@@ -30,8 +30,10 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    `separate_by_reference` は sampler 整理のため再利用するが、prefix shape の保証には
    使わない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
 4. **VRAM 機構は Phase 1 が MoT half-eviction、Phase 2b が
-   `TransformerBlockOffloader`** という分担にする。推論側で記録された block-swap
-   非対応の判断は generation 固有であり、学習には転移しない（§8）。
+   `LayerOffloadConductor`**（学習側の offload 機構。`TransformerBlockOffloader` は
+   forward-only inference 用で、以前ここに書かれていたのは誤り — §8.3）という分担に
+   する。推論側で記録された block-swap 非対応の判断は generation 固有であり、学習には
+   転移しない（§8）。ただし 2 機構の合成にはモジュール粒度の未解決問題がある（§8.3.1）。
 
 §5-§7 の設計判断は fable への設計相談を経て確定したものであり、根拠は各節に併記する。
 
@@ -92,7 +94,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
-| reference / full FT | §11 の後続フェーズ | PENDING |
+| reference / full FT | §11 の後続フェーズ。full FT の律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4）、reference は flux2 ハードゲート 6 箇所の解除から（§7.5） | PENDING |
 
 ---
 
@@ -387,9 +389,32 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
   activation と一時領域を置けない。原理とメモリの両方で落ちるので選択肢から外す。
 - **gen-only の算術は厳しいが現実的:** bf16 weight 16.2 GB + gradient 16.2 GB +
   optimizer state（CPU offload）+ stochastic-rounding の per-step scratch + pixel space の
-  activation（checkpointing 下）。48 GB で閉じるには gen 半分の block swap と
+  activation（checkpointing 下）。48 GB で閉じるには gen 半分の offload と
   optimizer state の CPU 常駐が必要になる。つまり **Phase 2 は §8 の
-  block-swap 機構の存在に依存する**。この依存順序自体がガード先行を正当化する。
+  offload 機構の存在に依存する**。この依存順序自体がガード先行を正当化する。
+
+**Phase 1 の実装がこの判断を強化した。** `encode_prompt` は `requires_grad=True` を
+即 raise し（`arch/sensenova.py:27-32` → `ops/sensenova_ops.py`）、prefix の
+immutability は forward のたびに `_assert_immutable_prefix_cache` で検証される。
+und を学習可能にするには**この不変条件群と 2 パス構造そのものを解体する**必要があり、
+§5.2 の「フラグではなくサブシステム」という評価が実装として具体化された形である。
+
+#### 未決定のサブ論点 — decoder 外の gen 側モジュール
+
+「gen branch = 8.1B」は **decoder Linear の数え方**である。gen 側には decoder の外にも
+モジュールがあり、**これらを trainable に含めるかは未決定**である。
+
+- `fm_modules['fm_head']`（`use_pixel_head` では `ConvDecoder`。x0 を直接出力する）
+- `fm_modules['vision_model_mot_gen']`（gen 側 ViT）
+- `fm_modules['timestep_embedder']` / `['noise_scale_embedder']`
+- 各層の `*_norm_mot_gen`（`q_norm_mot_gen` / `k_norm_mot_gen` など）
+
+`fm_modules` は decoder 層の外にある `nn.ModuleDict` である
+（[`vendor/modeling_neo_chat.py:229-255`](../../backend/core/models/sensenova/vendor/modeling_neo_chat.py)）。
+したがってこれらは 588 Linear の census にも Phase 1 の 294 LoRA target にも入らず、
+量子化対象でもなく、half-eviction の対称性検証の対象でもない。**x0 を直接出力する
+`fm_head` を凍結したまま「full fine-tune」と呼べるかは疑わしい**ため含める方向を
+推奨するが、これは推奨であって決定ではない。Phase 2b の実装時に明示的に決めること。
 
 ### 6.3 master weight dtype 戦略
 
@@ -399,7 +424,7 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
 明示的に棄却されている**という点である。
 
 `BaseTrainer._attach_stochastic_rounding`
-([`base_trainer.py:3313-3384`](../../backend/core/training/base_trainer.py)) の
+([`base_trainer.py:3364-3438`](../../backend/core/training/base_trainer.py)) の
 docstring が機構をそのまま述べている:
 
 > Full fine-tuning writes optimizer updates straight into BF16 storage with no
@@ -435,9 +460,18 @@ SenseNova への含意:
 - SenseNova は 8.1B の bf16 full FT なので**この欠陥をそのまま継承する**。
   アーキテクチャ的に免れる理由は何もない（MoT 二重化も pixel space も、
   仮数の分解能とは無関係）。実装すれば forced-bf16 arch の仲間入りをする。
-- Phase 2 を実装する場合、**`optimizer_stochastic_rounding` を SenseNova full FT で
-  既定 ON にするか、OFF を拒否するか**を決める必要がある。既定 False のまま出すと
-  `adamw8bit` 既定と組み合わさって既知の欠陥を再生産する。§12 に残す。
+- **`_attach_stochastic_rounding` は arch を見ないので、追加実装ゼロで適用対象になる。**
+  gate は `self.optimizer_stochastic_rounding` と optimizer 名だけで、arch 分岐は
+  1 つも無い（`base_trainer.py:3366-3372`）。SenseNova 側に必要なのは実装ではなく
+  **契約（既定値と拒否）の決定**だけである。
+- **推奨（fable 諮問、決定は Phase 2b 実装時）**: (1) `optimizer: adamw` を SenseNova
+  full FT で**拒否する** — 警告で流すと「既定 False」と「非カバー optimizer」の二重経路で
+  91% 凍結欠陥を再生産する。`torch.optim.AdamW` は per-parameter seam を持たない
+  唯一の optimizer で、非カバー時は名指しで警告されるだけである
+  （`base_trainer.py:3426-3431`）。(2) `optimizer_stochastic_rounding` を **SenseNova
+  full FT の contract で既定 True に上書きする** — 全 arch 共通の既定
+  （`param_defaults.py:2208`、False）は変えず、レガシー利用者のいない新規経路だけを
+  正しい既定で開ける。永続 fp32 master は棄却済みのまま（下記）。
 - **永続 fp32 master を SenseNova のために復活させる提案はしない。** リポジトリ全体で
   既に棄却された選択肢であり、gen branch 8.1B でも 32.4 GB になる。再提案するなら
   棄却理由（直列化・resume 非安全・OOM）を覆す新しい論拠が要る。
@@ -471,17 +505,51 @@ of a quantized base — out of scope"）。
 **未調査であり、やるなら新しい pre-registered gate と新しい論拠が要る**。
 本設計はそれを提案しない — §6.2 の bf16 gen branch 抽出の方が素直だからである。
 
-### 6.4 bf16 base の入手経路
+### 6.4 bf16 base の供給経路（「入手」ではなく「実装」が律速）
 
-- **推奨: upstream の 46.8 GiB bf16 ソースから gen branch のみを抽出**して
-  ~16.2 GB の成果物を作る。
-- **代替: 配布 int8 を bf16 へ dequant する。** これは棄却済みの「int8-resident FT」
-  とは別物であり、正当な materialization である。ただし精度を前提とする学習の
-  出発点に int8 量子化誤差を焼き付けることになる。
-  **未検証の不確実性**: dequant 起点が FT の初期値として実測で劣るかどうかは
-  誰も測っていない。upstream ソースが入手できない場合の fallback としては妥当。
+**この節の見出しは以前「bf16 base の入手経路」だった。Phase 1 の出荷によって前提条件の
+重心が入手から実装へ移ったため改題した。** 現行の gate
+`_assert_supported_quantized_training_base`（[`ops/sensenova_ops.py:49-91`](../../backend/core/training/ops/sensenova_ops.py)）は
+**未量子化 bf16 base を明示的に拒否する** — docstring と例外メッセージの両方が
+"and so is an unquantized bf16 base" と書いている。しかも
+`load_components`（`:155-156`）は training method を一切見ずに無条件でこれを呼ぶ。
+したがって upstream から bf16 を入手しても現行 loader 経路ではロードできず、
+**gate と loader の method-aware 化という実装作業が、入手とは独立に必要**である。
+これは Phase 2b の前提条件が「artifact の入手」から「配線の実装」に変わったことを意味する
+（構造的推論ではなく、gate のコードそのものから読める事実）。
 
-Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で両方の経路を
+供給経路は 3 つある。
+
+- **(a) ロード時の dequant materialization（外部依存なし）。** 配布 int8 checkpoint を
+  ロードし、gen half の 294 Linear だけを `weight.to(bf16) * scale` で bf16 に
+  materialize する。und half は int8 のまま凍結でよい — **凍結 int8 の und half の下で
+  gen 側に勾配が通ること自体は Phase 0 が実 checkpoint で確認済み**である
+  （§11 Phase 0）。ただし**そこで gen 側だったのは LoRA であり、bf16 に materialize した
+  294 Linear そのものを学習する形は未試験**である（構造的には同型だが実測は無い）。
+  int8 量子化誤差を学習の初期値に焼き付ける。
+  - **plain int8 checkpoint に限定することを推奨する。** ConvRot base を dequant 元に
+    すると rotation の逆適用という新規の複雑性が入り、しかも §5.3 の train/inference
+    skew と重なる。
+- **(b) upstream の 46.8 GiB bf16 ソースから gen half を抽出した artifact。** ~16.2 GB。
+  §6.2 の推奨形。
+- **(c) upstream bf16 をそのまま両 half bf16 でロードする。** 学習対象は gen half のみでも、
+  und half が bf16 で常駐するぶん VRAM 要求が上がる。
+
+#### 学習成果物の checkpoint format（未決定、新規の設計問題）
+
+Phase 2b は LoRA と違い**モデル本体を出力する**ため、Phase 1 には存在しなかった
+決定が要る。選択肢は 3 つで、いずれも推論側 loader との適合が問題になる。
+
+1. **mixed（und int8 + gen bf16）** — 保存量は最小だが、**この形式の推論ロードは一度も
+   試験されていない**。§12 に未測定事項として登録する。
+2. **両 half bf16** — 推論側の量子化前提から外れる。
+3. **gen half を再量子化して int8 に戻す** — 配布形式に一致するが lossy であり、
+   学習で得た更新の一部を保存時に捨てる。
+
+どれを既定にするかは Phase 2b 本体の実装時に決める。**現時点でどれかを推奨しない** —
+1 の可否が未試験である以上、比較の前提が揃っていない。
+
+Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で採用した経路を
 明示する。現行ガードは未提供の full FT を広告せず、未実装であることと LoRA 代替だけを
 示す。
 
@@ -574,6 +642,68 @@ reference 忠実度が実測で不足した場合にのみ、§5.2 で保留し�
 - 推論側には `REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024*1024` の encode コスト上限が
   ある。学習側も同じ上限と動的 preprocessing を再利用する。
 
+### 7.5 実装差分（設計判断は §7.1-§7.4 のまま、配線の具体）
+
+§7.1-§7.4 の設計判断はすべて維持する。以下は Phase 3 の実装時に必要になる配線で、
+**§9 の統合ポイント一覧に未記載だったもの**である。B1 強制はむしろ必然性を増した —
+reference は各 ref の smart-resize で token 数が per-item に変わるため、prefix を
+さらに ragged にする。
+
+**差分 1: `use_reference_images` の flux2 ハードゲート解除（必須）。** 現状は 6 箇所で
+gate されている。
+
+| 箇所 | 内容 |
+|---|---|
+| `train_runner.py:202-203` | sensenova で `ValueError`（Phase 3 deferral） |
+| `base_trainer.py:8085-8086` | 同じ拒否の trainer 側の重複（§9 の「flag 代入ブロック 2 箇所」と同型） |
+| `base_trainer.py:8107-8110` | 非 flux2 は warn して**無視**（"only supported for FLUX.2, will be ignored"） |
+| `base_trainer.py:8269` | `separate_by_reference = use_reference_images and self.is_flux2` |
+| `base_trainer.py:10700` | reference latent の encode 分岐が `and self.is_flux2` |
+| `base_trainer.py:11005` | batch への引き回しが `and self.is_flux2` |
+
+**差分 2: `text_length` の意味論変更（最も踏みやすい罠）。** 現在の
+`SenseNovaTrainingPrefix.text_length` は `int(input_ids.shape[1])`
+（`ops/sensenova_ops.py:207`）で、これが `_build_t2i_image_indexes(token_h, token_w,
+text_len, device)` の **t 軸の基点**として使われる（`:353`）。vendor 実装は
+`t_image = torch.full((token_h*token_w,), text_len)` であり、text_len は
+**「次の t index」であって token 数ではない**
+（`vendor/modeling_neo_chat.py:502-507`）。text-only では
+`indexes[0].max()+1 == indexes.shape[1] == input_ids.shape[1]` が偶然すべて一致するため
+現在の実装は正しい。**reference があると image patch token が h/w 軸に展開されて
+t 軸長 ≠ token 数になり、この一致が壊れる。** 推論の reference 経路は一般形の
+`indexes_cond[0].max() + 1` を使う（`sensenova_pipeline_ops.py:534-535`、
+text-only 経路の `indexes_cond.shape[1]`（`:463-464`）とは別式）。学習側もこれに揃え、
+フィールドを「次の t index」として一般化すること。**放置すると位置ずれが形状エラー
+なしに静かに起きる。**
+
+**差分 3: 再利用する推論側関数（再実装ゼロ）。** cond branch のみでよい
+（img_cond / uncond は CFG 用で loss には不要）。
+
+- `_embed_reference_images`（`sensenova_pipeline_ops.py:239-274`）—
+  `load_image_native` による ImageNet 正規化 + smart-resize + 1MP cap、
+  understanding tower の `extract_feature(..., gen_model=False)` 経由。
+- `transformer.img_context_token_id` の設定（`sensenova_pipeline_ops.py:482`）。
+  **既定は `None`（`modeling_neo_chat.py:258`）で Phase 1 経路は一度も設定しない。**
+  漏らすと `_build_it2i_inputs` の `assert selected.sum() != 0`
+  （`modeling_neo_chat.py:672-673`）で落ちる。
+- `_splice_reference_image_tokens`（`sensenova_pipeline_ops.py:277-`）、
+  `transformer._build_it2i_inputs`（`modeling_neo_chat.py:658-`）、
+  `transformer._it2i_prefix_forward`（`modeling_neo_chat.py:518-`）。
+
+`train_step` 本体・専用 non-reentrant checkpoint loop・`update_cache=False` fallback は
+**無変更で流用できる**（prefix が長くなるだけである）。
+
+**差分 4: FLUX.2 の前例は正規化・リサイズの「反面テンプレート」である。** これは §10 の
+「正規化の取り違え」リスクの顕在化形態である。FLUX.2 は reference を**target と同じ
+bucket 寸法で** trainer 自身の `encode_image` に通して VAE encode する
+（`base_trainer.py:10700-10712`、コメントに "Use same bucket dimensions as target
+image"）。SenseNova の reference は **bucket に一切参加せず**、per-ref 独立の
+smart-resize、ImageNet 正規化、understanding tower 経由である。故障モードが厄介で、
+**ref を trainer の画像ロード経路に通してから ViT に渡すと、形状は patchify 段で
+偶然合いうるため、エラーなしに誤正規化の条件付けが学習される。** 防御は規律ではなく
+構造で行うこと — reference のロード・前処理・encode を丸ごと `sensenova_ops` 内に
+閉じ、**PIL path を受け取る設計**にして trainer の画像 pipeline に ref を触らせない。
+
 ---
 
 ## 8. VRAM / offload 戦略
@@ -590,7 +720,7 @@ deliberately not built for this arch"）の判断は次の理由に基づく。
 **この機構的理由は generation 固有であり、学習 step には存在しない。** 学習 step は
 (1) `no_grad` の und 1 パス、(2) 通常の layer 順の gen forward、(3) backward であり、
 3 分岐の denoise loop も rolling schedule も無い。構造的には
-`TransformerBlockOffloader` が既に serve している他 arch と同型である
+`LayerOffloadConductor` が既に serve している他 arch の**学習経路**と同型である
 （gradient checkpointing 下で backward が block を再計算し、offloader の仕事は
 その時点で当該 block の weight を常駐させること）。
 
@@ -615,7 +745,7 @@ generation の非対応が training の非対応を含意しないことは既�
 
 | | Phase 1（LoRA） | Phase 2（gen full FT） |
 |---|---|---|
-| 主機構 | MoT half-eviction（DONE、既定 OFF） | `TransformerBlockOffloader`（gen 半分のみ、PENDING） |
+| 主機構 | MoT half-eviction（DONE、既定 OFF） | `LayerOffloadConductor`（gen 半分のみ、PENDING、§8.3.1 の未解決問題あり） |
 | und 半分 | 凍結済み。prefix cache 成功後から次の prefix まで CPU 退避 | 同左 |
 | 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-35` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
 
@@ -625,9 +755,21 @@ peak allocated / reserved が同量減る保証ではない。Phase 0 で観測�
 half-eviction の exit 判定には、同一 checkpoint・seed・shape・GC 条件で eviction OFF / ON
 を別 process で走らせ、peak allocated / reserved と wall time を個別に記録する必要がある。
 
-2 つの機構は**互いに素な weight 集合**を持つため、Phase 2 では素直に合成できる
-（und 半分は half-eviction で fwd+bwd 全体を通じて CPU、gen 半分は block swap で
-rolling）。
+**機構名の訂正（旧記述は誤り）。** この表は以前 Phase 2 の主機構として
+`TransformerBlockOffloader` を挙げていたが、その docstring は
+**"Block offloader for Transformer models (forward-only inference)"** であり
+（[`memory_management/block_offloading.py:264-272`](../../backend/core/memory_management/block_offloading.py)）、
+学習用ではない。学習側は `LayerOffloadConductor`
+（"Orchestrates layer offloading for VRAM-efficient training"、
+[`layer_offload_conductor.py:24-32`](../../backend/core/memory_management/layer_offload_conductor.py)）で、
+他 arch の学習 `setup_block_swap` は全てこちらを使う（anima / krea2 / ideogram4 /
+acestep / ltx2 等の `ops/*_ops.py`）。**しかも下に verbatim 引用している
+`kv_cache_streaming.py:27-35` 自身が "training-side offload belongs to
+LayerOffloadConductor" と書いており、引用を残したまま表の機構名だけが誤っていた** —
+文書内で自己矛盾していた形なので、経緯ごとここに残す。
+
+**2 機構の合成は未解決の設計問題である**（旧記述「互いに素な weight 集合を持つため
+素直に合成できる」からの格下げ）。詳細は §8.3.1。
 
 `kv_cache_streaming.py:27-35` の verbatim:
 
@@ -690,6 +832,35 @@ staging 実装、すなわち host 側で `.to("cpu")`（pageable）→ `pin_mem
 変更されつつあるため、5.61 倍という比は現行実装の値ではない。二重コピーが減速の
 支配要因だったかどうかは**未測定であり、断定しない** — blocking copy であること、
 転送量が phase 境界あたり 7.55 GiB であること自体も候補として残る。
+
+### 8.3.1 2 機構の合成は未解決の設計問題（旧「素直に合成できる」を格下げ）
+
+以前 §8.3 は「2 つの機構は互いに素な weight 集合を持つため素直に合成できる」と
+書いていた。**これは楽観的すぎたので未解決問題に格下げする。** 理由は weight 集合では
+なく**モジュール粒度**にある。
+
+- `LayerOffloadConductor` は `layers` の各要素に `register_forward_pre_hook` /
+  `register_full_backward_hook` を張り、staging は `layer.to(self.device)` で
+  **モジュール丸ごと**行う（`layer_offload_conductor.py:334-359`, `:175-179`）。
+- SenseNova の `Qwen3DecoderLayer` は**両 half を同一モジュール内の兄弟属性として持つ**
+  （`q_proj_mot_gen` / `mlp_mot_gen` などが und 側と並ぶ。
+  `vendor/modeling_qwen3.py:458-490`）。gen half は独立した部分木ではない。
+- したがって decoder layer をそのまま conductor に渡すと、`layer.to(device)` が
+  **evictor が CPU 退避したはずの und weight を引き戻す**か、device 不整合を起こす。
+
+合成するには conductor に「層ごとの gen half だけ」を渡せる必要があるが、現状の
+`select_mot_weight_modules` は層構造を持たない**平坦なモジュール列**を返す
+（`training/sensenova_phase_eviction.py:41-45`）ため、そのままでは per-layer の
+indexable list にならない。**conductor がサブモジュール粒度のリストを受けられるかは
+未調査**であり、受けられたとしても hook が層単位ではなく Linear 単位で発火する点の
+検討が要る。§12 に未測定事項として登録する。
+
+**この依存関係は Phase 2b の VRAM 前提に直結する。** Phase 2b は
+gen bf16 16.2 GB + gradient 16.2 GB で、weights と gradients だけで 48 GB カードの
+32.4 GB を占める構造である（§6.2 の算術）。und half 7.55 GiB の退避が残る唯一の余白で
+あるにもかかわらず、**half-eviction の有効性 gate は §8.3 のとおり未解決のまま**である。
+したがって **gate の消化（activation が支配する解像度での OFF / ON 再測定）を
+Phase 2b の最初の作業項目に置く**（§11 Phase 2b-0）。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -781,6 +952,12 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 ### PENDING
 
 - Phase 2b full FT 本体と Phase 3 reference 混在。
+- **§9 に未記載だった統合ポイント**（設計再検証で判明）: Phase 3 は
+  `use_reference_images` の flux2 ハードゲート 6 箇所（`train_runner.py:202-203`、
+  `base_trainer.py:8085`, `:8110`, `:8269`, `:10700`, `:11005`）の解除が必須で、
+  `SenseNovaTrainingPrefix.text_length` の意味論変更を伴う。Phase 2b は
+  `ops/sensenova_ops.py` の gate と `load_components` を method-aware にする必要が
+  ある。詳細は §7.5 / §6.4。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -805,7 +982,8 @@ cache namespace と alignment は登録だけで有効になった。
 | `Int8Linear` の isinstance 罠 | `nn.Linear` サブクラスでないため 294 件を黙って取りこぼす | 既存の共有述語を使う（§5.4） |
 | base census の isinstance 罠（別方向） | `ConvRotInt8Linear` は `Int8Linear` の subclass なので、`isinstance` census は ConvRot を plain の数に畳み込み mixed base を黙って受理する | `type(m) is cls` で数える（§5.3、`0c9ea86b`） |
 | ConvRot base の train / inference skew | 学習は dequant 経路（W-int8 / A-bf16）に fit するが、推論は常に fused W8A8。fit 先とデプロイ先が activation 量子化誤差の分だけ異なる。**実害は未測定** | 既知制約として §5.3 に記録。skew を避けるなら plain int8 base を選ぶ |
-| 正規化の取り違え | reference は ImageNet、target は 0.5/0.5 | §4.6, §7.4 |
+| 正規化の取り違え | reference は ImageNet、target は 0.5/0.5。**顕在化形態**: FLUX.2 の前例（ref を target と同じ bucket 寸法で VAE encode）をテンプレートにすると、形状が patchify 段で偶然合いエラーなしに誤正規化が学習される | §4.6, §7.4。防御は規律ではなく構造で — ref の前処理を `sensenova_ops` に閉じる（§7.5 差分 4） |
+| offload 2 機構の合成 | `LayerOffloadConductor` はモジュール丸ごと staging するが、SenseNova の decoder layer は両 half を同一モジュールに持つ | 未解決。conductor のサブモジュール粒度対応が未調査（§8.3.1、§12） |
 | prediction config の退行 | 既存の flow-matching 登録を学習統合時に外すと静かに誤る | §9 の退行テストで固定 |
 | half-eviction の層選択 | Parameter ベースの規則は 2 度不活性のまま出荷された | 判別子ごと再利用する（§8.4） |
 | prefix forward のコスト | Qwen3-8B 全体を毎 step 通す | 実測後にキャッシュ可否を判断（§12） |
@@ -955,22 +1133,51 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - `TRAINING_UNSUPPORTED` と共通 preflight でモデルロード前に拒否する。初期案の
   `SenseNovaFullParameterAdapter` は不要になったため追加していない。
 
-### Phase 2b — full FT 本体（PENDING、bf16 base 入手が前提条件）
+### Phase 2b — full FT 本体（PENDING、律速は bf16 base の「入手」ではなく「実装」）
 
-- gen branch 抽出 bf16 base の作成。
-- `TransformerBlockOffloader` の gen 半分への適用 + und 半分の常時 CPU 退避。
-- stochastic rounding の有効性を実測し、既定 ON / OFF 拒否と `optimizer: adamw` 拒否を決定する。
-- prefix forward を checkpointed region の外に置く不変条件のテスト。
+**前提条件の表現を訂正した。** 旧見出しは「bf16 base 入手が前提条件」だったが、
+現行 gate は未量子化 bf16 base も拒否するため、入手しただけでは動かない（§6.4）。
+以下は Phase 1 の §11 と同じ粒度の作業分割である。
+
+- **2b-0 — half-eviction gate の消化（最初に行う）。** §8.3 の未解決 gate を、
+  activation が支配する解像度で同一 checkpoint / seed / GC 条件の OFF / ON 別 process
+  として取り直す。Phase 2b の VRAM 前提が und half 7.55 GiB の退避に依存するため
+  （§8.3.1）、これが未解決のままでは後続の作業量が見積もれない。
+- **2b-1 — gate と loader の method-aware 化。**
+  `_assert_supported_quantized_training_base` と `load_components` が training method を
+  見るようにし、§6.4 の供給経路のどれを受理するかを決める。
+- **2b-2 — `SenseNovaFullParameterAdapter`。** §6.1 で「共通 preflight だけで
+  fail-closed になるため追加しなかった」もの。本体実装時には必要になる。
+  decoder 外の gen 側モジュールを含めるかの決定（§6.2）をここで確定する。
+- **2b-3 — bf16 rounding-defect の契約。** §6.3 の推奨 2 点
+  （`optimizer: adamw` 拒否、`optimizer_stochastic_rounding` の contract 既定 True）を
+  決定して実装する。実装量はゼロに近く、決定が本体である。
+- **2b-4 — offload の合成。** §8.3.1 のモジュール粒度問題を解決する。
+  `LayerOffloadConductor` がサブモジュール粒度のリストを受けられるかの調査が先行する。
+- **2b-5 — exit smoke。** prefix forward を checkpointed region の外に置く不変条件の
+  テストを含む。
+- **exit criteria**: **「学習が壊れていないこと」だけを主張し、品質は主張しない。**
+  短 horizon では stochastic rounding の誤差が信号と同程度で（§6.3）、A/B が測定として
+  無効になるためである。
 
 ### Phase 3 — reference 混在（PENDING）
 
+- **3-1 — gate 解除と配線。** §7.5 差分 1 の 6 箇所。
+- **3-2 — reference prefix の構築。** §7.5 差分 2（`text_length` の一般化）と
+  差分 3（推論側関数の再利用）。reference の前処理は `sensenova_ops` 内に閉じる
+  （差分 4）。
+- **3-3 — 学習中 sample の ref 対応。** 現在 `generate_sample` は
+  reference/condition image を無視して warn する（`dc91bef1`）。
+- **3-4 — 混在 smoke。** ref 有り / 無し dataset を 1 run で混ぜる。
 - 既存の run-global `use_reference_images` と per-item `reference_images` を再利用する
   （新しい dataset-level parameter / API 変更は行わない）。
 - `separate_by_reference` の SenseNova への適用（bucket key に反映）。
-- prefix への reference token 差し込み（ImageNet 正規化、推論と同じ動的 preprocessing）。
-- ref 有り / 無し dataset を 1 run で混ぜる smoke。
 - **exit criteria**: 混在 run で両種類の batch が形状エラーなく通ること、
-  ref 無し batch の挙動が Phase 1 と一致すること（何も捨てられていないこと）。
+  **ref 無し step の loss / grad SHA-256 が Phase 1 実装と一致すること**（何も壊して
+  いないことの証明）、および **t-extent 検証** — ref 有り prefix で
+  `text_length ≠ token 数` になるケースを最低 1 つ含み、image index の t 基点が
+  `indexes[0].max()+1` と一致することを確認する（§7.5 差分 2 の静かな位置ずれは
+  これでしか捕まらない）。
 
 ---
 
@@ -979,18 +1186,31 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - **prefix KV をキャッシュするか。** caption ごとに 42 層 × 全 token の K/V は容量が
   大きい。毎 step 計算のコストを実測してから決める。Phase 0 の計測項目。
 - **`optimizer_stochastic_rounding` を SenseNova full FT で既定 ON にするか、
-  OFF を拒否するか。** 既定 False のまま出すと既知の欠陥を再生産する。§6.3。
-  （永続 fp32 master は選択肢に含めない。棄却済み。）
+  OFF を拒否するか。** 既定 False のまま出すと既知の欠陥を再生産する。
+  **推奨は contract で既定 True に上書き（全 arch 共通の既定は変えない）。決定は
+  Phase 2b-3。** §6.3。（永続 fp32 master は選択肢に含めない。棄却済み。）
 - **`optimizer: adamw` を SenseNova full FT で拒否するか。** per-parameter seam が
   無く stochastic rounding をかけられない唯一の optimizer である。
+  **推奨は拒否。決定は Phase 2b-3。** §6.3。
+- **full FT の学習成果物をどの checkpoint format で保存するか。** mixed
+  （und int8 + gen bf16）/ 両 half bf16 / gen half 再量子化 の 3 択。§6.4。
+- **decoder 外の gen 側モジュール（`fm_head`、gen ViT、embedder、`*_norm_mot_gen`）を
+  trainable に含めるか。** 含める方向を推奨するが未決定。§6.2。
 - ~~**ConvRot checkpoint を学習対象に含めるか。**~~ **解決済み（`0c9ea86b`）: 含める。**
   受理条件は 588 Linear が単一 flavour で `Int8Linear` か `ConvRotInt8Linear`（§5.3）。
   代わりに**新しい未測定事項**が残る: **ConvRot での学習は dequant 経路
   （W-int8 / A-bf16）に fit するが、推論は常に fused W8A8 を走らせる**という
   train / inference skew の実害。ConvRot 学習 LoRA を fused 推論カーネル下で A/B した
   例が無い。plain int8 にこの skew は無い（§5.3）。
-- **dequant-from-int8 起点の full FT が実測で劣るか。** 誰も測っていない。
-  upstream ソースが入手できない場合の fallback の妥当性がこれに掛かる。
+- ~~**dequant-from-int8 起点の full FT が実測で劣るか。**~~ **「測らない」で close する。**
+  構造的な理由であって、優先度の問題ではない: この A/B には比較対象として upstream bf16 が
+  要るが、**upstream bf16 が入手できるなら dequant 経路を使う理由が消滅する**。dequant が
+  必要なのは upstream が入手できない場合だけで、そのとき比較 arm は存在しない
+  （実施可能なとき = 不要、必要なとき = 実施不能）。加えて収束規模の run が 2 本要り、
+  本リポジトリは収束実験を行わない。
+  **代替（upstream が入手できた場合に限り、1 回だけ）**: `dequant(int8)` と upstream bf16 の
+  per-tensor 誤差 census（学習なし、shard streaming、GPU 不要）を記録する。これは
+  「劣るか」には答えないが、**焼き付く誤差の規模を事実として残せる**。
 - **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。
   不足した場合のみ `scope: both`（LoRA 限定）を開く。
 - **batch > 1 をいつ開くか。** padding-aware gen mask / varlen attention または
@@ -998,6 +1218,26 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - **upstream issue #207 の mixed forward を検証・修正して 1 パス化する価値があるか。**
   2 パス設計で十分機能する見込みなので優先度は低いが、und 学習を将来入れるなら
   再評価する。
+
+### 未測定事項の一覧（実測が無いもの／構造から推論しただけのもの）
+
+新規（今回の設計再検証で判明したもの。いずれも**構造からの推論であって実測ではない**）:
+
+1. **mixed checkpoint（und int8 + gen bf16）の推論ロード可否。** 構造上は通りそうだが
+   **一度も試験されていない**。§6.4。
+2. **`LayerOffloadConductor` がサブモジュール粒度のリストを受けられるか。** 未調査。
+   受けられなければ half-eviction との合成に wrapper か per-layer 選択の新規実装が要る。
+   §8.3.1。
+3. **dequant 起点 full FT の学習品質影響。** 上記のとおり**測定不能な構造**である
+   （比較 arm が存在しうる状況と、経路が必要になる状況が排他）。
+
+既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
+（§7.2）、ConvRot base の train / inference skew（§5.3）。
+
+**ただし half-eviction の依存関係は強まった。** Phase 2b は weights + gradients だけで
+32.4 GB を占め、und half 7.55 GiB の退避が唯一の余白であるため、この gate は
+「Phase 1 の運用判断」から「**Phase 2b の VRAM 前提**」に格上げされた（§8.3.1、
+§11 Phase 2b-0）。
 
 ---
 

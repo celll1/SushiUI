@@ -3231,6 +3231,20 @@ class BaseTrainer(ABC):
             lrs.append(getattr(self, 'unet_lr', self.learning_rate))
             names.append("U-Net")
 
+        # SenseNova's two groups both live inside `transformer` (`unet` is None
+        # and `text_encoder` is None), so neither the U-Net entry above nor the
+        # TE1 entry below fires and a resume would reset both to learning_rate.
+        # Order mirrors SenseNovaLoRAAdapter.setup_trainable_parameters.
+        if getattr(self, 'is_sensenova', False):
+            if getattr(self, 'train_unet', True):
+                lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+                names.append("MoT-Generation")
+            if getattr(self, 'train_text_encoder', False):
+                lrs.append(getattr(self, 'text_encoder_1_lr', None)
+                           or getattr(self, 'text_encoder_lr', None)
+                           or getattr(self, 'unet_lr', self.learning_rate))
+                names.append("MoT-Understanding")
+
         # ControlNetTrainer sets train_unet=False (it never trains the base UNet)
         # but still creates a single optimizer group over ITS OWN module at
         # unet_lr (see controlnet_sd15_adapter.py / controlnet_sdxl_adapter.py
@@ -4441,7 +4455,7 @@ class BaseTrainer(ABC):
             return self.arch.encode_prompt(
                 self,
                 caption,
-                requires_grad=False,
+                requires_grad=requires_grad,
                 reference_image_paths=reference_image_paths,
             ), None
         elif self.is_lens:
@@ -5227,9 +5241,29 @@ class BaseTrainer(ABC):
             raise ValueError("SenseNova B1 collation requires exactly one prompt prefix")
         return prefixes[0]
 
-    @staticmethod
-    def _sensenova_mnt_conditioning(prefix: Any):
-        """Build the opaque conditioning payload reused by every MNT iteration."""
+    def _sensenova_mnt_conditioning(
+        self,
+        prefix: Any,
+        *,
+        captions: Optional[List[str]] = None,
+        mnt_index: int = 0,
+    ):
+        """Build the opaque conditioning payload for one MNT iteration.
+
+        A frozen understanding branch reuses the same detached prefix every
+        iteration. A TRAINABLE one cannot: the MNT loop steps the optimizer once
+        per iteration, so reusing the graph (``retain_graph``) would either trip
+        the version counter or backpropagate against stale parameters. The
+        prefix is therefore recomputed per iteration, the same resolution
+        ``need_recompute_text_embeddings`` applies to the other architectures'
+        trainable text encoders.
+        """
+        if (
+            mnt_index > 0
+            and bool(getattr(self, "train_text_encoder", False))
+            and captions
+        ):
+            prefix, _ = self.encode_caption(captions[0], requires_grad=True)
         return None, None, None, prefix
 
     def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
@@ -10633,9 +10667,13 @@ class BaseTrainer(ABC):
                             # through encode_image: sensenova_ops owns their loading
                             # and ImageNet normalization so the trainer's bucket /
                             # [-1,1] pipeline can never touch them.
+                            # requires_grad follows train_text_encoder: SenseNova's
+                            # prompt encoder IS the understanding branch of the same
+                            # LLM that denoises, so a trainable "text encoder" means
+                            # a differentiable prefix pass.
                             prefix, _ = self.encode_caption(
                                 caption,
-                                requires_grad=False,
+                                requires_grad=bool(getattr(self, "train_text_encoder", False)),
                                 reference_image_paths=(
                                     item.get("reference_images") or []
                                 ) if use_reference_images else None,
@@ -11170,7 +11208,11 @@ class BaseTrainer(ABC):
                                 mnt_attention_mask,
                                 mnt_pooled_embeddings,
                                 mnt_sensenova_prefix,
-                            ) = self._sensenova_mnt_conditioning(sensenova_prefix)
+                            ) = self._sensenova_mnt_conditioning(
+                                sensenova_prefix,
+                                captions=batch_captions,
+                                mnt_index=mnt_idx,
+                            )
                         elif need_recompute_text_embeddings:
                             # Text Encoder trainable + MNT > 1: Re-encode text for each iteration
                             # This creates a fresh computation graph with gradient flow to Text Encoder.

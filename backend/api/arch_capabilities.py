@@ -879,8 +879,8 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova"}):
 
 # --- Text-encoder training --------------------------------------------------
 # Declared where the text encoder is frozen by the adapter regardless of the
-# flag. Z-Image is the one split case: its LoRA adapter injects no TE LoRA while
-# ZImageFullParameterAdapter does unfreeze the encoder, hence the method scope.
+# flag. Z-Image and SenseNova are the split cases, in opposite directions, and
+# are declared with a method scope below rather than in this list.
 for _a, _why in [
     ("anima", "AnimaLoRAAdapter/AnimaFullParameterAdapter keep the Qwen3 text encoder frozen; the trainable LLM adapter lives inside the DiT and is reached through the LoRA scope instead"),
     ("lens", "LensLoRAAdapter/LensFullParameterAdapter keep the GPT-OSS text encoder frozen"),
@@ -889,13 +889,21 @@ for _a, _why in [
     ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
     ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
     ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),
-    ("sensenova", "SenseNova's understanding branch is frozen and SenseNovaLoRAAdapter injects no text LoRA; the prompt is encoded by the same LLM that denoises"),
 ]:
     _add_training_feature_unsupported(_a, "text_encoder_training", _why)
 _add_training_feature_unsupported(
     "zimage", "text_encoder_training",
     "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it",
     methods=["lora", "relora"])
+# SenseNova is Z-Image's mirror image: LoRA DOES train the understanding branch
+# (train_text_encoder injects 294 understanding-branch adapters and the prompt
+# prefix is built by a differentiable pass), while full fine-tuning of that half
+# is not implemented -- SenseNovaFullParameterAdapter does not exist and
+# full_finetune is refused for this architecture outright.
+_add_training_feature_unsupported(
+    "sensenova", "text_encoder_training",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises; LoRA trains it through train_text_encoder, but no full-parameter path for it is implemented",
+    methods=["full_finetune"])
 
 # --- Sample generation during training --------------------------------------
 # NOT declared for SenseNova: its sampling integration is in flight, and a

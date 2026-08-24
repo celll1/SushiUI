@@ -59,8 +59,16 @@ def select_mot_weight_modules(
 ) -> MotWeightSelection:
     """Select owned Parameters and persistent buffers from both decoder halves.
 
-    LoRA children are generation-only by design; exact symmetry applies to the
-    frozen base beneath their wrappers.
+    ``require_exact_symmetry`` (the TRAINING evictor) excludes LoRA children on
+    the generation side only, so a run that also carries understanding LoRA
+    fails this check rather than passing silently. That is the intended
+    outcome: the training evictor stages the understanding half to CPU for the
+    denoise phase, which cannot host a branch that must survive to backward.
+    ``train_runner._apply_sensenova_training_contract`` refuses that
+    combination up front with a readable message; this is the backstop.
+
+    The INFERENCE evictor leaves symmetry unchecked and classifies purely by
+    path, so understanding wrappers travel with the understanding half.
     """
     layers: Iterable[nn.Module] = transformer.language_model.model.layers
     all_gen: list[nn.Module] = []

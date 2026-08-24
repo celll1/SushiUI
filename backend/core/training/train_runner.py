@@ -184,6 +184,25 @@ def _apply_sensenova_training_contract(
         "sensenova_mot_phase_eviction",
         TRAINING_DEFAULTS["sensenova_mot_phase_eviction"],
     )
+    # Reused, never duplicated: SenseNova's prompt encoder IS the understanding
+    # branch of the same LLM that denoises, so `train_text_encoder` arms
+    # understanding-branch LoRA.
+    train_understanding = _normalize_sensenova_bool(
+        train_config, "train_text_encoder", False
+    )
+    if train_understanding and phase_eviction:
+        # An explicit error, not a silent auto-disable: both flags are opt-in,
+        # and quietly dropping either one breaks a contract the user set (a VRAM
+        # budget, or which weights get trained).
+        raise ValueError(
+            "SenseNova train_text_encoder cannot be combined with "
+            "sensenova_mot_phase_eviction: the understanding half must stay "
+            "GPU-resident until backward, while the evictor moves it to CPU for "
+            "the denoise phase. This is a scope limit of this implementation, not "
+            "a fundamental incompatibility -- a phase split that keeps the "
+            "understanding half through backward is deferred to the "
+            "understanding full-finetune phase. Disable one of the two."
+        )
     if phase_eviction:
         groups = _normalize_sensenova_integer(
             train_config, "num_optimizer_groups", 0

@@ -45,8 +45,9 @@ from core.training.probes.sensenova_real_checkpoint import (  # noqa: E402
 
 # Understanding-branch LoRA targets. Unlike the generation branch these carry no
 # suffix at all -- neither on the Linear (gen: ``q_proj_mot_gen``) nor on the
-# parent (gen: ``mlp_mot_gen``). U-1 folds this into
-# ``iter_sensenova_lora_targets(transformer, branch=...)``.
+# parent (gen: ``mlp_mot_gen``). U-1 folded the enumeration into
+# ``iter_sensenova_lora_targets(transformer, branch=...)``, which this probe now
+# drives instead of keeping a second copy.
 UND_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "o_proj")
 UND_MLP_ATTRS = ("gate_proj", "up_proj", "down_proj")
 EXPECTED_UND_TARGETS = 294
@@ -56,15 +57,9 @@ EXPECTED_UND_TARGETS = 294
 # MLP only produce hidden_42, which a t2i prefix discards (inference keeps
 # ``past_key_values`` and drops ``last_hidden_state``).
 def _expected_dead_und_targets(num_layers: int) -> set[str]:
-    last = num_layers - 1
-    prefix = f"language_model.model.layers.{last}"
-    return {
-        f"{prefix}.self_attn.q_proj",
-        f"{prefix}.self_attn.o_proj",
-        f"{prefix}.mlp.gate_proj",
-        f"{prefix}.mlp.up_proj",
-        f"{prefix}.mlp.down_proj",
-    }
+    from core.models.sensenova.sensenova_lora import und_gradient_unreachable_paths
+
+    return und_gradient_unreachable_paths(num_layers)
 
 
 # Stop an arm well before the gate so an over-budget measurement aborts with a
@@ -78,32 +73,10 @@ GC_OFF_SAFETY_BYTES = 1024 ** 3
 def _iter_und_lora_targets(
     transformer: nn.Module,
 ) -> Generator[tuple[str, Any, str, nn.Module], None, None]:
-    """Yield ``(module_path, parent, attr, module)`` per understanding target.
+    """Yield ``(module_path, parent, attr, module)`` per understanding target."""
+    from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
 
-    Same 4-tuple contract as ``iter_sensenova_lora_targets`` so U-1 can adopt
-    this as its ``branch="und"`` arm without changing any consumer.
-    """
-    from core.models.sensenova.sensenova_lora import _is_lora_target
-
-    language_model = getattr(transformer, "language_model", None)
-    llm_core = getattr(language_model, "model", None) if language_model is not None else None
-    layers = getattr(llm_core, "layers", None)
-    if layers is None:
-        return
-    for layer_idx, block in enumerate(layers):
-        prefix = f"language_model.model.layers.{layer_idx}"
-        attn = getattr(block, "self_attn", None)
-        if attn is not None:
-            for attr_name in UND_ATTN_ATTRS:
-                module = getattr(attn, attr_name, None)
-                if _is_lora_target(module):
-                    yield f"{prefix}.self_attn.{attr_name}", attn, attr_name, module
-        mlp = getattr(block, "mlp", None)
-        if mlp is not None:
-            for attr_name in UND_MLP_ATTRS:
-                module = getattr(mlp, attr_name, None)
-                if _is_lora_target(module):
-                    yield f"{prefix}.mlp.{attr_name}", mlp, attr_name, module
+    return iter_sensenova_lora_targets(transformer, branch="und")
 
 
 class _TrainingPrefixLayer:

@@ -1,6 +1,6 @@
 # SenseNova U1.5 学習設計案
 
-> Status: Phase 0 と Phase 1 は完了。Phase 2b、Phase 3 は未完。
+> Status: Phase 0 / Phase 1 / Phase 3 は完了。Phase 2b と Phase U は未完。
 > Date: 2026-08-24
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -25,7 +25,8 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    int8 のみで、既知の非対応はモデルロード前に拒否する。実装本体は bf16 base の
    入手を前提条件として Phase 2b に送る。
    実装する場合の対象は **gen branch のみの 8.1B**（both-branch 16.2B は設計対象外）。
-3. **Phase 3（reference 混在）は per-item presence を真とする。** 初版は物理
+3. **Phase 3（reference 混在）は per-item presence を真とする。**（**DONE**、
+   `7a09af52`..`611a4a24`。以下の判断はすべてそのまま実装された。）初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
    `separate_by_reference` は sampler 整理のため再利用するが、prefix shape の保証には
    使わない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
@@ -94,7 +95,8 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
-| reference / full FT | §11 の後続フェーズ。full FT の律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4）、reference は flux2 ハードゲート 6 箇所の解除から（§7.5） | PENDING |
+| reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
+| full FT（Phase 2b） | 律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4） | PENDING |
 | understanding branch の学習 | ユーザー選択式（既定 OFF）で LoRA / Full-FT の対象にする機能要求。Phase 1 のみに依存する独立フェーズとして §13 に分離 | PENDING |
 
 ---
@@ -766,7 +768,12 @@ G-RB3 が最も重要である。upgrade 項目 4 のサイレントスキップ
 
 ---
 
-## 7. Phase 3 — reference 画像を含むデータセットの混在（PENDING）
+## 7. Phase 3 — reference 画像を含むデータセットの混在（DONE）
+
+**実装完了（`7a09af52` 3-1/3-2、`d7bd9067` 3-3、`611a4a24` 3-4）。**
+§7.1-§7.4 の設計判断は**すべてそのまま実装された** — per-item presence、B1 強制、
+`separate_by_reference` の位置づけ（prefix shape の保証には使わない）、und 凍結。
+実装の実際の姿と実測値は §7.5 / §11 Phase 3 に置く。
 
 ### 7.1 前例は存在する（新規設計ではない）
 
@@ -853,24 +860,38 @@ reference 忠実度が実測で不足した場合にのみ、§5.2 で保留し�
 - 推論側には `REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024*1024` の encode コスト上限が
   ある。学習側も同じ上限と動的 preprocessing を再利用する。
 
-### 7.5 実装差分（設計判断は §7.1-§7.4 のまま、配線の具体）
+### 7.5 実装差分（設計判断は §7.1-§7.4 のまま、配線の具体）— DONE
 
-§7.1-§7.4 の設計判断はすべて維持する。以下は Phase 3 の実装時に必要になる配線で、
+§7.1-§7.4 の設計判断はすべて維持された。以下は Phase 3 の実装で必要になった配線で、
 **§9 の統合ポイント一覧に未記載だったもの**である。B1 強制はむしろ必然性を増した —
 reference は各 ref の smart-resize で token 数が per-item に変わるため、prefix を
 さらに ragged にする。
 
-**差分 1: `use_reference_images` の flux2 ハードゲート解除（必須）。** 現状は 6 箇所で
-gate されている。
+**差分 1: `use_reference_images` のゲート — 6 箇所中 4 箇所だけ解除した（`7a09af52`）。**
+**残る 2 箇所は意図的に flux2 限定のまま**である。
 
-| 箇所 | 内容 |
-|---|---|
-| `train_runner.py:202-203` | sensenova で `ValueError`（Phase 3 deferral） |
-| `base_trainer.py:8085-8086` | 同じ拒否の trainer 側の重複（§9 の「flag 代入ブロック 2 箇所」と同型） |
-| `base_trainer.py:8107-8110` | 非 flux2 は warn して**無視**（"only supported for FLUX.2, will be ignored"） |
-| `base_trainer.py:8269` | `separate_by_reference = use_reference_images and self.is_flux2` |
-| `base_trainer.py:10700` | reference latent の encode 分岐が `and self.is_flux2` |
-| `base_trainer.py:11005` | batch への引き回しが `and self.is_flux2` |
+| 箇所 | 内容 | 結果 |
+|---|---|---|
+| `train_runner.py` | sensenova で `ValueError`（Phase 3 deferral） | **解除**（型正規化だけ残す） |
+| `base_trainer.py` train() | 同じ拒否の trainer 側の重複 | **解除** |
+| `base_trainer.py` warn | 非 flux2 は warn して無視 | **解除**（`not (is_flux2 or is_sensenova)`） |
+| `base_trainer.py` sampler | `separate_by_reference = ... and self.is_flux2` | **解除**（`(is_flux2 or is_sensenova)`） |
+| `base_trainer.py` encode | reference latent の encode 分岐 | **flux2 のまま（意図的）** |
+| `base_trainer.py` batch | reference latent の batch 引き回し | **flux2 のまま（意図的）** |
+
+**後ろ 2 つを広げてはいけない。** そこは reference を **target の bucket 寸法で VAE
+encode する latent 経路**であり、§7.5 差分 4 が「反面テンプレート」と呼んでいるもの
+そのものである。SenseNova はそこに**加わることで**ではなく、**自前の入口を持つことで**
+解放された（上流の `encode_caption` 分岐へ迂回し、reference は prompt prefix に入る）。
+`sensenova_reference_training_test.py` が
+`source.count("use_reference_images and self.is_flux2") == 2` を固定しているので、
+後から「SenseNova を足し忘れている」と誤解して広げると**テストが落ちる**。これは
+仕様であって不足ではない。
+
+なお `separate_by_reference` は SenseNova でも有効化されたが、**位置づけは §7.2 の
+まま「sampler の整理」**である（B1 では prefix が per-item なので、これが prefix
+shape を保証することは無い）。**この経路は 3-4 の smoke では exercise されていない** —
+bucketing 無効時は通らないためである。
 
 **差分 2: `text_length` の意味論変更（最も踏みやすい罠）。** 現在の
 `SenseNovaTrainingPrefix.text_length` は `int(input_ids.shape[1])`
@@ -883,9 +904,15 @@ text_len, device)` の **t 軸の基点**として使われる（`:353`）。ven
 現在の実装は正しい。**reference があると image patch token が h/w 軸に展開されて
 t 軸長 ≠ token 数になり、この一致が壊れる。** 推論の reference 経路は一般形の
 `indexes_cond[0].max() + 1` を使う（`sensenova_pipeline_ops.py:534-535`、
-text-only 経路の `indexes_cond.shape[1]`（`:463-464`）とは別式）。学習側もこれに揃え、
-フィールドを「次の t index」として一般化すること。**放置すると位置ずれが形状エラー
-なしに静かに起きる。**
+text-only 経路の `indexes_cond.shape[1]`（`:463-464`）とは別式）。**放置すると位置ずれが
+形状エラーなしに静かに起きる。**
+
+**実装（`7a09af52`）**: `text_length = int(indexes[0].max()) + 1` に一般化し、
+dataclass のコメントで「token 数ではなく次の t index」と明記した。両方向を pin して
+ある — text-only は `input_ids.shape[1]` との一致、reference 有りは t extent との一致
+**かつ token 数より真に小さいこと**。後者が要るのは、**前者だけでは退化ケース
+（両者が偶然一致する形）を通してしまう**からである。実機での非退化確認は
+§11 Phase 3 の実測に記録した。
 
 **差分 3: 再利用する推論側関数（再実装ゼロ）。** cond branch のみでよい
 （img_cond / uncond は CFG 用で loss には不要）。
@@ -904,6 +931,12 @@ text-only 経路の `indexes_cond.shape[1]`（`:463-464`）とは別式）。学
 `train_step` 本体・専用 non-reentrant checkpoint loop・`update_cache=False` fallback は
 **無変更で流用できる**（prefix が長くなるだけである）。
 
+**実装（`7a09af52`）**: 上記をすべてそのまま使い、再実装はゼロ。`img_context_token_id`
+は `_build_it2i_inputs` の直前に設定する。`SENSENOVA_MAX_REFERENCE_IMAGES`（推論側の
+上限）を超えたら raise し、`REFERENCE_IMAGE_MAX_PIXELS_CAP` は
+`_embed_reference_images` の既定引数として自動的に効く。予告どおり `train_step`・
+immutability assert・checkpoint loop・phase evictor は**一行も変えていない**。
+
 **差分 4: FLUX.2 の前例は正規化・リサイズの「反面テンプレート」である。** これは §10 の
 「正規化の取り違え」リスクの顕在化形態である。FLUX.2 は reference を**target と同じ
 bucket 寸法で** trainer 自身の `encode_image` に通して VAE encode する
@@ -914,6 +947,14 @@ smart-resize、ImageNet 正規化、understanding tower 経由である。故障
 偶然合いうるため、エラーなしに誤正規化の条件付けが学習される。** 防御は規律ではなく
 構造で行うこと — reference のロード・前処理・encode を丸ごと `sensenova_ops` 内に
 閉じ、**PIL path を受け取る設計**にして trainer の画像 pipeline に ref を触らせない。
+
+**実装（`7a09af52`）**: そのとおりに構造で防いだ。trainer には **path しか渡らず**、
+`_load_reference_images` が PIL を開いて vendor `load_image_native` に**そのまま**渡す
+（`.convert("RGB")` すら呼ばない — RGBA の flatten は vendor の責務なので、ここで
+触ると二重処理になる）。さらに `sensenova_reference_training_test.py` が
+`encode_image` と `vae_encode` を**例外送出に差し替えて**テストを走らせており、
+「trainer の画像 pipeline に ref が触れないこと」を規律ではなく**構造として**
+保証している。
 
 ---
 
@@ -1196,15 +1237,21 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   `base_trainer.train()` の `sample_every` 強制 0 は削除済み。API / フロントの変更は
   不要だった（§11 Phase 1 参照）。
 
+### DONE — Phase 3（`7a09af52`..`611a4a24`）
+
+§9 の初版一覧に未記載だった統合ポイントで、実装時に必要になったもの:
+
+- `use_reference_images` のゲート **6 箇所中 4 箇所**の解除（残り 2 は意図的に
+  flux2 限定。§7.5 差分 1）。
+- `encode_caption` に `reference_image_paths` を通す配線と、その sensenova 分岐。
+  **arch 経由**（`arch.encode_prompt`）で渡すので、他 arch はこの引数を無視する。
+- `SenseNovaTrainingPrefix.text_length` の意味論変更（§7.5 差分 2）。
+- `arch_capabilities` の `reference_images` 宣言から sensenova を外す。
+
 ### PENDING
 
-- Phase 2b full FT 本体と Phase 3 reference 混在。
-- **§9 に未記載だった統合ポイント**（設計再検証で判明）: Phase 3 は
-  `use_reference_images` の flux2 ハードゲート 6 箇所（`train_runner.py:202-203`、
-  `base_trainer.py:8085`, `:8110`, `:8269`, `:10700`, `:11005`）の解除が必須で、
-  `SenseNovaTrainingPrefix.text_length` の意味論変更を伴う。Phase 2b は
-  `ops/sensenova_ops.py` の gate と `load_components` を method-aware にする必要が
-  ある。詳細は §7.5 / §6.4。
+- Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` を
+  method-aware にする必要がある。§6.4）と、Phase U（§13）。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -1363,6 +1410,34 @@ step `1 / 2 / 3` を報告した。step 3 の保存物は `neo_hf_lora`、294 ta
 882 tensors（588 weight tensors）で、live LoRA と保存 weight の SHA-256 が一致した。
 peak allocated は 18.09 GiB、peak reserved は 18.19 GiB だった。
 
+> **【2026-08-24 追記】この 3 つの loss 値は現行実装では再現しない。上の値は当時の
+> 正しい実測なので書き換えず、注記として残す。**
+>
+> - 記録時点（`58637bc5`、08-24 00:11）の tree では再現する。`ba5181cb^`
+>   （= `76671a0e`）で再実行すると残差 ≤ 3.2e-09、これは上の 8 桁丸めそのものである。
+> - **現行（`611a4a24`）では `0.41466627 / 0.37605366 / 0.52368003`。**
+> - 原因は **`ba5181cb`「Stop quantizing the SenseNova training timestep to bf16」**
+>   （08-24 07:40、記録の 7.5 時間後）。`t` を bf16 に量子化するのをやめた**意図的な
+>   数値変更**である（`t` は活性ではなく条件付けの**値**で、bf16 は ~2e-3 に丸めていた）。
+> - **peak allocated / reserved は 18.09 / 18.19 GiB で現行と一致する。** 変わったのは
+>   loss 値だけで、メモリ挙動は同一である。
+> - grad digest も動くが、**step 1 の down 方向だけは一致する**。矛盾ではなく、
+>   その勾配が厳密にゼロ（`lora_up` のゼロ初期化）で dtype に依存しないためである。
+> - **帰属の但し書き**: この A/B は `76671a0e..fa0ebbab` の 20 コミットを一括で比較して
+>   おり、`ba5181cb` 単独を分離してはいない。この範囲で SenseNova の学習コード配下に
+>   触れるのは 5 コミットだが、**算術を変えるのは `ba5181cb` だけ**である
+>   （diff は `t` の `dtype=dtype → torch.float32` と fp32 の分母。他の 4 つは
+>   sampling / debug dump、grad-norm の集計単位、batch position の記録、docstring）。
+> - **Phase 3 とは無関係である。** `fa0ebbab` と `611a4a24` の reference-free arm は
+>   **bit-exact に一致する**（§11 Phase 3 実測）。この隣で「exit-smoke の数値が変わった」
+>   だけを読むと Phase 3 を疑いたくなるが、その可能性は bit-exact parity が排除している。
+>
+> 上書きしない理由: (1) 2026-08-24 の値は正しく取られた実測で、消すと「意図的な数値
+> 変更があった」証跡まで消える。(2) 上書きは実際に起きた誤診断を再発させる — 日付の
+> 無い triple 1 組だけを見て食い違いに気づいた人は「壊れている」と考え、実際にその
+> 調査に時間が使われた。(3) かといって旧 triple だけを残すのも不可で、今日実行する
+> 人は別の値を得る。
+
 fresh runtime arm は保存物を 294/294 module に適用し、294/294 を復元した。
 復元後の全 module identity は元と一致した。base と strength 0 の denoise tensor は
 同じ SHA-256 を持ち、`torch.equal` でも一致した。half-eviction の OFF / ON 実測も
@@ -1415,24 +1490,62 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   短 horizon では stochastic rounding の誤差が信号と同程度で（§6.3）、A/B が測定として
   無効になるためである。
 
-### Phase 3 — reference 混在（PENDING）
+### Phase 3 — reference 混在（DONE、2026-08-24）
 
-- **3-1 — gate 解除と配線。** §7.5 差分 1 の 6 箇所。
-- **3-2 — reference prefix の構築。** §7.5 差分 2（`text_length` の一般化）と
-  差分 3（推論側関数の再利用）。reference の前処理は `sensenova_ops` 内に閉じる
-  （差分 4）。
-- **3-3 — 学習中 sample の ref 対応。** 現在 `generate_sample` は
-  reference/condition image を無視して warn する（`dc91bef1`）。
-- **3-4 — 混在 smoke。** ref 有り / 無し dataset を 1 run で混ぜる。
-- 既存の run-global `use_reference_images` と per-item `reference_images` を再利用する
-  （新しい dataset-level parameter / API 変更は行わない）。
-- `separate_by_reference` の SenseNova への適用（bucket key に反映）。
-- **exit criteria**: 混在 run で両種類の batch が形状エラーなく通ること、
-  **ref 無し step の loss / grad SHA-256 が Phase 1 実装と一致すること**（何も壊して
-  いないことの証明）、および **t-extent 検証** — ref 有り prefix で
-  `text_length ≠ token 数` になるケースを最低 1 つ含み、image index の t 基点が
-  `indexes[0].max()+1` と一致することを確認する（§7.5 差分 2 の静かな位置ずれは
-  これでしか捕まらない）。
+- **3-1 — gate 解除と配線（DONE、`7a09af52`）。** §7.5 差分 1 の 6 箇所のうち
+  **4 箇所を解除、2 箇所は意図的に flux2 限定のまま**（テストが出現数 2 を固定）。
+- **3-2 — reference prefix の構築（DONE、`7a09af52`）。** §7.5 差分 2
+  （`text_length` の一般化）と差分 3（推論側関数の再利用）。reference の前処理は
+  `sensenova_ops` 内に閉じた（差分 4）。
+- **3-3 — 学習中 sample の ref 対応（DONE、`d7bd9067`）。** 推論側
+  `encode_prompt(..., ref_images=..., img_cfg_scale=...)` を、生成バックエンドと
+  **同じ位置引数順・同じ kwarg** で駆動する。`img_cfg_scale` は sample config に
+  該当フィールドが無いため `SENSENOVA_GENERATION_DEFAULTS` から取る
+  （`timestep_shift` / `cfg_norm` と同じ扱い。ハードコードや新規パラメータにはしない）。
+  `denoise_loop` は無変更 — branch 情報は prefix に載るので、推論側もそう渡している。
+  **condition image は引き続き無視する**が、これは正しい: ControlNet 系の条件付けで
+  SenseNova には入口が無く（capability で拒否済み）、reference とは別機構である。
+  メッセージも分離した（1 文にまとめると reference まで未対応に読めるため）。
+  復元契約は不変で、reference のロードは同じ `try` の中にあるため、読めない path は
+  他の失敗と同様に `None` を返す。
+- **3-4 — 混在 smoke（DONE、`611a4a24`）。** 下記の実測を参照。
+- 既存の run-global `use_reference_images` と per-item `reference_images` を再利用した
+  （新しい dataset-level parameter / API 変更なし）。
+- **exit criteria: 4 項目すべて PASS**（下記）。
+
+#### Phase 3 実測（2026-08-24: PASS）
+
+`611a4a24`。plain int8 checkpoint、CRef（dataset id 23、`M:\dataset_control`、
+`_source` / `_target` / `_instruction` の suffix 規約、production の
+`related_images["reference"]` 導出経由）と reference なしデータセットの **2 dataset を
+1 run に混在**、per-item presence で batch ごとに分岐。B1、3 step、GC ON、
+`set_per_process_memory_fraction(0.72)`。**以下はすべて実測値である。**
+
+- **3 step とも有限 loss**、294/294 target に有限 grad。64px と 1 段上の解像度の
+  両方で確認したので、smoke のジオメトリに合わせ込んだ実装ではない。
+- **reference-free 経路が 3-1 直前（`fa0ebbab`）と bit-exact**: 3 つの loss、
+  6 つの grad digest、live / saved の LoRA hash、peak allocated / reserved が
+  **バイト単位で一致**。reference 対応は、reference を使わない経路を一切乱していない。
+- **ViT 行数 == splice した placeholder 数**: `grid_hw=[[44,80]]`、downsample 0.5 で
+  **880 == 880**、`<IMG_CONTEXT>` は token id **151669** に解決。
+  **モックでは検証できなかった項目**である。
+- **t-extent の非退化ケース**: reference 有りで `text_length = 414 ==
+  indexes[0].max()+1`、かつ prefix は **1293 token** なので **414 < 1293**。
+  同じ run の reference なし step は `558 == 558`。これで `text_length` が
+  「token 数」ではなく本当に t 座標であることが両側から固定された。
+- **reference のコスト**: 1280×720 の source 1 枚で **+883 token / +146.6 MiB**
+  （同一 caption の A/B）。
+- **VRAM**: peak **17.911 GiB allocated / 18.098 GiB reserved**、
+  model resident 17.591 GiB。probe が全 arm に敷く 34.55 GiB ゲートの **52.4%**。
+
+**exercise されていない経路**: `separate_by_reference`（bucketing 無効時は通らない）。
+配線は入ったが、この smoke では踏んでいない。
+
+**効果は測っていない**: reference 忠実度やプロンプト追従が改善したかは**何も測定して
+いない**。上記はすべて「形状と数値が壊れていないこと」の確認である。
+
+なお `_instruction` caption は `tags` と内容が同一で、本番の auto-select は `tags` を
+取るため 3-2 と衝突しない。
 
 ---
 
@@ -1467,7 +1580,13 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   per-tensor 誤差 census（学習なし、shard streaming、GPU 不要）を記録する。これは
   「劣るか」には答えないが、**焼き付く誤差の規模を事実として残せる**。
 - **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。
-  不足した場合のみ `scope: both`（LoRA 限定）を開く。
+  **Phase 3 が DONE になっても、この問いは開いたままである** — 3-4 の smoke は形状と
+  数値の健全性だけを確認しており、**忠実度は何も測っていない**（§11 Phase 3 実測）。
+  不足した場合のみ `scope: both` を開くが、その受け皿は Phase U（§13）として既に
+  設計されている。
+- **`separate_by_reference` を SenseNova で実際に踏んだときの挙動。** 配線は Phase 3 で
+  入ったが（§7.5 差分 1）、3-4 の smoke は bucketing 無効で走ったため
+  **この経路は未 exercise** である。
 - **batch > 1 をいつ開くか。** padding-aware gen mask / varlen attention または
   streaming per-sample backward が前提。`separate_by_reference` だけでは開かない。
 - **upstream issue #207 の mixed forward を検証・修正して 1 パス化する価値があるか。**
@@ -1701,7 +1820,8 @@ und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP 
   hook 経路への state H2D→更新→D2H 移植 / 専用 stream + prefetch + event 同期 /
   サイレント CPU-skip の fail-loud 化）。**依存は U-2-2、exit は G-RB1 / G-RB2 /
   G-RB3**（§6.5）。これが通るまで Ring Buffer 系は opt-in を開かない。
-- **U-3 — und × reference。** 依存は U-1 + Phase 3。**`vision_model`（und tower の
+- **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
+  実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、
   §5.2 根拠 3 の「消費者の居ない形式を作らない」原則が当たる。したがって
   **und 学習 = 「und decoder 層の学習」と定義する**。

@@ -17121,6 +17121,23 @@ async def visualize_debug_latent(
         img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
 
+    # MiniMax-H3 trains video and audio jointly and dumps both streams into one
+    # file, so an audio-side collapse is diagnosable separately. Audio tensors
+    # are [1, 1, C, T] channel-vs-time maps (latent_debug_dump.audio_strip).
+    for _ak in ("audio_latents", "audio_noisy_latents", "audio_predicted_velocity",
+                "audio_actual_velocity", "audio_predicted_latent"):
+        if _ak in data:
+            result[f"{_ak}_image"] = image_to_base64(latent_to_image(data[_ak]))
+
+    # Per-channel mean/std of each saved stream: a prediction collapsing toward
+    # the channel mean shows up here before any image is inspected.
+    if "channel_stats" in data:
+        result["channel_stats"] = data["channel_stats"]
+    for _k in ("window_latent_frames", "clip_latent_frames", "audio_sigma",
+               "audio_present", "latent_frames"):
+        if _k in data:
+            result[_k] = data[_k]
+
     return result
 
 @router.get("/training/runs/{run_id}/metrics")

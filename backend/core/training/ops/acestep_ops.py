@@ -634,6 +634,42 @@ def train_step(
 
     pred_loss_value = mse_loss.item()
 
+    if debug_save_path is not None:
+        from core.training import latent_debug_dump as dbg
+
+        with torch.no_grad():
+            sigma_0 = float(sigma.reshape(-1)[0].item())
+            # xt = (1 - sigma) x0 + sigma * noise with target v = noise - x0,
+            # so x0 = xt - sigma * v (same sign as LTX-2.3 / Anima).
+            pred_x0 = xt[0:1].float() - sigma_0 * v_pred[0:1].float()
+
+            dbg.save_dump(
+                debug_save_path,
+                timestep=sigma_0,
+                model_type="acestep",
+                # Audio latents are false-coloured as a channel-vs-time map;
+                # no vocoder runs here (decoding is the endpoint's job).
+                audio={
+                    "latents": dbg.audio_strip(latents),
+                    "noisy_latents": dbg.audio_strip(xt),
+                    "predicted_velocity": dbg.audio_strip(v_pred),
+                    "actual_velocity": dbg.audio_strip(target),
+                    "predicted_latent": dbg.audio_strip(pred_x0),
+                },
+                scalars={
+                    "loss": pred_loss_value,
+                    "loss_batch_mean": float(loss.detach()),
+                    "recon_loss": float(
+                        F.mse_loss(pred_x0.float(), latents[0:1].float())),
+                    "batch_size": batch_size,
+                    "scheduler_type": "FlowMatching",
+                },
+                captions=debug_captions,
+                reference_image_paths=debug_reference_image_paths,
+                extra={"latent_frames": int(t_lat)},
+            )
+            del pred_x0
+
     del noise, xt, v_pred, target, loss_per_element
     return loss, pred_loss_value, recon_loss_value
 

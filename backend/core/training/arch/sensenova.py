@@ -24,11 +24,16 @@ class SenseNovaArchHandler(ArchHandler):
 
         sensenova_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
-    def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
+    def encode_prompt(
+        self, trainer, prompt, *, requires_grad: bool = False, reference_image_paths=None
+    ):
         from core.training.ops import sensenova_ops
 
         return sensenova_ops.encode_prompt(
-            trainer, prompt, requires_grad=requires_grad
+            trainer,
+            prompt,
+            requires_grad=requires_grad,
+            reference_image_paths=reference_image_paths,
         )
 
     def vae_encode(

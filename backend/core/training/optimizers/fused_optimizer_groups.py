@@ -26,6 +26,8 @@ from typing import List, Dict, Any
 import torch
 from torch.optim import Optimizer
 
+from .fused_grad_norm import record_fused_grad_norm
+
 
 class FusedOptimizerGroups:
     """
@@ -76,6 +78,10 @@ class FusedOptimizerGroups:
                             # Gradient clipping (per parameter)
                             if self.max_grad_norm > 0:
                                 torch.nn.utils.clip_grad_norm_(tensor, self.max_grad_norm)
+
+                            # Before the group's zero_grad(set_to_none=True) below,
+                            # which is what leaves the trainer nothing to measure.
+                            record_fused_grad_norm(self.optimizers[idx], tensor)
 
                             # Get optimizer index for this parameter
                             i = self.parameter_optimizer_map[tensor]

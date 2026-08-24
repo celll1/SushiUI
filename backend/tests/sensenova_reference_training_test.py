@@ -265,6 +265,186 @@ def test_reference_encode_still_drives_the_phase_evictor(tmp_path):
     assert calls == ["prefix", "denoise", "resident"]
 
 
+# --- 3-3: reference-conditioned sampling during training ---------------------
+
+
+class _SampleTransformer(nn.Module):
+    """Only the state generate_sample touches: training flag + eval()/train()."""
+
+    def forward(self):  # pragma: no cover - never called
+        raise AssertionError
+
+
+def _sample_trainer(with_evictor=False):
+    transformer = _SampleTransformer()
+    transformer.train()
+    trainer = SimpleNamespace(
+        transformer=transformer,
+        tokenizer=_Tokenizer(),
+        log_prefix="[test]",
+        attention_backend="auto",
+        _resolve_training_backend=lambda backend: "sdpa",
+        move_main_model_to_gpu=lambda: None,
+    )
+    events = []
+    if with_evictor:
+        trainer.sensenova_phase_evictor = SimpleNamespace(
+            enter_prefix=lambda: events.append("prefix"),
+            enter_denoise=lambda: events.append("denoise"),
+            assert_generation_resident=lambda: events.append("resident"),
+        )
+    return trainer, transformer, events
+
+
+class _SampleRecorder:
+    """Stands in for the inference ops generate_sample drives."""
+
+    def __init__(self, denoise_error=None):
+        self.encode_calls = []
+        self.modes = []
+        self.cleared = []
+        self.denoise_error = denoise_error
+        self.prefix = SimpleNamespace(name="prefix")
+
+    def encode_prompt(self, *args, **kwargs):
+        self.encode_calls.append((args, kwargs))
+        return self.prefix
+
+    def denoise_loop(self, *args, **kwargs):
+        if self.denoise_error is not None:
+            raise self.denoise_error
+        return torch.zeros(1, 3, 32, 32)
+
+    def set_attention_backend(self, transformer, backend, mode):
+        self.modes.append(mode)
+        return 1
+
+    def clear_prefix_caches(self, prefix):
+        self.cleared.append(prefix)
+
+
+def _run_sample(recorder, trainer, **overrides):
+    from PIL import Image
+
+    from core.training.ops.sensenova_ops import generate_sample
+
+    target = "core.models.sensenova.sensenova_pipeline_ops"
+    kwargs = dict(
+        prompt="a cat",
+        height=512,
+        width=512,
+        num_inference_steps=4,
+        guidance_scale=4.0,
+        seed=7,
+    )
+    kwargs.update(overrides)
+    with patch(f"{target}.encode_prompt", recorder.encode_prompt), patch(
+        f"{target}.denoise_loop", recorder.denoise_loop
+    ), patch(f"{target}.set_attention_backend", recorder.set_attention_backend), patch(
+        f"{target}.clear_prefix_caches", recorder.clear_prefix_caches
+    ), patch(
+        f"{target}.tensor_to_image", lambda tensor: Image.new("RGB", (8, 8))
+    ):
+        return generate_sample(trainer, **kwargs)
+
+
+def test_sample_without_references_keeps_the_text_only_inference_call():
+    from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+
+    trainer, transformer, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+
+    image = _run_sample(recorder, trainer)
+
+    assert image is not None
+    (args, kwargs) = recorder.encode_calls[0]
+    assert args == (transformer, trainer.tokenizer, "a cat", 512, 512, 4.0)
+    assert kwargs["negative_prompt"] == ""
+    # Both equal encode_prompt's own defaults, so the text-only branch inside it
+    # ("if not ref_images") is entered exactly as before.
+    assert kwargs["ref_images"] == []
+    assert kwargs["img_cfg_scale"] == SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]
+
+
+def test_sample_with_a_reference_drives_the_inference_reference_path(tmp_path):
+    from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+
+    trainer, _, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+    path = _write_images(tmp_path, 1)[0]
+
+    image = _run_sample(recorder, trainer, reference_image_path=path)
+
+    assert image is not None
+    kwargs = recorder.encode_calls[0][1]
+    refs = kwargs["ref_images"]
+    assert len(refs) == 1 and refs[0].size == (64, 64)
+    assert kwargs["img_cfg_scale"] == SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]
+
+
+def test_sample_condition_image_is_ignored_and_never_becomes_a_reference(tmp_path):
+    trainer, _, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+    path = _write_images(tmp_path, 1)[0]
+
+    _run_sample(recorder, trainer, condition_image_path=path)
+
+    assert recorder.encode_calls[0][1]["ref_images"] == []
+
+
+def test_reference_sample_restores_training_state_and_frees_the_prefix(tmp_path):
+    from core.attention import AttentionMode
+
+    trainer, transformer, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+
+    _run_sample(recorder, trainer, reference_image_path=_write_images(tmp_path, 1)[0])
+
+    # An INFERENCE stamp left behind would persist for the whole rest of the run.
+    assert recorder.modes == [AttentionMode.INFERENCE, AttentionMode.TRAINING]
+    assert transformer.training is True
+    assert recorder.cleared == [recorder.prefix]
+
+
+def test_reference_sample_failure_returns_none_and_still_restores(tmp_path):
+    from core.attention import AttentionMode
+
+    trainer, transformer, _ = _sample_trainer()
+    recorder = _SampleRecorder(denoise_error=RuntimeError("boom"))
+
+    result = _run_sample(
+        recorder, trainer, reference_image_path=_write_images(tmp_path, 1)[0]
+    )
+
+    assert result is None
+    assert recorder.modes == [AttentionMode.INFERENCE, AttentionMode.TRAINING]
+    assert transformer.training is True
+    assert recorder.cleared == [recorder.prefix]
+
+
+def test_reference_sample_keeps_the_phase_evictor_transition_pair(tmp_path):
+    trainer, _, events = _sample_trainer(with_evictor=True)
+    recorder = _SampleRecorder()
+
+    _run_sample(recorder, trainer, reference_image_path=_write_images(tmp_path, 1)[0])
+
+    assert events == ["prefix", "denoise", "resident"]
+
+
+def test_sample_unreadable_reference_never_takes_the_run_down(tmp_path):
+    """Reference loading happens inside the same guard as the generation."""
+    trainer, transformer, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+
+    result = _run_sample(
+        recorder, trainer, reference_image_path=str(tmp_path / "missing.png")
+    )
+
+    assert result is None
+    assert recorder.encode_calls == []
+    assert transformer.training is True
+
+
 # --- 3-1: the six flux2 hard gates ------------------------------------------
 
 

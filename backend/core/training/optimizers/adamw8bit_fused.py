@@ -1,15 +1,18 @@
-"""
-AdamW8bit optimizer with fused backward pass
+"""AdamW8bit with a per-parameter update, for Block Swap's fused backward pass.
 
-This implementation allows parameter updates to happen immediately after gradients
-are computed (via register_post_accumulate_grad_hook), enabling:
-- Block Swap compatibility: parameters are updated while still on GPU
-- Memory efficiency: gradients are cleared immediately after use
-- Works with bitsandbytes AdamW8bit optimizer
+``register_post_accumulate_grad_hook`` calls ``step_param(p, group)`` while the
+parameter is still on the GPU, before Block Swap moves it back to the CPU.
 
-Requirements:
-- PyTorch 2.1+ (for register_post_accumulate_grad_hook)
-- bitsandbytes (for AdamW8bit optimizer)
+The update itself delegates to bitsandbytes' own
+``Optimizer8bit.init_state`` / ``update_step``, which is exactly what its
+``step()`` drives one parameter at a time. That keeps the real blockwise 8-bit
+state (uint8 ``state1``/``state2`` + fp32 ``absmax``, measured 2.031 B/param) in
+BOTH paths, so Block Swap no longer silently doubles optimizer state and a
+checkpoint is portable between Block Swap on and off. The previous hand-written
+AdamW here allocated ``zeros_like(p)`` moments: 4 B/param, and a state format
+``step()`` cannot read.
+
+Requirements: PyTorch 2.1+ (for the hook), bitsandbytes (for the update).
 """
 
 import torch
@@ -17,109 +20,95 @@ import torch
 from .stochastic_rounding import (
     NATIVE_ATTR,
     Fp32ScratchPool,
-    copy_stochastic_bf16,
+    fp32_master_update,
     should_use_stochastic_rounding,
 )
+
+_INDEX_ATTR = "_sushiui_bnb_param_index"
+
+
+def _param_index(self, p):
+    """The ``(gindex, pindex)`` bitsandbytes' ``step()`` would have passed.
+
+    They are used for one thing only -- ``get_config`` looks up
+    ``GlobalOptimManager.index2config[(gindex, pindex)]`` (optimizer.py:316) --
+    so the hook has to reproduce ``step()``'s enumeration order. ``(-1, -1)``
+    for a parameter that is in no group can never match an override.
+    """
+    index = getattr(self, _INDEX_ATTR, None)
+    if index is None or id(p) not in index:
+        index = {
+            id(param): (gindex, pindex)
+            for gindex, group in enumerate(self.param_groups)
+            for pindex, param in enumerate(group["params"])
+        }
+        setattr(self, _INDEX_ATTR, index)
+    return index.get(id(p), (-1, -1))
+
+
+def _bnb_update(self, p, group):
+    gindex, pindex = _param_index(self, p)
+    state = self.state[p]
+
+    if len(state) == 0:
+        self.init_state(group, p, gindex, pindex)
+    else:
+        # Per-parameter form of Optimizer8bit.to_gpu(): a resumed state can be on
+        # another device, and the global version would follow block-swapped
+        # parameters onto the CPU, where the 8-bit kernels cannot run.
+        stale = [
+            key for key, value in state.items()
+            if isinstance(value, torch.Tensor) and value.device != p.device
+            and not getattr(value, "is_paged", False)
+        ]
+        for key in stale:
+            state[key] = state[key].to(p.device)
+
+    self.prefetch_state(p)
+    # self.update_step, not the class method: any interposition rebinds the
+    # instance attribute (see adafactor_fused.adafactor_step).
+    self.update_step(group, p, gindex, pindex)
+
+    if self.is_paged:
+        from bitsandbytes.utils import sync_gpu
+        sync_gpu(p)
 
 
 @torch.no_grad()
 def adamw8bit_step_param(self, p, group):
-    """
-    Update a single parameter immediately after its gradient is computed.
-
-    This method is called by the post-accumulate-grad hook, allowing parameter
-    updates while the parameter is still on GPU (before Block Swap moves it to CPU).
-
-    Args:
-        p: Parameter to update
-        group: Optimizer parameter group
-
-    Note:
-        This implementation follows bitsandbytes AdamW8bit logic but operates
-        on a single parameter instead of all parameters.
-    """
+    """Update one parameter immediately after its gradient is ready."""
     if p.grad is None:
         return
 
-    # Get state for this parameter
-    state = self.state[p]
+    if not getattr(self, "initialized", False):
+        # step()'s to_gpu() is deliberately skipped here; _bnb_update aligns the
+        # state device per parameter instead.
+        self.check_overrides()
+        self.initialized = True
 
-    # State initialization
-    if len(state) == 0:
-        state['step'] = 0
-        # Exponential moving average of gradient values
-        state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-        # Exponential moving average of squared gradient values
-        state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
-
-    exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
-    beta1, beta2 = group['betas']
-
-    state['step'] += 1
-    bias_correction1 = 1 - beta1 ** state['step']
-    bias_correction2 = 1 - beta2 ** state['step']
-
-    # Gradient
-    grad = p.grad
-
-    # Decay the first and second moment running average coefficient
-    exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-
-    # Compute step
-    denom = (exp_avg_sq.sqrt() / (bias_correction2 ** 0.5)).add_(group['eps'])
-    step_size = group['lr'] / bias_correction1
-
-    # Both writes below land in the parameter's own storage. For a BF16
-    # parameter that is round-to-nearest, which discards every update below half
-    # a ULP -- deterministically, so such a weight is frozen for the whole run
-    # rather than slow (see stochastic_rounding.py). When stochastic rounding is
-    # requested, apply the update to a pooled FP32 image of the parameter and
-    # round that back instead.
-    #
-    # The optimizer STATE is deliberately still allocated from ``p`` above, so
-    # it keeps the parameter's dtype and this costs no persistent memory. That
-    # leaves exp_avg_sq's own accumulation in BF16 (with beta2=0.999 its
-    # per-step relative change is 1e-3, just under BF16's 2^-9 half-ULP), which
-    # biases the denominator but not the conclusion here: the step size stays of
-    # order lr, and it is the parameter write that freezes the weight.
-    use_sr = should_use_stochastic_rounding(getattr(self, "stochastic_rounding", False), p)
-    if use_sr:
+    if should_use_stochastic_rounding(getattr(self, "stochastic_rounding", False), p):
         pool = getattr(self, "_sr_pool", None)
         if pool is None:
             pool = Fp32ScratchPool()
             self._sr_pool = pool
-        target = pool.copy_of("master", p)
+        # The 8-bit kernels dispatch on the gradient dtype and read the parameter
+        # through a pointer of that type, so both become FP32 for the call and the
+        # result is rounded back stochastically. The state stays uint8: init_state
+        # allocates it with an explicit dtype, not from the parameter's.
+        with fp32_master_update(p, pool):
+            _bnb_update(self, p, group)
     else:
-        target = p
-
-    # Weight decay (AdamW style - decoupled)
-    if group['weight_decay'] != 0:
-        target.mul_(1 - group['lr'] * group['weight_decay'])
-
-    # Update parameters
-    target.addcdiv_(exp_avg, denom, value=-step_size)
-
-    if use_sr:
-        copy_stochastic_bf16(p.data, target)
+        _bnb_update(self, p, group)
 
 
 # Tells attach_stochastic_rounding() not to interpose on this function: it
-# applies stochastic rounding itself, above, and doing it twice would also make
-# the optimizer state FP32 (this implementation allocates state with
-# ``zeros_like(p)``, so it would follow an FP32 view of the parameter).
+# applies stochastic rounding itself, above.
 setattr(adamw8bit_step_param, NATIVE_ATTR, True)
 
 
 @torch.no_grad()
 def adamw8bit_step(self, closure=None):
-    """
-    Performs a single optimization step (fallback for non-fused mode).
-
-    Arguments:
-        closure (callable, optional): A closure that reevaluates the model
-            and returns the loss.
-    """
+    """Batch update built from the per-parameter seam (fallback; not installed)."""
     loss = None
     if closure is not None:
         with torch.enable_grad():
@@ -139,35 +128,29 @@ def adamw8bit_step(self, closure=None):
 
 
 def patch_adamw8bit_fused(optimizer, stochastic_rounding: bool = False):
-    """
-    Patch AdamW8bit optimizer to support per-parameter updates.
-
-    Adds:
-    - step_param(): Update single parameter (called by hook)
-    - step(): Fallback batch update (if hooks not registered)
+    """Give a bitsandbytes AdamW8bit a ``step_param`` for the fused backward pass.
 
     Args:
-        optimizer: AdamW8bit optimizer instance to patch
+        optimizer: ``bnb.optim.AdamW8bit`` instance (any ``Optimizer8bit`` with
+            ``init_state``/``update_step`` works).
         stochastic_rounding: Write BF16 parameters with stochastic rounding
             instead of round-to-nearest. Only affects BF16 parameters.
-
-    Example:
-        >>> import bitsandbytes as bnb
-        >>> from core.training.optimizers.adamw8bit_fused import patch_adamw8bit_fused
-        >>>
-        >>> optimizer = bnb.optim.AdamW8bit(model.parameters())
-        >>> patch_adamw8bit_fused(optimizer)
-        >>>
-        >>> # Register hooks
-        >>> for param in model.parameters():
-        >>>     if param.requires_grad:
-        >>>         param.register_post_accumulate_grad_hook(
-        >>>             lambda tensor: optimizer.step_param(tensor, optimizer.param_groups[0])
-        >>>         )
     """
+    missing = [
+        name for name in ("init_state", "update_step", "get_config", "prefetch_state")
+        if not callable(getattr(optimizer, name, None))
+    ]
+    if missing:
+        raise TypeError(
+            f"patch_adamw8bit_fused expects a bitsandbytes Optimizer8bit "
+            f"(bnb.optim.AdamW8bit); {type(optimizer).__name__} is missing "
+            f"{', '.join(missing)}. The per-parameter update delegates to "
+            f"bitsandbytes so that Block Swap keeps 8-bit optimizer state."
+        )
+
     optimizer.stochastic_rounding = bool(stochastic_rounding)
     optimizer.step_param = adamw8bit_step_param.__get__(optimizer)
     # Don't replace step() - keep bitsandbytes implementation for fallback
-    # optimizer.step = adamw8bit_step.__get__(optimizer)
-    print(f"[AdamW8bitFused] Optimizer patched with fused backward support"
+    print(f"[AdamW8bitFused] Optimizer patched with fused backward support "
+          f"(delegates to bitsandbytes 8-bit state)"
           f"{' (stochastic rounding)' if optimizer.stochastic_rounding else ''}")

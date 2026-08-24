@@ -83,7 +83,7 @@ Block Swap（`blocks_to_swap > 0`）と組み合わせられるのは、per-para
 | Optimizer | `blocks_to_swap > 0` | 経路 |
 |---|---|---|
 | `adamw8bit_ringbuffer` / `lion8bit_ringbuffer` | ✅ | 自前の post-accumulate-grad hook（8-bit stateのまま） |
-| `adamw8bit` | ✅ | `adamw8bit_fused.step_param`（stateはパラメータdtypeになる） |
+| `adamw8bit` | ✅ | `adamw8bit_fused.step_param`（bitsandbytesの per-parameter 更新に委譲、8-bit stateのまま） |
 | `adafactor` | ✅ | `adafactor_fused.step_param` |
 | `adamw`（torch） | ✅ | CPU上のパラメータをそのまま更新できる |
 | `lion8bit` / `paged_adamw` / `paged_adamw8bit` / `paged_lion8bit` | ❌ 拒否 | fused経路が無く、bitsandbytesはCPU常駐パラメータでraiseする |
@@ -135,7 +135,7 @@ BF16ストレージには触れない。呼び出し終了時にstochastic round
 |---|---|---|
 | `adamw8bit` / `lion8bit` / `paged_*` | `Optimizer8bit.update_step` | bitsandbytes。8-bit stateはuint8のまま |
 | `adafactor` | `step_param` | fused版（`adafactor_fused`）を使う。stateは元からFP32 |
-| `adamw8bit` + Block Swap | `adamw8bit_fused.step_param` 内で直接適用 | stateを `zeros_like(p)` で確保するため、介入方式だとstateがFP32になり2倍になる |
+| `adamw8bit` + Block Swap | `adamw8bit_fused.step_param` 内で直接適用（FP32イメージを渡す） | 委譲先の `init_state` はdtypeを明示してstateを確保するため、stateはuint8のまま |
 | `adamw8bit_ringbuffer` / `lion8bit_ringbuffer` | optimizer本体 | 従来通り |
 | `adamw` | **なし** | 全パラメータを1回の呼び出しで更新し、パラメータ単位の入口が無い。setup時に警告する |
 

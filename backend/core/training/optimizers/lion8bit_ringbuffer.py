@@ -645,6 +645,10 @@ def register_lion8bit_fused_backward(optimizer, model):
     if not isinstance(optimizer, Lion8bit_RingBuffer):
         raise TypeError("Optimizer must be Lion8bit_RingBuffer")
 
+    # No Schedule-Free gate is needed here (adamw8bit_ringbuffer has one): the
+    # constructor refuses schedule_free outright, so a Schedule-Free
+    # Lion8bit_RingBuffer cannot be constructed to be passed in.
+
     # Precompute id(param) -> param_group once. The previous per-hook scan
     # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
     # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
@@ -654,20 +658,45 @@ def register_lion8bit_fused_backward(optimizer, model):
         for gp in g['params']:
             param_to_group[id(gp)] = g
 
+    # See patch_adamw8bit_ringbuffer: under fused backward optimizer.step() is
+    # never called, so a trainable parameter that is in no param_group would be
+    # updated by nothing at all. Refuse before the run starts.
+    orphans = [name for name, p in model.named_parameters()
+               if p.requires_grad and id(p) not in param_to_group]
+    if orphans:
+        raise RuntimeError(
+            f"{len(orphans)} trainable parameter(s) of the module passed to "
+            f"register_lion8bit_fused_backward are in no param_group of this optimizer, "
+            f"e.g. {orphans[:3]}. Under the fused backward pass optimizer.step() is "
+            f"never called, so nothing would ever update them. Add them to the "
+            f"optimizer, or freeze them (requires_grad=False)."
+        )
+
     def create_update_hook(param: nn.Parameter):
         """Create hook function for a specific parameter."""
 
         # The parameter identity is fixed for this hook, so resolve its group
         # once at registration instead of searching on every backward.
-        group = param_to_group.get(id(param))
+        # Guaranteed present: the orphan check above ran over the same module.
+        group = param_to_group[id(param)]
 
         def hook(param: nn.Parameter):
-            if group is None:
-                return
-
-            # Skip parameters on CPU (offloaded by Block Swap)
+            # Was a silent `return` here. Under fused backward nothing applies the
+            # skipped update afterwards -- optimizer.step() is never called -- so
+            # the parameter would go untrained for the whole run. Block Swap
+            # evicts a block only from a later block's full_backward_hook, after
+            # that block's own AccumulateGrad leaves have run, so reaching this
+            # means the residency ordering broke. See patch_adamw8bit_ringbuffer.
             if not param.is_cuda:
-                return
+                raise RuntimeError(
+                    f"Lion8bit_RingBuffer's fused-backward hook fired for a parameter "
+                    f"{tuple(param.shape)} that is on {param.device}. The 8-bit CUDA "
+                    f"kernel cannot update it, and under the fused backward pass there is "
+                    f"no later optimizer.step() to apply the update instead, so skipping "
+                    f"would leave this parameter untrained for the whole run. Block Swap "
+                    f"must keep a block resident until its backward (and its parameter "
+                    f"hooks) have finished."
+                )
 
             # Skip if no gradient
             if param.grad is None:

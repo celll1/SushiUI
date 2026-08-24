@@ -496,6 +496,13 @@ class AdamW8bit_RingBuffer(Optimizer):
         """
         state_dict = super().state_dict()
 
+        # Adam's bias correction in step() is driven by this counter and nothing
+        # else, so leaving it out restarted every ordinary resume at step 1 --
+        # 1/(1-beta1) times the intended first update, decaying over ~1/(1-beta2)
+        # steps. The per-parameter state['step'] the fused hook keeps is already
+        # serialized (it lives in self.state); this is the step() path's half.
+        state_dict['step_count'] = self.step_count
+
         # Add Schedule-Free/RAdam specific state
         if self.schedule_free or self.use_radam:
             state_dict['k'] = self.k
@@ -515,6 +522,14 @@ class AdamW8bit_RingBuffer(Optimizer):
         """
         # First, call our custom load_state_dict for UINT8 preservation
         self._load_state_dict_uint8(state_dict)
+
+        # Absent from checkpoints written before step_count was serialized, and
+        # from BaseTrainer's prefix-preserving partial load, which rebuilds the
+        # dict from state + param_groups only. Both keep the current value, which
+        # is what a cross-implementation conversion sets (see _advance_param_step).
+        if 'step_count' in state_dict:
+            self.step_count = int(state_dict['step_count'])
+            print(f"[AdamW8bit_RingBuffer] Restored step_count={self.step_count}")
 
         # Restore Schedule-Free/RAdam specific state
         if 'k' in state_dict:
@@ -1094,6 +1109,21 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
         optimizer: AdamW8bit_RingBuffer optimizer instance
     """
 
+    # The hooks below run the STANDARD 8-bit update: they read state['exp_avg'] /
+    # state['absmax1'], which _init_param_state does not allocate in Schedule-Free
+    # mode (it allocates z / absmax_z instead), so the first backward would raise
+    # KeyError('exp_avg') from inside the autograd engine. BaseTrainer already
+    # refuses this combination before registration; this is the second gate, for
+    # the direct callers of a module-level public function.
+    if getattr(optimizer, 'schedule_free', False):
+        raise RuntimeError(
+            "patch_adamw8bit_ringbuffer does not support a Schedule-Free optimizer: the "
+            "per-parameter hooks implement the standard AdamW update and read exp_avg / "
+            "absmax1, which are not allocated in Schedule-Free mode. Use "
+            "schedule_free=False for the fused-backward (Block Swap) path, or call "
+            "optimizer.step() instead of registering these hooks."
+        )
+
     # Precompute id(param) -> param_group once. The previous per-hook scan
     # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
     # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
@@ -1103,21 +1133,51 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
         for gp in g['params']:
             param_to_group[id(gp)] = g
 
+    # A trainable parameter that belongs to no param_group used to get a hook that
+    # returned immediately. Under fused backward the trainer never calls step()
+    # (base_trainer: `if not self.use_fused_backward and ...`), so that parameter
+    # would be trained by nothing at all while the loss kept falling. Refuse at
+    # registration, where the run has not started yet.
+    orphans = [name for name, p in model.named_parameters()
+               if p.requires_grad and id(p) not in param_to_group]
+    if orphans:
+        raise RuntimeError(
+            f"{len(orphans)} trainable parameter(s) of the module passed to "
+            f"patch_adamw8bit_ringbuffer are in no param_group of this optimizer, "
+            f"e.g. {orphans[:3]}. Under the fused backward pass optimizer.step() is "
+            f"never called, so nothing would ever update them. Add them to the "
+            f"optimizer, or freeze them (requires_grad=False)."
+        )
+
     def create_update_hook(p: nn.Parameter):
         """Create a hook that updates this parameter immediately after grad accumulation."""
 
         # The parameter identity is fixed for this hook, so resolve its group
         # once at registration instead of searching on every backward.
-        group = param_to_group.get(id(p))
+        # Guaranteed present: the orphan check above ran over the same module.
+        group = param_to_group[id(p)]
 
         def hook(param: nn.Parameter):
-            if group is None:
-                return
-
-            # Skip parameters on CPU (offloaded by Block Swap)
-            # Update will be applied when layer returns to GPU
+            # This used to `return` with a comment promising the update would be
+            # applied "when the layer returns to GPU". Nothing applies it: under
+            # fused backward the trainer never calls optimizer.step(), so the
+            # parameter would be skipped on every step of the run, with its grad
+            # left in place. Block Swap is built so this cannot happen -- a block
+            # is evicted from a LATER block's full_backward_hook, i.e. after its
+            # own backward and its AccumulateGrad leaves have run, and
+            # wait_for_block() makes a block resident before its backward -- so
+            # reaching here means that ordering broke, which is worth a crash
+            # rather than a silently untrained tensor.
             if not param.is_cuda:
-                return
+                raise RuntimeError(
+                    f"AdamW8bit_RingBuffer's fused-backward hook fired for a parameter "
+                    f"{tuple(param.shape)} that is on {param.device}. The 8-bit CUDA "
+                    f"kernel cannot update it, and under the fused backward pass there is "
+                    f"no later optimizer.step() to apply the update instead, so skipping "
+                    f"would leave this parameter untrained for the whole run. Block Swap "
+                    f"must keep a block resident until its backward (and its parameter "
+                    f"hooks) have finished."
+                )
 
             # Skip if no gradient
             if param.grad is None:

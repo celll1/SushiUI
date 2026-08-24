@@ -43,6 +43,9 @@ from .lion8bit_cuda import get_extension
 # Import quantization map generator
 from .quantization_map import create_quantization_map
 
+# Fused-backward hook registration (driven by optimizer.param_groups)
+from .fused_backward_registration import register_fused_backward_hooks
+
 # Stochastic rounding helpers (shared with AdamW8bit_RingBuffer)
 from .stochastic_rounding import (
     Fp32ScratchPool,
@@ -638,9 +641,13 @@ def register_lion8bit_fused_backward(optimizer, model):
     without waiting for optimizer.step(). This reduces memory fragmentation and
     improves performance with Block Swap.
 
+    Hooks are registered on every parameter ``optimizer.param_groups`` holds, not
+    on the parameters of ``model``: see fused_backward_registration for why the
+    optimizer, and not a module walk, is the source of truth.
+
     Args:
         optimizer: Lion8bit_RingBuffer optimizer instance
-        model: PyTorch model
+        model: Module the hooks are checked against (may be None)
     """
     if not isinstance(optimizer, Lion8bit_RingBuffer):
         raise TypeError("Optimizer must be Lion8bit_RingBuffer")
@@ -649,36 +656,12 @@ def register_lion8bit_fused_backward(optimizer, model):
     # constructor refuses schedule_free outright, so a Schedule-Free
     # Lion8bit_RingBuffer cannot be constructed to be passed in.
 
-    # Precompute id(param) -> param_group once. The previous per-hook scan
-    # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
-    # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
-    # for models with thousands of weight tensors. This makes it O(1).
-    param_to_group = {}
-    for g in optimizer.param_groups:
-        for gp in g['params']:
-            param_to_group[id(gp)] = g
-
-    # See patch_adamw8bit_ringbuffer: under fused backward optimizer.step() is
-    # never called, so a trainable parameter that is in no param_group would be
-    # updated by nothing at all. Refuse before the run starts.
-    orphans = [name for name, p in model.named_parameters()
-               if p.requires_grad and id(p) not in param_to_group]
-    if orphans:
-        raise RuntimeError(
-            f"{len(orphans)} trainable parameter(s) of the module passed to "
-            f"register_lion8bit_fused_backward are in no param_group of this optimizer, "
-            f"e.g. {orphans[:3]}. Under the fused backward pass optimizer.step() is "
-            f"never called, so nothing would ever update them. Add them to the "
-            f"optimizer, or freeze them (requires_grad=False)."
-        )
-
-    def create_update_hook(param: nn.Parameter):
+    def create_update_hook(p: nn.Parameter, group: dict):
         """Create hook function for a specific parameter."""
 
-        # The parameter identity is fixed for this hook, so resolve its group
-        # once at registration instead of searching on every backward.
-        # Guaranteed present: the orphan check above ran over the same module.
-        group = param_to_group[id(param)]
+        # The group is resolved once at registration (it comes from the iteration
+        # over param_groups) instead of being searched for on every backward: the
+        # previous per-hook scan was O(P) per parameter, i.e. O(P^2) per step.
 
         def hook(param: nn.Parameter):
             # Was a silent `return` here. Under fused backward nothing applies the
@@ -708,7 +691,16 @@ def register_lion8bit_fused_backward(optimizer, model):
 
             state = optimizer.state[param]
             if not state.get('is_8bit', False):
-                return  # Skip FP32 params
+                # Registration refuses use_8bit=False groups, so this can only be
+                # reached through state loaded from elsewhere. There is no
+                # optimizer.step() under fused backward to update it instead.
+                raise RuntimeError(
+                    f"Lion8bit_RingBuffer's fused-backward hook fired for a parameter "
+                    f"{tuple(param.shape)} whose optimizer state is not 8-bit. The hook "
+                    f"performs the 8-bit CUDA update only, and under the fused backward "
+                    f"pass there is no optimizer.step() to apply an FP32 update instead, "
+                    f"so skipping would leave this parameter untrained for the whole run."
+                )
 
             # Perform 8-bit update
             beta1, beta2 = group['betas']
@@ -743,9 +735,13 @@ def register_lion8bit_fused_backward(optimizer, model):
 
         return hook
 
-    # Register hooks for all parameters
-    for p in model.parameters():
-        if p.requires_grad:
-            p.register_post_accumulate_grad_hook(create_update_hook(p))
+    hooked, frozen = register_fused_backward_hooks(
+        optimizer, model, "register_lion8bit_fused_backward", create_update_hook
+    )
 
-    print(f"[Lion8bit_RingBuffer] Registered post_accumulate_grad hooks for {sum(1 for p in model.parameters() if p.requires_grad)} parameters")
+    print(f"[Lion8bit_RingBuffer] Registered post_accumulate_grad hooks for {hooked} "
+          f"parameters (every parameter in optimizer.param_groups)")
+    if frozen:
+        print(f"[Lion8bit_RingBuffer] {len(frozen)} parameter(s) in param_groups have "
+              f"requires_grad=False and get no hook (they receive no gradient), "
+              f"e.g. {frozen[:3]}")

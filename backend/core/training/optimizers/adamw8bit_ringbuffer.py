@@ -42,6 +42,9 @@ from .adamw8bit_cuda import get_extension
 # Import quantization map generator
 from .quantization_map import create_quantization_map
 
+# Fused-backward hook registration (driven by optimizer.param_groups)
+from .fused_backward_registration import register_fused_backward_hooks
+
 # Stochastic rounding helpers (shared with Lion8bit_RingBuffer)
 from .stochastic_rounding import (
     Fp32ScratchPool,
@@ -1097,15 +1100,22 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.train_mode = False
 
 
-def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer):
+def patch_adamw8bit_ringbuffer(model: Optional[nn.Module], optimizer: AdamW8bit_RingBuffer):
     """
     Patch model to use per-parameter fused updates via post_accumulate_grad_hook.
 
     This allows optimizer updates to happen immediately after each parameter's
     gradient is computed, enabling pipelined execution and reduced peak VRAM.
 
+    Hooks are registered on every parameter ``optimizer.param_groups`` holds, not
+    on the parameters of ``model``: the optimizer is what has to update them, and
+    the trainer adds text-encoder / vision-encoder groups to the same optimizer
+    while passing only the transformer here (see fused_backward_registration).
+    ``model`` still supplies parameter names and the check that none of ITS
+    trainable parameters is missing from the optimizer.
+
     Args:
-        model: Model to patch
+        model: Module the hooks are checked against (may be None)
         optimizer: AdamW8bit_RingBuffer optimizer instance
     """
 
@@ -1124,38 +1134,12 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
             "optimizer.step() instead of registering these hooks."
         )
 
-    # Precompute id(param) -> param_group once. The previous per-hook scan
-    # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
-    # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
-    # for models with thousands of weight tensors. This makes it O(1).
-    param_to_group = {}
-    for g in optimizer.param_groups:
-        for gp in g['params']:
-            param_to_group[id(gp)] = g
-
-    # A trainable parameter that belongs to no param_group used to get a hook that
-    # returned immediately. Under fused backward the trainer never calls step()
-    # (base_trainer: `if not self.use_fused_backward and ...`), so that parameter
-    # would be trained by nothing at all while the loss kept falling. Refuse at
-    # registration, where the run has not started yet.
-    orphans = [name for name, p in model.named_parameters()
-               if p.requires_grad and id(p) not in param_to_group]
-    if orphans:
-        raise RuntimeError(
-            f"{len(orphans)} trainable parameter(s) of the module passed to "
-            f"patch_adamw8bit_ringbuffer are in no param_group of this optimizer, "
-            f"e.g. {orphans[:3]}. Under the fused backward pass optimizer.step() is "
-            f"never called, so nothing would ever update them. Add them to the "
-            f"optimizer, or freeze them (requires_grad=False)."
-        )
-
-    def create_update_hook(p: nn.Parameter):
+    def create_update_hook(p: nn.Parameter, group: dict):
         """Create a hook that updates this parameter immediately after grad accumulation."""
 
-        # The parameter identity is fixed for this hook, so resolve its group
-        # once at registration instead of searching on every backward.
-        # Guaranteed present: the orphan check above ran over the same module.
-        group = param_to_group[id(p)]
+        # The group is resolved once at registration (it comes from the iteration
+        # over param_groups) instead of being searched for on every backward: the
+        # previous per-hook scan was O(P) per parameter, i.e. O(P^2) per step.
 
         def hook(param: nn.Parameter):
             # This used to `return` with a comment promising the update would be
@@ -1189,7 +1173,16 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
 
             state = optimizer.state[param]
             if not state.get('is_8bit', False):
-                return  # Skip FP32 params (updated in optimizer.step())
+                # Registration refuses use_8bit=False groups, so this can only be
+                # reached through state loaded from elsewhere. The old `return`
+                # here claimed step() would apply the update; it is never called.
+                raise RuntimeError(
+                    f"AdamW8bit_RingBuffer's fused-backward hook fired for a parameter "
+                    f"{tuple(param.shape)} whose optimizer state is not 8-bit. The hook "
+                    f"performs the 8-bit CUDA update only, and under the fused backward "
+                    f"pass there is no optimizer.step() to apply an FP32 update instead, "
+                    f"so skipping would leave this parameter untrained for the whole run."
+                )
 
             step = optimizer._advance_param_step(state)
 
@@ -1229,9 +1222,13 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
 
         return hook
 
-    # Register hooks for all parameters
-    for p in model.parameters():
-        if p.requires_grad:
-            p.register_post_accumulate_grad_hook(create_update_hook(p))
+    hooked, frozen = register_fused_backward_hooks(
+        optimizer, model, "patch_adamw8bit_ringbuffer", create_update_hook
+    )
 
-    print(f"[AdamW8bit_RingBuffer] Registered post_accumulate_grad hooks for {sum(1 for p in model.parameters() if p.requires_grad)} parameters")
+    print(f"[AdamW8bit_RingBuffer] Registered post_accumulate_grad hooks for {hooked} "
+          f"parameters (every parameter in optimizer.param_groups)")
+    if frozen:
+        print(f"[AdamW8bit_RingBuffer] {len(frozen)} parameter(s) in param_groups have "
+              f"requires_grad=False and get no hook (they receive no gradient), "
+              f"e.g. {frozen[:3]}")

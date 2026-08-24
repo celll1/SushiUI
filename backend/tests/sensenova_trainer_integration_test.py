@@ -129,7 +129,6 @@ def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
         ({"batch_size": 2}, "lora", "batch_size=1"),
         ({"batch_size": 1, "blocks_to_swap": 1}, "lora", "blocks_to_swap"),
         ({"batch_size": 1, "blocks_to_swap": -1}, "lora", "blocks_to_swap"),
-        ({"batch_size": 1, "use_reference_images": True}, "lora", "reference-image"),
         ({"batch_size": 1}, "full_finetune", "lora"),
         ({"batch_size": 1}, "relora", "lora"),
     ],
@@ -160,11 +159,12 @@ def test_runner_strictly_rejects_non_integer_contract_fields(train, message):
 
 
 @pytest.mark.parametrize("value", [True, 1, "true", "1"])
-def test_runner_strict_reference_true_is_refused(value):
+def test_runner_strict_reference_true_is_accepted_and_normalized(value):
+    """Phase 3: the runner arms reference conditioning instead of refusing it."""
     train = {"batch_size": 1, "use_reference_images": value}
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
-        with pytest.raises(ValueError, match="reference-image"):
-            _apply_sensenova_training_contract("checkpoint", "lora", train, {})
+        assert _apply_sensenova_training_contract("checkpoint", "lora", train, {})
+    assert train["use_reference_images"] is True
 
 
 @pytest.mark.parametrize("value", [False, 0, "false", "0"])
@@ -455,10 +455,20 @@ def test_encode_caption_returns_prefix_without_tensor_cache_payload():
     trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
     trainer.is_zimage = False
     trainer.is_sensenova = True
-    trainer.arch = SimpleNamespace(
-        encode_prompt=lambda owner, caption, requires_grad=False: prefix
-    )
+    seen = {}
+
+    def _encode(owner, caption, requires_grad=False, reference_image_paths=None):
+        seen["refs"] = reference_image_paths
+        return prefix
+
+    trainer.arch = SimpleNamespace(encode_prompt=_encode)
     assert trainer.encode_caption("caption") == (prefix, None)
+    assert seen["refs"] is None
+    assert trainer.encode_caption("caption", reference_image_paths=["a.png"]) == (
+        prefix,
+        None,
+    )
+    assert seen["refs"] == ["a.png"]
 
 
 def test_execute_forward_backward_uses_dedicated_prefix_field():

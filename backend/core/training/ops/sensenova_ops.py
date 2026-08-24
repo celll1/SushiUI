@@ -20,6 +20,9 @@ class SenseNovaTrainingPrefix:
     """Detached prompt K/V reused by every flow step for one sample."""
 
     cache: Any
+    # The NEXT t index, not a token count: image tokens spread over h/w, so with
+    # references the prefix's t extent is shorter than its token count. Vendor
+    # `_build_t2i_image_indexes` uses this as the image tokens' t coordinate.
     text_length: int
 
 
@@ -174,10 +177,44 @@ def load_components(trainer: Any) -> None:
     setup_attention_backend(trainer, trainer.attention_backend)
 
 
+def _load_reference_images(reference_image_paths: Optional[List[str]]) -> list:
+    """Open reference PILs HERE, never through the trainer's image pipeline.
+
+    That pipeline resizes to the target's bucket and normalizes to [-1,1]; the
+    understanding tower wants a per-reference smart-resize with ImageNet stats.
+    The two are shape-compatible at patchify, so mixing them would silently
+    train mis-normalized conditioning instead of raising. Conversion (incl. the
+    RGBA contrasting-background flatten) belongs to vendor `load_image_native`,
+    so the PIL is handed over untouched.
+    """
+    from PIL import Image
+
+    from core.pipeline_backends.sensenova import SENSENOVA_MAX_REFERENCE_IMAGES
+
+    paths = [path for path in (reference_image_paths or []) if path]
+    if not paths:
+        return []
+    if len(paths) > SENSENOVA_MAX_REFERENCE_IMAGES:
+        raise ValueError(
+            f"SenseNova training accepts at most {SENSENOVA_MAX_REFERENCE_IMAGES} "
+            f"reference image(s) per item (the inference cap); got {len(paths)}"
+        )
+    return [Image.open(path) for path in paths]
+
+
 def encode_prompt(
-    trainer: Any, prompt: str, *, requires_grad: bool = False
+    trainer: Any,
+    prompt: str,
+    *,
+    requires_grad: bool = False,
+    reference_image_paths: Optional[List[str]] = None,
 ) -> SenseNovaTrainingPrefix:
-    """Build a detached prefix without inference streamers or flash buffers."""
+    """Build a detached prefix without inference streamers or flash buffers.
+
+    With ``reference_image_paths`` this runs inference's cond branch verbatim
+    (understanding-tower ViT embeds spliced into the text prefix); img_cond and
+    uncond are CFG-only and carry no loss.
+    """
     if requires_grad:
         raise ValueError("SenseNova text-encoder training is not supported")
     if not isinstance(prompt, str):
@@ -186,25 +223,53 @@ def encode_prompt(
     from core.models.sensenova.vendor.utils import SYSTEM_MESSAGE_FOR_GEN
 
     transformer = trainer.transformer
+    ref_images = _load_reference_images(reference_image_paths)
     phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
     if phase_evictor is not None:
         phase_evictor.enter_prefix()
-    query = transformer._build_t2i_query(
-        prompt,
-        system_message=SYSTEM_MESSAGE_FOR_GEN,
-        append_text="<think>\n\n</think>\n\n<img>",
-    )
     with torch.no_grad():
-        input_ids, indexes, attention_mask = transformer._build_t2i_text_inputs(
-            trainer.tokenizer, query
-        )
-        cache, _ = transformer._t2i_prefix_forward(input_ids, indexes, attention_mask)
+        if ref_images:
+            from core.models.sensenova.sensenova_pipeline_ops import (
+                _IMG_CONTEXT_TOKEN,
+                _embed_reference_images,
+                _splice_reference_image_tokens,
+            )
+
+            pixel_values, grid_hw = _embed_reference_images(transformer, ref_images)
+            # Never set on the Phase 1 text-only path; _build_it2i_inputs asserts
+            # on it matching at least one token.
+            transformer.img_context_token_id = trainer.tokenizer.convert_tokens_to_ids(
+                _IMG_CONTEXT_TOKEN
+            )
+            query = transformer._build_t2i_query(
+                _splice_reference_image_tokens(
+                    prompt, len(ref_images), grid_hw, transformer.downsample_ratio
+                ),
+                system_message=SYSTEM_MESSAGE_FOR_GEN,
+                append_text="<think>\n\n</think>\n\n<img>",
+            )
+            inputs = transformer._build_it2i_inputs(
+                trainer.tokenizer, query, pixel_values, grid_hw
+            )
+            cache, _ = transformer._it2i_prefix_forward(*inputs)
+        else:
+            query = transformer._build_t2i_query(
+                prompt,
+                system_message=SYSTEM_MESSAGE_FOR_GEN,
+                append_text="<think>\n\n</think>\n\n<img>",
+            )
+            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
+            cache, _ = transformer._t2i_prefix_forward(*inputs)
+        indexes = inputs[1]
     expected_layers = len(transformer.language_model.model.layers)
     _assert_immutable_prefix_cache(cache, expected_layers)
     if phase_evictor is not None:
         phase_evictor.enter_denoise()
         phase_evictor.assert_generation_resident()
-    return SenseNovaTrainingPrefix(cache=cache, text_length=int(input_ids.shape[1]))
+    # Equals input_ids.shape[1] on the text-only path (t is arange there).
+    return SenseNovaTrainingPrefix(
+        cache=cache, text_length=int(indexes[0].max()) + 1
+    )
 
 
 def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tensor:

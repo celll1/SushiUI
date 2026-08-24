@@ -867,18 +867,15 @@ for _a in ["sd15", "sdxl", "sensenova"]:
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
 
 # --- Reference-image conditioning -------------------------------------------
-# `use_reference_images` gates FLUX.2 code only: base_trainer's dataset split
-# (`separate_by_reference = use_reference_images and self.is_flux2`) and its two
-# `use_reference_images and self.is_flux2` train-loop branches. Every other
-# architecture logs "will be ignored" and trains without it.
-for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2"}):
+# Two unrelated mechanisms, one flag. FLUX.2 VAE-encodes each reference at the
+# target's bucket size and concatenates it to the noisy sequence; SenseNova
+# splices understanding-tower ViT tokens into the prompt prefix
+# (ops/sensenova_ops.encode_prompt) and never routes a reference through the
+# trainer's image pipeline. Every other architecture logs "will be ignored".
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova"}):
     _add_training_feature_unsupported(
         _a, "reference_images",
-        "reference-image conditioning during training is implemented for FLUX.2 only; base_trainer gates every reference codepath on is_flux2 and warns that the flag is ignored elsewhere")
-# SenseNova refuses rather than ignores, so it carries its own reason.
-_add_training_feature_unsupported(
-    "sensenova", "reference_images",
-    "SenseNova reference-image training is deferred to Phase 3 and a run that asks for it is refused (train_runner._apply_sensenova_training_contract)")
+        "reference-image conditioning during training is implemented for FLUX.2 and SenseNova only; base_trainer gates the other reference codepaths on those two and warns that the flag is ignored elsewhere")
 
 # --- Text-encoder training --------------------------------------------------
 # Declared where the text encoder is frozen by the adapter regardless of the

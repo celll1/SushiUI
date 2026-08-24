@@ -4406,13 +4406,19 @@ class BaseTrainer(ABC):
         from core.training.ops import minit2i_ops
         return minit2i_ops.encode_prompt(self, prompt, requires_grad=requires_grad)
 
-    def encode_caption(self, caption: str, requires_grad: bool = False, lyrics: str = ""):
+    def encode_caption(self, caption: str, requires_grad: bool = False, lyrics: str = "",
+                       reference_image_paths=None):
         """
         Unified caption encoding for all architectures.
 
         Args:
             caption: The item's caption text.
             requires_grad: Whether to keep a gradient-carrying graph (trainable TE).
+            reference_image_paths: SenseNova ONLY -- the item's reference image
+                paths, spliced into the prompt prefix as understanding-tower
+                tokens (``ops/sensenova_ops.encode_prompt``). Every other arch
+                ignores this argument; FLUX.2 conditions on references through
+                VAE latents in the train loop instead.
             lyrics: ACE-Step ONLY -- the item's per-item lyrics text ("" for
                 instrumental / no-lyrics, the default; every other arch ignores
                 this argument). See ``ops/acestep_ops.py``'s module docstring.
@@ -4432,7 +4438,12 @@ class BaseTrainer(ABC):
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
         elif self.is_sensenova:
-            return self.arch.encode_prompt(self, caption, requires_grad=False), None
+            return self.arch.encode_prompt(
+                self,
+                caption,
+                requires_grad=False,
+                reference_image_paths=reference_image_paths,
+            ), None
         elif self.is_lens:
             return self.encode_prompt_lens(caption)
         elif self.is_ideogram4:
@@ -8090,8 +8101,6 @@ class BaseTrainer(ABC):
                 )
             if self.blocks_to_swap != 0:
                 raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
-            if use_reference_images:
-                raise ValueError("SenseNova reference-image training is deferred to Phase 3")
             text_encoding_mode = "onthefly_gpu"
             latent_encoding_mode = "onthefly_gpu"
 
@@ -8114,8 +8123,8 @@ class BaseTrainer(ABC):
 
         if use_reference_images:
             print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
-            if not self.is_flux2:
-                print(f"{self.log_prefix} WARNING: use_reference_images is only supported for FLUX.2, will be ignored")
+            if not (self.is_flux2 or self.is_sensenova):
+                print(f"{self.log_prefix} WARNING: use_reference_images is only supported for FLUX.2 and SenseNova, will be ignored")
 
         # Load Vision Encoder if specified (SigLIP2 for SDXL/SD1.5)
         if vision_encoder_path:
@@ -8273,8 +8282,9 @@ class BaseTrainer(ABC):
             if base_resolutions is None:
                 base_resolutions = [1024]
 
-            # Enable reference separation when use_reference_images is enabled for FLUX.2
-            separate_by_reference = use_reference_images and self.is_flux2
+            # Sampler tidiness only for SenseNova: at its forced batch_size=1 the
+            # prefix is per-item anyway, so this never underwrites prefix shape.
+            separate_by_reference = use_reference_images and (self.is_flux2 or self.is_sensenova)
 
             # Align to the ARCH's pixel requirement, not a hardcoded /8 -- the
             # same read the two NO-bucketing fit paths already do. See
@@ -10619,7 +10629,17 @@ class BaseTrainer(ABC):
                         caption = item.get("caption", "")
 
                         if self.is_sensenova:
-                            prefix, _ = self.encode_caption(caption, requires_grad=False)
+                            # References enter through the PROMPT PREFIX here, not
+                            # through encode_image: sensenova_ops owns their loading
+                            # and ImageNet normalization so the trainer's bucket /
+                            # [-1,1] pipeline can never touch them.
+                            prefix, _ = self.encode_caption(
+                                caption,
+                                requires_grad=False,
+                                reference_image_paths=(
+                                    item.get("reference_images") or []
+                                ) if use_reference_images else None,
+                            )
                             sensenova_prefixes.append(prefix)
                         elif text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
                             # Get from swap buffer using image_path as key (dict lookup).
@@ -10705,6 +10725,12 @@ class BaseTrainer(ABC):
                         # - reference_latents_list contains List[List[Tensor]] or List[None]
                         # - Each inner list has latents for that item's reference images
                         # - train_step applies T=10, 20, 30... to each reference image
+                        #
+                        # is_flux2, NOT "any arch with references": this branch is
+                        # VAE-latent conditioning at the target's bucket size.
+                        # SenseNova's references are ViT tokens in the prompt prefix
+                        # (built in its encode_caption branch above) and must never
+                        # reach encode_image -- see ops/sensenova_ops.
                         if use_reference_images and self.is_flux2:
                             reference_images = item.get("reference_images", [])
                             if reference_images:
@@ -11009,6 +11035,8 @@ class BaseTrainer(ABC):
                     # Only apply conditioning if ALL items in batch have valid reference latents
                     # reference_latents_list is now List[List[Tensor]] or List[None]
                     # We pass the nested structure to train_step which handles T coordinates
+                    # SenseNova has no entry here: its references are already inside
+                    # each item's prompt prefix.
                     reference_latents_nested = None
                     if use_reference_images and self.is_flux2 and reference_latents_list:
                         # Check if any item is missing reference latent (None)

@@ -216,16 +216,23 @@ def test_attention_setup_stamps_training_mode_and_checks_layer_count():
         setup_attention_backend(trainer, "native")
 
 
+def _text_only_inputs(tokenizer, query, length=3):
+    """Vendor `_build_t2i_text_inputs` shape: t is arange, h/w are zero."""
+    t_idx = torch.arange(length, dtype=torch.long)
+    zeros = torch.zeros_like(t_idx)
+    return (
+        torch.ones(1, length, dtype=torch.long),
+        torch.stack([t_idx, zeros, zeros], dim=0),
+        {"full_attention": None},
+    )
+
+
 def test_encode_prompt_builds_detached_training_prefix():
     cache = _Cache()
     transformer = SimpleNamespace(
         language_model=SimpleNamespace(model=SimpleNamespace(layers=[object()])),
         _build_t2i_query=lambda prompt, **kwargs: prompt,
-        _build_t2i_text_inputs=lambda tokenizer, query: (
-            torch.ones(1, 3, dtype=torch.long),
-            torch.zeros(3, 3, dtype=torch.long),
-            {"full_attention": None},
-        ),
+        _build_t2i_text_inputs=_text_only_inputs,
         _t2i_prefix_forward=lambda *args: (cache, torch.zeros(1, 3, 1)),
     )
     trainer = SimpleNamespace(transformer=transformer, tokenizer=object())
@@ -262,11 +269,7 @@ def test_encode_prompt_phase_retry_and_success_transition():
     transformer = SimpleNamespace(
         language_model=SimpleNamespace(model=SimpleNamespace(layers=[object()])),
         _build_t2i_query=lambda prompt, **kwargs: prompt,
-        _build_t2i_text_inputs=lambda tokenizer, query: (
-            torch.ones(1, 3, dtype=torch.long),
-            torch.zeros(3, 3, dtype=torch.long),
-            {"full_attention": None},
-        ),
+        _build_t2i_text_inputs=_text_only_inputs,
         _t2i_prefix_forward=prefix_forward,
     )
     trainer = SimpleNamespace(

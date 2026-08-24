@@ -174,9 +174,9 @@ def _apply_sensenova_training_contract(
     blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
     if blocks_to_swap != 0:
         raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
-    use_reference_images = _normalize_sensenova_bool(
-        train_config, "use_reference_images", False
-    )
+    # Normalized, not gated: reference conditioning is armed run-globally here and
+    # applied per item (Phase 3). Strict typing still applies.
+    _normalize_sensenova_bool(train_config, "use_reference_images", False)
     from api.param_defaults import TRAINING_DEFAULTS
 
     phase_eviction = _normalize_sensenova_bool(
@@ -199,8 +199,6 @@ def _apply_sensenova_training_contract(
                 "SenseNova MoT phase eviction is independent of block swap; "
                 "set block_swap_h2d_only=false"
             )
-    if use_reference_images:
-        raise ValueError("SenseNova reference-image training is deferred to Phase 3")
     _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"

@@ -34,6 +34,12 @@ EXIT_SMOKE_STEPS = 3
 EXIT_SMOKE_WIDTH = 64
 EXIT_SMOKE_HEIGHT = 64
 EXIT_SMOKE_RUN_NAME = "sensenova_exit_smoke"
+MIXED_SMOKE_RUN_NAME = "sensenova_mixed_smoke"
+MIXED_REFERENCE_DATASET_ID = 23
+MIXED_REFERENCE_FREE_DATASET_ID = 37
+# Hard per-process cap: an over-budget arm OOMs inside its own process instead of
+# filling the shared GPU.
+VRAM_GATE_FRACTION = 0.72
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,19 @@ def _cuda_memory() -> dict[str, int]:
     return {
         "allocated": torch.cuda.memory_allocated(),
         "reserved": torch.cuda.memory_reserved(),
+    }
+
+
+def _apply_vram_gate() -> dict[str, Any]:
+    if not torch.cuda.is_available():
+        return {"applied": False}
+    torch.cuda.set_per_process_memory_fraction(VRAM_GATE_FRACTION, 0)
+    total = int(torch.cuda.get_device_properties(0).total_memory)
+    return {
+        "applied": True,
+        "fraction": VRAM_GATE_FRACTION,
+        "device_total_bytes": total,
+        "budget_bytes": int(total * VRAM_GATE_FRACTION),
     }
 
 
@@ -519,6 +538,197 @@ class _ExitSmokeDataset:
         return [dict(item) for item in self.items]
 
 
+def _lora_grad_digest(lora_layers: dict[str, torch.nn.Module]) -> dict[str, Any]:
+    return {
+        "up": _gradient_stats(lora_layers, "lora_up"),
+        "down": _gradient_stats(lora_layers, "lora_down"),
+    }
+
+
+class _GradDigestCapture:
+    """Read the LoRA gradients at every ``optimizer.step()`` without changing it."""
+
+    def __init__(self, layers_getter):
+        self._layers_getter = layers_getter
+        self.records: list[dict[str, Any]] = []
+        self._original = None
+
+    def __enter__(self) -> "_GradDigestCapture":
+        original = torch.optim.AdamW.step
+        capture = self
+
+        def step(optimizer_self, *args, **kwargs):
+            capture.records.append(_lora_grad_digest(capture._layers_getter()))
+            return original(optimizer_self, *args, **kwargs)
+
+        torch.optim.AdamW.step = step
+        self._original = original
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        torch.optim.AdamW.step = self._original
+        return False
+
+
+class _ProbeDataset:
+    """Item dicts straight from the DB, shaped exactly like train_runner's."""
+
+    def __init__(self, unique_id: str, items: list[dict[str, Any]]):
+        self.unique_id = unique_id
+        self.items = [dict(item, dataset_unique_id=unique_id) for item in items]
+        self._reloaded = False
+
+    def reload_for_epoch(self, epoch_num: int, run_id: int | None = None):
+        del run_id
+        if epoch_num == 0 and not self._reloaded:
+            self._reloaded = True
+            return None
+        return [dict(item) for item in self.items]
+
+
+def _read_dataset_items(dataset_id: int, limit: int) -> list[dict[str, Any]]:
+    """Bounded, read-only mirror of ``train_runner._load_dataset_items_fast``.
+
+    Field derivation is copied from that function, not re-invented:
+    the caption auto-select priority (``train_runner.py:889-901``) and
+    ``reference_images = related_images["reference"]``
+    (``train_runner.py:1387-1388`` / ``:1200-1201``).
+    """
+    import sqlite3
+
+    database = REPO_ROOT / "datasets.db"
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT id, image_path, width, height, related_images "
+            "FROM dataset_items WHERE dataset_id = ? ORDER BY id LIMIT ?",
+            (dataset_id, limit),
+        )
+        rows = cursor.fetchall()
+        items = []
+        for item_id, image_path, width, height, related_images in rows:
+            if not os.path.exists(image_path):
+                continue
+            cursor.execute(
+                "SELECT caption_type, content FROM dataset_captions WHERE item_id = ?",
+                (item_id,),
+            )
+            captions = cursor.fetchall()
+            caption = ""
+            for caption_type in ("tags", "natural_language"):
+                match = [text for kind, text in captions if kind == caption_type]
+                if match:
+                    caption = match[0]
+                    break
+            else:
+                if captions:
+                    caption = captions[0][1]
+            item = {
+                "image_path": image_path,
+                "caption": caption,
+                "width": width,
+                "height": height,
+                "caption_types_available": sorted({kind for kind, _ in captions}),
+            }
+            related = json.loads(related_images) if related_images else None
+            if related and "reference" in related:
+                item["reference_images"] = related["reference"]
+            items.append(item)
+    finally:
+        connection.close()
+    if len(items) != limit:
+        raise AssertionError(
+            f"dataset {dataset_id}: wanted {limit} readable items, got {len(items)}"
+        )
+    return items
+
+
+class _ReferenceInstrumentation:
+    """Record the reference prefix's shape/size without altering any of it."""
+
+    def __init__(self, trainer):
+        self.trainer = trainer
+        self.records: list[dict[str, Any]] = []
+        self._restore: list = []
+
+    def __enter__(self) -> "_ReferenceInstrumentation":
+        from core.training.ops import sensenova_ops
+
+        transformer = self.trainer.transformer
+        original_encode = sensenova_ops.encode_prompt
+        original_build = transformer._build_it2i_inputs
+        original_extract = transformer.extract_feature
+        pending: dict[str, Any] = {}
+
+        def extract_feature(*args, **kwargs):
+            output = original_extract(*args, **kwargs)
+            pending["vit_tokens"] = int(output.numel() // output.shape[-1])
+            return output
+
+        def build_it2i_inputs(tokenizer, query, pixel_values=None, grid_hw=None):
+            transformer.extract_feature = extract_feature
+            try:
+                embeds, indexes, mask = original_build(
+                    tokenizer, query, pixel_values, grid_hw
+                )
+            finally:
+                del transformer.extract_feature
+            token_id = int(transformer.img_context_token_id)
+            input_ids = tokenizer(query, return_tensors="pt")["input_ids"][0]
+            pending.update({
+                "img_context_token_id": token_id,
+                "img_context_placeholders": int((input_ids == token_id).sum()),
+                "prefix_token_count": int(indexes.shape[1]),
+                "prefix_t_extent": int(indexes[0].max()) + 1,
+                "grid_hw": grid_hw.tolist() if grid_hw is not None else None,
+            })
+            return embeds, indexes, mask
+
+        def encode_prompt(trainer, prompt, *, requires_grad=False, reference_image_paths=None):
+            pending.clear()
+            torch.cuda.synchronize()
+            before = _cuda_memory()
+            torch.cuda.reset_peak_memory_stats()
+            prefix = original_encode(
+                trainer,
+                prompt,
+                requires_grad=requires_grad,
+                reference_image_paths=reference_image_paths,
+            )
+            torch.cuda.synchronize()
+            after = _cuda_memory()
+            sensenova_ops._assert_immutable_prefix_cache(
+                prefix.cache, len(trainer.transformer.language_model.model.layers)
+            )
+            self.records.append({
+                "has_reference": bool(reference_image_paths),
+                "reference_image_paths": list(reference_image_paths or []),
+                "caption_chars": len(prompt),
+                "text_length": int(prefix.text_length),
+                "prefix_seq_length": int(prefix.cache.get_seq_length()),
+                "prefix_layers": len(prefix.cache.layers),
+                "immutable_prefix_cache": True,
+                "allocated_delta": after["allocated"] - before["allocated"],
+                "encode_peak_allocated": int(torch.cuda.max_memory_allocated()),
+                **pending,
+            })
+            return prefix
+
+        sensenova_ops.encode_prompt = encode_prompt
+        transformer._build_it2i_inputs = build_it2i_inputs
+        self._restore = [
+            lambda: setattr(sensenova_ops, "encode_prompt", original_encode),
+            lambda: delattr(transformer, "_build_it2i_inputs"),
+        ]
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        for restore in self._restore:
+            restore()
+        return False
+
+
 def _write_deterministic_smoke_image(path: Path) -> None:
     from PIL import Image
 
@@ -626,6 +836,7 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     from core.training.lora_trainer import LoRATrainer
 
+    vram_gate = _apply_vram_gate()
     config = trainer_exit_smoke_config(
         phase_eviction=getattr(args, "smoke_phase_eviction", "off") == "on"
     )
@@ -696,7 +907,8 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
     })
     dataset = _ExitSmokeDataset(image_path, args.prompt)
     train_started = time.perf_counter()
-    trainer.train(datasets=[dataset], **train)
+    with _GradDigestCapture(lambda: trainer.lora_layers) as grad_capture:
+        trainer.train(datasets=[dataset], **train)
     train_wall_time_s = time.perf_counter() - train_started
     wall_time_with_model_load_s = time.perf_counter() - load_started
 
@@ -744,7 +956,9 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
         "losses_finite": True,
         "lora_parameters_finite": True,
         "lora_parameter_sha256": lora_hash,
+        "grad_digests": grad_capture.records,
         "peak_memory": peak,
+        "vram_gate": vram_gate,
         "gradient_checkpointing": bool(trainer.gradient_checkpointing),
         "attention_backend": "native",
         "determinism": {
@@ -767,6 +981,243 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         trainer._db_executor.shutdown(wait=True)
     return result
+
+
+def _run_mixed_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
+    """Phase 3-4: one run whose items mix reference-carrying and plain datasets."""
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova mixed smoke requires CUDA")
+
+    from core.training.lora_trainer import LoRATrainer
+
+    vram_gate = _apply_vram_gate()
+    config = trainer_exit_smoke_config()
+    config["train_config"]["use_reference_images"] = True
+    config["train"]["use_reference_images"] = True
+    config["train"]["base_resolutions"] = [args.mixed_base_resolution]
+
+    reference_items = _read_dataset_items(args.mixed_reference_dataset_id, args.mixed_items)
+    reference_free_items = _read_dataset_items(
+        args.mixed_reference_free_dataset_id, args.mixed_items
+    )
+    for item in reference_items:
+        if not item.get("reference_images"):
+            raise AssertionError(f"dataset item {item['image_path']} carries no reference")
+    for item in reference_free_items:
+        if item.get("reference_images"):
+            raise AssertionError(
+                f"the reference-free dataset item {item['image_path']} carries a reference"
+            )
+
+    workdir = Path(args.smoke_workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    output_dir = workdir / "mixed_output"
+    checkpoint_path = output_dir / f"{MIXED_SMOKE_RUN_NAME}_step_{EXIT_SMOKE_STEPS:06d}.safetensors"
+
+    import numpy as np
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.deterministic = True
+    torch.cuda.reset_peak_memory_stats()
+
+    load_started = time.perf_counter()
+    trainer = LoRATrainer(
+        model_path=args.model_path,
+        output_dir=str(output_dir),
+        run_name=MIXED_SMOKE_RUN_NAME,
+        run_id=None,
+        learning_rate=1e-4,
+        device="cuda",
+        train_config=dict(config["train_config"]),
+        **dict(config["constructor"]),
+    )
+    model_load_wall_time_s = time.perf_counter() - load_started
+    model_resident = _cuda_memory()
+    losses: list[float] = []
+    training_steps: list[int] = []
+
+    def progress_callback(phase, step, total, epoch=0, loss=None):
+        del total, epoch
+        if phase != "training":
+            return
+        if loss is None or not math.isfinite(float(loss)):
+            raise AssertionError(f"non-finite SenseNova mixed-smoke loss: {loss!r}")
+        training_steps.append(int(step))
+        losses.append(float(loss))
+
+    train = dict(config["train"])
+    train.update({
+        "num_epochs": 1,
+        "sample_prompts": [],
+        "sample_guidance_scale": 1.0,
+        "sample_steps": 1,
+        "sample_width": EXIT_SMOKE_WIDTH,
+        "sample_height": EXIT_SMOKE_HEIGHT,
+        "sample_seed": args.seed,
+        "max_grad_norm": 1.0,
+        "progress_callback": progress_callback,
+        "run_id": None,
+        "max_step_saves_to_keep": 1,
+        "force_recache": False,
+    })
+    datasets = [
+        _ProbeDataset(f"sensenova-phase3-ref-{args.mixed_reference_dataset_id}", reference_items),
+        _ProbeDataset(
+            f"sensenova-phase3-noref-{args.mixed_reference_free_dataset_id}",
+            reference_free_items,
+        ),
+    ]
+    train_started = time.perf_counter()
+    with _ReferenceInstrumentation(trainer) as prefixes:
+        with _GradDigestCapture(lambda: trainer.lora_layers) as grad_capture:
+            trainer.train(datasets=datasets, **train)
+        train_wall_time_s = time.perf_counter() - train_started
+        # Same caption, reference on/off: the only A/B where the prefix size
+        # difference is attributable to the reference alone.
+        from core.training.ops import sensenova_ops
+
+        step_record_count = len(prefixes.records)
+        paired_caption = reference_items[0]["caption"]
+        paired = sensenova_ops.encode_prompt(
+            trainer,
+            paired_caption,
+            reference_image_paths=reference_items[0]["reference_images"],
+        )
+        del paired
+        torch.cuda.empty_cache()
+        paired = sensenova_ops.encode_prompt(trainer, paired_caption)
+        del paired
+        torch.cuda.empty_cache()
+    paired_prefixes = prefixes.records[step_record_count:]
+
+    if training_steps != list(range(1, EXIT_SMOKE_STEPS + 1)):
+        raise AssertionError(f"expected training steps [1, 2, 3], got {training_steps}")
+    records = prefixes.records[:step_record_count]
+    if len(records) != EXIT_SMOKE_STEPS:
+        raise AssertionError(
+            f"expected one prefix per step, got {len(records)} for {EXIT_SMOKE_STEPS} steps"
+        )
+    with_reference = [record for record in records if record["has_reference"]]
+    without_reference = [record for record in records if not record["has_reference"]]
+    if not with_reference or not without_reference:
+        raise AssertionError(
+            "the mixed run did not exercise both kinds of item: "
+            f"{len(with_reference)} with reference, {len(without_reference)} without"
+        )
+    for record in with_reference:
+        if record["vit_tokens"] != record["img_context_placeholders"]:
+            raise AssertionError(
+                f"ViT emitted {record['vit_tokens']} tokens for "
+                f"{record['img_context_placeholders']} <IMG_CONTEXT> placeholders"
+            )
+        if record["text_length"] != record["prefix_t_extent"]:
+            raise AssertionError(
+                f"text_length {record['text_length']} != t extent {record['prefix_t_extent']}"
+            )
+    t_extent_below_tokens = [
+        record for record in with_reference
+        if record["text_length"] < record["prefix_token_count"]
+    ]
+    if not t_extent_below_tokens:
+        raise AssertionError(
+            "no reference prefix had text_length < token count; the t-extent check "
+            "would pass on a degenerate case"
+        )
+    for record in without_reference:
+        if record["text_length"] != record["prefix_seq_length"]:
+            raise AssertionError(
+                f"text-only text_length {record['text_length']} != prefix seq length "
+                f"{record['prefix_seq_length']}"
+            )
+    if not checkpoint_path.is_file():
+        raise AssertionError(f"trainer did not save {checkpoint_path.name}")
+    lora_hash, lora_finite = _lora_layer_hash(trainer.lora_layers)
+    if not lora_finite:
+        raise AssertionError("mixed-run LoRA parameters contain a non-finite value")
+    saved = _inspect_saved_lora_relaxed(checkpoint_path)
+    if saved["parameter_sha256"] != lora_hash:
+        raise AssertionError("saved LoRA tensor hash differs from live trainer parameters")
+    for index, digest in enumerate(grad_capture.records, start=1):
+        for direction in ("up", "down"):
+            stats = digest[direction]
+            if stats["reached"] != EXPECTED_TARGETS or stats["finite"] != EXPECTED_TARGETS:
+                raise AssertionError(f"step {index} {direction} gradients: {stats}")
+
+    torch.cuda.synchronize()
+    peak = {
+        "allocated": int(torch.cuda.max_memory_allocated()),
+        "reserved": int(torch.cuda.max_memory_reserved()),
+    }
+    result = {
+        "probe": "sensenova_phase3_mixed_smoke",
+        "checkpoint": {"name": checkpoint_path.name, **saved},
+        "datasets": [
+            {
+                "unique_id": dataset.unique_id,
+                "items": [
+                    {
+                        "image_path": item["image_path"],
+                        "width": item["width"],
+                        "height": item["height"],
+                        "caption_chars": len(item["caption"]),
+                        "caption_types_available": item["caption_types_available"],
+                        "reference_images": item.get("reference_images", []),
+                    }
+                    for item in dataset.items
+                ],
+            }
+            for dataset in datasets
+        ],
+        "seed": args.seed,
+        "training_steps": training_steps,
+        "losses": losses,
+        "losses_finite": True,
+        "prefixes": records,
+        "paired_caption_prefixes": paired_prefixes,
+        "grad_digests": grad_capture.records,
+        "lora_parameter_sha256": lora_hash,
+        "model_resident": model_resident,
+        "peak_memory": peak,
+        "vram_gate": vram_gate,
+        "wall_time_s": train_wall_time_s,
+        "model_load_wall_time_s": model_load_wall_time_s,
+    }
+    try:
+        trainer.writer.close()
+    finally:
+        trainer._db_executor.shutdown(wait=True)
+    return result
+
+
+def _inspect_saved_lora_relaxed(path: Path) -> dict[str, Any]:
+    """``_inspect_saved_lora`` without the exit-smoke's fixed epoch metadata."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        keys = sorted(handle.keys())
+        metadata = dict(handle.metadata() or {})
+        tensors = [(key, handle.get_tensor(key)) for key in keys]
+    if len(keys) != EXPECTED_TARGETS * 3:
+        raise AssertionError(f"expected {EXPECTED_TARGETS * 3} LoRA tensors, got {len(keys)}")
+    parameter_hash, finite = _hash_named_tensors(
+        (key, tensor) for key, tensor in tensors if key.endswith(".weight")
+    )
+    if not finite:
+        raise AssertionError("saved LoRA contains a non-finite tensor")
+    return {
+        "tensor_count": len(keys),
+        "parameter_sha256": parameter_hash,
+        "metadata": {
+            key: metadata.get(key)
+            for key in ("tensor_kind", "model_type", "lora_targets", "step", "epoch")
+        },
+        "finite": True,
+    }
 
 
 def _runtime_generation_args(args: argparse.Namespace, lora_path: str | None):
@@ -908,6 +1359,10 @@ def _run_exit_smoke_subprocess(
         "--smoke-arm", arm,
         "--smoke-workdir", str(workdir),
         "--smoke-arm-json", str(result_path),
+        "--mixed-reference-dataset-id", str(args.mixed_reference_dataset_id),
+        "--mixed-reference-free-dataset-id", str(args.mixed_reference_free_dataset_id),
+        "--mixed-items", str(args.mixed_items),
+        "--mixed-base-resolution", str(args.mixed_base_resolution),
     ]
     if lora_path is not None:
         cmd.extend(("--smoke-lora-path", str(lora_path)))
@@ -957,6 +1412,14 @@ def run_trainer_exit_smoke(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def run_mixed_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova mixed smoke requires CUDA")
+    with tempfile.TemporaryDirectory(prefix="sensenova_phase3_mixed_smoke_") as raw_workdir:
+        workdir = Path(raw_workdir)
+        return _run_exit_smoke_subprocess(args, "mixed", workdir)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
@@ -994,20 +1457,42 @@ def _parse_args() -> argparse.Namespace:
         "--smoke-cfg-norm",
         default=None,
     )
+    parser.add_argument(
+        "--mixed-smoke",
+        action="store_true",
+        help="Opt-in Phase 3 mixed reference / reference-free run (CUDA, real datasets).",
+    )
+    parser.add_argument(
+        "--mixed-reference-dataset-id", type=int, default=MIXED_REFERENCE_DATASET_ID
+    )
+    parser.add_argument(
+        "--mixed-reference-free-dataset-id",
+        type=int,
+        default=MIXED_REFERENCE_FREE_DATASET_ID,
+    )
+    parser.add_argument("--mixed-items", type=int, default=1)
+    parser.add_argument("--mixed-base-resolution", type=int, default=EXIT_SMOKE_WIDTH)
     parser.add_argument("--smoke-timeout-s", type=float, default=3600.0)
     parser.add_argument("--smoke-json-out", default=None)
-    parser.add_argument("--smoke-arm", choices=("trainer", "runtime"), default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-arm", choices=("trainer", "runtime", "mixed"), default=None, help=argparse.SUPPRESS)
     parser.add_argument("--smoke-workdir", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--smoke-arm-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--smoke-lora-path", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if not args.trainer_exit_smoke and args.smoke_arm is None and args.checkpointing is None:
-        parser.error("--checkpointing is required unless --trainer-exit-smoke is selected")
+    if (
+        not args.trainer_exit_smoke
+        and not args.mixed_smoke
+        and args.smoke_arm is None
+        and args.checkpointing is None
+    ):
+        parser.error(
+            "--checkpointing is required unless --trainer-exit-smoke or --mixed-smoke is selected"
+        )
     if args.smoke_arm is not None and (args.smoke_workdir is None or args.smoke_arm_json is None):
         parser.error("internal smoke arm requires --smoke-workdir and --smoke-arm-json")
     if args.smoke_arm == "runtime" and args.smoke_lora_path is None:
         parser.error("internal runtime smoke arm requires --smoke-lora-path")
-    if (args.trainer_exit_smoke or args.smoke_arm is not None) and any(
+    if (args.trainer_exit_smoke or args.mixed_smoke or args.smoke_arm is not None) and any(
         value is None
         for value in (args.smoke_cfg_scale, args.smoke_timestep_shift, args.smoke_cfg_norm)
     ):
@@ -1050,7 +1535,15 @@ def main() -> int:
         _write_smoke_arm_result(args, result)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    if args.trainer_exit_smoke:
+    if args.smoke_arm == "mixed":
+        result = _run_mixed_smoke_arm(args)
+        _write_smoke_arm_result(args, result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.mixed_smoke:
+        result = run_mixed_smoke(args)
+        _write_public_smoke_result(args, result)
+    elif args.trainer_exit_smoke:
         result = run_trainer_exit_smoke(args)
         _write_public_smoke_result(args, result)
     else:

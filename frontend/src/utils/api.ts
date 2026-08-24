@@ -1849,12 +1849,6 @@ export const trainingFeatureUnsupportedReason = (
   return entry.reason;
 };
 
-// The user-facing spelling of an architecture id, falling back to the id.
-export const archDisplayName = (
-  caps: ArchCapabilities | null | undefined,
-  arch: string
-): string => caps?.arch_display_names?.[arch] ?? arch;
-
 // The reason `method` is refused for `arch`, or undefined when it is offered.
 // Used to disable a training-method control AND to title it with the backend's
 // own wording rather than a second copy of it in the UI.
@@ -2919,8 +2913,20 @@ const ARCH_DISPLAY_NAMES: Record<string, string> = {
   minimax_music3: "MiniMax Music 3",
 };
 
-export const archDisplayName = (arch: string | null | undefined): string =>
-  (arch && ARCH_DISPLAY_NAMES[arch]) || arch || "";
+export function archDisplayName(arch: string | null | undefined): string;
+export function archDisplayName(
+  caps: ArchCapabilities | null | undefined,
+  arch: string
+): string;
+export function archDisplayName(
+  capsOrArch: ArchCapabilities | string | null | undefined,
+  arch?: string
+): string {
+  if (typeof capsOrArch !== "string") {
+    return (arch && capsOrArch?.arch_display_names?.[arch]) || arch || "";
+  }
+  return ARCH_DISPLAY_NAMES[capsOrArch] || capsOrArch;
+}
 
 // True when `arch` honors `feature`. An unknown arch, or capabilities that have
 // not loaded yet, are treated as SUPPORTING the feature — the same convention as

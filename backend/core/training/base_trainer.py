@@ -3796,6 +3796,49 @@ class BaseTrainer(ABC):
               f"path (blocks_to_swap=0 and num_optimizer_groups=0); to silence this, set "
               f"max_grad_norm=0.")
 
+    def _warn_gradient_accumulation_ignored_under_fused(
+        self,
+        gradient_accumulation_steps: int,
+        batch_size: int,
+        multi_noise_timesteps: int = 1,
+    ) -> None:
+        """Say once, before the run starts, that accumulation does not happen here.
+
+        Accumulating means holding every parameter's summed gradient until the end
+        of the window; the fused paths exist precisely to never have all gradients
+        resident at once, and free each one as its update is applied. So the window
+        cannot span backward passes: each backward becomes its own optimizer step.
+        The setting is left as the user wrote it and nothing is refused -- the
+        effective batch is just reported as what it will actually be.
+        """
+        accum = int(gradient_accumulation_steps or 1)
+        if accum <= 1:
+            return
+        if not fused_backward_active(self):
+            return
+        if getattr(self, "_fused_accum_warned", False):
+            return
+        self._fused_accum_warned = True
+        mode = ("fused optimizer groups" if self.fused_optimizer_groups is not None
+                else "the fused backward pass")
+        mnt = max(1, int(multi_noise_timesteps or 1))
+        intended = batch_size * accum // mnt
+        print(f"{self.log_prefix} WARNING: gradient_accumulation_steps={accum} is IGNORED under "
+              f"{mode}. Its hooks apply each parameter's update and free that gradient as soon "
+              f"as it exists, so no gradient survives to be summed across backward passes. "
+              f"Every backward pass becomes its own optimizer step: the optimizer steps {accum}x "
+              f"more often than the reported step count, each step seeing ONE batch of "
+              f"{batch_size} -- not the effective batch of {intended} that "
+              f"batch_size x gradient_accumulation_steps"
+              f"{' / multi_noise_timesteps' if mnt > 1 else ''} implies. "
+              f"Each of those steps also sees the loss divided by {accum}, which for an "
+              f"adaptive optimizer (AdamW/Lion/Adafactor) barely shrinks the update, so the run "
+              f"moves further per reported step than a non-fused run would, on noisier gradients. "
+              f"The LR schedule still advances once per {accum} backward passes. "
+              f"To actually accumulate, disable the fused path (blocks_to_swap=0 and "
+              f"num_optimizer_groups=0); to silence this, set gradient_accumulation_steps=1, "
+              f"which is what this run is doing.")
+
     def _setup_fused_backward_pass(self, optimizer_type: str):
         """
         Setup fused backward pass for Block Swap compatibility.
@@ -3998,7 +4041,10 @@ class BaseTrainer(ABC):
         # Create FusedOptimizerGroups instance
         self.fused_optimizer_groups = FusedOptimizerGroups(
             optimizers=optimizers,
-            max_grad_norm=0.0  # Gradient clipping handled by hook
+            # No clipping: the hook's clip is per parameter, which is not the
+            # global-norm clip max_grad_norm names. _warn_grad_clipping_ignored_
+            # under_fused says so once when max_grad_norm > 0.
+            max_grad_norm=0.0,
         )
 
         # Register hooks
@@ -8654,6 +8700,13 @@ class BaseTrainer(ABC):
             optimizer_type=optimizer_type,
             lr_scheduler_type=lr_scheduler_type,
             total_steps=actual_total_steps,
+        )
+
+        # Whether a fused path is active is only known once the optimizer exists;
+        # say what it does to the accumulation window here, before any batch runs,
+        # rather than at the first step of a run that may go for hours.
+        self._warn_gradient_accumulation_ignored_under_fused(
+            gradient_accumulation_steps, batch_size, multi_noise_timesteps
         )
 
         # Resolution curriculum phase-0 setup: seed the original-size map (so a later

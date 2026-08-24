@@ -1,6 +1,7 @@
 # SenseNova U1.5 学習設計案
 
-> Status: Phase 0 / Phase 1 / Phase 3 は完了。Phase 2b と Phase U は未完。
+> Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
+> Phase 2b と Phase U-2 / U-3 は未完。
 > Date: 2026-08-24
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -97,7 +98,8 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
 | full FT（Phase 2b） | 律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4） | PENDING |
-| understanding branch の学習 | ユーザー選択式（既定 OFF）で LoRA / Full-FT の対象にする機能要求。Phase 1 のみに依存する独立フェーズとして §13 に分離 | PENDING |
+| understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
+| understanding branch の Full-FT / reference 併用（U-2 / U-3） | §13.4 | PENDING |
 
 ---
 
@@ -1605,32 +1607,46 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 3. **dequant 起点 full FT の学習品質影響。** 上記のとおり**測定不能な構造**である
    （比較 arm が存在しうる状況と、経路が必要になる状況が排他）。
 
-Phase U（§13）関連。**いずれも構造からの推論であって実測ではない**:
+Phase U（§13）関連。
 
-4. **非 reentrant checkpoint の closure 捕捉 cache テンソルへの勾配伝播が、この vendor
-   経路で実際に und grad を届けるか。** 構造上は成立するが本 repo での実測はゼロ。
-   **U-0 の中心項目**（§13.1）。
-5. **prefix 非 checkpoint 時の und dequant 実体化 ~15.1 GiB。** 構造上の見積もりで
-   未実測（§13.2）。U-0 の GC OFF arm で観測する。
-6. **推論側 `mot_phase_eviction` × und LoRA wrapper の weight 移動整合。** 未検証。
-   検証するか拒否するかを U-1 で決める（§13.3）。
+**U-0 / U-1 で解決したもの**（`3d837202`..`327276df`。**構造的推論が実測に置き換わった**）:
+
+4. ~~**非 reentrant checkpoint の closure 捕捉 cache テンソルへの勾配伝播が、この
+   vendor 経路で実際に und grad を届けるか。**~~ **解決: 届く。** und LoRA
+   **289 個が有限かつ非ゼロ**（§13.5）。同時に**残り 5 個は構造的に到達不能**である
+   ことも判明し、`und_gradient_unreachable_paths()` が名前で予測する（§13.3）。
+5. ~~**prefix 非 checkpoint 時の und dequant 実体化 ~15.1 GiB。**~~ **解決: 当たって
+   いた。** 解析値 **15.093 GiB**（設計値と 3 桁一致）+ 実測の傾き 66 MB/層 →
+   全深度外挿 **17.65 GiB**、model resident 込みで 35.2 GiB（§13.2、§13.5）。
+6. **推論側 `mot_phase_eviction` × und LoRA wrapper の weight 移動整合。**
+   **一部解決。** CPU テストで、evictor が und wrapper の
+   `lora_down` / `lora_up` / `original_module` を **und 側に分類**し、4 相を一巡させても
+   出力が不変であることを確認した（§13.3）。**残るのは実 H2D / D2H 転送と pinning の
+   挙動**で、これは CPU テストでは踏めない。
+
+**残るもの**:
+
 7. **und LoRA が reference 忠実度・プロンプト追従を実際に改善するか。** 未測定。
-   **提供するのは選択肢であって効果の主張ではない**（§13）。
+   **U-0 / U-1 は「勾配が届き、壊れていない」ことしか示していない。**
+   提供するのは選択肢であって効果の主張ではない（§13）。
 8. **旧ビルドが新形式（gen+und）LoRA を無警告で部分適用するバージョン skew。**
-   新ビルド側は metadata で検知できるが逆方向は防げない（§13.3）。
+   新ビルド側は `check_lora_application` の metadata 突き合わせで検知できるように
+   なったが、**逆方向（旧ビルドが新ファイルを読む）は依然として防げない**（§13.3）。
 9. **und forward 2 回のコストと weight 往復コスト**（4 相分割）。未測定。
    `probes/text_encode_vs_step.py` の sensenova アームで prefix / step 比を測る
    （§8.3.2、U-2-4）。
+10. **勾配ノルムの大小関係。** U-0 と U-1 で順序が逆転したが、**測定条件が異なるので
+    どちらも一般的主張にならない**（§13.6 の訂正表）。設計判断の根拠に使わないこと。
 
 Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6 で消化する**:
 
-10. **G-RB1 — state 往復 64.8 GB/step（Lion 32.4 GB）が backward に隠れるか。**
+11. **G-RB1 — state 往復 64.8 GB/step（Lion 32.4 GB）が backward に隠れるか。**
     現実装は計算 stream 上の on-demand 転送で専用 stream も prefetch も無いため
     **隠れず直列加算になる**というのが実装から言える上限側の事実だが、
     upgrade 後にどうなるかは未測定。
-11. **G-RB2 — pinned host RAM（upgrade 後 32.4 GB、4 相 eviction 併用で ~50 GB 級）が
+12. **G-RB2 — pinned host RAM（upgrade 後 32.4 GB、4 相 eviction 併用で ~50 GB 級）が
     実行ホストに載るか。** 搭載 RAM 依存で、構造値のみ。
-12. **G-RB3 — サイレント CPU-skip の不在。** `if not param.is_cuda: return`
+13. **G-RB3 — サイレント CPU-skip の不在。** `if not param.is_cuda: return`
     （`adamw8bit_ringbuffer.py:1082`）が 4 相 eviction と順序衝突しないことは未検証。
 
 **なお「Ring Buffer optimizer の CPU state が現状どの学習経路からも有効化されない」は
@@ -1647,7 +1663,7 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
 
 ---
 
-## 13. Phase U — understanding branch の学習（新規、PENDING）
+## 13. Phase U — understanding branch の学習（U-0 / U-1 DONE、U-2 / U-3 PENDING）
 
 **要求**: understanding branch も微調整の対象にするかどうかを、SDXL の TE / U-Net や
 他 arch の TE / DiT と同様に**ユーザーが選択できるようにする**（LoRA / Full-FT の
@@ -1663,12 +1679,18 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
 **Phase 2b / Phase 3 には折り込まない。** U-1 の依存は Phase 1 のみで、PENDING の
 2b / 3 に混ぜると偽の依存が生まれる。
 
-### 13.1 微分可能経路は「新規構築」ではなく「解錠」である
+**実装状況（2026-08-24）**: **U-0（`3d837202`）と U-1（`e811e461` 本体、
+`327276df` 実機 exit smoke）は DONE。** U-2（und Full-FT）と U-3（und × reference）は
+PENDING。実測は §13.5 / §13.6 に置く。**効果は依然として何も測っていない** —
+und LoRA が品質・忠実度・プロンプト追従を改善するかは未測定である（§12）。
+
+### 13.1 微分可能経路は「新規構築」ではなく「解錠」である（U-0 で実証済み）
 
 §5.2 根拠 1 は und 学習を「微分可能な KV パイプラインの構築」と評価したが、
 **und LoRA についてはこれが過大評価だった。** Phase 1 が自分のために作った機構が、
-偶然 und 勾配互換の構造を備えている。**以下はコードから読める構造的事実であり、
-勾配が実際に届くことの実証（probe）はまだ無い**（§12、U-0 の中心項目）。
+偶然 und 勾配互換の構造を備えている。以下はコードから読める構造的事実で、
+**U-0 が実 checkpoint 上で実証した**（§13.5。当初この節は「実証はまだ無い」と
+書いていた）。
 
 - **prefix forward の cache 書き込みは非破壊。** `DynamicLayer.update` は
   `self.keys = torch.cat([self.keys, key_states], dim=-2)` と**再束縛**する
@@ -1683,17 +1705,33 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
 
 真にサブシステム級なのは次の 3 つだけである: **(a) prefix pass 専用の checkpoint
 loop**（§13.2）、**(b) 推論側の und target 列挙と適用**（§13.3）、
-**(c) MNT 再計算・assert 分割・eviction 配線**（§13.3）。
+**(c) MNT 再計算・assert 分割・eviction 配線**（§13.3）。**この 3 分類は正しかった** —
+U-1 の実装量はほぼこの 3 つに収まった。
+
+**ただし 4 つ目があった（U-0 が実行して初めて判明）**: `LoRALinearLayer` は
+**fp32 の adapter を保持し、周囲の ambient autocast に依存する**。`train_step` は
+generation pass 用に autocast を張っているが、`encode_prompt` は張っていなかったため、
+**und LoRA の最初の prefix pass が layer 0 で dtype 不一致を起こして落ちた**。
+U-1 は prefix を autocast で包むことで解決した（`_build_trainable_prefix`）。
+コードを読むだけでは出てこなかった項目であり、U-0 を「実行する」probe にした価値が
+ここに出た。
 
 ### 13.2 (a) prefix 専用 checkpoint loop が前提実装である理由
 
 **prefix を非 checkpoint で勾配付きに回すと VRAM が破綻する。** und 側 294 個の
 `Int8Linear` がそれぞれ backward 用に dequant 済み bf16 weight を autograd に保存し、
 layer 1 以降は hidden が `requires_grad` なので **294 個すべてが該当して約 15.1 GiB が
-同時実体化する**。text prefix の活性そのものより支配的である。
-**これは構造上の見積もりであって実測ではない**（§12）。機構は §5.3 の
+同時実体化する**。text prefix の活性そのものより支配的である。機構は §5.3 の
 `warn_quantized_base_without_checkpointing` および `INT8_W8A8_TRAINING_GATE.md` の
 G4 実測と同一である。
+
+> **【U-0 実測、2026-08-24】この見積もりは当たっていた（当初は「構造上の見積もりで
+> あって実測ではない」と書いていた）。** 294 target の dequant weight 保持は解析値
+> **15.093 GiB** で、設計時の 15.1 GiB と**3 桁一致**する。さらに実測の per-layer の
+> 傾きが **66 MB/層** の活性を上乗せし、全深度に外挿すると **17.65 GiB**。
+> model resident と合わせると **35.2 GiB** で probe の上限を超える。
+> GC OFF の arm は設計どおり 8 層で直線的に伸びたところで上限に当たって中断した。
+> **したがって prefix checkpoint は「推奨」ではなく前提実装である。**
 
 **gen 側の流儀をそのまま流用できない**理由が 2 つある。
 
@@ -1710,6 +1748,15 @@ G4 実測と同一である。
 **parity gate（必須）**: no-grad モードで、学習 prefix loop と vendor
 `_t2i_prefix_forward` の cache K/V が **bitwise 一致**すること。
 
+**実装（`3d837202`）**: 設計どおり vendor に `return_kv` を足した。**keyword-only で
+既定 OFF** なので既存の呼び出し側は 2-tuple のまま変わらない。attention 版が
+`(attn_output, attn_weights, key_states, value_states)`、decoder-layer 版が
+`(hidden_states, key_states, value_states)` を返す。**gen branch では
+`NotImplementedError` を送出する** — gen は既存の prefix を読む側で prefix を生成
+しないので、推測で通すより落とす方が正しい。学習側の prefix cache は
+`_TrainingPrefixLayer` として **checkpoint の「出力」から**組み立て、cache 書き込みは
+経由しない。**parity gate は PASS**（§13.5）。
+
 ### 13.3 (b)(c) 推論側と学習側の配線
 
 #### 推論側は und キーを無警告で捨てる（実害あり）
@@ -1722,19 +1769,34 @@ G4 実測と同一である。
 **applied カウントが減るだけでエラーは出ない。** 対応せずに und LoRA を出荷すると
 「学習はできるが黙って部分適用される LoRA」を生産する。
 
-必要な対応:
+必要な対応（**すべて `e811e461` で実装済み**）:
 
 - `iter_sensenova_lora_targets` に `branch: "gen" | "und" | "both"` を追加する。
   **学習と推論が同じ列挙器を使うこと**（新しい列挙器を作らない。これは §5.4 で
   記録済みの「リゾルバを増やさない」規律と同型）。
+  → **DONE。** 列挙器は「これが唯一の target 列挙器である」と docstring で宣言し、
+  学習 adapter・推論の apply / restore・U-0 probe がすべてこれを駆動する。
+  **probe が持っていた私的コピーは削除した**（drift させないため）。
 - **applied カウントの検証**（grouped の件数と applied の件数の突き合わせ）。
+  → **DONE。** `check_lora_application()` が 2 つの独立した検査を行う: ファイルが
+  持つ全 module が live module に到達したか、および metadata の `lora_targets` が
+  宣言する scope と module 数が一致するか（後者が「gen+und の checkpoint を
+  gen しか知らないビルドが読んだ」場合を捕まえる）。不足は
+  `add_warning(code="sensenova_lora_partially_applied")` で生成レスポンスにも出る。
+  **`apply_lora_group` の既定は `branch="both"` になった。**
 - **format sniff の硬化**: `load_lora_safetensors` の `looks_like_keys` は
-  `"mot_gen" in k` を見る（`:141`）ので、gen+und ファイルは通るが und のみのファイルは
-  `unknown` に落ちる。
-- `smoke.py` に und ケースを追加。
+  `"mot_gen" in k` を見るので、gen+und ファイルは通るが und のみのファイルは
+  `unknown` に落ちる。→ `understanding-only` は恒久非提供なので実害は無い（下記）。
+- `smoke.py` に und ケースを追加。→ **DONE**（`sensenova_und_lora_smoke_test.py`）。
 - **推論側 `mot_phase_eviction` × und LoRA wrapper の weight 移動整合を検証するか、
-  拒否する。** 未検証のまま出荷すると eviction ON の生成で device mismatch になる
-  （§12）。
+  拒否する。** 未検証のまま出荷すると eviction ON の生成で device mismatch になる。
+  → **CPU テストで検証済み、ただし限界あり。** evictor は LoRA 適用**後**に構築され、
+  分類は module path で行う。und wrapper の `lora_down` / `lora_up` / `original_module`
+  は `_mot_gen` を含まないので **und 側に分類され、実際にそれを呼ぶ half と一緒に
+  動く**（prefix では常駐、denoise では CPU へ退避 — denoise で und branch は
+  そもそも到達しない）。テストは 4 相を一巡させて出力が不変であることまで確認する。
+  **カバーできていないのは実 H2D / D2H 転送と pinning の挙動**であり、この部分は
+  §12 に残す。
 
 #### `_assert_immutable_prefix_cache` は分離する（外すのではない）
 
@@ -1749,6 +1811,13 @@ G4 実測と同一である。
   `no_grad` で作られ、loss は正常に下がるが und は 1mm も学習されない」という
   §6.1 と同型のサイレント故障**を再生産する。
 
+**実装（`e811e461`）**: 設計どおり 3 つに分けた —
+`_assert_prefix_cache_structure`（無条件）、`_assert_prefix_cache_detached`（凍結時）、
+`_assert_prefix_cache_differentiable`（学習時、positive）。後者の例外文は
+「loss would fall normally and the understanding LoRA would never be trained」と
+故障の形まで書いてある。**実機で実際に発火していることも確認済み** — 3-step arm で
+9 回、MNT arm で 12 回呼ばれ、census は毎回 `(42, 42, 42)` だった（§13.6）。
+
 #### その他の配線
 
 - **MNT > 1 では `retain_graph` を使わない。** MNT ループは iteration ごとに
@@ -1756,12 +1825,26 @@ G4 実測と同一である。
   勾配になる。**per-iteration で prefix を再計算する。** 前例は
   `need_recompute_text_embeddings`（TE trainable かつ MNT>1 なら re-encode。
   `base_trainer.py:11086-11090`）。
+  → **DONE。** `_sensenova_mnt_conditioning` が `mnt_index` と captions を受け取り、
+  `train_text_encoder` が真かつ `mnt_index > 0` のときだけ prefix を再構築する
+  （凍結時は従来どおり同じ detached prefix を使い回す）。実機で
+  **2 batch × 2 MNT = 4 回の prefix build、freed-graph エラー無し**を確認（§13.6）。
 - **dropout guard**: `attention_dropout` の既定は 0.0（upstream `Qwen3Config`）だが、
   `dropout=0.0 if not self.training else self.attention_dropout`
   （`vendor/modeling_qwen3.py:583`）の分岐は `transformer.train()` が stamp される
   学習経路で**生きている**。**und 学習経路の有効化時に `attention_dropout != 0` を
   fail-closed で拒否する**（将来の非ゼロ config で再計算が確率的になるのを黙って
   通さないため）。
+  → **DONE**（`assert_understanding_training_supported`）。理由も
+  「checkpoint された prefix の**再計算**が確率的になり、recompute した K/V が
+  forward の K/V と静かに食い違う」と明記されている。既定 0.0 なので今日存在する
+  構成は何も拒否しない。
+- **eviction との併用は contract で拒否する（自動無効化ではない）。**
+  `train_text_encoder` と `sensenova_mot_phase_eviction` の同時指定は
+  `train_runner` が `ValueError` にする。**どちらも opt-in なので、片方を黙って
+  落とすとユーザーが設定した契約（VRAM 予算か、学習対象か）を破る**からである。
+  メッセージは「**これはこの実装形のスコープ制限であって原理的な非互換ではない**」と
+  明言し、4 相分割（§8.3.2、U-2-4）を参照先として指す。
 
 #### und 側 target の命名
 
@@ -1770,6 +1853,18 @@ und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP 
 なお **gen 側の命名は非対称**（attn は Linear 名 `q_proj_mot_gen` を `self_attn` の
 下に、MLP は親名 `mlp_mot_gen` を使う。`sensenova_lora.py:154-155`, `:203-215`）だが、
 **und 側は attn / MLP ともに素の名前**であり、非対称なのは gen 側だけである。
+実装ではこの差を `_BRANCH_LAYOUT`（branch → attn 属性名・MLP 親名・MLP 属性名）に
+畳んであり、列挙ループ自体は 1 本である。
+
+#### und は 289 ではなく 294 を維持する
+
+U-0 が「5 個には構造的に勾配が届かない」ことを実測したが（§13.5）、**列挙は 294 の
+まま**にした。理由は gen 側との対称性で、checkpoint は 588 × 3 = **1764 tensors** に
+なる。届かない 5 個は `lora_up` のゼロ初期化のまま残り、推論時に何も寄与しない。
+その代わり **`und_gradient_unreachable_paths()` が 5 個を名前で予測する**ので、
+census は「294 個すべてが動いた」ではなく「**294 個中 289 個が到達、残り 5 個は
+この名前**」と書ける。「全部動いたはず」と書いた assert は**まさにこの 5 個で落ちる**
+のが正しい挙動である。
 
 #### パラメータ・LR・checkpoint
 
@@ -1777,6 +1872,10 @@ und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP 
   `text_encoder_1_lr`、fallback は `text_encoder_lr` → `unet_lr` の連鎖で、
   SDXL LoRA と同じ（`sdxl_adapter.py:387`）。und が vision も兼ねる件は param ではなく
   **capability reason と UI 説明文**で扱う。
+  → **DONE。** adapter は und half を `LORA_COMPONENT_TEXT_ENCODER_1` として登録する
+  （`unet` ではなく）ので、LR チェーンにも grad-norm の集計単位にも自然に乗る。
+  実機の optimizer group は `[{lr: 1e-4, 588 params}, {lr: 5e-5, 588 params}]` で、
+  **und が実際に `text_encoder_1_lr` チェーンを通っている証拠**になっている（§13.6）。
 - **checkpoint は gen + und を 1 ファイル。** `neo_hf_lora` の verbatim path 形式は
   und パスをそのまま収容できる。metadata は
   `lora_targets: "generation+understanding"`、tensor 数は **1764**
@@ -1792,22 +1891,25 @@ und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP 
 `TRAINING_FEATURE_UNSUPPORTED["sensenova"]["text_encoder_training"]` は**削除ではなく
 スコープ化**する: `methods=["full_finetune"]`。これは zimage の逆向きの同型である
 （zimage は `methods=["lora", "relora"]` で「LoRA では TE を学習しないが full FT は
-する」を宣言している。`arch_capabilities.py:897-901`）。U-2 が着地したらこの entry
-自体を落とす。
+する」を宣言している）。U-2 が着地したらこの entry 自体を落とす。
+→ **DONE**（`e811e461`）。コメントに「SenseNova is Z-Image's mirror image」と書いて
+両者を相互参照させてある。
 
 ### 13.4 フェーズ分割と exit criteria
 
-- **U-0 — 前提 probe。** exit: (1) 学習 prefix loop と vendor `_t2i_prefix_forward` の
-  K/V が **bitwise 一致**（no-grad モード）、(2) 588 LoRA の grad が finite かつ
-  **und 294 が nonzero**（= §13.1 の closure 勾配伝播の実証。ここが本フェーズの中心）、
-  (3) prefix GC ON / OFF の loss・grad parity、(4) **GC OFF arm で ~15.1 GiB の
-  dequant 実体化を数値として観測**（§13.2 の見積もりの検証）。
-- **U-1 — und LoRA 本体（text-only）。** exit: 3-step smoke で有限 loss、
-  1764 tensors、**fresh runtime で 588 適用・588 復元、strength 0 が base と
-  `torch.equal`、strength 1 が base と異なること**（後者が無いと §13.3 のサイレント
-  部分適用を検出できない）、`train_text_encoder=false` の loss・grad SHA-256 が現行
-  実装と一致すること（**回帰していないことの証明**）、MNT>1 smoke、
-  既存の蒸留 LoRA の推論ロード回帰。
+- **U-0 — 前提 probe（DONE、`3d837202`）。** exit: (1) 学習 prefix loop と vendor
+  `_t2i_prefix_forward` の K/V が **bitwise 一致**（no-grad モード）、
+  (2) 588 LoRA の grad が finite かつ **und 294 が nonzero**（= §13.1 の closure
+  勾配伝播の実証。ここが本フェーズの中心）、(3) prefix GC ON / OFF の loss・grad
+  parity、(4) **GC OFF arm で ~15.1 GiB の dequant 実体化を数値として観測**
+  （§13.2 の見積もりの検証）。→ **全項目 PASS。ただし (2) は 294 ではなく 289 で、
+  残り 5 個は構造的に到達不能であることが判明した**（§13.5）。
+- **U-1 — und LoRA 本体（text-only）（DONE、`e811e461` + `327276df`）。** exit:
+  3-step smoke で有限 loss、1764 tensors、**fresh runtime で 588 適用・588 復元、
+  strength 0 が base と `torch.equal`、strength 1 が base と異なること**（後者が
+  無いと §13.3 のサイレント部分適用を検出できない）、`train_text_encoder=false` の
+  loss・grad SHA-256 が現行実装と一致すること（**回帰していないことの証明**）、
+  MNT>1 smoke、既存の蒸留 LoRA の推論ロード回帰。→ **5 項目すべて PASS**（§13.6）。
 - **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版。U-2-2: fused backward の
   gate 解錠 + EMA 拒否 + **effective batch = 1** の contract（§6.2 改訂の条件 1-4）。
   **許可 optimizer は Adafactor と Ring Buffer 系（`adamw8bit_ringbuffer` /
@@ -1831,6 +1933,71 @@ und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP 
 **追加機構ゼロで reference 条件付け経路も学習される**。これは §7.3 が保留していた
 和解経路の実体化にあたる（§7.3 と矛盾しない — 既定 OFF である限り §7.2 判断 3 も
 生きている）。
+
+### 13.5 U-0 実測（2026-08-24: PASS、`3d837202`）
+
+実 checkpoint 上での測定である。**以下はすべて実測値。**
+
+- **K/V parity: 42/42 層 bitwise 一致。** 学習 prefix loop と vendor
+  `_t2i_prefix_forward` を比較。checkpoint あり / なし / autocast 下の **3 モード
+  すべて**で一致した。これは同時に「既定経路が変わっていない」ことの証拠でもある。
+- **勾配伝播: und LoRA 289 個が有限かつ非ゼロ。** 実際の flow-matching loss からの
+  1 回の backward で到達する。**§13.1 の構造的推論が実証された。**
+- **到達しない 5 個は構造であって欠陥ではない**:
+  `layers.41.self_attn.q_proj` / `.o_proj` と `layers.41.mlp.{gate,up,down}_proj`。
+  prefix は `past_key_values` を残して `last_hidden_state` を捨てるので、**最終層の
+  attention 以降が何も生まない**。同じ層の `k_proj` / `v_proj` は**学習される** —
+  generation 側の layer 41 がその K/V を消費するからである。**推論もまったく同じ
+  テンソルを捨てる**ので、これはモデルの形である。
+- **prefix checkpoint は前提実装**（§13.2 の実測ボックス参照）。解析値 15.093 GiB、
+  実測の傾き 66 MB/層、全深度外挿 17.65 GiB、model resident 込みで 35.2 GiB。
+- **`LoRALinearLayer` の fp32 adapter は ambient autocast に依存する**（§13.1 の
+  「4 つ目」）。`encode_prompt` に autocast が無く、最初の und-LoRA prefix pass が
+  layer 0 で dtype 不一致を起こした。autocast を張り直しても parity は不変である
+  ことも確認した。
+
+### 13.6 U-1 実機 exit smoke（2026-08-24: PASS、`327276df`）
+
+17.6 GiB の plain-int8 checkpoint に対し、**5 アームをそれぞれ独立プロセス**で、
+Phase 1 probe と同じ per-process VRAM ゲート下で実行した。**以下はすべて実測値。**
+
+| arm | 結果 |
+|---|---|
+| 3-step trainer | loss `[0.41467, 0.37538, 0.52401]`、保存 **1764 tensors / 588 targets**、metadata `lora_targets=generation+understanding`、optimizer group `[{lr 1e-4, 588}, {lr 5e-5, 588}]` |
+| fresh runtime | **588 適用 / 588 復元**、**strength 0 が base と `torch.equal`**、strength 1 は max abs delta **0.015625** |
+| `train_text_encoder=false` 回帰 | `3d837202` に対し 3 loss・6 grad digest・parameter hash・保存 tensor hash が一致、**peak allocated がバイト単位で同一（19,424,865,792 B）** |
+| MNT>1 | prefix build **4 回**（2 batch × 2 MNT）、freed-graph エラー無し、各 step で und nonzero = **289** |
+| 既存 gen-only 蒸留 LoRA | **294/294 適用・復元**、strength 0 parity |
+
+- **strength 0 と strength 1 の対**が要点である。**片方だけでは意味が無い** —
+  strength 0 の一致は「壊していない」ことしか言わず、**strength 1 の差分が
+  「ロードしても何も起きない LoRA」ではないことを示す**。これは §13.3 の推論側
+  列挙器修正が防いでいる故障そのものである。
+- **列挙器を広げても既存フォーマットのコストはゼロ**: 蒸留 LoRA は both-branch 列挙
+  下でも 294/294 に到達する（適用は lookup 駆動なので und スロットが空振りするだけ）。
+- **positive assertion が実際に発火している**: 3-step arm で 9 回、MNT arm で 12 回、
+  census は毎回 `(42, 42, 42)`。
+- **autocast wrapper は装飾ではない**: 外す破壊実験を 1 回だけ行い、U-0 と同じ
+  dtype エラー（`BFloat16 != float`）が再現することを確認した。
+- **到達しない 5 個は U-0 が名指ししたとおりに現れた**（全 step で `.grad` が
+  ゼロではなく `None`、adapter はゼロ初期化のままファイルに残る）。したがって census は
+  **294 個中 289 個到達**であり、「294 個すべてが動いた」と主張する assert は
+  運が悪いのではなく**誤り**である。
+- **VRAM**: 全アーム 64×64 で最大 **18.57 GiB**（hard gate 34.55 GiB の 53.7%）。
+
+#### 勾配ノルムの大小は主張しない（U-0 コミットメッセージの訂正）
+
+`3d837202` のコミットメッセージは「und の勾配ノルムは gen より大きい」と書いたが、
+**これは一般には成り立たないので訂正する。**
+
+| 測定 | 条件 | 結果 |
+|---|---|---|
+| U-0 | **合成 x0**（一様乱数）+ **固定 `t=0.5`** | und 3.410e-2 > gen 3.094e-2 |
+| U-1 exit smoke | **実画像** + **sampler が引いた timestep** | gen 0.0046 / 0.0204 / 0.0408 > und 0.0030 / 0.0178 / 0.0179 |
+
+**2 つは同一条件の比較ではないので、どちらの順序も一般的主張にはならない。**
+どちらが大きいかを設計判断の根拠に使わないこと。この訂正は `327276df` の
+コミットメッセージにも記録してある。
 
 ---
 

@@ -2,8 +2,9 @@
 
 > Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
 > Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 が `cc296e84`、
-> U-2-2 の step 1-2 が `601d0271` で着地。**full FT の受付は依然閉じており、
-> 開ける前に U-2-3 と §6.4 の checkpoint format 決定が要る** — §13.4 の警告ボックス）。
+> U-2-2 の step 1-2 が `601d0271`、U-2-3 が `24220b5c` で着地。**full FT の受付は
+> 依然閉じており、開ける前に §6.4 の checkpoint format 決定と、ユーザーに届く
+> 通知経路が要る** — §13.4 の警告ボックス）。
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -32,8 +33,9 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    both は閉じていない）。前提条件は「bf16 base の入手」ではなく「配線の実装」で
    （§6.4）、その最初の一片 — int8 base を materialize する経路 (a) — は
    **`cc296e84` で、materialize した half を collect する adapter と契約は
-   `601d0271` で着地した。ただし受付はまだ開いていない**（残るのは
-   出力 checkpoint format の決定と U-2-3。§13.4 U-2-2）。
+   `601d0271` で、U-2-3（stochastic rounding + dropout guard）は `24220b5c` で
+   着地した。ただし受付はまだ開いていない**（残るのは出力 checkpoint format の
+   決定と、ユーザーに届く通知経路。§13.4 U-2-2）。
 3. **Phase 3（reference 混在）は per-item presence を真とする。**（**DONE**、
    `7a09af52`..`611a4a24`。以下の判断はすべてそのまま実装された。）初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
@@ -105,7 +107,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
-| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）と adapter + 契約 + fused backward の decoupling（`601d0271`）は着地。**残るのは出力 checkpoint format の決定と受付の解錠**で、その前に U-2-3 が要る（§6.4、§13.4 U-2-2） | PENDING |
+| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。**残るのは出力 checkpoint format の決定と受付の解錠**で、その前にユーザーに届く通知経路が要る（§6.4、§13.4 U-2-2） | PENDING |
 | understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
 | understanding branch の Full-FT / reference 併用（U-2 / U-3） | §13.4 | PENDING |
 
@@ -636,7 +638,8 @@ SenseNova への含意:
     期待値に到達する。**`torch.optim.AdamW` だけは SR でも救えない**（per-parameter
     seam が無い）。合成パラメータと厳密既知の勾配による測定で、モデルは載せていない。
     上の推奨 (1)(2) はこれで実測の裏付けを得た。
-- **【`601d0271`】推奨 (1) は実装された。推奨 (2) はされていない。**
+- **【`601d0271` / `24220b5c`】推奨 (1) は実装され、(2) も着地した — ただし
+  「既定 True」ではなく「ルート要件（強制）」として。**
   - (1) `optimizer: adamw` の拒否は `assert_full_finetune_contract` が
     **新規に実装した**。それまで存在した仕組みは
     `_attach_stochastic_rounding` の警告だけで、しかもそれは
@@ -644,11 +647,40 @@ SenseNova への含意:
     （`base_trainer.py:3494-3495` の early return）。既定は False なので
     **出荷時の既定設定では何も言わなかった**。これが「警告で流すと二重経路で
     欠陥を再生産する」の実際の姿である。
-  - (2) `optimizer_stochastic_rounding` は **`601d0271` 時点ではこのルートでも
-    False のまま**である。したがって契約が**許可する**構成（Adafactor + 出荷既定）は、
-    (1) が名指しで挙げている欠陥をそのまま再生産する。**これは U-2-3 であり、
-    §13.4 U-2-2 の step 3 を開ける前に必ず着地させること**（順序制約。§13.4 の
-    警告ボックス）。**U-2-3 が着地したらこの箇条書きを更新すること。**
+  - (2) **【`24220b5c`、U-2-3】`optimizer_stochastic_rounding` はこのルートで
+    強制 ON になった。**`enforce_full_finetune_stochastic_rounding`
+    （`ops/sensenova_ops.py`）が `setup_optimizer` の optimizer 構築**前**に適用し、
+    どの arch がそうするかは `param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH`
+    に per-arch 表として置かれている。フラグが立っただけで seam が包まれていない
+    状態（ログだけ正しく、書き込みは round-to-nearest）を塞ぐため、
+    `assert_full_finetune_stochastic_rounding_attached` が attach 後に
+    `step_param` の被覆を**機構として**検証する。
+    - **「既定 True」にできなかった理由は transport にある。** request model は
+      このフィールドを `Optional[bool]` ではなく **`bool`** として宣言し
+      （`routes.py:15145`）、`training_config.py:142` は**値が真のときだけ**
+      YAML キーを書く。したがって**明示的な false とキーの省略は、trainer に
+      届いた時点で同一**である。false を拒否条件にすると**全リクエストを拒否する**
+      ことになる — frontend は既定を false でハードコードし
+      （`TrainingConfig.tsx:126`）**常に送る**（`:786`）ので、UI が組める構成は
+      すべて落ちる。false を尊重すれば凍結 run を出荷する。どちらも不可なので、
+      **ルート要件（強制 + stdout 通知）**を選んだ。三値化すれば正直な既定が
+      可能になる（未実装。§13.4 の警告ボックスの (c)）。
+    - **強制は full FT ルートだけである。** 同 arch の LoRA 学習は設定を尊重する。
+  - **【実測、`24220b5c`】このルート自身の seam での測定。** bf16、
+    `N=65536 ~ N(0, 0.02)`、定数勾配、lr 1e-5、Adafactor を
+    `adafactor_fused.step_param` 経由で駆動（CPU、モデル無し）:
+    **SR OFF は 20 step で 84.5% が一度も動かず、累積 drift は要求量の 18.3%。
+    400 step でも凍結率は同じで、moved@1 == moved@400 == 15.46%**（遅いのではなく
+    凍結）。**SR ON は 400 step で never-moved 0.0%、drift 100%。**
+    独立の監査で seed 非依存・N 非依存も確認した（seed 12345 で 0.8452、
+    N=262144 で 0.844）。
+    - **但し書き（この 84.5% を scale 非依存と読まないこと）。** 上の
+      `5dce52ee` の 84.5% / 18% は **optimizer も device も勾配も tensor サイズも
+      違う**測定なので、一致は optimizer と device をまたいでいる。しかし
+      **両者は同じ weight scale と同じ lr を固定している**（`PARAM_STD=0.02`、
+      `lr=1e-5`）。凍結率を決めているのは実質この 2 定数であり、σ を振ると
+      **σ=0.005 / 0.01 / 0.02 / 0.04 で 43.3% / 69.6% / 84.5% / 92.3%** と動く
+      （同じ harness での実測）。
 - **永続 fp32 master を SenseNova のために復活させる提案はしない。** リポジトリ全体で
   既に棄却された選択肢であり、gen branch 8.1B でも 32.4 GB になる。再提案するなら
   棄却理由（直列化・resume 非安全・OOM）を覆す新しい論拠が要る。
@@ -749,7 +781,7 @@ LoRA 経路が bit 単位で不変であることの証明）。
 fused backward の Block Swap からの decoupling（同）、**学習成果物の checkpoint
 format の決定（下節は開いたままにしてある。U-2-1 はどれも選んでいない）**、
 offload との合成（U-2-4）、stochastic rounding の契約（U-2-3）。
-**このうち前 2 つは `601d0271` で着地した**（§13.4 U-2-2）。
+**このうち前 2 つは `601d0271`、U-2-3 は `24220b5c` で着地した**（§13.4 U-2-2）。
 
 **そして経路はまだ端から端まで到達しない。** `arch_capabilities.py:812-814` の
 `TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]` と `train_runner.py:166-167` の
@@ -1573,8 +1605,10 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 
 - Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
   method-aware 化は `cc296e84` で、**adapter・契約・fused backward の decoupling は
-  `601d0271`** で DONE。**残るのは checkpoint format の決定と受付の解錠**で、
-  §6.4 と §13.4 U-2-2 に列挙してある。**順序制約あり: U-2-3 が先**）と、Phase U（§13）。
+  `601d0271`**、**stochastic rounding の強制と dropout guard は `24220b5c`** で
+  DONE。**残るのは checkpoint format の決定と受付の解錠**で、
+  §6.4 と §13.4 U-2-2 に列挙してある。**順序制約あり: 通知経路が先**）と、
+  Phase U（§13）。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -1805,10 +1839,12 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   adapter + `assert_full_finetune_contract` + fused backward の decoupling が着地し、
   decoder 外の gen 側モジュールは**含めない**と決まった（§6.2）。
   **受付の解錠（step 3）は未着地** — checkpoint format 未決定のため（§6.4）。
-- **2b-3 — bf16 rounding-defect の契約（半分 DONE、`601d0271`。= U-2-3 が残り）。**
-  §6.3 の推奨 2 点のうち **`optimizer: adamw` 拒否は実装された**が、
-  **`optimizer_stochastic_rounding` の contract 既定 True は未実装**である。
-  **2b-2 の step 3 より前に着地させること**（§13.4 の警告ボックス）。
+- **2b-3 — bf16 rounding-defect の契約（DONE、`601d0271` + `24220b5c`。= U-2-3）。**
+  §6.3 の推奨 2 点のうち **`optimizer: adamw` 拒否は `601d0271`**、
+  **`optimizer_stochastic_rounding` は `24220b5c`** で着地した。後者は
+  「contract 既定 True」ではなく**ルート要件（強制 + stdout 通知）**として実装
+  されている（transport が「未指定」を表現できないため。§6.3 (2)）。
+  同 commit で dropout guard が full FT では branch によらず無条件になった（§13.3）。
 - **2b-4 — offload の合成。** §8.3.1 のモジュール粒度問題を解決する。
   `LayerOffloadConductor` がサブモジュール粒度のリストを受けられるかの調査が先行する。
 - **2b-5 — exit smoke。** prefix forward を checkpointed region の外に置く不変条件の
@@ -1880,14 +1916,12 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 
 - **prefix KV をキャッシュするか。** caption ごとに 42 層 × 全 token の K/V は容量が
   大きい。毎 step 計算のコストを実測してから決める。Phase 0 の計測項目。
-- **`optimizer_stochastic_rounding` を SenseNova full FT で既定 ON にするか、
-  OFF を拒否するか。** 既定 False のまま出すと既知の欠陥を再生産する。
-  **推奨は contract で既定 True に上書き（全 arch 共通の既定は変えない）。決定は
-  Phase 2b-3。** §6.3。（永続 fp32 master は選択肢に含めない。棄却済み。）
-  **【`601d0271` 以後】これは「未決」であると同時に順序制約になった** — 契約が
-  許可する構成（Adafactor + 出荷既定 SR=False）が、同じ契約の `adamw` 拒否が
-  名指ししている欠陥（bf16 要素の 84.5% が動かないまま loss は下がる）を
-  再生産する。**U-2-3 は U-2-2 step 3 より前**（§13.4 の警告ボックス）。
+- ~~**`optimizer_stochastic_rounding` を SenseNova full FT で既定 ON にするか、
+  OFF を拒否するか。**~~ **決定済み（`24220b5c`）: どちらでもなく「ルート要件と
+  して強制する」。** 既定にも拒否にもできないのは transport が「未指定」を
+  表現できないためで、理由と実装は §6.3 (2)。（永続 fp32 master は選択肢に
+  含めない。棄却済み。）**新しく開いた項目**は、強制を**ユーザーに知らせる経路**が
+  無いこと（§13.4 警告ボックス (c)）。
 - ~~**`optimizer: adamw` を SenseNova full FT で拒否するか。**~~ **決定済み
   （`601d0271`）: 拒否する。** それどころか allowlist は `("adafactor",)` のみで、
   `adamw` はそこから外れた名前の 1 つとして拒否され、加えて §6.3 の理由が
@@ -2198,7 +2232,7 @@ G4 実測と同一である。
   **2 batch × 2 MNT = 4 回の prefix build、freed-graph エラー無し**を確認（§13.6）。
 - **dropout guard**: `attention_dropout` の既定は 0.0（upstream `Qwen3Config`）だが、
   `dropout=0.0 if not self.training else self.attention_dropout`
-  （`vendor/modeling_qwen3.py:583`）の分岐は `transformer.train()` が stamp される
+  （`vendor/modeling_qwen3.py:591`）の分岐は `transformer.train()` が stamp される
   学習経路で**生きている**。**und 学習経路の有効化時に `attention_dropout != 0` を
   fail-closed で拒否する**（将来の非ゼロ config で再計算が確率的になるのを黙って
   通さないため）。
@@ -2206,6 +2240,32 @@ G4 実測と同一である。
   「checkpoint された prefix の**再計算**が確率的になり、recompute した K/V が
   forward の K/V と静かに食い違う」と明記されている。既定 0.0 なので今日存在する
   構成は何も拒否しない。
+  - **【`24220b5c` で判明・修正】guard は存在したが、その呼び出しが
+    und / both branch に限定されていた。** full FT の既定 branch は
+    **gen-only** なので、そのままでは素通りしていた。欠陥になる連鎖はこうである:
+    (1) und と gen は**同一の decoder** — 1 個の `Qwen3Attention` が
+    `q_proj` と `q_proj_mot_gen` を並べて持つ（`vendor/modeling_qwen3.py:455-458`）。
+    (2) `load_components` は decoder 全体に `train()` を stamp する
+    （`ops/sensenova_ops.py:511`。branch も method も見ない）。
+    (3) prompt prefix は **und half が毎 step 構築する**（`encode_prompt` →
+    `_t2i_prefix_forward` → `language_model.model`）。これは `no_grad` の下だが、
+    **`no_grad` は dropout を止めない**（`dropout=0.0 if not self.training else
+    self.attention_dropout`、`:591`）。
+    したがって非ゼロの `attention_dropout` は、**loss を計算する相手である
+    conditioning 自体を、毎 step 別々に、かつ推論とも別に、無言でランダム化する**。
+    → **`assert_full_finetune_dropout_free` を新設し、full FT では branch に
+    よらず無条件に呼ぶ**（`sensenova_adapter.py:301`）。
+  - **【既知・非 live】LoRA 側に同型の穴が残っている（意図的）。**
+    `train()` の stamp は LoRA でも同じ 1 行から来る（上記 (2)）。
+    `SenseNovaLoRAAdapter` が und guard を呼ぶのは
+    **`train_text_encoder` が真のときだけ**（`sensenova_adapter.py:131-133`）で、
+    `encode_prompt` 側の呼び出しも `requires_grad=True`（= und LoRA）に限られる
+    （`sensenova_ops.py:737-738`）。つまり **gen-only LoRA（既定）は
+    どちらの guard も通らない**。**触っていないのは LoRA の挙動を変えないため**である。
+    **live ではない**根拠: upstream `Qwen3Config` の `attention_dropout` 既定は
+    **0.0** で、実 checkpoint も一致する — `M:/model/sensenova/config.json` の
+    `llm_config.attention_dropout = 0.0`、`vision_config.attention_dropout = 0.0`。
+    非ゼロ config を持ち込む日が来たら、ここが先に読まれるように記録しておく。
 - **eviction との併用は contract で拒否する（自動無効化ではない）。**
   `train_text_encoder` と `sensenova_mot_phase_eviction` の同時指定は
   `train_runner` が `ValueError` にする。**どちらも opt-in なので、片方を黙って
@@ -2289,7 +2349,10 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   併記していた旧文は撤回した）。
   → **step 1-2 は DONE（`601d0271`）、step 3 は意図的に未着地。** 下記
   「U-2-2 の着地状況」。
-  U-2-3: stochastic rounding 既定 True（§6.3）+ dropout guard。
+  U-2-3: stochastic rounding（§6.3）+ dropout guard。→ **DONE（`24220b5c`）。
+  ただし「既定 True」ではなく「ルート要件（強制）」として着地した**（transport が
+  「未指定」を表現できないため。§6.3 (2)）。dropout guard は full FT で無条件に
+  なった（§13.3）。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
   U-2-5: exit smoke — **update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
@@ -2305,6 +2368,18 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   **state shuttle の移植は実測により不要と判明したので落とした**）。
   **依存は U-2-2、exit は G-RB2 / G-RB3**（G-RB1 は `8c13c493` で CLOSED）。
   これが通るまで Ring Buffer 系は opt-in を開かない。
+  - **⚠️ U-2-6 の罠（`24220b5c` が仕掛けた assertion に当たる）。**
+    Ring Buffer 系は **`step_param` を定義しない** — 自前で
+    post-accumulate-grad hook を登録し、`base_trainer._setup_fused_backward_pass`
+    の両 branch 末尾で **early return する**。
+    一方 `assert_full_finetune_stochastic_rounding_attached` は
+    `step_param` の存在と被覆を検査する。したがって
+    **`_NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS` への所属を「被覆済み」として
+    扱わないまま `SENSENOVA_FULL_FINETUNE_OPTIMIZERS` に追加すると、
+    正しい構成で assertion が raise する。** しかも両者は
+    **stochastic rounding を自前の更新の中でネイティブに実装している唯一の
+    optimizer**なので、この assertion は**最もよく被覆された構成を、
+    両半分とも彼らには当てはまらないメッセージで拒否する**ことになる。
   - **【`0d843213` で確定】U-2-2 の「effective batch = 1」は選択肢ではなく前提である。**
     fused backward と gradient accumulation は**原理的に両立しない** — accumulation は
     window 終端で全パラメータの総和勾配が同時に存在することを要求し、それは
@@ -2371,18 +2446,36 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
 
     > ### ⚠️ step 3 を開ける前の順序制約（好みではなく前提条件）
     >
-    > **U-2-3（stochastic rounding をこのルートの既定 True にする）が
-    > U-2-2 step 3 より前に着地しなければならない。**
+    > **step 3 の前提条件は 3 つある。(a) は満たされた。(b)(c) は開いている。**
     >
-    > **`601d0271` 時点で**、契約が**許可する**構成 — Adafactor + 出荷既定
-    > （`optimizer_stochastic_rounding: False`、`param_defaults.py:2208`）— は、
-    > 同じ契約の `adamw` 拒否メッセージが**名指しで挙げている欠陥**をそのまま
-    > 再生産する: **bf16 テンソルの要素の 84.5% が step 数によらず一度も動かず、
-    > その間 loss は正常に下がる**（`5dce52ee` の実測、§6.3）。
+    > **(a) U-2-3（stochastic rounding）— DONE（`24220b5c`）。**
+    > `601d0271` 時点では、契約が**許可する**構成（Adafactor + 出荷既定
+    > `optimizer_stochastic_rounding: False`）が、同じ契約の `adamw` 拒否
+    > メッセージが**名指しで挙げている欠陥**をそのまま再生産していた
+    > （bf16 要素の 84.5% が step 数によらず一度も動かず、loss は正常に下がる。
+    > §6.3）。現在はこのルートで強制 ON になっている。
     >
-    > つまり今の状態で受付だけ開けると、**この製品が名指しで拒否している故障を、
-    > 拒否せずに既定で出荷する**ことになる。加えて §6.4 の checkpoint format の
-    > 決定も step 3 の前提である（上記）。**step 3 を最初に開けないこと。**
+    > **(b) §6.4 の checkpoint format の決定 — 未決定。** 3 候補は
+    > **意図的に開いたまま**にしてある（選ぶのは実装者ではない）。
+    >
+    > **(c) 【新規】ユーザーに届く通知経路、または三値 transport。**
+    > (a) の強制は **trainer の stdout にしか出ない**。その stdout は
+    > `training_process.py:239` が読み取り、`routes.py:16493-16494` の
+    > `log_callback` が `print()` する — つまり**バックエンドサーバー自身の
+    > コンソール**である。学習ログ用の WebSocket チャンネルは存在せず
+    > （`backend/api/WS_PROTOCOL.md` のメッセージ型は `ping` / `progress` /
+    > `training_metrics` / `tagger_metrics` / `dataset_scan_progress` のみ）、
+    > frontend の消費者も無く、有効値を checkpoint metadata に残す仕組みも無い。
+    > **チェックを外したユーザーは、設定を覆されたことを製品面のどこでも
+    > 知らされない。** これが許容できるのは、受付の 2 つの拒否
+    > （`arch_capabilities` と `train_runner`）が**どちらも閉じていて
+    > 誰もこのコードに到達できない間だけ**である。
+    > なお三値化は研究ではなく `docs/guides/ADD_A_PARAMETER.md` の通常作業である:
+    > `routes.py:15145` を `Optional[bool] = None`、`openapi.yaml:18246` の
+    > スキーマに `nullable: true`、`training_config.py:142` を無条件書き込みに、
+    > 加えて frontend が「未指定」を送れるようにする変更。
+    >
+    > **step 3 を最初に開けないこと。**
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、

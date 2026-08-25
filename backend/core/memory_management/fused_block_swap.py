@@ -56,7 +56,8 @@ class FusedBlockSwapTrainer:
         device: torch.device,
         use_pinned_memory: bool = True,
         max_grad_norm: float = 1.0,
-        enable_activation_offload: bool = False
+        enable_activation_offload: bool = False,
+        use_grad_scaler: bool = False
     ):
         """
         Initialize Fused Block Swap Trainer
@@ -69,13 +70,25 @@ class FusedBlockSwapTrainer:
             use_pinned_memory: Use pinned CPU memory
             max_grad_norm: Gradient clipping norm
             enable_activation_offload: Enable activation offloading (experimental)
+            use_grad_scaler: Caller's FP16 GradScaler state; refused (see below)
         """
         self.transformer = transformer
         self.blocks_to_swap = blocks_to_swap
+        self.use_grad_scaler = use_grad_scaler
+        self.num_optimizer_groups = len(optimizer_groups)
         self.device = device
         self.use_pinned_memory = use_pinned_memory
         self.max_grad_norm = max_grad_norm
         self.enable_activation_offload = enable_activation_offload
+
+        # Same defect as base_trainer's fused paths: the hooks registered below
+        # apply and free each gradient during backward, so an FP16 GradScaler's
+        # inf/NaN check and backoff never run. Before any offloader work.
+        from ..training.base_trainer import refuse_grad_scaler_under_fused_path
+        refuse_grad_scaler_under_fused_path(
+            self,
+            type(optimizer_groups[0]).__name__ if optimizer_groups else "unknown",
+            "fused optimizer groups")
 
         # Get transformer layers
         if not hasattr(transformer, 'layers'):

@@ -16,6 +16,8 @@ from datetime import datetime
 import torch
 from PIL import Image
 
+from core.training.image_preprocessing import TRANSPARENT_WEBP_PREPROCESSING_VERSION
+
 
 def get_cache_base_dir() -> str:
     """
@@ -186,7 +188,9 @@ class LatentCache:
         """
         Compute hash for image cache key.
 
-        Includes image path and target dimensions to handle bucketing.
+        Includes image path and target dimensions to handle bucketing. WebP keys
+        also include the transparency-flattening version so caches made by the
+        old alpha-dropping path are not reused.
 
         Args:
             image_path: Path to image
@@ -197,6 +201,8 @@ class LatentCache:
             Hash string
         """
         key = f"{image_path}_{width}_{height}"
+        if Path(image_path).suffix.lower() == ".webp":
+            key += f"_{TRANSPARENT_WEBP_PREPROCESSING_VERSION}"
         return hashlib.md5(key.encode()).hexdigest()
 
     @staticmethod

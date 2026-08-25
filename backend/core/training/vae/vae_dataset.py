@@ -53,6 +53,8 @@ import torch
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset, Sampler
 
+from core.training.image_preprocessing import flatten_to_rgb
+
 # Training datasets routinely contain slightly-truncated JPEGs; the rest of the
 # repo's loaders tolerate them rather than crashing a multi-hour run.
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -218,7 +220,7 @@ def load_image_tensor(
     """
     rng = rng or random
     with Image.open(path) as im:
-        image = im.convert("RGB")
+        image = flatten_to_rgb(im)
 
         w, h = image.size
         scale = resolve_crop_scale(

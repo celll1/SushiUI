@@ -31,6 +31,8 @@ from typing import Dict, List, Optional
 import numpy as np
 from PIL import Image
 
+from core.training.image_preprocessing import flatten_to_rgb
+
 # Lazy imports for controlnet_aux processors (loaded on first use)
 _PROCESSOR_CACHE: Dict[str, object] = {}
 
@@ -230,7 +232,7 @@ class ControlNetConditionGenerator:
             ptype = self.preprocessor_types[0]
 
         # Load source image
-        source_image = Image.open(image_path).convert("RGB")
+        source_image = flatten_to_rgb(Image.open(image_path))
 
         # Resize to target dimensions
         source_image = source_image.resize((width, height), Image.LANCZOS)

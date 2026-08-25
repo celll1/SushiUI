@@ -24,6 +24,7 @@ import torch.nn as nn
 from .base_trainer import BaseTrainer, log_verbose
 from .adapters import ControlNetSD15Adapter, ControlNetSDXLAdapter
 from .crop_planner import OutpaintControlPlanner
+from .image_preprocessing import flatten_to_rgb
 
 
 class ControlNetTrainer(BaseTrainer):
@@ -598,7 +599,7 @@ class ControlNetTrainer(BaseTrainer):
             p = Path(condition_image_path)
             if p.exists():
                 try:
-                    img = Image.open(str(p)).convert("RGB")
+                    img = flatten_to_rgb(Image.open(str(p)))
                     print(f"{self.log_prefix} [Sample] Loaded condition image from per-prompt path: {p}")
                     self._condition_image_cache[condition_image_path] = img
                     return img
@@ -624,7 +625,7 @@ class ControlNetTrainer(BaseTrainer):
                         ref_path = Path(ref_images[0])
                         if ref_path.exists():
                             try:
-                                img = Image.open(str(ref_path)).convert("RGB")
+                                img = flatten_to_rgb(Image.open(str(ref_path)))
                                 print(f"{self.log_prefix} [Sample] Loaded condition image from dataset: {ref_path}")
                                 self._condition_image_cache[fallback_key] = img
                                 return img

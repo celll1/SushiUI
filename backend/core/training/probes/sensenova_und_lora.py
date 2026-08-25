@@ -320,12 +320,14 @@ class _BranchGradCapture:
 # ---------------------------------------------------------------------------
 
 
-def _und_config(*, total_steps: int, mnt: int) -> dict[str, Any]:
+def _und_config(*, total_steps: int, mnt: int, reference: bool = False) -> dict[str, Any]:
     config = trainer_exit_smoke_config()
     config["train_config"]["multi_noise_timesteps"] = mnt
     config["train"]["multi_noise_timesteps"] = mnt
     config["train"]["total_steps"] = total_steps
     config["train"]["save_every_n_steps"] = total_steps
+    config["train_config"]["use_reference_images"] = bool(reference)
+    config["train"]["use_reference_images"] = bool(reference)
     return config
 
 
@@ -340,13 +342,22 @@ def _train_understanding(
     """One real ``LoRATrainer`` run with the understanding branch armed."""
     from core.training.lora_trainer import LoRATrainer
 
-    config = _und_config(total_steps=total_steps, mnt=mnt)
+    reference = bool(getattr(args, "reference", False))
+    config = _und_config(total_steps=total_steps, mnt=mnt, reference=reference)
     workdir = Path(args.smoke_workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     image_path = workdir / "training_image.png"
     output_dir = workdir / output_subdir
     checkpoint_path = output_dir / f"{run_name}_step_{total_steps:06d}.safetensors"
     _write_deterministic_smoke_image(image_path)
+    reference_paths: list[str] = []
+    if reference:
+        # Phase U-3: the same 289 census, with the understanding prefix carrying
+        # spliced reference tokens. Not the target's geometry -- references do
+        # not participate in bucketing (7.5 differential 4).
+        reference_image = workdir / "reference_512x512.png"
+        _write_deterministic_smoke_image(reference_image, 512, 512)
+        reference_paths = [str(reference_image)]
 
     _seed_everything(args.seed)
     torch.cuda.reset_peak_memory_stats()
@@ -409,7 +420,9 @@ def _train_understanding(
         "max_step_saves_to_keep": 1,
         "force_recache": False,
     })
-    dataset = _ExitSmokeDataset(image_path, args.prompt)
+    dataset = _ExitSmokeDataset(
+        image_path, args.prompt, reference_images=reference_paths
+    )
 
     train_started = time.perf_counter()
     with _PrefixAssertionCapture() as prefix_capture:
@@ -436,6 +449,8 @@ def _train_understanding(
         "prefix_capture": prefix_capture,
         "parameter_groups": parameter_groups,
         "lora_parameter_sha256": lora_hash,
+        "reference_conditioned": reference,
+        "reference_image_paths": reference_paths,
         "model_resident": model_resident,
         "model_load_wall_time_s": model_load_wall_time_s,
         "train_wall_time_s": train_wall_time_s,
@@ -518,12 +533,18 @@ def _autocast_break_check(trainer, prompt: str) -> dict[str, Any]:
     original = sensenova_ops._build_trainable_prefix
 
     def build_without_autocast(trainer_self, transformer, inputs):
-        input_ids, indexes, attention_mask = inputs
+        # The production body with ONLY the autocast wrapper removed, including
+        # its ids-or-embeds entry (U-3): unpacking the inputs as a bare triple
+        # here made this report `raised: True` for a ValueError from the probe
+        # rather than the dtype mismatch it exists to reproduce.
+        tokens, indexes, attention_mask = inputs[0], inputs[1], inputs[2]
+        embeds = bool(inputs[3]) if len(inputs) > 3 else False
         return sensenova_ops.forward_und_prefix_layers(
             transformer.language_model.model,
-            input_ids,
+            None if embeds else tokens,
             indexes,
             attention_mask,
+            inputs_embeds=tokens if embeds else None,
             checkpoint_layers=bool(getattr(trainer_self, "gradient_checkpointing", True)),
         )
 
@@ -531,16 +552,37 @@ def _autocast_break_check(trainer, prompt: str) -> dict[str, Any]:
     try:
         sensenova_ops.encode_prompt(trainer, prompt, requires_grad=True)
     except Exception as exc:  # noqa: BLE001 -- the failure IS the measurement
-        return {
+        outcome = {
             "raised": True,
             "exception_type": type(exc).__name__,
             "message": str(exc)[:400],
         }
     else:
-        return {"raised": False}
+        outcome = {"raised": False}
     finally:
         sensenova_ops._build_trainable_prefix = original
         torch.cuda.empty_cache()
+    # "Something raised" is NOT the measurement, and treating it as one is a
+    # defect this check has already had: after the U-3 inputs change the
+    # stand-in above unpacked a 4-field inputs tuple as a triple, and the arm
+    # reported a probe-side ValueError as a successful reproduction. The claim
+    # is specifically the fp32-adapter dtype mismatch, so it is matched.
+    expected_type = "RuntimeError"
+    expected_fragment = "same dtype"
+    outcome["expected_exception_type"] = expected_type
+    outcome["expected_message_fragment"] = expected_fragment
+    outcome["reproduced_the_dtype_mismatch"] = bool(
+        outcome["raised"]
+        and outcome.get("exception_type") == expected_type
+        and expected_fragment in outcome.get("message", "")
+    )
+    if not outcome["reproduced_the_dtype_mismatch"]:
+        raise AssertionError(
+            "the autocast break check did not reproduce the U-0 failure it "
+            f"exists to reproduce (expected {expected_type} containing "
+            f"{expected_fragment!r}, got {outcome})"
+        )
+    return outcome
 
 
 def _run_und_trainer_arm(args: argparse.Namespace) -> dict[str, Any]:
@@ -608,6 +650,8 @@ def _run_und_trainer_arm(args: argparse.Namespace) -> dict[str, Any]:
         "seed": args.seed,
         "geometry": {"width": EXIT_SMOKE_WIDTH, "height": EXIT_SMOKE_HEIGHT, "batch": 1},
         "multi_noise_timesteps": 1,
+        "reference_conditioned": run["reference_conditioned"],
+        "reference_image_paths": run["reference_image_paths"],
         "lora_layers": len(trainer.lora_layers),
         "parameter_groups": run["parameter_groups"],
         "learning_rates": {
@@ -941,6 +985,7 @@ def _run_arm_subprocess(
         "--arm", arm,
         "--smoke-workdir", str(workdir / label),
         "--arm-json", str(result_path),
+        *(["--reference"] if getattr(args, "reference", False) else []),
     ]
     if lora_path is not None:
         cmd.extend(("--smoke-lora-path", str(lora_path)))
@@ -1054,6 +1099,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--unet-lr", type=float, default=1e-4)
     parser.add_argument("--understanding-lr", type=float, default=5e-5)
     parser.add_argument("--distill-lora-path", default=str(DISTILL_LORA_PATH))
+    parser.add_argument("--reference", action="store_true",
+                        help="give the training item a reference image, so the "
+                             "understanding prefix is reference-conditioned "
+                             "(Phase U-3)")
     parser.add_argument("--smoke-cfg-scale", type=float, default=None)
     parser.add_argument("--smoke-timestep-shift", type=float, default=None)
     parser.add_argument("--smoke-cfg-norm", default=None)

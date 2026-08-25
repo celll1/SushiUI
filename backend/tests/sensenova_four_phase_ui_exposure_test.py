@@ -16,6 +16,15 @@ here against `train_runner` and `ops/sensenova_ops` rather than assumed:
     own backward.
   * the split: refused unless full fine-tuning, `train_text_encoder` and
     `sensenova_mot_phase_eviction` all hold.
+  * eviction under full fine-tuning: refused unless `train_unet` AND
+    `train_text_encoder` both hold (U-3, SENSENOVA_TRAINING_DESIGN.md 13.7 (5)).
+    A single-branch full fine-tune materializes only the half it trains, and
+    the evictor's symmetry rule refuses halves of different kinds. Measured in
+    both directions on the real checkpoint; LoRA is exempt because it wraps
+    rather than materializing, so both halves stay int8.
+
+Together the last two mean full fine-tuning accepts exactly one eviction
+shape: both halves plus the split.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/sensenova_four_phase_ui_exposure_test.py -v
@@ -96,11 +105,17 @@ def test_negative_control_the_eviction_section_was_lora_only():
     tsx = _git_show("frontend/src/components/training/TrainingConfig.tsx")
     assert 'isSenseNovaModel(baseModelPath) && trainingMethod === "lora" && (' in tsx
     # While the backend accepted it for a full fine-tune the whole time, and the
-    # split cannot be armed without it.
+    # split cannot be armed without it. Stated on the `both` branch: a
+    # single-branch full fine-tune materializes one half and leaves the other
+    # int8, which the evictor's symmetry rule refuses (measured on the real
+    # checkpoint in both directions, U-3) -- so the shipped acceptance of a
+    # gen-only eviction run was itself a load-then-die.
     with _sensenova():
         assert _apply_sensenova_training_contract(
             "model", "full_finetune",
-            _config(sensenova_mot_phase_eviction=True), {"sample": {}})
+            _config(sensenova_mot_phase_eviction=True, train_text_encoder=True,
+                    sensenova_four_phase_eviction=True),
+            {"sample": {}})
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +137,36 @@ def test_understanding_training_with_eviction_is_refused_without_the_split():
                 "model", "full_finetune",
                 _config(train_text_encoder=True,
                         sensenova_mot_phase_eviction=True), {"sample": {}})
+
+
+@pytest.mark.parametrize("branch", [
+    {"train_unet": True, "train_text_encoder": False},
+    {"train_unet": False, "train_text_encoder": True},
+])
+def test_single_branch_full_finetune_cannot_be_evicted(branch):
+    """Measured on the real checkpoint (U-3), in both directions.
+
+    ``select_mot_weight_modules(require_exact_symmetry=True)`` compares each
+    layer's two halves by dtype and shape, and a single-branch full fine-tune
+    materializes only the half it trains. Before this refusal the run paid the
+    17.6 GiB load and the materialize and then raised about layer-0 mlp shapes.
+    """
+    with _sensenova():
+        with pytest.raises(ValueError, match="requires both train_unet and"):
+            _apply_sensenova_training_contract(
+                "model", "full_finetune",
+                _config(sensenova_mot_phase_eviction=True,
+                        sensenova_four_phase_eviction=branch["train_text_encoder"],
+                        **branch),
+                {"sample": {}})
+
+
+def test_lora_keeps_single_branch_eviction():
+    """LoRA wraps rather than materializing, so both halves stay int8."""
+    with _sensenova():
+        assert _apply_sensenova_training_contract(
+            "model", "lora",
+            _config(sensenova_mot_phase_eviction=True), {"sample": {}})
 
 
 @pytest.mark.parametrize("overrides,match", [
@@ -176,6 +221,22 @@ def test_the_advisory_states_the_interlock_for_both_methods(method):
     for clause in ("train_text_encoder", "sensenova_mot_phase_eviction",
                    "sensenova_four_phase_eviction", "full_finetune"):
         assert clause in entry["reason"]
+
+
+@pytest.mark.parametrize("method", ["lora", "full_finetune"])
+def test_the_advisory_does_not_call_plain_eviction_the_unconstrained_flag(method):
+    """A user-visible description that outran the implementation (U-3, H-1).
+
+    It read "sensenova_mot_phase_eviction ... is available under LoRA and full
+    fine-tuning", framing the SPLIT as the constrained one. Under full fine
+    tuning that is backwards: plain eviction is refused for every branch but
+    `both`, which then requires the split anyway.
+    """
+    reason = training_feature_advisories(
+        "sensenova", method)["sensenova_mot_eviction"]["reason"]
+    assert "is available under LoRA and full fine-tuning" not in reason
+    assert "train_unet" in reason
+    assert "13.7" in reason
 
 
 def test_the_openapi_description_no_longer_calls_eviction_lora_only():

@@ -325,7 +325,17 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     train_config["sensenova_full_finetune_save_format"] = args.save_format
     train_config["sensenova_mot_phase_eviction"] = bool(args.four_phase)
     train_config["sensenova_four_phase_eviction"] = bool(args.four_phase)
+    train_config["use_reference_images"] = bool(args.reference)
     train_understanding = args.branch in ("und", "both")
+
+    reference_paths: list[str] = []
+    if args.reference:
+        # Deliberately a different geometry from the target: the reference does
+        # not participate in bucketing at all (7.5 differential 4), so a smoke
+        # that reused the target's square would not show that.
+        reference_image = workdir / "reference_512x512.png"
+        _write_deterministic_smoke_image(reference_image, 512, 512)
+        reference_paths = [str(reference_image)]
 
     torch.cuda.reset_peak_memory_stats()
     host_before_load = _host_rss_bytes()
@@ -440,8 +450,12 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": None,
         "max_step_saves_to_keep": 1,
         "force_recache": False,
+        "use_reference_images": bool(args.reference),
     })
-    dataset = _ExitSmokeDataset(image_path, args.prompt, resolution, resolution)
+    dataset = _ExitSmokeDataset(
+        image_path, args.prompt, resolution, resolution,
+        reference_images=reference_paths,
+    )
 
     # What the step ACTUALLY ran at, from the tensor rather than from the flag
     # that was set: with bucketing off, base_resolutions only clamps DOWN, so a
@@ -459,12 +473,34 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         return _original_train_step(trainer_, images=images, **kwargs)
 
     _ops.train_step = _recording_train_step
+
+    # Whether each prefix was actually reference-conditioned, read from the call
+    # rather than from the flag that was set: `use_reference_images` arms the
+    # route and per-item presence decides it (7.2 judgement 1), so a run that
+    # armed the route and lost the item's paths would otherwise look identical.
+    prefix_records: list[dict[str, Any]] = []
+    _original_encode = _ops.encode_prompt
+
+    def _recording_encode_prompt(trainer_, prompt, **kwargs):
+        prefix = _original_encode(trainer_, prompt, **kwargs)
+        prefix_records.append({
+            "has_reference": bool(kwargs.get("reference_image_paths")),
+            "requires_grad": bool(kwargs.get("requires_grad")),
+            "prefix_seq_length": int(prefix.cache.get_seq_length()),
+            "text_length": int(prefix.text_length),
+            "kv_grad_fn": prefix.cache.layers[0].keys.grad_fn is not None,
+            "kv_requires_grad": bool(prefix.cache.layers[0].keys.requires_grad),
+        })
+        return prefix
+
+    _ops.encode_prompt = _recording_encode_prompt
     train_started = time.perf_counter()
     step_peaks.open_first_window()
     try:
         trainer.train(datasets=[dataset], **train)
     finally:
         _ops.train_step = _original_train_step
+        _ops.encode_prompt = _original_encode
     step_peaks.close_tail()
     train_wall_time_s = time.perf_counter() - train_started
     if [s[-2:] for s in observed_shapes] != [[resolution, resolution]]:
@@ -500,6 +536,19 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         predicted_unmoved=predicted_unmoved, steps=steps,
         expected_steps=total_steps,
     )
+    if args.reference and not all(r["has_reference"] for r in prefix_records):
+        failures.append(
+            "a reference arm ran prefixes without references: "
+            f"{sum(1 for r in prefix_records if not r['has_reference'])} of "
+            f"{len(prefix_records)} were text-only"
+        )
+    if train_understanding and not all(
+        r["kv_grad_fn"] or r["kv_requires_grad"] for r in prefix_records
+    ):
+        failures.append(
+            "the understanding branch was trained but a prefix arrived with "
+            "neither a grad_fn nor a grad-requiring boundary leaf"
+        )
 
     census = trainer._update_census
     checkpoint = output_dir / f"{RUN_NAME}_step_{total_steps:06d}.safetensors"
@@ -533,6 +582,9 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         "requested_steps": total_steps,
         "saved_checkpoint": bool(saved),
         "four_phase_eviction": bool(args.four_phase),
+        "reference_conditioned": bool(args.reference),
+        "reference_image_paths": reference_paths,
+        "prefix_records": prefix_records,
         "evictor_states_during_run": evictor_states,
         "adapter": adapter_name,
         "branch": branch,
@@ -732,6 +784,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--branch", choices=("gen", "und", "both"), default="gen")
     parser.add_argument("--four-phase", action="store_true",
                         help="arm sensenova_four_phase_eviction (8.3.2)")
+    parser.add_argument("--reference", action="store_true",
+                        help="give the item a reference image, so the prefix is "
+                             "reference-conditioned (Phase U-3)")
     parser.add_argument("--resolution", type=int, default=EXIT_SMOKE_WIDTH,
                         help="square training resolution; sets BOTH the dataset "
                              "item dims and base_resolutions")

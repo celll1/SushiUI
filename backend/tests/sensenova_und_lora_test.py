@@ -646,23 +646,17 @@ def test_trainable_prefix_runs_under_autocast_for_the_fp32_adapters():
     assert seen == {"device_type": "cuda", "dtype": torch.bfloat16, "enabled": True}
 
 
-def test_trainable_prefix_refuses_phase_eviction_and_reference_items():
+def test_trainable_prefix_refuses_phase_eviction():
+    """Reference items are no longer refused here (U-3); eviction still is.
+
+    ``sensenova_und_reference_test.py`` owns the reference half, including the
+    negative control that reproduces the refusal this used to assert.
+    """
     transformer = _PrefixTransformer()
 
     trainer = _trainable_trainer(transformer, sensenova_phase_evictor=object())
     with pytest.raises(RuntimeError, match="MoT phase eviction"):
         sensenova_ops.encode_prompt(trainer, "a caption", requires_grad=True)
-
-    trainer = _trainable_trainer(transformer)
-    with patch(
-        "core.training.ops.sensenova_ops._load_reference_images",
-        return_value=[object()],
-    ):
-        with pytest.raises(NotImplementedError, match="text-only"):
-            sensenova_ops.encode_prompt(
-                trainer, "a caption", requires_grad=True,
-                reference_image_paths=["ref.png"],
-            )
 
 
 # ---------------------------------------------------------------------------

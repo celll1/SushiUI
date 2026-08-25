@@ -207,7 +207,9 @@ def _apply_sensenova_training_contract(
     if blocks_to_swap != 0:
         raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
     # Normalized, not gated: reference conditioning is armed run-globally here and
-    # applied per item (Phase 3). Strict typing still applies.
+    # applied per item (Phase 3), and composes with a trainable understanding
+    # branch (Phase U-3) rather than being refused against it. Strict typing
+    # still applies.
     _normalize_sensenova_bool(train_config, "use_reference_images", False)
     from api.param_defaults import TRAINING_DEFAULTS
 
@@ -266,6 +268,24 @@ def _apply_sensenova_training_contract(
             "understanding half through its own backward; that route is "
             "full-finetune only. Otherwise disable one of the two."
         )
+    if phase_eviction and is_full_finetune:
+        # The evictor requires the two MoT halves to be per-layer symmetric
+        # (`select_mot_weight_modules(require_exact_symmetry=True)`), and full
+        # fine-tuning materializes only the branch it trains: `gen` or `und`
+        # leaves one half bf16 and the other int8, so the halves differ in dtype
+        # at every layer. Refused here rather than by the selector, which raises
+        # AFTER the 17.6 GiB load and the materialize, in a message about
+        # layer-0 mlp tensor shapes.
+        train_gen = _normalize_sensenova_bool(train_config, "train_unet", True)
+        if not (train_gen and train_understanding):
+            raise ValueError(
+                "SenseNova MoT phase eviction under full fine-tuning requires "
+                "both train_unet and train_text_encoder (the 'both' branch): the "
+                "evictor moves whole halves and requires them to hold the same "
+                "kind of weight, but a single-branch full fine-tune materializes "
+                "only the half it trains and leaves the other quantized. Train "
+                "both halves, or disable sensenova_mot_phase_eviction."
+            )
     if phase_eviction:
         groups = _normalize_sensenova_integer(
             train_config, "num_optimizer_groups", 0

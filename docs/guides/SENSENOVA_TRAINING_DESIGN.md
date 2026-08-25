@@ -1,8 +1,8 @@
 # SenseNova U1.5 学習設計案
 
-> Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
+> Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 / **Phase U-3** は完了。
 > **Phase 2b と Phase U-2 も offload 合成（2b-4 / §8.3.1）を除いて完了**、
-> 残る未完は 2b-4 と U-3 である（U-2-1 = 2b-1 が `cc296e84`、
+> **残る未完は 2b-4 だけである**（U-2-1 = 2b-1 が `cc296e84`、
 > U-2-2 の step 1-2 が `601d0271`、U-2-3 が `24220b5c`、U-2-6 が `e6bdcc38` で着地）。
 > **【U-2-2 step 3 着地】full FT の受付は開いた** — `TRAINING_UNSUPPORTED
 > ["sensenova"]["full_finetune"]` と `train_runner` の `network.type != "lora"`
@@ -17,7 +17,13 @@
 > バイト一致再ロードした（§13.4 U-2-5）。品質は主張しない。
 > **Phase U-2 は offload 合成（2b-4 / §8.3.1）を除いて完了**である。
 > それ以外の未測定事項は §13.4 U-2-5 末尾に列挙してある
-> （品質・収束・und × reference・MNT>1 と学習中 sample）。
+> （品質・収束・MNT>1 と学習中 sample）。
+> **【U-3 着地、2026-08-25】und 学習 × reference 条件付けが通った**（§13.7）。
+> full FT `und` branch で **289/294**、und LoRA で **gen 294 / und 289**、
+> 動いた集合は **text-only と同一**。設計の「追加機構ゼロ」は decoder stack
+> については真だが**入口については偽**で、`inputs_embeds` の keyword が 1 本要った。
+> また出荷状態に「ロード前の拒否」は**存在しなかった** — 実際の挙動は
+> 25-32 GiB をロードしてからの `NotImplementedError` だった。品質は主張しない。
 > **【2026-08-25、解像度キャンペーン `d1df3443`】§8.3.3 を追加した。訂正である** —
 > 本文書が書いていた「学習 step はロード時 high-water を一度も超えていない」は
 > **偽**（成立するのは 4 相 ON の both arm だけ）、64px の residency 数値は
@@ -130,7 +136,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。通知経路（`training_log`）も着地。~~**残るのは出力 checkpoint format の決定と受付の解錠**（§6.4、§13.4 U-2-2）~~ **【両方着地】format は `22b22f09`、受付の解錠は `b2694674`。残るのは 2b-4（offload 合成、§8.3.1）のみ** | DONE（2b-4 を除く） |
 | understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
 | understanding branch の Full-FT（U-2） | 3 branch すべてに実 checkpoint の run が付いた（`ce713b58` / §13.4 U-2-5）。**2b-4 = offload 合成のみ残る** | DONE（2b-4 を除く） |
-| reference 併用（U-3） | §13.4 | PENDING |
+| reference 併用（U-3） | 微分可能 prefix の `inputs_embeds` 入口（decoder stack は無改造）、ViT 凍結の assertion 化、und full FT / und LoRA 両方の実 checkpoint run（§13.7） | DONE |
 
 ---
 
@@ -1349,13 +1355,30 @@ reference は推論と同じ動的 preprocessing を使え、異なる item 間�
 **この点は本文書で最も不確実性が高い箇所である。** 凍結 und での reference 忠実度が
 十分かどうかは、どちらの方向にも前例が無い経験的問題である。
 
+> **【U-3 後、2026-08-25】判断 3 は「既定では不要」という判断として生きている。**
+> Phase U は und を解凍する**選択肢**を出荷したが（既定 OFF）、
+> **凍結 und で忠実度が足りるかどうかは依然として何も測っていない**。
+> すなわち判断 3 を反証も追認もしていない。§13.7 が測ったのは
+> 「und × reference が動くこと」であって「効くこと」ではない。
+
 ### 7.3 忠実度が不足した場合の和解経路
 
-reference 忠実度が実測で不足した場合にのみ、§5.2 で保留した `scope: both` を
-**LoRA に限って**追加する（full FT には決して入れない）。und への LoRA なら忘却
+~~reference 忠実度が実測で不足した場合にのみ、§5.2 で保留した `scope: both` を
+**LoRA に限って**追加する（full FT には決して入れない）。~~ und への LoRA なら忘却
 リスクは有界であり、微分可能 prefix の実装コストは opt-in したユーザだけが払う。
 
-**設計としては継ぎ目だけを用意し、und 学習の機構は先に作らない。**
+~~**設計としては継ぎ目だけを用意し、und 学習の機構は先に作らない。**~~
+
+> **【この節は 2 点とも overtaken された。訂正である。】**
+> 1. **「忠実度が不足した場合にのみ」という条件は外れた。** und 学習は忠実度の実測を
+>    待たずに **Phase U として出荷された**（既定 OFF の機能要求として。§13 冒頭）。
+>    条件付きの和解経路ではなく、無条件の選択肢である。
+> 2. **「full FT には決して入れない」は偽になった。** U-2 が und の full FT を
+>    3 branch すべてで着地させている（§13.4 U-2-5）。忘却リスクの議論は残るが、
+>    それは**既定 OFF と「品質を主張しない」で扱っており、機構の不在では扱っていない**。
+>
+> 変わっていないのは、und 学習が**既定 OFF** であることと、
+> **`understanding-only` を恒久的に提供しない**こと（§5.2 末尾）である。
 
 ### 7.4 データパイプライン上の注意
 
@@ -2018,6 +2041,21 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 - `SenseNovaTrainingPrefix.text_length` の意味論変更（§7.5 差分 2）。
 - `arch_capabilities` の `reference_images` 宣言から sensenova を外す。
 
+### DONE — U-3（reference × und、2026-08-25）
+
+- `forward_und_prefix_layers` の **`inputs_embeds` 入口**（vendor `Qwen3Model.forward`
+  と同じ排他契約）。decoder stack は無改造（§13.4 の U-3 訂正ボックス）。
+- `_PrefixInputs`（`tokens` / `indexes` / `attention_mask` / `embeds`）。
+  4 相分割は inputs を opaque に保持して相 3 で replay するので、
+  **どちらの入口かは inputs 自身が運ぶ必要がある**。位置は 3-tuple 互換にしてある。
+- `_build_prefix_inputs` — text-only / reference の入力構築を**単一化**し、
+  微分可能経路・4 相経路・凍結経路の 3 つが同じ 1 本を使う。
+- `assert_reference_tower_frozen` — `vision_model` に requires_grad の parameter が
+  あれば拒否する。**列挙器の外にあることは 1 関数の性質にすぎず、
+  reference item は trainable な構成で ViT を走らせる最初の経路**である。
+- `train_runner` の full FT × MoT eviction × 単一 branch のロード前拒否
+  （§13.7 (5)。U-3 とは独立の既存欠陥）。
+
 ### PENDING
 
 - ~~Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
@@ -2028,8 +2066,8 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   Phase U（§13）。~~
   **【更新】Phase 2b 本体は着地した** — checkpoint format は `22b22f09`、
   受付の解錠は `b2694674`、3 branch の exit smoke は `ce713b58`（§13.4 U-2-5）。
-  **PENDING に残るのは 2b-4（offload 合成、§8.3.1）と U-3（reference 併用、§13）
-  だけ**である。
+  **PENDING に残るのは 2b-4（offload 合成、§8.3.1）だけ**である
+  （U-3 = reference 併用は 2026-08-25 に着地。§13.7）。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -2075,6 +2113,8 @@ cache namespace と alignment は登録だけで有効になった。
 ~~PENDING の Phase 2b / 3~~ **当時 PENDING だった Phase 2b / 3**（**両者とも着地済み**:
 Phase 3 は `611a4a24`、Phase 2b は `b2694674` + `ce713b58`）に混ぜると偽の依存が
 生まれるため、独立フェーズとして §13 に分離した。
+**【2026-08-25】Phase U は U-0 / U-1 / U-2 / U-3 すべて着地した。** Phase U 側に
+残る未完は無く、`2b-4`（offload 合成、§8.3.1）が Phase 2b の項目として残るだけである。
 
 ### Phase 0 — 前提確認（DONE）
 
@@ -2424,8 +2464,12 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。
   **Phase 3 が DONE になっても、この問いは開いたままである** — 3-4 の smoke は形状と
   数値の健全性だけを確認しており、**忠実度は何も測っていない**（§11 Phase 3 実測）。
-  不足した場合のみ `scope: both` を開くが、その受け皿は Phase U（§13）として既に
-  設計されている。
+  ~~不足した場合のみ `scope: both` を開くが、その受け皿は Phase U（§13）として既に
+  設計されている。~~ **【U-3 後】受け皿は設計だけでなく実装・実測まで済んでいる**
+  （und LoRA / und full FT のどちらでも reference 条件付きで学習が回る。§13.7）。
+  **したがってこの問いは「機構が無いから測れない」ではなく、単に測っていない**。
+  §6.3 のとおり短 horizon の A/B は無効なので、答えるには収束規模の run が要り、
+  本リポジトリはそれを行わない。
 - **`separate_by_reference` を SenseNova で実際に踏んだときの挙動。** 配線は Phase 3 で
   入ったが（§7.5 差分 1）、3-4 の smoke は bucketing 無効で走ったため
   **この経路は未 exercise** である。
@@ -2481,6 +2525,11 @@ Phase U（§13）関連。
    提供するのは選択肢であって効果の主張ではない（§13）。
    **U-2-5 も同じ位置にある** — und half の full FT は 3 branch とも実 run で
    通ったが、示したのは「壊れていない」ことだけである。
+   **U-3 も同じ位置にある** — reference 条件付きで und を学習する run が
+   LoRA / full FT の両方で通ったが（§13.7）、示したのは「壊れていない」ことと
+   「動いた重みの集合が text-only と同一である」ことだけである。
+   **この項目こそが U-3 の後に残る中心的な未測定事項**であり、
+   §6.3 により短 horizon の A/B では答えられない。
    ~~**さらに U-2-5 が新たに開けた未測定事項**: 解像度上限（全 run が 64px で、
    both branch は既に gate の 94.5%）、`int8` 形式の実 run 往復とそれに載る resume、
    保存 checkpoint での生成、host RSS peak の再現性（同一 arm で 9.7 GiB 動いた）。~~
@@ -2549,19 +2598,50 @@ U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator �
     空きがあった。**真の所要量は「> 34.55 GiB」までしか分かっていない。**
 18. **commit charge が同一作業の 2 run で 21 GiB 動いた機構。**
 19. **品質・収束**（変わらず）、および **offload 合成（2b-4 / §8.3.1）**。
+20. **【U-3 で追加】4 相分割 × reference の実 checkpoint run。** 4 相は `both` branch
+    でしか回らず（§13.7 (5)）、その arm は host peak 61.67 GiB を要求する。
+    合成木では phase 3 の replay まで固定してあるが、**実機では回していない**。
+21. **【U-3 で追加】reference 複数枚での und 学習、MNT>1 × reference、
+    学習中 sample × reference × und 学習。**
+22. **【U-3 で追加】gen-only full FT（Phase 2b）の VRAM 余白。** 下の訂正のとおり
+    「und half を退避すればよい」は現在の実装では取れない選択肢なので、
+    **この arm の余白は解像度ごとの実測（§8.3.3）以外に根拠が無い**。
+    1024px 超は未測定である。
+23. **【U-3 で追加】full FT に対して対称性規則を緩めるべきか**（§13.7 (5)）。
+    現在の拒否は `require_exact_symmetry` の**規則**によるものであって、
+    「int8 の遊休 half を退避できない」という物理ではない — dtype は
+    `_base_signature` に一般署名の一部として入っているだけである。
+    緩めれば単一 branch の full FT でも退避が可能になりうるが、
+    **その規則が本来捕まえている stray LoRA child の検出と、
+    2 half の dtype が違うときの転送・pinning の挙動は測っていない。**
 
 既存（不変）: half-eviction の有効性（§8.3 の gate。§8.3.3 の A/B は別 arm であり
-これを閉じない）、凍結 und での reference 忠実度（§7.2）、ConvRot base の
-train / inference skew（§5.3）。
+これを閉じない）、凍結 und での reference 忠実度（§7.2。**U-3 の後も未測定**）、
+ConvRot base の train / inference skew（§5.3）。
 
-**ただし half-eviction の依存関係は強まった。** Phase 2b は weights + gradients だけで
+~~**ただし half-eviction の依存関係は強まった。** Phase 2b は weights + gradients だけで
 32.4 GB を占め、und half 7.55 GiB の退避が唯一の余白であるため、この gate は
 「Phase 1 の運用判断」から「**Phase 2b の VRAM 前提**」に格上げされた（§8.3.1、
-§11 Phase 2b-0）。
+§11 Phase 2b-0）。~~
+
+> **【訂正、U-3（§13.7 (5)）】この段落は現在の実装と矛盾する。**
+> ここでいう Phase 2b は **gen-only の full FT arm** であり、
+> **単一 branch の full FT では MoT eviction が現在の対称性規則に拒否される** —
+> すなわち**ここで唯一の余白として挙げた退避そのものが、この arm では使えない**。
+> したがって:
+> - **「Phase 2b の VRAM 前提」という格上げは撤回する。** half-eviction は
+>   LoRA（両 half が int8 のまま）と full FT の `both` branch でのみ成立する。
+> - gen-only full FT の実測は **peak 26.16-26.26 GiB**（64px。§13.4 U-2-2 /
+>   §8.3.3）で、eviction 抜きで gate 34.551 GiB に収まっている。
+>   上の「32.4 GB」は **weights + gradients を同時常駐と仮定した見積もり**であり、
+>   fused backward がその gradient 常駐を回避していることは同じ §6.2 の表が
+>   書いている（`~0.1-0.2 GB`）。**この段落はその訂正を取り込んでいなかった。**
+> - **「Phase 2b の VRAM 余白」自体は未解決の問いとして開いたままにする**
+>   （下の 22 番）。解像度を上げたときの余白は §8.3.3 の実測に従う。
 
 ---
 
-## 13. Phase U — understanding branch の学習（U-0 / U-1 / U-2 DONE、U-3 PENDING）
+## 13. Phase U — understanding branch の学習（U-0 / U-1 / U-2 / U-3 DONE）
 
 **要求**: understanding branch も微調整の対象にするかどうかを、SDXL の TE / U-Net や
 他 arch の TE / DiT と同様に**ユーザーが選択できるようにする**（LoRA / Full-FT の
@@ -2580,8 +2660,8 @@ train / inference skew（§5.3）。
 **実装状況（2026-08-25 更新）**: **U-0（`3d837202`）と U-1（`e811e461` 本体、
 `327276df` 実機 exit smoke）は DONE。** ~~U-2（und Full-FT）と U-3（und × reference）は
 PENDING。~~ **U-2 は 2b-4（offload 合成、§8.3.1）を除いて DONE**（3 branch の
-exit smoke = `ce713b58`、§13.4 U-2-5）。**U-3（und × reference）は PENDING。**
-実測は §13.5 / §13.6 に置く。**効果は依然として何も測っていない** —
+exit smoke = `ce713b58`、§13.4 U-2-5）。**U-3（und × reference）も DONE**（§13.7）。
+実測は §13.5 / §13.6 / §13.7 に置く。**効果は依然として何も測っていない** —
 und LoRA / und Full-FT が品質・忠実度・プロンプト追従を改善するかは未測定である（§12）。
 
 ### 13.1 微分可能経路は「新規構築」ではなく「解錠」である（U-0 で実証済み）
@@ -3558,6 +3638,14 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     eviction を使わないなら 4 相は「second backward と再計算 forward を足すだけ」で、
     契約自身がそう書いて拒否する。
 
+    > **【訂正、U-3（§13.7 (5)）】「要らない」より強い事実が実測で出た — und-only の
+    > 4 相は*現在の実装では拒否される*。** 学習側 evictor は
+    > `require_exact_symmetry` で 2 half の per-layer 署名一致を要求し、
+    > full FT は学習する half だけを materialize するので、`und`（および `gen`）では
+    > 42 層すべてで非対称になる。**したがって full FT × eviction は現状 `both` branch
+    > 専用**であり、`train_runner` がロード前に拒否する。
+    > **これは規則による拒否であって物理的な不可能ではない**（§12 の 23 番）。
+
     #### 【U-2-5】§11 Phase 2b-5 が要求していた不変条件テストを足した
 
     §11 の 2b-5 は exit smoke に「**prefix forward を checkpointed region の外に
@@ -3601,19 +3689,24 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     その 6 件がすべて修正した後の同じコードであり、branch 依存の分岐は
     `resolve_full_finetune_branch` と列挙器の中だけに閉じている。
 
-    #### 【U-2-5】und full FT は U-1 の text-only スコープをそのまま継承する
+    #### 【U-2-5】und full FT は U-1 の text-only スコープをそのまま継承する（**U-3 で解消**）
 
-    **`train_text_encoder=true` + reference データセットは、25-32 GiB をロードしてから
-    最初の item で落ちる。** `encode_prompt` は `requires_grad` が立っている限り
+    ~~**`train_text_encoder=true` + reference データセットは、25-32 GiB をロードしてから
+    最初の item で落ちる。**~~ `encode_prompt` は `requires_grad` が立っている限り
     reference 条件付き item を `NotImplementedError` で拒否し
-    （`sensenova_ops.py:919-924` と `:948-953`。単一 backward 経路と 4 相経路の**両方**）、
-    一方 `use_reference_images` は `train_runner.py:211` で
-    「**Normalized, not gated**」— すなわちロード前に拒否する gate が無い。
+    （単一 backward 経路と 4 相経路の**両方**）、一方 `use_reference_images` は
+    `train_runner` で「**Normalized, not gated**」だった。
 
     **これは U-2-5 が作った欠陥ではない**（und LoRA でも同一で、U-1 以来同じ形である）。
-    ここに書くのは、**full FT の下で und branch に到達できるようになったのが初めて**
-    だからである。§13 の U-3（und × reference）はまさにこの穴を埋めるフェーズであり、
-    それまでの間、この組み合わせは**ロード前に拒否されるべきもの**として残っている。
+    ここに書いたのは、**full FT の下で und branch に到達できるようになったのが初めて**
+    だからである。
+
+    **【CLOSED、U-3（§13.7）】2 つの `NotImplementedError` は削除され、両経路とも
+    reference 条件付き item を受け付ける。** 同時に本節の但し書きへの訂正がある —
+    「それまでの間ロード前に拒否されるべきもの」と書いたが、
+    **そのような gate は一度も実装されなかった。** 出荷されていた挙動は「拒否」ではなく
+    「ロードしてから最初の item で落ちる」であり、U-3 の着地で穴ごと消えた
+    （新しい gate は作っていない。塞ぐ対象が無くなったからである）。
 
     #### 【U-2-5】新しい 2 branch で exercise していない経路
 
@@ -3675,17 +3768,31 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     - **grad norm の大小**。both run では 2 half に分かれて出るが、§13.6 の訂正表の
       とおり**どちらが大きいかは設計判断の根拠にしない**。
 
-- **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
-  実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
+- **U-3 — und × reference（DONE、2026-08-25）。** 依存は U-1 + Phase 3（**Phase 3 は
+  DONE なので、実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、
   §5.2 根拠 3 の「消費者の居ない形式を作らない」原則が当たる。したがって
-  **und 学習 = 「und decoder 層の学習」と定義する**。
+  **und 学習 = 「und decoder 層の学習」と定義する**。実測は §13.7。
 
 **Phase 3 との関係は直交である。** und trainable と reference あり item を組み合わせた
 場合、reference の `<IMG_CONTEXT>` token は**同じ prefix pass の und 層を通る**ので、
 **追加機構ゼロで reference 条件付け経路も学習される**。これは §7.3 が保留していた
 和解経路の実体化にあたる（§7.3 と矛盾しない — 既定 OFF である限り §7.2 判断 3 も
 生きている）。
+
+> **【U-3 で検証、2026-08-25】この「追加機構ゼロ」は decoder stack については真、
+> その入口については偽だった。** vendor `_build_it2i_inputs` が返すのは
+> **`input_embeds`（ViT 行を splice 済み）であって `input_ids` ではない**
+> （`modeling_neo_chat.py:658-677`）のに対し、学習側の
+> `forward_und_prefix_layers` は `model.embed_tokens(input_ids)` しか呼んでいなかった。
+> したがって必要だったのは **`inputs_embeds` の keyword 1 本**（vendor
+> `Qwen3Model.forward` と同じ排他契約）であり、サブシステムではない。
+> **decoder stack 自体は 1 行も変わっていない** — 42 層は ids 経由でも embeds 経由でも
+> 同じ関数・同じ引数を通り、`image_gen_indicators=None` ⇒
+> `exist_non_image_gen_tokens=True` / `exist_image_gen_tokens=False` も同一である
+> （vendor `Qwen3Model.forward:1355-1357` と学習ループが同じ値を渡す）。
+> **「zero mechanism」を要約として残さないこと。「decoder stack は無改造、入口は
+> 1 keyword」が実際に測った形である。**
 
 ### 13.5 U-0 実測（2026-08-24: PASS、`3d837202`）
 
@@ -3751,6 +3858,152 @@ Phase 1 probe と同じ per-process VRAM ゲート下で実行した。**以下�
 **2 つは同一条件の比較ではないので、どちらの順序も一般的主張にはならない。**
 どちらが大きいかを設計判断の根拠に使わないこと。この訂正は `327276df` の
 コミットメッセージにも記録してある。
+
+### 13.7 U-3 実測（2026-08-25: PASS）
+
+実 checkpoint（`M:/model/sensenova/sensenova_int8.safetensors`、plain int8）上の
+**実 run** である。probe は `probes/sensenova_full_finetune.py --branch und
+[--reference]`（full FT）と `probes/sensenova_und_lora.py --arm und_trainer
+--reference`（LoRA）。64px、3 step、B1、GC ON、`--no-save`、
+`set_per_process_memory_fraction(0.72)` = 34.551 GiB。**以下はすべて実測値。**
+
+#### (1) 機構の検証 — 変更前に確かめたこと
+
+- **`_build_it2i_inputs` は embeds を返す**（上の U-3 訂正ボックス）。これが
+  「追加機構ゼロ」の唯一の例外であり、`inputs_embeds` keyword で閉じた。
+- **合成木上の勾配到達**（CPU、`backend/tests/sensenova_und_reference_test.py`）:
+  splice した ViT 行**だけ**から出る loss（他の行の寄与をゼロにしたもの）で、
+  und の Linear は **`7L-5` 個**に到達する。L=3 で 16/21、到達しない 5 個は
+  `und_gradient_unreachable_paths()` が名前で返すものと**集合として一致**する。
+  **text-only の到達集合と reference の到達集合は同一**である。
+- **K/V parity は再測していない** — decoder stack を 1 行も変えていないので
+  U-0 の 42/42 bitwise がそのまま適用される。`inputs_embeds` 経路は
+  `hidden_states` の初期値を差し替えるだけで、以降の 42 層は同じ関数である。
+  **さらに強い理由がある（監査の指摘、既存の記述の訂正）**: U-0 の parity arm が
+  vendor と突き合わせているのは `ops.forward_und_prefix_layers` **ではなく**
+  `probes/sensenova_und_prefix.training_prefix_forward`（同じ構成の probe 側の双子）
+  である。**その双子には `inputs_embeds` 引数が無いので、再実行しても新しい入口を
+  1 度も踏まない。** `forward_und_prefix_layers` の docstring は
+  「vendor と bitwise 一致を検証済み」と書いていたが、正確には
+  **双子で検証済み**であり、そのように直した（挙動の変更は無い）。
+
+#### (2) und full FT × reference（本フェーズの本体）
+
+| 量 | reference あり | text-only（同一コマンド、対照） |
+|---|---|---|
+| branch / adapter | `und` / `SenseNovaFullParameterAdapter` | 同 |
+| target | 294（1 group、lr 1e-6、**8,103,395,328 要素**） | 同 |
+| loss（3 step） | 0.3490 / 0.5357 / 0.5878 | 2.0253 / 0.4304 / 1.9653 |
+| prefix token 数 | **517** | 258 |
+| prefix t extent (`text_length`) | **262**（< 517、非退化） | 258（= token 数） |
+| prefix の grad_fn | あり（単一 backward 経路） | あり |
+| updated-parameter census | **289 expect / 3 step 全部 complete** | 同 |
+| update-nonzero census | **294 個中 289 個が動いた** | 同 |
+| 動かなかった 5 個 | `layers.41.self_attn.{q,o}_proj` + `mlp.{gate,up,down}_proj` | **同じ 5 個** |
+| 要素レベル標本（layer 0 の 4 本） | 2.653 / 2.407 / 2.909 / 3.237% | 2.517 / 2.645 / 2.985 / 3.139% |
+| VRAM peak allocated / reserved | **26.5762 / 26.7910 GiB**（gate の **76.9%**） | 26.2571 / 26.5313 GiB |
+| step − load の増分 | **1.4564 GiB** | 1.1373 GiB |
+| model resident | 25.1198 GiB | 25.1198 GiB |
+| host RSS peak（peak_wset） | 32.100 GiB | 32.100 GiB |
+| host peak commit | 65.193 GiB | 65.194 GiB |
+| wall（model load / train） | 17.39 s / 7.54 s | 15.54 s / 7.21 s |
+
+- **census は reference の有無で変わらない。** 動いた集合は**両 arm で同一**であり
+  （同じ 294 列挙、同じ 5 個が不動）、設計の予告どおりである。
+  **「reference の方が多く動く」は起きなかったし、起きる理由も無い** — 到達不能な
+  5 個は prefix が `last_hidden_state` を捨てることに由来し、prefix が長いか短いかとは
+  独立だからである。
+- **要素レベルの差は主張しない。** probe は noise / timestep を seed 固定していない
+  （loss 列がその証拠）ので、2.4-3.2% という帯は**対照ではなく観測**である。
+  §6.3 のとおり短 horizon の A/B は測定として無効である。
+- **reference が実際に prefix に入ったことの証拠**は 2 つ: token 数 258 → 517
+  （+259 = 512×512 の ref 1 枚の context token 数 256 + placeholder 分）と、
+  **t extent 262 < token 数 517**（§7.5 差分 2 の非退化条件）。
+  probe は毎 step の `has_reference` も記録し、1 つでも text-only なら run を落とす。
+- **reference のコストは +0.3191 GiB**（peak allocated、step−load の増分も同値）。
+  512×512 の ref 1 枚・64px target・GC ON での値である。
+- **品質・収束は測っていない。** §11 Phase 2b と同じく主張は「壊れていないこと」だけ。
+
+#### (3) und LoRA × reference（同じ拒否が塞いでいた側）
+
+`probes/sensenova_und_lora.py --arm und_trainer --reference`。
+
+- **3 step とも有限 loss**（0.4978 / 0.6019 / 0.4924）、**588 LoRA layer**、
+  保存 **1764 tensors**、metadata `lora_targets=generation+understanding`。
+- **勾配 census は全 step で gen 294 / und 289**、und の dead 集合は
+  `und_gradient_unreachable_paths()` と一致。**U-1 の text-only と同じ数え方・同じ結果**。
+- **positive assertion は 9 回発火**、census は毎回 `(42, 42, 42)`。
+- **autocast 破壊実験**は U-0 / U-1 と同じ `BFloat16 != float` を再現した。
+- **VRAM peak 18.6322 GiB / reserved 18.7285**（gate の 53.9%）、resident 17.6027 GiB、
+  train wall 5.64 s。
+
+#### (4) 出荷状態には「ロード前の拒否」は存在しなかった
+
+§13.4 U-2-5 は、この組み合わせは U-3 が着地するまで
+「**ロード前に拒否されるべきもの**」として残っている、と書いた。
+**実装を確認した結果、そのような gate は一度も作られていない。**
+`train_runner.py` の該当行は `_normalize_sensenova_bool(train_config,
+"use_reference_images", False)` だけで、コメント自身が "Normalized, not gated" と
+書いている。したがって**出荷されていた挙動は「拒否」ではなく
+「25-32 GiB をロードしてから最初の item で `NotImplementedError`」**である。
+U-3 の着地でこの穴は消えたので、gate を新設する必要も無くなった。
+
+#### (5) U-3 で見つかった別件 — 単一 branch の full FT は現在の規則では evict が拒否される
+
+**U-3 とは独立の既存欠陥**である（reference とは無関係）。
+`--branch und --four-phase` を実 checkpoint で回そうとしたところ、
+**ロードと materialize を払った後**に落ちた:
+
+```
+RuntimeError: SenseNova MoT weight halves are missing or asymmetric at layer 0
+```
+
+- **機構**: 学習側の evictor は `select_mot_weight_modules(require_exact_symmetry=True)`
+  で**層ごとに 2 half の dtype/shape 署名が一致すること**を要求する。一方
+  full FT は**学習する half だけ**を materialize するので、`gen` でも `und` でも
+  片方が bf16・片方が int8 になり、**42 層すべてで非対称**になる。
+- **両方向で実測した**: `und` branch では `missing_gen` に bf16 の
+  `mlp.{down,gate,up}_proj`、`gen` branch では同じ 3 本が int8 署名で現れる
+  （VRAM 25.1198 GiB / host 32.097 GiB を払って落ちる）。
+- したがって **MoT phase eviction（および 4 相分割）は full FT では現状 `both` branch
+  でしか通らない**。§13.4 U-2-5 は「und-only の 4 相 run は要らないので回さなかった」と
+  書いていたが、**より強い事実は「現在の実装では拒否される」**である。
+- **⚠️ 「不可能」ではなく「拒否」である。この区別を落とさないこと。**
+  初稿はここを「構造的に到達不能」と書いたが、**それは過剰な主張だった**。
+  塞いでいるのは `require_exact_symmetry` という**規則**であり、その本来の目的は
+  §8.4 が書くとおり **stray な LoRA child を捕まえること**で、dtype は
+  `_base_signature` に一般署名の一部として入っているにすぎない。
+  **bf16 の学習 half と int8 の遊休 half を交互に退避すること自体は物理的に
+  一貫している** — というより、§12 の Phase 2b 余白の議論が欲しがっていたのは
+  まさにそれである。規則を緩めるかどうかは**閉じた事実ではなく未解決の問い**として
+  §12 の 23 番に置いた。ここで確定しているのは
+  **「現在の実装はこの組み合わせを拒否する」**という 1 点だけである。
+- **対応**: `train_runner._apply_sensenova_training_contract` が
+  `full_finetune` × `sensenova_mot_phase_eviction` × 単一 branch を
+  **ロード前に名指しで拒否**するようにした（ロードと materialize を払ってから
+  layer-0 の tensor 形状の話で落ちるのを避けるため。**規則を追認する変更であって、
+  規則を新設する変更ではない**）。LoRA は wrap するだけで両 half が int8 のままなので
+  **対象外**（テストで固定）。
+  テスト: `backend/tests/sensenova_four_phase_ui_exposure_test.py`。
+- **capability の advisory も直した**（H-1）。`sensenova_mot_eviction` の advisory は
+  「`sensenova_mot_phase_eviction` は LoRA と full FT で利用できる」と書き、
+  **制約が強いのは split の方であるかのように**読めたが、full FT では逆である。
+  `arch_capabilities.py` と `openapi.yaml` の**バイト一致の 2 文字列**を両方直した。
+
+#### (6) 測っていないもの
+
+- **品質・忠実度・プロンプト追従**。§7.2 判断 3 の経験的不確実性は**依然として
+  未解決**である。U-3 が提供したのは選択肢であって効果の測定ではない。
+- **4 相分割 × reference の実 checkpoint run**。4 相は上記 (5) により**現状**
+  `both` branch でしか回らず、その arm は U-2-4 実測で **VRAM 32.66 GiB / host peak 61.67 GiB**
+  である。本作業時点の空き host RAM が 58.1 GiB だったので**回していない**。
+  合成木上では phase 3 の replay まで固定してある（保存した embeds を再利用し、
+  **ViT を 2 度目に走らせない**ことを含む）。
+- **reference 複数枚**（`SENSENOVA_MAX_REFERENCE_IMAGES` まで）での und 学習。
+  1 枚のみ実測。
+- **MNT>1 × reference**、**学習中 sample × reference × und 学習**。
+- **`separate_by_reference`**（bucketing 無効時は通らない。Phase 3 から継続）。
+- **reference token の cache**（§7.4 の「初版では実装しない」は依然そのまま）。
 
 ---
 

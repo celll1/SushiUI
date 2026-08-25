@@ -1010,6 +1010,17 @@ async def get_arch_capabilities():
     and `training_feature_labels` are its sibling maps, same role as
     `feature_params`/`feature_labels` on the generation axis.
 
+    `training_required_values` is a FOURTH axis, and the only one that says what
+    a parameter must BE rather than what is missing: architecture -> training
+    config parameter -> `{value, reason, methods?}`. SenseNova implements full
+    fine-tuning under a contract that fixes the optimizer, and every SenseNova
+    run is batch 1. `train_runner` applies these before the model loads, either
+    by REFUSING a different value or by OVERWRITING it (the two encoding modes),
+    and each `reason` says which -- an overwritten control is a user choice the
+    run drops silently, so both kinds have to be visible to a client. Pin the
+    control to the value rather than offering a default the run rejects or
+    discards. Absent means unconstrained.
+
     `arch_display_names` is the user-facing spelling of an architecture id
     ("sensenova" -> "SenseNova U1.5"), served from the backend's own
     `ARCH_DISPLAY_NAMES` so a client's architecture filter labels come from one
@@ -1044,7 +1055,7 @@ async def get_arch_capabilities():
         FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
         TRAINING_FEATURE_UNSUPPORTED, TRAINING_FEATURE_PARAMS,
-        TRAINING_FEATURE_LABELS,
+        TRAINING_FEATURE_LABELS, TRAINING_REQUIRED_VALUES,
         AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
         chain_context_payload, video_constraints_payload,
     )
@@ -1057,6 +1068,7 @@ async def get_arch_capabilities():
         "training_feature_unsupported": TRAINING_FEATURE_UNSUPPORTED,
         "training_feature_params": TRAINING_FEATURE_PARAMS,
         "training_feature_labels": TRAINING_FEATURE_LABELS,
+        "training_required_values": TRAINING_REQUIRED_VALUES,
         "arch_display_names": ARCH_DISPLAY_NAMES,
         "video_constraints": video_constraints_payload(),
         "chain_context": chain_context_payload(),

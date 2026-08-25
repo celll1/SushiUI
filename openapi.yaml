@@ -168,6 +168,16 @@ paths:
           a newly added architecture keeps every control rather than losing one
           silently. `training_feature_params` / `training_feature_labels` are its
           sibling maps (arming config keys, human-readable label).
+        * `training_required_values` — architecture name -> TRAINING CONFIG
+          PARAMETER -> `{value, reason, methods?}`: the value that architecture
+          REQUIRES, optionally narrowed to the listed training methods. The one
+          axis that says what a parameter must BE rather than what is missing —
+          SenseNova's full fine-tune fixes the optimizer, and every SenseNova run
+          is batch 1. The backend applies these before the model loads, either by
+          refusing a different value or by overwriting it (SenseNova's two
+          encoding modes); each `reason` says which. An architecture absent from
+          the map is unconstrained, so a client pins a control only where the
+          backend says the value is not its to choose.
         * `arch_display_names` — architecture id -> its user-facing spelling
           (`sensenova` -> `SenseNova U1.5`). An id with no entry falls back to
           itself.
@@ -9396,6 +9406,72 @@ components:
             type: string
           example:
             block_swap: "Block Swap (per-block CPU offload during training)"
+        training_required_values:
+          type: object
+          description: |
+            Architecture name -> training CONFIG PARAMETER -> the value that
+            architecture REQUIRES. Mirrors `TRAINING_REQUIRED_VALUES` in
+            `backend/api/arch_capabilities.py`.
+
+            A fourth axis, and the only one that says what a parameter must BE
+            rather than what is missing. An architecture can implement a
+            training method under a contract that FIXES part of the config:
+            SenseNova applies each full-fine-tune update from that parameter's
+            own post-accumulate-grad hook, which decides the optimizer and rules
+            out gradient accumulation and EMA, and every SenseNova run — LoRA
+            included — is physical batch 1.
+
+            `train_runner._apply_sensenova_training_contract` applies these from
+            the config alone, before the model loads, in one of two ways: it
+            REFUSES a different value, or it OVERWRITES it (SenseNova's
+            `text_encoding_mode` / `latent_encoding_mode`, which have no separate
+            encoder and no VAE to apply to). Each `reason` says which. A client
+            pins the control to this value instead of offering a default the run
+            rejects — or, worse, silently discards.
+
+            An architecture absent from the map, or a parameter absent from its
+            entry, is UNCONSTRAINED. `methods`, when present, narrows the
+            requirement to those `training_method` values. This table does not
+            restate `training_feature_unsupported`: a parameter whose whole
+            mechanism is missing is declared there instead.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              required: [value, reason]
+              properties:
+                value:
+                  description: |
+                    The required value (string, number or boolean — whatever the
+                    parameter's own type is).
+                  oneOf:
+                    - type: string
+                    - type: number
+                    - type: boolean
+                reason:
+                  type: string
+                  description: One-line factual reason the value is fixed there.
+                methods:
+                  type: array
+                  description: |
+                    Training methods the requirement applies to. Absent = every
+                    method.
+                  items:
+                    type: string
+                    enum: [lora, relora, full_finetune, controlnet]
+          example:
+            sensenova:
+              batch_size:
+                value: 1
+                reason: "SenseNova training runs at physical batch 1; under LoRA use gradient_accumulation_steps for a larger effective batch"
+              optimizer:
+                value: adafactor
+                reason: "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half"
+                methods: [full_finetune]
+              train_unet:
+                value: true
+                reason: "the generation branch is the artefact: SenseNovaLoRAAdapter refuses to save an understanding-only LoRA, since inference applies both branches from one file"
+                methods: [lora]
         arch_display_names:
           type: object
           description: |

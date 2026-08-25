@@ -1123,8 +1123,11 @@ Lion の 32.4 GB は**隠れる**。ただし MoT が image token に対して g
    allocator が要る。また **pinned 済みバッファを返すこと**が必須で、返さないと
    optimizer 側の `pin_memory()` が第 2 の確保を作り **host RAM が 2 倍**になる
    （実測: 保持する版 2.04x 対 出荷版 1.04x）。
-   **switch には API 面がまだ無い**（`param_defaults` → `routes` →
-   `training_config` → `openapi` → frontend の連鎖が必要）。
+   **switch は config channel 限定**（run の train_config = YAML の
+   `optimizer_state_host_resident` キー。`BaseTrainer.__init__` が読む）。
+   **API / UI 面は意図的に張らない** — 対象は Ring Buffer 系 2 つだけで、
+   本ルートの allowlist は `("adafactor",)` なので、選べる場所では効かず、
+   効く場所では未実測になる。理由は `BaseTrainer.__init__` のコメントと §13.4 U-2-5。
 2. ~~**hook 経路への state H2D → 更新 → D2H の移植。**~~ **【撤回、`5dce52ee`】
    不要である。** ただし **【U-2-6 で機構を訂正】理由が誤っていた。**
    ここには「host buffer は pinned なので kernel が UVA 経由で直接アドレスでき、
@@ -1970,7 +1973,8 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   `_apply_sensenova_full_finetune_contract` を足し、**実 checkpoint 上の
   gen branch smoke run**（3 step、census 294/294、mixed 25.129 GiB の保存と
   本番 reader での 294/294 バイト一致再ロード）で通した。実測と、その過程で
-  見つかった 7 件（5 件修正、2 件は記録のみ）は §13.4。
+  見つかった 7 件（全件修正済み）と、`train_unet` 修正の arch 横断的な副作用
+  3 件（同じく全件解決）は §13.4。
   **品質は主張しない。**
 - **2b-3 — bf16 rounding-defect の契約（DONE、`601d0271` + `24220b5c`。= U-2-3）。**
   §6.3 の推奨 2 点のうち **`optimizer: adamw` 拒否は `601d0271`**、
@@ -2198,9 +2202,9 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
 
 **§6.5 前提事実 1（「CPU state はどの学習経路からも有効化されない」）は
 U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator を渡す。
-**ただし switch に API 面が無い**ので、**製品から起動した run では依然 GPU 確保**
-である。残っているのは **API 面**と、**閾値下の prefetch**（stream と event 同期は
-実装済み。§6.5 upgrade 項目 3）である。
+**ただし switch は config channel 限定**（YAML キー。API / UI 面は意図的に無い）
+なので、**UI から起動した run では依然 GPU 確保**である。残っているのは
+**閾値下の prefetch**（stream と event 同期は実装済み。§6.5 upgrade 項目 3）である。
 
 既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
 （§7.2）、ConvRot base の train / inference skew（§5.3）。
@@ -2518,6 +2522,18 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     census**（289 / 583）で、それが U-2-5 の本体である。
     なお census の機構自体はここで一度壊れているのが見つかっている
     （adafactor が `record_param_update` を呼んでいなかった。§13.4）。
+  - **【census の arm 方法】** `optimizer_update_census` は
+    **run の train_config（YAML）のキー**として読まれる
+    （`BaseTrainer.__init__`。`use_ema` / `gradient_checkpointing` と同じ channel で、
+    `train_runner` の 4 箇所すべてが `train_config=` を渡している）。
+    以前は `__init__` でリテラル `False` に固定されており、**config からは
+    一切 arm できなかった** — U-2-5 の acceptance criterion が、trainer を手で
+    構築する以外の方法では使えない状態だった。
+    **API / UI 面は意図的に張っていない**: census は不足を検出すると `raise` するので
+    checkbox にすると false positive が正しい run を落とすし、結果は stdout の
+    census で UI に出す先が無い。`optimizer_state_host_resident`（§6.5）も
+    同じ config channel・同じ理由で同じ扱いにした。
+    テスト: `backend/tests/optimizer_diagnostic_switch_config_test.py`。
   U-2-6: **Ring Buffer optimizer の upgrade 3 項目**（§6.5。`get_state_buffer` の配線 /
   閾値下向けの専用 stream + prefetch / サイレント CPU-skip の fail-loud 化。
   **state shuttle の移植は実測により不要と判明したので落とした**）。
@@ -2649,7 +2665,7 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       `_is_bf16_native_base_model` 経由で両方を bf16 に強制するので、config 値は
       trainer が見る値ではない。
 
-    #### 【step 3】受付経路の点検と監査で見つかった 7 件（5 件修正 / 2 件記録のみ）
+    #### 【step 3】受付経路の点検と監査で見つかった 7 件（全件修正済み）
 
     1. **`train_unet` が `FullParameterTrainer` に渡っていなかった**（修正済み）。
        `train_runner` の full_finetune 分岐は `train_text_encoder` /
@@ -2699,16 +2715,36 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
          結びつける必要はもう無い。そのために `load_sensenova_from_path` は
          metadata を返すようになった（追加のみ）。
     5. **`FullParameterTrainer.load_checkpoint` は存在しないモジュールを import する**
-       （**未修正**、arch 非依存）。`from core.models.checkpoint_utils import
-       load_unified_checkpoint` — `checkpoint_utils.py` はリポジトリのどこにも無い。
-       SenseNova の resume はこの関数を通らない（`base_trainer:1352` が
-       `_load_checkpoint_as_base` を使う）ので**本ルートは影響を受けない**が、
-       full FT の resume 経路に死んだ枝がある。
-    6. **grad-norm の bucket 分けは und half を `unet` として数える**（**未修正**）。
-       `_calculate_grad_norms` の full-FT 側は `transformer_original` を丸ごと
-       `'unet'` に入れるので、`both` / `und` branch では `MoT-Understanding` の
-       grad norm が独立して出ない。`_build_component_lr_list` は正しく 2 group を
-       返すので LR 側にずれは無い。表示上の粗さであり、学習は正しい。
+       （**修正済み（拒否として着地）**、arch 非依存）。`from core.models.checkpoint_utils
+       import load_unified_checkpoint` — `checkpoint_utils.py` はリポジトリのどこにも無い。
+       **どの arch もこのメソッドを通らない**（旧文は SenseNova だけが通らないと
+       読める書き方だった。**過小評価である**）: `load_checkpoint` は
+       `BaseTrainer` の abstractmethod だが**呼び出し側が 1 つも無く**、
+       full FT の resume は全 arch とも `resume_from_checkpoint` →
+       `BaseTrainer.__init__` → `_load_checkpoint_as_base`（checkpoint を
+       base model として読み直す）である。自分の `load_checkpoint` を呼ぶ trainer は
+       `ControlNetTrainer` と `VaeTrainer` で、いずれも別クラス・別実装。
+       - **対応**: 削除は不可（abstractmethod なのでクラスが instantiate できなくなる）、
+         実装は 11 arch 分の full-FT 保存形式の reader を消費者ゼロで発明することに
+         なるので、**実 resume 経路を名指しする `NotImplementedError` に置き換えた**。
+         同時に消したもう 1 つの枝は diffusers ディレクトリ形式の loader で、
+         **本リポジトリのどの full-parameter adapter も書かない**レイアウト向けだった。
+         テスト: `backend/tests/full_parameter_resume_path_test.py`。
+    6. **grad-norm の bucket 分けは und half を `unet` として数える**（**修正済み**）。
+       `_calculate_grad_norms` の full-FT 側は parameter を「walk した module」で
+       bucket に入れる。1 module = 1 component の arch では正しいが、SenseNova は
+       両 MoT half が `transformer_original` の中にあるので、`both` / `und` branch で
+       `MoT-Understanding` の grad norm が独立して出なかった。`_build_component_lr_list`
+       は正しく 2 group を返すので **LR 側にずれは無かった**（学習は正しく、表示だけの
+       問題だった）。
+       - **対応**: LoRA 側と同じ権威に揃えた — **optimizer group を作った adapter が
+         自分の parameter を分類する**（`BaseFullParameterAdapter.grad_norm_components()`、
+         既定は `{}`）。SenseNova の実装は `iter_sensenova_lora_targets` で駆動し、
+         und half を `LORA_COMPONENT_TEXT_ENCODER_1` に入れる（Phase 1 LoRA が
+         `sensenova_adapter.py:134` で登録しているのと同じ component）。
+         **module path の名前判定は使わない**（`dd0b10c7` が 4 arch で消した形）。
+         override しない adapter は `{}` を返すので他 arch の挙動は不変。
+         テスト: `backend/tests/sensenova_full_finetune_grad_norm_test.py`。
     7. **`text_encoder_training` の capability 理由が虚偽になった**（修正済み）。
        「full fine-tuning is refused for this architecture as a whole」と書いて
        いたが、それは step 3 で偽になった。**エントリ自体は残した** — 機構は
@@ -2717,27 +2753,112 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
        これは trainer 側の拒否ではないので、API から `train_text_encoder=true` を
        送る経路は通る。
 
-    #### 【step 3】`train_unet` 修正の arch 横断的な副作用（記録。未修正）
+    #### 【step 3 の後追い】`train_unet` 修正の arch 横断的な副作用（3 件とも解決）
 
-    項目 1 の修正は SenseNova 固有ではなく、**全 arch の full FT の挙動を変える**。
-    黙って入れる種類の変更ではないので、開いたままの点をここに記録する。
+    項目 1 の修正は SenseNova 固有ではなく **全 arch の full FT の挙動を変える**もの
+    だったので、旧文はここに 3 件を「未修正」として開いたまま記録していた。
+    **3 件とも閉じた。** 以下は結論と、閉じる過程で**旧文が事実として誤っていた**と
+    判明した点である。
 
-    - **LoRA 側には同じ穴が残っている。** `train_runner.py:1975-2010` の
-      `LoRATrainer(...)` にも `train_unet=` は無い。したがって**同じ UI の
-      チェックボックスが、full FT では効き、LoRA では効かない**という
-      非対称が生まれた。**意図的に触っていない** — 本タスクの制約が
-      「LoRA 経路を一切変えない」だったため。**塞ぐなら LoRA 側も同じ 1 行**である。
-    - **`train_unet=False` かつ `train_text_encoder=False` が到達可能になった。**
-      SenseNova は `resolve_full_finetune_branch` が「何も学習しない」と
-      名指しで raise する。**他 arch は違う** — sd15 / sdxl / krea2 の adapter は
-      何も収集せず、**空のパラメータリストを optimizer に渡す**。
-      arch 非依存の穴であり、本コミットの scope 外として記録するにとどめる。
-    - **frontend の既定では full FT の初回 run が必ず拒否される。**
-      `batch_size` 4 と optimizer `adamw8bit` が既定なので、UI で SenseNova +
-      full FT を選んでそのまま開始すると contract が拒否する。**fail-closed で
-      ロード前**なので危険はないが、「method は出るのに既定では走らない」状態で
-      ある。UI 側に arch 別の既定を持たせるか、拒否メッセージで足りるとするかは
-      未決定。
+    1. **LoRA / ReLoRA 側の同じ穴（閉じた）。** `LoRATrainer(...)` にも
+       `ReLoRATrainer(...)` にも `train_unet=` が無く、**同じ UI のチェックボックスが
+       full FT では効き LoRA では効かない**非対称になっていた（旧文は LoRA だけを
+       挙げていた。**ReLoRA も同じ穴で、`ReLoRATrainer` は `LoRATrainer` の
+       サブクラスなので同じ 1 行である**）。両方に渡すようにした。
+       - 効かせる場所は adapter ではなく **`LoRATrainer._apply_lora` の
+         `if self.train_unet:`** なので、`train_unet` を一度も参照しない 3 つの
+         LoRA adapter（sensenova / ideogram4 / minimax_h3）も含めて**全 arch が従う**。
+       - **これは 13 arch すべてに対する挙動変更である**（意図的だが、記録が要る）。
+         これまで LoRA / ReLoRA では無視されていた `train_unet=false` が意味を持つので、
+         **`train_unet=false` + `train_text_encoder=true` を保存している preset や
+         過去の run は、U-Net + TE から TE のみに変わる**。両方 false のものは
+         ロード前に失敗する（下の項目 3）。そうした run を U-Net LoRA を含む
+         checkpoint から resume すると TE 側しか注入されず、
+         `lora_trainer.load_checkpoint:370-379` は**一致する key だけを copy する**ので
+         エラーではなく**静かに小さい adapter**になる。
+    2. **【旧文の誤り】SenseNova の LoRA では `train_unet=False` +
+       `train_text_encoder=True` は成立しない。** full FT では
+       `resolve_full_finetune_branch` が `und` と名前を付ける正当な branch だが、
+       **LoRA では成果物にならない** — `SenseNovaLoRAAdapter.save_checkpoint` は
+       **generation branch を含まない LoRA を明示的に拒否する**
+       （推論は 1 ファイルから両 branch を適用するので、消費者が存在しない）。
+       したがって forwarding を素直に入れると**「100 step 学習してから最初の save で
+       落ちる run」が新たに到達可能になる**。`_apply_sensenova_training_contract` の
+       LoRA 分岐で **ロード前に名指しで拒否**するようにした。und half の学習は従来どおり
+       `train_unet=True` + `train_text_encoder=True`（branch `both`）である。
+    3. **`train_unet=False` かつ `train_text_encoder=False`（閉じた、arch 非依存）。**
+       旧文は「他 arch は空のパラメータリストを optimizer に渡す」と書いていたが、
+       **静かに壊れるのではない** — torch が
+       `ValueError: optimizer got an empty parameter list` を出す。問題は
+       **それがロード後（checkpoint 常駐後、数分後）である**ことだった。
+       `train_runner._assert_training_scope_is_nonempty` が
+       `lora` / `relora` / `full_finetune` について **config だけで、ロード前に**拒否する。
+       ControlNet は構造上 `train_unet=False` で自分の module を学習するので対象外、
+       `vae_decoder` はそもそもこの flag を持たない。
+       `train_vision_encoder` + `vision_encoder_path` は**第 4 の学習対象として数える**
+       （SigLIP2 のみを学習する LoRA は成立する）。
+       同時に、この guard は 4 つの flag を**素の truthiness では読まない**:
+       手書き YAML の `train_unet: "false"` は非空文字列なので、
+       guard を通ったうえに trainer 側でも truthy に読まれていた。
+       bool へ正規化して config に書き戻す（真偽値として解釈できない値は名指しで拒否、
+       明示的な `null` は既定として扱う）。API は bool 型なので到達経路は手書き YAML のみ。
+    4. **frontend 既定の初回 run 拒否（閉じた。ただし旧文の前提が 2 つ誤り）。**
+       - **誤り (a): `batch_size` 4 は死んだリテラルだった。**
+         `TRAINING_DEFAULTS["batch_size"] == 1` であり、`TrainingConfig` は起動時に
+         `/schema/training-defaults` で `DEFAULT_PARAMS` を上書きする。したがって
+         **バックエンドが上がっている限り、full FT の確定的な拒否は optimizer 1 件
+         だけ**だった。frontend のリテラル 4 は SSOT に対して古かっただけなので 1 に直した。
+       - **誤り (b): `batch_size=1` は full FT だけの契約ではない。**
+         `train_runner.py:185-191` は **SenseNova の全 method** に対して要求するので、
+         **古い 4 を持ち込んだ利用者は LoRA の初回 run も拒否される**。
+         capability 宣言で `batch_size` に method scope を付けなかったのはこのためである。
+         **その「持ち込み」の経路は localStorage ではない**（本節の初稿はそう書いていたが、
+         `TrainingConfig.tsx` は training 設定を localStorage に**保存しない** —
+         唯一の参照 `:1780` は sample prompt のために `txt2img_params` を**読む**だけである）。
+         実際の carrier は **preset・copy-from-run・edit mode の YAML 復元**、および
+         **バックエンド未起動時のフォールバックリテラル**の 4 つである。
+         この 4 つはいずれも arch / method を触らずに値だけを書き換えるので、
+         下の UI 実装が「値のドリフト」で収束する必要がある理由でもある。
+       - **対応: capability の第 4 軸 `TRAINING_REQUIRED_VALUES`。**
+         既存の 3 軸（`ARCH_UNSUPPORTED` / `TRAINING_UNSUPPORTED` /
+         `TRAINING_FEATURE_UNSUPPORTED`）はいずれも「**無い**もの」を宣言するが、
+         この軸だけは「**その値でなければならない**」を宣言する。
+         `arch -> param -> {value, reason, methods?}` で、`GET /schema/arch-capabilities`
+         が `training_required_values` として配信する。SenseNova の宣言は
+         `batch_size=1`（全 method）、`optimizer=adafactor` /
+         `gradient_accumulation_steps=1` / `use_ema=false`（full FT）、
+         `train_unet=true`（LoRA、上の項目 2）、
+         `text_encoding_mode` / `latent_encoding_mode` = `onthefly_gpu`（全 method）。
+         `num_optimizer_groups` は**書かない** — `fused_optimizer_groups` として
+         `TRAINING_FEATURE_UNSUPPORTED` が既に所有しており、
+         2 つの表が同じ parameter を持つことは import 時の assert で禁止した
+         （この assert が「並列表」ではなく「分割」であることを保証している）。
+       - **【この軸は「拒否」と「上書き」の両方を運ぶ】** 最後の 2 件は他と性質が違う。
+         `train_runner.py:254-255` は**全 SenseNova run** に対して 2 つの encoding mode を
+         `onthefly_gpu` に**黙って書き換える**（prompt encoder が und branch そのもので
+         別建ての encoder が無く、pixel-space なので latent も無い）。拒否ではないが、
+         **フォームが生きた select を 2 つ出し続け、run がそれを黙って捨てる**という
+         状態であり、**本軸が防ぐために存在する失敗そのもの**なので宣言に含めた。
+         各 entry の `reason` が「refused」か「overwritten rather than refused」かを
+         名指しし、**テストが reason の文言と runner の実際の挙動を突き合わせる**
+         （`test_every_declared_entry_is_enforced_the_way_its_reason_says`）。
+         表の docstring も「全件が拒否である」とは主張しない書き方に直した。
+       - **UI**: 該当 control を**その値に固定して disable し、backend が書いた reason を
+         その場に出す**。method radio の隣に契約全体を出し、**フォームが値を変更した項目には
+         「(changed from &lt;元の値&gt;)」を付ける** — 黙って上書きしない、が前提である
+         （arch / method を変えると自動的に unpin される。**元の値に戻しはしない**）。
+         **収束は arch/method の identity ではなく値のドリフトで判定する**
+         （effect の依存は `[requiredValues, params]`、不一致のときだけ書く）:
+         preset・copy-from-run・起動時の `trainingDefaults` 一括差し替えは
+         arch も method も変えずに値だけを書くので、identity 依存では
+         **disable された control の中に違反値が座り、method radio を往復する以外に
+         直す手段が無い**状態になる。
+         frontend は値の複製を持たない（テストで `api.ts` と `TrainingConfig.tsx` の
+         **両方**に reason 文字列が現れないことを確認している）。
+       - テスト: `backend/tests/training_required_values_test.py`（54 件。
+         「出荷既定が拒否される」「LoRA path が `train_unet` を無視していた」
+         「素の truthiness なら文字列 `"false"` を学習対象として通していた」を
+         negative control として記録している）。
     #### 【step 3】U-2-2 実測（2026-08-25: PASS）
 
     実 checkpoint（`M:/model/sensenova/sensenova_int8.safetensors`、plain int8）上の

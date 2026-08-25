@@ -30,7 +30,7 @@ from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
-    LORA_COMPONENT_UNET,
+    resolve_component_lr, LORA_COMPONENT_UNET,
 )
 from .sd15_adapter import LoRALinearLayer
 
@@ -82,7 +82,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
             params.extend(lora_layer.lora_up.parameters())
         if not params:
             return []
-        base_lr = getattr(self.trainer, "unet_lr", None) or 1e-4
+        base_lr = resolve_component_lr(self.trainer, "unet_lr", label="Krea 2 LoRA")
         lr_factor = float(self.trainer.config.get("krea2_lr_factor", 1.0))
         return [{"params": params, "lr": base_lr * lr_factor}]
 
@@ -145,7 +145,7 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
         if trainer.transformer is not None:
             t_params = [p for p in trainer.transformer.parameters() if p.requires_grad]
             if t_params:
-                base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+                base_lr = resolve_component_lr(trainer, "unet_lr", label="Krea 2 transformer")
                 print(f"[Krea2FullParameterAdapter] {sum(p.numel() for p in t_params):,} trainable params (transformer)")
                 groups.append({"params": t_params, "lr": base_lr})
         return groups

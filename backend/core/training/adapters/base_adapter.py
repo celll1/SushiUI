@@ -26,6 +26,27 @@ LORA_COMPONENTS = frozenset({
 })
 
 
+def resolve_component_lr(trainer, *attr_names: str, label: str = "component") -> float:
+    """The first configured LR among ``attr_names``, else the run's ``learning_rate``.
+
+    "Configured" means *not None*, so an explicit ``0.0`` is a rate and not
+    "unset". Refuses rather than inventing one when nothing is resolvable.
+    See ``adapters/MODEL_ADAPTER_DESIGN.md`` for the convention.
+    """
+    for name in attr_names:
+        value = getattr(trainer, name, None)
+        if value is not None:
+            return float(value)
+    base = getattr(trainer, "learning_rate", None)
+    if base is None:
+        raise ValueError(
+            f"Cannot resolve a learning rate for {label}: none of "
+            f"({', '.join(attr_names) or 'no component keys'}) is set on the trainer "
+            f"and it has no learning_rate either."
+        )
+    return float(base)
+
+
 def count_quantized_linears(module: Optional[nn.Module]) -> int:
     """Number of weight-only quantized Linear modules under ``module``.
 

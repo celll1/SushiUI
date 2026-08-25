@@ -31,6 +31,32 @@ Each adapter implements model-specific logic:
 - Checkpoint saving/loading
 - Parameter grouping
 
+## Learning-rate resolution (all adapters)
+
+A param group's `lr` comes from `base_adapter.resolve_component_lr(trainer,
+*attr_names)`. It returns the first attribute that is **not None** — an
+explicit `0.0` is a configured rate, not "unset" — and falls back to
+`trainer.learning_rate`; it raises when neither exists rather than inventing a
+rate. `BaseTrainer.__init__` already derives `unet_lr` / `text_encoder*_lr` from
+`learning_rate` when the config omits them, so the resolver's own fallback is
+the last line rather than the usual path.
+
+Do not write `getattr(trainer, "unet_lr", None) or 1e-4`: that idiom replaced a
+configured `0.0` with a literal, and the literal differed per adapter (1e-4,
+1e-5, 1e-6) so the same config trained at a different rate depending on the
+architecture. `BaseTrainer._build_component_lr_list` (which the resume LR
+re-assert writes back) resolves all seven of its entries the same way.
+
+`BaseTrainer._report_effective_component_lrs`, called last in
+`setup_optimizer`, warns on the training-log channel when a group ends up at
+lr=0 (`component_lr_zero`) or when `num_optimizer_groups > 0` rebuilt the
+optimizers from a flat parameter list at the base LR and discarded the
+per-component rates (`component_lr_flattened`). Its index-wise
+`component_lr_mismatch` check is a consistency check between two producers of
+the same description, not an independent measurement, and it cannot run where
+`_build_component_lr_list` is empty (every DiT architecture); it prints a NOTE
+saying so instead of staying silent.
+
 ## Architecture
 
 ### Base Adapter Interface

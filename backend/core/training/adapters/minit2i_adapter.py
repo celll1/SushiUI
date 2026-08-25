@@ -24,7 +24,7 @@ from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
-    LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
+    resolve_component_lr, LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
 )
 from .sd15_adapter import LoRALinearLayer
 
@@ -108,11 +108,11 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             target.extend(lora_layer.lora_up.parameters())
         groups: List[Dict[str, Any]] = []
         if unet_params:
-            base_lr = getattr(self.trainer, "unet_lr", None) or 1e-4
+            base_lr = resolve_component_lr(self.trainer, "unet_lr", label="MiniT2I LoRA")
             lr_factor = float(self.trainer.config.get("minit2i_lr_factor", 1.0))
             groups.append({"params": unet_params, "lr": base_lr * lr_factor})
         if te_params:
-            te_lr = getattr(self.trainer, "text_encoder_lr", None) or getattr(self.trainer, "learning_rate", 1e-4)
+            te_lr = resolve_component_lr(self.trainer, "text_encoder_lr", label="MiniT2I FLAN-T5 LoRA")
             groups.append({"params": te_params, "lr": te_lr})
             print(f"[MiniT2ILoRAAdapter] FLAN-T5 LoRA param group lr={te_lr}")
         # REPA projector (training-only alignment head). Without this group the
@@ -121,7 +121,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
         if getattr(self.trainer, "repa_enable", False) and getattr(self.trainer, "repa_projector", None) is not None:
             p_params = [p for p in self.trainer.repa_projector.parameters() if p.requires_grad]
             if p_params:
-                proj_base_lr = getattr(self.trainer, "unet_lr", None) or getattr(self.trainer, "learning_rate", 1e-4)
+                proj_base_lr = resolve_component_lr(self.trainer, "unet_lr", label="MiniT2I REPA projector")
                 proj_lr = proj_base_lr * float(getattr(self.trainer, "repa_proj_lr_factor", 1.0))
                 print(f"[MiniT2ILoRAAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
                 groups.append({"params": p_params, "lr": proj_lr})
@@ -203,13 +203,13 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
         if trainer.transformer is not None:
             t_params = [p for p in trainer.transformer.parameters() if p.requires_grad]
             if t_params:
-                base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+                base_lr = resolve_component_lr(trainer, "unet_lr", label="MiniT2I transformer")
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in t_params):,} trainable params (transformer)")
                 groups.append({"params": t_params, "lr": base_lr})
         if self._train_te():
             te_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
             if te_params:
-                te_lr = getattr(trainer, "text_encoder_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+                te_lr = resolve_component_lr(trainer, "text_encoder_lr", label="MiniT2I FLAN-T5")
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in te_params):,} trainable params (FLAN-T5), lr={te_lr}")
                 groups.append({"params": te_params, "lr": te_lr})
         # REPA projector (training-only alignment head). Joins the optimizer so it is
@@ -217,7 +217,7 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
         if getattr(trainer, "repa_enable", False) and getattr(trainer, "repa_projector", None) is not None:
             p_params = [p for p in trainer.repa_projector.parameters() if p.requires_grad]
             if p_params:
-                proj_base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+                proj_base_lr = resolve_component_lr(trainer, "unet_lr", label="MiniT2I REPA projector")
                 proj_lr = proj_base_lr * float(getattr(trainer, "repa_proj_lr_factor", 1.0))
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
                 groups.append({"params": p_params, "lr": proj_lr})

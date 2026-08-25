@@ -15136,7 +15136,7 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["gradient_accumulation_steps"], ge=1
     )
     max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
-    learning_rate: float = 1e-4
+    learning_rate: float = TRAINING_DEFAULTS["learning_rate"]
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in
     # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only

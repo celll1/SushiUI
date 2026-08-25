@@ -3498,11 +3498,13 @@ class BaseTrainer(ABC):
         Returns:
             Tuple[List[float], List[str]]: (lrs, names) matching optimizer group indices
         """
+        from core.training.adapters.base_adapter import resolve_component_lr
+
         lrs = []
         names = []
 
         if getattr(self, 'train_unet', True) and getattr(self, 'unet', None) is not None:
-            lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+            lrs.append(resolve_component_lr(self, 'unet_lr', label="U-Net"))
             names.append("U-Net")
 
         # SenseNova's two groups both live inside `transformer` (`unet` is None
@@ -3511,12 +3513,15 @@ class BaseTrainer(ABC):
         # Order mirrors SenseNovaLoRAAdapter.setup_trainable_parameters.
         if getattr(self, 'is_sensenova', False):
             if getattr(self, 'train_unet', True):
-                lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+                lrs.append(resolve_component_lr(
+                    self, 'unet_lr', label="SenseNova generation branch"))
                 names.append("MoT-Generation")
             if getattr(self, 'train_text_encoder', False):
-                lrs.append(getattr(self, 'text_encoder_1_lr', None)
-                           or getattr(self, 'text_encoder_lr', None)
-                           or getattr(self, 'unet_lr', self.learning_rate))
+                # Same resolver the adapter's group uses, so this list (which the
+                # resume re-assert writes back) cannot drift from what trains.
+                lrs.append(resolve_component_lr(
+                    self, 'text_encoder_1_lr', 'text_encoder_lr', 'unet_lr',
+                    label="SenseNova understanding branch"))
                 names.append("MoT-Understanding")
 
         # ControlNetTrainer sets train_unet=False (it never trains the base UNet)
@@ -3527,24 +3532,101 @@ class BaseTrainer(ABC):
         # resume LR-remap in train() falls through to its `else: new_lr =
         # self.learning_rate` branch, silently overwriting the intended unet_lr.
         if getattr(self, 'controlnet', None) is not None:
-            lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+            lrs.append(resolve_component_lr(self, 'unet_lr', label="ControlNet"))
             names.append("ControlNet")
 
         if getattr(self, 'train_text_encoder', False):
             if getattr(self, 'text_encoder', None) is not None:
-                lrs.append(getattr(self, 'text_encoder_1_lr',
-                                   getattr(self, 'text_encoder_lr', self.learning_rate)))
+                lrs.append(resolve_component_lr(
+                    self, 'text_encoder_1_lr', 'text_encoder_lr', label="TE1"))
                 names.append("TE1")
             if getattr(self, 'is_sdxl', False) and getattr(self, 'text_encoder_2', None) is not None:
-                lrs.append(getattr(self, 'text_encoder_2_lr', self.learning_rate))
+                lrs.append(resolve_component_lr(self, 'text_encoder_2_lr', label="TE2"))
                 names.append("TE2")
 
         if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
-            ve_lr = getattr(self, '_vision_encoder_lr', None) or getattr(self, 'text_encoder_lr', self.learning_rate)
+            ve_lr = resolve_component_lr(self, '_vision_encoder_lr', 'text_encoder_lr',
+                                         label="vision encoder")
             lrs.append(ve_lr)
             names.append("VisionEncoder")
 
         return lrs, names
+
+    def _report_effective_component_lrs(self, requested_group_lrs=None):
+        """The rate each optimizer group ends up training at, and what changed it.
+
+        Call this LAST in ``setup_optimizer``: ``_setup_fused_optimizer_groups``
+        flattens every param group into one list and rebuilds N optimizers at
+        ``self.learning_rate``, so anything checked before it describes an
+        optimizer that is about to be discarded.
+
+        ``requested_group_lrs`` is the pre-fused ``[group['lr'], ...]`` the
+        adapter built; passing it is what makes that flattening visible.
+
+        The index-wise comparison against ``_build_component_lr_list`` is a
+        consistency check between two producers of the same description, not an
+        independent measurement -- both read the same attributes with the same
+        precedence. It cannot run at all where that list is empty (every DiT
+        architecture: ``self.unet`` is None there and only the SenseNova /
+        ControlNet / VE branches fill it), so it says so rather than looking
+        like a check that passed.
+        """
+        optimizer = getattr(self, 'optimizer', None)
+        if optimizer is None:
+            return
+        fused = getattr(self, 'fused_optimizer_groups', None)
+        fused_optimizers = list(getattr(fused, 'optimizers', []) or []) if fused else []
+        groups = [g for o in (fused_optimizers or [optimizer]) for g in o.param_groups]
+        effective = [g.get('lr') for g in groups]
+
+        if fused_optimizers and requested_group_lrs and len(set(requested_group_lrs)) > 1:
+            emit_training_warning(
+                f"num_optimizer_groups={self.num_optimizer_groups} rebuilt the optimizer "
+                f"from a flat parameter list at the run's base learning rate, so the "
+                f"per-component rates the adapter set ({requested_group_lrs}) are not "
+                f"what trains: every one of the {len(groups)} group(s) now runs at "
+                f"{sorted(set(effective))}. Set num_optimizer_groups=0 to keep "
+                f"per-component learning rates.",
+                code="component_lr_flattened",
+                prefix=self.log_prefix,
+            )
+
+        component_names: List[str] = []
+        aligned = False
+        try:
+            component_lrs, component_names = self._build_component_lr_list()
+            aligned = len(component_lrs) == len(groups)
+            for i, group in enumerate(groups):
+                if not aligned or group.get('lr') is None:
+                    continue
+                if not math.isclose(float(group['lr']), float(component_lrs[i]),
+                                    rel_tol=1e-9, abs_tol=0.0):
+                    emit_training_warning(
+                        f"{component_names[i]} trains at lr={group['lr']!r}, but the "
+                        f"configured learning rate for it is {component_lrs[i]!r}. The "
+                        f"optimizer group wins until the next resume, which rewrites it "
+                        f"to the configured value.",
+                        code="component_lr_mismatch",
+                        prefix=self.log_prefix,
+                    )
+            if not aligned:
+                print(f"{self.log_prefix} NOTE: per-component LR verification did not run: "
+                      f"_build_component_lr_list describes {len(component_lrs)} group(s) "
+                      f"{component_names} and the optimizer has {len(groups)}. The group "
+                      f"LRs printed above are the effective rates; they were not checked "
+                      f"against the configured per-component ones.")
+        except Exception as e:
+            print(f"{self.log_prefix} NOTE: per-component LR verification did not run: {e}")
+
+        for i, group in enumerate(groups):
+            if group.get('lr') is not None and float(group['lr']) == 0.0 and group.get('params'):
+                label = component_names[i] if aligned else f"Optimizer group {i}"
+                emit_training_warning(
+                    f"{label} is in the optimizer with lr=0: its "
+                    f"{len(group['params'])} parameter tensor(s) will not change.",
+                    code="component_lr_zero",
+                    prefix=self.log_prefix,
+                )
 
     def _reassert_config_lr_on_resume(self):
         """Make the YAML config's per-component LRs win over the resumed ones.
@@ -3754,12 +3836,15 @@ class BaseTrainer(ABC):
             lr_scheduler_type: LR scheduler type (constant, cosine, etc.)
             total_steps: Total training steps
         """
+        from core.training.adapters.base_adapter import resolve_component_lr
+
         # Get trainable parameters from subclass
         param_groups = self.setup_trainable_parameters()
 
         # Add Vision Encoder parameters if training is enabled
         if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
-            ve_lr = getattr(self, '_vision_encoder_lr', None) or self.text_encoder_lr
+            ve_lr = resolve_component_lr(self, '_vision_encoder_lr', 'text_encoder_lr',
+                                         label="vision encoder")
             ve_params = list(self.vision_encoder.parameters())
             if ve_params:
                 param_groups.append({"params": ve_params, "lr": ve_lr})
@@ -3891,6 +3976,9 @@ class BaseTrainer(ABC):
             num_scalars = sum(p.numel() for p in group['params'])
             print(f"{self.log_prefix}   Group {i}: lr={group_lr}, tensors={num_tensors}, params={format_param_count(num_scalars)}")
         print(f"{self.log_prefix} ==========================================")
+        # What the adapter asked for, kept for the report below: the fused paths
+        # can replace self.optimizer entirely before this method returns.
+        requested_group_lrs = [g.get('lr') for g in self.optimizer.param_groups]
 
         # Setup LR scheduler
         if str(lr_scheduler_type).lower() == "plateau_cosine_floor":
@@ -4048,6 +4136,9 @@ class BaseTrainer(ABC):
         # replace self.optimizer: stochastic rounding has to wrap whatever
         # actually ends up performing the update.
         self._attach_stochastic_rounding(optimizer_type)
+
+        # After every path that can replace the optimizer or its LRs.
+        self._report_effective_component_lrs(requested_group_lrs)
 
         if getattr(self, "is_sensenova", False) and is_full_finetune(self):
             from core.training.ops.sensenova_ops import (

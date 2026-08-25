@@ -18,6 +18,7 @@ from .base_adapter import (
     is_lora_wrappable_linear,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_UNET,
+    resolve_component_lr,
 )
 from .sd15_adapter import LoRALinearLayer
 
@@ -154,16 +155,20 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
         self, lora_layers: Dict[str, nn.Module]
     ) -> List[Dict[str, Any]]:
         generation, understanding = self._split_by_component(lora_layers)
-        unet_lr = getattr(self.trainer, "unet_lr", None) or 1e-4
+        unet_lr = resolve_component_lr(
+            self.trainer, "unet_lr", label="SenseNova generation branch"
+        )
         groups: List[Dict[str, Any]] = []
         if generation:
             groups.append({"params": generation, "lr": unet_lr})
         if understanding:
             # Same fallback chain SDXL's LoRA adapter uses for TE1.
-            und_lr = (
-                getattr(self.trainer, "text_encoder_1_lr", None)
-                or getattr(self.trainer, "text_encoder_lr", None)
-                or unet_lr
+            und_lr = resolve_component_lr(
+                self.trainer,
+                "text_encoder_1_lr",
+                "text_encoder_lr",
+                "unet_lr",
+                label="SenseNova understanding branch",
             )
             groups.append({"params": understanding, "lr": und_lr})
         return groups
@@ -332,13 +337,17 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         """
         branch, targets = self._resolve_scope()
         trainer = self.trainer
-        unet_lr = getattr(trainer, "unet_lr", None) or 1e-6
+        unet_lr = resolve_component_lr(
+            trainer, "unet_lr", label="SenseNova generation branch"
+        )
         # The chain SenseNova's LoRA adapter and SDXL's TE1 group both use: the
         # understanding half is this architecture's prompt encoder.
-        und_lr = (
-            getattr(trainer, "text_encoder_1_lr", None)
-            or getattr(trainer, "text_encoder_lr", None)
-            or unet_lr
+        und_lr = resolve_component_lr(
+            trainer,
+            "text_encoder_1_lr",
+            "text_encoder_lr",
+            "unet_lr",
+            label="SenseNova understanding branch",
         )
         groups: List[Dict[str, Any]] = []
         for half, lr in (("gen", unet_lr), ("und", und_lr)):

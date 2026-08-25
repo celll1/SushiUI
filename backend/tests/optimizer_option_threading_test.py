@@ -96,6 +96,8 @@ class _StubTrainer:
     """
 
     setup_optimizer = BaseTrainer.setup_optimizer
+    _report_effective_component_lrs = BaseTrainer._report_effective_component_lrs
+    _build_component_lr_list = BaseTrainer._build_component_lr_list
     _resolved_optimizer_hyperparameters = BaseTrainer._resolved_optimizer_hyperparameters
     _ringbuffer_optimizer_kwargs = BaseTrainer._ringbuffer_optimizer_kwargs
     _setup_fused_backward_pass = BaseTrainer._setup_fused_backward_pass

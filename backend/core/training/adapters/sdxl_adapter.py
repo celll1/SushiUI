@@ -27,6 +27,7 @@ from .base_adapter import (
     BaseLoRAAdapter,
     BaseFullParameterAdapter,
     reject_quantized_base,
+    resolve_component_lr,
     LORA_COMPONENT_UNET,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_TEXT_ENCODER_2,
@@ -377,14 +378,17 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
                 and getattr(trainer, "te_adapters", None) is not None:
             ad_params = [p for p in trainer.te_adapters.parameters() if p.requires_grad]
             if ad_params:
-                ad_lr = getattr(trainer, "text_encoder_lr", None) or trainer.unet_lr
+                ad_lr = resolve_component_lr(trainer, "text_encoder_lr", "unet_lr",
+                                             label="SDXL custom-TE bridge adapters")
                 print(f"[SDXLFullParameterAdapter] {sum(p.numel() for p in ad_params):,} trainable "
                       f"params (custom-TE bridge adapters), lr={ad_lr}")
                 params.append({"params": ad_params, "lr": ad_lr})
             if getattr(trainer, "sdxl_te_train_encoder", False) and getattr(trainer, "te_custom", None) is not None:
                 te_params = [p for p in trainer.te_custom.parameters() if p.requires_grad]
                 if te_params:
-                    te_lr = getattr(trainer, "text_encoder_1_lr", None) or getattr(trainer, "text_encoder_lr", None) or trainer.unet_lr
+                    te_lr = resolve_component_lr(
+                        trainer, "text_encoder_1_lr", "text_encoder_lr", "unet_lr",
+                        label="SDXL custom TE body")
                     params.append({"params": te_params, "lr": te_lr})
 
         return params

@@ -40,7 +40,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, is_lora_wrappable_linear, LORA_COMPONENT_UNET
+from .base_adapter import (
+    BaseLoRAAdapter, is_lora_wrappable_linear, resolve_component_lr, LORA_COMPONENT_UNET
+)
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -228,7 +230,8 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
             params.extend(lora_layer.lora_up.parameters())
         if not params:
             return []
-        return [{"params": params, "lr": getattr(self.trainer, "unet_lr", 1e-4)}]
+        return [{"params": params,
+                 "lr": resolve_component_lr(self.trainer, "unet_lr", label="MiniMax-H3 LoRA")}]
 
     def save_checkpoint(self, lora_layers: Dict[str, nn.Module],
                          step: int, epoch: int, output_path: Path):

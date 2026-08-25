@@ -18026,6 +18026,9 @@ components:
             `fp8_base_dtype_ignored`,
             `fused_gradient_accumulation_ignored`,
             `fused_grad_clipping_ignored`,
+            `component_lr_mismatch`,
+            `component_lr_zero`,
+            `component_lr_flattened`,
             `training_event_cap_reached`,
             `warnings_truncated` (persisted list only; never broadcast).
           example: fused_gradient_accumulation_ignored

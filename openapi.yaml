@@ -18842,6 +18842,48 @@ components:
             weights resident. Emergency saves may run after CPU normalization.
             Requires batch_size=1, blocks_to_swap=0,
             num_optimizer_groups=0 and reference conditioning disabled.
+        sensenova_full_finetune_save_format:
+          type: 'string'
+          enum: ['mixed', 'bf16', 'int8']
+          default: 'mixed'
+          description: >-
+            SenseNova full fine-tuning only: on-disk format of the saved model.
+            The trained MoT half is dequantized from INT8 to bf16 at load, so a
+            save decides what to write for the untrained half and whether to put
+            the trained half back on the INT8 grid.
+
+            `mixed` (default): trained half bf16, untrained half INT8 as loaded.
+            Measured on the distributed checkpoint with the generation half
+            trained: 25.12 GiB on disk, 25.43 GiB peak VRAM at inference, and on
+            an untrained model the output is bitwise identical to the INT8 base.
+
+            `bf16`: both halves bf16. Same measurement: 32.66 GiB on disk, 32.99
+            GiB peak VRAM, output bitwise identical to the INT8 base.
+
+            `int8`: the trained half is requantized to per-output-row INT8, so
+            the file matches the distribution format at 17.58 GiB (inference VRAM
+            not measured). It is also the only one of the three that can be
+            selected again as a training base: this architecture's training guard
+            (`_assert_supported_quantized_training_base`) requires all 588 decoder
+            Linears to be one quantized flavour, which neither `mixed` (294 of
+            them dequantized) nor `bf16` (none quantized) satisfies.
+
+            `int8` is the only lossy option: it discards every weight update
+            smaller than half an INT8 grid step, and it also re-rounds weights
+            that were never trained. Measured over all 294 generation Linears
+            (8,103,395,328 elements) of the distributed checkpoint,
+            element-weighted mean grid step 2.70e-3, with a synthetic isotropic
+            Gaussian weight update applied in FP32 (not a real optimizer
+            trajectory): at update std 1e-4, 99.94% of elements do not move and
+            0.55% of the update direction survives; at 3.16e-4, 95.57% do not
+            move; at 1e-3, 52.09%; at 1e-2, 1.81% and 99.96% of the direction
+            survives. In a run the trained half is bf16, whose ULP at unit scale
+            is the same order as half the mean grid step, so on the production
+            path an unmeasured share of the immobility at the smallest update
+            sizes belongs to bf16 storage rather than to this requantization.
+            Round-tripping an untrained half through the same requantization
+            gives RMS relative error 6.58e-4 and max 7.81e-3.
+          example: 'mixed'
         block_swap_h2d_only:
           type: 'boolean'
           default: false

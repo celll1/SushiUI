@@ -863,6 +863,11 @@ class BaseTrainer(ABC):
             _TD_PHASE_EVICTION["sensenova_mot_phase_eviction"],
         ))
         self.sensenova_phase_evictor = None
+        # Validated by SenseNovaFullParameterAdapter, its only reader.
+        self.sensenova_full_finetune_save_format = str(_tc.get(
+            "sensenova_full_finetune_save_format",
+            _TD_PHASE_EVICTION["sensenova_full_finetune_save_format"],
+        ))
         self.block_swap_h2d_only = bool(_tc.get("block_swap_h2d_only", False))
         self.block_swap_ring_size = int(_tc.get("block_swap_ring_size", 2))
 

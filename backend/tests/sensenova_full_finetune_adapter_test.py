@@ -287,13 +287,21 @@ def test_a_single_half_produces_a_single_group():
 
 
 # ---------------------------------------------------------------------------
-# The checkpoint format is not decided here
+# The checkpoint format (round trips live in sensenova_full_finetune_save_test)
 # ---------------------------------------------------------------------------
 
-def test_saving_is_refused_because_the_output_format_is_undecided():
-    adapter = SenseNovaFullParameterAdapter(_full_ft_trainer("gen", _materialized("gen")))
-    with pytest.raises(NotImplementedError, match="output.*format is undecided"):
-        adapter.save_checkpoint(1, 0, Path("unused.safetensors"))
+def test_saving_defaults_to_the_mixed_format(tmp_path):
+    from api.param_defaults import TRAINING_DEFAULTS
+
+    trainer = _full_ft_trainer("gen", _materialized("gen"),
+                               sensenova_model_config=None, model_path=None,
+                               log_prefix="[SenseNova]")
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    assert adapter._resolve_save_format() == TRAINING_DEFAULTS[
+        "sensenova_full_finetune_save_format"
+    ] == "mixed"
+    adapter.save_checkpoint(1, 0, tmp_path / "run_step_000001")
+    assert list(tmp_path.glob("run_step_000001*"))
 
 
 # ---------------------------------------------------------------------------

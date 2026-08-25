@@ -491,6 +491,332 @@ def materialize_int8_decoder_linears(
     return materialized
 
 
+# Loose sibling files ``_load_sensenova_tokenizer`` and the ``config.json``
+# fallback need next to a checkpoint. Copied beside a training save so the
+# result loads through the same path the distributed checkpoint does.
+SENSENOVA_SIBLING_FILES = (
+    "tokenizer_config.json", "vocab.json", "merges.txt",
+    "special_tokens_map.json", "added_tokens.json", "config.json",
+)
+
+
+def _sensenova_branch_halves(branch: str) -> "tuple[str, ...]":
+    if branch == "both":
+        return ("gen", "und")
+    if branch in ("gen", "und"):
+        return (branch,)
+    raise ValueError(
+        f"Unknown SenseNova branch {branch!r} "
+        f"(expected one of {sorted(SENSENOVA_BRANCH_LINEAR_COUNTS)})"
+    )
+
+
+def _assert_scale_weight_conjunction(weight_dtypes: Dict[str, torch.dtype],
+                                     scale_stems: "set[str]") -> None:
+    """The loader's own per-Linear gate, asserted over what is about to be written.
+
+    ``swap_linears_to_int8`` takes a Linear only when its ``.weight`` is int8 AND
+    a ``.weight_scale`` sits beside it, and ``verify_quantized_swap`` then
+    demands swapped == scale keys == int8 weight keys. So a bf16 weight that kept
+    its stale scale is refused on read -- by a message describing the INVERSE
+    defect ("a scale-less (or partially scale-less) file cannot be read back"),
+    which is unfindable from the symptom. Checked here instead, where the cause
+    is in hand.
+    """
+    stale = sorted(s for s in scale_stems if weight_dtypes.get(s) is not torch.int8)
+    missing = sorted(s for s, d in weight_dtypes.items()
+                     if d is torch.int8 and s not in scale_stems)
+    if not stale and not missing:
+        return
+    raise RuntimeError(
+        f"SenseNova checkpoint write would violate the per-Linear rule its own "
+        f"loader reads back with: {len(stale)} Linear(s) carry a weight_scale "
+        f"beside a non-int8 weight (first: {stale[:3] or None}) and "
+        f"{len(missing)} carry an int8 weight with no scale (first: "
+        f"{missing[:3] or None}). A dequantized weight's scale is meaningless "
+        f"and must be dropped with it."
+    )
+
+
+def save_sensenova_full_finetune_checkpoint(
+    transformer: NEOChatModel,
+    output_path: str,
+    *,
+    branch: str,
+    save_format: str,
+    config: Any = None,
+    extra_metadata: Optional[Dict[str, str]] = None,
+    source_dir: Optional[str] = None,
+    max_shard_bytes: Optional[int] = None,
+) -> "tuple[str, Dict[str, Any]]":
+    """Write a full-fine-tuned SenseNova model this loader can read back.
+
+    ``branch`` is the half (or halves) a full fine-tune materialized;
+    ``save_format`` is one of ``param_defaults.SENSENOVA_FULL_FINETUNE_SAVE_FORMATS``
+    (SENSENOVA_TRAINING_DESIGN.md 6.4):
+
+    * ``mixed`` -- trained half bf16, untrained half's int8 codes and scales
+      passed through untouched. With BOTH halves trained there is no int8 half
+      left, so this degenerates into ``bf16``; the effective format is returned
+      and recorded in metadata rather than silently mislabelled.
+    * ``bf16``   -- both halves floating point. The untrained half is dequantized
+      here, by the same spelling ``materialize_int8_decoder_linears`` uses, so it
+      computes the function the int8 half computed at this dtype.
+    * ``int8``   -- the trained half is requantized with the repo's own
+      ``quantize_weight_to_int8``, giving back the distributed layout. LOSSY:
+      any update below half a grid step is discarded, and an untouched weight is
+      re-rounded too.
+
+    Streamed, never assembled: one shard buffer plus one tensor of host cost,
+    not a second copy of a 16.2 B-parameter model.
+
+    COMPLETENESS IS THE WRITER'S JOB, because the read path accepts any subset
+    of the 588 as materialized -- a half-written half loads clean and is a
+    valid, wrong model. Counted on the live tree, counted again over the emitted
+    keys, and committed atomically (provisional shard names, index last).
+
+    Returns ``(written path, census)``.
+    """
+    from api.param_defaults import SENSENOVA_FULL_FINETUNE_SAVE_FORMATS
+    from core.models.common.quantized_export import (
+        DEFAULT_EXPORT_SHARD_BYTES, ShardWriter, link_siblings,
+        sensenova_export_metadata,
+    )
+    from core.models.ideogram4.vendor.int8_linear import (
+        Int8Linear, quantize_weight_to_int8,
+    )
+
+    from .sensenova_lora import iter_sensenova_lora_targets
+
+    if save_format not in SENSENOVA_FULL_FINETUNE_SAVE_FORMATS:
+        raise ValueError(
+            f"Unknown SenseNova save format {save_format!r}; supported: "
+            f"{', '.join(SENSENOVA_FULL_FINETUNE_SAVE_FORMATS)}"
+        )
+    trained_halves = _sensenova_branch_halves(branch)
+    frozen_halves = tuple(h for h in ("gen", "und") if h not in trained_halves)
+    effective = "bf16" if (save_format == "mixed" and not frozen_halves) else save_format
+
+    trained: Dict[str, nn.Module] = {}
+    for half in trained_halves:
+        for path, _parent, _attr, module in iter_sensenova_lora_targets(transformer, branch=half):
+            trained[path] = module
+    frozen: Dict[str, nn.Module] = {}
+    for half in frozen_halves:
+        for path, _parent, _attr, module in iter_sensenova_lora_targets(transformer, branch=half):
+            frozen[path] = module
+
+    expected_trained = sum(SENSENOVA_BRANCH_LINEAR_COUNTS[h] for h in trained_halves)
+    expected_frozen = sum(SENSENOVA_BRANCH_LINEAR_COUNTS[h] for h in frozen_halves)
+    if len(trained) != expected_trained or len(frozen) != expected_frozen:
+        raise RuntimeError(
+            f"SenseNova save enumerated {len(trained)} trained and {len(frozen)} "
+            f"frozen decoder Linear(s) on branch {branch!r}, expected "
+            f"{expected_trained} and {expected_frozen}. Refusing to write a "
+            f"checkpoint from a tree that is not the 42-layer MoT decoder."
+        )
+    unmaterialized = sorted(
+        path for path, module in trained.items()
+        if not isinstance(getattr(module, "weight", None), nn.Parameter)
+    )
+    if unmaterialized:
+        raise RuntimeError(
+            f"SenseNova save found {len(unmaterialized)} of {len(trained)} "
+            f"{branch}-branch decoder Linear(s) still holding an int8 buffer "
+            f"(first: {unmaterialized[0]}). Those layers were never trained; "
+            f"writing them would produce a file that loads clean and silently "
+            f"carries the base weights for part of the half."
+        )
+    not_int8 = sorted(path for path, module in frozen.items() if type(module) is not Int8Linear)
+    if not_int8:
+        raise RuntimeError(
+            f"SenseNova save expects the untrained half's {len(frozen)} decoder "
+            f"Linear(s) to be plain Int8Linear, but {len(not_int8)} is/are not "
+            f"(first: {not_int8[0]})."
+        )
+
+    output_path = str(output_path)
+    if not output_path.endswith(".safetensors"):
+        output_path += ".safetensors"
+    directory = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(directory, exist_ok=True)
+
+    config_dict = config.to_dict() if hasattr(config, "to_dict") else (config or {})
+    metadata = dict(sensenova_export_metadata(config_dict))
+    metadata["sensenova_trained_branch"] = branch
+    metadata["sensenova_save_format"] = effective
+    metadata["sensenova_save_format_requested"] = save_format
+    for key, value in (extra_metadata or {}).items():
+        metadata[str(key)] = str(value)
+
+    writer = ShardWriter(
+        output_path, metadata,
+        int(max_shard_bytes or DEFAULT_EXPORT_SHARD_BYTES),
+    )
+    # What the frozen half is dequantized into, taken from the trained half so
+    # both ends of a bf16 file carry one dtype rather than a hardcoded guess.
+    float_dtype = next(iter(trained.values())).weight.dtype
+    if not float_dtype.is_floating_point:
+        raise RuntimeError(
+            f"SenseNova save expects the materialized half to hold floating-point "
+            f"weights; got {float_dtype}"
+        )
+    weight_dtypes: Dict[str, torch.dtype] = {}
+    scale_stems: "set[str]" = set()
+    census = {"trained_bf16": 0, "trained_int8": 0, "frozen_int8": 0,
+              "frozen_bf16": 0, "other": 0}
+    try:
+        for key, tensor in transformer.state_dict().items():
+            stem, _, leaf = key.rpartition(".")
+            tensor = tensor.detach()
+            if stem in trained:
+                if leaf == "weight_scale":
+                    raise RuntimeError(
+                        f"SenseNova save found a weight_scale on the materialized "
+                        f"Linear {stem}; a dequantized weight has no scale."
+                    )
+                if leaf == "weight":
+                    if effective == "int8":
+                        codes, scale = quantize_weight_to_int8(tensor)
+                        writer.add(f"{TRANSFORMER_PREFIX}{key}", codes.cpu().contiguous())
+                        writer.add(f"{TRANSFORMER_PREFIX}{stem}.weight_scale",
+                                   scale.cpu().contiguous())
+                        weight_dtypes[stem] = torch.int8
+                        scale_stems.add(stem)
+                        census["trained_int8"] += 1
+                        continue
+                    writer.add(f"{TRANSFORMER_PREFIX}{key}", tensor.cpu().contiguous())
+                    weight_dtypes[stem] = tensor.dtype
+                    census["trained_bf16"] += 1
+                    continue
+            elif stem in frozen:
+                if effective == "bf16":
+                    if leaf == "weight_scale":
+                        continue  # meaningless beside the dequantized weight
+                    if leaf == "weight":
+                        # The spelling materialize_int8_decoder_linears and
+                        # Int8Linear._dequant_forward both use, including its
+                        # scale-shape refusal: a mis-shaped scale broadcasts
+                        # into a silently wrong weight rather than raising.
+                        module = frozen[stem]
+                        scale = module.weight_scale
+                        if scale.dim() != 1 or scale.shape[0] != module.out_features:
+                            raise RuntimeError(
+                                f"SenseNova {stem} carries a weight_scale of shape "
+                                f"{tuple(scale.shape)}; Int8Linear registers it as "
+                                f"(out_features,) = ({module.out_features},). Refusing "
+                                f"rather than reshaping -- this is the blanket squeeze "
+                                f"_reshape_convrot_scales warns against."
+                            )
+                        weight = tensor * scale.to(float_dtype).unsqueeze(1)
+                        writer.add(f"{TRANSFORMER_PREFIX}{key}", weight.cpu().contiguous())
+                        weight_dtypes[stem] = weight.dtype
+                        census["frozen_bf16"] += 1
+                        del weight
+                        continue
+                elif leaf == "weight_scale":
+                    scale_stems.add(stem)
+                elif leaf == "weight":
+                    weight_dtypes[stem] = tensor.dtype
+                    census["frozen_int8"] += 1
+            else:
+                if leaf == "weight_scale":
+                    raise RuntimeError(
+                        f"SenseNova save found a quantized Linear outside the 588 "
+                        f"decoder targets ({stem}); this tree is not the base this "
+                        f"route was built for."
+                    )
+                census["other"] += 1
+            writer.add(f"{TRANSFORMER_PREFIX}{key}", tensor.cpu().contiguous())
+
+        int8_expected = expected_trained if effective == "int8" else 0
+        bf16_expected = 0 if effective == "int8" else expected_trained
+        frozen_int8_expected = 0 if effective == "bf16" else expected_frozen
+        frozen_bf16_expected = expected_frozen if effective == "bf16" else 0
+        if (census["trained_int8"], census["trained_bf16"],
+                census["frozen_int8"], census["frozen_bf16"]) != (
+                int8_expected, bf16_expected, frozen_int8_expected, frozen_bf16_expected):
+            raise RuntimeError(
+                f"SenseNova {effective} save wrote {census} decoder Linear(s), "
+                f"expected trained_int8={int8_expected}, trained_bf16={bf16_expected}, "
+                f"frozen_int8={frozen_int8_expected}, frozen_bf16={frozen_bf16_expected} "
+                f"for branch {branch!r}. A partial half loads without a warning, so "
+                f"the write is refused instead of committed."
+            )
+        _assert_scale_weight_conjunction(weight_dtypes, scale_stems)
+    except BaseException:
+        writer.abort()
+        raise
+    written = writer.close()
+
+    if source_dir and os.path.isdir(source_dir):
+        link_siblings(source_dir, directory, names=SENSENOVA_SIBLING_FILES)
+    print(
+        f"[SenseNovaLoader] saved {branch} full fine-tune checkpoint "
+        f"(format={effective}"
+        + (f", requested={save_format}" if effective != save_format else "")
+        + f"): {census['trained_bf16']} bf16 + {census['trained_int8']} int8 trained "
+        f"Linear(s), {census['frozen_bf16']} bf16 + {census['frozen_int8']} int8 "
+        f"frozen Linear(s) -> {written}"
+    )
+    return written, {**census, "effective_format": effective, "branch": branch}
+
+
+def install_sensenova_state_dict(
+    model: nn.Module,
+    sd: Dict[str, torch.Tensor],
+    int8_convrot_source_layers: Dict[str, Dict[str, int]],
+    torch_dtype: torch.dtype,
+    *,
+    path: Optional[str] = None,
+) -> int:
+    """Guard, census, quantized-Linear swap and ``assign=True`` load. Returns the swap count.
+
+    The whole of what ``load_sensenova_from_path`` does to a freshly built
+    (meta-device) tree once the tensors are in hand, factored out so that
+    anything asserting a written checkpoint can be read back exercises THIS
+    code rather than a re-spelling of it.
+    """
+    # The caller's early marker read validated every supported ConvRot marker;
+    # every OTHER declared-semantics marker must still refuse. See
+    # ``_sensenova_quant_dict_views`` for what each of the three views means.
+    guard_sd, plain_sd, sd_for_load = _sensenova_quant_dict_views(sd, int8_convrot_source_layers)
+    refuse_unsupported_quant_semantics(guard_sd, arch=ARCH_LABEL, path=path, label="transformer")
+
+    # Census + verify BEFORE the swap+load, same discipline as every other
+    # quantized loader in this repo (Anima/Ideogram 4): a scale-less or
+    # partially-matched quantized file must refuse rather than silently cast
+    # int8 codes into a bf16 parameter.
+    census = quantized_state_dict_report(plain_sd, arch=ARCH_LABEL, path=path, label="transformer")
+    quant_report = scaled_quantization_report(census, arch=ARCH_LABEL, path=path, label="transformer")
+
+    swapped = 0
+    if int8_convrot_source_layers:
+        from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
+
+        convrot_swapped = swap_linears_to_convrot_int8(
+            model, sd_for_load, int8_convrot_source_layers, torch_dtype
+        )
+        if convrot_swapped != len(int8_convrot_source_layers):
+            raise RuntimeError(
+                f"SenseNova ConvRot metadata mapped {len(int8_convrot_source_layers)} Linear(s), "
+                f"but only {convrot_swapped} module(s) were replaced"
+            )
+        swapped += convrot_swapped
+    _apply_sensenova_convrot_dequant_ablation(model)
+
+    plain_swapped = _swap_sensenova_quantized_linears(model, plain_sd, torch_dtype)
+    verify_quantized_swap(quant_report, plain_swapped, arch=ARCH_LABEL, path=path, label="transformer")
+    swapped += plain_swapped
+
+    missing, unexpected = model.load_state_dict(sd_for_load, strict=False, assign=True)
+    if missing:
+        print(f"[SenseNovaLoader] WARNING: {len(missing)} missing key(s); first 5: {missing[:5]}")
+    if unexpected:
+        print(f"[SenseNovaLoader] WARNING: {len(unexpected)} unexpected key(s); first 5: {unexpected[:5]}")
+    return swapped
+
+
 def load_sensenova_from_path(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -533,43 +859,9 @@ def load_sensenova_from_path(
         model = NEOChatModel(config)
         model.to(torch_dtype)
 
-    # The early marker read above validated every supported ConvRot marker;
-    # every OTHER declared-semantics marker must still refuse. See
-    # ``_sensenova_quant_dict_views`` for what each of the three views means.
-    guard_sd, plain_sd, sd_for_load = _sensenova_quant_dict_views(sd, int8_convrot_source_layers)
-    refuse_unsupported_quant_semantics(guard_sd, arch=ARCH_LABEL, path=model_path, label="transformer")
-
-    # Census + verify BEFORE the swap+load, same discipline as every other
-    # quantized loader in this repo (Anima/Ideogram 4): a scale-less or
-    # partially-matched quantized file must refuse rather than silently cast
-    # int8 codes into a bf16 parameter.
-    census = quantized_state_dict_report(plain_sd, arch=ARCH_LABEL, path=model_path, label="transformer")
-    quant_report = scaled_quantization_report(census, arch=ARCH_LABEL, path=model_path, label="transformer")
-
-    swapped = 0
-    if int8_convrot_source_layers:
-        from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
-
-        convrot_swapped = swap_linears_to_convrot_int8(
-            model, sd_for_load, int8_convrot_source_layers, torch_dtype
-        )
-        if convrot_swapped != len(int8_convrot_source_layers):
-            raise RuntimeError(
-                f"SenseNova ConvRot metadata mapped {len(int8_convrot_source_layers)} Linear(s), "
-                f"but only {convrot_swapped} module(s) were replaced"
-            )
-        swapped += convrot_swapped
-    _apply_sensenova_convrot_dequant_ablation(model)
-
-    plain_swapped = _swap_sensenova_quantized_linears(model, plain_sd, torch_dtype)
-    verify_quantized_swap(quant_report, plain_swapped, arch=ARCH_LABEL, path=model_path, label="transformer")
-    swapped += plain_swapped
-
-    missing, unexpected = model.load_state_dict(sd_for_load, strict=False, assign=True)
-    if missing:
-        print(f"[SenseNovaLoader] WARNING: {len(missing)} missing key(s); first 5: {missing[:5]}")
-    if unexpected:
-        print(f"[SenseNovaLoader] WARNING: {len(unexpected)} unexpected key(s); first 5: {unexpected[:5]}")
+    swapped = install_sensenova_state_dict(
+        model, sd, int8_convrot_source_layers, torch_dtype, path=model_path
+    )
 
     model.eval()
     model.requires_grad_(False)

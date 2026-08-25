@@ -2321,6 +2321,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "blocks_to_swap": 0,
     "use_pinned_memory": False,
     "sensenova_mot_phase_eviction": False,
+    # SenseNova full fine-tune only: on-disk format of the saved model.
+    # SENSENOVA_FULL_FINETUNE_SAVE_FORMATS below carries the measured sizes.
+    "sensenova_full_finetune_save_format": "mixed",
     "block_swap_h2d_only": False,   # H2D-only swap (FLUX.2 LoRA training: no D2H of frozen base)
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1)
     "num_optimizer_groups": 0,
@@ -2801,6 +2804,21 @@ def full_finetune_forces_stochastic_rounding(arch: str) -> bool:
     """Whether ``arch``'s full fine-tune enables stochastic rounding by itself."""
     return bool(FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH.get(
         arch, FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH["_default"]))
+
+
+# On-disk format of a SenseNova full-fine-tune checkpoint. The trained MoT half
+# is dequantized to bf16 at load, so a save has to decide what to do with the
+# other half and whether to put the trained one back on the int8 grid
+# (SENSENOVA_TRAINING_DESIGN.md 6.4). Measured on the real checkpoint, trained
+# half = generation:
+#
+#   mixed  25.12 GiB on disk, 25.43 GiB peak VRAM at inference
+#   bf16   32.66 GiB on disk, 32.99 GiB peak VRAM at inference
+#   int8   17.58 GiB on disk (VRAM unmeasured), and LOSSY -- see the adapter.
+#
+# With both halves trained there is no int8 half left, so "mixed" writes the
+# "bf16" file and says so.
+SENSENOVA_FULL_FINETUNE_SAVE_FORMATS = ("mixed", "bf16", "int8")
 
 
 def resolve_bundle_vae(value, arch: str) -> bool:

@@ -359,13 +359,77 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
         return groups
 
+    def _resolve_save_format(self) -> str:
+        """The requested on-disk format, refused rather than defaulted if unknown."""
+        from api.param_defaults import (
+            SENSENOVA_FULL_FINETUNE_SAVE_FORMATS, TRAINING_DEFAULTS,
+        )
+
+        trainer = self.trainer
+        settings = getattr(trainer, "config", None) or {}
+        value = getattr(trainer, "sensenova_full_finetune_save_format", None)
+        if value is None:
+            value = settings.get(
+                "sensenova_full_finetune_save_format",
+                TRAINING_DEFAULTS["sensenova_full_finetune_save_format"],
+            )
+        value = str(value).strip().lower()
+        if value not in SENSENOVA_FULL_FINETUNE_SAVE_FORMATS:
+            raise ValueError(
+                f"Unknown sensenova_full_finetune_save_format {value!r}. "
+                f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_SAVE_FORMATS)} "
+                f"(docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). Refusing rather "
+                f"than falling back to the default: a save is the only artefact "
+                f"this run produces."
+            )
+        return value
+
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
-        """Refused: writing any of the three candidate formats would pick one."""
-        raise NotImplementedError(
-            "SenseNova full fine-tuning cannot save a checkpoint yet: the output "
-            "format is undecided (mixed int8+bf16, both halves bf16, or the "
-            "trained half requantized to int8 -- see "
-            "docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). This is why full "
-            "fine-tuning is still refused for this architecture before a run "
-            "starts. Use training_method='lora'."
+        """Write the trained MoT half in the selected format (6.4).
+
+        Every format is meaningful on every branch, with one degeneracy: with
+        both halves trained there is no int8 half for ``mixed`` to keep, so it
+        writes the ``bf16`` file. That is announced rather than relabelled --
+        the effective format is in the checkpoint's metadata and in a warning on
+        the run.
+
+        Only ``int8`` produces a file this repo can train on again:
+        ``_assert_supported_quantized_training_base`` requires all 588 decoder
+        Linears to be one quantized flavour, which a mixed or bf16 file is not.
+        """
+        import os
+
+        from core.models.sensenova.loader import (
+            save_sensenova_full_finetune_checkpoint,
+        )
+        from core.training.training_events import emit_training_warning
+
+        trainer = self.trainer
+        save_format = self._resolve_save_format()
+        branch, targets = self._resolve_scope()
+        model_path = getattr(trainer, "model_path", None)
+        source_dir = os.path.dirname(str(model_path)) if model_path else None
+
+        if save_format == "mixed" and branch == "both":
+            emit_training_warning(
+                "SenseNova full fine-tuning is training both MoT halves, so the "
+                "'mixed' checkpoint format has no int8 half left to keep and the "
+                "'bf16' file is written instead (both halves floating point). "
+                "The checkpoint's metadata records the effective format.",
+                code="sensenova_save_format_degenerate",
+                prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+            )
+
+        written, census = save_sensenova_full_finetune_checkpoint(
+            trainer.transformer,
+            str(output_path),
+            branch=branch,
+            save_format=save_format,
+            config=getattr(trainer, "sensenova_model_config", None),
+            source_dir=source_dir,
+            extra_metadata={"step": str(step), "epoch": str(epoch)},
+        )
+        print(
+            f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "
+            f"{branch} decoder Linear(s) as '{census['effective_format']}' -> {written}"
         )

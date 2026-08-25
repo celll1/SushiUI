@@ -7091,6 +7091,10 @@ export interface TrainingRunCreateRequest {
   run_name?: string;  // Optional - will use UUID if not provided
   training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
   sensenova_mot_phase_eviction?: boolean;
+  // SenseNova full fine-tune only: on-disk format of the saved model.
+  // "mixed" (default) | "bf16" | "int8". See openapi.yaml for the measured
+  // sizes and the int8 requantization loss census.
+  sensenova_full_finetune_save_format?: string;  // "mixed" (default) | "bf16" | "int8"
   base_model_path: string;
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion

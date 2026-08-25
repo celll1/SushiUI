@@ -115,6 +115,31 @@ class ConnectionManager:
         self.message_queue.put(data)
         self._notify_sender()
 
+    def send_training_log(
+        self,
+        run_id: int,
+        level: str,
+        message: str,
+        code: str = None,
+    ):
+        """Broadcast one structured notice from a training run.
+
+        Carries only what the trainer emitted through
+        ``core.training.training_events`` -- an overridden, ignored or
+        unimplementable setting -- not the log stream, which stays on the
+        backend console. Thread-safe (uses the message queue).
+        """
+        data = {
+            "type": "training_log",
+            "run_id": run_id,
+            "level": level,
+            "message": message,
+        }
+        if code:
+            data["code"] = code
+        self.message_queue.put(data)
+        self._notify_sender()
+
     def send_tagger_metrics(
         self,
         run_id: str,

@@ -7031,6 +7031,15 @@ export const getRandomCaption = async (
 // Training API
 // ============================================================
 
+/** One structured notice from a training run (a setting overridden or ignored).
+ *  Same shape as the `training_log` WebSocket message minus the envelope —
+ *  see backend/api/WS_PROTOCOL.md. */
+export interface TrainingLogEvent {
+  level: "info" | "warning" | "error";
+  code?: string | null;
+  message: string;
+}
+
 export interface TrainingRun {
   id: number;
   dataset_id: number;
@@ -7058,6 +7067,8 @@ export interface TrainingRun {
   resumed_from_step?: number;  // Step at resume (for accurate ETA calculation)
   completed_at?: string;
   updated_at: string;
+  /** Detail payload only; absent on the summary rows returned by the run list. */
+  warnings?: TrainingLogEvent[];
 }
 
 export interface DatasetConfigItem {
@@ -7360,6 +7371,9 @@ export interface TrainingStatus {
   phase?: string | null;
   phase_progress?: number | null;
   phase_detail?: string | null;
+  /** Backlog for the `training_log` WebSocket channel, which replays nothing on
+   *  connect. Every notice this run has emitted, in order. */
+  warnings?: TrainingLogEvent[];
 }
 
 // ---------------------------------------------------------------------------

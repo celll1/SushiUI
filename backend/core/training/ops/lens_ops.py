@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 
 import torch
 
+from ..training_events import emit_training_warning
 from .training_method import trains_denoiser_weights
 
 
@@ -88,9 +89,13 @@ def load_components(trainer) -> None:
         trainer.transformer_original = trainer.transformer
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
-        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} requires a "
-              f"frozen transformer and is ignored when the transformer itself is trained "
-              f"(full fine-tune with train_unet=True). The base stays unquantised.")
+        emit_training_warning(
+            f"fp8_base_dtype={fp8_base_dtype} requires a "
+            f"frozen transformer and is ignored when the transformer itself is trained "
+            f"(full fine-tune with train_unet=True). The base stays unquantised.",
+            code="fp8_base_dtype_ignored",
+            prefix=trainer.log_prefix,
+        )
 
     # Block-swap deferred; conductor handle initialised to None.
     trainer.layer_offload_conductor = None

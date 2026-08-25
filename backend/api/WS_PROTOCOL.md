@@ -34,7 +34,8 @@ ws://<host>:<port>/api/v1/ws/progress
 There is **no per-request / per-task subscription model**. Every connected client is
 appended to `ConnectionManager.active_connections`
 (`backend/api/websocket.py:8-23`), and every message the server produces —
-image-generation progress, LoRA/Full-FT training metrics, tagger-training metrics,
+image-generation progress, LoRA/Full-FT training metrics, training notices,
+tagger-training metrics,
 and dataset-scan progress — is broadcast (`ConnectionManager.broadcast`,
 `backend/api/websocket.py:232-237`) to **all** currently connected clients, with no
 job id, request id, or client id filtering.
@@ -191,6 +192,58 @@ called from the training loop in `backend/core/training/base_trainer.py` (the
 }
 ```
 
+### `training_log`
+
+One structured notice from a LoRA/Full-FT training run: a setting that was
+overridden, ignored, or is not implementable on the path the run chose. Sent
+from `ConnectionManager.send_training_log()` (`backend/api/websocket.py`),
+called from the `event_callback` the `/training/runs/{run_id}/start` handler
+passes to `TrainingProcess.start()` (`backend/api/routes.py`).
+
+**This is not a log tail.** The training subprocess writes a lot to stdout and
+none of it reaches this channel. Only a call through
+`backend/core/training/training_events.py` (`emit_training_warning` /
+`emit_training_event`) produces an event: that helper writes the ordinary human
+line *and* a sentinel-prefixed JSON line, and `TrainingProcess._monitor_logs`
+lifts the sentinel line off the stream. Everything else stays on the backend
+console, as before.
+
+Bounds a client can rely on:
+- Identical `(level, code, message)` triples are forwarded **once** per run.
+- At most `TrainingProcess.MAX_EVENTS_PER_RUN` (200) distinct events per run;
+  on reaching it one final event with `code: "training_event_cap_reached"` is
+  sent and the rest are dropped.
+- `message` is truncated to 2000 characters, `code` to 64.
+
+**Backlog on connect**: this channel replays nothing, like every other type
+here. `warning`/`error` events are persisted on the run row instead and are
+returned by `GET /training/runs/{run_id}/status` (and in the detail payload of
+`GET /training/runs/{run_id}`) as a `warnings` array of the same shape. A client
+that connects mid-run, reloads, or opens a finished run should read that array
+and merge live events into it by `(level, code, message)`. The persisted list is
+capped at 50 entries per run and is cleared when the run is (re)started. The
+last of those 50 slots is reserved: a run that overflows it gets a final entry
+with `code: "warnings_truncated"` rather than a list that looks complete. That
+code appears only in the persisted array, never as a broadcast message.
+
+| field | type | description |
+|-------|------|-------------|
+| `type` | string | always `"training_log"` |
+| `run_id` | int | training run id (same id space as `training_metrics`) |
+| `level` | string | `"info"`, `"warning"` or `"error"`. Only `warning`/`error` are persisted |
+| `message` | string | human-readable text; the same text the trainer wrote to its console |
+| `code` | string (optional) | stable identifier for the notice, for clients matching on something other than text. Absent when the emitter supplied none. Current codes: `sensenova_stochastic_rounding_forced`, `fp8_base_dtype_ignored`, `fused_gradient_accumulation_ignored`, `fused_grad_clipping_ignored`, `training_event_cap_reached` |
+
+```json
+{
+  "type": "training_log",
+  "run_id": 42,
+  "level": "warning",
+  "code": "fused_gradient_accumulation_ignored",
+  "message": "gradient_accumulation_steps=4 is IGNORED under the fused backward pass. ..."
+}
+```
+
 ### `tagger_metrics`
 
 Tagger-training progress/metrics. Sent from
@@ -316,6 +369,10 @@ async def watch_progress():
 
             elif msg_type == "training_metrics":
                 print(f"[training run={msg['run_id']}] step={msg['step']} loss={msg['loss']}")
+
+            elif msg_type == "training_log":
+                print(f"[training run={msg['run_id']}] {msg['level'].upper()} "
+                      f"{msg.get('code') or '-'}: {msg['message']}")
 
             elif msg_type == "tagger_metrics":
                 print(f"[tagger run={msg['run_id']}] event={msg['event']} step={msg['step']}")

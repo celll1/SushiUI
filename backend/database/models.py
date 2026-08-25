@@ -847,7 +847,13 @@ class TrainingRun(TrainingBase):
     # Logs
     log_file = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
-    
+    # Structured notices the trainer emitted (settings overridden or ignored).
+    # [{level, code, message}], capped by
+    # core.training.training_events.MAX_PERSISTED_WARNINGS_PER_RUN so a run
+    # cannot grow its own row without bound. Persisted because a notice a user
+    # was not connected to see is no better than a console print.
+    warnings = Column(JSON, default=list)
+
     # Timestamps
     created_at = Column(DateTime, default=get_local_now, index=True)
     started_at = Column(DateTime, nullable=True)
@@ -910,6 +916,7 @@ class TrainingRun(TrainingBase):
         # Detail-only fields below.
         out["dataset_configs"] = self.dataset_configs
         out["config_yaml"]     = self.config_yaml
+        out["warnings"]        = list(self.warnings or [])
 
         # Extract component-specific LRs from YAML config
         unet_lr = None

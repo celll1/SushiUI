@@ -46,6 +46,16 @@ interface TrainingMetrics {
   resume_seq?: number;
 }
 
+/** A structured notice from a training run — a setting that was overridden,
+ *  ignored, or is not implementable on the path the run chose. Not a log tail:
+ *  ordinary trainer stdout never arrives here. See backend/api/WS_PROTOCOL.md. */
+export interface TrainingLogMessage {
+  run_id: number;
+  level: "info" | "warning" | "error";
+  message: string;
+  code?: string;
+}
+
 export interface FpFnScatterData {
   fp: number[];
   fn: number[];
@@ -92,6 +102,7 @@ export interface DatasetScanProgress {
 }
 
 type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;
+type TrainingLogCallback = (event: TrainingLogMessage) => void;
 type TaggerMetricsCallback = (metrics: TaggerMetrics) => void;
 type DatasetScanProgressCallback = (progress: DatasetScanProgress) => void;
 
@@ -99,6 +110,7 @@ class ProgressClient {
   private eventSource: EventSource | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
   private trainingMetricsCallbacks: Set<TrainingMetricsCallback> = new Set();
+  private trainingLogCallbacks: Set<TrainingLogCallback> = new Set();
   private taggerMetricsCallbacks: Set<TaggerMetricsCallback> = new Set();
   private datasetScanProgressCallbacks: Set<DatasetScanProgressCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -178,6 +190,14 @@ class ProgressClient {
           this.trainingMetricsCallbacks.forEach((callback) => {
             callback(metrics);
           });
+        } else if (data.type === "training_log") {
+          const ev: TrainingLogMessage = {
+            run_id: data.run_id,
+            level: data.level,
+            message: data.message,
+            code: data.code,
+          };
+          this.trainingLogCallbacks.forEach((cb) => cb(ev));
         } else if (data.type === "tagger_metrics") {
           const metrics: TaggerMetrics = {
             run_id: data.run_id,
@@ -284,6 +304,14 @@ class ProgressClient {
     this.trainingMetricsCallbacks.delete(callback);
   }
 
+  subscribeToTrainingLog(callback: TrainingLogCallback) {
+    this.trainingLogCallbacks.add(callback);
+  }
+
+  unsubscribeFromTrainingLog(callback: TrainingLogCallback) {
+    this.trainingLogCallbacks.delete(callback);
+  }
+
   subscribeToTaggerMetrics(callback: TaggerMetricsCallback) {
     this.taggerMetricsCallbacks.add(callback);
   }
@@ -305,4 +333,4 @@ class ProgressClient {
 export const wsClient = new ProgressClient();
 
 // Export types
-export type { TrainingMetrics, TrainingMetricsCallback, TaggerMetricsCallback };
+export type { TrainingMetrics, TrainingMetricsCallback, TaggerMetricsCallback, TrainingLogCallback };

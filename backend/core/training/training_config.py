@@ -257,6 +257,13 @@ def _build_train_section(
     # others False); an explicit boolean always wins.
     # Read unconditionally; LoRA / pixel-space archs ignore it.
     train["bundle_vae"] = p.get("bundle_vae", None)
+    # SenseNova full-fine-tune save format. Written unconditionally (it is not a
+    # block-swap option and full FT does not go through that branch); every other
+    # architecture reads it and ignores it.
+    train["sensenova_full_finetune_save_format"] = p.get(
+        "sensenova_full_finetune_save_format",
+        _TD["sensenova_full_finetune_save_format"],
+    )
     train["gradient_checkpointing"] = p.get("gradient_checkpointing", True)
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)

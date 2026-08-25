@@ -811,7 +811,7 @@ _add_training_unsupported(
 
 _add_training_unsupported(
     "sensenova", "full_finetune",
-    "SenseNova full fine-tuning has no checkpoint format to save into: it emits the model itself, and this architecture's inference loader reads a weight-only INT8 checkpoint. Until that format is decided a run would train and then be unable to write a result, so it is refused before it starts; use LoRA training")
+    "SenseNova full fine-tuning is implemented but not yet accepted: the loader materializes the trained MoT half, the adapter collects and saves it (sensenova_full_finetune_save_format selects mixed / bf16 / int8), and what is still open is the run-acceptance path itself, which is unlocked separately from the parts it depends on. Use LoRA training")
 _add_training_unsupported(
     "sensenova", "relora",
     "SenseNova ReLoRA cannot merge dense updates back into its weight-only INT8 base; use LoRA training")

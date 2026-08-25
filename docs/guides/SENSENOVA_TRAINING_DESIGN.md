@@ -867,6 +867,39 @@ Phase 2b は LoRA と違い**モデル本体を出力する**ため、Phase 1 �
 >
 > **ここで format を選ばない。** 3 択は意図的に開いたままで、選択は利用者の判断である。
 
+##### 【U-2-2 step 3 前提 (b) 着地】3 択は API パラメータになった
+
+`save_checkpoint` は実装され、**3 択は捨てずに設定値として出荷した**
+（`sensenova_full_finetune_save_format`、既定 `"mixed"`。
+`param_defaults` → `openapi.yaml` → `routes.py` → `training_config.py` →
+`base_trainer` → `SenseNovaFullParameterAdapter`）。実体は
+`loader.save_sensenova_full_finetune_checkpoint`（reader と同じファイルに置いた）。
+
+- **branch は gen だけではない。** 3 形式はいずれも gen / und / both で意味を持つ。
+  唯一の縮退は **both × mixed** — 残す int8 half が存在しないので `bf16` の
+  ファイルそのものになる。**黙って改名せず**、metadata に実効 format を書き、
+  `training_log` に warning を出す。無効な組み合わせは無い。
+- **実サイズは実測表と一致する**（safetensors ヘッダから算術で導出。テンソルは
+  1 つも実体化していない）: mixed(gen) 25.1167 GiB / both bf16 32.6575 GiB /
+  int8 17.5759 GiB。
+- **mixed と bf16 は「再学習の base」にはならない。**
+  `_assert_supported_quantized_training_base` は 588 個すべてが単一の量子化
+  flavour であることを要求するので、294 個が `nn.Linear` の mixed も、
+  量子化ゼロの bf16 も拒否される。**int8 形式だけが再選択できる。**
+  これは UI 文言にも書いた。
+- **書き手が完全性を保証する。** 読み手は per-Linear 判定 + 3 カウント一致しか
+  見ないので、**588 のどの部分集合でも「materialize 済み」として受理する** —
+  half の途中で止まった save は無警告でロードでき、valid だが誤ったモデルになる。
+  そこで (1) 書き込み前に live tree を数え、(2) 出力キーを数え、
+  (3) shard を仮名で書いて index を最後に置く（`ShardWriter`）。3 つは互いを
+  代替しない。
+- **stale `weight_scale` の罠**（bf16 weight の横に scale を残すと
+  `verify_quantized_swap` が **逆の欠陥**「partially scale-less」として拒否する）は、
+  **live module tree から書く**ことで構造的に起こり得なくし、さらに書き込み側で
+  loader と同じ連言を assert する。負の対照はテストに記録した。
+- host RAM は**ストリーミングで 1 shard 分**。既定 4 GiB 閾値、実 checkpoint の
+  最大テンソルが 1187.00 MiB なので peak は約 4 GiB + 一時 dequant 96 MiB。
+
 Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で採用した経路を
 明示する。現行ガードは未提供の full FT を広告せず、未実装であることと LoRA 代替だけを
 示す。
@@ -2456,8 +2489,11 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     > （bf16 要素の 84.5% が step 数によらず一度も動かず、loss は正常に下がる。
     > §6.3）。現在はこのルートで強制 ON になっている。
     >
-    > **(b) §6.4 の checkpoint format の決定 — 未決定。** 3 候補は
-    > **意図的に開いたまま**にしてある（選ぶのは実装者ではない）。
+    > **(b) §6.4 の checkpoint format の決定 — DONE。** 3 候補は捨てずに
+    > `sensenova_full_finetune_save_format`（既定 `mixed`）として出荷した。
+    > gen / und / both × 3 形式すべてが有効で、無効な組み合わせは無い
+    > （both × mixed のみ bf16 へ縮退し、それを告知する）。§6.4 末尾。
+    > **step 3 の 3 前提はこれで全部満たされた。step 3 自体は未着地である。**
     >
     > **(c) ユーザーに届く通知経路 — DONE。** 以前はこの強制が
     > **trainer の stdout にしか出ず**、`routes.py` の `log_callback` が

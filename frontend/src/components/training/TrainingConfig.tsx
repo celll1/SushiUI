@@ -235,6 +235,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   blocks_to_swap: 0,
   use_pinned_memory: false,
   sensenova_mot_phase_eviction: false,
+  sensenova_full_finetune_save_format: "mixed",
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -861,6 +862,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
       sensenova_mot_phase_eviction: params.sensenova_mot_phase_eviction,
+      sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1116,7 +1118,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_shuffle_tags", "danbooru_aug_shuffle_keep_first_n",
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
-      "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction", "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
+      "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction",
+      "sensenova_full_finetune_save_format",
+      "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
@@ -1827,6 +1831,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blocksToSwap,
       usePinnedMemory,
       sensenovaMotPhaseEviction: params.sensenova_mot_phase_eviction,
+      sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -2020,6 +2025,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.blocksToSwap !== undefined) updateParam("blocks_to_swap", config.blocksToSwap);
     if (config.usePinnedMemory !== undefined) updateParam("use_pinned_memory", config.usePinnedMemory);
     if (config.sensenovaMotPhaseEviction !== undefined) updateParam("sensenova_mot_phase_eviction", config.sensenovaMotPhaseEviction);
+    if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4423,6 +4429,41 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
             <p className="text-xs text-gray-500">
               Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1. This architecture has no block swap, so the Block Swap controls are not offered for it.
+            </p>
+          </div>
+        )}
+
+        {isSenseNovaModel(baseModelPath) && trainingMethod === "full_finetune" && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Checkpoint Format</h3>
+            <select
+              id="sensenova-full-finetune-save-format"
+              value={params.sensenova_full_finetune_save_format ?? "mixed"}
+              onChange={(e) => updateParam("sensenova_full_finetune_save_format", e.target.value)}
+              className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+            >
+              <option value="mixed">Mixed (trained half BF16, untrained half INT8)</option>
+              <option value="bf16">BF16 (both halves)</option>
+              <option value="int8">INT8 (trained half requantized)</option>
+            </select>
+            <p className="text-xs text-gray-500">
+              Measured on the distributed checkpoint with the generation half trained:
+              mixed 25.12 GiB on disk / 25.43 GiB peak VRAM at inference; BF16 32.66 GiB / 32.99 GiB.
+              On an untrained model both reproduce the INT8 base bitwise.
+              INT8 is 17.58 GiB (inference VRAM not measured) and matches the distributed layout,
+              so it is the only one of the three that can be selected again as a training base.
+            </p>
+            <p className="text-xs text-gray-500">
+              INT8 discards weight updates below half a grid step. Measured over all 294 generation
+              Linears (8,103,395,328 elements, element-weighted mean grid step 2.70e-3) with a
+              synthetic isotropic Gaussian update applied in FP32, not a real optimizer trajectory:
+              at update std 1e-4, 99.94% of elements do not move and 0.55% of the update direction
+              survives; at 3.16e-4, 95.57% do not move; at 1e-3, 52.09%; at 1e-2, 1.81% and 99.96%
+              of the direction survives. In a run the trained half is BF16, whose ULP at unit scale
+              is the same order as half the mean grid step, so an unmeasured share of the
+              immobility at the smallest update sizes belongs to BF16 storage rather than to this
+              requantization. Requantizing an untrained half gives RMS relative error 6.58e-4,
+              max 7.81e-3. Training both halves leaves no INT8 half, so mixed writes the BF16 file.
             </p>
           </div>
         )}

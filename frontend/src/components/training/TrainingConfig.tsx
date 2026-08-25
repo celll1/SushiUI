@@ -5916,12 +5916,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
             <input
               type="number"
-              min="1"
+              min="0"
               value={saveEvery}
               onChange={(e) => updateParam("save_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("save_every", 100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
+            {saveEvery === 0 && (
+              <p className="text-xs text-yellow-400 mt-1">
+                0 = never save periodically. A checkpoint is still attempted if you
+                stop the run or it fails, but that attempt can produce nothing —
+                a failure that leaves the CUDA context dead, or one detected
+                before any training happened, writes no checkpoint. With 0 there
+                is no earlier checkpoint to fall back on.
+              </p>
+            )}
           </div>
 
           {/* Max Checkpoints to Keep */}
@@ -6346,7 +6355,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-sm text-gray-400 mb-1.5">Save Debug Latents Every (steps)</label>
               <input
                 type="number"
-                min="1"
+                min="0"
                 value={debugLatentsEvery}
                 onChange={(e) => updateParam("debug_latents_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("debug_latents_every", 50); }}
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"

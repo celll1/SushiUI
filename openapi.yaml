@@ -18308,8 +18308,13 @@ components:
         # ReLoRA-specific parameters
         relora_merge_every:
           type: integer
+          minimum: 1
           default: 500
-          description: Interval between merge-reinit cycles (in steps or epochs)
+          description: |
+            Interval between merge-reinit cycles (in steps or epochs). Must be
+            >= 1: the merge-reinit cycle is what makes ReLoRA ReLoRA, so 0 is
+            refused rather than read as "never merge" — use
+            `training_method: "lora"` for that.
           example: 500
         relora_merge_unit:
           type: string
@@ -18419,6 +18424,7 @@ components:
           nullable: true
         gradient_accumulation_steps:
           type: 'integer'
+          minimum: 1
           default: 1
         max_grad_norm:
           type: 'number'
@@ -18466,7 +18472,13 @@ components:
           default: 'lora'
         save_every:
           type: 'integer'
+          minimum: 0
           default: 100
+          description: |
+            Periodic checkpoint interval, in the unit given by
+            `save_every_unit`. **0 means never save periodically** — the run
+            still writes a checkpoint on interrupt or on an emergency exit.
+            Negative values are refused.
         save_every_unit:
           type: 'string'
           default: 'steps'
@@ -18475,7 +18487,9 @@ components:
           nullable: true
         sample_every:
           type: 'integer'
+          minimum: 0
           default: 100
+          description: Sample-generation interval in steps. 0 = never sample.
         sample_prompts:
           type: 'array'
           items:
@@ -18499,7 +18513,9 @@ components:
           default: false
         debug_latents_every:
           type: 'integer'
+          minimum: 0
           default: 50
+          description: Debug-latent dump interval in steps. 0 = never dump.
         enable_bucketing:
           type: 'boolean'
           default: false
@@ -19158,6 +19174,7 @@ components:
           default: false
         param_tracking_interval:
           type: 'integer'
+          minimum: 1
           default: 100
         priority_training:
           type: 'object'
@@ -19998,7 +20015,11 @@ components:
           default: 'fisher'
         validate_every:
           type: integer
+          minimum: 1
           default: 1
+          description: |
+            Run validation every N epochs. Must be >= 1; to disable validation
+            entirely set `val_split: 0` so no validation loader is built.
         val_split:
           type: number
           default: 0.05

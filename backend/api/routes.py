@@ -15132,7 +15132,9 @@ class TrainingRunCreateRequest(BaseModel):
     total_steps: Optional[int] = None  # Mutually exclusive with epochs
     epochs: Optional[int] = None  # Mutually exclusive with total_steps
     batch_size: int = 1
-    gradient_accumulation_steps: int = TRAINING_DEFAULTS["gradient_accumulation_steps"]
+    gradient_accumulation_steps: int = Field(
+        default=TRAINING_DEFAULTS["gradient_accumulation_steps"], ge=1
+    )
     max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
@@ -15171,17 +15173,18 @@ class TrainingRunCreateRequest(BaseModel):
     lora_dtype: Optional[str] = "fp32"  # fp32, fp16, bf16 (LoRA weight dtype, independent of main model)
     network_type: Optional[str] = "lora"
 
-    # Advanced
-    save_every: int = 100
+    # Advanced. save_every/sample_every: 0 = never (same reading as the tagger
+    # and VAE trainers); negative is refused rather than silently folded.
+    save_every: int = Field(default=TRAINING_DEFAULTS["save_every"], ge=0)
     save_every_unit: str = "steps"  # "steps" or "epochs"
     max_step_saves_to_keep: Optional[int] = None  # None = use training method default (LoRA:10, FullFT:3, ControlNet:5)
-    sample_every: int = 100
+    sample_every: int = Field(default=TRAINING_DEFAULTS["sample_every"], ge=0)
     sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
 
     # Debug
     debug_latents: bool = False
-    debug_latents_every: int = 50
+    debug_latents_every: int = Field(default=TRAINING_DEFAULTS["debug_latents_every"], ge=0)
 
     # Bucketing options
     enable_bucketing: bool = False
@@ -15430,13 +15433,17 @@ class TrainingRunCreateRequest(BaseModel):
 
     # Parameter change tracking
     param_tracking: bool = False  # Track per-component parameter change norms
-    param_tracking_interval: int = 100  # Compute tracking every N steps
+    param_tracking_interval: int = Field(
+        default=TRAINING_DEFAULTS["param_tracking_interval"], ge=1
+    )  # Compute tracking every N steps
 
     # Priority training
     priority_training: Optional[Dict[str, Any]] = None  # Inline priority training config
 
     # ReLoRA-specific parameters
-    relora_merge_every: int = 500  # Steps/epochs between merge-reinit cycles
+    relora_merge_every: int = Field(
+        default=TRAINING_DEFAULTS["relora_merge_every"], ge=1
+    )  # Steps/epochs between merge-reinit cycles
     relora_merge_unit: str = "steps"  # "steps" or "epochs"
     restart_warmup_steps: int = 100  # Warmup steps after each merge cycle
     optimizer_reset_strategy: str = "full_reset"  # "full_reset", "magnitude_pruning", "random_pruning"
@@ -18124,7 +18131,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     loss_beta: float = 2.0
     loss_rho: float = 0.5
     loss_label_weight: str = "fisher"
-    validate_every: int = 1
+    validate_every: int = Field(
+        default=TAGGER_TRAINING_DEFAULTS["validate_every"], ge=1
+    )
     val_split: float = 0.05
     val_split_mode: str = "percent"
     val_fixed_size: Optional[int] = None

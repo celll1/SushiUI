@@ -63,6 +63,16 @@ class ReLoRATrainer(LoRATrainer):
             optimizer_pruning_ratio: Fraction to prune (for pruning strategies)
             **kwargs: Arguments forwarded to LoRATrainer
         """
+        # Refused, not folded to 1 or to "never": the merge-reinit cycle IS
+        # ReLoRA, so neither reading of 0 is what the caller asked for, and the
+        # modulo in should_merge() would divide by zero.
+        if int(relora_merge_every or 0) <= 0:
+            raise ValueError(
+                f"relora_merge_every must be >= 1, got {relora_merge_every}. It is the "
+                f"interval between merge-reinit cycles; without them ReLoRA is plain "
+                f"LoRA, so use training_method='lora' if that is what you want."
+            )
+
         # ReLoRA-specific settings (set before super().__init__)
         self.relora_merge_every = relora_merge_every
         self.relora_merge_unit = relora_merge_unit

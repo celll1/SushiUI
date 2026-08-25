@@ -33,7 +33,7 @@ from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
-    LORA_COMPONENT_UNET,
+    resolve_component_lr, LORA_COMPONENT_UNET,
 )
 from .sd15_adapter import LoRALinearLayer
 
@@ -159,7 +159,8 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
             params.extend(lora_layer.lora_up.parameters())
         if not params:
             return []
-        return [{"params": params, "lr": getattr(self.trainer, "unet_lr", 1e-4)}]
+        return [{"params": params,
+                 "lr": resolve_component_lr(self.trainer, "unet_lr", label="Anima LoRA")}]
 
     # -- Checkpoint --------------------------------------------------
 
@@ -298,7 +299,7 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         # silently-partial parameter list this guard exists to prevent.
         reject_quantized_base(trainer.transformer, model_label="Anima")
 
-        base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+        base_lr = resolve_component_lr(trainer, "unet_lr", label="Anima transformer")
         attn_mlp_factor = float(trainer.config.get("anima_attn_mlp_lr_factor", 1.0))
         mod_factor = float(trainer.config.get("anima_mod_lr_factor", 1.0))
         adapter_factor = float(trainer.config.get("anima_llm_adapter_lr_factor", 1.0))

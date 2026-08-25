@@ -30,7 +30,9 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, LORA_COMPONENT_UNET
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, resolve_component_lr, LORA_COMPONENT_UNET
+)
 from .sd15_adapter import LoRALinearLayer
 
 from core.models.ideogram4.ideogram4_lora import (
@@ -99,7 +101,7 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
             params.extend(lora_layer.lora_up.parameters())
         if not params:
             return []
-        base_lr = getattr(self.trainer, "unet_lr", None) or 1e-4
+        base_lr = resolve_component_lr(self.trainer, "unet_lr", label="Ideogram 4 LoRA")
         lr_factor = float(self.trainer.config.get("ideogram4_lr_factor", 1.0))
         return [{"params": params, "lr": base_lr * lr_factor}]
 

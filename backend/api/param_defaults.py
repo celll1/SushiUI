@@ -2783,6 +2783,26 @@ def resolve_full_finetune_train_text_encoder(value, arch: str) -> bool:
         arch, FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH["_default"]))
 
 
+# Architectures whose full fine-tune runs with stochastic rounding regardless of
+# optimizer_stochastic_rounding. This is a route requirement, not a default: the
+# flag arrives as a materialized bool (routes.py declares it `bool`, and
+# training_config only writes the YAML key when it is true), so an explicit False
+# and an omitted key are the same value by the time a trainer sees it. Refusing
+# on False would refuse every request; honouring it would run the route with
+# round-to-nearest, where a measured 84.5% of a bf16 tensor's elements never move
+# at any step count (SENSENOVA_TRAINING_DESIGN.md 6.3).
+FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH: Dict[str, bool] = {
+    "_default": False,
+    "sensenova": True,
+}
+
+
+def full_finetune_forces_stochastic_rounding(arch: str) -> bool:
+    """Whether ``arch``'s full fine-tune enables stochastic rounding by itself."""
+    return bool(FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH.get(
+        arch, FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH["_default"]))
+
+
 def resolve_bundle_vae(value, arch: str) -> bool:
     """Resolve a possibly-None bundle_vae config value to the per-arch default.
 

@@ -1,11 +1,13 @@
 # SenseNova U1.5 学習設計案
 
 > Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
-> Phase 2b と Phase U-2 / U-3 は未完。
-> Date: 2026-08-24
+> Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 のみ `cc296e84` で着地。
+> full FT の受付は依然閉じている）。
+> Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
-> 本文中の `file:line` は 2026-08-23 時点の静的調査による。
+> 本文中の `file:line` は 2026-08-23 時点の静的調査による（§6.4 と §13.4 U-2 の
+> 参照だけは `cc296e84` 時点で取り直してある）。
 
 この文書は設計判断、その根拠、実装状況を記録する。初期計画のフェーズ順は履歴として
 残すが、各節の **DONE / PENDING** が現在の境界である。SenseNova の推論と Phase 1
@@ -23,9 +25,12 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    (`sensenova_lora.py`) が列挙する 294 個の `_mot_gen` Linear をそのまま学習対象と
    する。understanding branch は凍結し、prefix forward は `no_grad` で回す。
 2. **Phase 2a（full FT の拒否ガード）は出荷済み。** 配布されている checkpoint は
-   int8 のみで、既知の非対応はモデルロード前に拒否する。実装本体は bf16 base の
-   入手を前提条件として Phase 2b に送る。
-   実装する場合の対象は **gen branch のみの 8.1B**（both-branch 16.2B は設計対象外）。
+   int8 のみで、既知の非対応はモデルロード前に拒否する。
+   実装する場合の既定は **gen branch のみの 8.1B**（**【2026-08-24 改訂】** 旧文の
+   「both-branch 16.2B は設計対象外」は §6.2 で撤回済み。既定が gen-only なだけで、
+   both は閉じていない）。前提条件は「bf16 base の入手」ではなく「配線の実装」で
+   （§6.4）、その最初の一片 — int8 base を materialize する経路 (a) — は
+   **`cc296e84` で着地した。ただし受付はまだ開いていない**。
 3. **Phase 3（reference 混在）は per-item presence を真とする。**（**DONE**、
    `7a09af52`..`611a4a24`。以下の判断はすべてそのまま実装された。）初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
@@ -590,15 +595,30 @@ of a quantized base — out of scope"）。
 ### 6.4 bf16 base の供給経路（「入手」ではなく「実装」が律速）
 
 **この節の見出しは以前「bf16 base の入手経路」だった。Phase 1 の出荷によって前提条件の
-重心が入手から実装へ移ったため改題した。** 現行の gate
-`_assert_supported_quantized_training_base`（[`ops/sensenova_ops.py:49-91`](../../backend/core/training/ops/sensenova_ops.py)）は
-**未量子化 bf16 base を明示的に拒否する** — docstring と例外メッセージの両方が
-"and so is an unquantized bf16 base" と書いている。しかも
-`load_components`（`:155-156`）は training method を一切見ずに無条件でこれを呼ぶ。
-したがって upstream から bf16 を入手しても現行 loader 経路ではロードできず、
-**gate と loader の method-aware 化という実装作業が、入手とは独立に必要**である。
-これは Phase 2b の前提条件が「artifact の入手」から「配線の実装」に変わったことを意味する
-（構造的推論ではなく、gate のコードそのものから読める事実）。
+重心が入手から実装へ移ったため改題した。** gate
+`_assert_supported_quantized_training_base`（[`ops/sensenova_ops.py`](../../backend/core/training/ops/sensenova_ops.py)、
+`cc296e84` 時点で `:134-189`）は **未量子化 bf16 base を依然として拒否する** — full FT
+側の例外メッセージも "an unquantized bf16 base is refused because none exists for this
+repo" と書いている。したがって upstream から bf16 を入手しても現行 loader 経路では
+ロードできず、**gate と loader の method-aware 化という実装作業が、入手とは独立に
+必要**であった。
+
+#### 【2026-08-25 改訂】「`load_components` は training method を見ない」は撤回する
+
+旧文はここに **「`load_components`（`:155-156`）は training method を一切見ずに
+無条件でこれを呼ぶ」** と書いていた。**`cc296e84` がその配線を実装したので撤回する**
+（旧文が指していた `:49-91` / `:155-156` も同 commit で移動したため、この節の行番号は
+すべて更新した）。現行の `load_components`（`cc296e84` 時点で `:244-296`）は
+
+- `resolve_training_method(trainer)` で方式を解決し（`:256`）、
+- **17.6 GiB のロードより前に** branch を解決して矛盾した switch 対を拒否し（`:259-263`）、
+- gate に `training_method=` を渡す（`:267-269`）。gate は full FT のときだけ
+  plain int8 を要求し、ConvRot base と bf16 base を名指しで拒否する（`:165-179`）。
+
+`training_method` は train config section に**誰も書き込まない**ため（後述の
+「方式の伝達経路」）、`resolve_training_method` は **trainer subclass 名**
+（`FullParameterTrainer` を MRO 上で名前照合）を第一の channel とし、
+`config["training_method"]` を第二の channel として併用する。
 
 供給経路は 3 つある。
 
@@ -611,11 +631,91 @@ of a quantized base — out of scope"）。
   int8 量子化誤差を学習の初期値に焼き付ける。
   - **plain int8 checkpoint に限定することを推奨する。** ConvRot base を dequant 元に
     すると rotation の逆適用という新規の複雑性が入り、しかも §5.3 の train/inference
-    skew と重なる。
+    skew と重なる。→ **推奨のまま実装された**（下記）。
 - **(b) upstream の 46.8 GiB bf16 ソースから gen half を抽出した artifact。** ~16.2 GB。
   §6.2 の推奨形。
 - **(c) upstream bf16 をそのまま両 half bf16 でロードする。** 学習対象は gen half のみでも、
   und half が bf16 で常駐するぶん VRAM 要求が上がる。
+
+#### 経路 (a) の 588 版は着地した（U-2-1 / `cc296e84`）
+
+`materialize_int8_decoder_linears`（[`sensenova/loader.py`](../../backend/core/models/sensenova/loader.py)
+`:370-`、`SENSENOVA_BRANCH_LINEAR_COUNTS = {gen: 294, und: 294, both: 588}` が `:367`）が
+選択された half の `Int8Linear` を `nn.Linear` + 実 `nn.Parameter` に置き換える。dequant の
+式は `Int8Linear._dequant_forward` と**同じ綴り**（int8 codes × dtype に落とした
+`weight_scale` を out 次元で broadcast）なので、
+materialize 後の base はその dtype で凍結 int8 base と同じ関数を計算する。branch は
+新規 config key ではなく **`train_unet` = gen half / `train_text_encoder` = und half**
+という Phase 1 LoRA と同じ対応で決まり、両方 False は既定ではなく拒否である。
+
+**実装したもの**: 上記 materializer、method-aware な gate と `load_components`、
+ConvRot base / mixed base / off-count tree / 非 `(out_features,)` scale の拒否、
+および `backend/tests/sensenova_int8_materialize_test.py`（算術の `torch.equal`、
+層まるごとの bitwise forward parity、閉形式誤差上界の両側 assert、
+「int8 weight は buffer なので `parameters()` に出ない」負の対照、
+LoRA 経路が bit 単位で不変であることの証明）。
+
+**意図的に実装していないもの**: `SenseNovaFullParameterAdapter`（U-2-2）、
+fused backward の gate 解錠（同）、**学習成果物の checkpoint format の決定
+（下節は開いたままにしてある。U-2-1 はどれも選んでいない）**、offload との合成（U-2-4）、
+stochastic rounding の契約（U-2-3）。
+
+**そして経路はまだ端から端まで到達しない。** `arch_capabilities.py:812-814` の
+`TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]` と `train_runner.py:166-167` の
+`network.type != "lora"` 拒否が**どちらも生きている**。したがって
+**ここで着地したものはテストで証明されているだけで、run で証明されてはいない**
+（loader の docstring も同じことを書いている）。
+
+##### メモリ算術は実測である（実 checkpoint の safetensors ヘッダ）
+
+**以下は見積もりではない。** 配布されている plain int8 checkpoint の safetensors
+ヘッダ（先頭の長さ + JSON のみ。テンソルは 1 つも実体化していない）を読み、
+`iter_sensenova_lora_targets` と同じ命名規則で half ごとに集計した値である。
+**gen half と und half は完全に同値**だった。
+
+| 量 | 値 | 出所 |
+|---|---:|---|
+| half あたりの int8 Linear 数 | 294 | ヘッダの key 集計（`iter_sensenova_lora_targets` の列挙と一致） |
+| half あたりの weight 要素数 | 8,103,395,328 | 同上（dtype はすべて `I8`） |
+| half あたり int8 | **7.546875 GiB** | 上記要素数 × 1 byte |
+| half あたり bf16 | **15.09375 GiB** | 同 × 2 byte |
+| 最大の単一 weight | **48.0 MiB (int8) / 96.0 MiB (bf16)** | ヘッダ中の最大 shape（50,331,648 要素） |
+
+per-Linear で「dequant → 直前の int8 を解放」する順序にすると、**int8 base がロード
+済みの状態からの追加ピークは `Q + q_max`**（`Q` = その scope の int8 総量、`q_max` =
+最大の単一 int8 weight = 48 MiB）になる。列挙した module を全部生かしたまま一括で
+materialize すると `2Q`（= bf16 の全複製）になる。
+
+| scope | 追加ピーク: per-Linear 解放（実装） | 一括 |
+|---|---:|---:|
+| 片 half | **7.5938 GiB** | 15.0938 GiB |
+| 両 half | **15.1406 GiB** | 30.1875 GiB |
+
+**これは host RAM であって VRAM ではない。** materialize は transformer が device へ
+移る前（`load_components` の `:271-276`、`.to(trainer.device)` は `:294`）に走るので、
+GPU が見るのは結果だけである。順序そのものは weakref で assert してあり
+（各 int8 module は「自分より後ろに生きている replacement が k 個」の状態で死ぬ。
+遅延一括解放にすると毎回 294 と報告される）、コードを読んで確かめる形にはしていない。
+
+##### 構造的に到達不能な und 5 個も materialize される
+
+`und_gradient_unreachable_paths()` が名指しする 5 個（layer 41 の
+`self_attn.q_proj` / `self_attn.o_proj` と `mlp.{gate,up,down}_proj`、§13.5）も
+**例外なく materialize され、実 `nn.Parameter` を持つ**。列挙は 294 のままだからである
+（§13.3 の「und は 289 ではなく 294 を維持する」と同じ理由）。t2i の loss はこの 5 個に
+届かないので、**「294 個すべてが動いた」と主張する census はここで落ちるのが正しい**。
+exit criterion 側の表現は §13.4 U-2-5 に書いた。
+
+##### 方式の伝達経路（`training_method` は train config に書かれていない）
+
+`resolve_training_method` が trainer subclass を第一の channel にしているのは、
+**`training_method` を train config section に書き込むコードが存在しない**からである
+（`train_runner` は `network.type` で dispatch して trainer クラスを構成する）。
+`config["training_method"]` を第二の channel として併読しているので、後日この key が
+配線されても静かに LoRA 扱いになることはない。**この欠落自体は SenseNova 固有ではなく
+cross-architecture の欠陥**で、別 commit の担当である。ここに書くのは
+**U-2-1 が subclass を channel に選んだ理由の説明としてのみ**であり、
+修正の内容は本文書の管轄外とする。
 
 #### 学習成果物の checkpoint format（未決定、新規の設計問題）
 
@@ -1337,8 +1437,9 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 
 ### PENDING
 
-- Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` を
-  method-aware にする必要がある。§6.4）と、Phase U（§13）。
+- Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
+  method-aware 化は `cc296e84` で DONE。**残るのは adapter・受付の解錠・契約**で、
+  §6.4 と §13.4 U-2-2 に列挙してある）と、Phase U（§13）。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -1353,7 +1454,7 @@ cache namespace と alignment は登録だけで有効になった。
 | リスク | 内容 | 緩和 |
 |---|---|---|
 | mixed forward の欠落 | issue #207。1 パスで und/gen を混ぜられない | 2 パス構造を設計の前提にする（§4.2）。修正を前提にしない |
-| int8 base のみ | full FT が構造的に不可能 | Phase 2 をガード先行にする（§6.1） |
+| int8 base のみ | weight が buffer なので full FT は 1 パラメータも学習しない（**「不可能」ではない**: `cc296e84` が学習する half を実 Parameter へ materialize する経路を実装した。ただし受付は未解錠） | Phase 2 をガード先行にする（§6.1）。経路 (a) と残作業は §6.4 |
 | bf16 丸め欠陥 | 8.1B full FT でそのまま継承する（凍結率 91% 前後、`\|w\| <= 512*lr` でしか動かない） | `optimizer_stochastic_rounding` の既定を SenseNova full FT でどうするか実装時に決定（§6.3, §12）。`optimizer: adamw` は構造的にカバー不能 |
 | 短 horizon での評価 | stochastic rounding は 1k step 未満では誤差が信号と同程度 | 数百 step の full FT で品質判断をしない（§6.3） |
 | gradient checkpointing OFF | 量子化 base の上に bf16 全体が実体化し、逆に増える | §4.7 の専用 non-reentrant loop を必須にする |
@@ -1560,9 +1661,10 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   activation が支配する解像度で同一 checkpoint / seed / GC 条件の OFF / ON 別 process
   として取り直す。Phase 2b の VRAM 前提が und half 7.55 GiB の退避に依存するため
   （§8.3.1）、これが未解決のままでは後続の作業量が見積もれない。
-- **2b-1 — gate と loader の method-aware 化。**
+- **2b-1 — gate と loader の method-aware 化（DONE、`cc296e84`。= U-2-1）。**
   `_assert_supported_quantized_training_base` と `load_components` が training method を
-  見るようにし、§6.4 の供給経路のどれを受理するかを決める。
+  見るようになり、受理する供給経路は **(a) の plain int8 限定**に決まった（§6.4）。
+  **ただし full FT の受付はまだ開いていない**（§6.4 の「端から端まで到達しない」）。
 - **2b-2 — `SenseNovaFullParameterAdapter`。** §6.1 で「共通 preflight だけで
   fail-closed になるため追加しなかった」もの。本体実装時には必要になる。
   decoder 外の gen 側モジュールを含めるかの決定（§6.2）をここで確定する。
@@ -1649,6 +1751,24 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   **推奨は拒否。決定は Phase 2b-3。** §6.3。
 - **full FT の学習成果物をどの checkpoint format で保存するか。** mixed
   （und int8 + gen bf16）/ 両 half bf16 / gen half 再量子化 の 3 択。§6.4。
+  **U-2-1（`cc296e84`）は意図的にどれも選んでいない。**
+- **materialize 時の `weight_dtype` 契約が未決定である。**（**新規、`cc296e84` 以後**）
+  `materialize_int8_decoder_linears` は `trainer.weight_dtype` をそのまま使うので、
+  **`weight_dtype=fp16` + `mixed_precision=False` なら fp16 の weight が実体化する**。
+  fp16 full FT の既存拒否は `use_grad_scaler` が立っているときだけ発火する
+  （`base_trainer.py:1106-1120`）。**API 経由では到達しない** — `_is_bf16_native_base_model`
+  が sensenova を名前で拾い（`train_runner.py:136-144`）、`:2769-2772` で
+  `training_dtype` / `weight_dtype` を bf16 に強制するからである。**しかし BaseTrainer を
+  直接構成する呼び出しからは到達する。** 決定は §6.3 の rounding-defect 契約
+  （2b-3）が持つ。
+- **full FT の `train_text_encoder` 既定を SenseNova で明示的に決めること。**
+  （**新規、`cc296e84` 以後**）`generate_full_finetune_config` は full FT の既定として
+  `train_text_encoder=True` を置く（`training_config.py:668`、`_build_train_section` への
+  引き渡しが `:704`）。SenseNova ではこれが「**両 half**」＝ materialize 15.1 GiB を意味し、
+  **§6.2 の「既定は gen のみ」と矛盾する**。API 経由では既定が False なので
+  （`param_defaults.py:2268`、`routes.py:15189`）到達しないが、
+  `generate_full_finetune_config` を legacy kwargs で叩く呼び出しは
+  **最も高価な branch を静かに選ぶ**。SDXL 由来の既定を継承せず、U-2-2 で明示的に決める。
 - **decoder 外の gen 側モジュール（`fm_head`、gen ViT、embedder、`*_norm_mot_gen`）を
   trainable に含めるか。** 含める方向を推奨するが未決定。§6.2。
 - ~~**ConvRot checkpoint を学習対象に含めるか。**~~ **解決済み（`0c9ea86b`）: 含める。**
@@ -2003,15 +2123,27 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   無いと §13.3 のサイレント部分適用を検出できない）、`train_text_encoder=false` の
   loss・grad SHA-256 が現行実装と一致すること（**回帰していないことの証明**）、
   MNT>1 smoke、既存の蒸留 LoRA の推論ロード回帰。→ **5 項目すべて PASS**（§13.6）。
-- **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版。U-2-2: fused backward の
+- **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版 → **DONE（`cc296e84`）。
+  ただし経路は端から端まで到達しない**（`arch_capabilities.py:812-814` と
+  `train_runner.py:166-167` が拒否を維持している）ので、**テストで証明されただけで
+  run では証明されていない**。着地したもの／意図的に着地させなかったもの／
+  実 checkpoint ヘッダから取った host RAM の実測値は §6.4。
+  U-2-2: fused backward の
   gate 解錠 + EMA 拒否 + **effective batch = 物理 batch = 1 を受け入れる**契約
   （§6.2 改訂の条件 1-4）。
   **許可 optimizer は Adafactor と Ring Buffer 系（`adamw8bit_ringbuffer` /
   `lion8bit_ringbuffer`）で、初版の既定は Adafactor**（§6.5。「Adafactor 一択」では
   ない）。U-2-3: stochastic rounding 既定 True（§6.3）+ dropout guard。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
-  U-2-5: exit smoke — **588 Linear の update-nonzero census** で bf16 丸め欠陥の
+  U-2-5: exit smoke — **update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
+  **期待値は「全部動いた」ではない** — und half の 5 個は materialize されて実
+  `nn.Parameter` を持つが（§6.4）、t2i の loss が構造的に届かない（§13.5）。したがって
+  census は **und branch で 294 個中 289 個、両 half で 588 個中 583 個**が動き、
+  **残り 5 個は `und_gradient_unreachable_paths()` が返す名前**（layer 41 の
+  `self_attn.q_proj` / `self_attn.o_proj` と `mlp.{gate,up,down}_proj`）である、と書く。
+  これは U-0 / U-1 が LoRA で記録したものと**同じ 5 個・同じ数え方**である。
+  「294 個すべてが動いた」と主張する assert は**まさにこの 5 個で落ちるのが正しい**。
   U-2-6: **Ring Buffer optimizer の upgrade 3 項目**（§6.5。`get_state_buffer` の配線 /
   閾値下向けの専用 stream + prefetch / サイレント CPU-skip の fail-loud 化。
   **state shuttle の移植は実測により不要と判明したので落とした**）。
@@ -2027,6 +2159,25 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     したがって U-2 は **effective batch = 物理 batch = 1 を受け入れる**か、
     別機構（pinned host への accumulator 退避など。**コスト付きの新機構であって
     修正ではない**）を作るかの二択になる。現状は**拒否ではなく警告**として出荷済み。
+  - **【`cc296e84` 以後】U-2-2 は「静かな部分学習」の形をひとつ引き受けた。**
+    `load_components` は SenseNova に text encoder が無いため
+    `trainer.text_encoder = None` を置く（`sensenova_ops.py:281`）。一方 full FT の
+    汎用 collector は **`trainer.train_text_encoder and trainer.text_encoder is not None`**
+    で分岐する（`sd15_adapter.py:327`、`:363`、`:418`）。この 2 つを突き合わせないまま
+    `train_text_encoder=True` で走らせると、**7.5 GiB を払って materialize した und half が
+    1 パラメータも収集されない**。したがって U-2-2 は次の 3 点を明示的に処理すること。
+    1. `full_parameter_trainer._create_adapter` に **`elif self.is_sensenova:` 分岐を
+       `else: SD15FullParameterAdapter` の fallthrough（`full_parameter_trainer.py:202-204`）
+       より上に**追加する。無いと上記の静かな 0 件収集になる
+       （`self.is_sensenova` は `base_trainer` が既に立てている）。
+    2. und half の materialize 済み weight は **`trainer.transformer` から**集め、
+       **`trainer.text_encoder` は決して読まない**。LR は
+       `text_encoder_1_lr` → `text_encoder_lr` → `unet_lr` の連鎖に載せる。これは
+       Phase 1 LoRA adapter が und を `LORA_COMPONENT_TEXT_ENCODER_1` として登録し
+       （`sensenova_adapter.py:134`）同じ連鎖を引いている（`:162-166`）のと同型である。
+    3. `TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]`（`arch_capabilities.py:812-814`）と
+       `network.type != "lora"` 拒否（`train_runner.py:166-167`）の**両方**を落とす。
+       片方だけでは到達しない。
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、

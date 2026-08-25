@@ -1,4 +1,40 @@
-"""Training-only SenseNova MoT phase eviction state machine."""
+"""Training-only SenseNova MoT phase eviction state machine.
+
+Three states (``full`` / ``prefix`` / ``denoise``) serve a frozen understanding
+half. A TRAINED understanding half needs a fourth, ``und_backward``, because the
+single ``loss.backward()`` the three-state machine assumes has no coordinate at
+which a weight swap can be inserted (SENSENOVA_TRAINING_DESIGN.md 8.3.2). The
+split cuts the graph at the prefix KV cache and runs two backwards, so the
+sequence per step becomes::
+
+    prefix        und resident   understanding forward, boundary K/V kept as leaves
+    denoise       gen resident   generation forward + backward down to leaf .grad
+    und_backward  und resident   recompute the understanding forward, then
+                                 autograd.backward(recomputed, grad_tensors=kv_grad)
+
+``und_backward -> prefix`` is a no-op: the understanding half is already resident
+and the next step's prefix phase wants exactly that, which saves one of the three
+round trips the naive cycle would pay.
+
+LAYER SELECTION (8.4 re-derived for this case). ``select_mot_weight_modules``
+keys on PERSISTENCE -- a module is selected if it owns a Parameter OR a
+persistent buffer -- and that stays correct here rather than reverting to a
+``parameters()`` rule now that U-2-1 gives the trained half real Parameters
+again. Two reasons, and only the second is new:
+
+  * the frozen half is still ``Int8Linear``, which owns no Parameter at all, and
+    it is the half being evicted. A ``parameters()`` rule selects RMSNorm and
+    nothing else, which is how this classifier shipped inert twice.
+  * persistence also carries ``Int8Linear``'s scale buffers. Selecting the
+    quantized weight without its scale would not merely lose a saving, it would
+    split one module's tensors across two devices.
+
+What IS new for four-phase is that the evicted half now carries gradients, so
+``_assert_grad_free`` refuses to move a half whose Parameters still hold
+``.grad``: under fused backward the hook nulls each gradient as it applies it, so
+a surviving ``.grad`` at a phase boundary means the optimizer did not run over
+that parameter, and moving it would silently detach the gradient from its weight.
+"""
 
 from __future__ import annotations
 
@@ -35,16 +71,21 @@ def _move_modules_to_device(modules: Iterable[nn.Module], device: Any) -> None:
 
 
 class SenseNovaTrainingPhaseEvictor:
-    """Keep only the phase-active MoT half resident while training LoRA."""
+    """Keep only the phase-active MoT half resident while training."""
 
-    def __init__(self, transformer: nn.Module, device: Any):
+    def __init__(
+        self, transformer: nn.Module, device: Any, *, four_phase: bool = False
+    ):
         selection = select_mot_weight_modules(
-            transformer, require_exact_symmetry=True
+            transformer,
+            require_exact_symmetry=True,
+            allow_understanding_adapters=four_phase,
         )
         self._gen_modules = selection.gen_modules
         self._und_modules = selection.und_modules
         self.transformer = transformer
         self.device = device
+        self.four_phase = bool(four_phase)
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
 
@@ -61,12 +102,37 @@ class SenseNovaTrainingPhaseEvictor:
             first_error = first_error or exc
         return first_error
 
+    def _assert_grad_free(self, modules, half: str) -> None:
+        """Refuse to evict a half that still owns gradients.
+
+        Only meaningful when the half is trained. Under fused backward the
+        post-accumulate hook applies and then nulls each gradient, so a ``.grad``
+        surviving to a phase boundary means the optimizer never ran over that
+        parameter -- the exact "a half is never updated while the loss falls"
+        failure 8.3 names. Staging it to CPU anyway would leave a CUDA gradient
+        attached to a CPU weight, which the next hook cannot use either.
+        """
+        for module in modules:
+            for name, parameter in module._parameters.items():
+                if parameter is None or parameter.grad is None:
+                    continue
+                raise RuntimeError(
+                    f"SenseNova four-phase eviction cannot stage the {half} half to "
+                    f"CPU while {name} still holds a gradient: the optimizer has not "
+                    f"consumed it, so this half would be moved without being updated"
+                )
+
     def _transition(self, operations, next_state: str) -> None:
         if self.state == "failed":
             raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
         try:
             for operation, modules in operations:
                 if operation == "d2h":
+                    if self.four_phase:
+                        self._assert_grad_free(
+                            modules,
+                            "generation" if modules is self._gen_modules else "understanding",
+                        )
                     _move_modules_to_cpu(modules, warn_once=self._warn_once)
                 else:
                     _move_modules_to_device(modules, self.device)
@@ -80,6 +146,11 @@ class SenseNovaTrainingPhaseEvictor:
         if self.state == "failed":
             raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
         if self.state == "prefix":
+            return
+        if self.state == "und_backward":
+            # The design's saved round trip: the understanding half is already
+            # resident from phase 3, and phase 0 of the next step wants it there.
+            self.state = "prefix"
             return
         if self.state == "full":
             operations = (("d2h", self._gen_modules),)
@@ -107,10 +178,36 @@ class SenseNovaTrainingPhaseEvictor:
             "denoise",
         )
 
-    def assert_generation_resident(self) -> None:
+    def enter_und_backward(self) -> None:
+        """Phase 3: bring the understanding half back for its own backward."""
+        if not self.four_phase:
+            raise RuntimeError(
+                "SenseNova und_backward phase requires the four-phase evictor; the "
+                "three-state machine has no coordinate at which the understanding "
+                "half can be made resident again inside one backward"
+            )
+        if self.state == "failed":
+            raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
+        if self.state == "und_backward":
+            return
         if self.state != "denoise":
             raise RuntimeError(
-                f"SenseNova generation work requires denoise state, got {self.state}"
+                "SenseNova und_backward phase requires a completed denoise phase, "
+                f"got {self.state}"
+            )
+        self._transition(
+            (
+                ("d2h", self._gen_modules),
+                ("h2d", self._und_modules),
+            ),
+            "und_backward",
+        )
+
+    def _assert_half_resident(self, modules, half: str, states) -> None:
+        if self.state not in states:
+            wanted = " or ".join(states)
+            raise RuntimeError(
+                f"SenseNova {half} work requires {wanted} state, got {self.state}"
             )
         expected = torch.device(self.device)
 
@@ -119,26 +216,34 @@ class SenseNovaTrainingPhaseEvictor:
                 expected.index is None or tensor.device.index == expected.index
             )
 
-        for module in self._gen_modules:
+        for module in modules:
             for parameter in module._parameters.values():
                 if parameter is None:
                     continue
                 if not on_expected_device(parameter):
-                    raise RuntimeError("SenseNova generation parameter is not GPU-resident")
+                    raise RuntimeError(f"SenseNova {half} parameter is not GPU-resident")
                 if parameter.grad is not None and parameter.grad.device != parameter.device:
-                    raise RuntimeError("SenseNova generation gradient is on the wrong device")
+                    raise RuntimeError(f"SenseNova {half} gradient is on the wrong device")
             for name, buffer in module._buffers.items():
                 if (
                     buffer is not None
                     and name not in module._non_persistent_buffers_set
                     and not on_expected_device(buffer)
                 ):
-                    raise RuntimeError("SenseNova generation buffer is not GPU-resident")
+                    raise RuntimeError(f"SenseNova {half} buffer is not GPU-resident")
+
+    def assert_generation_resident(self) -> None:
+        self._assert_half_resident(self._gen_modules, "generation", ("denoise",))
+
+    def assert_understanding_resident(self) -> None:
+        self._assert_half_resident(
+            self._und_modules, "understanding", ("prefix", "und_backward")
+        )
 
     def teardown(self) -> None:
         if self.state == "closed":
             return
-        if self.state not in ("full", "prefix", "denoise", "failed"):
+        if self.state not in ("full", "prefix", "denoise", "und_backward", "failed"):
             raise RuntimeError(f"Invalid SenseNova eviction state: {self.state}")
         error = self._best_effort_cpu()
         self.state = "closed"
@@ -149,6 +254,18 @@ class SenseNovaTrainingPhaseEvictor:
 
 
 def install_training_phase_eviction(trainer: Any) -> SenseNovaTrainingPhaseEvictor:
-    evictor = SenseNovaTrainingPhaseEvictor(trainer.transformer, trainer.device)
+    # ``sensenova_four_phase_eviction`` is set on EVERY trainer by
+    # BaseTrainer.__init__, and LoRATrainer calls this installer too. Gate on the
+    # method here as well as in train_runner: the four-phase selector relaxes the
+    # symmetry backstop, and that backstop exists for exactly the case where the
+    # front-line check did not run (a hand-built config, a probe, direct YAML).
+    from core.training.ops.training_method import is_full_finetune
+
+    four_phase = bool(
+        getattr(trainer, "sensenova_four_phase_eviction", False)
+    ) and is_full_finetune(trainer)
+    evictor = SenseNovaTrainingPhaseEvictor(
+        trainer.transformer, trainer.device, four_phase=four_phase
+    )
     trainer.sensenova_phase_evictor = evictor
     return evictor

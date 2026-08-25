@@ -226,6 +226,9 @@ def _build_train_section(
         train["sensenova_mot_phase_eviction"] = p.get(
             "sensenova_mot_phase_eviction", _TD["sensenova_mot_phase_eviction"]
         )
+        train["sensenova_four_phase_eviction"] = p.get(
+            "sensenova_four_phase_eviction", _TD["sensenova_four_phase_eviction"]
+        )
         train["block_swap_h2d_only"] = p.get("block_swap_h2d_only", False)
         train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)

@@ -115,9 +115,50 @@ class FullParameterTrainer(BaseTrainer):
         if hasattr(self, "setup_acestep_block_swap"):
             self.setup_acestep_block_swap()
 
+        self._setup_sensenova_phase_eviction()
+
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded
         print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")
+
+    def _setup_sensenova_phase_eviction(self) -> None:
+        """Install the MoT evictor and, when armed, the four-phase graph cut.
+
+        Built here rather than earlier for the same reason LoRATrainer builds it
+        after injection: the selector reads the LIVE module tree, and the adapter
+        has just replaced the trained half's ``Int8Linear``s with materialized
+        ``nn.Linear``s.
+        """
+        if not (self.is_sensenova and self.sensenova_mot_phase_eviction):
+            return
+        from core.training.ops import sensenova_ops
+
+        from .sensenova_phase_eviction import install_training_phase_eviction
+
+        install_training_phase_eviction(self)
+        if self.sensenova_four_phase_eviction:
+            from .sensenova_four_phase import install_four_phase_backward
+
+            sensenova_ops.assert_four_phase_contract(self)
+            install_four_phase_backward(self)
+            print(f"{self.log_prefix} SenseNova four-phase eviction ENABLED")
+
+    def train(self, *args, **kwargs):
+        try:
+            return super().train(*args, **kwargs)
+        finally:
+            four_phase = getattr(self, "sensenova_four_phase", None)
+            if four_phase is not None:
+                four_phase.discard()
+                self.sensenova_four_phase = None
+            evictor = getattr(self, "sensenova_phase_evictor", None)
+            if evictor is not None:
+                try:
+                    evictor.teardown()
+                except Exception as exc:
+                    print(f"{self.log_prefix} WARNING: SenseNova eviction teardown failed: {exc}")
+                finally:
+                    self.sensenova_phase_evictor = None
 
     @staticmethod
     def _refuse_unsupported_full_finetune(model_path):

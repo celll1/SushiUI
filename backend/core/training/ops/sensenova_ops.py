@@ -20,7 +20,11 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 from ..training_events import emit_training_warning
-from .training_method import _FULL_FINETUNE_METHOD, resolve_training_method
+from .training_method import (
+    _FULL_FINETUNE_METHOD,
+    is_full_finetune,
+    resolve_training_method,
+)
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,11 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
             "gradient_accumulation_steps."
         )
 
+    if bool(settings.get("sensenova_four_phase_eviction", False)) or bool(
+        getattr(trainer, "sensenova_four_phase_eviction", False)
+    ):
+        assert_four_phase_contract(trainer)
+
     if optimizer_type is None and settings.get("optimizer") is None:
         # Absence carries no information on the config channel; the call from
         # setup_optimizer always names one, and that is the authoritative check.
@@ -216,6 +225,102 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
         f"moment.{extra} Set optimizer=adafactor, or use training_method='lora', "
         f"which accepts every optimizer this product offers."
     )
+
+
+def assert_four_phase_contract(trainer: Any) -> None:
+    """Refuse four-phase eviction where the split cannot be closed (8.3.2).
+
+    Three clauses, none of them preferences:
+
+    * it needs a trained understanding half. With the understanding half frozen
+      the three-state evictor already suffices and the split buys nothing while
+      paying an extra understanding forward per step.
+    * it needs the eviction it exists to enable. Splitting the backward without
+      evicting leaves both halves resident, which is the single-backward path
+      with an extra forward bolted on.
+    * it needs the fused-backward route. Phase 3 ends with the generation half on
+      CPU, so a subsequent ``optimizer.step()`` would meet CUDA gradients on CPU
+      parameters. Under fused backward each half is stepped by its own hooks
+      while it is resident and there is no such call.
+    """
+    settings = getattr(trainer, "config", None) or {}
+
+    def either(key: str) -> bool:
+        return bool(settings.get(key, False)) or bool(getattr(trainer, key, False))
+
+    if not either("train_text_encoder"):
+        raise ValueError(
+            "SenseNova sensenova_four_phase_eviction requires train_text_encoder: "
+            "the split exists so a TRAINED understanding half can still be "
+            "evicted. With it frozen, sensenova_mot_phase_eviction alone already "
+            "does this, without the extra understanding forward per step."
+        )
+    if not either("sensenova_mot_phase_eviction"):
+        raise ValueError(
+            "SenseNova sensenova_four_phase_eviction requires "
+            "sensenova_mot_phase_eviction: on its own the split only adds a "
+            "second backward and a recomputed forward, and both halves stay "
+            "resident exactly as they do without it."
+        )
+    if not is_full_finetune(trainer):
+        raise ValueError(
+            "SenseNova sensenova_four_phase_eviction is implemented for "
+            "training_method='full_finetune' only. It leaves the generation half "
+            "on CPU at the end of the step, which is safe only on the fused "
+            "backward route, where each half is updated by its own "
+            "post-accumulate-grad hooks while it is resident; LoRA training calls "
+            "optimizer.step() there instead, and would meet CUDA gradients on CPU "
+            "parameters."
+        )
+    warn_four_phase_mnt_cost(trainer)
+
+
+def warn_four_phase_mnt_cost(trainer: Any) -> bool:
+    """Say what MNT > 1 costs under the split, rather than refusing it.
+
+    ``multi_noise_timesteps`` is NOT covered by this route's other clauses --
+    ``assert_full_finetune_contract`` refuses gradient accumulation, which is a
+    different mechanism, and ``BaseTrainer`` only requires MNT >= 1. It is
+    correct under the split: each iteration runs its own complete cycle, and the
+    phase-3 recompute reads the same understanding weights its own phase-1
+    forward did (the generation hooks fire in between, and touch no understanding
+    weight). What it is not is free -- the split runs per MNT iteration, so the
+    two weight round trips it costs are per iteration, not per step.
+    """
+    settings = getattr(trainer, "config", None) or {}
+    mnt = max(
+        int(settings.get("multi_noise_timesteps", 1) or 1),
+        int(getattr(trainer, "multi_noise_timesteps", 1) or 1),
+    )
+    if mnt <= 1:
+        return False
+    emit_training_warning(
+        f"SenseNova four-phase eviction with multi_noise_timesteps={mnt}: the "
+        f"backward split runs once per MNT iteration, so its two weight "
+        f"round trips are paid {mnt} times per step rather than once. This is "
+        f"correct, not degraded -- each iteration recomputes the understanding "
+        f"forward against the same weights its own forward used.",
+        code="sensenova_four_phase_mnt_cost",
+        prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+    )
+    return True
+
+
+def assert_four_phase_fused_backward(trainer: Any) -> None:
+    """Backstop for the clause only the trainer can decide.
+
+    The contract above refuses everything knowable before the load; whether the
+    fused backward pass was actually INSTALLED is knowable only afterwards, and
+    it is the clause the whole ordering depends on.
+    """
+    if not getattr(trainer, "sensenova_four_phase_eviction", False):
+        return
+    if not getattr(trainer, "use_fused_backward", False):
+        raise RuntimeError(
+            "SenseNova four-phase eviction requires the fused backward pass, which "
+            "was not installed for this run. Phase 3 leaves the generation half on "
+            "CPU, so the optimizer.step() that would follow cannot update it."
+        )
 
 
 def enforce_full_finetune_stochastic_rounding(trainer: Any) -> bool:
@@ -806,6 +911,38 @@ def encode_prompt(
     transformer = trainer.transformer
     ref_images = _load_reference_images(reference_image_paths)
     phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    four_phase = getattr(trainer, "sensenova_four_phase", None)
+    if requires_grad and four_phase is not None:
+        # Phase 1 of the four-phase split (8.3.2). Built under no_grad because
+        # phase 3 recomputes it; only the boundary K/V survives this phase.
+        assert_understanding_training_supported(transformer)
+        if ref_images:
+            raise NotImplementedError(
+                "SenseNova understanding-branch training is text-only in this "
+                "implementation; reference-conditioned items need the reference "
+                "tower's differentiable path, which is not wired yet"
+            )
+        if phase_evictor is not None:
+            phase_evictor.enter_prefix()
+            phase_evictor.assert_understanding_resident()
+        query = transformer._build_t2i_query(
+            prompt,
+            system_message=SYSTEM_MESSAGE_FOR_GEN,
+            append_text="<think>\n\n</think>\n\n<img>",
+        )
+        with torch.no_grad():
+            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
+            cache = _build_trainable_prefix(trainer, transformer, inputs)
+        leaf_cache = four_phase.cut(cache, inputs)
+        del cache
+        _assert_immutable_prefix_cache(
+            leaf_cache,
+            len(transformer.language_model.model.layers),
+            boundary_leaf=True,
+        )
+        return SenseNovaTrainingPrefix(
+            cache=leaf_cache, text_length=int(inputs[1][0].max()) + 1
+        )
     if requires_grad:
         assert_understanding_training_supported(transformer)
         if ref_images:
@@ -984,6 +1121,11 @@ def train_step(
     transformer = trainer.transformer
     _assert_pixel_head_fm_decoder(transformer)
     trainable_prefix = bool(getattr(trainer, "train_text_encoder", False))
+    # Under the four-phase split the prefix arrives CUT: grad-requiring leaves
+    # rather than a live graph, so this backward stops at the boundary.
+    boundary_leaf = trainable_prefix and getattr(
+        trainer, "sensenova_four_phase", None
+    ) is not None
     device = trainer.device
     dtype = trainer.training_dtype
     x0 = images.to(device=device, dtype=dtype)
@@ -1035,6 +1177,7 @@ def train_step(
         prefix.cache,
         len(transformer.language_model.model.layers),
         trainable=trainable_prefix,
+        boundary_leaf=boundary_leaf,
     )
 
     device_type = torch.device(device).type
@@ -1046,7 +1189,8 @@ def train_step(
             indexes=indexes,
             prefix_cache=prefix.cache,
             checkpoint_layers=bool(trainer.gradient_checkpointing),
-            trainable_prefix=trainable_prefix,
+            trainable_prefix=trainable_prefix and not boundary_leaf,
+            boundary_leaf_prefix=boundary_leaf,
         )
         decoded = transformer.fm_modules["fm_head"](
             hidden.view(1, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
@@ -1294,11 +1438,49 @@ def _assert_prefix_cache_differentiable(prefix_cache: Any) -> None:
         )
 
 
+def _assert_prefix_cache_boundary_leaf(prefix_cache: Any) -> None:
+    """Grad-mode half for the four-phase split's CUT prefix (§8.3.2).
+
+    The split hands the generation forward a cache whose K/V are leaves that
+    require grad, precisely so the generation backward terminates in their
+    ``.grad`` instead of running on into the understanding half. Such a tensor
+    has ``grad_fn is None``, so the ``_differentiable`` check above rejects it --
+    and rejecting it is right for the single-backward path, where a leaf means
+    the understanding half silently receives nothing.
+
+    Asserted positively for the same reason its sibling is: a cache that is
+    merely ``requires_grad=False`` would train nothing and fall normally, and a
+    cache that still carries a ``grad_fn`` means the cut did not happen, so the
+    generation backward would walk the understanding half after all -- which is
+    the residency the phase split exists to avoid.
+    """
+    broken = [
+        index
+        for index, layer in enumerate(prefix_cache.layers)
+        for tensor in (layer.keys, layer.values)
+        if not (tensor.requires_grad and tensor.is_leaf and tensor.grad_fn is None)
+    ]
+    if broken:
+        raise ValueError(
+            "SenseNova four-phase eviction requires the boundary prefix K/V to be "
+            f"grad-requiring LEAVES, but {len(set(broken))} of {len(prefix_cache.layers)} "
+            f"KV cache layer(s) are not (first: {sorted(set(broken))[:3]}). Either the "
+            "prefix was built under no_grad (nothing would train) or it was not cut "
+            "(the generation backward would run on into the understanding half)."
+        )
+
+
 def _assert_immutable_prefix_cache(
-    prefix_cache: Any, expected_layers: int, *, trainable: bool = False
+    prefix_cache: Any,
+    expected_layers: int,
+    *,
+    trainable: bool = False,
+    boundary_leaf: bool = False,
 ) -> None:
     _assert_prefix_cache_structure(prefix_cache, expected_layers)
-    if trainable:
+    if boundary_leaf:
+        _assert_prefix_cache_boundary_leaf(prefix_cache)
+    elif trainable:
         _assert_prefix_cache_differentiable(prefix_cache)
     else:
         _assert_prefix_cache_detached(prefix_cache)
@@ -1313,18 +1495,27 @@ def forward_gen_decoder_layers(
     attention_mask: Optional[torch.Tensor] = None,
     checkpoint_layers: bool = False,
     trainable_prefix: bool = False,
+    boundary_leaf_prefix: bool = False,
 ) -> torch.Tensor:
     """Run the all-generation-token Qwen3 decoder against immutable prefix K/V.
 
     Calling PyTorch's base ``Module.__call__`` bypasses Transformers'
     cache-dropping checkpoint wrapper while preserving module hooks. The cache
     is read through the differentiable ``update_cache=False`` concat path.
+
+    ``boundary_leaf_prefix`` is the four-phase split's cache shape (§8.3.2):
+    grad-requiring leaves rather than a live graph.
     """
 
     layers = getattr(model, "layers", None)
     if layers is None:
         raise ValueError("SenseNova generation training model has no decoder layers")
-    _assert_immutable_prefix_cache(prefix_cache, len(layers), trainable=trainable_prefix)
+    _assert_immutable_prefix_cache(
+        prefix_cache,
+        len(layers),
+        trainable=trainable_prefix,
+        boundary_leaf=boundary_leaf_prefix,
+    )
     image_gen_indicators = torch.ones(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )

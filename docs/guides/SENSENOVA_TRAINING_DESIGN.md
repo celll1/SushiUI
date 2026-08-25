@@ -1623,16 +1623,113 @@ und branch を学習対象にする場合（§13）の eviction 契約をここ�
   both-branch Full-FT が視野に入る**。**これは構造上の見積もりであって断定ではない** —
   half-eviction の有効性 gate は §8.3 のとおり未解決で、現行 staging 実装の転送コストも
   未知だからである（§8.3 の「減速の数値は再測定が必要」）。
+  > **【U-2-4 実測】この見積もりは着地しなかった。** 実 run の peak は
+  > **32.66 GiB allocated / 33.91 GiB reserved** で、**19-21 GB ではない**。
+  > 原因は分割でも eviction でもなく **placement の順序**である —
+  > `load_components` が 588 Linear を materialize して `.to(device)` した時点で
+  > **両 half が同時に GPU に載り**、evictor はその後（`_prepare_models` の後）に
+  > 作られる。実測でも `model_resident == peak_allocated`（32.66 GiB、完全一致）で、
+  > **学習 step は一度もロード時の high-water を超えていない**。
+  > すなわち 4 相 eviction が下げるのは **step の常駐量**であって
+  > **ロード時の high-water ではない**。24 GB 級を狙うなら、loader 側で
+  > half を 1 つずつ置く（§6.2 条件 5 の「per-Linear に dequant → 解放」を
+  > **placement にも**適用する）変更が別途要る。**step 中の最小常駐量は測っていない**
+  > （peak しか記録していないため）。詳細は §13.4 の U-2-4 実測。
 - `und_backward → prefix` は **no-op** にできる（und 常駐のまま次 step へ）ので、
   転送は 1 往復節約できる。
 - **MNT > 1 では境界勾配を累積してから相 3 を 1 回だけ回す。** KV 葉の `.grad` は
   backward 間で自然に加算され、und は iteration 間で不変なので数学的に正確である。
   **副作用として「gen は MNT 回 / und は batch あたり 1 回」という更新頻度の非対称**が
   生まれる。これは欠陥ではなく設計事実として記録する。
+  > **【U-2-4 訂正】「境界勾配を累積する」が成立しない理由は、形ではなく
+  > und の不変性である。**
+  > **形は揃う** — SenseNova は契約上 B1 で（`_collate_sensenova_b1_prefix` は
+  > prefix を 1 本しか許さない）、MNT ループは**その 1 item の timestep を回し、
+  > 毎 iteration `captions[0]` を再 encode する**（`_sensenova_mnt_conditioning`）。
+  > したがって窓内の境界 K/V は同形で、素直に加算できる。
+  > **成立しないのは設計の厳密性の前提の方である**: MNT ループは
+  > **iteration ごとに optimizer を step する**（そもそも graph を retain せず
+  > prefix を再計算しているのはそのためである）ので、窓末で流す累積勾配は
+  > **既に動いた und weight に対して**逆伝播することになる。
+  > 勾配 accumulation なら窓が閉じるまで step しないのでこの前提は成り立つが、
+  > その経路は別理由で拒否されている（§6.2 条件 2）。
+  > 実装は相 3 を **iteration ごとに** 回す。これは厳密である — 相 3 の再計算は
+  > 自分の相 1 と同じ und weight を読み（間に走る gen hook は und weight に
+  > 触れない）、gen half の更新は und forward に影響しない。
+  > **コストは weight 往復が step あたり 2 回ではなく MNT iteration あたり 2 回**に
+  > なることで、これは拒否ではなく `training_log` チャネルで告知する
+  > （`sensenova_four_phase_mnt_cost`）。更新頻度の非対称という結論は変わらない。
+  > **なお MNT>1 は到達可能である** — `assert_full_finetune_contract` が拒否するのは
+  > `gradient_accumulation_steps` であって `multi_noise_timesteps` ではなく、
+  > `BaseTrainer` は MNT >= 1 しか要求しない。**両者を同一視していた旧記述は誤り**。
+- **相 3 は backward 直後に走らせる（optimizer step 地点ではない）。**
+  `_update_census.assert_complete()` は MNT ループ内で呼ばれ、これは
+  `should_step_optimizer` ブロックより**上流**である（`base_trainer.py`。
+  行番号は動くので symbol で引く — 近傍の行番号を書いた旧版は、同じ節の編集で
+  既に 1 度ずれて OOM bucket の print を指していた）。
+  相 3 を step 地点まで遅らせると、**正しい run で census が「und half は 1 つも
+  更新されていない」と報告する**。§12 が「census × 4 相の順序」を未検証項目として
+  挙げていたのはまさにこれで、実装時に踏んだ。
+- **4 相は fused backward ルート専用である。** 相 3 は gen half を CPU に置いたまま
+  終わるので、その後に `optimizer.step()` が走ると **CPU の parameter に CUDA の
+  勾配**が当たる。fused backward には その呼び出し地点が無く、各 half は自分が
+  常駐している間に自分の hook で更新される。したがって LoRA では拒否する。
 - **und forward 2 回のコストと weight 往復コストは未測定。**
   `probes/text_encode_vs_step.py`（`a67640ed`）には既に sensenova アームがあり、
   prefix forward と DiT step の壁時計を測れるので、**「prefix / step 比の実測」を
   この設計の exit gate に指定する**（§13.4 U-2-4）。
+
+#### 【U-2-4 実測】exit gate（2026-08-25: PASS）
+
+実 checkpoint（`M:/model/sensenova/sensenova_int8.safetensors`）、RTX 6000 Ada、
+1024px、prefix 467 token（caption 30 本、実測 p50 218 token）、image token 1024、
+B1、GC ON、native attention、und 側の勾配は **both branch の LoRA rank 4** で供給、
+`set_per_process_memory_fraction(0.72)`。probe は
+`probes/text_encode_vs_step.py --arm sensenova-four-phase`（新設。既存の sensenova
+アームは prefix を `no_grad` の vendor 経路で測るので、4 相が必要とする
+**勾配付き prefix・境界葉での分割・und backward** を測れなかった）。
+**warmup 5 / 計測 25**（probe の既定）、**以下はすべて実測値**。
+
+| 量 | p50 (s) | mean (s) |
+|---|---:|---:|
+| single backward: prefix forward | 0.1728 | 0.1836 |
+| single backward: gen forward + backward（両 half 貫通） | 1.7584 | 1.7826 |
+| 4 相: prefix forward | 0.1708 | 0.1811 |
+| 4 相: denoise（gen forward + 境界までの backward） | 1.4288 | 1.4266 |
+| 4 相: und forward の**再計算** | 0.1897 | 0.2076 |
+| 4 相: und backward | 0.3291 | 0.3343 |
+
+**比は p50 と mean を混ぜず、両方で出す**（初稿は p50 の内訳から mean 由来の合計を
+引いて、成分の和と 57% 食い違う数字を書いていた）。
+
+| 比 | p50 基準 | mean 基準 |
+|---|---:|---:|
+| prefix / step | 0.098 | 0.103 |
+| 再計算 / single backward 合計 | 0.098 | 0.106 |
+| **4 相合計 / single backward 合計** | **1.097** | **1.093** |
+| 分解残差（denoise + und bwd を single の gen fwd+bwd と比較） | **−0.03%** | −1.22% |
+
+- **分割の限界コストは +9.3〜+9.7%。** 初稿の「+8.25%」は n=3 で、しかも分母側の
+  prefix forward に外れ値（mean 0.2715 対 p50 0.2010）を抱えていた。
+  **4 桁目まで主張できる測定ではなかったので撤回する。** 結論は変わらない —
+  **再計算は経済的である。**
+- **分解が成立している**（p50 基準で残差 −0.03%）ので、各相は名前どおりのものを
+  測っている。
+- **eviction 自体の転送コストは分割の約 7 倍である。** 同 probe が
+  production の staging 経路（`stage_modules_to_pinned_cpu` +
+  `_move_modules_to_device`）で und half（**8,161,563,648 byte = 7.60 GiB**、int8）の
+  往復を測ると D2H p50 0.3363 s / H2D p50 0.3296 s、**往復 0.666 s**。
+  4 相は step あたり 2 往復なので **+1.332 s = single backward の +69.0%（p50）/
+  +67.8%（mean）**。
+  **この比は §8.3 の未解決 gate（eviction の有効性）に属するのであって、分割の
+  コストではない** — 三状態 evictor も同じ 2 往復を払うので、**分割が足す転送は
+  ゼロである**。bf16 の both branch では half が 15.09 GiB になるので転送量は倍になる。
+  - 初稿の「往復 1.046 s / +103.7% / 分割の 12 倍」は**測定の欠陥である**。
+    往復ループに warmup が無く、1 回目が `stage_modules_to_pinned_cpu` 内の
+    pinned 確保を含んでいた（以後は torch の caching host allocator が使い回す）。
+    warmup を入れた現在は成分の和と一致する（0.3363 + 0.3296 = 0.666）。
+- **測っていないもの**: bf16 の und Linear での比（上記は int8 Linear の値である）、
+  1024px 以外の解像度、pinned 転送の非同期化。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -2197,8 +2294,13 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
     なお本項が引いていた `adamw8bit_ringbuffer.py:1082` の記述は **`3a7c9560`
     以来 stale** だった（hook 側は当時すでに fail-loud）。U-2-6 が直したのは
     `step()` 側の同型のスキップである。
-    **残る未検証**: census と **4 相 eviction の順序**の相互作用（§8.3.2 / U-2-4 と
-    合わせて見る必要がある。合成パラメータでは eviction が走らない）。
+    ~~**残る未検証**: census と **4 相 eviction の順序**の相互作用。~~
+    **CLOSED（U-2-4）。しかも「未検証」ではなく実際に踏んだ欠陥だった** —
+    `_update_census.assert_complete()` は MNT ループ内、`should_step_optimizer`
+    ブロックより**上流**で呼ばれるので、相 3 を optimizer step 地点に置くと
+    **正しい run で census が「und half は 1 つも更新されていない」と報告する**。
+    相 3 は backward 直後に走る。実 run（both branch、588 個中 583 個が更新、
+    5 個は構造的到達不能）で確認済み。§8.3.2 と §13.4 の U-2-4 実測。
 
 **§6.5 前提事実 1（「CPU state はどの学習経路からも有効化されない」）は
 U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator を渡す。
@@ -2506,6 +2608,7 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   「未指定」を表現できないため。§6.3 (2)）。dropout guard は full FT で無条件に
   なった（§13.3）。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
+  → **DONE。exit gate は PASS、ただし ~19-21 GB の見積もりは着地しなかった**（下記）。
   U-2-5: exit smoke — **update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
   **期待値は「全部動いた」ではない** — und half の 5 個は materialize されて実
@@ -2927,6 +3030,127 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       und branch / both branch の run、`int8` / `bf16` 形式の保存と再ロード、
       cold cache からのロード時間（reload arm の 0.70 s は直前に書いた
       ファイルの page cache 上での mmap である）。
+    #### 【U-2-4】4 相分割の実装と実測（2026-08-25: PASS）
+
+    **exit gate（prefix / step 比）は §8.3.2 の「U-2-4 実測」に置いた。結論は
+    prefix / step 比 0.098（p50）/ 0.103（mean）、分割の限界コスト **+9.3〜+9.7%** で、
+    再計算は経済的である。**
+
+    着地したもの:
+
+    - **`core/training/sensenova_four_phase.py`**（新規）。境界の切断・境界勾配の
+      capture・相 3 の replay を持つ。相 1 は **`no_grad` で回す** — 相 3 が
+      どのみち再計算するので、相 1 のグラフは作った端から捨てることになり、
+      その活性こそ分割が避けたい常駐だからである。数値は同一（同じ関数・同じ入力・
+      同じ重み、`attention_dropout` は 0 が assert 済み）。
+    - **`SenseNovaTrainingPhaseEvictor` の 4 相化**（既存の 3 状態機械の拡張であって
+      並列機構ではない）。`und_backward` 状態、`enter_und_backward`、
+      `assert_understanding_resident`、および **`und_backward → prefix` の no-op**
+      （設計どおり往復を 1 回節約する）。
+    - **層選択の判別子は「永続性」のまま**（§8.4）。U-2-1 以後、学習する側の Linear は
+      再び Parameter を持つが、**凍結側は `Int8Linear` のままで Parameter を 1 つも
+      持たない**。`parameters()` 規則は RMSNorm しか選ばず、しかも `Int8Linear` の
+      scale buffer を落として **1 モジュールのテンソルを 2 デバイスに分割する**。
+      4 相で新しいのは判別子ではなく、**退避する half が勾配を持つようになったこと**で、
+      `_assert_grad_free` が「hook が消費していない `.grad` を持つ half の退避」を
+      拒否する（§8.3 の表が名指しする「片方が更新されないまま loss だけ下がる」故障）。
+    - **`_assert_prefix_cache_boundary_leaf`**（新規）。既存の
+      `_assert_prefix_cache_differentiable` は **`grad_fn` の存在**を要求するので、
+      4 相の境界 K/V（葉）を**必ず拒否する**。実装中に実際に落ちた。葉であることを
+      **肯定的に** assert する（`requires_grad` かつ `is_leaf` かつ `grad_fn is None`）：
+      `requires_grad=False` なら何も学習されず、`grad_fn` が残っていれば切断が
+      起きておらず gen backward が und half に流れ込む。単一 backward 経路の
+      assertion は**そのまま厳格に残す**（そこでの葉は静かな不学習である）。
+    - **配線は opt-in**。`sensenova_four_phase_eviction`（既定 `False`、
+      `param_defaults.TRAINING_DEFAULTS`）。`train_text_encoder` +
+      `sensenova_mot_phase_eviction` + `full_finetune` の 3 つを要求し、
+      `train_runner` がロード前に、`assert_four_phase_contract` が trainer 側で、
+      `assert_four_phase_fused_backward` が fused backward の設置後に検査する。
+      `train_runner` の「`train_text_encoder` × eviction」拒否は**削除ではなく分岐**に
+      なり、拒否メッセージは lift する設定を名指しするようになった。
+
+    **勾配パリティ（acceptance criterion）**: 合成木上で **分割の勾配と単一 backward の
+    勾配は bitwise 一致**（float64 と float32 の両方）。**許容誤差はゼロで、選んだ値では
+    なく導出した値である** — 分割は同じ値に同じ演算を同じ順序で当てる（再計算は決定的で
+    自分自身の forward を再現し、`leaf.grad` への堆積は空バッファへの加算＝値そのもの、
+    それを `autograd.backward` に渡すのは単一呼び出しが走らせるのと同じ und backward）。
+    **negative control 付き**: 境界を detached で渡すと **loss は単一 backward と
+    完全一致したまま und half の `.grad` が 1 つも生えない**。相 3 を飛ばした場合も同様。
+    テスト: `backend/tests/sensenova_four_phase_test.py`（35 件）。
+    **この bitwise パリティは合成木（CPU、fp64 / fp32）上のものであって、実グラフ
+    （bf16 autocast + gradient checkpointing + 実 attention kernel）上のものではない。
+    この限定を落として要約しないこと。** 実グラフ側で言えるのは実 run の結果
+    （583/588 が動き、動かない 5 個が予告どおりの名前である）までである。
+
+    **実 run（`--branch both --four-phase`、実 checkpoint、64px、3 step、adafactor、
+    lr 1e-6、`mixed` 要求）。以下はすべて実測値。**
+
+    - adapter は `SenseNovaFullParameterAdapter`、branch `both`、**588 target**、
+      optimizer group 2 つ（各 294 tensor / 8,103,395,328 要素、合計
+      **16,206,790,656 要素**）。fused backward 設置済み、stochastic rounding 強制 ON。
+    - **3 step とも有限 loss**（1.4558 / 0.4096 / 0.4010）。**下降は主張しない。**
+    - **updated-parameter census: 583 expect / 3 step すべて complete**、
+      exempt は `und_gradient_unreachable_paths()` の 5 個。
+    - **U-2-5 形式の update-nonzero census: 588 個中 583 個が動き、動かなかった 5 個は
+      `layers.41.self_attn.{q,o}_proj` と `layers.41.mlp.{gate,up,down}_proj`** ——
+      §13.4 U-2-5 が予告した名前と数え方に一致する。要素レベル標本（layer 0 の
+      gen 側 4 本）は **2.75% / 2.78% / 4.00% / 3.77%**。
+    - **grad norm は 2 half に分かれて出た**（`MoT-Understanding` 35.544 /
+      `MoT-Generation` 30.948）。**大小は主張しない。**
+    - **4 相が実際に回ったことの証拠**: step 境界の `assert_understanding_resident()` が
+      通っている。この assert は状態が `und_backward` か `prefix` であることを要求し、
+      `und_backward` は `denoise` からしか、`denoise` は `prefix` からしか到達できず、
+      各遷移が実際の D2H / H2D を行う。
+    - **VRAM: peak 32.66 GiB allocated / 33.91 GiB reserved、gate 34.55 GiB の 94.5%。
+      §8.3.2 の ~19-21 GB には着地しなかった。** 理由は §8.3.2 に転記した placement の
+      順序であり、`model_resident == peak_allocated`（32.66 GiB が完全一致）が
+      「学習 step はロード時 high-water を一度も超えていない」ことを示している。
+      **step 中の最小常駐量は測っていない。**
+    - **host RAM: ロード前 0.98 GiB → ロード後 26.07 GiB、プロセス peak 61.67 GiB**
+      （実行ホスト 93.6 GiB、開始時 空き 56.6 GiB）。gen only の U-2-2（32.10 GiB）に
+      対し、もう 1 つの half を materialize する分だけ増えている。
+    - **wall time**: model load 24.77 s、train + save 58.81 s（3 step、64px、保存込み）。
+    - **保存**: `mixed` を要求したが **both branch では int8 に残す half が無い**ので
+      `bf16` へ縮退し、それを告知した（§6.4 の既知挙動）。9 shard + index、
+      **32.68 GiB**。
+    - **測っていないもの**: 品質、収束、解像度上限、この checkpoint の再ロード
+      （`--arm reload` は回していない）、4 相 OFF との A/B（64px では両 arm とも
+      ロード時 high-water が peak を支配するので、この shape では差が出ない）。
+
+    #### 【U-2-4】監査で見つかった 6 件（全件修正済み）
+
+    1. **`FullParameterTrainer.__init__` 末尾の `print(... Training U-Net ...)` が
+       `train()` の中へ孤立していた**（**arch 非依存の回帰**）。新メソッドを
+       その行の上に挿入したため、**必ず return する `try` の後ろ**に落ち、
+       **どの arch の full-FT run でもこのログが出なくなっていた**。`__init__` に戻した。
+       「他 arch には何も影響しない」という当方の主張はこれで反証されている。
+    2. **転送コストの測定に warmup が無かった**（上の §8.3.2 に経緯ごと記載）。
+       さらに **p50 の内訳から mean 由来の合計を引いていた**ので、引用した成分の和と
+       57% 食い違っていた。probe は 2 統計を混ぜずに両方出すようにした。
+    3. **`sensenova_four_phase_eviction` が `TRAINING_DEFAULTS` にだけ在った。**
+       `/schema/training-defaults` はこれを配信するのに `TrainingRunCreateRequest`
+       にも `openapi.yaml` にも無く、**製品からは一切有効化できなかった**
+       （`_build_train_section` は Pydantic 経由で保存された run params を読む）。
+       前例として引いた `255a3ab5` は**逆のことを書いている** — 「TRAINING_DEFAULTS
+       で公開すればこの API 面ができてしまう」ので**あえて避けた**、である。
+       本項は診断ではなく VRAM ノブで、正しい run で raise もしないので、
+       Pydantic + openapi 側に寄せた。**frontend の control は張っていない**ので、
+       現状の到達経路は API と YAML である。
+    4. **MNT に関する当方の訂正が誤りだった**（§8.3.2 に訂正を反映）。形は揃う。
+       成立しないのは und の不変性の方で、しかも **MNT>1 は到達可能**である
+       （契約が拒否するのは accumulation であって MNT ではない）。
+       コストは拒否せず `sensenova_four_phase_mnt_cost` として告知する。
+    5. **回復可能 OOM の batch skip が `four_phase.discard()` を呼んでいなかった。**
+       中断した batch の prefix は既に切られているので、次 batch の `cut()` が
+       raise し、それは OOM に分類されないので **この skip 経路が生かそうとしている
+       run を殺す**。`zero_grad` の隣に置いた。
+    6. **`install_training_phase_eviction` が method を見ずに flag だけを見ていた。**
+       `sensenova_four_phase_eviction` は `BaseTrainer.__init__` が全 trainer に立て、
+       `LoRATrainer` もこの installer を呼ぶ。`train_runner` の guard を迂回されると
+       **LoRA run が対称性 backstop を緩めてしまう** — その backstop は
+       まさに前段の check が走らなかった場合のために在る。installer 側でも
+       full fine-tune を要求するようにした。
+
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、

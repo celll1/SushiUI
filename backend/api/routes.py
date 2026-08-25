@@ -15350,6 +15350,12 @@ class TrainingRunCreateRequest(BaseModel):
     blocks_to_swap: int = 0  # Number of transformer blocks to swap (0 to disable)
     use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
     sensenova_mot_phase_eviction: bool = TRAINING_DEFAULTS["sensenova_mot_phase_eviction"]
+    # SenseNova full fine-tune only: split the backward at the prefix KV cache so
+    # a TRAINED understanding half can still be evicted. Carried here rather than
+    # on the train_config-only channel the fused-backward diagnostics use: this is
+    # a VRAM knob like the sibling above, not a diagnostic, and it does not raise
+    # on a correct run.
+    sensenova_four_phase_eviction: bool = TRAINING_DEFAULTS["sensenova_four_phase_eviction"]
     # SenseNova full fine-tune save format. Measured sizes and the int8 loss
     # census are in openapi.yaml's description. Literal, not str: the adapter's
     # own refusal fires at the first save_every, which is the "train for hours,

@@ -960,6 +960,14 @@ class BaseTrainer(ABC):
             _TD_PHASE_EVICTION["sensenova_mot_phase_eviction"],
         ))
         self.sensenova_phase_evictor = None
+        # Four-phase eviction (SENSENOVA_TRAINING_DESIGN.md 8.3.2): splits the
+        # single backward at the prefix KV cache so a TRAINED understanding half
+        # can still be evicted. Same config channel as the flag above.
+        self.sensenova_four_phase_eviction = bool(_tc.get(
+            "sensenova_four_phase_eviction",
+            _TD_PHASE_EVICTION["sensenova_four_phase_eviction"],
+        ))
+        self.sensenova_four_phase = None
         # Validated by SenseNovaFullParameterAdapter, its only reader.
         self.sensenova_full_finetune_save_format = str(_tc.get(
             "sensenova_full_finetune_save_format",
@@ -3999,9 +4007,11 @@ class BaseTrainer(ABC):
 
         if getattr(self, "is_sensenova", False) and is_full_finetune(self):
             from core.training.ops.sensenova_ops import (
+                assert_four_phase_fused_backward,
                 assert_full_finetune_stochastic_rounding_attached,
             )
             assert_full_finetune_stochastic_rounding_attached(self, optimizer_type)
+            assert_four_phase_fused_backward(self)
 
     def _fused_backward_target_module(self):
         """Return the main trainable module the ring-buffer optimizers register their
@@ -6430,6 +6440,18 @@ class BaseTrainer(ABC):
             self.grad_scaler.scale(loss_for_backward).backward()
         else:
             loss_for_backward.backward()
+        four_phase = getattr(self, "sensenova_four_phase", None)
+        if four_phase is not None:
+            # The backward above stopped at the boundary K/V leaves; take their
+            # gradient, then run phase 3 HERE rather than at the optimizer-step
+            # site. The update census asserts completeness inside the MNT loop,
+            # which is upstream of that site, so a deferred phase 3 would report
+            # the understanding half as never updated on a correct run. Deferring
+            # is what the MNT>1 batching in sensenova_four_phase would want, and
+            # it is unreachable anyway: this route refuses accumulation, so every
+            # backward is its own step.
+            four_phase.capture()
+            four_phase.flush()
         self._flush_fused_group_partials()
 
         # Extract values before deleting tensors
@@ -11900,6 +11922,14 @@ class BaseTrainer(ABC):
                                     self.optimizer.zero_grad(set_to_none=True)
                                 except Exception as e:
                                     print(f"{self.log_prefix} [FATAL CUDA Error] zero_grad failed: {e}")
+                                # The abandoned batch's prefix was already CUT during
+                                # prep, so its boundary leaves outlive the skip. Without
+                                # this the NEXT batch's cut() raises "never captured",
+                                # which _classify_cuda_error cannot see as an OOM and so
+                                # kills a run this path exists to keep alive.
+                                _four_phase = getattr(self, "sensenova_four_phase", None)
+                                if _four_phase is not None:
+                                    _four_phase.discard()
                                 gc.collect()
                                 try:
                                     torch.cuda.synchronize()
@@ -12134,11 +12164,21 @@ class BaseTrainer(ABC):
                                 except Exception as lr_err:
                                     print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
                         elif should_step_optimizer:
+                            four_phase = getattr(self, "sensenova_four_phase", None)
+                            if four_phase is not None:
+                                # Normally a no-op: phase 3 already ran with the
+                                # backward. This is the accumulation path's seam,
+                                # kept so a future route that defers it lands
+                                # before the grad norms rather than after.
+                                four_phase.flush()
                             phase_evictor = getattr(
                                 self, "sensenova_phase_evictor", None
                             )
                             if phase_evictor is not None:
-                                phase_evictor.assert_generation_resident()
+                                if four_phase is not None:
+                                    phase_evictor.assert_understanding_resident()
+                                else:
+                                    phase_evictor.assert_generation_resident()
                             if not self.use_fused_backward and self.fused_optimizer_groups is None:
                                 # Normal flow: optimizer.step() and zero_grad() here
                                 if self.use_grad_scaler:

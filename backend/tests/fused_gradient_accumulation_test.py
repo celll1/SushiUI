@@ -217,7 +217,13 @@ class AccumulationWarningTest(unittest.TestCase):
 
     def test_it_fires_once(self):
         trainer = _Trainer(fused=True)
-        self.assertEqual(_warn(trainer, times=5).count("IGNORED"), 1)
+        # One emission is two stdout lines: the human one and the machine one
+        # TrainingProcess lifts off the stream (core/training/training_events.py).
+        # Count the human line only.
+        from core.training.training_events import TRAINING_EVENT_SENTINEL
+        lines = [line for line in _warn(trainer, times=5).splitlines()
+                 if not line.startswith(TRAINING_EVENT_SENTINEL)]
+        self.assertEqual(sum(line.count("IGNORED") for line in lines), 1)
 
     def test_the_fused_optimizer_groups_path_warns_too(self):
         self.assertIn("fused optimizer groups", _warn(_Trainer(groups=object())))

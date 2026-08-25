@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from ..training_events import emit_training_warning
 from .training_method import trains_denoiser_weights
 
 
@@ -207,9 +208,13 @@ def load_components(trainer) -> None:
         trainer.transformer_original = trainer.transformer
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
-        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} requires a "
-              f"frozen DiT and is ignored when the DiT itself is trained (full fine-tune "
-              f"with train_unet=True). The DiT base stays unquantised.")
+        emit_training_warning(
+            f"fp8_base_dtype={fp8_base_dtype} requires a "
+            f"frozen DiT and is ignored when the DiT itself is trained (full fine-tune "
+            f"with train_unet=True). The DiT base stays unquantised.",
+            code="fp8_base_dtype_ignored",
+            prefix=trainer.log_prefix,
+        )
 
     # Plain GPU move. Block-swap init deferred to setup_block_swap() (called by
     # the mode subclass AFTER LoRA wrap) — same reasoning as anima_ops.

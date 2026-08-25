@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Play, Square, Trash2 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
-import { wsClient, DatasetScanProgress } from "@/utils/websocket";
+import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
+import { TrainingRun, TrainingLogEvent, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
+import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
@@ -51,19 +51,54 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [scanDatasetId, setScanDatasetId] = useState<number | null>(null);
   const [scanSkipping, setScanSkipping] = useState(false);
 
+  // Structured notices from the trainer (settings overridden or ignored). The
+  // WebSocket replays nothing on connect, so the backlog comes from the status
+  // response and live events are merged into it by (level, code, message).
+  const [notices, setNotices] = useState<TrainingLogEvent[]>(run.warnings ?? []);
+  const [noticesOpen, setNoticesOpen] = useState(true);
+
+  // JSON rather than a delimiter: no separator can collide with message text.
+  const noticeKey = (n: TrainingLogEvent) =>
+    JSON.stringify([n.level, n.code ?? null, n.message]);
+
+  const mergeNotices = (incoming: TrainingLogEvent[]) => {
+    setNotices((prev) => {
+      const seen = new Set(prev.map(noticeKey));
+      const added = incoming.filter((n) => !seen.has(noticeKey(n)));
+      return added.length ? [...prev, ...added] : prev;
+    });
+  };
+
   // Epoch is not on the run row, so fetch it once on open (covers finished runs
-  // and the gap before the first poll tick).
+  // and the gap before the first poll tick). Same call carries the notice backlog.
   useEffect(() => {
     let cancelled = false;
     getTrainingStatus(currentRun.id)
       .then((status) => {
         if (!cancelled) {
           setEpochInfo({ current: status.current_epoch ?? null, total: status.total_epochs ?? null });
+          if (status.warnings?.length) mergeNotices(status.warnings);
         }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [currentRun.id]);
+
+  // Live notices for this run.
+  useEffect(() => {
+    const handler = (ev: TrainingLogMessage) => {
+      if (Number(ev.run_id) !== Number(currentRun.id)) return;
+      mergeNotices([{ level: ev.level, code: ev.code ?? null, message: ev.message }]);
+    };
+    wsClient.subscribeToTrainingLog(handler);
+    return () => wsClient.unsubscribeFromTrainingLog(handler);
+  }, [currentRun.id]);
+
+  // A (re)start clears the run's notices server-side: they describe the attempt
+  // that emitted them.
+  useEffect(() => {
+    if (currentRun.status === "starting") setNotices([]);
+  }, [currentRun.status]);
 
   // Poll training status
   useEffect(() => {
@@ -75,6 +110,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       try {
         const status = await getTrainingStatus(currentRun.id);
         setEpochInfo({ current: status.current_epoch ?? null, total: status.total_epochs ?? null });
+        // Also the recovery path when the SSE connection dropped and reconnected.
+        if (status.warnings?.length) mergeNotices(status.warnings);
         const updatedRun = {
           ...currentRun,
           progress: status.progress,
@@ -500,6 +537,46 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               </button>
             ) : null}
           </div>
+
+          {/* Trainer notices — settings this run overrode or ignored. Backlog
+              from the status response, live ones over the WebSocket. */}
+          {notices.length > 0 && (
+            <div className="rounded-md border border-yellow-700/60 bg-yellow-950/20 p-3">
+              <button
+                onClick={() => setNoticesOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-2 text-left"
+              >
+                <span className="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-yellow-300">
+                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+                  Trainer notices ({notices.length})
+                </span>
+                <span className="text-xxs text-gray-400">{noticesOpen ? "Hide" : "Show"}</span>
+              </button>
+              {noticesOpen && (
+                <ul className="mt-2 space-y-2">
+                  {notices.map((n, i) => (
+                    <li key={`${n.code ?? "-"}-${i}`} className="text-xxs sm:text-xs">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`rounded px-1 py-0.5 font-medium ${
+                            n.level === "error"
+                              ? "bg-red-900/60 text-red-300"
+                              : n.level === "warning"
+                              ? "bg-yellow-900/60 text-yellow-300"
+                              : "bg-gray-700 text-gray-300"
+                          }`}
+                        >
+                          {n.level.toUpperCase()}
+                        </span>
+                        {n.code && <span className="font-mono text-gray-500">{n.code}</span>}
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-gray-300">{n.message}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
             </div>
 
           {/* Configuration Info */}

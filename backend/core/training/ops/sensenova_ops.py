@@ -19,6 +19,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from ..training_events import emit_training_warning
 from .training_method import _FULL_FINETUNE_METHOD, resolve_training_method
 
 
@@ -221,12 +222,11 @@ def enforce_full_finetune_stochastic_rounding(trainer: Any) -> bool:
 
     So it is a route requirement, listed per architecture in
     ``param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH``, applied
-    here and announced on the trainer's stdout. That stdout reaches the backend
-    server's console only -- there is no training-log WebSocket channel and no
-    frontend consumer -- so a user who unticked the box gets no product-surface
-    notice. Acceptable only while both step-3 gates are closed; opening them
-    needs a user-visible channel first (SENSENOVA_TRAINING_DESIGN.md 13.4).
-    Returns True when it changed the setting.
+    here and announced through ``core.training.training_events``, which puts it
+    on the ``training_log`` WebSocket channel and on the run row -- so a user
+    who unticked the box sees the override in the Training Monitor
+    (SENSENOVA_TRAINING_DESIGN.md 13.4). Returns True when it changed the
+    setting.
     """
     from api.param_defaults import full_finetune_forces_stochastic_rounding
 
@@ -236,14 +236,16 @@ def enforce_full_finetune_stochastic_rounding(trainer: Any) -> bool:
         return False
     trainer.optimizer_stochastic_rounding = True
     prefix = getattr(trainer, "log_prefix", "[SenseNova]")
-    print(
-        f"{prefix} SenseNova full fine-tuning: optimizer_stochastic_rounding was "
+    emit_training_warning(
+        f"SenseNova full fine-tuning: optimizer_stochastic_rounding was "
         f"off and has been turned on for this run. It is not optional here. The "
         f"trainable half is bf16 with no fp32 master, and under round-to-nearest "
         f"84.5% of a bf16 tensor's elements never move at any step count while "
         f"the loss falls normally (measured, SENSENOVA_TRAINING_DESIGN.md 6.3). "
         f"This route cannot be run with it off; LoRA training on this "
-        f"architecture honours the setting."
+        f"architecture honours the setting.",
+        code="sensenova_stochastic_rounding_forced",
+        prefix=prefix,
     )
     return True
 

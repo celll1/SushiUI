@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from datetime import datetime
 
+from core.training.training_events import split_training_event
+
 
 def _is_venv_interpreter(python_path: Path) -> bool:
     """Best-effort check that *python_path* is a venv interpreter.
@@ -76,6 +78,11 @@ def resolve_venv_python() -> str:
 class TrainingProcess:
     """Manages a single training process."""
 
+    # Distinct structured notices forwarded per run. Notices are "say once" by
+    # construction; this only bounds a pathological emitter, and the dedup set
+    # below is what a repeating one actually hits.
+    MAX_EVENTS_PER_RUN = 200
+
     def __init__(
         self,
         run_id: int,
@@ -115,11 +122,16 @@ class TrainingProcess:
         # skip its finally: and leak the activity, blocking every model load
         # until the backend restarts.
         self._monitor_task: Optional[asyncio.Task] = None
+        # (level, code, message) already forwarded, and whether the cap notice
+        # has been sent. Bounded by MAX_EVENTS_PER_RUN.
+        self._events_seen: set = set()
+        self._events_capped = False
 
     async def start(
         self,
         progress_callback: Optional[Callable[[int, float, float], None]] = None,
         log_callback: Optional[Callable[[str], None]] = None,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         """
         Start training process.
@@ -127,6 +139,9 @@ class TrainingProcess:
         Args:
             progress_callback: Callback(step, loss, lr) for progress updates
             log_callback: Callback(log_line) for log streaming
+            event_callback: Callback(event) for structured notices the trainer
+                emitted through ``core.training.training_events``. Deduped and
+                capped per run; ordinary log lines never reach it.
         """
         if self.is_running:
             raise RuntimeError("Training process is already running")
@@ -139,7 +154,7 @@ class TrainingProcess:
         # activity on failure. The activity gates model loads process-wide, so
         # any escape that skips the release blocks loading until restart.
         try:
-            await self._spawn(progress_callback, log_callback)
+            await self._spawn(progress_callback, log_callback, event_callback)
         except Exception:
             model_state_coordinator.end_activity(self._lifecycle_activity)
             self._lifecycle_activity_active = False
@@ -149,6 +164,7 @@ class TrainingProcess:
         self,
         progress_callback: Optional[Callable[[int, float, float], None]],
         log_callback: Optional[Callable[[str], None]],
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         """Build the command and hand ownership to the log monitor.
 
@@ -206,12 +222,48 @@ class TrainingProcess:
 
         # Monitor logs in background. Keep the handle: see _monitor_task.
         self._monitor_task = asyncio.create_task(
-            self._monitor_logs(progress_callback, log_callback))
+            self._monitor_logs(progress_callback, log_callback, event_callback))
+
+    def _forward_event(
+        self,
+        event: Dict[str, Any],
+        event_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> None:
+        """Dedup and cap a structured notice, then hand it to the backend.
+
+        Identical notices are forwarded once: every emitter in the tree is a
+        "say once" guard already, so a repeat means a loop, not new
+        information. The cap bounds the distinct case and says so rather than
+        going quiet.
+        """
+        if event_callback is None:
+            return
+        key = (event["level"], event.get("code"), event["message"])
+        if key in self._events_seen:
+            return
+        if len(self._events_seen) >= self.MAX_EVENTS_PER_RUN:
+            if not self._events_capped:
+                self._events_capped = True
+                event_callback({
+                    "level": "warning",
+                    "code": "training_event_cap_reached",
+                    "message": (
+                        f"This run emitted more than {self.MAX_EVENTS_PER_RUN} distinct "
+                        f"notices; the rest are on the backend console only."
+                    ),
+                })
+            return
+        self._events_seen.add(key)
+        try:
+            event_callback(event)
+        except Exception as e:
+            print(f"[Training] Failed to forward training event: {e}")
 
     async def _monitor_logs(
         self,
         progress_callback: Optional[Callable[[int, float, float], None]],
         log_callback: Optional[Callable[[str], None]],
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         """
         Monitor training logs and extract progress information.
@@ -265,6 +317,18 @@ class TrainingProcess:
                     print(f"[Training] Full line (hex): {line_bytes.hex()}")
                     # Replace invalid bytes and continue
                     line = line_bytes.decode('utf-8', errors='replace').strip()
+
+                # A sentinel line is the machine half of a notice whose human
+                # half already went through log_callback; it is lifted off the
+                # stream here rather than printed as JSON to the console. It can
+                # arrive with a carriage-return-only tqdm write glued in front
+                # of it (see split_training_event), so what precedes it is still
+                # forwarded to the console.
+                line, event = split_training_event(line)
+                if event is not None:
+                    self._forward_event(event, event_callback)
+                    if not line:
+                        continue
 
                 # Send log to callback
                 if log_callback:

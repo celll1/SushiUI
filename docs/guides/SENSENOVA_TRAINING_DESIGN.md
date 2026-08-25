@@ -3,8 +3,8 @@
 > Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
 > Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 が `cc296e84`、
 > U-2-2 の step 1-2 が `601d0271`、U-2-3 が `24220b5c` で着地。**full FT の受付は
-> 依然閉じており、開ける前に §6.4 の checkpoint format 決定と、ユーザーに届く
-> 通知経路が要る** — §13.4 の警告ボックス）。
+> 依然閉じており、開ける前に §6.4 の checkpoint format 決定が要る。通知経路は
+> `training_log` チャンネルとして着地済み** — §13.4 の警告ボックス）。
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -107,7 +107,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
-| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。**残るのは出力 checkpoint format の決定と受付の解錠**で、その前にユーザーに届く通知経路が要る（§6.4、§13.4 U-2-2） | PENDING |
+| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。通知経路（`training_log`）も着地。**残るのは出力 checkpoint format の決定と受付の解錠**（§6.4、§13.4 U-2-2） | PENDING |
 | understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
 | understanding branch の Full-FT / reference 併用（U-2 / U-3） | §13.4 | PENDING |
 
@@ -663,8 +663,9 @@ SenseNova への含意:
       ことになる — frontend は既定を false でハードコードし
       （`TrainingConfig.tsx:126`）**常に送る**（`:786`）ので、UI が組める構成は
       すべて落ちる。false を尊重すれば凍結 run を出荷する。どちらも不可なので、
-      **ルート要件（強制 + stdout 通知）**を選んだ。三値化すれば正直な既定が
-      可能になる（未実装。§13.4 の警告ボックスの (c)）。
+      **ルート要件（強制 + 通知）**を選んだ。通知は `training_log` チャンネルで
+      ユーザーに届く（§13.4 警告ボックス (c)）。三値化すれば正直な既定が
+      可能になる（未実装）。
     - **強制は full FT ルートだけである。** 同 arch の LoRA 学習は設定を尊重する。
   - **【実測、`24220b5c`】このルート自身の seam での測定。** bf16、
     `N=65536 ~ N(0, 0.02)`、定数勾配、lr 1e-5、Adafactor を
@@ -1606,8 +1607,8 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 - Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
   method-aware 化は `cc296e84` で、**adapter・契約・fused backward の decoupling は
   `601d0271`**、**stochastic rounding の強制と dropout guard は `24220b5c`** で
-  DONE。**残るのは checkpoint format の決定と受付の解錠**で、
-  §6.4 と §13.4 U-2-2 に列挙してある。**順序制約あり: 通知経路が先**）と、
+  DONE。通知経路（`training_log`）も着地。**残るのは checkpoint format の決定と
+  受付の解錠**で、§6.4 と §13.4 U-2-2 に列挙してある）と、
   Phase U（§13）。
 
 ### DONE — 登録から自動的に得られたもの
@@ -1920,8 +1921,8 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   OFF を拒否するか。**~~ **決定済み（`24220b5c`）: どちらでもなく「ルート要件と
   して強制する」。** 既定にも拒否にもできないのは transport が「未指定」を
   表現できないためで、理由と実装は §6.3 (2)。（永続 fp32 master は選択肢に
-  含めない。棄却済み。）**新しく開いた項目**は、強制を**ユーザーに知らせる経路**が
-  無いこと（§13.4 警告ボックス (c)）。
+  含めない。棄却済み。）強制を**ユーザーに知らせる経路**は `training_log`
+  チャンネルとして着地した（§13.4 警告ボックス (c)）。
 - ~~**`optimizer: adamw` を SenseNova full FT で拒否するか。**~~ **決定済み
   （`601d0271`）: 拒否する。** それどころか allowlist は `("adafactor",)` のみで、
   `adamw` はそこから外れた名前の 1 つとして拒否され、加えて §6.3 の理由が
@@ -2458,18 +2459,16 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     > **(b) §6.4 の checkpoint format の決定 — 未決定。** 3 候補は
     > **意図的に開いたまま**にしてある（選ぶのは実装者ではない）。
     >
-    > **(c) 【新規】ユーザーに届く通知経路、または三値 transport。**
-    > (a) の強制は **trainer の stdout にしか出ない**。その stdout は
-    > `training_process.py:239` が読み取り、`routes.py:16493-16494` の
-    > `log_callback` が `print()` する — つまり**バックエンドサーバー自身の
-    > コンソール**である。学習ログ用の WebSocket チャンネルは存在せず
-    > （`backend/api/WS_PROTOCOL.md` のメッセージ型は `ping` / `progress` /
-    > `training_metrics` / `tagger_metrics` / `dataset_scan_progress` のみ）、
-    > frontend の消費者も無く、有効値を checkpoint metadata に残す仕組みも無い。
-    > **チェックを外したユーザーは、設定を覆されたことを製品面のどこでも
-    > 知らされない。** これが許容できるのは、受付の 2 つの拒否
-    > （`arch_capabilities` と `train_runner`）が**どちらも閉じていて
-    > 誰もこのコードに到達できない間だけ**である。
+    > **(c) ユーザーに届く通知経路 — DONE。** 以前はこの強制が
+    > **trainer の stdout にしか出ず**、`routes.py` の `log_callback` が
+    > **バックエンドサーバー自身のコンソール**に `print()` するだけだった。
+    > 現在は `core/training/training_events.py` 経由で発行され、
+    > `TrainingProcess` が stdout から拾い上げて `training_log` WebSocket
+    > メッセージとして broadcast し、`training_runs.warnings` に永続化する
+    > （切断中・再読み込み・完了後も Training Monitor で見える。
+    > `backend/api/WS_PROTOCOL.md` の `training_log` 節）。
+    > **checkpoint metadata に有効値を残す仕組みは依然として無い**ので、
+    > 三値 transport（下記）は独立した未実施項目のまま。
     > なお三値化は研究ではなく `docs/guides/ADD_A_PARAMETER.md` の通常作業である:
     > `routes.py:15145` を `Optional[bool] = None`、`openapi.yaml:18246` の
     > スキーマに `nullable: true`、`training_config.py:142` を無条件書き込みに、

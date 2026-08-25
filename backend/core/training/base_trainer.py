@@ -41,6 +41,7 @@ from core.attention import (
     to_diffusers_backend,
 )
 from core.training.lr_utils import reassert_config_lr
+from core.training.training_events import emit_training_warning
 
 
 def setup_fused_grad_norm(trainer, optimizers):
@@ -3894,13 +3895,17 @@ class BaseTrainer(ABC):
         self._fused_clipping_warned = True
         mode = ("fused optimizer groups" if self.fused_optimizer_groups is not None
                 else "the fused backward pass")
-        print(f"{self.log_prefix} WARNING: max_grad_norm={max_grad_norm} is IGNORED under "
-              f"{mode}. Gradient clipping by global norm has to see every gradient "
-              f"before it can scale them, and this mode applies each parameter's update "
-              f"as soon as that parameter's gradient exists, so no global norm is ever "
-              f"available. No clipping of any kind is applied. To clip, disable the fused "
-              f"path (blocks_to_swap=0 and num_optimizer_groups=0); to silence this, set "
-              f"max_grad_norm=0.")
+        emit_training_warning(
+            f"max_grad_norm={max_grad_norm} is IGNORED under "
+            f"{mode}. Gradient clipping by global norm has to see every gradient "
+            f"before it can scale them, and this mode applies each parameter's update "
+            f"as soon as that parameter's gradient exists, so no global norm is ever "
+            f"available. No clipping of any kind is applied. To clip, disable the fused "
+            f"path (blocks_to_swap=0 and num_optimizer_groups=0); to silence this, set "
+            f"max_grad_norm=0.",
+            code="fused_grad_clipping_ignored",
+            prefix=self.log_prefix,
+        )
 
     def _warn_gradient_accumulation_ignored_under_fused(
         self,
@@ -3929,21 +3934,25 @@ class BaseTrainer(ABC):
                 else "the fused backward pass")
         mnt = max(1, int(multi_noise_timesteps or 1))
         intended = batch_size * accum // mnt
-        print(f"{self.log_prefix} WARNING: gradient_accumulation_steps={accum} is IGNORED under "
-              f"{mode}. Its hooks apply each parameter's update and free that gradient as soon "
-              f"as it exists, so no gradient survives to be summed across backward passes. "
-              f"Every backward pass becomes its own optimizer step: the optimizer steps {accum}x "
-              f"more often than the reported step count, each step seeing ONE batch of "
-              f"{batch_size} -- not the effective batch of {intended} that "
-              f"batch_size x gradient_accumulation_steps"
-              f"{' / multi_noise_timesteps' if mnt > 1 else ''} implies. "
-              f"Each of those steps also sees the loss divided by {accum}, which for an "
-              f"adaptive optimizer (AdamW/Lion/Adafactor) barely shrinks the update, so the run "
-              f"moves further per reported step than a non-fused run would, on noisier gradients. "
-              f"The LR schedule still advances once per {accum} backward passes. "
-              f"To actually accumulate, disable the fused path (blocks_to_swap=0 and "
-              f"num_optimizer_groups=0); to silence this, set gradient_accumulation_steps=1, "
-              f"which is what this run is doing.")
+        emit_training_warning(
+            f"gradient_accumulation_steps={accum} is IGNORED under "
+            f"{mode}. Its hooks apply each parameter's update and free that gradient as soon "
+            f"as it exists, so no gradient survives to be summed across backward passes. "
+            f"Every backward pass becomes its own optimizer step: the optimizer steps {accum}x "
+            f"more often than the reported step count, each step seeing ONE batch of "
+            f"{batch_size} -- not the effective batch of {intended} that "
+            f"batch_size x gradient_accumulation_steps"
+            f"{' / multi_noise_timesteps' if mnt > 1 else ''} implies. "
+            f"Each of those steps also sees the loss divided by {accum}, which for an "
+            f"adaptive optimizer (AdamW/Lion/Adafactor) barely shrinks the update, so the run "
+            f"moves further per reported step than a non-fused run would, on noisier gradients. "
+            f"The LR schedule still advances once per {accum} backward passes. "
+            f"To actually accumulate, disable the fused path (blocks_to_swap=0 and "
+            f"num_optimizer_groups=0); to silence this, set gradient_accumulation_steps=1, "
+            f"which is what this run is doing.",
+            code="fused_gradient_accumulation_ignored",
+            prefix=self.log_prefix,
+        )
 
     def _setup_fused_backward_pass(self, optimizer_type: str):
         """

@@ -16150,6 +16150,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         "started_at": run.started_at,
         "last_resumed_at": run.last_resumed_at,
         "resumed_from_step": run.resumed_from_step,
+        "warnings": list(run.warnings or []),
     }
 
     try:
@@ -16166,6 +16167,9 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
         run.error_message = None  # Clear stale error from a prior crash on (re)start/resume
+        # Notices describe the attempt that emitted them; a resume with edited
+        # settings would otherwise show the previous attempt's as current.
+        run.warnings = []
 
         # Set started_at on first start, last_resumed_at and resumed_from_step on resume
         current_time = datetime.utcnow()
@@ -16493,9 +16497,47 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         def log_callback(log_line: str):
             print(f"[Training {run_id}] {log_line}")
 
+        # Structured notices (settings overridden/ignored) reach the user: live
+        # over the WebSocket, and on the run row so a reload or a finished run
+        # still shows them. Deduped and capped upstream in TrainingProcess.
+        def event_callback_sync(event: dict):
+            from database import TrainingSessionLocal
+            from core.training.training_events import merge_run_warnings
+            try:
+                manager.send_training_log(
+                    run_id=run_id,
+                    level=event.get("level", "info"),
+                    message=event.get("message", ""),
+                    code=event.get("code"),
+                )
+            except Exception as e:
+                print(f"[Training {run_id}] Failed to broadcast notice: {e}")
+
+            db_session = TrainingSessionLocal()
+            try:
+                current_run = db_session.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+                if current_run is None:
+                    return
+                merged = merge_run_warnings(current_run.warnings, event)
+                if merged is None:
+                    return
+                current_run.warnings = merged
+                db_session.commit()
+            except Exception as e:
+                print(f"[Training {run_id}] Failed to persist notice: {e}")
+            finally:
+                db_session.close()
+
+        def event_callback(event: dict):
+            executor.submit(event_callback_sync, event)
+
         # Start training process (non-blocking)
         print(f"[API] Starting training process...")
-        await process.start(progress_callback=progress_callback, log_callback=log_callback)
+        await process.start(
+            progress_callback=progress_callback,
+            log_callback=log_callback,
+            event_callback=event_callback,
+        )
         print(f"[API] Training process started")
 
         print(f"[API] Returning response")
@@ -16731,7 +16773,11 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
         "phase": run.phase,
         "phase_progress": run.phase_progress,
         "phase_detail": run.phase_detail,
-        "process_status": process_status
+        "process_status": process_status,
+        # Backlog for the training_log WebSocket channel: a client that
+        # connects mid-run, or reloads, or opens a finished run, gets every
+        # notice it missed from here rather than from a server-side buffer.
+        "warnings": list(run.warnings or []),
     }
 
 @router.post("/training/runs/{run_id}/tensorboard/start")

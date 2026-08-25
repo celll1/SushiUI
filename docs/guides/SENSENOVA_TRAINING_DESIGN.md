@@ -1,13 +1,14 @@
 # SenseNova U1.5 学習設計案
 
 > Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
-> Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 のみ `cc296e84` で着地。
-> full FT の受付は依然閉じている）。
+> Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 が `cc296e84`、
+> U-2-2 の step 1-2 が `601d0271` で着地。**full FT の受付は依然閉じており、
+> 開ける前に U-2-3 と §6.4 の checkpoint format 決定が要る** — §13.4 の警告ボックス）。
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
 > 本文中の `file:line` は 2026-08-23 時点の静的調査による（§6.4 と §13.4 U-2 の
-> 参照だけは `cc296e84` 時点で取り直してある）。
+> 参照だけは `cc296e84` / `601d0271` 時点で取り直してある）。
 
 この文書は設計判断、その根拠、実装状況を記録する。初期計画のフェーズ順は履歴として
 残すが、各節の **DONE / PENDING** が現在の境界である。SenseNova の推論と Phase 1
@@ -30,7 +31,9 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    「both-branch 16.2B は設計対象外」は §6.2 で撤回済み。既定が gen-only なだけで、
    both は閉じていない）。前提条件は「bf16 base の入手」ではなく「配線の実装」で
    （§6.4）、その最初の一片 — int8 base を materialize する経路 (a) — は
-   **`cc296e84` で着地した。ただし受付はまだ開いていない**。
+   **`cc296e84` で、materialize した half を collect する adapter と契約は
+   `601d0271` で着地した。ただし受付はまだ開いていない**（残るのは
+   出力 checkpoint format の決定と U-2-3。§13.4 U-2-2）。
 3. **Phase 3（reference 混在）は per-item presence を真とする。**（**DONE**、
    `7a09af52`..`611a4a24`。以下の判断はすべてそのまま実装された。）初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
@@ -102,7 +105,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
-| full FT（Phase 2b） | 律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4） | PENDING |
+| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）と adapter + 契約 + fused backward の decoupling（`601d0271`）は着地。**残るのは出力 checkpoint format の決定と受付の解錠**で、その前に U-2-3 が要る（§6.4、§13.4 U-2-2） | PENDING |
 | understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
 | understanding branch の Full-FT / reference 併用（U-2 / U-3） | §13.4 | PENDING |
 
@@ -394,8 +397,13 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
   既知の拒否に到達しないため）。
 
 実装は後者の共通 preflight だけで fail-closed になるため、前者の専用 adapter は追加しなかった。
-現行メッセージは int8 base で full FT が未実装であることと LoRA 代替を示す。bf16 base
-を前提とする本体設計は Phase 2b に残る。
+bf16 base を前提とする本体設計は Phase 2b に残る。
+
+**【`601d0271`】現状はこの初期計画とは別の形になっている。** 専用 adapter は
+**追加された**が、全メソッドが `NotImplementedError` を投げる形ではなく
+**`save_checkpoint` だけが投げる**（残りは実際に動く）。そして受付の拒否は
+共通 preflight として生きたままである。拒否理由は int8 base ではなく
+**出力 checkpoint format が未決定であること**に訂正された（§6.4、§13.4 U-2-2）。
 
 ### 6.2 確定した設計判断 — 対象は gen branch のみ（fable 諮問）
 
@@ -438,18 +446,22 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 |---|---:|---|---:|
 | weights bf16 両 half | 32.4 GB | なし | 32.4 GB |
 | gradients | 32.4 GB | fused backward（`grad = None`） | ~0.1-0.2 GB |
-| optimizer state | AdamW fp32 129.6 GB / adamw8bit 32.4 GB | **Adafactor（factored 2nd moment）**。Ring Buffer 系という代替もある（§6.5） | ~0.1 GB オーダー |
+| optimizer state | AdamW fp32 129.6 GB / adamw8bit 32.4 GB | **Adafactor（factored 2nd moment）**。Ring Buffer 系を代替として併記していたが、出荷された allowlist は Adafactor のみ（§6.5 末尾の訂正） | ~0.1 GB オーダー |
 | stochastic rounding scratch | — | 出荷済みの per-step scratch 方式（§6.3） | ~0.2-0.4 GB |
 | prefix KV | — | — | **50.5 MiB（Phase 0 実測値の引用）** |
 | activations | — | GC ON | ~0.34 GB @1024² + pixel 系一時領域 |
 
-**合計 ~36-38 GB（見積もり）で 48 GB に載る。** ただし成立条件が 6 つあり、
-そのうち 1 は現状のブロッカーである。
+**合計 ~36-38 GB（見積もり）で 48 GB に載る。** ただし成立条件が 6 つある
+（旧文は「そのうち 1 は現状のブロッカーである」と続いていた。**その条件 1 は
+`601d0271` で解消し、同時に条件 1 の書き方自体が誤りだったので本節末で訂正した**）。
 
-1. **fused backward の gate 解錠（最大のブロッカー）。**
-   `_setup_fused_backward_pass` の呼び出しは **`if self.blocks_to_swap > 0:` の内側**に
-   ある（`base_trainer.py:3597` → `:3657`）。SenseNova は `blocks_to_swap != 0` を
-   拒否するため、**現状の契約では fused backward に到達できない**。
+1. ~~**fused backward の gate 解錠（最大のブロッカー）。**~~ **【解決、`601d0271`。
+   ただし「解錠」という言葉自体が誤りだったので下記に訂正する】**
+   旧文は「`_setup_fused_backward_pass` の呼び出しが `if self.blocks_to_swap > 0:` の
+   内側にあり、SenseNova は `blocks_to_swap != 0` を拒否するので fused backward に
+   到達できない」と書き、**あたかも Block Swap を有効化することが前提であるかのように
+   読める形になっていた。これは機構の取り違えである。**
+   本節末の「訂正」を参照。
 2. **勾配蓄積の意味論が変わる。** hook は backward ごとに step するので、
    **fused backward 下では effective batch = 物理 batch = 1** になる。
    B1 + gradient accumulation で effective batch を作る現行 SenseNova 契約
@@ -457,12 +469,17 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
    **【`0d843213` で実測確定】これは「accumulation-aware hook が未実装」という
    実装上の欠落ではなく、原理的な非両立である**（詳細と実測値は §13.4 U-2-2）。
    現状は拒否ではなく**警告**として出荷されている。
-3. **optimizer は Adafactor か Ring Buffer 系に限られる。**（**【2026-08-24 訂正】**
-   ここは一度「Adafactor 一択」と書いたが誤りだったので撤回した。詳細と根拠は
-   **§6.5**。）`torch.optim.AdamW` は fp32 state 129.6 GB かつ per-parameter seam が
+3. **optimizer は per-parameter seam と state 容量の両方を満たすものに限られる。**
+   `torch.optim.AdamW` は fp32 state 129.6 GB かつ per-parameter seam が
    無いので stochastic rounding もかけられず（§6.3）、素の `adamw8bit` は state
-   32.4 GB で超過する。
+   32.4 GB で超過する。**【`601d0271` で確定】出荷された allowlist は
+   `("adafactor",)` のみ**である（`SENSENOVA_FULL_FINETUNE_OPTIMIZERS`）。
+   Ring Buffer 系を併記していた旧文は誤りだったので撤回した — 根拠は §6.5 末尾の
+   「訂正」。
 4. **`use_ema` は fused backward と併用拒否**（実装済みの raise、`:3642-3652`）。
+   **`601d0271` はこれを SenseNova full FT の契約でも config / 属性の両 channel で
+   拒否する**（`assert_full_finetune_contract`）— hook 経路は `optimizer.step()` の
+   呼び出し地点を通らないので、EMA shadow が静かに更新されないままになる。
 5. **経路 (a) の 588 版は per-Linear に「dequant → int8 解放」の順**で行う。一括だと
    ロード時に int8 15.1 GiB と bf16 32.4 GB が同時実体化する。
 6. **解像度上限は実測 gate で引く。** pixel-space の activation が唯一の解像度比例項
@@ -478,6 +495,60 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 「解体しなければ und は学習できない」という意味ではない** — この assert は構造検証と
 `requires_grad` 拒否が 1 つの関数に同居しているだけで、**分離すれば済む**（§13.3）。
 §5.2 根拠 1 の改訂と合わせて読むこと。
+
+#### 【2026-08-25 訂正】fused backward は Block Swap に依存していない（条件 1）
+
+上の条件 1 の旧文は **「fused backward の gate 解錠」**という言い方をしており、
+**Block Swap を有効化することが前提であるかのように読めた。機構の取り違えである。**
+
+`_setup_fused_backward_pass`（[`base_trainer.py:3936-4048`](../../backend/core/training/base_trainer.py)）が
+やることは (1) `register_post_accumulate_grad_hook` の登録、(2) optimizer への
+`step_param` のパッチ、(3) hook 内での `step_param` → `tensor.grad = None` だけである。
+**Block Swap が用意する状態を 1 つも読まない** — `blocks_to_swap` も offloader も
+参照しない。`if self.blocks_to_swap > 0:` の内側にあったのは**たまたま**であり、
+**Block Swap が「これを必要とする理由」を持つ唯一の機構だった**からにすぎない。
+
+したがって必要だったのは gate の解錠ではなく **decoupling** であり、`601d0271` は
+`blocks_to_swap == 0` のままこのルートに fused backward を設置した
+（`base_trainer.py:3806-3813`。条件は `is_sensenova` かつ full FT かつ
+`num_optimizer_groups == 0` かつ optimizer 名が `FUSED_BACKWARD_OPTIMIZERS` に
+あること）。設置に失敗した場合は静かに非 fused へ落ちるのではなく **raise する**
+（`:3815-3833`）— このルートは 15.1 GiB 分の勾配が常駐しない前提で予算を組んでおり、
+非 fused は劣化モードではなく予算違反だからである。
+
+**SenseNova の Block Swap 拒否は 5 箇所である**（いずれも `blocks_to_swap != 0` を
+値として拒否する）。「3 箇所」と書いている記述があれば古い
+（`sensenova_full_finetune_adapter_test.py:552` の docstring がそう書いている）。
+
+| 位置 | 経路 |
+|---|---|
+| `base_trainer.py:1392-1393` | 通常の load（`_load_model_components`） |
+| `base_trainer.py:1994-1995` | `_load_checkpoint_as_base` |
+| `base_trainer.py:8387-8388` | `train()` の SenseNova 契約 |
+| `ops/sensenova_ops.py:353-354` | `load_components` |
+| `train_runner.py:175-176` | `_apply_sensenova_training_contract`（run 前） |
+
+種類の違う 6 番目として `arch/sensenova.py:19-20` の `setup_block_swap` が
+`NotImplementedError` を投げる。**`base_trainer.py:1333` はこの列に入らない** —
+resume 時の checkpoint ロード失敗のエラー処理であって Block Swap とは無関係である。
+
+#### 【`601d0271` で決定】decoder 外の gen 側モジュールは含めない
+
+**直後の節「未決定のサブ論点」の推奨（含める方向）を上書きする決定が実装で下された。**
+`SenseNovaFullParameterAdapter` は `fm_head` / gen ViT / timestep・noise_scale embedder /
+`*_norm_mot_gen` を **collect しない**。
+
+根拠は品質判断ではなく**同一性**である: これらは量子化されていないので U-2-1 の
+`materialize_int8_decoder_linears` が materialize せず、collect すると
+**adapter の scope が loader の scope と食い違う**。この食い違いこそ adapter が
+存在して防いでいるもの（loader と collector が別々の表を持ち、静かにずれる）である。
+adapter と `load_components` は `resolve_full_finetune_branch` と
+`iter_sensenova_lora_targets` を共有しているので、**列挙は 1 つしか存在しない**。
+
+**未解決のまま残す問い（新規登録）: x0 を直接出力する `fm_head` を凍結したまま
+「full fine-tune」と呼べるのか。** これは本決定が答えていない設計上の問いであり、
+ここでは解決しない。答えるとすれば「materialize の scope を量子化の有無から切り離す」
+という別の実装が要り、それは同一性を壊さない形で行わなければならない。
 
 #### 未決定のサブ論点 — decoder 外の gen 側モジュール
 
@@ -495,6 +566,12 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 量子化対象でもなく、half-eviction の対称性検証の対象でもない。**x0 を直接出力する
 `fm_head` を凍結したまま「full fine-tune」と呼べるかは疑わしい**ため含める方向を
 推奨するが、これは推奨であって決定ではない。Phase 2b の実装時に明示的に決めること。
+
+> **【`601d0271`】この推奨は上書きされた。決定は「含めない」である。** 理由（loader と
+> adapter の scope 同一性）と、**未解決のまま残した問い**（`fm_head` を凍結して
+> full FT と呼べるか）は直前の「【`601d0271` で決定】」節にある。
+> **この段落は推奨の記録として残す** — 決定を覆すなら、覆す側が同一性を
+> どう保つかを示すこと。
 
 ### 6.3 master weight dtype 戦略
 
@@ -559,6 +636,19 @@ SenseNova への含意:
     期待値に到達する。**`torch.optim.AdamW` だけは SR でも救えない**（per-parameter
     seam が無い）。合成パラメータと厳密既知の勾配による測定で、モデルは載せていない。
     上の推奨 (1)(2) はこれで実測の裏付けを得た。
+- **【`601d0271`】推奨 (1) は実装された。推奨 (2) はされていない。**
+  - (1) `optimizer: adamw` の拒否は `assert_full_finetune_contract` が
+    **新規に実装した**。それまで存在した仕組みは
+    `_attach_stochastic_rounding` の警告だけで、しかもそれは
+    **`self.optimizer_stochastic_rounding` が既に True のときにしか到達しない**
+    （`base_trainer.py:3494-3495` の early return）。既定は False なので
+    **出荷時の既定設定では何も言わなかった**。これが「警告で流すと二重経路で
+    欠陥を再生産する」の実際の姿である。
+  - (2) `optimizer_stochastic_rounding` は **`601d0271` 時点ではこのルートでも
+    False のまま**である。したがって契約が**許可する**構成（Adafactor + 出荷既定）は、
+    (1) が名指しで挙げている欠陥をそのまま再生産する。**これは U-2-3 であり、
+    §13.4 U-2-2 の step 3 を開ける前に必ず着地させること**（順序制約。§13.4 の
+    警告ボックス）。**U-2-3 が着地したらこの箇条書きを更新すること。**
 - **永続 fp32 master を SenseNova のために復活させる提案はしない。** リポジトリ全体で
   既に棄却された選択肢であり、gen branch 8.1B でも 32.4 GB になる。再提案するなら
   棄却理由（直列化・resume 非安全・OOM）を覆す新しい論拠が要る。
@@ -656,9 +746,10 @@ ConvRot base / mixed base / off-count tree / 非 `(out_features,)` scale の拒�
 LoRA 経路が bit 単位で不変であることの証明）。
 
 **意図的に実装していないもの**: `SenseNovaFullParameterAdapter`（U-2-2）、
-fused backward の gate 解錠（同）、**学習成果物の checkpoint format の決定
-（下節は開いたままにしてある。U-2-1 はどれも選んでいない）**、offload との合成（U-2-4）、
-stochastic rounding の契約（U-2-3）。
+fused backward の Block Swap からの decoupling（同）、**学習成果物の checkpoint
+format の決定（下節は開いたままにしてある。U-2-1 はどれも選んでいない）**、
+offload との合成（U-2-4）、stochastic rounding の契約（U-2-3）。
+**このうち前 2 つは `601d0271` で着地した**（§13.4 U-2-2）。
 
 **そして経路はまだ端から端まで到達しない。** `arch_capabilities.py:812-814` の
 `TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]` と `train_runner.py:166-167` の
@@ -730,6 +821,18 @@ Phase 2b は LoRA と違い**モデル本体を出力する**ため、Phase 1 �
 
 どれを既定にするかは Phase 2b 本体の実装時に決める。**現時点でどれかを推奨しない** —
 1 の可否が未試験である以上、比較の前提が揃っていない。
+
+> **【`601d0271`】この決定は critical path に乗った。** `SenseNovaFullParameterAdapter.save_checkpoint`
+> は上記 3 択を名指しして `NotImplementedError` を raise する。一方 run は
+> `save_every`（既定 100 step）ごとに `save_checkpoint` を呼び、その呼び出しを囲む
+> except は **`(PermissionError, OSError)` だけ**である（`base_trainer.py:12104`）。
+> `NotImplementedError` は捕まらない。
+>
+> したがって **format を決めないまま U-2-2 step 3（受付の解錠）を行うと、
+> ロード前に無料で返っていた拒否が「数時間走って最初の `save_every` で落ちる run」に
+> 変わる**。format 決定は step 3 の前提条件である。
+>
+> **ここで format を選ばない。** 3 択は意図的に開いたままで、選択は利用者の判断である。
 
 Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で採用した経路を
 明示する。現行ガードは未提供の full FT を広告せず、未実装であることと LoRA 代替だけを
@@ -930,7 +1033,8 @@ Lion の 32.4 GB は**隠れる**。ただし MoT が image token に対して g
 | fused seam | 追加実装ゼロ | 内蔵 hook が**そのまま host state で動く**（実測。旧記述「state shuttle 未配線 = upgrade 必須」は撤回） |
 | 追加前提 | gate 解錠のみ | gate 解錠 + upgrade **3 項目**（うち allocator 配線が必須、残り 2 は閾値下の最適化と fail-loud 化）+ **CUDA 拡張の JIT ビルド**（CUDA toolkit + ninja。`adamw8bit_cuda.py:191-199` が optimizer 生成時に `load()` する。**`adamw8bit` はこの要件を持たない** — bnb 同梱 kernel に委譲するため） |
 
-**提示形**: both-branch Full-FT の許可 optimizer は **Adafactor と Ring Buffer 系の
+**提示形**（**【`601d0271`】実装はこれを採らなかった。本節末の「訂正」を先に読むこと**）:
+both-branch Full-FT の許可 optimizer は **Adafactor と Ring Buffer 系の
 両方**とし、**初版の既定は Adafactor**。ただしその根拠は品質ではなく
 **「追加実装ゼロ・外部前提ゼロで成立する」という事実のみ**である。
 AdamW8bit_RB は upgrade 完了と gate 通過を条件に opt-in で開く。
@@ -952,6 +1056,36 @@ opt-in を開く条件として事前登録した gate。実施は U-2-6（§13.
 G-RB3 が最も重要である。upgrade 項目 4 のサイレントスキップは、**loss が正常に下がる
 まま一部の half が更新されない**という §6.1 と同型の故障を作るので、
 「速いか」ではなく「正しいか」を先に閉じる。
+
+#### 【`601d0271` で訂正】出荷された allowlist は `("adafactor",)` のみ
+
+**本節の「提示形」は「Adafactor と Ring Buffer 系の両方を許可し、既定は Adafactor」
+だった。実装はそうしていない。** `SENSENOVA_FULL_FINETUNE_OPTIMIZERS`
+（`ops/sensenova_ops.py`）は `("adafactor",)` である。Ring Buffer 系を
+allowlist に入れる案は **2 つの独立した理由で誤っていた**ので、再発しないよう
+理由を残す。
+
+1. **§13.4 U-2-6 が G-RB2 / G-RB3 を exit gate として事前登録しており、
+   どちらも開いている。** allowlist に入れることは gate を通さずに opt-in を
+   開けることと同じで、本節自身の「これが通るまで Ring Buffer 系は opt-in を
+   開かない」に反する。
+2. **`adamw8bit` を排除している state 容量の議論は、`adamw8bit_ringbuffer` を
+   同じだけ排除する。** 上の実測表が両者に **同一の 2.031250 B/param** を与えており
+   （host state モードは `get_state_buffer` を供給する呼び出し側が存在しないので
+   起動しない = 前提事実 1）、GPU 上での単価は文字通り等しい。
+   `lion8bit_ringbuffer` だけは **1.015625 B/param** で半分だが、そちらは理由 1 が
+   そのまま当たる。
+
+**scope を合わせた算術**（U-2-1 が実 checkpoint ヘッダから取った half あたり
+**8,103,395,328** 要素。§6.4 の表）:
+
+| optimizer | B/param（実測） | gen half のみ（このルートの既定 branch） | 両 half |
+|---|---:|---:|---:|
+| `adamw8bit` / `adamw8bit_ringbuffer`（GPU state） | 2.031250 | **16.5 GB** | **32.9 GB** |
+| `lion8bit_ringbuffer`（GPU state） | 1.015625 | 8.2 GB | 16.5 GB |
+
+上の「予算比較」表は **both-branch 16.2B への外挿**なので、gen-only を既定とする
+このルートの数字はここで別に置く。**単価は実測、合計は掛け算である。**
 
 ---
 
@@ -1438,8 +1572,9 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 ### PENDING
 
 - Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
-  method-aware 化は `cc296e84` で DONE。**残るのは adapter・受付の解錠・契約**で、
-  §6.4 と §13.4 U-2-2 に列挙してある）と、Phase U（§13）。
+  method-aware 化は `cc296e84` で、**adapter・契約・fused backward の decoupling は
+  `601d0271`** で DONE。**残るのは checkpoint format の決定と受付の解錠**で、
+  §6.4 と §13.4 U-2-2 に列挙してある。**順序制約あり: U-2-3 が先**）と、Phase U（§13）。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -1665,12 +1800,15 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   `_assert_supported_quantized_training_base` と `load_components` が training method を
   見るようになり、受理する供給経路は **(a) の plain int8 限定**に決まった（§6.4）。
   **ただし full FT の受付はまだ開いていない**（§6.4 の「端から端まで到達しない」）。
-- **2b-2 — `SenseNovaFullParameterAdapter`。** §6.1 で「共通 preflight だけで
-  fail-closed になるため追加しなかった」もの。本体実装時には必要になる。
-  decoder 外の gen 側モジュールを含めるかの決定（§6.2）をここで確定する。
-- **2b-3 — bf16 rounding-defect の契約。** §6.3 の推奨 2 点
-  （`optimizer: adamw` 拒否、`optimizer_stochastic_rounding` の contract 既定 True）を
-  決定して実装する。実装量はゼロに近く、決定が本体である。
+- **2b-2 — `SenseNovaFullParameterAdapter`（DONE、`601d0271`。= U-2-2 step 1-2）。**
+  §6.1 で「共通 preflight だけで fail-closed になるため追加しなかった」もの。
+  adapter + `assert_full_finetune_contract` + fused backward の decoupling が着地し、
+  decoder 外の gen 側モジュールは**含めない**と決まった（§6.2）。
+  **受付の解錠（step 3）は未着地** — checkpoint format 未決定のため（§6.4）。
+- **2b-3 — bf16 rounding-defect の契約（半分 DONE、`601d0271`。= U-2-3 が残り）。**
+  §6.3 の推奨 2 点のうち **`optimizer: adamw` 拒否は実装された**が、
+  **`optimizer_stochastic_rounding` の contract 既定 True は未実装**である。
+  **2b-2 の step 3 より前に着地させること**（§13.4 の警告ボックス）。
 - **2b-4 — offload の合成。** §8.3.1 のモジュール粒度問題を解決する。
   `LayerOffloadConductor` がサブモジュール粒度のリストを受けられるかの調査が先行する。
 - **2b-5 — exit smoke。** prefix forward を checkpointed region の外に置く不変条件の
@@ -1746,31 +1884,47 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   OFF を拒否するか。** 既定 False のまま出すと既知の欠陥を再生産する。
   **推奨は contract で既定 True に上書き（全 arch 共通の既定は変えない）。決定は
   Phase 2b-3。** §6.3。（永続 fp32 master は選択肢に含めない。棄却済み。）
-- **`optimizer: adamw` を SenseNova full FT で拒否するか。** per-parameter seam が
-  無く stochastic rounding をかけられない唯一の optimizer である。
-  **推奨は拒否。決定は Phase 2b-3。** §6.3。
+  **【`601d0271` 以後】これは「未決」であると同時に順序制約になった** — 契約が
+  許可する構成（Adafactor + 出荷既定 SR=False）が、同じ契約の `adamw` 拒否が
+  名指ししている欠陥（bf16 要素の 84.5% が動かないまま loss は下がる）を
+  再生産する。**U-2-3 は U-2-2 step 3 より前**（§13.4 の警告ボックス）。
+- ~~**`optimizer: adamw` を SenseNova full FT で拒否するか。**~~ **決定済み
+  （`601d0271`）: 拒否する。** それどころか allowlist は `("adafactor",)` のみで、
+  `adamw` はそこから外れた名前の 1 つとして拒否され、加えて §6.3 の理由が
+  メッセージに名指しで入る。**この拒否は新規実装である** — 既存の
+  `_attach_stochastic_rounding` は警告しかせず、しかも
+  `optimizer_stochastic_rounding` が既に True のときにしか到達しないので、
+  出荷既定では何も言わなかった。§6.3 / §6.5。
 - **full FT の学習成果物をどの checkpoint format で保存するか。** mixed
   （und int8 + gen bf16）/ 両 half bf16 / gen half 再量子化 の 3 択。§6.4。
   **U-2-1（`cc296e84`）は意図的にどれも選んでいない。**
-- **materialize 時の `weight_dtype` 契約が未決定である。**（**新規、`cc296e84` 以後**）
-  `materialize_int8_decoder_linears` は `trainer.weight_dtype` をそのまま使うので、
-  **`weight_dtype=fp16` + `mixed_precision=False` なら fp16 の weight が実体化する**。
-  fp16 full FT の既存拒否は `use_grad_scaler` が立っているときだけ発火する
-  （`base_trainer.py:1106-1120`）。**API 経由では到達しない** — `_is_bf16_native_base_model`
-  が sensenova を名前で拾い（`train_runner.py:136-144`）、`:2769-2772` で
-  `training_dtype` / `weight_dtype` を bf16 に強制するからである。**しかし BaseTrainer を
-  直接構成する呼び出しからは到達する。** 決定は §6.3 の rounding-defect 契約
-  （2b-3）が持つ。
-- **full FT の `train_text_encoder` 既定を SenseNova で明示的に決めること。**
-  （**新規、`cc296e84` 以後**）`generate_full_finetune_config` は full FT の既定として
-  `train_text_encoder=True` を置く（`training_config.py:668`、`_build_train_section` への
-  引き渡しが `:704`）。SenseNova ではこれが「**両 half**」＝ materialize 15.1 GiB を意味し、
-  **§6.2 の「既定は gen のみ」と矛盾する**。API 経由では既定が False なので
-  （`param_defaults.py:2268`、`routes.py:15189`）到達しないが、
-  `generate_full_finetune_config` を legacy kwargs で叩く呼び出しは
-  **最も高価な branch を静かに選ぶ**。SDXL 由来の既定を継承せず、U-2-2 で明示的に決める。
-- **decoder 外の gen 側モジュール（`fm_head`、gen ViT、embedder、`*_norm_mot_gen`）を
-  trainable に含めるか。** 含める方向を推奨するが未決定。§6.2。
+- ~~**materialize 時の `weight_dtype` 契約が未決定である。**~~ **決定済み
+  （`601d0271`）: bf16 のみ。ロードより前に拒否する。**
+  `materialize_int8_decoder_linears` は `trainer.weight_dtype` **へ向けて** dequant
+  するので、この設定は base を*記述*するのではなく **base が何になるかを決める**。
+  したがって fp16 は「更新を stochastic rounding で運べない base」を実体化し、
+  fp32 は **30.2 GiB**（8,103,395,328 要素 × 4 byte）の base を実体化する。
+  `assert_full_finetune_contract` が `weight_dtype` / `training_dtype` の
+  両方を見て、17.6 GiB のロードの前に拒否する。`use_grad_scaler` も別途拒否される
+  （hook が勾配を即解放するので GradScaler の inf/NaN 検査自体が走らない）。
+  **旧文が指摘していた「BaseTrainer を直接構成する呼び出しからは fp16 に到達する」
+  経路は、これで閉じた。**
+- ~~**full FT の `train_text_encoder` 既定を SenseNova で明示的に決めること。**~~
+  **決定済み（`601d0271`）: SenseNova に限り既定を gen half（False）にする。
+  拒否ではなく arch 別既定である。** `param_defaults.FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH`
+  （`_default: True` / `sensenova: False`）と `resolve_full_finetune_train_text_encoder`
+  が解決し、`generate_full_finetune_config` はリテラルの代わりにこれを呼ぶ。
+  根拠: **他のどの arch でもこの flag は「別個の、凍結されているモデル」を指すが、
+  ここでは denoiser の半分を指す**。汎用既定を継承すると、key を省略しただけで
+  パラメータ数と host メモリが 2 倍になる。**両 half を明示的に要求する経路は
+  そのまま通る** — 決定は既定の変更であって禁止ではない。
+- ~~**decoder 外の gen 側モジュール（`fm_head`、gen ViT、embedder、`*_norm_mot_gen`）を
+  trainable に含めるか。**~~ **決定済み（`601d0271`）: 含めない。§6.2 の
+  「含める方向を推奨」を上書きする。** 根拠は品質ではなく scope 同一性
+  （量子化されていない → loader が materialize しない → collect すると
+  adapter の scope が loader の scope と食い違う。これは adapter の存在理由そのもの）。
+  **代わりに開いたままにする問い: x0 を出力する head を凍結したまま
+  「full fine-tune」と呼べるのか。** 本決定はこれに答えていない。§6.2。
 - ~~**ConvRot checkpoint を学習対象に含めるか。**~~ **解決済み（`0c9ea86b`）: 含める。**
   受理条件は 588 Linear が単一 flavour で `Int8Linear` か `ConvRotInt8Linear`（§5.3）。
   代わりに**新しい未測定事項**が残る: **ConvRot での学習は dequant 経路
@@ -2128,12 +2282,14 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   `train_runner.py:166-167` が拒否を維持している）ので、**テストで証明されただけで
   run では証明されていない**。着地したもの／意図的に着地させなかったもの／
   実 checkpoint ヘッダから取った host RAM の実測値は §6.4。
-  U-2-2: fused backward の
-  gate 解錠 + EMA 拒否 + **effective batch = 物理 batch = 1 を受け入れる**契約
-  （§6.2 改訂の条件 1-4）。
-  **許可 optimizer は Adafactor と Ring Buffer 系（`adamw8bit_ringbuffer` /
-  `lion8bit_ringbuffer`）で、初版の既定は Adafactor**（§6.5。「Adafactor 一択」では
-  ない）。U-2-3: stochastic rounding 既定 True（§6.3）+ dropout guard。
+  U-2-2: adapter + fused backward の Block Swap からの
+  **decoupling**（「gate 解錠」ではない。§6.2 の訂正）+ EMA 拒否 +
+  **effective batch = 物理 batch = 1 を受け入れる**契約（§6.2 改訂の条件 1-4）。
+  **許可 optimizer は `("adafactor",)` のみ**（§6.5 末尾の訂正。Ring Buffer 系を
+  併記していた旧文は撤回した）。
+  → **step 1-2 は DONE（`601d0271`）、step 3 は意図的に未着地。** 下記
+  「U-2-2 の着地状況」。
+  U-2-3: stochastic rounding 既定 True（§6.3）+ dropout guard。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
   U-2-5: exit smoke — **update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
@@ -2178,6 +2334,55 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     3. `TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]`（`arch_capabilities.py:812-814`）と
        `network.type != "lora"` 拒否（`train_runner.py:166-167`）の**両方**を落とす。
        片方だけでは到達しない。
+  - **【`601d0271`】U-2-2 の着地状況 — 上記 3 点のうち 1 と 2 が DONE、3 は未着地。**
+
+    **着地したもの**:
+    - **`SenseNovaFullParameterAdapter`**（`adapters/sensenova_adapter.py`、
+      `adapters/__init__.py` に export、`full_parameter_trainer._create_adapter` の
+      `elif self.is_sensenova:` は SD1.5 fallthrough より**上**）。
+      `trainer.transformer` だけを読み、`trainer.text_encoder` は読まない。
+      scope は loader と**共有**（`resolve_full_finetune_branch` +
+      `iter_sensenova_lora_targets`）なので、materialize した集合と最適化する集合は
+      「一致する 2 つ」ではなく **1 つ**である。target がまだ buffer を持っていれば
+      静かに凍結せず **raise** する。LR は
+      `text_encoder_1_lr` → `text_encoder_lr` → `unet_lr` の連鎖。
+    - **fused backward の Block Swap からの decoupling**（§6.2 の訂正）。
+      `blocks_to_swap == 0` のまま設置し、設置に失敗したら raise する。
+    - **`assert_full_finetune_contract`**（`ops/sensenova_ops.py`）。
+      **run 中 2 回**呼ばれる — `load_components` から config を読んで
+      17.6 GiB のロード前に、`setup_optimizer` から**引数として渡された
+      optimizer 名**で（config 値と食い違いうるので、そちらが権威）。
+      拒否するもの: 非 bf16 の `weight_dtype` / `training_dtype`、`use_grad_scaler`、
+      `use_ema`、`num_optimizer_groups != 0`、`gradient_accumulation_steps != 1`、
+      allowlist（`("adafactor",)`）外の optimizer。**config channel と属性 channel の
+      両方**を見る option は両方で見る。
+
+    **着地しなかったもの（step 3）と、その理由**: `TRAINING_UNSUPPORTED` と
+    `train_runner` の受付は**両方とも生きたまま**である。理由は
+    **`save_checkpoint` に書ける形式がまだ無い**こと — adapter の
+    `save_checkpoint` は §6.4 の 3 候補を名指しして `NotImplementedError` を投げ、
+    run は `save_every`（既定 100 step）ごとにそれを呼び、その except は
+    `(PermissionError, OSError)` だけである。開けると**ロード前の無料の拒否が
+    「数時間走って最初の save で落ちる run」に変わる**。
+
+    なお `arch_capabilities.py` の拒否理由は**訂正された**: 以前は int8 base が
+    ブロッカーだと書いていたが、それは U-2-1 が処理済みである。現在は
+    **出力形式が無いこと**を理由として述べる。
+
+    > ### ⚠️ step 3 を開ける前の順序制約（好みではなく前提条件）
+    >
+    > **U-2-3（stochastic rounding をこのルートの既定 True にする）が
+    > U-2-2 step 3 より前に着地しなければならない。**
+    >
+    > **`601d0271` 時点で**、契約が**許可する**構成 — Adafactor + 出荷既定
+    > （`optimizer_stochastic_rounding: False`、`param_defaults.py:2208`）— は、
+    > 同じ契約の `adamw` 拒否メッセージが**名指しで挙げている欠陥**をそのまま
+    > 再生産する: **bf16 テンソルの要素の 84.5% が step 数によらず一度も動かず、
+    > その間 loss は正常に下がる**（`5dce52ee` の実測、§6.3）。
+    >
+    > つまり今の状態で受付だけ開けると、**この製品が名指しで拒否している故障を、
+    > 拒否せずに既定で出荷する**ことになる。加えて §6.4 の checkpoint format の
+    > 決定も step 3 の前提である（上記）。**step 3 を最初に開けないこと。**
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、

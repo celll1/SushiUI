@@ -144,6 +144,9 @@ class _Trainer:
         self._fused_grad_norm = accumulator
 
     _calculate_grad_norms = BaseTrainer._calculate_grad_norms
+    # The full-FT component override hook _calculate_grad_norms consults. No
+    # adapter here, so it resolves to {} and every bucket stays module-derived.
+    _full_parameter_grad_components = BaseTrainer._full_parameter_grad_components
     _warn_grad_clipping_ignored_under_fused = (
         BaseTrainer._warn_grad_clipping_ignored_under_fused
     )

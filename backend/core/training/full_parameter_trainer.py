@@ -21,9 +21,7 @@ References:
 Author: Claude (2026-01-04)
 """
 
-from pathlib import Path
 from typing import Dict, List
-import torch
 
 from .base_trainer import BaseTrainer
 from .adapters import (
@@ -247,120 +245,46 @@ class FullParameterTrainer(BaseTrainer):
         self._save_vision_encoder_checkpoint(step, epoch)
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
+        """Not the resume path for full fine-tuning, on any architecture. Refuses.
+
+        ``BaseTrainer.load_checkpoint`` is abstract, so this class must define
+        something; what it defined was unreachable code with an import of a
+        module that does not exist. The dead branches are gone and the refusal
+        is loud, because the alternative -- leaving them -- is a resume that
+        fails with ``ModuleNotFoundError: core.models.checkpoint_utils`` if
+        anything ever calls it.
+
+        WHAT ACTUALLY RESUMES A FULL FINE-TUNE: ``resume_from_checkpoint``, which
+        ``BaseTrainer.__init__`` handles by reloading the checkpoint AS THE BASE
+        MODEL (``_load_checkpoint_as_base``, with
+        ``_try_load_checkpoint_with_fallback`` behind it) before the components
+        are built. Every architecture goes through that path and none goes
+        through this method: the checkpoint a full FT writes is a single
+        arch-specific safetensors file, read by the same loader that reads any
+        other base checkpoint. ControlNet and VAE training are the trainers that
+        do call their own ``load_checkpoint``; those are different classes with
+        their own implementations.
+
+        The two branches removed here were:
+
+        * a ``.safetensors`` branch importing
+          ``core.models.checkpoint_utils.load_unified_checkpoint`` -- there is no
+          ``checkpoint_utils`` module anywhere in this repository, so the branch
+          could only ever have raised;
+        * a diffusers-DIRECTORY branch (``UNet2DConditionModel.from_pretrained``
+          on ``<dir>/unet``) for a layout no full-parameter adapter in this repo
+          writes -- every one of them saves a single safetensors file.
+
+        Reimplementing this would mean inventing a reader for eleven
+        architectures' full-FT save formats with no caller and no consumer, so
+        it refuses instead of guessing.
         """
-        Load full parameter checkpoint for resuming training.
-
-        Args:
-            checkpoint_path: Path to checkpoint file (.safetensors) or directory (diffusers format)
-
-        Returns:
-            Step number from checkpoint
-        """
-        import json
-        import re
-        from safetensors.torch import load_file
-
-        print(f"{self.log_prefix} Loading checkpoint: {checkpoint_path}")
-
-        checkpoint_path_obj = Path(checkpoint_path)
-
-        # Detect checkpoint format: safetensors file vs diffusers directory
-        if checkpoint_path_obj.is_file() and checkpoint_path_obj.suffix == ".safetensors":
-            # Single safetensors file format (Z-Image training)
-            if not checkpoint_path_obj.exists():
-                raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
-
-            # Extract step number from filename: *_step_NNNNNN.safetensors
-            step = 0
-            match = re.search(r'_step_(\d+)\.safetensors$', checkpoint_path_obj.name)
-            if match:
-                step = int(match.group(1))
-
-            # Load checkpoint using checkpoint_utils
-            from core.models.checkpoint_utils import load_unified_checkpoint
-            loaded_components = load_unified_checkpoint(str(checkpoint_path_obj), device='cpu')
-
-            # Delete old models to free VRAM before loading checkpoint
-            import gc
-            if self.train_unet and loaded_components.get('unet') is not None:
-                if self.unet is not None:
-                    del self.unet
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                self.unet = loaded_components['unet']
-                # Move to GPU (same as new training initialization)
-                self.unet.to(self.device)
-                print(f"{self.log_prefix} Loaded U-Net from checkpoint")
-
-            # Load Text Encoders
-            if self.train_text_encoder:
-                if loaded_components.get('text_encoder') is not None:
-                    if self.text_encoder is not None:
-                        del self.text_encoder
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                    self.text_encoder = loaded_components['text_encoder']
-                    print(f"{self.log_prefix} Loaded Text Encoder from checkpoint")
-
-                if self.is_sdxl and loaded_components.get('text_encoder_2') is not None:
-                    if self.text_encoder_2 is not None:
-                        del self.text_encoder_2
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                    self.text_encoder_2 = loaded_components['text_encoder_2']
-                    print(f"{self.log_prefix} Loaded Text Encoder 2 from checkpoint")
-
-            # Load Image Encoder (if present)
-            if loaded_components.get('image_encoder') is not None:
-                if hasattr(self, 'image_encoder') and self.image_encoder is not None:
-                    del self.image_encoder
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                self.image_encoder = loaded_components['image_encoder']
-                print(f"{self.log_prefix} Loaded Image Encoder from checkpoint")
-
-            print(f"{self.log_prefix} Loaded checkpoint from step {step}")
-            return step
-
-        else:
-            # Diffusers directory format (legacy, for backward compatibility)
-            checkpoint_dir = checkpoint_path_obj
-            if not checkpoint_dir.exists():
-                raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
-
-            # Load metadata to get step number
-            metadata_path = checkpoint_dir / "metadata.json"
-            step = 0
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-                    step = metadata.get('step', 0)
-
-            # Load U-Net
-            if self.train_unet:
-                unet_path = checkpoint_dir / "unet"
-                if unet_path.exists() and self.unet is not None:
-                    from diffusers import UNet2DConditionModel
-                    loaded_unet = UNet2DConditionModel.from_pretrained(unet_path)
-                    self.unet.load_state_dict(loaded_unet.state_dict())
-                    print(f"{self.log_prefix} Loaded U-Net from {unet_path}")
-
-            # Load Text Encoders
-            if self.train_text_encoder:
-                te1_path = checkpoint_dir / "text_encoder"
-                if te1_path.exists() and self.text_encoder is not None:
-                    from transformers import CLIPTextModel
-                    loaded_te1 = CLIPTextModel.from_pretrained(te1_path)
-                    self.text_encoder.load_state_dict(loaded_te1.state_dict())
-                    print(f"{self.log_prefix} Loaded Text Encoder 1 from {te1_path}")
-
-                if self.is_sdxl:
-                    te2_path = checkpoint_dir / "text_encoder_2"
-                    if te2_path.exists() and self.text_encoder_2 is not None:
-                        from transformers import CLIPTextModelWithProjection
-                        loaded_te2 = CLIPTextModelWithProjection.from_pretrained(te2_path)
-                        self.text_encoder_2.load_state_dict(loaded_te2.state_dict())
-                        print(f"{self.log_prefix} Loaded Text Encoder 2 from {te2_path}")
-
-            print(f"{self.log_prefix} Loaded checkpoint from step {step}")
-            return step
+        raise NotImplementedError(
+            f"{type(self).__name__}.load_checkpoint() is not the resume path for "
+            f"full fine-tuning and is not implemented (it was dead code importing "
+            f"a module, core.models.checkpoint_utils, that does not exist). To "
+            f"resume a full fine-tune, set resume_from_checkpoint (a path, or "
+            f"'latest'): BaseTrainer.__init__ loads that checkpoint as the base "
+            f"model before building the components, which is how every "
+            f"architecture's full-FT resume works. Requested: {checkpoint_path}"
+        )

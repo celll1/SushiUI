@@ -38,9 +38,12 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 > **2 つのパラメータの moment が同じバイトを共有すると静かに壊れます**。
 > したがって専用の**永続・非再利用・パラメータ単位** allocator を使います。
 >
-> **ただし既定は OFF で、この switch には API 面がありません** — `param_defaults`
-> → `routes` → `training_config` → `openapi` → frontend の連鎖が必要です。
-> したがって**製品から起動した run では今も `None` に解決され、8-bit state は
+> **ただし既定は OFF で、この switch には API / UI 面がありません。**
+> 読めるのは **run の train_config（YAML）の `optimizer_state_host_resident`
+> キーだけ**です（`BaseTrainer.__init__`。`use_ema` などと同じ config channel）。
+> `param_defaults` → `routes` → `openapi` → frontend の連鎖は**意図的に張って
+> いません**（理由は `BaseTrainer.__init__` のコメント）。したがって
+> **UI から起動した run では今も `None` に解決され、8-bit state は
 > GPU に確保されます**（"Ring Buffer disabled: GPU allocation" 分岐）。
 >
 > 実測（U-2-6、RTX 6000 Ada、402.7 M bf16 パラメータ、**1 case 1 process**）:
@@ -81,8 +84,8 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 > **【2026-08-25 → U-2-6 で更新】配線は完了しました。**
 > `BaseTrainer._ringbuffer_optimizer_kwargs()` が `optimizer_state_host_resident`
 > のときに `HostOptimizerStateAllocator`（`host_state_allocator.py`）を渡します。
-> ただし **この switch には API 面がまだありません**（`param_defaults` →
-> `routes` → `training_config` → `openapi` → frontend の連鎖が必要）。
+> ただし **この switch は config channel 限定です**（run の YAML に
+> `optimizer_state_host_resident: true` を書く。API / UI 面は無い）。
 > 実測は §「パフォーマンス」ではなく
 > [`docs/guides/SENSENOVA_TRAINING_DESIGN.md`](../../../../docs/guides/SENSENOVA_TRAINING_DESIGN.md)
 > §6.5 を参照してください。
@@ -101,11 +104,12 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 
 | Optimizer | 8-bit | Schedule-Free | Cautious | Stochastic Rounding | Ring Buffer |
 |-----------|-------|---------------|----------|---------------------|-------------|
-| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ⚙️ 実装済・未配線 |
-| Lion8bit_RingBuffer | ✅ | ❌ **拒否** | ✅ | ✅ | ⚙️ 実装済・未配線 |
+| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ⚙️ 配線済・既定 OFF |
+| Lion8bit_RingBuffer | ✅ | ❌ **拒否** | ✅ | ✅ | ⚙️ 配線済・既定 OFF |
 
-「⚙️ 実装済・未配線」= optimizer 側は `get_state_buffer` を受け取れば CPU state で
-動作するが、それを渡す呼び出し側が無いため既定では GPU 割当になる（冒頭の注記）。
+「⚙️ 配線済・既定 OFF」= `BaseTrainer._ringbuffer_optimizer_kwargs()` が
+`optimizer_state_host_resident` のときに allocator を渡す。既定は OFF で、
+その switch は train_config（YAML）からのみ設定できる（冒頭の注記）。
 
 `Lion8bit_RingBuffer` の Schedule-Free は拒否される。`lion8bit_schedulefree_kernel.cu`
 は Schedule-Free の位置系列であるべき `z` を Lion の momentum EMA として使い、

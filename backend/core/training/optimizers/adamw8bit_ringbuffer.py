@@ -978,9 +978,19 @@ class AdamW8bit_RingBuffer(Optimizer):
                         corrected_exp_avg = exp_avg / bias_correction1
                         corrected_exp_avg_sq = exp_avg_sq / bias_correction2
 
-                        # AdamW update
+                        # AdamW update. step_size is the plain LR: bias
+                        # correction 1 is already in corrected_exp_avg above, and
+                        # dividing by it again here applied it TWICE -- a step
+                        # oversized by 1/bias_correction1, which is 10.0x at step
+                        # 1 and still 2.44x at step 5. Measured over 5 CPU steps
+                        # at lr=1e-2: max|diff| against torch.optim.AdamW was
+                        # 1.874e-01 at a parameter scale of 2.97, and 1.19e-07
+                        # against a closed form that divides twice. The 8-bit
+                        # CUDA kernel this optimizer normally runs never had it
+                        # (adamw8bit_kernel.cu:230-241 divides once), so the two
+                        # paths of the same optimizer disagreed.
                         denom = corrected_exp_avg_sq.sqrt().add_(eps)
-                        step_size = scheduled_lr / bias_correction1
+                        step_size = scheduled_lr
 
                         # Use p_for_kernel (FP32 buffer) if stochastic rounding enabled
                         if use_stochastic_rounding:

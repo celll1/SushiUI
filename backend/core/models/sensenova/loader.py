@@ -72,6 +72,12 @@ unrelated probabilistic uninitialized-flash-KV-cache-tail bug as a confound)
 next-investigation notes. Revisit if someone isolates it; until then this
 pin is the safe default.
 
+Full-parameter TRAINING is the one caller that will undo this: see
+``materialize_int8_decoder_linears`` below, which dequantizes one MoT half's
+294 Linears (or both halves' 588) back to real ``nn.Parameter`` weights.
+Inference never calls it, and nothing does yet -- SenseNova full FT is still
+refused by ``arch_capabilities`` and ``train_runner`` until U-2-2.
+
 The model is built under ``accelerate.init_empty_weights()`` (meta device,
 mirroring the Anima loader) because it is 18.7 GB and this repo's other
 quantized loaders that build-then-strict-load would otherwise materialize a
@@ -98,6 +104,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional
 
 import torch
+from torch import nn
 
 from core.models.common.single_file_format import read_state_dict, strip_prefix, TRANSFORMER_PREFIX
 from core.models.common.convrot_marker import int8_convrot_layers_from_markers
@@ -353,6 +360,135 @@ def _swap_sensenova_quantized_linears(model: NEOChatModel, sd: Dict[str, torch.T
     print(f"[SenseNovaLoader] weight-only int8 checkpoint: swapped {swapped} Int8Linear(s); "
           f"the rest load at their checkpoint dtype")
     return swapped
+
+
+# Decoder Linears per MoT half, and both together -- the counts
+# ``iter_sensenova_lora_targets`` enumerates for each branch.
+SENSENOVA_BRANCH_LINEAR_COUNTS = {"gen": 294, "und": 294, "both": 588}
+
+
+def materialize_int8_decoder_linears(
+    transformer: NEOChatModel,
+    *,
+    branch: str,
+    dtype: torch.dtype = torch.bfloat16,
+) -> int:
+    """Replace one (or both) MoT half's ``Int8Linear`` decoder layers with ``nn.Linear``.
+
+    TRAINING-ONLY, and only for full fine-tuning: ``Int8Linear`` holds its
+    weight and scale as BUFFERS, so ``requires_grad_(True)`` is a no-op on them
+    and an optimizer sees nothing -- the run trains no decoder parameter at all
+    while the loss falls normally (SENSENOVA_TRAINING_DESIGN.md 6.1). This is
+    that document's 6.4 supply route (a): each selected Linear's weight becomes
+    ``int8_codes * weight_scale`` in ``dtype`` as an ``nn.Parameter``, spelled
+    exactly as ``Int8Linear._dequant_forward`` spells it, so the materialized
+    base computes the same function the frozen int8 base did at that dtype.
+
+    PER-LINEAR ORDER IS LOAD-BEARING. Each module's int8 buffers are released
+    before the next one is dequantized, so the peak is the resident base plus
+    the materialized total plus ONE weight (48 MiB int8 -> 96 MiB bf16 at the
+    largest of the real shapes), not the base plus a whole second copy of it.
+
+    Plain int8 only. A ConvRot base is refused: its codes are Hadamard-rotated,
+    so dequantizing them without inverting the rotation gives a wrong weight,
+    and inverting it would compound with the train/inference activation skew in
+    that document's 5.3.
+
+    The class refusals below run over the whole scope BEFORE anything is
+    replaced; the per-Linear scale-shape refusal cannot, so it can leave a
+    partially materialized tree. That is deliberate -- holding the int8 modules
+    alive to be able to roll back is exactly the second copy this ordering
+    exists to avoid, and the refusal aborts the run at setup either way.
+
+    Returns the number of Linears materialized.
+    """
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+
+    from .sensenova_lora import iter_sensenova_lora_targets
+
+    expected = SENSENOVA_BRANCH_LINEAR_COUNTS.get(branch)
+    if expected is None:
+        raise ValueError(
+            f"Unknown SenseNova materialization branch {branch!r} "
+            f"(expected one of {sorted(SENSENOVA_BRANCH_LINEAR_COUNTS)})"
+        )
+    if not dtype.is_floating_point:
+        raise ValueError(
+            f"SenseNova materialization needs a floating-point dtype for the "
+            f"trainable weights; got {dtype}"
+        )
+
+    targets = list(iter_sensenova_lora_targets(transformer, branch=branch))
+    if len(targets) != expected:
+        raise RuntimeError(
+            f"SenseNova {branch} materialization found {len(targets)} decoder "
+            f"Linear(s), expected {expected}. The loaded tree is not the "
+            f"42-layer MoT decoder this route was built for; refusing rather "
+            f"than materializing a partial half."
+        )
+
+    convrot = [path for path, _, _, m in targets if isinstance(m, ConvRotInt8Linear)]
+    if convrot:
+        raise RuntimeError(
+            f"SenseNova full fine-tuning cannot materialize a ConvRot-quantized base: "
+            f"{len(convrot)} of {len(targets)} {branch} decoder Linear(s) are "
+            f"ConvRotInt8Linear (first: {convrot[0]}). Their int8 codes are "
+            f"Hadamard-rotated, so dequantizing them without inverting the rotation "
+            f"produces a wrong weight. Remedy: select the plain-int8 SenseNova "
+            f"checkpoint for full fine-tuning, or keep training_method='lora', which "
+            f"trains on either quantized base."
+        )
+    other = [path for path, _, _, m in targets if type(m) is not Int8Linear]
+    if other:
+        raise RuntimeError(
+            f"SenseNova {branch} materialization requires every one of the "
+            f"{len(targets)} decoder Linears to be a plain Int8Linear, but "
+            f"{len(other)} is/are not (first: {other[0]}). This base is not the "
+            f"weight-only int8 checkpoint this repo distributes."
+        )
+
+    materialized = 0
+    released_bytes = 0
+    allocated_bytes = 0
+    for index in range(len(targets)):
+        module_path, parent, attr, module = targets[index]
+        # Drop the list's reference so this module dies at the setattr below and
+        # its int8 buffers are freed before the next one is dequantized.
+        targets[index] = None
+
+        scale = module.weight_scale
+        if scale.dim() != 1 or scale.shape[0] != module.out_features:
+            raise RuntimeError(
+                f"SenseNova {module_path} carries a weight_scale of shape "
+                f"{tuple(scale.shape)}; Int8Linear registers it as (out_features,) = "
+                f"({module.out_features},). Refusing rather than reshaping -- this is "
+                f"the blanket squeeze _reshape_convrot_scales warns against, and a "
+                f"mis-shaped scale would broadcast into a silently wrong weight."
+            )
+        # The spelling Int8Linear._dequant_forward uses, so the materialized
+        # weight is bitwise the tensor that layer built on every call.
+        weight = module.weight * scale.to(dtype).unsqueeze(1)
+        bias = None if module.bias is None else module.bias.detach().to(dtype)
+        released_bytes += module.weight.numel() * module.weight.element_size()
+        allocated_bytes += weight.numel() * weight.element_size()
+
+        linear = nn.Linear(
+            module.in_features, module.out_features, bias=bias is not None, device="meta"
+        )
+        linear.weight = nn.Parameter(weight)
+        if bias is not None:
+            linear.bias = nn.Parameter(bias)
+        setattr(parent, attr, linear)
+        del module, weight, bias
+        materialized += 1
+
+    print(
+        f"[SenseNovaLoader] materialized {materialized} {branch} decoder Int8Linear(s) "
+        f"to {dtype} nn.Linear parameters: released {released_bytes / 2**20:.1f} MiB of "
+        f"int8 codes, allocated {allocated_bytes / 2**20:.1f} MiB of weights"
+    )
+    return materialized
 
 
 def load_sensenova_from_path(

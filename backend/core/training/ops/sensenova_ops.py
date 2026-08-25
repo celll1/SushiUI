@@ -32,6 +32,60 @@ class SenseNovaTrainingPrefix:
 
 
 _SENSENOVA_QUANT_LINEAR_COUNT = 588
+_FULL_FINETUNE_METHOD = "full"
+# Both spellings of the same request: the API/YAML value is "full_finetune",
+# while the ops layer's own vocabulary (and this repo's other refusal messages)
+# says "full".
+_FULL_FINETUNE_ALIASES = frozenset({"full", "full_finetune"})
+
+
+def resolve_training_method(trainer: Any) -> str:
+    """``"full"`` for a full-parameter run, ``"lora"`` otherwise.
+
+    The TRAINER SUBCLASS is the authoritative channel, for the reason
+    ``base_trainer._maybe_compile_transformer`` states at its own gate:
+    ``training_method`` is not part of the train config section, so only
+    ``FullParameterTrainer`` identifies a run that trains base weights. The MRO
+    is walked by NAME rather than imported, because ``full_parameter_trainer``
+    imports ``base_trainer``, which imports this module.
+
+    An explicit ``config['training_method']`` is honoured as well, so a caller
+    that sets the key (and a future wiring of it) is not silently treated as
+    LoRA.
+    """
+    if any(cls.__name__ == "FullParameterTrainer" for cls in type(trainer).__mro__):
+        return _FULL_FINETUNE_METHOD
+    config = getattr(trainer, "config", None) or {}
+    declared = str(config.get("training_method") or "lora").strip().lower()
+    return _FULL_FINETUNE_METHOD if declared in _FULL_FINETUNE_ALIASES else declared
+
+
+def resolve_full_finetune_branch(trainer: Any) -> str:
+    """Which MoT half a full fine-tune trains: ``"gen"``, ``"und"`` or ``"both"``.
+
+    Reuses the two shipped switches rather than adding a SenseNova-only key, on
+    the mapping Phase 1 LoRA already uses: the generation half IS this arch's
+    denoiser (``train_unet``) and the understanding half IS its text encoder
+    (``train_text_encoder`` -- ``sensenova_adapter`` injects understanding LoRA
+    on exactly that flag). The ``getattr`` fallbacks match the call sites those
+    two flags already have (``base_trainer`` for ``train_unet``,
+    ``sensenova_adapter`` for ``train_text_encoder``).
+    """
+    train_gen = bool(getattr(trainer, "train_unet", True))
+    train_und = bool(getattr(trainer, "train_text_encoder", False))
+    if train_gen and train_und:
+        return "both"
+    if train_gen:
+        return "gen"
+    if train_und:
+        return "und"
+    raise ValueError(
+        "SenseNova full fine-tuning has nothing to train: train_unet=False and "
+        "train_text_encoder=False. For this architecture train_unet selects the "
+        "generation half of the MoT decoder (294 Linears) and train_text_encoder "
+        "the understanding half (294 more, the same LLM's prompt-encoding path). "
+        "Set at least one of them, or use training_method='lora'."
+    )
 
 
 def _quantized_linear_flavours() -> "dict[str, type]":
@@ -54,15 +108,10 @@ def _quantized_linear_flavours() -> "dict[str, type]":
     }
 
 
-def _assert_supported_quantized_training_base(transformer: nn.Module) -> None:
-    """Require all 588 decoder Linears to be ONE supported quantized flavour.
-
-    Accepts the plain-int8 and the ConvRot-int8 checkpoints (each quantizes all
-    588). Refuses a mixed base, an off-count base, an unrecognized subclass of a
-    known quantized Linear, and an unquantized bf16 base. Fp8/W4A8 are censused
-    for the diagnostic but not accepted: no such SenseNova base exists, so
-    accepting one would ship an untested path.
-    """
+def _census_quantized_linears(
+    transformer: nn.Module,
+) -> "tuple[dict[str, int], dict[str, int]]":
+    """Count the decoder's quantized Linears by EXACT class. Returns (known, unknown)."""
     flavours = _quantized_linear_flavours()
     known = tuple(flavours.values())
     counts = {label: 0 for label in flavours}
@@ -79,18 +128,58 @@ def _assert_supported_quantized_training_base(transformer: nn.Module) -> None:
             # be counted as whichever known class it happens to subclass.
             name = type(module).__name__
             unknown[name] = unknown.get(name, 0) + 1
+    return counts, unknown
+
+
+def _assert_supported_quantized_training_base(
+    transformer: nn.Module, *, training_method: str = "lora"
+) -> None:
+    """Require all 588 decoder Linears to be ONE supported quantized flavour.
+
+    LoRA (the default, and every method that is not full fine-tuning) accepts
+    the plain-int8 and the ConvRot-int8 checkpoints: the adapters wrap the
+    quantized module and never differentiate its weight.
+
+    Full fine-tuning accepts the plain-int8 base ONLY, because the trainable
+    half is dequantized to real Parameters at load
+    (``materialize_int8_decoder_linears``, SENSENOVA_TRAINING_DESIGN.md 6.4
+    route (a)) and a ConvRot base cannot be dequantized without inverting its
+    rotation.
+
+    Both refuse a mixed base, an off-count base, an unrecognized subclass of a
+    known quantized Linear, and an unquantized bf16 base. Fp8/W4A8 are censused
+    for the diagnostic but not accepted: no such SenseNova base exists, so
+    accepting one would ship an untested path.
+    """
+    counts, unknown = _census_quantized_linears(transformer)
+    present = [label for label, n in counts.items() if n]
+    pure = (
+        not unknown
+        and len(present) == 1
+        and counts[present[0]] == _SENSENOVA_QUANT_LINEAR_COUNT
+    )
+    census = ", ".join(
+        f"{label}={n}" for label, n in list(counts.items()) + list(unknown.items())
+    )
+
+    if training_method == _FULL_FINETUNE_METHOD:
+        if not pure or present[0] != "Int8Linear":
+            raise RuntimeError(
+                "SenseNova full fine-tuning (training_method='full_finetune') materializes the "
+                f"trainable decoder half to floating point at load, so it requires a base "
+                f"whose {_SENSENOVA_QUANT_LINEAR_COUNT} decoder Linears are all plain "
+                f"Int8Linear; got {census}. A ConvRot-int8 base is refused because "
+                "dequantizing it would require inverting its Hadamard rotation; an "
+                "unquantized bf16 base is refused because none exists for this repo and "
+                "the other two supply routes are undecided (see "
+                "docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). Remedy: select the "
+                "plain-int8 checkpoint, or set training_method='lora', which trains on "
+                "either quantized base."
+            )
+        return
 
     accepted = ("Int8Linear", "ConvRotInt8Linear")
-    present = [label for label, n in counts.items() if n]
-    if (
-        unknown
-        or len(present) != 1
-        or present[0] not in accepted
-        or counts[present[0]] != _SENSENOVA_QUANT_LINEAR_COUNT
-    ):
-        census = ", ".join(
-            f"{label}={n}" for label, n in list(counts.items()) + list(unknown.items())
-        )
+    if not pure or present[0] not in accepted:
         raise RuntimeError(
             "SenseNova training requires a base whose "
             f"{_SENSENOVA_QUANT_LINEAR_COUNT} decoder Linears are all ONE supported "
@@ -153,15 +242,38 @@ def setup_attention_backend(trainer: Any, backend: str) -> None:
 
 
 def load_components(trainer: Any) -> None:
-    """Load the frozen SenseNova graph; the adapter owns trainable parameters."""
+    """Load the SenseNova graph, method-aware.
+
+    LoRA leaves the int8 base exactly as the loader produced it -- the adapters
+    wrap the quantized modules. Full fine-tuning materializes the half it will
+    train to real ``nn.Parameter`` weights here, on the CPU, before the model is
+    staged to the GPU (SENSENOVA_TRAINING_DESIGN.md 6.4 route (a)).
+    """
     if getattr(trainer, "blocks_to_swap", 0) != 0:
         raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
     from core.models.sensenova.loader import load_sensenova_from_path
 
+    training_method = resolve_training_method(trainer)
+    # Resolved BEFORE the 17.6 GiB load so a contradictory train_unet /
+    # train_text_encoder pair is refused without paying for it.
+    branch = (
+        resolve_full_finetune_branch(trainer)
+        if training_method == _FULL_FINETUNE_METHOD
+        else None
+    )
+
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
-    _assert_supported_quantized_training_base(trainer.transformer)
+    _assert_supported_quantized_training_base(
+        trainer.transformer, training_method=training_method
+    )
     _assert_pixel_head_fm_decoder(trainer.transformer)
+    if branch is not None:
+        from core.models.sensenova.loader import materialize_int8_decoder_linears
+
+        materialize_int8_decoder_linears(
+            trainer.transformer, branch=branch, dtype=trainer.weight_dtype
+        )
     trainer.transformer_original = trainer.transformer
     trainer.transformer_uncond = None
     trainer.tokenizer = components["tokenizer"]
@@ -175,6 +287,8 @@ def load_components(trainer: Any) -> None:
     trainer.scheduler = None
     trainer.noise_scheduler = None
     trainer.layer_offload_conductor = None
+    # Materialized full-FT weights are frozen here too; unfreezing them is the
+    # adapter's job, as it is for every other architecture.
     trainer.transformer.requires_grad_(False)
     trainer.transformer.train()
     trainer.transformer.to(trainer.device)

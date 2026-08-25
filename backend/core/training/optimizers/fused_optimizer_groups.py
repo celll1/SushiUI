@@ -130,6 +130,36 @@ class FusedOptimizerGroups:
         """
         self.optimizer_hooked_count = {i: 0 for i in range(len(self.optimizers))}
 
+    def step_incomplete_groups(self) -> List[int]:
+        """Step the groups that got SOME, but not all, of their gradients.
+
+        MUST be called right after every backward returns. The hook's
+        ``== num_parameters_per_group`` condition only fires for a group whose
+        parameters ALL received a gradient in this backward, and some never do:
+        the Vision Encoder on a reference-free batch, a block that stochastic
+        depth dropped this step, any conditionally-executed module. Their group
+        would otherwise never step -- freezing the parameters that DID get a
+        gradient and happen to share the group, which
+        ``create_optimizer_groups`` assigns by nothing but index order -- and
+        would hold those gradients live into the next backward, which then sums
+        into them.
+
+        Count 0 means nothing to apply, count == the group size means the hook
+        already stepped it; both are excluded, so no group steps twice and no
+        group steps on an empty gradient set.
+
+        Returns the indices stepped.
+        """
+        stepped = []
+        for i, optimizer in enumerate(self.optimizers):
+            count = self.optimizer_hooked_count.get(i, 0)
+            if 0 < count < self.num_parameters_per_group[i]:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                stepped.append(i)
+        self.reset_counters()
+        return stepped
+
     def remove_hooks(self):
         """
         Remove all registered hooks.

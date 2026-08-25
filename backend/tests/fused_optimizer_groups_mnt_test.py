@@ -260,8 +260,10 @@ class AnIncompleteGroupStillDoesNotStep(unittest.TestCase):
 
     Some parameters get no gradient in some backwards (the Vision Encoder on a
     reference-free batch, for instance), so their group's count never reaches its
-    size within a backward and the group does not step -- which is the state at
-    MNT == 1 today, and is a separate, pre-existing problem.
+    size and the HOOK does not step it. What applies those gradients is the flush
+    after the backward returns, which these cases do not call --
+    ``fused_group_partial_flush_test.py`` covers it. The point here is only that
+    nothing steps DURING the backward on a mixture of two backwards' gradients.
 
     Carrying counts across backwards is strictly worse than leaving them alone:
     they add up until they happen to land on the group size and the group steps

@@ -5445,6 +5445,7 @@ class BaseTrainer(ABC):
             self._reset_fused_group_counters()
             torch.autograd.backward(tensors=list(graph_inputs.values()),
                                     grad_tensors=[grad_acc[n] for n in graph_inputs])
+            self._flush_fused_group_partials()
         return loss_acc / batch_size, pred_acc / batch_size, recon_acc / batch_size
 
     def _forward_backward_with_oom_recovery(
@@ -5858,6 +5859,22 @@ class BaseTrainer(ABC):
         if groups is not None:
             groups.reset_counters()
 
+    def _flush_fused_group_partials(self):
+        """Apply the gradients this backward produced for INCOMPLETE groups.
+
+        Belongs immediately after every ``backward()``: the end of the backward
+        is the only point at which "this parameter got no gradient this time" is
+        decided, and the hooks only step a group whose parameters all got one.
+        Without this, a group holding any parameter that a given backward does
+        not reach -- the Vision Encoder on a reference-free batch (see the epoch
+        VE-offload note in ``train()``), a block that stochastic depth dropped
+        this step -- never steps at all, freezing the parameters that DID get a
+        gradient and merely share the group by index order.
+        """
+        groups = getattr(self, "fused_optimizer_groups", None)
+        if groups is not None:
+            groups.step_incomplete_groups()
+
     def _execute_forward_backward(
         self,
         mnt_latents: torch.Tensor,
@@ -6138,6 +6155,7 @@ class BaseTrainer(ABC):
             self.grad_scaler.scale(loss_for_backward).backward()
         else:
             loss_for_backward.backward()
+        self._flush_fused_group_partials()
 
         # Extract values before deleting tensors
         loss_value = loss.item()

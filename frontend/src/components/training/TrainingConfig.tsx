@@ -719,9 +719,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoderTrainingAdvisory = featureAdvisory("text_encoder_training");
   const motEvictionAdvisory = featureAdvisory("sensenova_mot_eviction");
   const motEvictionUnsupported = unsupportedTrainingFeature("sensenova_mot_eviction");
-  // The three preconditions train_runner checks before the checkpoint loads.
-  // undefined = the split is selectable; a string = why it is not, in the same
-  // terms the backend would have refused in.
+  // The preconditions train_runner checks before the checkpoint loads: three on
+  // the split itself, plus the both-halves branch that its own required flag
+  // (MoT Phase Eviction under a full fine-tune) demands. undefined = the split
+  // is selectable; a string = why it is not, in the backend's own terms.
   const fourPhaseBlockedReason: string | undefined =
     trainingMethod !== "full_finetune"
       ? "The backward split is implemented for full fine-tuning only: it leaves the generation half on CPU at the step boundary, which is safe only on the fused backward route."
@@ -729,6 +730,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ? "Needs Train Text Encoder: the split exists so a TRAINED understanding half can still be evicted. With that half frozen, MoT Phase Eviction alone already does this."
       : !params.sensenova_mot_phase_eviction
       ? "Needs MoT Phase Eviction: on its own the split only adds a second backward and a recomputed understanding forward, with both halves resident."
+      : !trainUnet
+      ? "Needs Train U-Net as well: MoT Phase Eviction under a full fine-tune requires both halves (the evictor moves whole halves and needs them to hold the same kind of weight, and a single-branch full fine-tune leaves the other one INT8), so an understanding-only run is refused before the model loads."
+      : undefined;
+  // The same refusal where it is actually raised. Shown, not disabling: the
+  // eviction checkbox is legitimate on every other branch and method.
+  const motEvictionBranchRefusal: string | undefined =
+    trainingMethod === "full_finetune" && params.sensenova_mot_phase_eviction
+      && !(trainUnet && trainTextEncoder)
+      ? "MoT Phase Eviction under a full fine-tune is refused before the model loads unless BOTH Train U-Net and Train Text Encoder are on: a single-branch full fine-tune materializes only the half it trains and leaves the other INT8, and the evictor requires the two halves to hold the same kind of weight."
       : undefined;
   // The refusal in the OTHER direction (train_runner: train_text_encoder cannot
   // be combined with MoT Phase Eviction). Under full fine-tuning the split lifts
@@ -741,6 +751,39 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         ? "Train Text Encoder with MoT Phase Eviction is refused before the model loads unless the Four-Phase Backward Split is on: the three-phase evictor moves the understanding half to CPU before its own backward. Turn the split on, or turn one of the other two off."
         : "Train Text Encoder with MoT Phase Eviction is refused before the model loads. The Four-Phase Backward Split that would lift it is implemented for full fine-tuning only, so here the remedy is to turn one of the two off."
       : undefined;
+
+  // Global-norm clipping cannot happen on the fused route: every parameter is
+  // updated from its own post-accumulate-grad hook, so no global norm ever
+  // exists. Mirrors the three conditions in base_trainer.setup_optimizer, and
+  // says the same thing base_trainer._warn_grad_clipping_ignored_under_fused
+  // says as a trainer notice once the run has started.
+  const gradClippingIgnoredReason: string | undefined = (() => {
+    if ((params.max_grad_norm ?? 1.0) <= 0) return undefined;
+    const fusedOptimizer = ["adafactor", "adamw8bit", "adamw8bit_ringbuffer",
+      "lion8bit_ringbuffer"].includes(optimizer);
+    const route =
+      blocksToSwap > 0 && numOptimizerGroups > 0
+        ? "Block Swap with fused optimizer groups"
+        : blocksToSwap > 0 && fusedOptimizer
+        ? `Block Swap with ${optimizer}`
+        : isSenseNovaModel(baseModelPath) && trainingMethod === "full_finetune"
+          && numOptimizerGroups === 0 && fusedOptimizer
+        ? "a SenseNova full fine-tune"
+        : undefined;
+    if (!route) return undefined;
+    // The remedy is route-dependent. A SenseNova full fine-tune ALREADY has
+    // Block Swap off and 0 optimizer groups (its contract pins both), and the
+    // trainer refuses the unfused shape, so "take the non-fused route" would be
+    // advice the user has already followed and that cannot be followed further.
+    const remedy =
+      route === "a SenseNova full fine-tune"
+        ? "There is no non-fused route to take here: this architecture's full-fine-tune contract already pins Block Swap off and 0 optimizer groups, and it accepts only the fused per-parameter optimizer, so nothing in this form can turn global-norm clipping back on. Use LoRA if you need it."
+        : "Set it to 0 to silence the notice, or clip by taking the non-fused route (Block Swap off and 0 optimizer groups).";
+    return `NOT APPLIED on this route: ${route} applies each parameter's update as soon as that parameter's gradient exists, so the global norm this threshold needs never exists. No clipping of any kind happens, and the run reports this once as a trainer notice. ${remedy}${
+      optimizer === "adafactor"
+        ? " Adafactor still applies its own clip_threshold, which bounds the RMS of each parameter's update independently — a different mechanism, unaffected by this field."
+        : ""}`;
+  })();
 
   // FOURTH capability axis: config values this base model REQUIRES under the
   // selected method (SenseNova's full-fine-tune contract fixes the optimizer;
@@ -1498,7 +1541,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (fourPhaseBlockedReason && params.sensenova_four_phase_eviction) {
       updateParam("sensenova_four_phase_eviction", false);
     }
-    // The two eviction params are dependencies as well as reads: a preset or a
+    // The two eviction params and the two branch flags are dependencies as
+    // well as reads: a preset or a
     // copy-from-run writes them without touching arch or method, and
     // `fourPhaseBlockedReason` does not move when only the split itself is
     // written — so an identity-keyed list would park it true inside a control
@@ -1508,7 +1552,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blockSwapUnsupported, fusedGroupsUnsupported, referenceImagesUnsupported,
       textEncoderTrainingUnsupported, trainingSamplesUnsupported,
       motEvictionUnsupported, fourPhaseBlockedReason,
-      params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction]);
+      params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
+      params.train_unet, params.train_text_encoder]);
 
   // Keep the pinned parameters at their required values, and record what was
   // replaced. Recorded rather than applied silently: the backend refuses (or
@@ -3313,6 +3358,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
               <p className="text-xs text-gray-500 mt-1">Gradient clipping threshold. 0 disables clipping.</p>
+              {gradClippingIgnoredReason && (
+                <p className="text-xs text-amber-400 mt-1">{gradClippingIgnoredReason}</p>
+              )}
             </div>
 
             <div>
@@ -4655,6 +4703,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 too, and there the split is not the way out. */}
             {evictionPairRefusal && (
               <p className="text-xs text-red-400">{evictionPairRefusal}</p>
+            )}
+            {motEvictionBranchRefusal && (
+              <p className="text-xs text-red-400">{motEvictionBranchRefusal}</p>
             )}
             {motEvictionAdvisory && (
               <p className="text-xs text-amber-400">{motEvictionAdvisory.reason}</p>

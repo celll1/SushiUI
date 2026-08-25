@@ -381,6 +381,60 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_SAVE_FORMATS)}."
         )
     train_config["sensenova_full_finetune_save_format"] = save_format
+    _warn_on_unresumable_sensenova_save_format(train_config, save_format)
+
+
+def _warn_on_unresumable_sensenova_save_format(
+    train_config: Dict[str, Any], save_format: str
+) -> None:
+    """Say at run creation which resume a full fine-tune's save format leaves it.
+
+    Which format resumes losslessly depends on the branch (``ops.sensenova_ops``
+    ``_SENSENOVA_RESUME_FORMAT_FOR_BRANCH``), and the answer is only discovered
+    when a run is restarted -- possibly hours in, and the file is written by
+    then. Warned, never refused: every combination produces a usable model.
+    """
+    from types import SimpleNamespace
+
+    from core.training.ops.sensenova_ops import (
+        _SENSENOVA_RESUME_FORMAT_FOR_BRANCH, resolve_full_finetune_branch,
+    )
+    from core.training.training_events import emit_training_warning
+
+    train_gen = _normalize_sensenova_bool(train_config, "train_unet", True)
+    train_und = _normalize_sensenova_bool(train_config, "train_text_encoder", False)
+    try:
+        # The one resolver, so a run with nothing to train cannot be warned about
+        # a branch it does not have; that configuration is refused in the trainer
+        # and this advisory has no business naming "und" for it.
+        branch = resolve_full_finetune_branch(
+            SimpleNamespace(train_unet=train_gen, train_text_encoder=train_und)
+        )
+    except ValueError:
+        return
+    lossless = _SENSENOVA_RESUME_FORMAT_FOR_BRANCH[branch]
+    # What the writer will actually emit: 'mixed' has no int8 half to keep when
+    # both halves are trained, so it degenerates to 'bf16' -- which IS resumable.
+    effective = "bf16" if (save_format == "mixed" and branch == "both") else save_format
+    if effective == lossless:
+        return
+    if effective == "int8":
+        detail = (
+            "'int8' resumes, but it requantizes the trained half on every save, "
+            "so each restart re-rounds the weights onto the int8 grid"
+        )
+    else:
+        detail = (
+            f"'{save_format}' leaves the decoder in a layout a {branch!r}-branch "
+            f"resume does not accept, so a restart of this run would be refused"
+        )
+    emit_training_warning(
+        f"SenseNova full fine-tuning on the {branch!r} branch resumes losslessly "
+        f"only from sensenova_full_finetune_save_format='{lossless}'; this run is "
+        f"set to '{save_format}'. {detail}. The format cannot be changed after the "
+        f"fact -- the weights are already written in the shape it chose.",
+        code="sensenova_save_format_not_resumable",
+    )
 
 
 def _normalize_sensenova_integer(

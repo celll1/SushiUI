@@ -2057,6 +2057,30 @@ Paths below are relative to `backend/core/training/`.
         skew: `disable_int8_mm` does bite on a true `Int8Linear`, and its
         W8A8 path is pinned off anyway (see the W8A8 bullet above), so
         training and inference both run dequant.
+      - **Resuming a full fine-tune is a DIFFERENT gate**
+        (`accept_resume_shaped_base`, reachable only from the resume path).
+        It accepts the run's own checkpoint when the loaded tree is the
+        residency layout that branch was already training in — `gen`/`und`:
+        294 float `nn.Linear` on the trained half plus 294 plain `Int8Linear`
+        on the frozen one (what `mixed` writes); `both`: all 588 float (what
+        `bf16` writes, and what `mixed` degenerates to there). Both round-trip
+        byte-identically, so this is the only lossless resume the `both`
+        branch has — `int8` requantizes the trained half on every save. The
+        **class census on the constructed tree decides**; the checkpoint's
+        `sensenova_trained_branch` / `sensenova_save_format` metadata is a
+        required cross-check that refuses when absent or contradicting, so it
+        can only narrow acceptance. Base substitution (`model_path` for a NEW
+        run) is unchanged: plain int8 only.
+        **What is measured, and what is not.** The write/read round trip is
+        byte-identical for BOTH layouts — 294/294 for `mixed` and 588/588 for
+        `both`+`bf16`, SHA-256, production reader, separate process
+        (`SENSENOVA_TRAINING_DESIGN.md` 13.4 U-2-5). A real RESUME has been run
+        for **`gen` + `mixed` only** (8.3.4: step, epoch/batch, Adafactor state
+        and LR-scheduler position all continued, trained half 294/294
+        byte-identical). That `both` + `bf16` also resumes is an **inference**
+        from the same write/read pair feeding the same acceptance — not a
+        measurement. `und` and resolutions above 64px are unmeasured for resume
+        as well, and no quality claim attaches to any of it.
     - **Loss**: pixel-space flow matching in the arch's own `t=0` noise /
       `t=1` clean direction, `v = (x - z)/(1-t).clamp_min(t_eps)` MSE, with
       `noise_scale` taken from the inference `compute_noise_scale` rather

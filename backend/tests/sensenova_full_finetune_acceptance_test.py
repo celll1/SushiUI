@@ -441,9 +441,10 @@ def test_both_scope_flags_false_is_refused_for_sensenova_by_name():
 
 
 def test_a_checkpoint_this_repo_wrote_is_refused_by_name_of_the_setting():
-    """H2: at shipped defaults a full-FT run resumes from its own output, and
-    only ``int8`` is a legal base. The refusal names the setting that decided
-    that, because the file it is refusing says which one was used."""
+    """H2: only ``int8`` is a legal base for a NEW run. The refusal names the
+    setting that decided that, because the file it is refusing says which one
+    was used -- and points at the resume path, which is a different gate
+    (``accept_resume_shaped_base``, sensenova_full_finetune_resume_base_test)."""
     from core.training.ops.sensenova_ops import _own_save_format_remedy
 
     assert _own_save_format_remedy(None) == ""
@@ -454,6 +455,7 @@ def test_a_checkpoint_this_repo_wrote_is_refused_by_name_of_the_setting():
     })
     assert "sensenova_full_finetune_save_format='mixed'" in text
     assert "only 'int8'" in text
+    assert "accept_resume_shaped_base" in text
     # The degeneracy both-halves + mixed produces is reported as written, not
     # as requested.
     degenerate = _own_save_format_remedy({

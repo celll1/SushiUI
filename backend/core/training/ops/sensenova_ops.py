@@ -372,8 +372,50 @@ def _census_quantized_linears(
     return counts, unknown
 
 
+def _own_save_format_remedy(source_metadata: Any) -> str:
+    """The extra sentence a checkpoint THIS REPO wrote earns on refusal.
+
+    A full fine-tune's own output is the natural thing to resume from, and at
+    the shipped defaults it is exactly what a restart selects:
+    ``TRAINING_DEFAULTS["resume_from_checkpoint"] = "latest"`` and
+    ``_build_train_section`` always writes it. But only the ``int8`` format
+    keeps all 588 decoder Linears in one quantized flavour, so the default
+    ``mixed`` and the ``bf16`` option are both refused here -- correctly, and
+    with a message that otherwise asks the user to "select the plain-int8
+    checkpoint" without saying that the file they are pointing at was shaped by
+    a setting they chose when they created the run. The file says which one, so
+    the message can too.
+    """
+    metadata = source_metadata or {}
+    effective = str(metadata.get("sensenova_save_format") or "").strip()
+    if not effective:
+        return ""
+    requested = str(metadata.get("sensenova_save_format_requested") or "").strip()
+    branch = str(metadata.get("sensenova_trained_branch") or "").strip()
+    requested_note = (
+        f" (requested '{requested}', written as '{effective}')"
+        if requested and requested != effective else ""
+    )
+    return (
+        f" This checkpoint was written by this repo's own full fine-tune as "
+        f"sensenova_full_finetune_save_format='{effective}'{requested_note}"
+        + (f", branch '{branch}'" if branch else "")
+        + ". Of the three formats only 'int8' keeps all 588 decoder Linears in "
+        "one quantized flavour, so only 'int8' can be trained on again -- "
+        "'mixed' and 'bf16' are outputs, not bases. Resuming a run therefore "
+        "requires that the run was created with "
+        "sensenova_full_finetune_save_format='int8'; it cannot be changed after "
+        "the fact, because the weights of the other two formats are already "
+        "written in a shape this loader does not accept as a training base. "
+        "'int8' is lossy on save (see its API description)."
+    )
+
+
 def _assert_supported_quantized_training_base(
-    transformer: nn.Module, *, training_method: str = "lora"
+    transformer: nn.Module,
+    *,
+    training_method: str = "lora",
+    source_metadata: Any = None,
 ) -> None:
     """Require all 588 decoder Linears to be ONE supported quantized flavour.
 
@@ -416,6 +458,7 @@ def _assert_supported_quantized_training_base(
                 "docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). Remedy: select the "
                 "plain-int8 checkpoint, or set training_method='lora', which trains on "
                 "either quantized base."
+                + _own_save_format_remedy(source_metadata)
             )
         return
 
@@ -427,6 +470,7 @@ def _assert_supported_quantized_training_base(
             f"quantized flavour (all Int8Linear, or all ConvRotInt8Linear); got {census}. "
             "A mixed or partially quantized base is refused, and so is an unquantized "
             "bf16 base -- no bf16 SenseNova checkpoint exists for this repo to train on yet."
+            + _own_save_format_remedy(source_metadata)
         )
 
 
@@ -506,7 +550,9 @@ def load_components(trainer: Any) -> None:
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
     _assert_supported_quantized_training_base(
-        trainer.transformer, training_method=training_method
+        trainer.transformer,
+        training_method=training_method,
+        source_metadata=components.get("metadata"),
     )
     _assert_pixel_head_fm_decoder(trainer.transformer)
     if branch is not None:
@@ -519,6 +565,8 @@ def load_components(trainer: Any) -> None:
     trainer.transformer_uncond = None
     trainer.tokenizer = components["tokenizer"]
     trainer.sensenova_model_config = components.get("config")
+    # The geometry block THIS load accepted, for an export to re-embed verbatim.
+    trainer.sensenova_config_dict = components.get("config_dict")
     trainer.text_encoder = None
     trainer.text_encoder_2 = None
     trainer.tokenizer_2 = None

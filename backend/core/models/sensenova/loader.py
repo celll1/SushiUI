@@ -154,8 +154,16 @@ def is_sensenova_state_dict_keys(keys: Iterable[str]) -> bool:
     return has_mot_gen and has_fm_head and has_llm_layers
 
 
-def _load_sensenova_config(metadata: Dict[str, Any], model_dir: str) -> NEOChatConfig:
-    """The checkpoint's ``NEOChatConfig``: embedded metadata first, sibling ``config.json`` fallback."""
+def _load_sensenova_config(
+    metadata: Dict[str, Any], model_dir: str
+) -> "tuple[NEOChatConfig, Dict[str, Any]]":
+    """The checkpoint's ``NEOChatConfig``: embedded metadata first, sibling ``config.json`` fallback.
+
+    Returns the config AND the raw dict it was built from. The dict is what a
+    later export re-embeds, so a re-save carries the exact block this load
+    accepted rather than a re-serialization of the live object
+    (``_embeddable_sensenova_config``).
+    """
     raw = (metadata or {}).get("sensenova_config")
     if raw:
         cfg_dict = json.loads(raw)
@@ -171,7 +179,7 @@ def _load_sensenova_config(metadata: Dict[str, Any], model_dir: str) -> NEOChatC
             cfg_dict = json.load(f)
         source = f"sibling {cfg_path}"
     print(f"[SenseNovaLoader] config source: {source}")
-    return NEOChatConfig(**cfg_dict)
+    return NEOChatConfig(**cfg_dict), cfg_dict
 
 
 def _int8_convrot_source_layers(sd: Dict[str, torch.Tensor], *, path: str) -> Dict[str, Dict[str, int]]:
@@ -538,6 +546,108 @@ def _assert_scale_weight_conjunction(weight_dtypes: Dict[str, torch.dtype],
     )
 
 
+def _embeddable_sensenova_config(
+    config: Any, source_dir: Optional[str], raw_config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """The geometry block to embed: the block THIS LOAD accepted, verbatim, if there is one.
+
+    ``raw_config`` is what ``load_sensenova_from_path`` parsed -- the
+    checkpoint's own ``sensenova_config`` metadata when it had one, the sibling
+    ``config.json`` otherwise. Preferring it is exact AND safe: the reader
+    prefers embedded metadata over the sibling, so re-deriving from the sibling
+    could embed a different dict than the run was built from; and a dict that
+    reached here necessarily reconstructed a config and a model already, so it
+    cannot be one of the unreadable forms below. The sibling is the fallback,
+    and a re-serialization the last resort.
+
+    ``NEOChatConfig.to_dict()`` is not a fixed point of ``NEOChatConfig(**.)`` in
+    this vendor tree, for at least two independent reasons, and each one writes a
+    file that only fails when it is read back:
+
+    * the ``to_dict`` override skips the base class's dtype normalization, so the
+      top-level ``dtype`` serializes as ``"torch.bfloat16"`` and reloads as
+      ``getattr(torch, "torch.bfloat16")`` -- see ``_serializable_sensenova_config``;
+    * ``configuration_neo_vit.py:38`` assigns ``self.downsample_ratio =
+      downsample_ratio,`` -- a trailing comma, so the value is a 1-tuple that the
+      ViT reads as ``downsample_ratio[0]``. Serialized it becomes ``[0.5]`` and
+      the next construction makes it ``([0.5],)``, whose ``[0]`` is a list.
+      NOT repaired here: the tuple is load-bearing at inference.
+
+    A dict that came off disk has neither problem -- it is what the shipped
+    loader reads on every load -- so the export carries it through unchanged
+    instead of round-tripping the live object. ``link_siblings`` copies the
+    sibling ``config.json`` beside the checkpoint too, so the embedded block and
+    the sibling fallback agree by construction rather than by luck.
+    """
+    if raw_config:
+        return dict(raw_config)
+    if source_dir:
+        path = os.path.join(source_dir, "config.json")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                return json.load(handle)
+    return _serializable_sensenova_config(config)
+
+
+def _serializable_sensenova_config(config: Any) -> Dict[str, Any]:
+    """``config.to_dict()`` with its dtypes turned into the strings a reload accepts.
+
+    The vendored ``NEOChatConfig.to_dict`` OVERRIDES the base implementation and
+    copies ``__dict__`` verbatim, so it skips the base class's dtype
+    normalization and leaves the top-level ``dtype`` a real ``torch.dtype``.
+    ``sensenova_export_metadata`` then JSON-dumps it with ``default=str``, which
+    writes ``"torch.bfloat16"`` -- and ``PreTrainedConfig.__init__`` reads that
+    back as ``getattr(torch, "torch.bfloat16")`` and raises. The nested
+    ``vision_config`` / ``llm_config`` are unaffected because they use the stock
+    ``to_dict``, which is why only one key of the three was ever wrong.
+
+    The base class's own normalizer is called rather than reimplemented; it was
+    renamed in transformers 5 (``dict_torch_dtype_to_str`` ->
+    ``dict_dtype_to_str``), so both names are tried.
+    """
+    config_dict = config.to_dict() if hasattr(config, "to_dict") else dict(config or {})
+    for name in ("dict_dtype_to_str", "dict_torch_dtype_to_str"):
+        normalize = getattr(config, name, None)
+        if callable(normalize):
+            normalize(config_dict)
+            break
+    return config_dict
+
+
+def _assert_config_metadata_reloads(metadata: Dict[str, str]) -> None:
+    """Refuse to write a checkpoint whose own geometry metadata cannot be read.
+
+    ``sensenova_config`` is the loader's PRIMARY geometry source, and the write
+    happens hours into a run: a value that only fails on read turns a completed
+    fine-tune into an unloadable file.
+
+    NOT the whole read path: the reader also builds ``NEOChatModel(config)``
+    under ``init_empty_weights``, and this checks only the config construction
+    plus the one arithmetic that constructor does on a config value. Both known
+    round-trip defects live in those two steps, but a third one further inside
+    the model constructor would still reach disk. Kept narrow deliberately --
+    building the meta-device module graph on every ``save_every`` would be paid
+    by every run to guard a class of defect no run has hit.
+    """
+    raw = metadata.get("sensenova_config")
+    if not raw:
+        return
+    try:
+        reconstructed = NEOChatConfig(**json.loads(raw))
+        # The one arithmetic NEOChatModel's constructor does on a config value,
+        # and the one field this vendor tree does not round-trip
+        # (_embeddable_sensenova_config). Reconstructing the config alone does
+        # not raise on it; building the model does, 25 GiB later.
+        float(1.0 / reconstructed.vision_config.downsample_ratio[0])
+    except Exception as exc:
+        raise RuntimeError(
+            f"SenseNova save produced a 'sensenova_config' metadata block that "
+            f"its own loader cannot reconstruct ({type(exc).__name__}: {exc}). "
+            f"Refusing to write: this key is the checkpoint's primary geometry "
+            f"source, so the file would be unreadable."
+        ) from exc
+
+
 def save_sensenova_full_finetune_checkpoint(
     transformer: NEOChatModel,
     output_path: str,
@@ -545,6 +655,7 @@ def save_sensenova_full_finetune_checkpoint(
     branch: str,
     save_format: str,
     config: Any = None,
+    raw_config: Optional[Dict[str, Any]] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
     source_dir: Optional[str] = None,
     max_shard_bytes: Optional[int] = None,
@@ -641,8 +752,9 @@ def save_sensenova_full_finetune_checkpoint(
     directory = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(directory, exist_ok=True)
 
-    config_dict = config.to_dict() if hasattr(config, "to_dict") else (config or {})
+    config_dict = _embeddable_sensenova_config(config, source_dir, raw_config)
     metadata = dict(sensenova_export_metadata(config_dict))
+    _assert_config_metadata_reloads(metadata)
     metadata["sensenova_trained_branch"] = branch
     metadata["sensenova_save_format"] = effective
     metadata["sensenova_save_format_requested"] = save_format
@@ -842,7 +954,7 @@ def load_sensenova_from_path(
             f"tensors; this loader only reads the sushiUI single-file/shard-index format."
         )
 
-    config = _load_sensenova_config(metadata, model_dir)
+    config, config_dict = _load_sensenova_config(metadata, model_dir)
 
     # ConvRot markers, read from the still-plain state dict before anything is
     # installed (mirrors MiniMax-H3 DiT loader.py's ordering: the runtime
@@ -876,6 +988,12 @@ def load_sensenova_from_path(
         "transformer": model,
         "config": config,
         "tokenizer": tokenizer,
+        # Additive, for two callers that need the file's own words rather than a
+        # re-derivation: the training guard names the save format a refused tree
+        # was written with, and an export re-embeds the exact geometry block this
+        # load accepted.
+        "metadata": dict(metadata or {}),
+        "config_dict": config_dict,
     }
 
 

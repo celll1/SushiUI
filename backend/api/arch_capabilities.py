@@ -809,9 +809,12 @@ _add_training_unsupported(
     "minimax_h3", "relora",
     "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")
 
-_add_training_unsupported(
-    "sensenova", "full_finetune",
-    "SenseNova full fine-tuning is implemented but not yet accepted: the loader materializes the trained MoT half, the adapter collects and saves it (sensenova_full_finetune_save_format selects mixed / bf16 / int8), and what is still open is the run-acceptance path itself, which is unlocked separately from the parts it depends on. Use LoRA training")
+# No `full_finetune` entry: SenseNova full fine-tuning is accepted (U-2-2 step 3).
+# The loader dequantizes the selected MoT half, SenseNovaFullParameterAdapter
+# collects and saves it, and `sensenova_full_finetune_save_format` selects the
+# on-disk format. The envelope it runs in is not a capability entry but a
+# contract enforced per run: adafactor, bf16, batch 1, no accumulation, no EMA,
+# blocks_to_swap=0 (ops/sensenova_ops.assert_full_finetune_contract).
 _add_training_unsupported(
     "sensenova", "relora",
     "SenseNova ReLoRA cannot merge dense updates back into its weight-only INT8 base; use LoRA training")
@@ -897,13 +900,17 @@ _add_training_feature_unsupported(
     methods=["lora", "relora"])
 # SenseNova is Z-Image's mirror image: LoRA DOES train the understanding branch
 # (train_text_encoder injects 294 understanding-branch adapters and the prompt
-# prefix is built by a differentiable pass). SenseNovaFullParameterAdapter does
-# collect that half now, but full_finetune is refused for this architecture
-# outright (no checkpoint format), so this entry follows the method that is
-# refused rather than claiming the half itself is unreachable.
+# prefix is built by a differentiable pass). Full fine-tuning is accepted now
+# (U-2-2 step 3), and SenseNovaFullParameterAdapter collects the understanding
+# half when this flag is set -- so the reason this entry used to give ("full
+# fine-tuning is refused for this architecture as a whole") is no longer true
+# and has been replaced with the one that is. The mechanism exists and the
+# backend does not refuse it; what is missing is a measured run, which is
+# U-2-5's exit smoke (SENSENOVA_TRAINING_DESIGN.md 13.4). This entry keeps the
+# control off the UI until then; it is not enforced trainer-side.
 _add_training_feature_unsupported(
     "sensenova", "text_encoder_training",
-    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises; LoRA trains it through train_text_encoder, and full fine-tuning is refused for this architecture as a whole",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises. LoRA trains it through train_text_encoder; under full fine-tuning it is the second 294-Linear half, which doubles the dequantized weights and has no measured run yet, so only the generation half is offered here",
     methods=["full_finetune"])
 
 # --- Sample generation during training --------------------------------------

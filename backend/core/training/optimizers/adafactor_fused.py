@@ -19,6 +19,8 @@ import math
 import torch
 from transformers import Adafactor
 
+from .update_census import record_param_update
+
 
 @torch.no_grad()
 def adafactor_step_param(self, p, group):
@@ -110,6 +112,14 @@ def adafactor_step_param(self, p, group):
 
     if p.dtype in {torch.float16, torch.bfloat16}:
         p.copy_(p_data_fp32)
+
+    # Last, and only on the path that actually wrote: the census is armed by
+    # setup_update_census for EVERY fused-backward optimizer, but only the two
+    # ring-buffer ones used to call this, so an armed census reported every
+    # parameter missing on a correct Adafactor run -- the one optimizer
+    # SenseNova's full fine-tune allows. Recorded here rather than in the hook
+    # so the early return above (no gradient) stays uncounted.
+    record_param_update(self, p)
 
 
 @torch.no_grad()

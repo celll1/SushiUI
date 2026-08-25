@@ -660,13 +660,13 @@ def test_trainer_reads_the_setting_off_the_train_config():
 
 
 # ---------------------------------------------------------------------------
-# Gate G: the two step-3 refusals stay closed
+# Gate G: the two step-3 refusals are OPEN (U-2-2 step 3). The precondition this
+# file's own subject was -- a writable checkpoint format -- is what unlocked
+# them; sensenova_full_finetune_acceptance_test.py owns the acceptance path.
 # ---------------------------------------------------------------------------
 
-def test_full_finetune_is_still_refused_before_a_run_starts():
+def test_full_finetune_is_accepted_now_that_a_format_exists():
     from api.arch_capabilities import TRAINING_UNSUPPORTED
 
-    assert "full_finetune" in TRAINING_UNSUPPORTED["sensenova"]
-    runner = (Path(__file__).resolve().parents[1]
-              / "core/training/train_runner.py").read_text(encoding="utf-8")
-    assert 'network.type' in runner and '!= "lora"' in runner
+    assert "full_finetune" not in TRAINING_UNSUPPORTED["sensenova"]
+    assert "relora" in TRAINING_UNSUPPORTED["sensenova"]

@@ -9,9 +9,10 @@ training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` (13 entries — every generation
-architecture except MiniMax Music 3). SenseNova U1.5 supports Phase 1 LoRA;
-full-parameter training remains deferred to Phase 2b and reference-conditioned
-training to Phase 3. See `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
+architecture except MiniMax Music 3). SenseNova U1.5 supports LoRA (generation
+branch, plus the understanding branch when `train_text_encoder` is set) and
+reference-conditioned datasets; full-parameter training is still refused. See
+`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
 implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
 for the remaining training-out-of-scope architecture.
 Per-architecture facts are

@@ -174,6 +174,86 @@ def expected_read_shape(branch: str, effective_format: str) -> dict[str, str]:
     }
 
 
+class _StepPeakRecorder:
+    """Separate the peak DURING a training step from the load-time high-water.
+
+    Every measurement before this one reported a single process-wide
+    ``max_memory_allocated``, in which the load high-water and the step are the
+    same number: at 64px the step's activations are four image tokens, so the
+    load peak dominated and ``model_resident == peak_allocated`` held. That
+    equality is the reason the resolution at which the STEP becomes the peak was
+    unknown -- it cannot be read off a statistic that never separated them.
+
+    The window is callback-to-callback: ``progress_callback(phase="training")``
+    fires after forward, backward and (under fused backward) the parameter
+    updates, and before the ``should_step_optimizer`` block, so window N covers
+    the tail of step N-1's optimizer block, the data load and the whole of step
+    N. ``reset_peak_memory_stats`` resets the peak to the CURRENT allocation, so
+    each window peak is bounded below by the resident model and the quantity
+    that matters is ``peak - baseline``: what the step added on top.
+    """
+
+    def __init__(self):
+        self.windows: list[dict[str, Any]] = []
+
+    def _sample(self, label: str) -> None:
+        torch.cuda.synchronize()
+        self.windows.append({
+            "label": label,
+            "peak_allocated": int(torch.cuda.max_memory_allocated()),
+            "peak_reserved": int(torch.cuda.max_memory_reserved()),
+            "allocated_at_close": int(torch.cuda.memory_allocated()),
+        })
+        torch.cuda.reset_peak_memory_stats()
+
+    def open_first_window(self) -> None:
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+
+    def close_step(self, step: int) -> None:
+        self._sample(f"step_{step}")
+
+    def close_tail(self) -> None:
+        self._sample("after_train")
+
+    def summary(self, load_peak_allocated: int) -> dict[str, Any]:
+        steps = [w for w in self.windows if w["label"].startswith("step_")]
+        peak = max((w["peak_allocated"] for w in self.windows), default=0)
+        step_peak = max((w["peak_allocated"] for w in steps), default=0)
+        return {
+            "windows": [
+                {
+                    "label": w["label"],
+                    "peak_allocated_gib": w["peak_allocated"] / 1024 ** 3,
+                    "peak_reserved_gib": w["peak_reserved"] / 1024 ** 3,
+                    "allocated_at_close_gib": w["allocated_at_close"] / 1024 ** 3,
+                }
+                for w in self.windows
+            ],
+            "train_phase_peak_allocated_bytes": peak,
+            "train_phase_peak_allocated_gib": peak / 1024 ** 3,
+            "step_only_peak_allocated_bytes": step_peak,
+            "step_only_peak_allocated_gib": step_peak / 1024 ** 3,
+            "load_peak_allocated_bytes": load_peak_allocated,
+            "load_peak_allocated_gib": load_peak_allocated / 1024 ** 3,
+            "step_exceeds_load": bool(step_peak > load_peak_allocated),
+            "step_minus_load_bytes": step_peak - load_peak_allocated,
+            "step_minus_load_gib": (step_peak - load_peak_allocated) / 1024 ** 3,
+            # Growth across steady-state windows: a monotone climb is allocator
+            # fragmentation or a leak, which a three-step run cannot show.
+            "first_step_peak_gib": (
+                steps[0]["peak_allocated"] / 1024 ** 3 if steps else None
+            ),
+            "last_step_peak_gib": (
+                steps[-1]["peak_allocated"] / 1024 ** 3 if steps else None
+            ),
+            "steady_state_drift_gib": (
+                (steps[-1]["peak_allocated"] - steps[1]["peak_allocated"]) / 1024 ** 3
+                if len(steps) > 2 else None
+            ),
+        }
+
+
 def train_arm_failures(
     *,
     moved,
@@ -181,6 +261,7 @@ def train_arm_failures(
     of: int,
     predicted_unmoved,
     steps,
+    expected_steps: int = EXIT_SMOKE_STEPS,
 ) -> list[str]:
     """Every post-run verdict the train arm reaches, as data rather than raises.
 
@@ -194,8 +275,8 @@ def train_arm_failures(
     dead hook while staying silent on the five layer-41 projections.
     """
     failures: list[str] = []
-    if list(steps) != list(range(1, EXIT_SMOKE_STEPS + 1)):
-        failures.append(f"expected {EXIT_SMOKE_STEPS} steps, got {list(steps)}")
+    if list(steps) != list(range(1, expected_steps + 1)):
+        failures.append(f"expected {expected_steps} steps, got {list(steps)}")
     if sorted(unmoved) != sorted(predicted_unmoved):
         failures.append(
             f"update-nonzero census: {len(moved)} of {of} moved; the unmoved set "
@@ -234,9 +315,11 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     config = trainer_exit_smoke_config()
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    image_path = workdir / "training_image.png"
+    resolution = int(args.resolution)
+    total_steps = int(args.steps)
+    image_path = workdir / f"training_image_{resolution}.png"
     output_dir = workdir / "full_finetune"
-    _write_deterministic_smoke_image(image_path)
+    _write_deterministic_smoke_image(image_path, resolution, resolution)
 
     train_config = dict(config["train_config"])
     train_config["sensenova_full_finetune_save_format"] = args.save_format
@@ -270,6 +353,10 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     model_load_wall_time_s = time.perf_counter() - load_started
     host_after_load = _host_rss_bytes()
     model_resident = _cuda_memory()
+    # The load-time high-water, read BEFORE anything resets it. Every earlier
+    # measurement conflated this with the step peak.
+    load_peak_allocated = int(torch.cuda.max_memory_allocated())
+    load_peak_reserved = int(torch.cuda.max_memory_reserved())
 
     if not is_full_finetune(trainer):
         raise AssertionError("the trainer did not resolve as a full fine-tune")
@@ -316,6 +403,7 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     # reports None whether four-phase ran or was never installed. Sample it while
     # the run is live instead.
     evictor_states: list[str] = []
+    step_peaks = _StepPeakRecorder()
 
     def progress_callback(phase, step, total, epoch=0, loss=None):
         del total, epoch
@@ -328,15 +416,24 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             raise AssertionError(f"non-finite SenseNova full-FT loss: {loss!r}")
         steps.append(int(step))
         losses.append(float(loss))
+        step_peaks.close_step(int(step))
 
     train = dict(config["train"])
     train.update({
         "num_epochs": 1,
         "optimizer_type": "adafactor",
+        "total_steps": total_steps,
+        "base_resolutions": [resolution],
+        # total_steps + 1, NOT 0: `base_trainer.train` computes
+        # `global_step % save_every_n_steps` with no guard, so 0 -- the obvious
+        # spelling of "never save" -- raises ZeroDivisionError at step 1 on
+        # every architecture, and the emergency handler then writes a full
+        # checkpoint anyway. Reported as a finding; routed around here.
+        "save_every_n_steps": (total_steps + 1) if args.no_save else total_steps,
         "sample_prompts": [],
         "sample_every_n_steps": 0,
-        "sample_width": EXIT_SMOKE_WIDTH,
-        "sample_height": EXIT_SMOKE_HEIGHT,
+        "sample_width": resolution,
+        "sample_height": resolution,
         "sample_seed": args.seed,
         "max_grad_norm": 0.0,
         "progress_callback": progress_callback,
@@ -344,11 +441,36 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         "max_step_saves_to_keep": 1,
         "force_recache": False,
     })
-    dataset = _ExitSmokeDataset(image_path, args.prompt)
+    dataset = _ExitSmokeDataset(image_path, args.prompt, resolution, resolution)
 
+    # What the step ACTUALLY ran at, from the tensor rather than from the flag
+    # that was set: with bucketing off, base_resolutions only clamps DOWN, so a
+    # resolution arm that forgot either half of the pair would silently run at
+    # 64px and report a resolution it never used.
+    from core.training.ops import sensenova_ops as _ops
+
+    observed_shapes: list[list[int]] = []
+    _original_train_step = _ops.train_step
+
+    def _recording_train_step(trainer_, *, images, **kwargs):
+        shape = [int(v) for v in images.shape]
+        if shape not in observed_shapes:
+            observed_shapes.append(shape)
+        return _original_train_step(trainer_, images=images, **kwargs)
+
+    _ops.train_step = _recording_train_step
     train_started = time.perf_counter()
-    trainer.train(datasets=[dataset], **train)
+    step_peaks.open_first_window()
+    try:
+        trainer.train(datasets=[dataset], **train)
+    finally:
+        _ops.train_step = _original_train_step
+    step_peaks.close_tail()
     train_wall_time_s = time.perf_counter() - train_started
+    if [s[-2:] for s in observed_shapes] != [[resolution, resolution]]:
+        raise AssertionError(
+            f"asked for {resolution}px but the training step saw {observed_shapes}"
+        )
 
     after = _digest_map(trainer.transformer, branch)
     moved = sorted(p for p in before if after[p] != before[p])
@@ -376,27 +498,40 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     failures = train_arm_failures(
         moved=moved, unmoved=unmoved, of=len(before),
         predicted_unmoved=predicted_unmoved, steps=steps,
+        expected_steps=total_steps,
     )
 
     census = trainer._update_census
-    checkpoint = output_dir / f"{RUN_NAME}_step_{EXIT_SMOKE_STEPS:06d}.safetensors"
+    checkpoint = output_dir / f"{RUN_NAME}_step_{total_steps:06d}.safetensors"
     entry = checkpoint if checkpoint.is_file() else Path(str(checkpoint) + ".index.json")
     # A post-run FACT about the run, like the census and the step list -- not a
     # precondition. Raising here discarded everything the run had just measured.
     saved = entry.is_file()
-    if not saved:
+    if not saved and not args.no_save:
         failures.append(
             f"the run saved neither {checkpoint} nor its shard index"
         )
 
-    peak_allocated = int(torch.cuda.max_memory_allocated())
-    peak_reserved = int(torch.cuda.max_memory_reserved())
+    # The recorder resets the CUDA peak counters once per step, so the
+    # process-wide peak has to be reassembled from the windows plus the load
+    # high-water rather than read back from torch.
+    _windows = step_peaks.summary(load_peak_allocated)
+    peak_allocated = max(load_peak_allocated,
+                         _windows["train_phase_peak_allocated_bytes"])
+    peak_reserved = max(
+        load_peak_reserved,
+        max((w["peak_reserved"] for w in step_peaks.windows), default=0),
+    )
     written_bytes = sum(
         p.stat().st_size for p in entry.parent.glob(f"{entry.stem.split('.')[0]}*")
         if p.is_file()
     ) if saved else 0
     return {
         "arm": "train",
+        "resolution": resolution,
+        "observed_step_image_shapes": observed_shapes,
+        "requested_steps": total_steps,
+        "saved_checkpoint": bool(saved),
         "four_phase_eviction": bool(args.four_phase),
         "evictor_states_during_run": evictor_states,
         "adapter": adapter_name,
@@ -433,11 +568,16 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         "checkpoint_gib": written_bytes / 1024 ** 3,
         "post_train_digests": after,
         "vram": {
+            "model_resident_bytes": int(model_resident["allocated"]),
             "model_resident_gib": model_resident["allocated"] / 1024 ** 3,
+            "peak_allocated_bytes": peak_allocated,
             "peak_allocated_gib": peak_allocated / 1024 ** 3,
             "peak_reserved_gib": peak_reserved / 1024 ** 3,
+            "load_peak_reserved_gib": load_peak_reserved / 1024 ** 3,
             "gate_budget_gib": vram_gate.get("budget_bytes", 0) / 1024 ** 3,
+            "device_total_gib": vram_gate.get("device_total_bytes", 0) / 1024 ** 3,
         },
+        "step_vs_load": step_peaks.summary(load_peak_allocated),
         "host_rss": {
             "before_load_gib": host_before_load / 1024 ** 3,
             "after_load_gib": host_after_load / 1024 ** 3,
@@ -592,6 +732,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--branch", choices=("gen", "und", "both"), default="gen")
     parser.add_argument("--four-phase", action="store_true",
                         help="arm sensenova_four_phase_eviction (8.3.2)")
+    parser.add_argument("--resolution", type=int, default=EXIT_SMOKE_WIDTH,
+                        help="square training resolution; sets BOTH the dataset "
+                             "item dims and base_resolutions")
+    parser.add_argument("--steps", type=int, default=EXIT_SMOKE_STEPS)
+    parser.add_argument("--no-save", action="store_true",
+                        help="skip the checkpoint save (a 25-32 GiB write and a "
+                             "whole second host-resident state dict) when the "
+                             "arm is measuring the step rather than the writer")
     parser.add_argument("--prompt", default="a red square on a white background")
     parser.add_argument("--seed", type=int, default=1234)
     return parser.parse_args()

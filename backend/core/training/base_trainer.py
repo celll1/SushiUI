@@ -42,6 +42,7 @@ from core.attention import (
 )
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_warning
+from core.training.image_preprocessing import flatten_to_rgb
 
 
 def setup_fused_grad_norm(trainer, optimizers):
@@ -1813,7 +1814,7 @@ class BaseTrainer(ABC):
                 img = Image.open(key)
             else:
                 return None
-            img = img.convert("RGB").resize((S, S), Image.BICUBIC)
+            img = flatten_to_rgb(img).resize((S, S), Image.BICUBIC)
 
             import numpy as _np
             arr = _np.asarray(img, dtype=_np.float32) / 255.0  # [S,S,3] in [0,1]
@@ -5513,7 +5514,7 @@ class BaseTrainer(ABC):
         Returns:
             Latent tensor
         """
-        image = image.convert("RGB")
+        image = flatten_to_rgb(image)
 
         # Determine target dimensions
         if target_width is not None and target_height is not None:
@@ -11715,11 +11716,11 @@ class BaseTrainer(ABC):
                                     # modes that don't consume it first.
                                     _danb_b = item.get("_danbooru_image_bytes")
                                     if _danb_b is not None:
-                                        full_image = Image.open(BytesIO(_danb_b)).convert("RGB").resize(
+                                        full_image = flatten_to_rgb(Image.open(BytesIO(_danb_b))).resize(
                                             (width, height), Image.LANCZOS
                                         )
                                     else:
-                                        full_image = Image.open(image_path).convert("RGB").resize(
+                                        full_image = flatten_to_rgb(Image.open(image_path)).resize(
                                             (width, height), Image.LANCZOS
                                         )
                                     full_np = np.array(full_image)
@@ -11791,7 +11792,7 @@ class BaseTrainer(ABC):
                                 if reference_images:
                                     try:
                                         # Use first reference image only
-                                        cond_image = Image.open(reference_images[0]).convert("RGB")
+                                        cond_image = flatten_to_rgb(Image.open(reference_images[0]))
                                         # Resize to match target dimensions
                                         cond_image = cond_image.resize((width, height), Image.LANCZOS)
                                         # Convert to tensor [0, 1] range: [1, 3, H, W]
@@ -12252,7 +12253,7 @@ class BaseTrainer(ABC):
                                     ve_pos_list = []
                                     for _ref_path in ref_paths:
                                         if _ref_path is not None:
-                                            _pil = Image.open(_ref_path).convert("RGB")
+                                            _pil = flatten_to_rgb(Image.open(_ref_path))
                                             # with_grad=True keeps gradients flowing through VE for training;
                                             # with_grad=False (default) wraps in torch.no_grad() for inference.
                                             _ve_pos_i, _ = ve_obj.encode(

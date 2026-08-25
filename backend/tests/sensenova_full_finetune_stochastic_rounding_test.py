@@ -182,6 +182,8 @@ class _StubTrainer:
 
     setup_optimizer = BaseTrainer.setup_optimizer
     _report_effective_component_lrs = BaseTrainer._report_effective_component_lrs
+    _record_configured_group_lrs = BaseTrainer._record_configured_group_lrs
+    _name_configured_groups = BaseTrainer._name_configured_groups
     _build_component_lr_list = BaseTrainer._build_component_lr_list
     _resolved_optimizer_hyperparameters = BaseTrainer._resolved_optimizer_hyperparameters
     _ringbuffer_optimizer_kwargs = BaseTrainer._ringbuffer_optimizer_kwargs

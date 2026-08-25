@@ -80,7 +80,11 @@ def resolve_group_lrs(
     * a **scalar** -- broadcast to every group (the VAE trainer's single-group
       case), or
     * a **sequence** of per-group LRs, in optimizer param-group order
-      (``BaseTrainer._build_component_lr_list()`` -> ``[U-Net, TE1, TE2, VE]``).
+      (``BaseTrainer._configured_component_lr_description()``).
+
+    A scalar is broadcast, so callers with more than one param group must pass a
+    sequence: a scalar there assigns every component the same rate. That is what
+    ``BaseTrainer`` used to do whenever its component list came out empty.
 
     Length contract, matching what ``BaseTrainer`` did inline before this was
     hoisted:

@@ -44,18 +44,40 @@ the last line rather than the usual path.
 Do not write `getattr(trainer, "unet_lr", None) or 1e-4`: that idiom replaced a
 configured `0.0` with a literal, and the literal differed per adapter (1e-4,
 1e-5, 1e-6) so the same config trained at a different rate depending on the
-architecture. `BaseTrainer._build_component_lr_list` (which the resume LR
-re-assert writes back) resolves all seven of its entries the same way.
+architecture. `BaseTrainer._build_component_lr_list` resolves all seven of its
+entries the same way.
+
+### What a resume writes back
+
+`setup_optimizer` ends by calling `_record_configured_group_lrs`, which
+snapshots each live param group's BASE lr (`initial_lr`, since the scheduler
+may already have scaled `lr`) into `_configured_group_lrs`. That snapshot is
+the adapter's own description — group order and every per-component factor
+(`anima_*_lr_factor`, `lens_*_lr_factor`, `minit2i_lr_factor`, the REPA
+projector, the SDXL custom-TE bridge) included — so it cannot drift from what
+trains. `_reassert_config_lr_on_resume` writes it back index-for-index.
+
+`_build_component_lr_list` re-derives a description from trainer attributes
+instead. It is EMPTY on every DiT architecture (`self.unet is None`; only the
+SenseNova / ControlNet / VE branches fill it) and can be non-empty yet
+misaligned (a MiniT2I/Flux2/Z-Image run with `train_text_encoder` describes
+only `TE1` while group 0 is the transformer). It is now a fallback used only
+when it matches the group count, and both consumers refuse to write a
+description that does not: an unusable one emits
+`component_lr_resume_unavailable` and leaves the checkpoint's rates in place
+rather than broadcasting a scalar over every group. If a group carries a
+`"name"` key (Lens does), that name labels it in the log.
 
 `BaseTrainer._report_effective_component_lrs`, called last in
-`setup_optimizer`, warns on the training-log channel when a group ends up at
-lr=0 (`component_lr_zero`) or when `num_optimizer_groups > 0` rebuilt the
+`setup_optimizer`, warns on the training-log channel when a group's base rate
+is 0 (`component_lr_zero`) or when `num_optimizer_groups > 0` rebuilt the
 optimizers from a flat parameter list at the base LR and discarded the
-per-component rates (`component_lr_flattened`). Its index-wise
-`component_lr_mismatch` check is a consistency check between two producers of
-the same description, not an independent measurement, and it cannot run where
-`_build_component_lr_list` is empty (every DiT architecture); it prints a NOTE
-saying so instead of staying silent.
+per-component rates (`component_lr_flattened`). It compares base rates, not
+`group['lr']`, because a warmup lambda has already scaled the latter to 0.0 at
+step 0. Its index-wise `component_lr_mismatch` check is a consistency check
+between two producers of the same description, not an independent measurement,
+and it cannot run where `_build_component_lr_list` is empty (every DiT
+architecture); it prints a NOTE saying so instead of staying silent.
 
 ## Architecture
 

@@ -232,7 +232,7 @@ code appears only in the persisted array, never as a broadcast message.
 | `run_id` | int | training run id (same id space as `training_metrics`) |
 | `level` | string | `"info"`, `"warning"` or `"error"`. Only `warning`/`error` are persisted |
 | `message` | string | human-readable text; the same text the trainer wrote to its console |
-| `code` | string (optional) | stable identifier for the notice, for clients matching on something other than text. Absent when the emitter supplied none. Current codes: `sensenova_stochastic_rounding_forced`, `fp8_base_dtype_ignored`, `fused_gradient_accumulation_ignored`, `fused_grad_clipping_ignored`, `component_lr_mismatch`, `component_lr_zero`, `component_lr_flattened`, `training_event_cap_reached` |
+| `code` | string (optional) | stable identifier for the notice, for clients matching on something other than text. Absent when the emitter supplied none. Current codes: `sensenova_stochastic_rounding_forced`, `fp8_base_dtype_ignored`, `fused_gradient_accumulation_ignored`, `fused_grad_clipping_ignored`, `component_lr_mismatch`, `component_lr_zero`, `component_lr_flattened`, `component_lr_resume_unavailable`, `training_event_cap_reached` |
 
 ```json
 {

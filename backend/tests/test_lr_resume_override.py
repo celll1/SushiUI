@@ -552,6 +552,12 @@ class BaseTrainerResumeWiringTest(_LrAssertions):
         class _Stub:
             _build_component_lr_list = BaseTrainer._build_component_lr_list
             _reassert_config_lr_on_resume = BaseTrainer._reassert_config_lr_on_resume
+            _configured_component_lr_description = \
+                BaseTrainer._configured_component_lr_description
+            # No setup_optimizer ran here, so no snapshot exists: these stubs
+            # exercise the _build_component_lr_list fallback on purpose.
+            _configured_group_lrs = None
+            _configured_group_names = None
 
         cls.Stub = _Stub
 

@@ -3489,6 +3489,14 @@ class BaseTrainer(ABC):
         Build a (component_lrs, component_names) pair matching the actual optimizer
         param group order created by setup_trainable_parameters() + VE append.
 
+        Re-derived from trainer attributes, so it only describes the U-Net-based
+        architectures plus the SenseNova / ControlNet / VE special cases: it is
+        EMPTY on every DiT architecture, and can be non-empty yet misaligned
+        (train_text_encoder on Flux2/MiniT2I/Z-Image yields just ``TE1`` while
+        group 0 is the transformer). The resume path prefers the snapshot
+        ``_record_configured_group_lrs`` takes off the adapter's own groups and
+        uses this only when its length matches the live groups.
+
         Group ordering:
           - UNet (if train_unet)
           - TE1 (if train_text_encoder and text_encoder is not None)
@@ -3552,6 +3560,97 @@ class BaseTrainer(ABC):
 
         return lrs, names
 
+    # Recorded at the end of setup_optimizer; None means "never recorded".
+    _configured_group_lrs = None
+    _configured_group_names = None
+
+    def _record_configured_group_lrs(self, requested_group_lrs=None):
+        """Snapshot the BASE learning rate of every optimizer param group.
+
+        The adapter owns both the group order and the per-component factors
+        (``anima_*_lr_factor``, ``lens_*_lr_factor``, ``minit2i_lr_factor``, the
+        REPA projector, the SDXL custom-TE bridge), so each group's own LR is
+        the only description of the run's rates that cannot drift from what
+        trains. ``_build_component_lr_list`` re-derives one from trainer
+        attributes instead, and is EMPTY on every DiT architecture
+        (``self.unet is None``), which made a resume broadcast
+        ``learning_rate`` over every group.
+
+        Base, not current: the scheduler already exists by the time this runs
+        and a warmup lambda has scaled ``group['lr']`` (to 0.0 at step 0).
+        """
+        self._configured_group_lrs = None
+        self._configured_group_names = None
+
+        optimizer = getattr(self, "optimizer", None)
+        groups = list(getattr(optimizer, "param_groups", []) or []) if optimizer else []
+        if not groups:
+            return
+
+        fused = getattr(self, "fused_optimizer_groups", None)
+        flattened = bool(fused and getattr(fused, "optimizers", None))
+        requested = list(requested_group_lrs or [])
+
+        if (not flattened and len(requested) == len(groups)
+                and all(v is not None for v in requested)):
+            lrs = [float(v) for v in requested]
+        else:
+            # A fused path rebuilt the optimizer: read each live group's base.
+            lrs = []
+            for group in groups:
+                base = group.get("initial_lr", group.get("lr"))
+                if base is None:
+                    return
+                lrs.append(float(base))
+
+        self._configured_group_lrs = lrs
+        self._configured_group_names = self._name_configured_groups(groups, lrs)
+
+    def _name_configured_groups(self, groups, lrs):
+        """Per-group labels for the log lines, best available source first."""
+        names = [g.get("name") for g in groups]
+        if all(names):
+            return [str(n) for n in names]
+        try:
+            legacy_lrs, legacy_names = self._build_component_lr_list()
+        except Exception:
+            legacy_lrs, legacy_names = [], []
+        if (len(legacy_lrs) == len(groups)
+                and all(math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=0.0)
+                        for a, b in zip(legacy_lrs, lrs))):
+            return list(legacy_names)
+        return [str(g.get("name") or f"group{i}") for i, g in enumerate(groups)]
+
+    def _configured_component_lr_description(self, n_groups):
+        """``(lrs, names, source)`` for ``n_groups`` groups, or ``([], [], reason)``.
+
+        Never returns a description that does not correspond index-for-index to
+        the live param groups: both consumers write BY INDEX, so a list of the
+        wrong length -- or a scalar broadcast over the groups -- assigns some
+        component another component's rate.
+        """
+        snapshot = getattr(self, "_configured_group_lrs", None)
+        if snapshot and len(snapshot) == n_groups:
+            names = list(getattr(self, "_configured_group_names", None) or [])
+            return list(snapshot), names, "the optimizer's own param groups"
+
+        try:
+            lrs, names = self._build_component_lr_list()
+        except Exception:
+            lrs, names = [], []
+        if lrs and len(lrs) == n_groups:
+            return list(lrs), list(names), "_build_component_lr_list"
+
+        if n_groups == 1:
+            # Unambiguous: one group, one configured rate, no index to get wrong.
+            return [float(self.learning_rate)], ["group0"], "the run's learning_rate"
+
+        return [], [], (
+            f"no per-group description is available: the optimizer snapshot holds "
+            f"{len(snapshot or [])} rate(s) and _build_component_lr_list describes "
+            f"{len(lrs)} ({names}), against {n_groups} live param group(s)"
+        )
+
     def _report_effective_component_lrs(self, requested_group_lrs=None):
         """The rate each optimizer group ends up training at, and what changed it.
 
@@ -3577,7 +3676,10 @@ class BaseTrainer(ABC):
         fused = getattr(self, 'fused_optimizer_groups', None)
         fused_optimizers = list(getattr(fused, 'optimizers', []) or []) if fused else []
         groups = [g for o in (fused_optimizers or [optimizer]) for g in o.param_groups]
-        effective = [g.get('lr') for g in groups]
+        # BASE rates, not the schedule-scaled current ones: the scheduler is
+        # built before this runs, and a warmup lambda makes group['lr'] 0.0 at
+        # step 0 -- which read as both a mismatch and a dead group.
+        effective = [g.get('initial_lr', g.get('lr')) for g in groups]
 
         if fused_optimizers and requested_group_lrs and len(set(requested_group_lrs)) > 1:
             emit_training_warning(
@@ -3597,12 +3699,12 @@ class BaseTrainer(ABC):
             component_lrs, component_names = self._build_component_lr_list()
             aligned = len(component_lrs) == len(groups)
             for i, group in enumerate(groups):
-                if not aligned or group.get('lr') is None:
+                if not aligned or effective[i] is None:
                     continue
-                if not math.isclose(float(group['lr']), float(component_lrs[i]),
+                if not math.isclose(float(effective[i]), float(component_lrs[i]),
                                     rel_tol=1e-9, abs_tol=0.0):
                     emit_training_warning(
-                        f"{component_names[i]} trains at lr={group['lr']!r}, but the "
+                        f"{component_names[i]} trains at lr={effective[i]!r}, but the "
                         f"configured learning rate for it is {component_lrs[i]!r}. The "
                         f"optimizer group wins until the next resume, which rewrites it "
                         f"to the configured value.",
@@ -3619,7 +3721,7 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} NOTE: per-component LR verification did not run: {e}")
 
         for i, group in enumerate(groups):
-            if group.get('lr') is not None and float(group['lr']) == 0.0 and group.get('params'):
+            if effective[i] is not None and float(effective[i]) == 0.0 and group.get('params'):
                 label = component_names[i] if aligned else f"Optimizer group {i}"
                 emit_training_warning(
                     f"{label} is in the optimizer with lr=0: its "
@@ -3643,19 +3745,44 @@ class BaseTrainer(ABC):
         un-multiplied base LR (unbounded error mid-warmup, 1/floor_ratio in a
         plateau_cosine_floor decay tail). See core/training/lr_utils.py.
 
-        Groups the component list does not cover fall back to
-        ``self.learning_rate``, exactly as the previous inline code did.
+        The description comes from ``_configured_component_lr_description``,
+        which only ever returns one that corresponds index-for-index to the live
+        param groups. Passing a SCALAR here instead broadcasts it over every
+        group (``lr_utils.resolve_group_lrs``), which is why an unusable
+        description refuses to write rather than falling back to one: on a
+        3-group Anima full FT it turned [2e-5, 4e-5, 1e-5] into
+        [1e-4, 1e-4, 1e-4].
         """
         if not hasattr(self, 'optimizer') or self.optimizer is None:
             return
 
-        component_lrs, component_names = self._build_component_lr_list()
-        lr_scheduler = getattr(self, 'lr_scheduler', None)
+        groups = list(getattr(self.optimizer, 'param_groups', []) or [])
+        if not groups:
+            return
+
+        component_lrs, component_names, source = \
+            self._configured_component_lr_description(len(groups))
+
+        if not component_lrs:
+            emit_training_warning(
+                f"the configured learning rates were NOT re-asserted on this resume: "
+                f"{source}. Writing by index with a description that does not match the "
+                f"groups would give components each other's rates, so every group keeps "
+                f"the rate its checkpoint carried -- which is correct unless the config's "
+                f"lr/unet_lr/text_encoder_lr was edited since that checkpoint, in which "
+                f"case the edit has not taken effect.",
+                code="component_lr_resume_unavailable",
+                prefix=self.log_prefix,
+            )
+            return
+
+        print(f"{self.log_prefix} LR re-assertion: {len(component_lrs)} configured rate(s) "
+              f"for {len(groups)} param group(s), described by {source}")
 
         reassert_config_lr(
             self.optimizer,
-            lr_scheduler,
-            component_lrs if component_lrs else self.learning_rate,
+            getattr(self, 'lr_scheduler', None),
+            component_lrs,
             log_prefix=self.log_prefix,
             component_names=component_names,
             fallback_lr=self.learning_rate,
@@ -4138,6 +4265,7 @@ class BaseTrainer(ABC):
         self._attach_stochastic_rounding(optimizer_type)
 
         # After every path that can replace the optimizer or its LRs.
+        self._record_configured_group_lrs(requested_group_lrs)
         self._report_effective_component_lrs(requested_group_lrs)
 
         if getattr(self, "is_sensenova", False) and is_full_finetune(self):
@@ -9701,8 +9829,8 @@ class BaseTrainer(ABC):
                     # Re-assert the YAML config's LR over whatever the resume
                     # restored (needed when the user edits LR before resuming),
                     # AT the schedule's current position -- see lr_utils. The
-                    # component LR list matches the optimizer group order:
-                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
+                    # per-group rates come from the snapshot setup_optimizer
+                    # recorded off the adapter's own param groups.
                     self._reassert_config_lr_on_resume()
 
                     # Restore EMA shadow (no-op unless use_ema; re-inits from

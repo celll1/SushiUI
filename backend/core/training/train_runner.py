@@ -152,7 +152,20 @@ def _apply_sensenova_training_contract(
     train_config: Dict[str, Any],
     process_config: Dict[str, Any],
 ) -> bool:
-    """Validate the initial SenseNova B1 LoRA-only training envelope."""
+    """Validate the SenseNova B1 training envelope, per training method.
+
+    ``lora`` and ``full_finetune`` are the two accepted methods. Everything else
+    is refused BY NAME rather than by falling through: this check is the only
+    thing that ever refused a SenseNova ControlNet run (that method has a
+    ``TRAINING_UNSUPPORTED`` entry but no trainer-side guard reading it, unlike
+    ReLoRA's ``_refuse_unsupported_relora``), so accepting whatever is not LoRA
+    would open it.
+
+    Full fine-tuning adds the clauses of its memory budget that are knowable
+    from the config alone (SENSENOVA_TRAINING_DESIGN.md 6.2/6.4); the rest are
+    checked by ``ops.sensenova_ops.assert_full_finetune_contract``, still before
+    the 17.6 GiB load.
+    """
     if network_type == "vae_decoder":
         return False
     try:
@@ -163,14 +176,21 @@ def _apply_sensenova_training_contract(
         is_sensenova = "sensenova" in lowered or "sense-nova" in lowered
     if not is_sensenova:
         return False
-    if network_type != "lora":
-        raise ValueError("SenseNova training currently supports network.type='lora' only")
+    if network_type not in ("lora", "full_finetune"):
+        raise ValueError(
+            f"SenseNova training supports network.type='lora' and "
+            f"network.type='full_finetune', not '{network_type}'"
+        )
+    is_full_finetune = network_type == "full_finetune"
     batch_size = _normalize_sensenova_integer(train_config, "batch_size", 1)
     if batch_size != 1:
         raise ValueError(
-            "SenseNova training requires batch_size=1; use "
-            "gradient_accumulation_steps for a larger effective batch"
+            "SenseNova training requires batch_size=1"
+            + ("" if is_full_finetune else
+               "; use gradient_accumulation_steps for a larger effective batch")
         )
+    if is_full_finetune:
+        _apply_sensenova_full_finetune_contract(train_config)
     blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
     if blocks_to_swap != 0:
         raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
@@ -222,6 +242,82 @@ def _apply_sensenova_training_contract(
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"
     return True
+
+
+def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> None:
+    """The full-fine-tune clauses that are decidable from the config alone.
+
+    Duplicating nothing: each clause below is checked again inside the trainer
+    (``assert_full_finetune_contract`` before the load,
+    ``BaseTrainer.train`` from its own arguments). What this adds is the point
+    at which it is checked -- here the run has not yet imported torch or read
+    the checkpoint, and the message reaches the user as a run failure rather
+    than as an exception raised minutes in.
+
+    ``weight_dtype``/``training_dtype`` are NOT checked here: the full-finetune
+    dispatch below forces both to bf16 for this architecture via
+    ``_is_bf16_native_base_model``, so a config value is not what the trainer
+    will see.
+    """
+    accumulation = _normalize_sensenova_integer(
+        train_config, "gradient_accumulation_steps", 1
+    )
+    if accumulation != 1:
+        raise ValueError(
+            f"SenseNova full fine-tuning requires gradient_accumulation_steps=1, "
+            f"got {accumulation}. Its updates are applied per parameter during "
+            f"backward and each gradient is freed as it is applied, so no "
+            f"gradient survives to be summed across backward passes. Physical "
+            f"batch 1 with no accumulation is what this route trains; LoRA "
+            f"training on this architecture does support accumulation."
+        )
+    groups = _normalize_sensenova_integer(train_config, "num_optimizer_groups", 0)
+    if groups != 0:
+        raise ValueError(
+            f"SenseNova full fine-tuning requires num_optimizer_groups=0, got "
+            f"{groups}. Fused optimizer groups replace the per-parameter hooks "
+            f"this route's memory budget depends on with a batched "
+            f"optimizer.step(), and they are only ever set up under Block Swap, "
+            f"which this architecture does not implement."
+        )
+    if _normalize_sensenova_bool(train_config, "use_ema", False):
+        raise ValueError(
+            "SenseNova full fine-tuning does not support use_ema: the EMA update "
+            "is attached to the single optimizer.step() call site, which this "
+            "route never reaches, so the shadow would silently never update."
+        )
+    from api.param_defaults import (
+        SENSENOVA_FULL_FINETUNE_SAVE_FORMATS, TRAINING_DEFAULTS,
+    )
+    from core.training.ops.sensenova_ops import SENSENOVA_FULL_FINETUNE_OPTIMIZERS
+
+    optimizer = train_config.get("optimizer")
+    if optimizer is not None:
+        name = str(optimizer).strip().lower()
+        if name not in SENSENOVA_FULL_FINETUNE_OPTIMIZERS:
+            raise ValueError(
+                f"SenseNova full fine-tuning does not support optimizer='{name}'. "
+                f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)}. Each "
+                f"update is applied from that parameter's own "
+                f"post-accumulate-grad hook, so the optimizer needs a "
+                f"per-parameter seam and state small enough to sit beside the "
+                f"dequantized bf16 half."
+            )
+    # Refused here rather than at the first save: the adapter resolves this
+    # value only when it writes, and save_every defaults to 100 steps, so an
+    # unknown format authored in a hand-written YAML would take the run down
+    # after it had already trained (SENSENOVA_TRAINING_DESIGN.md 6.4). The API
+    # constrains the field to a Literal, so only that path can reach it.
+    save_format = str(train_config.get(
+        "sensenova_full_finetune_save_format",
+        TRAINING_DEFAULTS["sensenova_full_finetune_save_format"],
+    )).strip().lower()
+    if save_format not in SENSENOVA_FULL_FINETUNE_SAVE_FORMATS:
+        raise ValueError(
+            f"Unknown sensenova_full_finetune_save_format {save_format!r}. "
+            f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_SAVE_FORMATS)}."
+        )
+    train_config["sensenova_full_finetune_save_format"] = save_format
 
 
 def _normalize_sensenova_integer(
@@ -2795,7 +2891,12 @@ def main():
             text_encoder_2_lr = train_config.get('text_encoder_2_lr')
             image_encoder_lr = train_config.get('image_encoder_lr')
 
-            # Training scope control
+            # train_unet was NOT read here, so the constructor default (True)
+            # won every run even though `_build_train_section` always emits the
+            # key. On SenseNova the two flags ARE the two MoT halves, so
+            # train_unet=False + train_text_encoder=True asked for one half and
+            # dequantized both.
+            train_unet = train_config.get('train_unet', True)
             train_text_encoder = train_config.get('train_text_encoder', False)
             train_image_encoder = train_config.get('train_image_encoder', False)
 
@@ -2879,6 +2980,7 @@ def main():
                 text_encoder_2_lr=text_encoder_2_lr,
                 image_encoder_lr=image_encoder_lr,
                 # Training scope control
+                train_unet=train_unet,
                 train_text_encoder=train_text_encoder,
                 train_image_encoder=train_image_encoder,
                 # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)

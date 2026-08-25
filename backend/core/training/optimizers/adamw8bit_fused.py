@@ -23,6 +23,7 @@ from .stochastic_rounding import (
     fp32_master_update,
     should_use_stochastic_rounding,
 )
+from .update_census import record_param_update
 
 _INDEX_ATTR = "_sushiui_bnb_param_index"
 
@@ -99,6 +100,10 @@ def adamw8bit_step_param(self, p, group):
             _bnb_update(self, p, group)
     else:
         _bnb_update(self, p, group)
+
+    # See adafactor_fused: setup_update_census arms the census for every
+    # fused-backward optimizer, so every one of them has to report.
+    record_param_update(self, p)
 
 
 # Tells attach_stochastic_rounding() not to interpose on this function: it

@@ -293,6 +293,11 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         # Config channel only; setup_optimizer re-checks with the real name.
         assert_full_finetune_contract(trainer)
+        # Resolved now rather than at the first save: save_every defaults to 100
+        # steps, so an unknown format would take the run down after it had
+        # already trained. train_runner refuses it earlier still; this covers a
+        # trainer built directly.
+        self._resolve_save_format()
         branch, targets = self._resolve_scope()
         # Every branch, not just the understanding ones: load_components stamps
         # train() on the whole decoder, and the prefix the loss is conditioned on
@@ -426,6 +431,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             branch=branch,
             save_format=save_format,
             config=getattr(trainer, "sensenova_model_config", None),
+            raw_config=getattr(trainer, "sensenova_config_dict", None),
             source_dir=source_dir,
             extra_metadata={"step": str(step), "epoch": str(epoch)},
         )

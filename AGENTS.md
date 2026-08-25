@@ -10,8 +10,12 @@ list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` (13 entries — every generation
 architecture except MiniMax Music 3). SenseNova U1.5 supports LoRA (generation
-branch, plus the understanding branch when `train_text_encoder` is set) and
-reference-conditioned datasets; full-parameter training is still refused. See
+branch, plus the understanding branch when `train_text_encoder` is set),
+reference-conditioned datasets, and — since U-2-2 step 3 — **full-parameter
+training of the generation half**, under a per-run contract that is not
+negotiable (adafactor only, bf16, batch 1, no gradient accumulation, no EMA,
+`blocks_to_swap=0`) and refused before the model loads. `relora` and
+`controlnet` are still refused for it. See
 `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
 implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
 for the remaining training-out-of-scope architecture.

@@ -129,8 +129,10 @@ def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
         ({"batch_size": 2}, "lora", "batch_size=1"),
         ({"batch_size": 1, "blocks_to_swap": 1}, "lora", "blocks_to_swap"),
         ({"batch_size": 1, "blocks_to_swap": -1}, "lora", "blocks_to_swap"),
-        ({"batch_size": 1}, "full_finetune", "lora"),
-        ({"batch_size": 1}, "relora", "lora"),
+        # full_finetune is ACCEPTED now (U-2-2 step 3); relora and controlnet
+        # are not, and are refused by name rather than by "not lora".
+        ({"batch_size": 1}, "relora", "not 'relora'"),
+        ({"batch_size": 1}, "controlnet", "not 'controlnet'"),
     ],
 )
 def test_runner_rejects_outside_initial_contract(train, network, message):
@@ -562,10 +564,13 @@ def test_sensenova_prefix_reaches_minimal_batch_oom_path():
     assert seen == [prefix]
 
 
-def test_full_finetune_refuses_before_loading():
+def test_full_finetune_is_no_longer_refused_before_loading():
+    """U-2-2 step 3: the pre-load capability refusal is gone for this arch.
+
+    ReLoRA's is checked below and must NOT have moved with it.
+    """
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
-        with pytest.raises(ValueError, match="Use training_method='lora'"):
-            FullParameterTrainer._refuse_unsupported_full_finetune("model")
+        FullParameterTrainer._refuse_unsupported_full_finetune("model")
 
 
 def test_relora_refuses_before_loading_with_the_capability_table_reason():

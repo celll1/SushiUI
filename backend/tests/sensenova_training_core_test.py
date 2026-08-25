@@ -162,6 +162,38 @@ def test_quantized_training_base_refuses_mixed_and_off_count_census():
         _assert_supported_quantized_training_base(_Transformer())
 
 
+def test_quantized_training_base_is_method_aware_about_convrot():
+    """Full FT dequantizes the trainable half, which a ConvRot base cannot serve."""
+    plain = _attach_plain_int8(_Transformer())
+    convrot = _attach_convrot_int8(_Transformer())
+
+    # LoRA: both flavours stay accepted, explicitly and by default.
+    _assert_supported_quantized_training_base(plain, training_method="lora")
+    _assert_supported_quantized_training_base(convrot, training_method="lora")
+    _assert_supported_quantized_training_base(convrot)
+
+    _assert_supported_quantized_training_base(plain, training_method="full")
+    with pytest.raises(RuntimeError, match="training_method='full_finetune'") as refusal:
+        _assert_supported_quantized_training_base(convrot, training_method="full")
+    assert "ConvRotInt8Linear=588" in str(refusal.value)
+    assert "Hadamard rotation" in str(refusal.value)
+
+
+def test_quantized_training_base_refuses_a_bf16_base_for_either_method():
+    bf16_base = _Transformer()
+    with pytest.raises(RuntimeError, match="bf16 base"):
+        _assert_supported_quantized_training_base(bf16_base)
+    with pytest.raises(RuntimeError, match="unquantized bf16 base is refused"):
+        _assert_supported_quantized_training_base(bf16_base, training_method="full")
+
+
+def test_quantized_training_base_refuses_a_mixed_base_for_full_finetune():
+    mixed = _attach_plain_int8(_Transformer(), count=587)
+    mixed.quantized_linears.append(_convrot_linear())
+    with pytest.raises(RuntimeError, match="Int8Linear=587, ConvRotInt8Linear=1"):
+        _assert_supported_quantized_training_base(mixed, training_method="full")
+
+
 def test_quantized_training_base_refuses_unknown_quantized_subclass():
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
 

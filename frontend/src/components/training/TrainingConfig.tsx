@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, archDisplayName } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, archDisplayName } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -86,6 +86,17 @@ const OPTIMIZER_CONFIGS: Record<string, {
   }
 };
 
+// A control whose value the backend's capability matrix FIXES for the selected
+// architecture and training method (`training_required_values`). Rendered under
+// the pinned control so the value and the backend's reason for it are visible
+// before submit rather than in a run-failed message afterwards.
+const RequiredValueNote = ({ entry }: { entry?: TrainingRequiredValue }) =>
+  entry ? (
+    <p className="text-xs text-amber-400 mt-1">
+      Fixed at {String(entry.value)} for this architecture and training method: {entry.reason}
+    </p>
+  ) : null;
+
 // ============================================================
 // Single-state migration (Phase 3a foundation)
 // ============================================================
@@ -101,7 +112,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // where useState(10) guaranteed the value was always present.
   // getRequestData() strips one of them based on `useEpochs`.
   epochs: 10,
-  batch_size: 4,
+  // Mirrors TRAINING_DEFAULTS["batch_size"]; overwritten by /schema/training-defaults
+  // on startup, so this literal is the no-backend fallback.
+  batch_size: 1,
   gradient_accumulation_steps: 1,
   max_grad_norm: 1.0,
   learning_rate: 1e-5,
@@ -299,7 +312,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Single-state form (Phase 3a–3m complete)
   // ============================================================
   // All top-level TrainingRunCreateRequest fields live in `params`.
-  // UI inputs read via const aliases (e.g. `const batchSize = params.batch_size ?? 4`)
+  // UI inputs read via const aliases (e.g. `const batchSize = params.batch_size ?? 1`)
   // and write via `updateParam("batch_size", v)`.
   //
   // Remaining useState declarations are strictly for:
@@ -424,7 +437,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Convenience read-only aliases into params (used by existing UI code)
   const totalSteps = params.total_steps ?? 1000;
   const epochs = params.epochs ?? 10;
-  const batchSize = params.batch_size ?? 4;
+  const batchSize = params.batch_size ?? 1;
   const learningRate = localLrText;
   const lrScheduler = params.lr_scheduler ?? "constant";
   const lrWarmupSteps = params.lr_warmup_steps ?? 0;
@@ -692,6 +705,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
+
+  // FOURTH capability axis: config values this base model REQUIRES under the
+  // selected method (SenseNova's full-fine-tune contract fixes the optimizer;
+  // every SenseNova run is batch 1). The backend refuses a run that violates
+  // one, before the model loads, so the controls below are pinned to the value
+  // rather than offering a default the run would be rejected for. Derived from
+  // arch + method, so switching either unpins whatever is no longer required.
+  const baseModelArch = getModelArchitecture(baseModelPath) ?? "";
+  const requiredValues = useMemo(
+    () => trainingRequiredValues(archCapabilities, baseModelArch, trainingMethod),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [archCapabilities, baseModelPath, trainingMethod, availableModels]
+  );
+  const requiredValue = (param: string): TrainingRequiredValue | undefined =>
+    requiredValues[param];
+  // param -> the value it held before this component pinned it, so the banner
+  // names what was replaced instead of just saying something was.
+  const [contractAdjusted, setContractAdjusted] = useState<Record<string, string>>({});
+  // Identity of the requirement set the record above belongs to; a new arch or
+  // method starts a new record rather than accumulating across contracts.
+  const pinnedForRef = useRef<Record<string, TrainingRequiredValue> | null>(null);
 
   // MiniMax-H3 is the only architecture that reads audio_loss_weight (the only
   // one whose packed training sequence carries audio rows), so its control is
@@ -1411,6 +1445,43 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [baseModelPath, trainingMethod, archCapabilities, availableModels,
       blockSwapUnsupported, fusedGroupsUnsupported, referenceImagesUnsupported,
       textEncoderTrainingUnsupported, trainingSamplesUnsupported]);
+
+  // Keep the pinned parameters at their required values, and record what was
+  // replaced. Recorded rather than applied silently: the backend refuses (or
+  // overwrites) either way, so the choice is between an explained adjustment
+  // here and a rejection after submit — not between adjusting and honouring the
+  // user's value.
+  //
+  // Converges on VALUE drift, not on arch/method identity. A preset, a
+  // copy-from-run, or the startup `trainingDefaults` replacement writes these
+  // params without touching arch or method, and an identity-keyed effect would
+  // leave the violating value parked inside a control this form has disabled —
+  // unreachable except by toggling the method radio. No loop: `contractAdjusted`
+  // is not a dependency, and once the values match the body changes nothing.
+  //
+  // Skipped while restoring a run from YAML: that run's own config wins, and a
+  // config that violates the contract must be seen as-is.
+  useEffect(() => {
+    if (restoringFromYAMLRef.current) return;
+    const startsNewContract = pinnedForRef.current !== requiredValues;
+    pinnedForRef.current = requiredValues;
+    const changed = Object.entries(requiredValues)
+      .filter(([param, entry]) => (params as any)[param] !== entry.value);
+    for (const [param, entry] of changed) {
+      updateParam(param as keyof TrainingRunCreateRequest, entry.value as any);
+    }
+    setContractAdjusted((prev) => {
+      const next = startsNewContract ? {} : { ...prev };
+      for (const [param] of changed) {
+        next[param] = String((params as any)[param]);
+      }
+      const keys = Object.keys(next);
+      const unchanged = keys.length === Object.keys(prev).length
+        && keys.every((key) => prev[key] === next[key]);
+      return unchanged ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requiredValues, params]);
 
 
   // Reset optimizer hyperparameters when optimizer changes
@@ -2398,6 +2469,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               );
             })()}
           </div>
+
+          {/* The contract this architecture + method runs under, and what this
+              form had to change to meet it. Shown here because the method radio
+              above is what selects the contract. */}
+          {Object.keys(requiredValues).length > 0 && (
+            <div className="mt-2 p-2 border border-amber-700/60 bg-amber-950/30 rounded text-xs space-y-1">
+              <p className="text-amber-300">
+                {archDisplayName(archCapabilities, baseModelArch)} requires
+                these settings for {trainingMethod === "full_finetune" ? "full fine-tuning" : trainingMethod}:
+              </p>
+              <ul className="list-disc list-inside text-gray-300">
+                {Object.entries(requiredValues).map(([param, entry]) => (
+                  <li key={param}>
+                    <span className="text-gray-200">{param} = {String(entry.value)}</span>
+                    {contractAdjusted[param] !== undefined && (
+                      <span className="text-amber-400"> (changed from {contractAdjusted[param]})</span>
+                    )}
+                    <span className="text-gray-500"> — {entry.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Base Model */}
@@ -3118,10 +3212,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={batchSize}
-                onChange={(e) => updateParam("batch_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("batch_size", 4); }}
+                onChange={(e) => updateParam("batch_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("batch_size", requiredValue("batch_size") ? Number(requiredValue("batch_size")!.value) : 1); }}
                 min="1"
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                disabled={!!requiredValue("batch_size")}
+                title={requiredValue("batch_size")?.reason}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
               />
+              <RequiredValueNote entry={requiredValue("batch_size")} />
             </div>
 
             <div>
@@ -3131,8 +3228,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={params.gradient_accumulation_steps ?? 1}
                 onChange={(e) => updateParam("gradient_accumulation_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value)) || parseInt(e.target.value) < 1) updateParam("gradient_accumulation_steps", 1); }}
                 min="1"
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                disabled={!!requiredValue("gradient_accumulation_steps")}
+                title={requiredValue("gradient_accumulation_steps")?.reason}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
               />
+              <RequiredValueNote entry={requiredValue("gradient_accumulation_steps")} />
               <p className="text-xs text-gray-500 mt-1">Effective batch = Batch Size × this. Reduces gradient noise without extra VRAM.</p>
             </div>
 
@@ -3733,12 +3833,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="use-ema"
                   checked={useEma}
                   onChange={(e) => updateParam("use_ema", e.target.checked)}
-                  className="w-4 h-4"
+                  disabled={!!requiredValue("use_ema")}
+                  title={requiredValue("use_ema")?.reason}
+                  className="w-4 h-4 disabled:opacity-60"
                 />
                 <label htmlFor="use-ema" className="text-xs text-gray-300 cursor-pointer">
                   Weight EMA
                 </label>
               </div>
+              <RequiredValueNote entry={requiredValue("use_ema")} />
               <p className="text-xs text-gray-500">
                 Maintains an exponential moving average of the trained weights and saves it
                 as a separate, loadable checkpoint alongside each normal checkpoint
@@ -3794,15 +3897,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <select
                   value={optimizer}
                   onChange={(e) => updateParam("optimizer", e.target.value)}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  disabled={!!requiredValue("optimizer")}
+                  title={requiredValue("optimizer")?.reason}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
                 >
+                  {/* Narrowed to the required one when the backend fixes it, so
+                      the list never offers a value the run is refused for. */}
+                  {requiredValue("optimizer") ? (
+                    <option value={String(requiredValue("optimizer")!.value)}>
+                      {OPTIMIZER_CONFIGS[String(requiredValue("optimizer")!.value)]?.label
+                       ?? String(requiredValue("optimizer")!.value)}
+                    </option>
+                  ) : (
+                    <>
                   <option value="adamw">AdamW</option>
                   <option value="adamw8bit">AdamW 8-bit</option>
                   <option value="adamw8bit_ringbuffer">AdamW 8-bit Ring Buffer</option>
                   <option value="lion8bit">Lion 8-bit</option>
                   <option value="lion8bit_ringbuffer">Lion 8-bit Ring Buffer</option>
                   <option value="adafactor">Adafactor</option>
+                    </>
+                  )}
                 </select>
+                <RequiredValueNote entry={requiredValue("optimizer")} />
                 <p className="text-xs text-gray-500 mt-1">
                   {optimizer === "adafactor" && "Adaptive learning rate"}
                   {optimizer === "lion8bit" && "Sign-based momentum, 8-bit quantization"}
@@ -4027,13 +4144,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {/* Train toggles in 2 columns */}
             <div className="grid grid-cols-2 gap-3 mb-2">
               {/* Train U-Net */}
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2" title={requiredValue("train_unet")?.reason}>
                 <input
                   type="checkbox"
                   id="train-unet"
                   checked={trainUnet}
                   onChange={(e) => updateParam("train_unet", e.target.checked)}
-                  className="w-4 h-4"
+                  disabled={!!requiredValue("train_unet")}
+                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
                   Train U-Net
@@ -5215,13 +5333,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <select
               value={textEncodingMode}
               onChange={(e) => updateParam("text_encoding_mode", e.target.value)}
-              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              disabled={!!requiredValue("text_encoding_mode")}
+              title={requiredValue("text_encoding_mode")?.reason}
+              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
             >
               <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
               <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
               <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
               <option value="cpu_prefetch">CPU Prefetch (background thread; TE pinned to CPU)</option>
             </select>
+            <RequiredValueNote entry={requiredValue("text_encoding_mode")} />
           </div>
 
           {textEncodingMode === "cpu_prefetch" && (
@@ -5615,12 +5736,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <select
               value={latentEncodingMode}
               onChange={(e) => updateParam("latent_encoding_mode", e.target.value)}
-              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              disabled={!!requiredValue("latent_encoding_mode")}
+              title={requiredValue("latent_encoding_mode")?.reason}
+              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
             >
               <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
               <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
               <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
             </select>
+            <RequiredValueNote entry={requiredValue("latent_encoding_mode")} />
           </div>
 
           {latentEncodingMode === "swap_onthefly" && (

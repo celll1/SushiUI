@@ -191,6 +191,18 @@ def _apply_sensenova_training_contract(
         )
     if is_full_finetune:
         _apply_sensenova_full_finetune_contract(train_config)
+    elif not _normalize_sensenova_bool(train_config, "train_unet", True):
+        # LoRA only. Under full fine-tuning the understanding half alone is a
+        # branch resolve_full_finetune_branch names ("und"); under LoRA it is
+        # not an artefact -- SenseNovaLoRAAdapter.save_checkpoint refuses a
+        # generation-free file, so the run would train to its first save (100
+        # steps by default) and die there.
+        raise ValueError(
+            "SenseNova LoRA requires train_unet=True: inference applies both MoT "
+            "branches from one file, so an understanding-only LoRA has no "
+            "consumer and is refused when it is saved. Set train_text_encoder to "
+            "add the understanding half alongside the generation one."
+        )
     blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
     if blocks_to_swap != 0:
         raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
@@ -478,6 +490,74 @@ def _warn_on_sensenova_timestep_sampling(
     return True
 
 
+# train_config keys that each turn ON one trainable component. `train_unet`
+# defaults True; the rest default False.
+_TRAINING_SCOPE_FLAGS = (
+    "train_unet", "train_text_encoder", "train_image_encoder",
+)
+
+
+def _normalize_scope_flag(
+    train_config: Dict[str, Any], key: str, default: bool
+) -> bool:
+    """Read one scope flag without Python truthiness, and write the bool back.
+
+    A hand-written YAML ``train_unet: "false"`` is a non-empty string: it would
+    pass this guard AND read as trainable in the trainer. The API types these as
+    booleans, so only that path can produce one. Normalizing in place means the
+    trainer receives what the config meant, not what it happened to be truthy as.
+    """
+    value = train_config.get(key, default)
+    if value is None:
+        normalized = default          # an explicit YAML `null` means "unset"
+    elif isinstance(value, bool):
+        normalized = value
+    elif isinstance(value, int) and value in (0, 1):
+        normalized = bool(value)
+    elif isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0"):
+        normalized = value.strip().lower() in ("true", "1")
+    else:
+        raise ValueError(
+            f"Training config {key} must be a boolean, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    train_config[key] = normalized
+    return normalized
+
+
+def _assert_training_scope_is_nonempty(
+    network_type: str, train_config: Dict[str, Any]
+) -> None:
+    """Refuse a run that would train nothing, from the config and before the load.
+
+    Architecture-independent. SenseNova names this case itself
+    (``resolve_full_finetune_branch``), but sd15/sdxl/krea2 collect no parameters
+    and hand the optimizer an empty list minutes later, with the checkpoint
+    already resident.
+
+    Only the three methods that read the flags are checked: ControlNet trains its
+    own module with ``train_unet=False`` by construction, and ``vae_decoder`` has
+    no such flags at all.
+    """
+    if network_type not in ("lora", "relora", "full_finetune"):
+        return
+    on = [name for name in _TRAINING_SCOPE_FLAGS
+          if _normalize_scope_flag(train_config, name, name == "train_unet")]
+    # A trained vision encoder is a fourth component, and the only one that is
+    # not one of the flags above (it needs its weights named too).
+    if _normalize_scope_flag(train_config, "train_vision_encoder", False) \
+            and train_config.get("vision_encoder_path"):
+        on.append("train_vision_encoder")
+    if on:
+        return
+    raise ValueError(
+        f"This {network_type} run has nothing to train: "
+        + ", ".join(f"{name}=false" for name in _TRAINING_SCOPE_FLAGS)
+        + ". Set at least one of them (or train_vision_encoder together with "
+        "vision_encoder_path)."
+    )
+
+
 def _prepare_training_process_config(
     config: Dict[str, Any], base_model_path: str
 ):
@@ -486,6 +566,7 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    _assert_training_scope_is_nonempty(network_type, train_config)
     _apply_sensenova_training_contract(
         base_model_path, network_type, train_config, process_config
     )
@@ -2064,7 +2145,12 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
-            # Training scope control
+            # Training scope control. `train_unet` reaches the trainer here for
+            # the same reason it does on the full-FT path: without it the
+            # constructor default (True) always won and the UI checkbox was
+            # inert. LoRATrainer._apply_lora gates injection on it for every
+            # architecture, so a text-encoder-only LoRA is what False means.
+            train_unet = train_config.get('train_unet', True)
             train_text_encoder = train_config.get('train_text_encoder', False)
 
             # Initialize trainer
@@ -2110,6 +2196,7 @@ def main():
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,
                 # Training scope control
+                train_unet=train_unet,
                 train_text_encoder=train_text_encoder,
                 # Full YAML train_config — must reach BaseTrainer.__init__
                 # BEFORE _load_*_components runs, so arch-specific setup
@@ -2501,7 +2588,9 @@ def main():
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
 
-            # Training scope control
+            # Training scope control (ReLoRATrainer subclasses LoRATrainer, so
+            # the same flag governs the same injection).
+            train_unet = train_config.get('train_unet', True)
             train_text_encoder = train_config.get('train_text_encoder', False)
 
             # ReLoRA-specific settings
@@ -2561,6 +2650,7 @@ def main():
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,
                 # Training scope control
+                train_unet=train_unet,
                 train_text_encoder=train_text_encoder,
                 # ReLoRA-specific settings
                 relora_merge_every=relora_merge_every,

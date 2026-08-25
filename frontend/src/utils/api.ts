@@ -1706,6 +1706,15 @@ export interface ArchCapabilities {
   training_feature_unsupported?: Record<string, Record<string, TrainingFeatureRefusal>>;
   training_feature_params?: Record<string, string[]>;
   training_feature_labels?: Record<string, string>;
+  // arch -> training config parameter -> the value that architecture REQUIRES,
+  // with the factual reason and an optional training-method scope.
+  //
+  // A FOURTH axis: the three above say what is missing, this one says what a
+  // parameter must BE. SenseNova implements full fine-tuning under a contract
+  // that fixes the optimizer and the batch size, refused before the model
+  // loads. ABSENT MEANS UNCONSTRAINED. Optional so an older backend without the
+  // key still type-checks.
+  training_required_values?: Record<string, Record<string, TrainingRequiredValue>>;
   // Architecture id -> its user-facing spelling ("sensenova" -> "SenseNova
   // U1.5"), from the backend's ARCH_DISPLAY_NAMES. An id with no entry falls
   // back to the id, so a new architecture shows up (unprettified) rather than
@@ -1847,6 +1856,34 @@ export const trainingFeatureUnsupportedReason = (
   if (!entry) return undefined;
   if (entry.methods && method && !entry.methods.includes(method)) return undefined;
   return entry.reason;
+};
+
+// One training-config parameter's required value for one architecture.
+export interface TrainingRequiredValue {
+  value: string | number | boolean;
+  reason: string;
+  // Training methods the requirement applies to; absent = all of them.
+  methods?: string[];
+}
+
+// The config values `arch` requires under `method`, param -> {value, reason}.
+// Empty for an unknown arch or an unloaded matrix: unconstrained, so a control
+// keeps its own default and the backend refuses the run if that is wrong —
+// recoverable, where a control pinned to a value invented here is not.
+export const trainingRequiredValues = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  method?: string | null
+): Record<string, TrainingRequiredValue> => {
+  if (!arch) return {};
+  const entries = caps?.training_required_values?.[arch];
+  if (!entries) return {};
+  const out: Record<string, TrainingRequiredValue> = {};
+  for (const [param, entry] of Object.entries(entries)) {
+    if (entry.methods && method && !entry.methods.includes(method)) continue;
+    out[param] = entry;
+  }
+  return out;
 };
 
 // The reason `method` is refused for `arch`, or undefined when it is offered.

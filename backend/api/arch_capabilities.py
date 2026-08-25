@@ -281,6 +281,41 @@ def _add_training_feature_unsupported(arch: str, feature: str, reason: str,
     TRAINING_FEATURE_UNSUPPORTED.setdefault(arch, {})[feature] = entry
 
 # ---------------------------------------------------------------------------
+# TRAINING_REQUIRED_VALUES[arch][param] = {"value": ..., "reason": ...,
+#                                          "methods"?: [...]}
+#
+# A FOURTH axis. The three above say what is missing; this one says what a
+# parameter must BE. An architecture can implement a training method under a
+# contract that fixes some of the config rather than widening it -- SenseNova
+# full fine-tuning applies each update from that parameter's own
+# post-accumulate-grad hook, which decides the optimizer, the batch size and the
+# accumulation count outright.
+#
+# Enforced two ways, and BOTH belong here: `train_runner` REFUSES most of these
+# before the model loads, but it OVERWRITES the two encoding modes instead. A
+# client cannot tell the difference by looking at the parameter, and the failure
+# an undeclared overwrite produces -- a control the user set that the run
+# silently ignores -- is the one this axis exists to prevent. Each entry's
+# `reason` says which of the two it is.
+#
+# ABSENT MEANS UNCONSTRAINED, same direction as the tables above. `methods`
+# narrows the claim; omitted, it applies to every training method.
+#
+# This table does not restate `TRAINING_FEATURE_UNSUPPORTED`: a parameter whose
+# whole mechanism is missing (blocks_to_swap on SenseNova) belongs there, and an
+# entry here would be a second copy of it.
+# ---------------------------------------------------------------------------
+TRAINING_REQUIRED_VALUES: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+def _add_training_required_value(arch: str, param: str, value: Any, reason: str,
+                                 methods: Optional[List[str]] = None) -> None:
+    entry: Dict[str, Any] = {"value": value, "reason": reason}
+    if methods:
+        entry["methods"] = list(methods)
+    TRAINING_REQUIRED_VALUES.setdefault(arch, {})[param] = entry
+
+# ---------------------------------------------------------------------------
 # ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming
 # parameter that the architecture DOES honor, even though the feature is listed
 # unsupported above.
@@ -922,6 +957,38 @@ _add_training_feature_unsupported(
     "step-0 and periodic sampling are not implemented for Ideogram 4 (dual transformer + FP8); arch/ideogram4.py's sample() warns and returns None")
 
 # --- VAE --------------------------------------------------------------------
+# --- Required config values -------------------------------------------------
+# SenseNova's training contract (SENSENOVA_TRAINING_DESIGN.md 6.2/6.5), applied
+# by train_runner from the config alone before torch is imported. The first
+# group is refused; the last two are overwritten (`train_runner.py:254-255`),
+# which is why they are declared -- an overwritten control is a user choice the
+# run drops without saying so. None of them is a recommendation.
+_add_training_required_value(
+    "sensenova", "batch_size", 1,
+    "SenseNova training runs at physical batch 1; under LoRA use gradient_accumulation_steps for a larger effective batch")
+_add_training_required_value(
+    "sensenova", "optimizer", "adafactor",
+    "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half",
+    methods=["full_finetune"])
+_add_training_required_value(
+    "sensenova", "gradient_accumulation_steps", 1,
+    "each gradient is freed as it is applied during backward, so none survives to be summed across backward passes",
+    methods=["full_finetune"])
+_add_training_required_value(
+    "sensenova", "use_ema", False,
+    "the EMA update is attached to the single optimizer.step() call site, which this route never reaches, so the shadow would never update",
+    methods=["full_finetune"])
+_add_training_required_value(
+    "sensenova", "train_unet", True,
+    "the generation branch is the artefact: SenseNovaLoRAAdapter refuses to save an understanding-only LoRA, since inference applies both branches from one file",
+    methods=["lora"])
+_add_training_required_value(
+    "sensenova", "text_encoding_mode", "onthefly_gpu",
+    "overwritten rather than refused: SenseNova's prompt encoder is the understanding branch of the same LLM that denoises, so the prompt prefix is built inside the training step and there is no separate encoder to swap or cache")
+_add_training_required_value(
+    "sensenova", "latent_encoding_mode", "onthefly_gpu",
+    "overwritten rather than refused: SenseNova is pixel-space and has no VAE, so there are no latents to cache or swap for")
+
 _add_training_feature_unsupported(
     "sensenova", "vae",
     "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
@@ -951,6 +1018,21 @@ for _arch, _features in TRAINING_FEATURE_UNSUPPORTED.items():
         assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
             f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}] scopes unknown "
             f"training methods")
+assert set(TRAINING_REQUIRED_VALUES) <= TRAINING_DECLARED_ARCHS, (
+    f"TRAINING_REQUIRED_VALUES names undeclared archs: "
+    f"{set(TRAINING_REQUIRED_VALUES) - TRAINING_DECLARED_ARCHS}")
+for _arch, _params in TRAINING_REQUIRED_VALUES.items():
+    for _param, _entry in _params.items():
+        assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
+            f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] scopes unknown "
+            f"training methods")
+        # A parameter whose whole mechanism is declared missing must not also be
+        # given a required value: the two tables would then both own it.
+        for _feature, _keys in TRAINING_FEATURE_PARAMS.items():
+            assert not (_param in _keys
+                        and _feature in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {})), (
+                f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] restates "
+                f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}]")
 
 
 def training_feature_unsupported_reason(arch: Optional[str], feature: str,
@@ -967,6 +1049,24 @@ def training_feature_unsupported_reason(arch: Optional[str], feature: str,
     if methods and method is not None and method not in methods:
         return None
     return entry["reason"]
+
+
+def training_required_values(arch: Optional[str],
+                             method: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """The config values ``arch`` requires under ``method``: param -> entry.
+
+    "Requires" covers both enforcement shapes the runner uses -- refusing a
+    different value, and overwriting it. Empty for an unknown/None arch: absent
+    means unconstrained, so a newly added architecture keeps every control at
+    its own default.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for param, entry in (TRAINING_REQUIRED_VALUES.get(arch or "") or {}).items():
+        methods = entry.get("methods")
+        if methods and method is not None and method not in methods:
+            continue
+        out[param] = {"value": entry["value"], "reason": entry["reason"]}
+    return out
 
 
 # ---------------------------------------------------------------------------

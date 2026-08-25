@@ -516,16 +516,28 @@ def trainer_exit_smoke_config(phase_eviction: bool = False) -> dict[str, Any]:
 
 
 class _ExitSmokeDataset:
-    """The smallest dataset object accepted by ``BaseTrainer.train``."""
+    """The smallest dataset object accepted by ``BaseTrainer.train``.
+
+    ``width`` / ``height`` are what actually set the training resolution: with
+    bucketing off, ``base_resolutions`` only clamps items DOWN into its area
+    (``base_trainer`` no-bucketing path), so a caller that raises the resolution
+    must raise BOTH this and ``base_resolutions``.
+    """
 
     unique_id = "sensenova-phase1-exit-smoke"
 
-    def __init__(self, image_path: Path, prompt: str):
+    def __init__(
+        self,
+        image_path: Path,
+        prompt: str,
+        width: int = EXIT_SMOKE_WIDTH,
+        height: int = EXIT_SMOKE_HEIGHT,
+    ):
         self.items = [{
             "image_path": str(image_path),
             "caption": prompt,
-            "width": EXIT_SMOKE_WIDTH,
-            "height": EXIT_SMOKE_HEIGHT,
+            "width": int(width),
+            "height": int(height),
             "dataset_unique_id": self.unique_id,
         }]
         self._reloaded = False
@@ -729,16 +741,20 @@ class _ReferenceInstrumentation:
         return False
 
 
-def _write_deterministic_smoke_image(path: Path) -> None:
+def _write_deterministic_smoke_image(
+    path: Path,
+    width: int = EXIT_SMOKE_WIDTH,
+    height: int = EXIT_SMOKE_HEIGHT,
+) -> None:
     from PIL import Image
 
     pixels = bytearray()
-    for y in range(EXIT_SMOKE_HEIGHT):
-        for x in range(EXIT_SMOKE_WIDTH):
+    for y in range(int(height)):
+        for x in range(int(width)):
             pixels.extend(((17 * x + 3 * y) % 256,
                            (5 * x + 19 * y) % 256,
                            (x + 11 * y) % 256))
-    Image.frombytes("RGB", (EXIT_SMOKE_WIDTH, EXIT_SMOKE_HEIGHT), bytes(pixels)).save(
+    Image.frombytes("RGB", (int(width), int(height)), bytes(pixels)).save(
         path, format="PNG"
     )
 

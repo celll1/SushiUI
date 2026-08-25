@@ -9,7 +9,15 @@
 > （gen branch、adafactor、B1、3 step、**census 294/294**、mixed checkpoint
 > 25.129 GiB を保存し**本番 reader で 294/294 バイト一致で再ロード**。§13.4
 > U-2-2 の実測ボックス）。品質は主張しない。
-> 残るのは U-2-4（offload 合成）と U-2-5（und 側 exit smoke）。
+> **【U-2-4 / U-2-5 着地】** 4 相分割（`071e602b`）に続き、**U-2-5 の exit smoke が
+> 3 branch すべてで通った** — und branch **289/294**、both branch **583/588**、
+> 動かない 5 個はいずれも `und_gradient_unreachable_paths()` が名前で予測した
+> layer 41 の und 側であり、`mixed` の**両向き**と `bf16` を本番 reader で
+> バイト一致再ロードした（§13.4 U-2-5）。品質は主張しない。
+> **Phase U-2 は offload 合成（2b-4 / §8.3.1）を除いて完了**である。
+> それ以外の未測定事項は §13.4 U-2-5 末尾に列挙してある
+> （品質・収束・解像度上限・`int8` 形式の往復と resume・保存 checkpoint での生成・
+> und × reference・MNT>1 と学習中 sample）。
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -2081,8 +2089,14 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   同 commit で dropout guard が full FT では branch によらず無条件になった（§13.3）。
 - **2b-4 — offload の合成。** §8.3.1 のモジュール粒度問題を解決する。
   `LayerOffloadConductor` がサブモジュール粒度のリストを受けられるかの調査が先行する。
-- **2b-5 — exit smoke。** prefix forward を checkpointed region の外に置く不変条件の
-  テストを含む。
+- **2b-5 — exit smoke（DONE。= U-2-5）。** gen / und / both の 3 branch すべてに
+  実 checkpoint 上の run が付き、`mixed` の**両向き**（gen 側 int8 残し / und 側
+  int8 残し）と `bf16` を本番 reader で読み戻した。update-nonzero census は
+  **gen 294/294、und 289/294、both 583/588** で、動かない 5 個はいずれも
+  `und_gradient_unreachable_paths()` が名前で予測したものである。
+  **prefix forward を checkpointed region の外に置く不変条件のテストもここで着地した**
+  （`sensenova_u2_5_exit_smoke_test.py`、負の対照つき）。実測と、残る未測定事項は
+  §13.4 の「U-2-5 実測」。**品質は主張しない。**
 - **exit criteria**: **「学習が壊れていないこと」だけを主張し、品質は主張しない。**
   短 horizon では stochastic rounding の誤差が信号と同程度で（§6.3）、A/B が測定として
   無効になるためである。
@@ -2166,9 +2180,11 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - ~~**full FT の学習成果物をどの checkpoint format で保存するか。**~~
   **決定済み（`22b22f09`）: 選ばずに設定値として出荷した**
   （`sensenova_full_finetune_save_format`、既定 `mixed`）。§6.4。
-  **実 run で実証されたのは `mixed`（gen branch）だけ**である — 25.129 GiB を
-  保存し、本番 reader で 294/294 バイト一致で読み戻した（§13.4）。
-  `bf16` / `int8` の実 run 往復は未実施。
+  **実 run で実証されたのは `mixed`（gen / und の両向き）と `bf16`（both）**である
+  （§13.4 の U-2-2 / U-2-5 実測）— それぞれ 25.129 / 25.129 / 32.682 GiB を保存し、
+  本番 reader で 294/294・294/294・588/588 バイト一致で読み戻した。
+  **`int8` の実 run 往復は未実施**（合成ツリーのテストのみ）。これは
+  **再学習の base になれる唯一の形式**なので、resume の実測も同時に空いている。
 - ~~**materialize 時の `weight_dtype` 契約が未決定である。**~~ **決定済み
   （`601d0271`）: bf16 のみ。ロードより前に拒否する。**
   `materialize_int8_decoder_linears` は `trainer.weight_dtype` **へ向けて** dequant
@@ -2237,6 +2253,10 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
    **生成そのものは走らせていない**ので、「ロードできる」以上は主張しない。
    なおここで **2 件の直列化欠陥**が見つかっている（§6.4 末尾）— 「構造上は
    通りそう」という推論は、実際には**書いた側が読めない config を書いていた**。
+   **【U-2-5 で拡張】** mixed の**逆向き**（und 学習 = gen 半分が int8 のまま）も
+   **294/294 バイト一致**で読み戻した。加えて **both branch の `bf16`**
+   （量子化テンソルが 1 つも無いツリー）も **588/588 バイト一致**で読める。
+   **どちらも生成は走らせていない。** 残るのは `int8` 形式の実 run 往復である。
 2. **`LayerOffloadConductor` がサブモジュール粒度のリストを受けられるか。** 未調査。
    受けられなければ half-eviction との合成に wrapper か per-layer 選択の新規実装が要る。
    §8.3.1。
@@ -2265,12 +2285,21 @@ Phase U（§13）関連。
 7. **und LoRA が reference 忠実度・プロンプト追従を実際に改善するか。** 未測定。
    **U-0 / U-1 は「勾配が届き、壊れていない」ことしか示していない。**
    提供するのは選択肢であって効果の主張ではない（§13）。
+   **U-2-5 も同じ位置にある** — und half の full FT は 3 branch とも実 run で
+   通ったが、示したのは「壊れていない」ことだけである。
+   **さらに U-2-5 が新たに開けた未測定事項**: 解像度上限（全 run が 64px で、
+   both branch は既に gate の 94.5%）、`int8` 形式の実 run 往復とそれに載る resume、
+   保存 checkpoint での生成、host RSS peak の再現性（同一 arm で 9.7 GiB 動いた）。
+   一覧は §13.4 の「U-2-5 測っていないもの」。
 8. **旧ビルドが新形式（gen+und）LoRA を無警告で部分適用するバージョン skew。**
    新ビルド側は `check_lora_application` の metadata 突き合わせで検知できるように
    なったが、**逆方向（旧ビルドが新ファイルを読む）は依然として防げない**（§13.3）。
-9. **und forward 2 回のコストと weight 往復コスト**（4 相分割）。未測定。
-   `probes/text_encode_vs_step.py` の sensenova アームで prefix / step 比を測る
-   （§8.3.2、U-2-4）。
+9. ~~**und forward 2 回のコストと weight 往復コスト**（4 相分割）。~~
+   **CLOSED（U-2-4、`071e602b`）。** prefix / step 比 0.098（p50）/ 0.103（mean）、
+   分割の限界コスト **+9.3〜+9.7%**、eviction の往復は別勘定で **+69.0%**（p50）。
+   実測表は §8.3.2 の「U-2-4 実測」。**旧「未測定」は stale だった**（U-2-5 の点検で発見）。
+   残るのは同節末尾の 3 点（bf16 und Linear での比、1024px 以外の解像度、
+   pinned 転送の非同期化）である。
 10. **勾配ノルムの大小関係。** U-0 と U-1 で順序が逆転したが、**測定条件が異なるので
     どちらも一般的主張にならない**（§13.6 の訂正表）。設計判断の根拠に使わないこと。
 
@@ -2318,7 +2347,7 @@ U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator �
 
 ---
 
-## 13. Phase U — understanding branch の学習（U-0 / U-1 DONE、U-2 / U-3 PENDING）
+## 13. Phase U — understanding branch の学習（U-0 / U-1 / U-2 DONE、U-3 PENDING）
 
 **要求**: understanding branch も微調整の対象にするかどうかを、SDXL の TE / U-Net や
 他 arch の TE / DiT と同様に**ユーザーが選択できるようにする**（LoRA / Full-FT の
@@ -2591,7 +2620,11 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   無いと §13.3 のサイレント部分適用を検出できない）、`train_text_encoder=false` の
   loss・grad SHA-256 が現行実装と一致すること（**回帰していないことの証明**）、
   MNT>1 smoke、既存の蒸留 LoRA の推論ロード回帰。→ **5 項目すべて PASS**（§13.6）。
-- **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版 → **DONE（`cc296e84`）。
+- **U-2 — und Full-FT（DONE。ただし 2b-4 = offload 合成は別途 PENDING）。**
+  U-2-1 〜 U-2-6 のうち **U-2-1 / U-2-2 / U-2-3 / U-2-4 / U-2-5 / U-2-6 が着地**し、
+  gen / und / both の 3 branch すべてに実 checkpoint 上の run がある。
+  **§8.3.1 の offload 合成（§11 の 2b-4）だけが残る**。
+  U-2-1: §6.4 経路 (a) の 588 版 → **DONE（`cc296e84`）。
   ただし経路は端から端まで到達しない**（`arch_capabilities.py:812-814` と
   `train_runner.py:166-167` が拒否を維持している）ので、**テストで証明されただけで
   run では証明されていない**。着地したもの／意図的に着地させなかったもの／
@@ -2609,7 +2642,10 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   なった（§13.3）。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
   → **DONE。exit gate は PASS、ただし ~19-21 GB の見積もりは着地しなかった**（下記）。
-  U-2-5: exit smoke — **update-nonzero census** で bf16 丸め欠陥の
+  U-2-5: exit smoke — **DONE（2026-08-25。本節末「U-2-5 実測」）。**
+  gen / und / both の 3 branch すべてに実 run が付き、`mixed`（gen 側 int8 残し・
+  und 側 int8 残しの**両向き**）と `bf16` の再ロードが本番 reader で通った。
+  **update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
   **期待値は「全部動いた」ではない** — und half の 5 個は materialize されて実
   `nn.Parameter` を持つが（§6.4）、t2i の loss が構造的に届かない（§13.5）。したがって
@@ -3026,10 +3062,14 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       実行ホストは 93.6 GiB、空き 42.7 GiB。
     - **wall time**: model load 25.87 s、train + save 21.61 s（3 step、64px）。
       **step 単体の壁時計は分離していない**（U-2-4 の担当）。
-    - **測っていないもの**: 品質、収束、解像度上限、offload との合成、
+    - **測っていないもの**（この run の時点。**取り消し線相当の更新は下記**）:
+      品質、収束、解像度上限、offload との合成、
       und branch / both branch の run、`int8` / `bf16` 形式の保存と再ロード、
       cold cache からのロード時間（reload arm の 0.70 s は直前に書いた
       ファイルの page cache 上での mmap である）。
+      → **このうち `both` branch の run は U-2-4 が、`und` branch の run と
+      `bf16` の再ロードは U-2-5 が埋めた。** 残るのは品質・収束・解像度上限・
+      offload 合成・`int8` 形式の往復・cold cache のロード時間である。
     #### 【U-2-4】4 相分割の実装と実測（2026-08-25: PASS）
 
     **exit gate（prefix / step 比）は §8.3.2 の「U-2-4 実測」に置いた。結論は
@@ -3150,6 +3190,218 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
        **LoRA run が対称性 backstop を緩めてしまう** — その backstop は
        まさに前段の check が走らなかった場合のために在る。installer 側でも
        full fine-tune を要求するようにした。
+
+    #### 【U-2-5】exit smoke 実測（2026-08-25: PASS）
+
+    実 checkpoint（`M:/model/sensenova/sensenova_int8.safetensors`、plain int8）上の
+    実 run。probe は `probes/sensenova_full_finetune.py`、arm ごとに別プロセス、
+    `set_per_process_memory_fraction(0.72)` = 34.551 GiB、64px、3 step、adafactor、
+    lr 1e-6、B1、accumulation 1、`blocks_to_swap=0`、GC ON、bf16。
+    **以下はすべて実測値。品質・収束は一切主張しない。**
+
+    **U-2-2（gen）/ U-2-4（both）が既に着地させていたものは再測していない。**
+    本節が新たに埋めたのは (1) **und branch の run が存在しなかったこと**、
+    (2) **`und` × `mixed`（gen 半分を int8 に残す、gen run とは向きが逆の形式）の
+    再ロード**、(3) **both branch の `bf16` checkpoint の再ロード**（`071e602b` は
+    書いただけで読み戻していない）の 3 点である。
+
+    | | und branch（新規） | both branch + 4 相（`071e602b` の arm を再実行） |
+    |---|---|---|
+    | adapter / branch / target | `SenseNovaFullParameterAdapter` / `und` / **294** | 同 / `both` / **588** |
+    | optimizer group | 1 群（lr 1e-6、294 tensor、**8,103,395,328 要素**） | 2 群（各 294 tensor、計 16,206,790,656 要素） |
+    | loss（3 step） | 1.9414 / 0.3786 / 1.4027 | 0.4108 / 0.5655 / 0.3779 |
+    | fused backward / SR 強制 | 設置済み / ON・attach 検証通過 | 同 |
+    | updated-parameter census | **289 expect、3/3 complete**、exempt 5 | **583 expect、3/3 complete**、exempt 5 |
+    | **update-nonzero census** | **294 個中 289 個が動いた** | **588 個中 583 個が動いた** |
+    | 動かなかったもの | `layers.41` の `self_attn.{q,o}_proj` と `mlp.{gate,up,down}_proj` | 同じ 5 個 |
+    | 要素レベル標本（layer 0 の 4 本） | und 側 **2.43 / 2.47 / 2.79 / 2.94%** | gen 側 **3.35 / 3.21 / 4.78 / 4.24%** |
+    | 保存 | `mixed` 実効 `mixed`、7 shard + index、**26,982,061,395 B = 25.12900 GiB** | `mixed` 要求 → `bf16` へ縮退（告知あり）、**35,091,856,594 B = 32.68184 GiB** |
+    | VRAM peak allocated / reserved | **26.2571 / 26.5508 GiB**（gate の **76.0%**） | **32.6606 / 33.9063 GiB**（**94.5%**） |
+    | model resident | 25.1198 GiB | 32.6606 GiB（= peak allocated、完全一致） |
+    | host RSS peak | **32.101 GiB** | **51.965 GiB** |
+    | wall（model load / train+save） | 17.12 s / 23.11 s | 24.71 s / 45.98 s |
+
+    - **und の census は 289 であって 294 ではない、が実測でも成立した。**
+      動かなかった 5 個は `und_gradient_unreachable_paths()` が名前で予測する
+      layer 41 の 5 本と**集合として完全一致**する。exempt 集合（census が
+      期待集合から落とす 5 個）と unmoved 集合が同じであることは、
+      **「hook が発火しなかった」と「勾配が構造的に届かない」を混同していない**
+      ことの確認でもある。同じ層の `k_proj` / `v_proj` は**動いた**（gen 側 layer 41 が
+      その K/V を消費する）ので、層まるごとを除外する criterion なら誤りである。
+    - **criterion は読む数値ではなく assertion になった。** probe は
+      `u2_5_unmoved_expectation()` で予測集合を作り、unmoved 集合と一致しなければ
+      **JSON を書いてから raise する**（25 GiB 書いた run が自分の数値まで失う理由が無い）。
+      gen branch で予測が空集合になるのは `*_mot_gen` 命名により交わらないからで、
+      これも同じ 1 本の関数から出る。
+    - **再ロード（本番 reader `load_sensenova_from_path`、trainer を持たない別プロセス）。**
+      - `und` × `mixed`: **gen 294 個すべてが `Int8Linear`、und 294 個すべてが浮動小数の
+        `nn.Linear`、und 294/294 が SHA-256 でバイト一致**。gen run（`22b22f09` 以来
+        唯一検証されていた形）と**向きが逆の形式**で、これが初回である。
+        load 0.573 s、host RSS peak **16.225 GiB**。
+      - `both` × `bf16`: **588 個すべてが浮動小数、int8 は 0 個、588/588 が SHA-256 で
+        バイト一致**。**量子化テンソルが 1 つも無いツリーを reader が受理する**ことは
+        ここで初めて実測された（`verify_quantized_swap` は 0 対 0 で通る）。
+        load 0.676 s、host RSS peak **31.309 GiB**。
+      - どちらの arm も **checkpoint の metadata（`sensenova_trained_branch` /
+        `sensenova_save_format`）を権威として読み**、train arm の申告と突き合わせている。
+        以前の reload arm は **gen × mixed の答えをハードコードしていた**ので、
+        上の 2 形式は**この arm では検査できなかった**（下記「見つかったもの」1）。
+    - **`und` × `mixed` は gen × mixed より 262,320 byte 小さい**（26,982,061,395 対
+      26,982,323,715）。両者は同じテンソル総量なので差は shard header 側にあり、
+      und の key 名が短い（`mlp.` 対 `mlp_mot_gen.`）ことと整合する。
+      **これは U-2-2 が残した「+12.85 MiB の残差」を説明しない** — 桁が 2 つ違う。
+      残差の原因は依然として測っていない。
+    - **both branch の host RSS peak は再現しなかった。原因は構造にある。**
+      同一コマンド・同一 checkpoint で `071e602b` は「ロード後 **26.07** GiB /
+      peak **61.67** GiB」、本 run は「ロード後 **9.04** GiB / peak **51.97** GiB」。
+      **差は peak が 9.70 GiB、ロード後が 17.03 GiB で、同じではない**
+      （初稿は「どちらも約 9.7 GiB」と書いていた。**誤り**。しかも
+      **大きい方＝ロード後の 17.03 GiB の方が情報量が多い** — 差がロード時点で
+      既に開いていることを示す）。
+      - **測っている量が悪い。** probe の `_host_peak_bytes()` は
+        `psutil.memory_info().peak_wset`、すなわち **peak working set** である。
+        Windows の working set は (1) **常駐している mmap 済みファイルページを含む**
+        （17.6 GiB の base に対する page cache が warm か cold かで動く）、
+        (2) **メモリ圧の下で OS がトリムできる**（＝下がりうる）。したがって
+        **プロセスが所有する何かの単調な high-water ではない**。
+        `071e602b` の run は空き 56.6 GiB から始まり、本 run は**同じセッションで
+        32 GiB の und run の直後**に走った。これは 9.70 と 17.03 の**両方**を説明し、
+        この量を「謎めいて再現しない」ではなく**構造的に再現しない**ものにする。
+      - **対応（実施済み）**: probe は `peak_pagefile`（peak commit charge、
+        本 venv で存在を確認）を `host_rss.peak_commit_gib` として併記するようにした。
+        **これは常駐ファイルマッピングに膨らまされず OS にトリムもされない**ので、
+        **host RAM 予算を書くならこちらである**。
+        `_host_peak_bytes()` の docstring に両者の違いを書いた。
+      - **運用**: 依然として **61.67 GiB の側を上限として扱う**。
+        追試のために 32 GiB の arm を回し直す価値は無い。
+      - **VRAM peak は再現した** — `071e602b` と本 run はともに
+        **記録されている精度（32.66 GiB）で一致**する
+        （`071e602b` の実測ボックスは 2 桁までしか残しておらず、当時の JSON は
+        削除済みなので、「バイト単位で一致」とは**言えない**）。
+        `model_resident == peak_allocated` も両 run で成立している。
+    - **2 つの both run は決定的ではない。** loss は
+      `071e602b` が 1.4558 / 0.4096 / 0.4010、本 run が 0.4108 / 0.5655 / 0.3779 で、
+      **probe が seed を固定しているのは `sample_seed` だけ**（noise と timestep
+      サンプリングは固定していない）。「同一コマンド」は字義どおり真だが
+      **「他がすべて同じ」ではない**。loss 列がその可視の証拠であり、
+      host RSS の差をこの非決定性だけで説明することも**できない**
+      （上の working-set の性質の方が支配的だが、**切り分けは測っていない**）。
+
+    #### 【U-2-5】「und branch に 4 相分割は要るか」— 要らない（コードからの結論、run で確認）
+
+    **要求していない。** `assert_four_phase_contract` が要求するのは
+    `train_text_encoder`（4 相が存在する理由）であって、その逆ではない。
+    und-only の run は **単一 backward 経路**を通る — `encode_prompt` の
+    `requires_grad and four_phase is None` 分岐で、prefix は `grad_fn` を持つ
+    生きたグラフとして構築され、`_assert_prefix_cache_differentiable` が
+    それを**肯定的に**要求する。実測 run はこの経路で走った
+    （`four_phase_eviction: false`、`evictor_states_during_run: []`）。
+
+    **要る場合は 1 つだけある: und 学習と MoT half-eviction を同時に使うとき。**
+    `encode_prompt` は「requires_grad + evictor あり + 4 相なし」を実行時に
+    `RuntimeError` で拒否し、`train_runner` は同じ組を**ロード前に**拒否して
+    `sensenova_four_phase_eviction` を名指しする。すなわち
+    **4 相は und 学習の前提ではなく、und 学習 × eviction の唯一の合法な形**である。
+    eviction を使わないなら 4 相は「second backward と再計算 forward を足すだけ」で、
+    契約自身がそう書いて拒否する。
+
+    #### 【U-2-5】§11 Phase 2b-5 が要求していた不変条件テストを足した
+
+    §11 の 2b-5 は exit smoke に「**prefix forward を checkpointed region の外に
+    置く不変条件のテスト**」を含めることを要求していたが、`b2694674` /
+    `071e602b` のどちらもこれを着地させていない。
+    `backend/tests/sensenova_u2_5_exit_smoke_test.py` に着地させた:
+    prefix を**自分の checkpoint 無し**で構築し、gen loop を `checkpoint_layers=True`
+    で回して backward すると、**und の 3 層はフォワードの 1 回しか呼ばれない**
+    （gen backward は自分の segment を再計算するが und 側には入らない）。
+    **負の対照つき**: prefix 構築を gen の checkpoint segment の**内側**に置くと
+    呼び出し数が `[0,1,2]` から `[0,1,2,0,1,2]` に倍増する。
+    加えて gen の再計算が**同じ cache オブジェクト**（`id` 一致）を読むことと、
+    `no_grad` prefix が `trainable_prefix=True` の下で依然拒否されることを固定した。
+
+    #### 【U-2-5】見つかったもの（2 件、いずれも probe 側。trainer 側には無し）
+
+    1. **reload arm が gen × mixed をハードコードしていた**（修正済み）。
+       「294 個の gen が浮動小数で、294 個の und が `Int8Linear`」だけを問う実装で、
+       これは 3 形式 × 3 branch のうち**ちょうど 1 つ**の答えである。
+       したがって **U-2-5 が閉じるべき 2 つの形式は、この arm では検査できなかった** —
+       `und` × `mixed` には全項目が偽（向きが逆）、`both` × `bf16` には
+       「und が int8」が偽（int8 half が存在しない）になる。
+       **さらに形状判定だけの問題ではなかった**（初出の記述はここを過小評価していた）:
+       **SHA-256 の digest 比較も gen 側からしか作っていなかった**ので、
+       `und` × `mixed` では形状の 2 件に加えて **294/294 が digest 不一致**として
+       報告されることになる。すなわち「学習した half がバイト一致で読み戻せるか」
+       という**この arm の中心的な問い自体が、gen 以外の branch では機能していなかった**。
+       `expected_read_shape(branch, effective_format)` に規則を出し、
+       arm は checkpoint metadata から branch と実効 format を読むようにした。
+       テストは**規則を書き写さず**、9 通りすべてを本番 writer で書いて本番
+       read sequence で読み戻し、出てきた形と突き合わせる。
+    2. **U-2-5 の criterion が「読む数値」でしかなかった**（修正済み）。
+       moved / unmoved を報告するだけで、289 という期待値はどこにも無かった。
+       上記のとおり assertion 化した。負の対照として
+       「294 個すべてが動いたと主張する assert はここで落ちるのが正しい」を
+       **実行可能な形で**テストに入れてある。
+
+    **trainer 側の欠陥は 1 件も出なかった。** gen run が 3 件、both run が 3 件
+    見つけたのとは対照的だが、それは驚くことではない — und branch が通る配線
+    （branch 解決 / adapter / fused backward / census / 保存）は
+    その 6 件がすべて修正した後の同じコードであり、branch 依存の分岐は
+    `resolve_full_finetune_branch` と列挙器の中だけに閉じている。
+
+    #### 【U-2-5】und full FT は U-1 の text-only スコープをそのまま継承する
+
+    **`train_text_encoder=true` + reference データセットは、25-32 GiB をロードしてから
+    最初の item で落ちる。** `encode_prompt` は `requires_grad` が立っている限り
+    reference 条件付き item を `NotImplementedError` で拒否し
+    （`sensenova_ops.py:919-924` と `:948-953`。単一 backward 経路と 4 相経路の**両方**）、
+    一方 `use_reference_images` は `train_runner.py:211` で
+    「**Normalized, not gated**」— すなわちロード前に拒否する gate が無い。
+
+    **これは U-2-5 が作った欠陥ではない**（und LoRA でも同一で、U-1 以来同じ形である）。
+    ここに書くのは、**full FT の下で und branch に到達できるようになったのが初めて**
+    だからである。§13 の U-3（und × reference）はまさにこの穴を埋めるフェーズであり、
+    それまでの間、この組み合わせは**ロード前に拒否されるべきもの**として残っている。
+
+    #### 【U-2-5】新しい 2 branch で exercise していない経路
+
+    - **MNT > 1**。両 run とも `multi_noise_timesteps: 1` である。4 相 × MNT>1 は
+      `warn_four_phase_mnt_cost` が告知する経路だが、**新しい branch では踏んでいない**
+      （U-1 の LoRA arm は MNT>1 を踏んでいる）。
+    - **学習中の sample 生成**。両 run とも `sample_every_n_steps: 0`、
+      `sample_prompts: []` である。full FT × sample の相互作用
+      （`generate_sample` の evictor 駆動と attention mode の再 stamp。§11 Phase 1）は
+      **どちらの新 branch でも走っていない**。
+
+    #### 【U-2-5】測っていないもの（U-2 全体として残るもの）
+
+    - **品質・収束**。3 step・64px・画像 1 枚であり、§11 Phase 2b の exit criteria は
+      「壊れていないこと」だけを主張する。短 horizon では stochastic rounding の
+      誤差が信号と同程度なので（§6.3）、**A/B は測定として無効になる**。
+    - **解像度上限**。全 run が 64px である。both branch は 64px で既に gate の 94.5% を
+      使っており、しかも `model_resident == peak_allocated` なので
+      **解像度を上げたときに step 側が high-water を超える点は測っていない**。
+    - **offload との合成（U-2-4 の 2b-4 / §8.3.1）**。`LayerOffloadConductor` の
+      サブモジュール粒度は依然として未調査。
+    - **4 相 ON / OFF の A/B**。64px では両 arm ともロード時 high-water が peak を
+      支配するので、この shape では差が出ない（U-2-4 と同じ理由）。
+      **und-only での 4 相 run も回していない**（要らないので回さなかった。
+      「要らない」は上記のとおりコードからの結論である）。
+    - **`int8` 形式の実 run 往復**。3 形式のうち `mixed`（両向き）と `bf16` は
+      実 checkpoint で往復したが、`int8` は合成ツリーのテストだけである。
+      これは**再学習の base になれる唯一の形式**なので（§6.4）、
+      resume の実測も同時に空いたままである。
+    - **保存した checkpoint での生成**。reader が読めることまでで、
+      推論そのものは 3 branch とも走らせていない。
+    - **`+12.85 MiB` の残差**（U-2-2）。本 run の 262,320 byte 差は桁が違うので
+      説明にならない。
+    - **host RSS peak の再現性**。上記のとおり同一 arm で peak 9.70 GiB /
+      ロード後 17.03 GiB 動いた。機構（working set の性質 + セッション履歴）は
+      特定したが、**working set の変動と run 自体の非決定性の切り分けは測っていない**。
+      `peak_commit_gib` は今回の 2 run には**存在しない**（今回追加したため）ので、
+      **再現量としての host 予算は次の run から取れる**。
+    - **step 中の最小常駐量**（peak しか記録していない。U-2-4 から継続）。
+    - **grad norm の大小**。both run では 2 half に分かれて出るが、§13.6 の訂正表の
+      とおり**どちらが大きいかは設計判断の根拠にしない**。
 
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の

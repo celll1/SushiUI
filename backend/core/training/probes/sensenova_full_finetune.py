@@ -16,6 +16,11 @@ gate the Phase 1 / U-1 probes use.
                 through the production reader (``load_sensenova_from_path``),
                 with the per-Linear digests compared bit for bit against what the
                 training process reported.
+* ``resume`` -- a FRESH process that CONTINUES the train arm's run from the
+                checkpoint in its own output_dir: step/epoch position, Adafactor
+                state, LR-scheduler position, the update census on the first step
+                after the resume, and the trained half compared byte for byte
+                against what the train arm held when it saved.
 
 The two arms are separate processes because their host-RAM peaks do not overlap:
 the trainer holds the dequantized half while the reader holds a whole second
@@ -772,14 +777,270 @@ def _run_reload_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Arm 3 -- a real resume: same output_dir, fresh process, no materialization
+# ---------------------------------------------------------------------------
+
+
+def _run_resume_arm(args: argparse.Namespace) -> dict[str, Any]:
+    """Continue the train arm's run from its own checkpoint and report what carried.
+
+    The train arm's ``--out`` JSON is passed as ``--expect``; this arm reuses its
+    ``output_dir``, resumes with ``resume_from_checkpoint='latest'``, and records
+    the four things a resume is supposed to carry (step/epoch position, optimizer
+    state, scheduler position, and the per-step update census on the first step
+    after the resume) plus the one this route adds: the trained half's weights
+    compared BYTE FOR BYTE against what the train arm held when it saved.
+    """
+    from core.training.full_parameter_trainer import FullParameterTrainer
+    from core.training.ops.sensenova_ops import resolve_full_finetune_branch
+
+    expected = json.loads(Path(args.expect).read_text(encoding="utf-8"))
+    vram_gate = _apply_vram_gate()
+    config = trainer_exit_smoke_config()
+    workdir = Path(args.workdir)
+    resolution = int(expected["resolution"])
+    first_steps = int(expected["requested_steps"])
+    total_steps = first_steps + int(args.resume_extra_steps)
+    image_path = workdir / f"training_image_{resolution}.png"
+    output_dir = workdir / "full_finetune"
+    _write_deterministic_smoke_image(image_path, resolution, resolution)
+
+    train_config = dict(config["train_config"])
+    train_config["sensenova_full_finetune_save_format"] = args.save_format
+    train_config["sensenova_mot_phase_eviction"] = bool(args.four_phase)
+    train_config["sensenova_four_phase_eviction"] = bool(args.four_phase)
+    train_config["use_reference_images"] = False
+    branch_arg = expected["branch"]
+
+    torch.cuda.reset_peak_memory_stats()
+    load_started = time.perf_counter()
+    trainer = FullParameterTrainer(
+        model_path=args.model_path,
+        output_dir=str(output_dir),
+        run_name=RUN_NAME,
+        run_id=None,
+        learning_rate=LEARNING_RATE,
+        unet_lr=LEARNING_RATE,
+        train_unet=branch_arg in ("gen", "both"),
+        train_text_encoder=branch_arg in ("und", "both"),
+        device="cuda",
+        weight_dtype="bf16",
+        training_dtype="bf16",
+        output_dtype="bf16",
+        vae_dtype="bf16",
+        mixed_precision=True,
+        attention_backend="native",
+        use_flash_attention=False,
+        blocks_to_swap=0,
+        resume_from_checkpoint="latest",
+        train_config=train_config,
+    )
+    model_load_wall_time_s = time.perf_counter() - load_started
+    load_peak_allocated = int(torch.cuda.max_memory_allocated())
+    branch = resolve_full_finetune_branch(trainer)
+
+    failures: list[str] = []
+    loaded_checkpoint = getattr(trainer, "_loaded_checkpoint_path", None)
+    if not loaded_checkpoint:
+        failures.append("the trainer did not resolve a checkpoint to resume from")
+    resumed_format = getattr(trainer, "sensenova_resumed_save_format", None)
+    if resumed_format is None:
+        failures.append(
+            "the resume went through the materializing route, not the "
+            "resume-shaped acceptance (sensenova_resumed_save_format is None)"
+        )
+
+    # THE LOSSLESSNESS CLAIM: the tree the resume loaded, against the weights the
+    # train arm held when it wrote the file. Taken BEFORE any step runs.
+    saved_digests = expected["post_train_digests"]
+    at_resume = _digest_map(trainer.transformer, branch)
+    mismatched = sorted(p for p in saved_digests if at_resume.get(p) != saved_digests[p])
+    if mismatched:
+        failures.append(
+            f"{len(mismatched)} of {len(saved_digests)} trained-half weight(s) "
+            f"differ from what the train arm saved (first: {mismatched[0]})"
+        )
+
+    # The resume's own bookkeeping, captured at the point base_trainer restores it.
+    restored: dict[str, Any] = {}
+    _real_load_optimizer_state = trainer.load_optimizer_state
+    _real_load_training_state = trainer.load_training_state
+
+    def _capture_load_optimizer_state(step: int):
+        scheduler = getattr(trainer, "lr_scheduler", None)
+        before = len(getattr(trainer.optimizer, "state", {}) or {})
+        ok = _real_load_optimizer_state(step)
+        state = getattr(trainer.optimizer, "state", {}) or {}
+        sample = None
+        for entry in state.values():
+            sample = sorted(str(k) for k in entry)
+            break
+        restored["optimizer"] = {
+            "requested_step": int(step),
+            "loaded": bool(ok),
+            "param_states_before": before,
+            "param_states_after": len(state),
+            "first_param_state_keys": sample,
+            # Adafactor's own step counter, the thing a fresh optimizer would
+            # have at 0 and the thing its bias/decay schedule reads.
+            "adafactor_step": next(
+                (int(e["step"]) for e in state.values()
+                 if isinstance(e.get("step"), (int, float))), None
+            ),
+        }
+        restored["scheduler_at_resume"] = {
+            "last_epoch": int(getattr(scheduler, "last_epoch", -1)),
+            "last_lr": [float(v) for v in scheduler.get_last_lr()] if scheduler else None,
+        }
+        return ok
+
+    def _capture_load_training_state(step: int):
+        state = _real_load_training_state(step)
+        restored["training_state"] = dict(state) if state else None
+        return state
+
+    trainer.load_optimizer_state = _capture_load_optimizer_state
+    trainer.load_training_state = _capture_load_training_state
+    trainer.optimizer_update_census = True
+
+    before_resumed_steps = dict(at_resume)
+    losses: list[float] = []
+    steps: list[int] = []
+    step_peaks = _StepPeakRecorder()
+
+    def progress_callback(phase, step, total, epoch=0, loss=None):
+        del total, epoch
+        if phase != "training":
+            return
+        if loss is None or not math.isfinite(float(loss)):
+            raise AssertionError(f"non-finite SenseNova resumed loss: {loss!r}")
+        steps.append(int(step))
+        losses.append(float(loss))
+        step_peaks.close_step(int(step))
+
+    train = dict(config["train"])
+    train.update({
+        "num_epochs": 1,
+        "optimizer_type": "adafactor",
+        "total_steps": total_steps,
+        "base_resolutions": [resolution],
+        "save_every_n_steps": total_steps,
+        "sample_prompts": [],
+        "sample_every_n_steps": 0,
+        "sample_width": resolution,
+        "sample_height": resolution,
+        "sample_seed": args.seed,
+        "max_grad_norm": 0.0,
+        "progress_callback": progress_callback,
+        "run_id": None,
+        "max_step_saves_to_keep": 2,
+        "force_recache": False,
+        "use_reference_images": False,
+        "resume_from_checkpoint": "latest",
+    })
+    dataset = _ExitSmokeDataset(image_path, args.prompt, resolution, resolution)
+
+    train_started = time.perf_counter()
+    step_peaks.open_first_window()
+    trainer.train(datasets=[dataset], **train)
+    step_peaks.close_tail()
+    train_wall_time_s = time.perf_counter() - train_started
+
+    after = _digest_map(trainer.transformer, branch)
+    moved = sorted(p for p in before_resumed_steps if after[p] != before_resumed_steps[p])
+    unmoved = sorted(p for p in before_resumed_steps if after[p] == before_resumed_steps[p])
+    predicted_unmoved = u2_5_unmoved_expectation(
+        before_resumed_steps, len(trainer.transformer.language_model.model.layers)
+    )
+    if sorted(unmoved) != sorted(predicted_unmoved):
+        failures.append(
+            f"post-resume update-nonzero census: {len(moved)} of "
+            f"{len(before_resumed_steps)} moved; unmoved is {sorted(unmoved)[:10]} "
+            f"but und_gradient_unreachable_paths() predicts {sorted(predicted_unmoved)}"
+        )
+
+    # THE STEP-POSITION CLAIM: the run continued, it did not restart.
+    expected_steps = list(range(first_steps + 1, total_steps + 1))
+    if steps != expected_steps:
+        failures.append(
+            f"expected the resumed run to report steps {expected_steps}, got {steps}"
+        )
+    optimizer_record = restored.get("optimizer") or {}
+    if not optimizer_record.get("loaded"):
+        failures.append("the Adafactor state was not restored from the checkpoint")
+    if optimizer_record.get("param_states_after", 0) <= 0:
+        failures.append("the restored optimizer holds no per-parameter state")
+    scheduler_at_resume = restored.get("scheduler_at_resume") or {}
+    if scheduler_at_resume.get("last_epoch") != first_steps:
+        failures.append(
+            f"the LR scheduler resumed at position "
+            f"{scheduler_at_resume.get('last_epoch')}, expected {first_steps}"
+        )
+    census = trainer._update_census
+
+    _windows = step_peaks.summary(load_peak_allocated)
+    peak_allocated = max(load_peak_allocated,
+                         _windows["train_phase_peak_allocated_bytes"])
+    return {
+        "arm": "resume",
+        "resumed_from": str(loaded_checkpoint),
+        "resumed_save_format": resumed_format,
+        "branch": branch,
+        "first_run_steps": first_steps,
+        "total_steps": total_steps,
+        "steps": steps,
+        "losses": losses,
+        "weights_identical_to_saved": {
+            "matches": len(saved_digests) - len(mismatched),
+            "of": len(saved_digests),
+            "mismatched": mismatched[:10],
+        },
+        "restored": restored,
+        "scheduler_after_run": {
+            "last_epoch": int(getattr(trainer.lr_scheduler, "last_epoch", -1)),
+            "last_lr": [float(v) for v in trainer.lr_scheduler.get_last_lr()],
+        },
+        "update_census": {
+            "expected": census.expected_count if census else None,
+            "steps_checked": census.steps_checked if census else None,
+            "exempt": sorted(census.exempt) if census else None,
+        },
+        "moved_census": {
+            "moved": len(moved),
+            "unmoved": len(unmoved),
+            "of": len(before_resumed_steps),
+            "predicted_unmoved": predicted_unmoved,
+        },
+        "failures": failures,
+        "vram": {
+            "load_peak_allocated_gib": load_peak_allocated / 1024 ** 3,
+            "peak_allocated_gib": peak_allocated / 1024 ** 3,
+            "gate_budget_gib": vram_gate.get("budget_bytes", 0) / 1024 ** 3,
+            "device_total_gib": vram_gate.get("device_total_bytes", 0) / 1024 ** 3,
+        },
+        "step_vs_load": _windows,
+        "host_rss": {
+            "peak_gib": _host_peak_bytes() / 1024 ** 3,
+            "peak_commit_gib": _host_peak_commit_bytes() / 1024 ** 3,
+        },
+        "wall_time_s": {
+            "model_load": model_load_wall_time_s,
+            "train_and_save": train_wall_time_s,
+        },
+    }
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", choices=("train", "reload"), required=True)
+    parser.add_argument("--arm", choices=("train", "reload", "resume"), required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--expect", default=None,
-                        help="the train arm's JSON, for --arm reload")
+                        help="the train arm's JSON, for --arm reload / --arm resume")
+    parser.add_argument("--resume-extra-steps", type=int, default=2,
+                        help="steps to run AFTER the resume, for --arm resume")
     parser.add_argument("--save-format", default="mixed")
     parser.add_argument("--branch", choices=("gen", "und", "both"), default="gen")
     parser.add_argument("--four-phase", action="store_true",
@@ -803,8 +1064,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     _require_repo_venv()
     args = _parse_args()
-    result = (_run_train_arm(args) if args.arm == "train"
-              else _run_reload_arm(args))
+    result = {
+        "train": _run_train_arm, "reload": _run_reload_arm, "resume": _run_resume_arm,
+    }[args.arm](args)
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in result.items()
                       if k != "post_train_digests"}, indent=2))

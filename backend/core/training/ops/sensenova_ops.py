@@ -10,16 +10,17 @@ differ only in which grad-mode assertion applies -- see
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from ..training_events import emit_training_warning
+from ..training_events import emit_training_event, emit_training_warning
 from .training_method import (
     _FULL_FINETUNE_METHOD,
     is_full_finetune,
@@ -507,14 +508,249 @@ def _own_save_format_remedy(source_metadata: Any) -> str:
         f"sensenova_full_finetune_save_format='{effective}'{requested_note}"
         + (f", branch '{branch}'" if branch else "")
         + ". Of the three formats only 'int8' keeps all 588 decoder Linears in "
-        "one quantized flavour, so only 'int8' can be trained on again -- "
-        "'mixed' and 'bf16' are outputs, not bases. Resuming a run therefore "
-        "requires that the run was created with "
-        "sensenova_full_finetune_save_format='int8'; it cannot be changed after "
-        "the fact, because the weights of the other two formats are already "
-        "written in a shape this loader does not accept as a training base. "
-        "'int8' is lossy on save (see its API description)."
+        "one quantized flavour, so only 'int8' can be handed to a NEW run as "
+        "model_path -- 'mixed' and 'bf16' are outputs, not distributable bases, "
+        "and 'int8' is lossy on save (see its API description). RESUMING the run "
+        "that wrote this file is a different question and does not go through "
+        "this gate: see accept_resume_shaped_base, which takes 'mixed' on a "
+        "single-half run and 'bf16' on a both-halves run losslessly, but only "
+        "for a checkpoint the resume path selected out of that run's own "
+        "output_dir."
     )
+
+
+# The one on-disk format whose resident layout equals what a fresh int8 load
+# plus ``materialize_int8_decoder_linears(branch)`` produces, per branch.
+# ``mixed`` keeps the untrained half's int8 codes untouched; with both halves
+# trained there is no int8 half left and the writer degenerates it to ``bf16``.
+_SENSENOVA_RESUME_FORMAT_FOR_BRANCH = {"gen": "mixed", "und": "mixed", "both": "bf16"}
+
+_RESUME_ENTRY_SUFFIXES = (".safetensors.index.json", ".safetensors")
+_RESUME_STEP_RE = re.compile(r"_step_(\d+)\Z")
+
+
+def _half_linear_layout(transformer: nn.Module) -> "Dict[str, Dict[str, Any]]":
+    """Per MoT half, how its decoder Linears are currently shaped.
+
+    ``float`` is a materialized/never-quantized ``nn.Linear``; ``int8`` is a
+    PLAIN ``Int8Linear`` (``type is``, so a ``ConvRotInt8Linear`` lands in
+    ``other`` instead of being folded in by ``isinstance``).
+    """
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+    from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
+
+    layout: "Dict[str, Dict[str, Any]]" = {}
+    for half in ("gen", "und"):
+        counts = {"float": 0, "int8": 0, "other": 0}
+        first_other = None
+        for path, _parent, _attr, module in iter_sensenova_lora_targets(
+            transformer, branch=half
+        ):
+            weight = getattr(module, "weight", None)
+            if type(module) is Int8Linear:
+                counts["int8"] += 1
+            elif isinstance(weight, nn.Parameter) and weight.dtype.is_floating_point:
+                counts["float"] += 1
+            else:
+                counts["other"] += 1
+                if first_other is None:
+                    first_other = f"{path} ({type(module).__name__})"
+        layout[half] = {
+            "counts": counts,
+            "total": sum(counts.values()),
+            "first_other": first_other,
+        }
+    return layout
+
+
+def _resume_selected_checkpoint(trainer: Any) -> Optional[Path]:
+    """The file this trainer is RESUMING from, or ``None`` if it is not resuming.
+
+    Not "a file that says it is ours". WHAT IS ACTUALLY CHECKED is the request
+    plus the path's SHAPE, not the identity of the caller: ``resume_from_checkpoint``
+    is set, ``model_path`` names an existing file, that file's parent resolves to
+    this run's own ``output_dir``, and its name is ``{run_name}_step_<digits>``
+    with a checkpoint suffix. That is a proxy for "the resume machinery
+    substituted this path" -- a sound one, because ``_load_checkpoint_as_base``
+    is the only thing that writes a path of that shape into ``model_path``, but a
+    proxy. Its residual is an operator deliberately copying a file into this
+    run's output directory under this run's checkpoint name, which is the same
+    class of act as pointing ``model_path`` anywhere.
+
+    THAT RESIDUAL HAS A SHARP EDGE. Weights from a DIFFERENT run so placed would
+    pass every check here and every check in ``accept_resume_shaped_base`` -- the
+    layout and the stamp describe a branch and a format, not an identity -- and
+    would then be resumed against THIS run's ``_optimizer.pt`` and
+    ``_state.json``. Nothing warns, because the sidecar warning fires on their
+    ABSENCE, and they are present. There is no defence here that does not amount
+    to trusting a claim; recorded so the next reader does not have to rediscover
+    it (SENSENOVA_TRAINING_DESIGN.md 6.4).
+    """
+    if not str(getattr(trainer, "resume_from_checkpoint", "") or "").strip():
+        return None
+    model_path = getattr(trainer, "model_path", None)
+    output_dir = getattr(trainer, "output_dir", None)
+    run_name = str(getattr(trainer, "run_name", "") or "").strip()
+    if not model_path or not output_dir or not run_name:
+        return None
+    path = Path(str(model_path))
+    if not path.is_file():
+        return None
+    try:
+        if path.parent.resolve() != Path(str(output_dir)).resolve():
+            return None
+    except OSError:
+        return None
+    for suffix in _RESUME_ENTRY_SUFFIXES:
+        if path.name.endswith(suffix):
+            stem = path.name[: -len(suffix)]
+            break
+    else:
+        return None
+    if not stem.startswith(f"{run_name}_step_") or not _RESUME_STEP_RE.search(stem):
+        return None
+    return path
+
+
+def accept_resume_shaped_base(
+    trainer: Any,
+    transformer: nn.Module,
+    metadata: Any,
+    *,
+    branch: str,
+) -> Optional[str]:
+    """Accept a full fine-tune's OWN checkpoint as a resume base, losslessly.
+
+    Returns the accepted format label, or ``None`` to leave the decision to
+    ``_assert_supported_quantized_training_base`` unchanged.
+
+    WHY THIS IS A SEPARATE QUESTION from that gate. That gate answers "is this a
+    distributable base a new run may be pointed at", and its answer for anything
+    but plain int8 is no. Resume asks something narrower: is the tree in front of
+    us the layout this run was already training in. For a single-half run that
+    layout is 294 float Linears on the trained half and 294 plain ``Int8Linear``
+    on the frozen one -- exactly what the ``mixed`` writer emits, and exactly
+    what a fresh int8 load plus ``materialize_int8_decoder_linears`` produces.
+    For a both-halves run it is 588 float Linears, which is the ``bf16`` writer.
+    Both are bit-exact round trips (bf16 in, bf16 out, ``assign=True``), so this
+    is the only lossless resume the ``both`` branch has: its ``int8`` alternative
+    requantizes every trained weight on every save. MEASURED SEPARATELY, and not
+    equally: the write/read round trip is byte-identical for both layouts
+    (SENSENOVA_TRAINING_DESIGN.md 13.4 U-2-5, 294/294 and 588/588 SHA-256), but a
+    real RESUME has been run only for ``gen``/``mixed`` (8.3.4). The ``both``
+    case is the same write/read pair feeding the same acceptance, which is an
+    inference, not a measurement.
+
+    WHAT IS TRUSTED. The class census on the CONSTRUCTED TREE decides what is
+    accepted; metadata never widens that. Metadata is required and required to
+    agree -- a file with no ``sensenova_trained_branch`` / ``sensenova_save_format``
+    is refused, and one whose claim contradicts the tree or the run's branch is
+    refused by name. So the claim is a necessary condition that can only narrow
+    acceptance, and the sentence "a file claiming to be ours is not proof that it
+    is" is answered by not relying on the claim for anything load-bearing.
+
+    Materialization is SKIPPED for an accepted base: its halves are already in
+    the shape it produces, and running it would refuse (it requires every target
+    to be a plain ``Int8Linear``).
+    """
+    layout = _half_linear_layout(transformer)
+    if sum(layout[half]["counts"]["float"] for half in ("gen", "und")) == 0:
+        # The distributed int8 layout, or something the shipped gate refuses.
+        return None
+    checkpoint = _resume_selected_checkpoint(trainer)
+    if checkpoint is None:
+        # A float-carrying tree handed over as model_path: not this path's
+        # question, and the shipped gate already refuses it by name.
+        return None
+
+    census = "; ".join(
+        f"{half} half: " + ", ".join(f"{k}={v}" for k, v in layout[half]["counts"].items())
+        + (f", first unexpected {layout[half]['first_other']}"
+           if layout[half]["first_other"] else "")
+        for half in ("gen", "und")
+    )
+    # Named WITHOUT its suffix: BaseTrainer.__init__ classifies any resume failure
+    # whose text contains "safetensor" as corruption and then reloads every older
+    # checkpoint as a fallback -- 17-25 GiB apiece, all refused for the same
+    # structural reason.
+    entry = checkpoint.name.split(".safetensors")[0]
+    step = int(_RESUME_STEP_RE.search(entry).group(1))
+    trained_halves = ("gen", "und") if branch == "both" else (branch,)
+    expected_format = _SENSENOVA_RESUME_FORMAT_FOR_BRANCH[branch]
+    for half in ("gen", "und"):
+        want = "float" if half in trained_halves else "int8"
+        if layout[half]["counts"][want] != _SENSENOVA_QUANT_LINEAR_COUNT // 2:
+            raise RuntimeError(
+                f"SenseNova cannot resume the {branch!r} branch from "
+                f"{entry}: the {half} half of its decoder is not the "
+                f"shape this run trains in. Expected all "
+                f"{_SENSENOVA_QUANT_LINEAR_COUNT // 2} of its Linears to be "
+                f"{'floating-point nn.Linear' if want == 'float' else 'plain Int8Linear'}; "
+                f"got {census}. A resume of this branch is only lossless from a "
+                f"checkpoint written as "
+                f"sensenova_full_finetune_save_format='{expected_format}'; the "
+                f"other formats leave the decoder in a different layout and are "
+                f"refused rather than reshaped."
+            )
+
+    claimed = metadata or {}
+    claimed_branch = str(claimed.get("sensenova_trained_branch") or "").strip()
+    claimed_format = str(claimed.get("sensenova_save_format") or "").strip()
+    if not claimed_branch or not claimed_format:
+        raise RuntimeError(
+            f"SenseNova refuses to resume from {entry}: it carries the "
+            f"decoder layout a {branch!r}-branch resume needs, but not this "
+            f"repo's own save stamp (sensenova_trained_branch / "
+            f"sensenova_save_format). Both the structure and the stamp are "
+            f"required -- the structure decides what is loaded, the stamp is what "
+            f"rules out an unrelated file that happens to have the same layout. "
+            f"Every checkpoint this repo's full fine-tune writes carries both."
+        )
+    if claimed_branch != branch or claimed_format != expected_format:
+        raise RuntimeError(
+            f"SenseNova refuses to resume from {entry}: its own metadata "
+            f"disagrees with what it is being resumed as. The file says "
+            f"sensenova_trained_branch={claimed_branch!r}, "
+            f"sensenova_save_format={claimed_format!r}; this run trains the "
+            f"{branch!r} branch, whose resumable format is {expected_format!r}. "
+            f"The tree loaded as: {census}. A file whose stamp and whose tensors "
+            f"tell different stories is refused rather than believed on either."
+        )
+
+    aux_base = f"{getattr(trainer, 'run_name', '')}_step_{step:06d}"
+    missing = [
+        name
+        for name in (f"{aux_base}_optimizer.pt", f"{aux_base}_state.json")
+        if not (checkpoint.parent / name).is_file()
+    ]
+    if missing:
+        # The weights resume losslessly either way; these two carry the Adafactor
+        # state and the epoch/batch position. Losing them silently is what the
+        # audit this path answers objected to.
+        emit_training_warning(
+            f"SenseNova is resuming from {entry} with "
+            f"{' and '.join(missing)} absent. The decoder weights resume exactly, "
+            f"but the optimizer state and/or the epoch/batch position for step "
+            f"{step} cannot be restored from this output directory; the run "
+            f"continues from global step {step} with whatever of the two is "
+            f"present.",
+            code="sensenova_resume_state_incomplete",
+            prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+        )
+
+    # On the channel, not just stdout: relaxing a safety gate is at least as
+    # worth telling the user about as the degraded case above, which warns.
+    emit_training_event(
+        "info",
+        f"SenseNova is resuming the {branch!r} branch from its own checkpoint "
+        f"{entry} at step {step}, accepted losslessly as "
+        f"sensenova_full_finetune_save_format='{claimed_format}' ({census}). The "
+        f"trained half is already floating point, so it is loaded as saved and "
+        f"not re-materialized from int8.",
+        code="sensenova_resume_base_accepted",
+        prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+    )
+    return claimed_format
 
 
 def _assert_supported_quantized_training_base(
@@ -655,13 +891,23 @@ def load_components(trainer: Any) -> None:
 
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
-    _assert_supported_quantized_training_base(
-        trainer.transformer,
-        training_method=training_method,
-        source_metadata=components.get("metadata"),
-    )
-    _assert_pixel_head_fm_decoder(trainer.transformer)
+    # A full fine-tune resuming from its OWN checkpoint is a different question
+    # from which base a new run may be pointed at; only the resume path can
+    # widen, and only to the layout it was already training in.
+    resumed_format = None
     if branch is not None:
+        resumed_format = accept_resume_shaped_base(
+            trainer, trainer.transformer, components.get("metadata"), branch=branch
+        )
+    trainer.sensenova_resumed_save_format = resumed_format
+    if resumed_format is None:
+        _assert_supported_quantized_training_base(
+            trainer.transformer,
+            training_method=training_method,
+            source_metadata=components.get("metadata"),
+        )
+    _assert_pixel_head_fm_decoder(trainer.transformer)
+    if branch is not None and resumed_format is None:
         from core.models.sensenova.loader import materialize_int8_decoder_linears
 
         materialize_int8_decoder_linears(

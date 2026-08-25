@@ -28,7 +28,10 @@
 > 本文書が書いていた「学習 step はロード時 high-water を一度も超えていない」は
 > **偽**（成立するのは 4 相 ON の both arm だけ）、64px の residency 数値は
 > **image token 4 個の点**で取られたものだった。同時に **解像度上限・`int8` 形式の
-> 往復と resume・保存 checkpoint での生成**の 3 件が実測で閉じた。
+> 往復・保存 checkpoint での生成**の 3 件が実測で閉じた。
+> **【2026-08-25、外部監査 + `resume` arm】§8.3.3 が「resume も実測になった」と
+> 書いたのは過大である。訂正は §8.3.3 に、本物の resume の実測は §8.3.4 に、
+> それを可能にした受理経路（`accept_resume_shaped_base`）は §6.4 にある。**
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -921,8 +924,53 @@ Phase 2b は LoRA と違い**モデル本体を出力する**ため、Phase 1 �
 - **mixed と bf16 は「再学習の base」にはならない。**
   `_assert_supported_quantized_training_base` は 588 個すべてが単一の量子化
   flavour であることを要求するので、294 個が `nn.Linear` の mixed も、
-  量子化ゼロの bf16 も拒否される。**int8 形式だけが再選択できる。**
-  これは UI 文言にも書いた。
+  量子化ゼロの bf16 も拒否される。**新しい run の `model_path` に選べるのは
+  int8 形式だけである。** これは UI 文言にも書いた。
+- **【2026-08-25 追加】「配布 base として受理できるか」と「自分の run を
+  resume できるか」は別の問である。** 後者を答えるのが
+  `ops/sensenova_ops.accept_resume_shaped_base` で、**resume 経路からしか
+  到達しない**。受理するのは、その run の branch が学習していた常駐レイアウト
+  そのもの — gen/und branch なら「学習 half 294 個が float `nn.Linear` +
+  凍結 half 294 個が plain `Int8Linear`」（= `mixed` が書くもの）、
+  both branch なら「588 個すべて float」（= `bf16`。both × mixed の縮退先）。
+  どちらも本番 reader が**バイト一致**で読み戻す形式なので、
+  **`both` branch にとってこれが唯一の可逆 resume である**（`int8` は
+  保存のたびに学習 half を再量子化する）。受理された base では
+  `materialize_int8_decoder_linears` を**呼ばない** — 既にその出力の形だからで、
+  呼べば「全 target が plain Int8Linear であること」を要求して拒否する。
+  - **信頼の規則。** 受理を決めるのは**構築済みツリーの class census** であって
+    metadata ではない。metadata（`sensenova_trained_branch` /
+    `sensenova_save_format`）は**必須の相互確認**で、無ければ拒否、
+    ツリーや run の branch と食い違えば名指しで拒否する。すなわち claim は
+    受理を**狭める**ことしかできず、広げることはできない。加えて到達条件として
+    (1) run が resume を要求している、(2) loader が読もうとしている path が
+    resume 機構の差し替えたもの、(3) それが**その run 自身の `output_dir`** 内、
+    (4) 名前がその run の `run_name` + step —— の 4 つを要求する。
+    「我々のものだと自称するファイル」は、run の checkpoint 名でその run の
+    出力ディレクトリに置かれない限りこの経路に届かない。
+  - `{run_name}_step_NNNNNN_optimizer.pt` / `_state.json` が欠けている場合は
+    **拒否ではなく warning**（`sensenova_resume_state_incomplete`）。重みは
+    どちらにせよ可逆に戻るが、Adafactor state と epoch/batch 位置は戻らない。
+  - run 作成時に、その branch で可逆 resume にならない save format を選んで
+    いれば `sensenova_save_format_not_resumable` を warning で出す
+    （`train_runner._warn_on_unresumable_sensenova_save_format`）。
+    **format は後から変更できない**ので、言うなら作成時である。
+  - **測ったものと推論を分ける。** write→read のバイト一致は
+    **両レイアウトとも実測**（§13.4 U-2-5: `mixed` 294/294、`both`×`bf16`
+    588/588、SHA-256、別プロセスの本番 reader）。**実 resume を回したのは
+    `gen`×`mixed` だけ**（§8.3.4）。`both`×`bf16` も resume できるというのは、
+    同じ write/read 対が同じ受理経路に入るという**推論であって実測ではない**。
+    `und` と 64px 超も resume としては未測定。テストは
+    `backend/tests/sensenova_full_finetune_resume_base_test.py`。
+  - **緩和が届かない残余**（§8.3.4 の負の対照が扱わない範囲）。leg 1 が見るのは
+    path の**形**（この run の `output_dir` 内・`{run_name}_step_<digits>`）で
+    あって呼び出し元の同一性ではない。したがって**別 run の重み**をその名前で
+    この run の出力ディレクトリに置くと、layout も stamp も branch と format しか
+    語らないので受理され、**この run の `_optimizer.pt` / `_state.json` と
+    突き合わされる。警告は出ない** — sidecar 警告は「無いこと」で発火するが、
+    この場合それらは有るからである。`model_path` を任意の場所へ向ける行為と
+    同じ類の、意図的な操作でしか起こらない。**claim を信じる以外の防御は無い**
+    ので、閉じたとは書かない。
 - **書き手が完全性を保証する。** 読み手は per-Linear 判定 + 3 カウント一致しか
   見ないので、**588 のどの部分集合でも「materialize 済み」として受理する** —
   half の途中で止まった save は無警告でロードでき、valid だが誤ったモデルになる。
@@ -1901,13 +1949,18 @@ skip される**（`cuda_error_skip`。`base_trainer.py` の census 呼び出し
 
 #### 閉じた 2 件（§12 の未測定事項）
 
-- **`int8` 形式の実 run 往復と resume（CLOSED）。** C1 が int8 で保存
+- **`int8` 形式の実 run 往復（CLOSED）。** C1 が int8 で保存
   （**18,885,547,920 byte = 17.5885 GiB**）、C2 が本番 reader で別プロセスから
   読み戻して **588/588 が `Int8Linear`**（gen 294 = trained、und 294 = frozen）、
   0.618 s。**digest 比較はしていない** — int8 の再量子化は非可逆だからである。
   C3 がその file を `model_path` として `FullParameterTrainer` に**再投入**し、
   294 target・6 step 有限 loss・**294/294 が動いた**（failure 0）。
-  **再学習の base になれる唯一の形式の resume が、議論ではなく実測になった。**
+  **【訂正、2026-08-25、外部監査】旧文の「resume が議論ではなく実測になった」は
+  過大である。** C3 が示したのは **その file が「再学習の base」になれること**
+  だけで、resume ではない: `resume_from_checkpoint` を通っておらず、
+  global step / epoch / batch 位置も、Adafactor state も、LR scheduler 位置も、
+  resume 直後の census も、**1 つも関与していない**。
+  本物の resume は **§8.3.4** で測った。
 - **保存 checkpoint からの生成（CLOSED、構造のみ）。** D1 が `mixed`/gen を保存
   （**26,982,323,721 byte = 25.1292 GiB**）、D2 が**本番 reader + 本番生成経路**で
   512×512 / 8 step / seed 1234 を回し、denoise テンソルは有限、**PNG 233,867 byte を
@@ -1932,6 +1985,42 @@ results.json は 2 本目だけを arm として保持し、両者は `_campaign
 （gen arm は ~65 GiB、C3 は 51.2 GiB）。**VRAM は対照的にバイト単位で再現する**ので、
 予算の根拠にできるのは VRAM 側だけである。
 
+#### host 側の所要量（実測と、そこから導いた推奨を分けて書く）
+
+48 GB の card では **VRAM より host 側が先に効く**。この節は 2 つを混ぜないために
+**実測**と**推奨**を分けて並べる。**推奨は監査の助言であって実測ではない。**
+
+**実測（すべて本節または §13.4 の run から）**
+
+| 量 | 値 | 出所・条件 |
+|---|---:|---|
+| `both` run の peak commit charge | **67.95 / 89.10 GiB** | 同一コマンドの B3 を 2 本。working set は 49.108 で一致。**再現しないので高い方を上限として扱う** |
+| `gen` arm の peak commit charge | ~65 GiB | 同キャンペーン |
+| C3（int8 再投入）の peak commit | 51.2 GiB | 同キャンペーン |
+| 測定に使った host | 93.585 GiB | 本節「測定条件」 |
+| `both` checkpoint（bf16） | **35,091,856,594 B = 32.68184 GiB** | §13.4 U-2-5 の保存表 |
+| checkpoint（int8、**gen** branch の保存） | **18,885,547,920 B = 17.5885 GiB** | C1 の保存（§8.3.3）。**`both` でも同じ**というのは「int8 file は どちらでも 588 個すべてを量子化する」からの**推論であって実測ではない** |
+| 4 相が step ごとに動かす half | int8 **7.60 GiB** を往復 2 回（往復 0.666 s） | §8.3.2 U-2-4。bf16 なら half は 15.09 GiB なので転送量は倍 |
+
+**推奨（上記からの導出。実測ではない）**
+
+- **commit limit は最低 100 GiB、できれば 110-120 GiB。** 89.10 GiB という
+  上限側の実測に、再現しない 21 GiB 幅ぶんの余裕を足した値である。
+- **物理 RAM は 96 GiB 以上。** pinned staging は物理ページを要求するので、
+  pagefile で代替できるとは限らない。
+- **checkpoint 用に 150-300 GiB の空き。** 1 本 32.68 GiB（bf16）を複数世代
+  保持する前提。int8 のみなら下限側でよい。
+- **1024px では GPU を他プロセスと共有しない。** B3 の OOM は card ではなく
+  0.72 の per-process gate が出したものだが、`both` の reserved は run 中ずっと
+  33.9-34.4 GiB を握り続ける（本節）。
+
+**利用者にはどこで見えるか**: この表の実測値と上の推奨は
+`arch_capabilities.py` の `text_encoder_training` advisory にも入れてある
+（`GET /schema/arch-capabilities` → 学習フォームの Train Text Encoder 脇に表示）。
+**複数日の run を始める人は doc ではなく UI を読む**、というのがその理由である。
+本文書は開発者向けの原本、advisory はその要約であり、両者は
+`backend/tests/sensenova_advisory_resolution_and_host_test.py` で突き合わせてある。
+
 #### §8.3 の gate との関係（閉じていない）
 
 本キャンペーンが A/B したのは **both branch full FT × 4 相 eviction** であって、
@@ -1939,6 +2028,75 @@ results.json は 2 本目だけを arm として保持し、両者は `_campaign
 さらに gate の前提「activation が支配する解像度」自体が**この測定では成立していない** —
 1024px でも activation は gen で 0.718 GiB、weight residency 25.1 GiB に対して
 小さい。**したがって §8.3 の gate は依然として未解決である**（§8.3.1、§11 Phase 2b-0）。
+
+### 8.3.4 本物の resume（2026-08-25、gen × mixed × 64px）
+
+§8.3.3 の C3 が resume ではなかったこと（上の訂正）を受けて測った。probe は
+`probes/sensenova_full_finetune.py --arm resume`（`--arm train` の出力 JSON を
+`--expect` に取り、**同じ `output_dir` を別プロセスで引き継ぐ**）。
+
+| arm | 内容 | step | peak allocated | peak reserved | host peak wset / commit | wall |
+|---|---|---|---:|---:|---:|---:|
+| R1 | `train` gen / mixed / 3 step | 1-3 | **26.0821 GiB** | 26.1680 | 32.101 / 65.185 | load 18.32 s + 23.59 s |
+| R2 | `resume` +2 step | **4-5** | **26.0821 GiB** | 26.1738 | 8.348 / 42.933 | load 17.00 s + 20.35 s |
+
+R1 が書いたのは **26,982,323,721 byte = 25.1292 GiB**（7 shard + index）と、
+`_step_000003_optimizer.pt` / `_step_000003_state.json`。両 arm とも failure 0。
+
+**運ばれたもの（監査が列挙した項目に 1 対 1 で対応する）:**
+
+- **step 位置**: R2 が報告した step は `[4, 5]`。`[1, 2]` ではない。
+- **epoch / batch 位置**: `_state.json` から `epoch=2, batch_idx=1,
+  global_step=3` を読み戻し、`Mid-epoch resume: epoch 3, batch 1, step 3`。
+- **Adafactor state**: `load_optimizer_state` が **True** を返し、
+  **294 個**の per-parameter state が入った（fresh なら 0）。キーは
+  `RMS` / `exp_avg_sq_row` / `exp_avg_sq_col` / `step`、内部 `step` は **3**。
+  すなわち**この arch の optimizer state は保存されているし、戻る** —
+  `save_optimizer_state` / `load_optimizer_state` は `BaseTrainer.train` に
+  あって arch 非依存であり、SenseNova 固有の欠落は無かった。
+- **LR scheduler 位置**: resume 直後 `last_epoch=3`（`for _ in range(global_step):
+  lr_scheduler.step()`）、run 終了時 `last_epoch=5`。LR は 1e-6 で一定
+  （`lr_scheduler_type: constant`。**位置が正しいことは示したが、
+  非定数スケジュールでの LR 値の連続性は測っていない**）。
+- **resume 直後の census**: `optimizer_update_census` が 294 を期待して
+  **2 step とも通過**、exempt は layer 41 の 5 本（`und` 側の構造的到達不能。
+  gen branch では発火しない）。resume 後 2 step の moved census は
+  **294/294 が動き、unmoved 0**。
+- **重み**: resume がロードしたツリーの学習 half を、R1 が保存時に持っていた
+  per-Linear SHA-256 と比較して **294/294 バイト一致**。
+  **これが `mixed`/`bf16` を resume base として受理する根拠である。**
+
+**stochastic rounding には復元すべき state が無い**（更新ごとの乱択で、
+optimizer state にも checkpoint にも残らない）。したがって resume 後の軌跡は
+中断しなかった run と**ビット一致しない** — これは本経路の性質であって、
+形式の可逆性とは別の話である。
+
+**負の対照（実ファイル）**: 同じ `mixed`/gen の checkpoint を `both` branch の
+run から resume させると、**構造で拒否され、run は abort する**
+（base から学習し直さない）:
+
+```
+RuntimeError: SenseNova cannot resume the 'both' branch from
+sensenova_u2_full_finetune_smoke_step_000005: the und half of its decoder is not
+the shape this run trains in. Expected all 294 of its Linears to be
+floating-point nn.Linear; got gen half: float=294, int8=0, other=0;
+und half: float=0, int8=294, other=0. ...
+```
+
+**この負の対照が見つけた副次的な事実（arch 非依存）**: `BaseTrainer.__init__`
+の resume 失敗ハンドラは、例外テキストに `"safetensor"` が含まれるだけで
+**corruption と分類し、古い checkpoint を順に fallback 再ロードする**。
+拒否メッセージが checkpoint を拡張子込みで名指ししていた最初の版では、
+**同じ構造的理由で落ちるファイルを 3 回**（17-25 GiB ずつ）読み直した。
+本経路の拒否は checkpoint を**拡張子抜きの名前**で呼ぶようにして
+**読み直しは 1 回**になった。`base_trainer.py` 側の分類はそのままである
+（本作業の所有外）。
+
+**測っていないこと**: `both` branch の実 resume（32.68 GiB の bf16 file を
+書いて読み直す arm。VRAM は本節の gen arm と同じ機構だが、host commit が
+§8.3.3 の測定で 67-89 GiB に振れる）、`und` branch の resume、64px 超での
+resume、metadata を書き換えた実ファイルでの拒否（合成ツリーのテストのみ）、
+そして**品質は一切**。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -2418,7 +2576,11 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   **【CLOSED、2026-08-25、§8.3.3】** `int8` を実 run で保存（17.5885 GiB）→
   本番 reader が別プロセスで **588/588 を `Int8Linear`** として読み戻し →
   その file を学習 base として再投入し **294/294 が動いた**。
-  **resume も実測になった。** digest 比較だけは行っていない（再量子化が非可逆）。
+  digest 比較だけは行っていない（再量子化が非可逆）。
+  **resume はこれでは閉じない**（§8.3.3 の訂正）。**resume 自体は §8.3.4 で
+  別途 CLOSED**: `mixed`/gen を同じ `output_dir` から別プロセスで resume し、
+  step 4-5・Adafactor state 294 個・scheduler 位置 3→5・学習 half
+  **294/294 バイト一致**。`both` / `und` branch の実 resume は未測定。
 - ~~**materialize 時の `weight_dtype` 契約が未決定である。**~~ **決定済み
   （`601d0271`）: bf16 のみ。ロードより前に拒否する。**
   `materialize_int8_decoder_linears` は `trainer.weight_dtype` **へ向けて** dequant
@@ -3140,11 +3302,33 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
          量子化 flavour であることを要求するので、**既定の `mixed`
          （294 `nn.Linear` + 294 `Int8Linear`）も `bf16` も落ちる**。
        - **fail-loud なので安全側**であり、静かに base から学習し直すことはない。
-         しかし**再学習の base になるのは `int8` だけ**で、それは openapi が
+         ~~しかし**再学習の base になるのは `int8` だけ**で、それは openapi が
          lossy と明記している形式である。**resume したい run は作成時に
          `sensenova_full_finetune_save_format='int8'` を選んでおく必要があり、
          後から変更はできない**（他 2 形式の重みは既に loader が base として
-         受理しない形で書かれている）。
+         受理しない形で書かれている）。~~
+       - **【CLOSED、2026-08-25】** この行き止まりは解消した。
+         **`both` branch は `int8` でも可逆に resume できなかった**
+         （保存のたびに再量子化する）ので、実際には「3 形式のどれを選んでも
+         可逆 resume が無い」構成が存在していた、というのが正確な帰結である。
+         `accept_resume_shaped_base`（§6.4）が、**resume 経路からのみ**、
+         その run の branch が学習していた常駐レイアウトと一致する自分自身の
+         checkpoint を受理するようにした:
+         gen/und → `mixed`、both → `bf16`（= both × mixed の縮退先）。
+         どちらも本番 reader がバイト一致で読み戻す形式なので可逆である。
+         受理の判定は**構築済みツリーの class census**で行い、metadata は
+         「無ければ拒否・食い違えば拒否」の相互確認としてのみ使う。
+         配布 base の gate（`_assert_supported_quantized_training_base`）は
+         **一切変えていない** — `model_path` に渡す新規 run の base は今も
+         plain int8 だけである。実測 §8.3.4、テスト
+         `backend/tests/sensenova_full_finetune_resume_base_test.py`。
+       - **step / epoch / batch 位置・Adafactor state・LR scheduler 位置は
+         もともと保存され、もともと戻っていた** —
+         `save_optimizer_state` / `save_training_state` /
+         `load_optimizer_state` / `load_training_state` と scheduler の
+         早送りはすべて `BaseTrainer.train` にあり arch 非依存で、
+         SenseNova 固有の欠落は無い。**それらに到達できていなかっただけである**
+         （load_components がその前に拒否していた）。§8.3.4 で実測した。
        - **コード側の対応（実施済み）**: 拒否されたツリーが**このリポジトリ自身の
          writer が書いたもの**だったとき、guard が
          `sensenova_full_finetune_save_format` を**名指しする**ようにした
@@ -3745,7 +3929,9 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       これは**再学習の base になれる唯一の形式**なので（§6.4）、
       resume の実測も同時に空いたままである。~~
       **【CLOSED、§8.3.3】** 保存 17.5885 GiB → 本番 reader で 588/588 `Int8Linear` →
-      学習 base として再投入し 294/294 が動いた。**resume も実測になった。**
+      学習 base として再投入し 294/294 が動いた。~~**resume も実測になった。**~~
+      **これは resume ではない**（§8.3.3 の訂正）。**resume の実測は §8.3.4**、
+      `mixed`/gen の 1 branch のみ。`both` / `und` の実 resume は未測定。
     - ~~**保存した checkpoint での生成**。reader が読めることまでで、
       推論そのものは 3 branch とも走らせていない。~~
       **【CLOSED、§8.3.3。ただし `mixed`/gen の 1 branch のみ】**

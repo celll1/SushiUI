@@ -965,16 +965,24 @@ def test_phase_eviction_moves_understanding_lora_with_the_understanding_half():
 
 
 def test_capability_scopes_text_encoder_training_to_full_finetune():
+    """The full-fine-tune claim moved axis. It used to be a REFUSAL scoped to
+    `full_finetune` while the API accepted `train_text_encoder` and ran it; it is
+    now an ADVISORY with the same scope, carrying the measured memory cost. LoRA
+    is unaffected in both directions -- it trains this branch and says nothing
+    about it. See sensenova_capability_advisory_test.py."""
     from api.arch_capabilities import (
-        TRAINING_FEATURE_UNSUPPORTED,
+        TRAINING_FEATURE_ADVISORY,
+        training_feature_advisories,
         training_feature_unsupported_reason,
     )
 
-    entry = TRAINING_FEATURE_UNSUPPORTED["sensenova"]["text_encoder_training"]
+    entry = TRAINING_FEATURE_ADVISORY["sensenova"]["text_encoder_training"]
     assert entry["methods"] == ["full_finetune"]
-    assert training_feature_unsupported_reason("sensenova", "text_encoder_training", "lora") is None
-    assert training_feature_unsupported_reason(
-        "sensenova", "text_encoder_training", "full_finetune"
-    )
-    # Unscoped queries still answer, as they do for Z-Image's mirror declaration.
-    assert training_feature_unsupported_reason("sensenova", "text_encoder_training")
+    assert entry["level"] == "high_memory"
+    assert "text_encoder_training" not in training_feature_advisories("sensenova", "lora")
+    assert "text_encoder_training" in training_feature_advisories(
+        "sensenova", "full_finetune")
+    # Nothing declares the mechanism absent any more, under any method.
+    for method in ("lora", "full_finetune", None):
+        assert training_feature_unsupported_reason(
+            "sensenova", "text_encoder_training", method) is None

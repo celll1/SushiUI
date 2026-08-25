@@ -1715,6 +1715,11 @@ export interface ArchCapabilities {
   // loads. ABSENT MEANS UNCONSTRAINED. Optional so an older backend without the
   // key still type-checks.
   training_required_values?: Record<string, Record<string, TrainingRequiredValue>>;
+  // arch -> training config FEATURE -> what the backend says about a feature it
+  // DOES implement: `{level, reason, methods?}`. A FIFTH axis, and the only one
+  // that refuses nothing (see `trainingFeatureAdvisory` below). Optional so an
+  // older backend without the key still type-checks.
+  training_feature_advisory?: Record<string, Record<string, TrainingFeatureAdvisory>>;
   // Architecture id -> its user-facing spelling ("sensenova" -> "SenseNova
   // U1.5"), from the backend's ARCH_DISPLAY_NAMES. An id with no entry falls
   // back to the id, so a new architecture shows up (unprettified) rather than
@@ -1856,6 +1861,32 @@ export const trainingFeatureUnsupportedReason = (
   if (!entry) return undefined;
   if (entry.methods && method && !entry.methods.includes(method)) return undefined;
   return entry.reason;
+};
+
+// What the backend says ABOUT a training feature it does implement.
+export interface TrainingFeatureAdvisory {
+  // "high_memory" — the reason carries measured numbers; "experimental" — the
+  // path is implemented and thinly measured. Neither is a gate.
+  level: "experimental" | "high_memory";
+  reason: string;
+  methods?: string[];
+}
+
+// The advisory for `feature` on `arch` under `method`, or undefined when there
+// is none. NEVER a reason to hide or disable a control: the backend accepts and
+// runs the feature, so a caller that treats this like a refusal recreates the
+// contradiction the axis exists to end.
+export const trainingFeatureAdvisory = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  feature: string,
+  method?: string | null
+): TrainingFeatureAdvisory | undefined => {
+  if (!arch) return undefined;
+  const entry = caps?.training_feature_advisory?.[arch]?.[feature];
+  if (!entry) return undefined;
+  if (entry.methods && method && !entry.methods.includes(method)) return undefined;
+  return entry;
 };
 
 // One training-config parameter's required value for one architecture.
@@ -7128,6 +7159,11 @@ export interface TrainingRunCreateRequest {
   run_name?: string;  // Optional - will use UUID if not provided
   training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
   sensenova_mot_phase_eviction?: boolean;
+  // SenseNova full fine-tune only: splits the backward at the prefix KV cache
+  // so a TRAINED understanding half can still be evicted. Refused before the
+  // model loads unless train_text_encoder and sensenova_mot_phase_eviction are
+  // both set; and those two TOGETHER are refused without it.
+  sensenova_four_phase_eviction?: boolean;
   // SenseNova full fine-tune only: on-disk format of the saved model.
   // "mixed" (default) | "bf16" | "int8". See openapi.yaml for the measured
   // sizes and the int8 requantization loss census.

@@ -1021,6 +1021,13 @@ async def get_arch_capabilities():
     control to the value rather than offering a default the run rejects or
     discards. Absent means unconstrained.
 
+    `training_feature_advisory` is a FIFTH axis and the only one that refuses
+    nothing: architecture -> training CONFIG FEATURE -> `{level, reason,
+    methods?}` for a feature that IS implemented and IS accepted, so a client
+    keeps the control visible and enabled and shows the reason beside it. See
+    `TRAINING_FEATURE_ADVISORY` in `api/arch_capabilities.py` for the levels and
+    the partition it must satisfy against `training_feature_unsupported`.
+
     `arch_display_names` is the user-facing spelling of an architecture id
     ("sensenova" -> "SenseNova U1.5"), served from the backend's own
     `ARCH_DISPLAY_NAMES` so a client's architecture filter labels come from one
@@ -1056,6 +1063,7 @@ async def get_arch_capabilities():
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
         TRAINING_FEATURE_UNSUPPORTED, TRAINING_FEATURE_PARAMS,
         TRAINING_FEATURE_LABELS, TRAINING_REQUIRED_VALUES,
+        TRAINING_FEATURE_ADVISORY,
         AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
         chain_context_payload, video_constraints_payload,
     )
@@ -1069,6 +1077,7 @@ async def get_arch_capabilities():
         "training_feature_params": TRAINING_FEATURE_PARAMS,
         "training_feature_labels": TRAINING_FEATURE_LABELS,
         "training_required_values": TRAINING_REQUIRED_VALUES,
+        "training_feature_advisory": TRAINING_FEATURE_ADVISORY,
         "arch_display_names": ARCH_DISPLAY_NAMES,
         "video_constraints": video_constraints_payload(),
         "chain_context": chain_context_payload(),

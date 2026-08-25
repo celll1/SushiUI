@@ -1,7 +1,8 @@
 # SenseNova U1.5 学習設計案
 
 > Status: Phase 0 / Phase 1 / Phase 3 / Phase U-0 / Phase U-1 は完了。
-> Phase 2b と Phase U-2 / U-3 は未完（U-2-1 = 2b-1 が `cc296e84`、
+> **Phase 2b と Phase U-2 も offload 合成（2b-4 / §8.3.1）を除いて完了**、
+> 残る未完は 2b-4 と U-3 である（U-2-1 = 2b-1 が `cc296e84`、
 > U-2-2 の step 1-2 が `601d0271`、U-2-3 が `24220b5c`、U-2-6 が `e6bdcc38` で着地）。
 > **【U-2-2 step 3 着地】full FT の受付は開いた** — `TRAINING_UNSUPPORTED
 > ["sensenova"]["full_finetune"]` と `train_runner` の `network.type != "lora"`
@@ -47,8 +48,10 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
    （§6.4）、その最初の一片 — int8 base を materialize する経路 (a) — は
    **`cc296e84` で、materialize した half を collect する adapter と契約は
    `601d0271` で、U-2-3（stochastic rounding + dropout guard）は `24220b5c` で
-   着地した。ただし受付はまだ開いていない**（残るのは出力 checkpoint format の
-   決定と、ユーザーに届く通知経路。§13.4 U-2-2）。
+   着地した。**~~ただし受付はまだ開いていない（残るのは出力 checkpoint format の
+   決定と、ユーザーに届く通知経路。§13.4 U-2-2）。~~
+   **【解消】checkpoint format は `22b22f09`、受付の解錠は U-2-2 step 3
+   （`b2694674`）で着地している。full FT は現在ロード前 gate を持たない。**
 3. **Phase 3（reference 混在）は per-item presence を真とする。**（**DONE**、
    `7a09af52`..`611a4a24`。以下の判断はすべてそのまま実装された。）初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
@@ -115,14 +118,15 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | Phase 1 の loader、prefix、pixel-space step、LoRA adapter を実装済み | DONE |
 | `base_trainer.py` / `train_runner.py` | B1、単一 flavour の int8 base、no-reference、no-block-swap の初版契約と専用 prefix payload を統合済み | DONE |
 | `detect_prediction_config` | `sensenova` を flow / velocity として登録し退行テスト済み | DONE |
-| `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
+| `TRAINING_UNSUPPORTED` | ~~full FT / ReLoRA / ControlNet をロード前に拒否~~ **ReLoRA / ControlNet のみ。full FT の entry は U-2-2 step 3（`b2694674`）で削除済み** | DONE |
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference 混在（Phase 3） | ゲート 6 箇所中 4 箇所を解除（残り 2 は意図的に flux2 限定）、prefix への ViT token splice、学習中 sample の ref 対応、実 checkpoint の混在 smoke まで完了（`7a09af52`..`611a4a24`） | DONE |
-| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。通知経路（`training_log`）も着地。**残るのは出力 checkpoint format の決定と受付の解錠**（§6.4、§13.4 U-2-2） | PENDING |
+| full FT（Phase 2b） | gate/loader の method-aware 化（`cc296e84`）、adapter + 契約 + fused backward の decoupling（`601d0271`）、stochastic rounding の強制 + dropout guard（`24220b5c`）は着地。通知経路（`training_log`）も着地。~~**残るのは出力 checkpoint format の決定と受付の解錠**（§6.4、§13.4 U-2-2）~~ **【両方着地】format は `22b22f09`、受付の解錠は `b2694674`。残るのは 2b-4（offload 合成、§8.3.1）のみ** | DONE（2b-4 を除く） |
 | understanding branch の LoRA（Phase U-0 / U-1） | `train_text_encoder` で選択（既定 OFF）。微分可能 prefix、branch 対応の単一列挙器、推論側の und 適用、assert 分離、実 checkpoint の exit smoke まで完了（`3d837202`..`327276df`） | DONE |
-| understanding branch の Full-FT / reference 併用（U-2 / U-3） | §13.4 | PENDING |
+| understanding branch の Full-FT（U-2） | 3 branch すべてに実 checkpoint の run が付いた（`ce713b58` / §13.4 U-2-5）。**2b-4 = offload 合成のみ残る** | DONE（2b-4 を除く） |
+| reference 併用（U-3） | §13.4 | PENDING |
 
 ---
 
@@ -387,7 +391,7 @@ Phase 1 の前提実装になった（DONE）。
 
 ---
 
-## 6. Phase 2 — full-parameter fine-tune（guard DONE、本体 PENDING）
+## 6. Phase 2 — full-parameter fine-tune（~~guard DONE、本体 PENDING~~ **本体 DONE。残るのは 2b-4 = offload 合成のみ**）
 
 ### 6.1 拒否ガード（DONE）
 
@@ -954,9 +958,12 @@ loader が毎回読んでいる形であり、`link_siblings` が同じファイ
 （`1 / vision_config.downsample_ratio[0]`）まで実行する — 不動点でない block は
 **25 GiB を書く前に拒否する**。負の対照はテストに入れてある。
 
-Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で採用した経路を
+~~Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で採用した経路を
 明示する。現行ガードは未提供の full FT を広告せず、未実装であることと LoRA 代替だけを
-示す。
+示す。~~ **【受付は開いた（`b2694674`）】** 採用した経路 (a)（plain int8 base の
+materialize）は loader と `openapi.yaml` の
+`sensenova_full_finetune_save_format` に明示してある。full FT を「未提供」と
+広告するガードはもう存在しない。
 
 ### 6.5 fused backward 下の optimizer 選択（Adafactor 一択ではない）
 
@@ -1777,9 +1784,11 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   `setup_block_swap`, `setup_attention_backend`, `encode_prompt`（= prefix KV 構築）,
   `vae_encode`（= pixel passthrough）, `train_step`, `generate_sample`。
 - `backend/core/training/adapters/sensenova_adapter.py` —
-  `SenseNovaLoRAAdapter`（`iter_sensenova_lora_targets` を再利用）。初期案の
+  `SenseNovaLoRAAdapter`（`iter_sensenova_lora_targets` を再利用）。~~初期案の
   `SenseNovaFullParameterAdapter` は追加せず、full FT は共通のロード前 capability
-  guard で拒否する。
+  guard で拒否する。~~ **【逆転済み】`SenseNovaFullParameterAdapter` は
+  `601d0271` で追加され、`save_checkpoint` は `22b22f09`、capability guard は
+  `b2694674` で削除された。**
 
 ### DONE — 登録（漏れると import 時に落ちる = 安全）
 
@@ -1791,8 +1800,9 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 3. `adapters/__init__.py` — import と `__all__`。
 4. `lora_trainer.py` — adapter import と `_create_adapter` の分岐、
    SenseNova adapter 選択。
-5. `arch_capabilities.py` / 既存の full-parameter・ReLoRA preflight — full FT と ReLoRA
-   をモデルロード前に拒否。
+5. `arch_capabilities.py` / 既存の full-parameter・ReLoRA preflight — ~~full FT と ReLoRA
+   をモデルロード前に拒否。~~ **ReLoRA と ControlNet のみ。full FT の entry は
+   `b2694674` で削除した。**
 
 ### DONE — `base_trainer.py`（漏れると静かに間違う = 危険）
 
@@ -1815,9 +1825,9 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 - **DONE:** `model_loader.detect_prediction_config` の flow / velocity 分類と退行テスト。
 - **DONE:** `train_runner.py` の bf16 強制、B1・単一 flavour int8 base・no-reference・no-block-swap
   preflight、on-the-fly prefix/pixel 経路。
-- **DONE:** training-method capability による full FT / ReLoRA / ControlNet の UI と
-  backend refusal。SenseNova は VAE を持たないが、明示 VAE path/store の decoder
-  training は別契約として許可する。
+- **DONE:** training-method capability による ~~full FT /~~ ReLoRA / ControlNet の UI と
+  backend refusal（**full FT は `b2694674` で解錠済み**）。SenseNova は VAE を持たないが、
+  明示 VAE path/store の decoder training は別契約として許可する。
 - **DONE:** real trainer の 3-step exit smoke と fresh runtime strength 0 parity。
 - **DONE:** Phase 1 half-eviction の OFF / ON 別 process 計測。
 - **DONE:** 学習中 sample（`arch/sensenova.py::sample` → `ops.generate_sample`）と
@@ -1839,12 +1849,16 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 
 ### PENDING
 
-- Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
+- ~~Phase 2b full FT 本体（`ops/sensenova_ops.py` の gate と `load_components` の
   method-aware 化は `cc296e84` で、**adapter・契約・fused backward の decoupling は
   `601d0271`**、**stochastic rounding の強制と dropout guard は `24220b5c`** で
   DONE。通知経路（`training_log`）も着地。**残るのは checkpoint format の決定と
   受付の解錠**で、§6.4 と §13.4 U-2-2 に列挙してある）と、
-  Phase U（§13）。
+  Phase U（§13）。~~
+  **【更新】Phase 2b 本体は着地した** — checkpoint format は `22b22f09`、
+  受付の解錠は `b2694674`、3 branch の exit smoke は `ce713b58`（§13.4 U-2-5）。
+  **PENDING に残るのは 2b-4（offload 合成、§8.3.1）と U-3（reference 併用、§13）
+  だけ**である。
 
 ### DONE — 登録から自動的に得られたもの
 
@@ -1859,7 +1873,7 @@ cache namespace と alignment は登録だけで有効になった。
 | リスク | 内容 | 緩和 |
 |---|---|---|
 | mixed forward の欠落 | issue #207。1 パスで und/gen を混ぜられない | 2 パス構造を設計の前提にする（§4.2）。修正を前提にしない |
-| int8 base のみ | weight が buffer なので full FT は 1 パラメータも学習しない（**「不可能」ではない**: `cc296e84` が学習する half を実 Parameter へ materialize する経路を実装した。ただし受付は未解錠） | Phase 2 をガード先行にする（§6.1）。経路 (a) と残作業は §6.4 |
+| int8 base のみ | weight が buffer なので full FT は 1 パラメータも学習しない（**「不可能」ではない**: `cc296e84` が学習する half を実 Parameter へ materialize する経路を実装した。~~ただし受付は未解錠~~ **受付は `b2694674` で解錠済み**） | Phase 2 をガード先行にする（§6.1）。経路 (a) は §6.4。防御は拒否ではなく**実体化 + census 検証**に移った |
 | bf16 丸め欠陥 | 8.1B full FT でそのまま継承する（凍結率 91% 前後、`\|w\| <= 512*lr` でしか動かない） | `optimizer_stochastic_rounding` の既定を SenseNova full FT でどうするか実装時に決定（§6.3, §12）。`optimizer: adamw` は構造的にカバー不能 |
 | 短 horizon での評価 | stochastic rounding は 1k step 未満では誤差が信号と同程度 | 数百 step の full FT で品質判断をしない（§6.3） |
 | gradient checkpointing OFF | 量子化 base の上に bf16 全体が実体化し、逆に増える | §4.7 の専用 non-reentrant loop を必須にする |
@@ -1887,8 +1901,9 @@ cache namespace と alignment は登録だけで有効になった。
 初期計画を残し、現在の DONE / PENDING 境界を明示する。
 
 **Phase U（understanding branch の学習）はこの系列に含めない。** 依存は Phase 1 のみで、
-PENDING の Phase 2b / 3 に混ぜると偽の依存が生まれるため、独立フェーズとして §13 に
-分離した。
+~~PENDING の Phase 2b / 3~~ **当時 PENDING だった Phase 2b / 3**（**両者とも着地済み**:
+Phase 3 は `611a4a24`、Phase 2b は `b2694674` + `ce713b58`）に混ぜると偽の依存が
+生まれるため、独立フェーズとして §13 に分離した。
 
 ### Phase 0 — 前提確認（DONE）
 
@@ -2051,12 +2066,15 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 `wall_time_with_model_load_s`、`model_load_wall_time_s`、
 `peak_memory.allocated/reserved` を記録する。
 
-### Phase 2a — full FT ガード（DONE）
+### Phase 2a — full FT ガード（DONE、のち撤去）
 
-- `TRAINING_UNSUPPORTED` と共通 preflight でモデルロード前に拒否する。初期案の
-  `SenseNovaFullParameterAdapter` は不要になったため追加していない。
+- ~~`TRAINING_UNSUPPORTED` と共通 preflight でモデルロード前に拒否する。初期案の
+  `SenseNovaFullParameterAdapter` は不要になったため追加していない。~~
+  **【両方とも逆転した】** ガードは U-2-2 step 3（`b2694674`）で撤去され、
+  adapter は `601d0271` で追加された。この節が防いでいた「静かな 0 件学習」は、
+  拒否ではなく **materialize + updated-parameter census** が防いでいる（§6.1）。
 
-### Phase 2b — full FT 本体（PENDING、律速は bf16 base の「入手」ではなく「実装」）
+### Phase 2b — full FT 本体（~~PENDING、律速は bf16 base の「入手」ではなく「実装」~~ **DONE（2b-4 を除く）**）
 
 **前提条件の表現を訂正した。** 旧見出しは「bf16 base 入手が前提条件」だったが、
 現行 gate は未量子化 bf16 base も拒否するため、入手しただけでは動かない（§6.4）。
@@ -2069,7 +2087,8 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 - **2b-1 — gate と loader の method-aware 化（DONE、`cc296e84`。= U-2-1）。**
   `_assert_supported_quantized_training_base` と `load_components` が training method を
   見るようになり、受理する供給経路は **(a) の plain int8 限定**に決まった（§6.4）。
-  **ただし full FT の受付はまだ開いていない**（§6.4 の「端から端まで到達しない」）。
+  ~~**ただし full FT の受付はまだ開いていない**（§6.4 の「端から端まで到達しない」）。~~
+  **【解消】受付は次項 2b-2b（`b2694674`）で開いた。**
 - **2b-2 — `SenseNovaFullParameterAdapter`（DONE、`601d0271`。= U-2-2 step 1-2）。**
   §6.1 で「共通 preflight だけで fail-closed になるため追加しなかった」もの。
   adapter + `assert_full_finetune_contract` + fused backward の decoupling が着地し、
@@ -2360,13 +2379,15 @@ U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator �
 改訂注記を参照）。**提供するのは選択肢であって効果の主張ではない** — und 学習が
 実際に忠実度やプロンプト追従を改善するかは未測定である（§12）。
 
-**Phase 2b / Phase 3 には折り込まない。** U-1 の依存は Phase 1 のみで、PENDING の
-2b / 3 に混ぜると偽の依存が生まれる。
+**Phase 2b / Phase 3 には折り込まない。** U-1 の依存は Phase 1 のみで、~~PENDING の
+2b / 3~~ **当時 PENDING だった 2b / 3** に混ぜると偽の依存が生まれる。
 
-**実装状況（2026-08-24）**: **U-0（`3d837202`）と U-1（`e811e461` 本体、
-`327276df` 実機 exit smoke）は DONE。** U-2（und Full-FT）と U-3（und × reference）は
-PENDING。実測は §13.5 / §13.6 に置く。**効果は依然として何も測っていない** —
-und LoRA が品質・忠実度・プロンプト追従を改善するかは未測定である（§12）。
+**実装状況（2026-08-25 更新）**: **U-0（`3d837202`）と U-1（`e811e461` 本体、
+`327276df` 実機 exit smoke）は DONE。** ~~U-2（und Full-FT）と U-3（und × reference）は
+PENDING。~~ **U-2 は 2b-4（offload 合成、§8.3.1）を除いて DONE**（3 branch の
+exit smoke = `ce713b58`、§13.4 U-2-5）。**U-3（und × reference）は PENDING。**
+実測は §13.5 / §13.6 に置く。**効果は依然として何も測っていない** —
+und LoRA / und Full-FT が品質・忠実度・プロンプト追従を改善するかは未測定である（§12）。
 
 ### 13.1 微分可能経路は「新規構築」ではなく「解錠」である（U-0 で実証済み）
 
@@ -2624,18 +2645,20 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   U-2-1 〜 U-2-6 のうち **U-2-1 / U-2-2 / U-2-3 / U-2-4 / U-2-5 / U-2-6 が着地**し、
   gen / und / both の 3 branch すべてに実 checkpoint 上の run がある。
   **§8.3.1 の offload 合成（§11 の 2b-4）だけが残る**。
-  U-2-1: §6.4 経路 (a) の 588 版 → **DONE（`cc296e84`）。
-  ただし経路は端から端まで到達しない**（`arch_capabilities.py:812-814` と
+  U-2-1: §6.4 経路 (a) の 588 版 → **DONE（`cc296e84`）。**
+  ~~ただし経路は端から端まで到達しない（`arch_capabilities.py:812-814` と
   `train_runner.py:166-167` が拒否を維持している）ので、**テストで証明されただけで
-  run では証明されていない**。着地したもの／意図的に着地させなかったもの／
+  run では証明されていない**。~~ **【解消、`b2694674` + U-2-5（`ce713b58`）】**
+  2 つの拒否は削除され（引用していた行番号はいずれも別のコードを指すようになった）、
+  3 branch すべてに実 run がある。着地したもの／意図的に着地させなかったもの／
   実 checkpoint ヘッダから取った host RAM の実測値は §6.4。
   U-2-2: adapter + fused backward の Block Swap からの
   **decoupling**（「gate 解錠」ではない。§6.2 の訂正）+ EMA 拒否 +
   **effective batch = 物理 batch = 1 を受け入れる**契約（§6.2 改訂の条件 1-4）。
   **許可 optimizer は `("adafactor",)` のみ**（§6.5 末尾の訂正。Ring Buffer 系を
   併記していた旧文は撤回した）。
-  → **step 1-2 は DONE（`601d0271`）、step 3 は意図的に未着地。** 下記
-  「U-2-2 の着地状況」。
+  → **step 1-2 は DONE（`601d0271`）**、~~step 3 は意図的に未着地~~
+  **step 3 も DONE（`b2694674`）** 。下記「U-2-2 の着地状況」。
   U-2-3: stochastic rounding（§6.3）+ dropout guard。→ **DONE（`24220b5c`）。
   ただし「既定 True」ではなく「ルート要件（強制）」として着地した**（transport が
   「未指定」を表現できないため。§6.3 (2)）。dropout guard は full FT で無条件に
@@ -2718,8 +2741,10 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
        （`sensenova_adapter.py:134`）同じ連鎖を引いている（`:162-166`）のと同型である。
     3. `TRAINING_UNSUPPORTED["sensenova"]["full_finetune"]`（`arch_capabilities.py:812-814`）と
        `network.type != "lora"` 拒否（`train_runner.py:166-167`）の**両方**を落とす。
-       片方だけでは到達しない。
-  - **【`601d0271`】U-2-2 の着地状況 — 上記 3 点のうち 1 と 2 が DONE、3 は未着地。**
+       片方だけでは到達しない。**【`b2694674` で両方とも削除済み。上の行番号は
+       当時のもので、現在は別のコードを指す】**
+  - **【`601d0271`】U-2-2 の着地状況 — 上記 3 点のうち 1 と 2 が DONE、~~3 は未着地~~
+    【`b2694674`】3 も DONE**（3 節下の「【step 3 着地】受付は開いた」）。
 
     **着地したもの**:
     - **`SenseNovaFullParameterAdapter`**（`adapters/sensenova_adapter.py`、
@@ -2886,11 +2911,27 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
          テスト: `backend/tests/sensenova_full_finetune_grad_norm_test.py`。
     7. **`text_encoder_training` の capability 理由が虚偽になった**（修正済み）。
        「full fine-tuning is refused for this architecture as a whole」と書いて
-       いたが、それは step 3 で偽になった。**エントリ自体は残した** — 機構は
+       いたが、それは step 3 で偽になった。~~**エントリ自体は残した** — 機構は
        あり trainer も拒否しないが、**und half の full FT には実測 run がまだ無い**
        （U-2-5）ので、理由をその事実に置き換えて UI では gen half のみを出す。
        これは trainer 側の拒否ではないので、API から `train_text_encoder=true` を
-       送る経路は通る。
+       送る経路は通る。~~
+       **【エントリは軸ごと移した】** 理由は 2 度書き換えられ、2 度とも実測が
+       それを偽にした（1 度目は step 3、2 度目は U-2-5 の実 run）。3 度目の理由は
+       もはや「機構が無い」ではなく**メモリ予算**だったので、
+       `TRAINING_FEATURE_UNSUPPORTED` に置いておくこと自体が誤りだった —
+       **UI は flag を強制 OFF、REST API は受理して実行、capability API は
+       「非対応」**の 3 通りの答えが同時に出ていた。
+       **`TRAINING_FEATURE_ADVISORY`（第 5 の軸）を追加して移設した**:
+       「実装済み・受理される・ただしこれだけかかる」を述べる軸で、control は
+       **表示され有効なまま**、理由を横に出す。同一 (arch, feature) が
+       unsupported と advisory の両方に載ることは import 時 assert で禁止する
+       （第 4 の軸 `TRAINING_REQUIRED_VALUES` の二重所有 assert と同じ形）。
+       理由中の数値も訂正した: 旧文の「94.5% of a 48 GB card」の 94.5% は
+       **probe が自分に課した `set_per_process_memory_fraction(0.72)` = 34.551 GiB
+       に対する比**であり、カードに対しては **68%** である。
+       テスト: `backend/tests/sensenova_capability_advisory_test.py`
+       （出荷状態の 3 すくみを再現する負の対照つき）。
 
     #### 【step 3 の後追い】`train_unet` 修正の arch 横断的な副作用（3 件とも解決）
 
@@ -3108,6 +3149,17 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       `assert_four_phase_fused_backward` が fused backward の設置後に検査する。
       `train_runner` の「`train_text_encoder` × eviction」拒否は**削除ではなく分岐**に
       なり、拒否メッセージは lift する設定を名指しするようになった。
+      **【2026-08-25 追記】UI 面も張った。** `071e602b` は「UI control は無い」と
+      明記していたが、`text_encoder_training` の capability 修正（§13.4 U-2-2 の
+      項目 7）と合わせると「gen-only full FT だけが UI から到達可能」という
+      製品状態になるため、**MoT Phase Eviction の section を full FT にも出し
+      （backend は元から受理していた。`openapi.yaml` の "LoRA training only" は
+      誤記だった）、その中に Four-Phase Backward Split を置いた**。3 前提が
+      揃わない間 checkbox は disable + 理由表示、揃っていて OFF のときは
+      `train_runner` と同じ拒否を submit 前に赤字で出す。**3 つは 1 つの
+      interlocked setting**なので capability 上も 1 feature
+      （`sensenova_mot_eviction`、arming key 2 本）として宣言してある。
+      テスト: `backend/tests/sensenova_four_phase_ui_exposure_test.py`。
 
     **勾配パリティ（acceptance criterion）**: 合成木上で **分割の勾配と単一 backward の
     勾配は bitwise 一致**（float64 と float32 の両方）。**許容誤差はゼロで、選んだ値では
@@ -3174,8 +3226,10 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
        前例として引いた `255a3ab5` は**逆のことを書いている** — 「TRAINING_DEFAULTS
        で公開すればこの API 面ができてしまう」ので**あえて避けた**、である。
        本項は診断ではなく VRAM ノブで、正しい run で raise もしないので、
-       Pydantic + openapi 側に寄せた。**frontend の control は張っていない**ので、
-       現状の到達経路は API と YAML である。
+       Pydantic + openapi 側に寄せた。~~**frontend の control は張っていない**ので、
+       現状の到達経路は API と YAML である。~~
+       **【2026-08-25 解消】frontend control を張った**（§8.3.2 の追記）。
+       API・YAML・UI・capability の 4 面が同じ答えを返す。
     4. **MNT に関する当方の訂正が誤りだった**（§8.3.2 に訂正を反映）。形は揃う。
        成立しないのは und の不変性の方で、しかも **MNT>1 は到達可能**である
        （契約が拒否するのは accumulation であって MNT ではない）。

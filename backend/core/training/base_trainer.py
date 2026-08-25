@@ -1103,8 +1103,9 @@ class BaseTrainer(ABC):
         # weights directly, so FP16 weight_dtype + FP16 mixed precision is broken.
         # Fail loudly at setup (before any GPU work) with an actionable remedy
         # rather than silently changing numerics.
+        from core.training.ops.training_method import is_full_finetune
         if (
-            type(self).__name__ == "FullParameterTrainer"
+            is_full_finetune(self)
             and self.use_grad_scaler
             and self.weight_dtype == torch.float16
         ):
@@ -8190,13 +8191,12 @@ class BaseTrainer(ABC):
                   f"architecture has no DiT transformer (U-Net archs are not "
                   f"supported yet); skipping compile.")
             return
-        # Gate to full-parameter FT. training_method is NOT part of the train
-        # config section, so detect via the trainer subclass: only
-        # FullParameterTrainer trains the base DiT weights (LoRA/ReLoRA/ControlNet
-        # trainers freeze the base and train small adapters — compiling over
-        # freshly-inserted adapter wrappers is recompile-heavy and off-target).
+        # Gate to full-parameter FT: adapter paths (LoRA/ReLoRA/ControlNet) freeze
+        # the base, and compiling over freshly-inserted adapter wrappers is
+        # recompile-heavy and off-target.
+        from core.training.ops.training_method import is_full_finetune
         trainer_cls = type(self).__name__
-        if trainer_cls != "FullParameterTrainer":
+        if not is_full_finetune(self):
             print(f"{self.log_prefix} torch_compile={mode!r} requested but trainer "
                   f"is {trainer_cls} (not full-parameter FT); compile is gated to "
                   f"full-parameter FT - skipping (adapter paths run eager).")

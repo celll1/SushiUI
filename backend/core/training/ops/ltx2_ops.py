@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from .training_method import trains_denoiser_weights
+
 
 # Fallback for audio_latents_per_second when it cannot be resolved from the
 # loaded pipeline config (UNVERIFIED item #2). Derived from the LTX-2.3 default
@@ -191,12 +193,11 @@ def load_components(trainer) -> None:
         trainer.audio_vae.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
 
-    # Optional: FP8 the frozen base DiT before LoRA wraps anything (LoRA-only),
-    # mirroring anima_ops. Reuse the same anima FP8 quantiser (arch-agnostic
+    # Optional: FP8 the frozen base DiT before LoRA wraps anything, mirroring
+    # anima_ops. Reuse the same anima FP8 quantiser (arch-agnostic
     # Linear-forward patch).
     fp8_base_dtype = trainer.config.get("fp8_base_dtype") or None
-    training_method = trainer.config.get("training_method", "lora")
-    if fp8_base_dtype and training_method == "lora":
+    if fp8_base_dtype and not trains_denoiser_weights(trainer):
         print(f"{trainer.log_prefix} Quantising frozen LTX-2.3 DiT base to "
               f"{fp8_base_dtype} (LoRA-on-FP8-base)")
         from core.vram_optimization import _anima_quantize_fp8
@@ -206,9 +207,9 @@ def load_components(trainer) -> None:
         trainer.transformer_original = trainer.transformer
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
-        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} is "
-              f"only supported for training_method='lora' "
-              f"(current: {training_method!r}); ignoring.")
+        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} requires a "
+              f"frozen DiT and is ignored when the DiT itself is trained (full fine-tune "
+              f"with train_unet=True). The DiT base stays unquantised.")
 
     # Plain GPU move. Block-swap init deferred to setup_block_swap() (called by
     # the mode subclass AFTER LoRA wrap) — same reasoning as anima_ops.

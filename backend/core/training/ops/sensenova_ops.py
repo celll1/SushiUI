@@ -19,6 +19,8 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from .training_method import _FULL_FINETUNE_METHOD, resolve_training_method
+
 
 @dataclass(frozen=True)
 class SenseNovaTrainingPrefix:
@@ -32,32 +34,6 @@ class SenseNovaTrainingPrefix:
 
 
 _SENSENOVA_QUANT_LINEAR_COUNT = 588
-_FULL_FINETUNE_METHOD = "full"
-# Both spellings of the same request: the API/YAML value is "full_finetune",
-# while the ops layer's own vocabulary (and this repo's other refusal messages)
-# says "full".
-_FULL_FINETUNE_ALIASES = frozenset({"full", "full_finetune"})
-
-
-def resolve_training_method(trainer: Any) -> str:
-    """``"full"`` for a full-parameter run, ``"lora"`` otherwise.
-
-    The TRAINER SUBCLASS is the authoritative channel, for the reason
-    ``base_trainer._maybe_compile_transformer`` states at its own gate:
-    ``training_method`` is not part of the train config section, so only
-    ``FullParameterTrainer`` identifies a run that trains base weights. The MRO
-    is walked by NAME rather than imported, because ``full_parameter_trainer``
-    imports ``base_trainer``, which imports this module.
-
-    An explicit ``config['training_method']`` is honoured as well, so a caller
-    that sets the key (and a future wiring of it) is not silently treated as
-    LoRA.
-    """
-    if any(cls.__name__ == "FullParameterTrainer" for cls in type(trainer).__mro__):
-        return _FULL_FINETUNE_METHOD
-    config = getattr(trainer, "config", None) or {}
-    declared = str(config.get("training_method") or "lora").strip().lower()
-    return _FULL_FINETUNE_METHOD if declared in _FULL_FINETUNE_ALIASES else declared
 
 
 def resolve_full_finetune_branch(trainer: Any) -> str:

@@ -36,6 +36,8 @@ from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokeniz
 
 from core.attention import AttentionMode, to_diffusers_backend
 
+from .training_method import is_full_finetune
+
 
 def load_components(trainer) -> None:
     """Load SD/SDXL model components."""
@@ -160,12 +162,11 @@ def load_components(trainer) -> None:
     # layers or the TE bridge adapters, and the LoRA save path does not persist them
     # (the trained pieces would be silently lost). Require full fine-tune.
     if trainer.is_sdxl:
-        _tm = str(trainer.config.get("training_method", "lora") or "lora").strip().lower()
         _wants_custom = (
             str(trainer.config.get("sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
             or str(trainer.config.get("sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
         )
-        if _wants_custom and _tm == "lora":
+        if _wants_custom and not is_full_finetune(trainer):
             raise ValueError(
                 "SDXL custom architecture (sdxl_vae_type / sdxl_te_type) requires "
                 "training_method='full' - LoRA cannot train the resized conv layers or "

@@ -17,6 +17,8 @@ from typing import Optional, Tuple
 
 import torch
 
+from .training_method import trains_denoiser_weights
+
 
 def load_components(trainer) -> None:
     """Load Lens model components for training.
@@ -74,10 +76,9 @@ def load_components(trainer) -> None:
     trainer.text_encoder.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
 
-    # Optional FP8 base quantisation (LoRA-only; same helper as Anima).
-    fp8_base_dtype  = trainer.config.get("fp8_base_dtype") or None
-    training_method = trainer.config.get("training_method", "lora")
-    if fp8_base_dtype and training_method == "lora":
+    # Optional FP8 base quantisation (frozen transformer only; same helper as Anima).
+    fp8_base_dtype = trainer.config.get("fp8_base_dtype") or None
+    if fp8_base_dtype and not trains_denoiser_weights(trainer):
         print(f"{trainer.log_prefix} Quantising frozen Lens transformer base to "
               f"{fp8_base_dtype} (LoRA-on-FP8-base)")
         from core.vram_optimization import _anima_quantize_fp8
@@ -87,8 +88,9 @@ def load_components(trainer) -> None:
         trainer.transformer_original = trainer.transformer
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
-        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} only "
-              f"supported for training_method='lora' ({training_method!r}); ignoring.")
+        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} requires a "
+              f"frozen transformer and is ignored when the transformer itself is trained "
+              f"(full fine-tune with train_unet=True). The base stays unquantised.")
 
     # Block-swap deferred; conductor handle initialised to None.
     trainer.layer_offload_conductor = None

@@ -23,39 +23,69 @@
 
 Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**必要な時だけGPUに転送**することで、**GPU VRAMを削減**する設計の最適化手法です。
 
-> ### ⚠️ 現状: CPU state モードはどの呼び出し側からも有効化されていない
+> ### ⚠️ 現状: CPU state モードは配線済み・既定は OFF・UI からは選べない
 >
-> **実装は存在し、`get_state_buffer` を渡せば動きます。壊れているのは配線です。**
+> **【U-2-6 で更新】** 以前ここには「この引数を供給している呼び出し側が存在しない
+> （導入コミット `190c876e` 以来一度も配線されたことがない）」と書いてありました。
+> **配線されました。** `BaseTrainer._ringbuffer_optimizer_kwargs()` が
+> `optimizer_state_host_resident` のときに `HostOptimizerStateAllocator`
+> （`host_state_allocator.py`）を `get_state_buffer` として渡します。
 >
-> CPU 常駐は、コンストラクタ引数 `get_state_buffer`（`RingBufferAllocator` ベースの
-> allocator）を渡したときにだけ有効になります。ところが**この引数を供給している
-> 呼び出し側が存在しません**。参照は optimizer 実装の内部と
-> `optimizer_factory.py:130`, `:174` の `kwargs.get("get_state_buffer", None)` だけで、
-> `BaseTrainer._ringbuffer_optimizer_kwargs()` にも VAE trainer にも含まれていません
-> （`git log -S "get_state_buffer=" -- base_trainer.py` は空。導入コミット
-> `190c876e` 以来一度も配線されたことがありません）。
+> **allocator の基底も訂正されています。** 設計文書は `RingBufferAllocator` ベース
+> と書いていましたが、あれは**再利用されるアリーナへの view** を返すもの
+> （`free_layer` / wrap-around 付き、1 回の forward/backward しか生きない層
+> パラメータ用）です。optimizer state は run 全体を生きるので、
+> **2 つのパラメータの moment が同じバイトを共有すると静かに壊れます**。
+> したがって専用の**永続・非再利用・パラメータ単位** allocator を使います。
 >
-> したがって既定では常に `None` に解決され、**8-bit state は GPU に確保されます**
-> （`adamw8bit_ringbuffer.py` の "Ring Buffer disabled: GPU allocation
-> (bitsandbytes-compatible)" 分岐。`lion8bit_ringbuffer.py` も同様）。
+> **ただし既定は OFF で、この switch には API 面がありません** — `param_defaults`
+> → `routes` → `training_config` → `openapi` → frontend の連鎖が必要です。
+> したがって**製品から起動した run では今も `None` に解決され、8-bit state は
+> GPU に確保されます**（"Ring Buffer disabled: GPU allocation" 分岐）。
 >
-> **現状これらの optimizer が提供しているのは「GPU state を持つ fused 8-bit
-> AdamW / Lion」です。** 8-bit 量子化ぶんの削減は実際に効いていますが、本ドキュメントが
-> 「Ring Buffer」として説明する CPU 常駐と DMA 転送は既定では走りません。
-> 以下の記述は、**allocator を渡した場合に設計上どう動くか**として読んでください。
+> 実測（U-2-6、RTX 6000 Ada、402.7 M bf16 パラメータ、**1 case 1 process**）:
+>
+> | optimizer | mode | GPU state B/param | host state B/param | pinned |
+> |---|---|---:|---:|---:|
+> | `adamw8bit_ringbuffer` | GPU（既定） | 2.031250 | 0 | – |
+> | `adamw8bit_ringbuffer` | HOST | **0.031250** | 2.000000 | 100% |
+> | `lion8bit_ringbuffer` | GPU（既定） | 1.015625 | 0 | – |
+> | `lion8bit_ringbuffer` | HOST | **0.015625** | 1.000000 | 100% |
+>
+> GPU state は **98.5% 減**。host 側は pinned 実バイトとほぼ 1:1 で、
+> **二重確保はありません**（allocator が pinned 済みバッファを返すので
+> optimizer 側の `pin_memory()` が no-op になる。返さないと 2 倍になります）。
 >
 > **【2026-08-25 実測】未配線ではあるが、壊れてはいません。** probe から
 > `get_state_buffer` を渡すと（`probes/optimizer_bf16_and_vram.py --arm cpuring`）
 > **GPU state と bit 一致の結果**を出します（同一 seed で moved fraction / drift /
 > parameter checksum / state 占有率が最終桁まで一致、GPU state は 98.5% 減）。
-> **fused hook 経路も含めて動きます** — hook は `state['exp_avg']` を kernel に
-> そのまま渡し、host buffer は pinned なので kernel が **UVA 経由で直接アドレス**
-> します。ステージングされた H2D/D2H が無いのは欠陥ではなく、この経路の動作原理です。
-> 残っているのは **production 側で allocator を渡す配線**だけです。
+> **fused hook 経路も含めて動きます。**
 >
-> 配線に必要な作業と、それを前提にした設計上の帰結は
+> **【U-2-6 で訂正】機構の説明が誤っていました。** ここには以前「hook は
+> `state['exp_avg']` を kernel にそのまま渡し、host buffer は pinned なので kernel が
+> **UVA 経由で直接アドレス**する。ステージングされた H2D/D2H が無いのはこの経路の
+> 動作原理である」と書いてありました。**転送はステージングされています。**
+> Python 層が素通しなだけで、実際に走るのは C++ 拡張です
+> （`cuda/adamw8bit_cuda.cpp:145-243`、Lion は `cuda/lion8bit_cuda.cpp:170-250`）:
+>
+> - **device ごとにキャッシュされた専用 transfer stream**（`get_xfer_stream`）
+> - その stream 上での `.to(device, non_blocking=true)` による **H2D ステージング**
+> - **CUDA event** で update kernel を H2D の後ろに順序付け
+> - **D2H writeback も同じ transfer stream**（後続パラメータの backward と重なる）
+>
+> G-RB1 の実測 26.5 GB/s（PCIe 4.0 x16 の線速）はこのバルク DMA が出す値で、
+> per-element の UVA read が出す値ではありません。**測定値は無効になりませんが、
+> それに与えていた機構の説明が誤りでした。**
+>
+> **【2026-08-25 → U-2-6 で更新】配線は完了しました。**
+> `BaseTrainer._ringbuffer_optimizer_kwargs()` が `optimizer_state_host_resident`
+> のときに `HostOptimizerStateAllocator`（`host_state_allocator.py`）を渡します。
+> ただし **この switch には API 面がまだありません**（`param_defaults` →
+> `routes` → `training_config` → `openapi` → frontend の連鎖が必要）。
+> 実測は §「パフォーマンス」ではなく
 > [`docs/guides/SENSENOVA_TRAINING_DESIGN.md`](../../../../docs/guides/SENSENOVA_TRAINING_DESIGN.md)
-> §6.5 に整理してあります（SenseNova の full FT 予算がこの差で 30 GB 変わるため）。
+> §6.5 を参照してください。
 
 ### 特徴
 

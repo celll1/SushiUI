@@ -74,15 +74,24 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
 #   adamw8bit             2.031250 B/param -> 16.5 GB / 32.9 GB. Has the seam
 #                         (FUSED_BACKWARD_OPTIMIZERS, patched in
 #                         _setup_fused_backward_pass); excluded on state size.
-#   adamw8bit_ringbuffer  2.031250 B/param -> 16.5 GB / 32.9 GB on the GPU,
-#                         because its CPU-state mode is unreachable today
-#                         (nothing supplies get_state_buffer; see
-#                         base_trainer._ringbuffer_optimizer_kwargs). Excluded
-#                         on state size AND by its open gates.
+#   adamw8bit_ringbuffer  2.031250 B/param -> 16.5 GB / 32.9 GB on the GPU.
+#                         Excluded on state size. Its host-resident mode is now
+#                         reachable (base_trainer._ringbuffer_optimizer_kwargs
+#                         supplies get_state_buffer when
+#                         optimizer_state_host_resident is set) and measured at
+#                         0.031250 B/param on the GPU with 2.0 pinned on the
+#                         host -- but that switch has NO API surface, so a run
+#                         started from the product gets the 16.5 GB figure. The
+#                         exclusion stands on what a user can actually select.
 #   lion8bit_ringbuffer   1.015625 B/param -> 8.2 GB / 16.5 GB: HALF the AdamW
-#                         pair, one moment instead of two. The state-size
-#                         argument does NOT exclude it. It is excluded only by
-#                         U-2-6's open gates G-RB2 / G-RB3.
+#                         pair, one moment instead of two (0.015625 GPU /
+#                         1.0 host in host-resident mode). The state-size
+#                         argument does not exclude it, and G-RB2 / G-RB3 are
+#                         now discharged (U-2-6). What is still missing is the
+#                         step wall this route would pay for it: SenseNova sits
+#                         BELOW G-RB1's transfer-hiding threshold (1024 image
+#                         tokens at 1024^2 against Lion's 1019), and U-2-4 has
+#                         not measured a real step. Admitted only when that is.
 #   adafactor             0.002991 B/param (shape-dependent) -- the admitted one.
 SENSENOVA_FULL_FINETUNE_OPTIMIZERS = ("adafactor",)
 
@@ -189,10 +198,11 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
         )
         extra = (
             f" The ring-buffer optimizers are the intended second option. Their "
-            f"CPU-resident state is not wired up yet (nothing supplies "
-            f"get_state_buffer), so they allocate 8-bit state on the GPU at a "
-            f"measured {state}, and the host-RAM and update-census gates for them "
-            f"are open."
+            f"host-resident state mode is wired up now but has no setting to turn "
+            f"it on, so a run started from the product allocates 8-bit state on "
+            f"the GPU at a measured {state}. What is not measured is the step "
+            f"time this route would pay: its resolution band sits below the "
+            f"threshold at which host state stops costing wall clock."
         )
     raise ValueError(
         f"SenseNova full fine-tuning does not support optimizer='{name}'. "
@@ -263,20 +273,31 @@ def assert_full_finetune_stochastic_rounding_attached(
     seam is unwrapped writes round-to-nearest while every log line says
     otherwise, which is the failure this whole contract exists to prevent.
 
-    Trap for U-2-6: neither ring-buffer optimizer defines ``step_param`` -- they
-    register their own hooks and return early from
-    ``_setup_fused_backward_pass`` -- yet both round stochastically inside their
-    own update (``_NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS``). Admitting them to
-    SENSENOVA_FULL_FINETUNE_OPTIMIZERS without treating that membership as
-    coverage makes this raise on a correct configuration, with a message that is
-    false for them in both halves.
+    The ring-buffer optimizers are a second, equally valid seam: neither defines
+    ``step_param`` (they register their own hooks), yet both round stochastically
+    inside their own update, which is why ``_attach_stochastic_rounding`` skips
+    them. Checked for ``step_param`` they would fail on a correct configuration,
+    so membership in ``_NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS`` counts as
+    coverage here (U-2-6).
     """
     from api.param_defaults import full_finetune_forces_stochastic_rounding
+    from core.training.base_trainer import BaseTrainer
     from core.training.optimizers.stochastic_rounding import NATIVE_ATTR, WRAPPED_ATTR
+
+    # The one list, read off BaseTrainer, so this cannot disagree with
+    # _attach_stochastic_rounding about which optimizers it skips.
+    _NATIVE_SR = BaseTrainer._NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS
 
     if not full_finetune_forces_stochastic_rounding("sensenova"):
         # Same table the enforcement reads, so the two cannot disagree about
         # whether this route is supposed to be covered.
+        return
+
+    if optimizer_type is not None and str(optimizer_type).strip().lower() in _NATIVE_SR:
+        # No step_param exists to inspect, and none should: the rounding is in
+        # the optimizer's own update. Verified separately by the update-nonzero
+        # census (bf16_stochastic_rounding_test), which measures the effect
+        # rather than the attachment.
         return
 
     groups = getattr(trainer, "fused_optimizer_groups", None)

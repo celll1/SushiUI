@@ -341,7 +341,15 @@ def test_the_optimizer_refusal_states_the_two_conditions_and_the_measured_cost()
 
     with pytest.raises(ValueError) as ring:
         assert_full_finetune_contract(trainer, "adamw8bit_ringbuffer")
-    assert "get_state_buffer" in str(ring.value)
+    ring_message = str(ring.value)
+    # The reason changed with U-2-6 and the message has to follow it. The
+    # host-resident state mode IS wired up now (base_trainer supplies
+    # get_state_buffer), so "nothing supplies get_state_buffer" is no longer
+    # true; what still excludes it is that the switch has no setting, so a run
+    # started from the product allocates the state on the GPU.
+    assert "get_state_buffer" not in ring_message
+    assert "no setting to turn" in ring_message
+    assert "2.031250 B/param" in ring_message
 
 
 def test_adamw_is_refused_by_name_with_the_reason_it_cannot_be_repaired():

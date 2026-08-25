@@ -64,6 +64,72 @@ def setup_fused_grad_norm(trainer, optimizers):
     return accumulator
 
 
+def setup_update_census(trainer, optimizers):
+    """Arm the per-step updated-parameter census (G-RB3), if it is switched on.
+
+    Under the fused backward pass a parameter whose hook never fires, or returns
+    early, is updated by nothing for the whole run while the loss falls
+    normally. The census counts the updates that were actually applied and
+    compares against the parameters the optimizers own. Off by default: it costs
+    a set insertion per parameter per step and a set difference per step, which
+    is small but not free, and it is a diagnostic rather than a route
+    requirement. See optimizers/update_census.py.
+    """
+    if not getattr(trainer, "optimizer_update_census", False):
+        return None
+    from core.training.optimizers.update_census import (
+        UpdateCensus,
+        attach_update_census,
+        trainable_params_of,
+    )
+    census = getattr(trainer, "_update_census", None)
+    if census is None:
+        census = UpdateCensus()
+        trainer._update_census = census
+    # Names only, and a diagnostic must not be able to abort setup: the target
+    # module raises when neither self.transformer nor self.unet is loaded.
+    names = {}
+    try:
+        module = trainer._fused_backward_target_module()
+    except Exception:
+        module = None
+    if module is not None:
+        names = {id(p): n for n, p in module.named_parameters()}
+    expected = []
+    for optimizer in optimizers:
+        attach_update_census(optimizer, census)
+        expected.extend(trainable_params_of(optimizer))
+    count = census.expect(expected, names, exempt=census_exempt_names(trainer))
+    print(f"{getattr(trainer, 'log_prefix', '[Trainer]')} Updated-parameter census armed "
+          f"for {count} trainable parameter(s)"
+          + (f", {len(census.exempt)} path(s) exempt as gradient-unreachable"
+             if census.exempt else ""))
+    return census
+
+
+def census_exempt_names(trainer):
+    """Parameter paths no gradient can reach by construction, for this arch.
+
+    Not a tolerance: these are ``requires_grad`` parameters the optimizer owns
+    that the loss structurally cannot reach, so a census that demanded them
+    would raise on every step of a CORRECT run. SenseNova's understanding branch
+    has five (SENSENOVA_TRAINING_DESIGN.md 13.4, U-2-5); the list is taken from
+    the function that already predicts them by name, so the two cannot drift.
+    """
+    if not getattr(trainer, "is_sensenova", False):
+        return ()
+    try:
+        from core.models.sensenova.sensenova_lora import und_gradient_unreachable_paths
+        return sorted(und_gradient_unreachable_paths())
+    except Exception:
+        # A diagnostic must not abort setup. Reported rather than swallowed:
+        # without the exemption the census would raise on a correct run.
+        print(f"{getattr(trainer, 'log_prefix', '[Trainer]')} WARNING: could not "
+              f"resolve the gradient-unreachable exemption list; the updated-"
+              f"parameter census may report the structurally dead paths as missing")
+        return ()
+
+
 # Optimizers for which _setup_fused_backward_pass installs per-parameter hooks
 # (the num_optimizer_groups == 0 branch of the Block Swap setup).
 FUSED_BACKWARD_OPTIMIZERS = (
@@ -1037,6 +1103,25 @@ class BaseTrainer(ABC):
         # elements never move; stochastic rounding keeps those updates alive in
         # expectation. Honoured by the RingBuffer optimizers only.
         self.optimizer_stochastic_rounding = optimizer_stochastic_rounding
+
+        # Ring-buffer optimizer state on pinned host memory instead of the GPU
+        # (the mode those optimizers are named for). Off, and with no API
+        # surface yet: exposing it as a user option needs the param_defaults ->
+        # routes -> training_config -> openapi chain, and the below-threshold
+        # cost is not measured for any production model. Set by tests, probes
+        # and by callers that have measured the trade for their own run; see
+        # _ringbuffer_optimizer_kwargs and host_state_allocator.py.
+        self.optimizer_state_host_resident = False
+        self._host_state_allocator = None
+
+        # Per-step updated-parameter census (G-RB3). Off, no API surface yet.
+        # FUSED-BACKWARD ONLY: setup_update_census() is called from
+        # _setup_fused_backward_pass, because the failure it detects (a hook that
+        # never fires) exists only where hooks apply the updates. Setting it on a
+        # non-fused run is reported, not silently ignored -- see
+        # _warn_update_census_inactive(). See optimizers/update_census.py.
+        self.optimizer_update_census = False
+        self._update_census = None
 
         # Resume training
         self.resume_from_checkpoint = resume_from_checkpoint
@@ -3444,15 +3529,17 @@ class BaseTrainer(ABC):
         optimizers resolved ``kwargs.get("stochastic_rounding", False)`` and
         rounded BF16 updates to nearest regardless of the user's choice.
 
-        ``get_state_buffer`` is in that same state today, and is NOT a user option
-        (it is an allocator, not a config flag) -- but the effect is the shape
-        above: both optimizers resolve ``kwargs.get("get_state_buffer", None)``,
-        nothing here or anywhere else supplies one, so their CPU-resident state
-        never activates and they allocate 8-bit state on the GPU instead. Wiring
-        it up is a design task, not a one-line addition here; see
-        RINGBUFFER_OPTIMIZERS.md and docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.
+        ``get_state_buffer`` used to be in that same state -- both optimizers
+        resolved ``kwargs.get("get_state_buffer", None)``, nothing supplied one,
+        so their CPU-resident state never activated and they allocated 8-bit
+        state on the GPU. It is supplied here now, from
+        ``HostOptimizerStateAllocator``, when ``optimizer_state_host_resident``
+        is set. It is NOT a user option (it is an allocator, not a config flag);
+        the trainer owns the allocator so it outlives optimizer construction and
+        can be read back for the host-RAM accounting (G-RB2). See
+        host_state_allocator.py and docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.
         """
-        return {
+        kwargs = {
             "cautious": self.optimizer_cautious,
             "schedule_free": self.optimizer_schedule_free,
             "warmup_steps": self.optimizer_warmup_steps,
@@ -3461,6 +3548,12 @@ class BaseTrainer(ABC):
             "use_radam": self.optimizer_use_radam,
             "stochastic_rounding": self.optimizer_stochastic_rounding,
         }
+        if getattr(self, "optimizer_state_host_resident", False):
+            from .optimizers.host_state_allocator import HostOptimizerStateAllocator
+            if getattr(self, "_host_state_allocator", None) is None:
+                self._host_state_allocator = HostOptimizerStateAllocator()
+            kwargs["get_state_buffer"] = self._host_state_allocator
+        return kwargs
 
     # Optimizers that apply stochastic rounding inside their own update, so
     # _attach_stochastic_rounding() must leave them alone.
@@ -3844,6 +3937,18 @@ class BaseTrainer(ABC):
                 f"has no register_post_accumulate_grad_hook."
             )
 
+        # The census only exists where hooks apply the updates; say so rather
+        # than leaving the switch looking active.
+        if (getattr(self, "optimizer_update_census", False)
+                and getattr(self, "_update_census", None) is None):
+            print(f"{self.log_prefix} NOTE: optimizer_update_census is set but this "
+                  f"run has no fused backward pass (optimizer={optimizer_type}, "
+                  f"blocks_to_swap={self.blocks_to_swap}, num_optimizer_groups="
+                  f"{self.num_optimizer_groups}), so no census is taken. It detects "
+                  f"a per-parameter hook that never fires, which is a failure only "
+                  f"the fused path can have; optimizer.step() updates every "
+                  f"parameter it owns in one call.")
+
         # Last, because the Block Swap setup above installs step_param and can
         # replace self.optimizer: stochastic rounding has to wrap whatever
         # actually ends up performing the update.
@@ -4006,6 +4111,9 @@ class BaseTrainer(ABC):
             )
 
         setup_fused_grad_norm(self, [self.optimizer])
+        # Before the branch below, which returns early for the ring-buffer
+        # optimizers. param_groups are final by now, so the expectation set is.
+        setup_update_census(self, [self.optimizer])
 
         # Patch optimizer with step_param method
         if optimizer_type.lower() == "adafactor":
@@ -11690,6 +11798,11 @@ class BaseTrainer(ABC):
                             self._fused_grad_norm.begin_step(
                                 (global_step + 1) % gradient_accumulation_steps == 0
                             )
+                        # G-RB3: start this step's updated-parameter census. Armed
+                        # on every backward, not only on optimizer steps: under
+                        # the fused path each backward IS an optimizer step.
+                        if self._update_census is not None:
+                            self._update_census.begin_step(True)
 
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
@@ -11768,6 +11881,14 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} [OOM] bucket {_cur_bucket_wh[0]}x{_cur_bucket_wh[1]} "
                                       f"won't fit one sample -> excluding it from subsequent epochs "
                                       f"({len(self._unfittable_buckets)} bucket(s) excluded so far)")
+
+                        # G-RB3: every trainable parameter must have received an
+                        # update during that backward. Skipped when the batch was
+                        # abandoned, since then no backward completed.
+                        if self._update_census is not None and not cuda_error_skip:
+                            self._update_census.assert_complete(
+                                f"global_step={global_step}"
+                            )
 
                         # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings

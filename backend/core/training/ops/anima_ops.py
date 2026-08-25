@@ -23,6 +23,8 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from .training_method import trains_denoiser_weights
+
 
 def load_components(trainer) -> None:
     """Load Anima model components for training.
@@ -112,15 +114,13 @@ def load_components(trainer) -> None:
     trainer.text_encoder.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
 
-    # Optional: FP8 the base DiT before LoRA wraps anything (LoRA-only).
-    # Only safe when the base is frozen — which is true for the LoRA path
-    # (Phase C.1 freezes everything before adapter injection). Full FT
-    # needs trainable base weights, so silently ignore the flag with a
-    # warning. We piggy-back on the Phase B.1-d inference quantiser which
-    # patches each Linear's forward to dequantise on-the-fly.
+    # Optional: FP8 the base DiT before LoRA wraps anything. Only safe while the
+    # DiT stays frozen (every adapter path, plus a text-encoder-only full FT);
+    # a full FT that trains the DiT would be training quantised weights, so the
+    # flag is ignored with a warning. We piggy-back on the Phase B.1-d inference
+    # quantiser which patches each Linear's forward to dequantise on-the-fly.
     fp8_base_dtype = trainer.config.get("fp8_base_dtype") or None
-    training_method = trainer.config.get("training_method", "lora")
-    if fp8_base_dtype and training_method == "lora":
+    if fp8_base_dtype and not trains_denoiser_weights(trainer):
         print(f"{trainer.log_prefix} Quantising frozen Anima DiT base to "
               f"{fp8_base_dtype} (LoRA-on-FP8-base, ~50% VRAM reduction)")
         from core.vram_optimization import _anima_quantize_fp8
@@ -135,9 +135,9 @@ def load_components(trainer) -> None:
         trainer.transformer_original = trainer.transformer
         trainer.transformer.requires_grad_(False)
     elif fp8_base_dtype:
-        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} is "
-              f"only supported for training_method='lora' "
-              f"(current: {training_method!r}); ignoring.")
+        print(f"{trainer.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} requires a "
+              f"frozen DiT and is ignored when the DiT itself is trained (full fine-tune "
+              f"with train_unet=True). The DiT base stays unquantised.")
 
     # Plain GPU move. Block-swap init is deferred to setup_anima_block_swap(),
     # which is called by the trainer subclass AFTER any structural changes

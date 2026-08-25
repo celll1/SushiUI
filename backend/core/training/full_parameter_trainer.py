@@ -65,7 +65,12 @@ class FullParameterTrainer(BaseTrainer):
             train_image_encoder: Whether to train Image Encoder (future support)
             **kwargs: Additional arguments passed to BaseTrainer
         """
-        # Full fine-tune settings (set before super().__init__)
+        # Full fine-tune settings (set before super().__init__), so the gates
+        # that run during component loading can read them.
+        # trains_base_weights is the channel ops/training_method resolves on: an
+        # attribute costs no import (a real one would cycle back through
+        # base_trainer) and survives a rename of this class.
+        self.trains_base_weights = True
         self.train_unet = train_unet
         self.train_text_encoder = train_text_encoder
         self.train_image_encoder = train_image_encoder
@@ -155,11 +160,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_anima:
             self.adapter = AnimaFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AnimaFullParameterAdapter")
-            # FP8 base + Full FT is incompatible (base needs gradients).
-            # _load_anima_components already runs (before _create_adapter)
-            # and base_trainer's fp8_base_dtype branch only triggers for
-            # training_method='lora', so a Full FT request with the flag
-            # set produces a warning there and is skipped. Nothing to do.
+            # FP8 base + Full FT is incompatible (a trained base needs
+            # gradients); anima_ops.load_components has already skipped the flag
+            # with a warning when train_unet is set. Nothing to do.
         elif self.is_lens:
             self.adapter = LensFullParameterAdapter(self)
             print(f"{self.log_prefix} Using LensFullParameterAdapter")

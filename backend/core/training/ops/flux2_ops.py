@@ -38,12 +38,14 @@ from tqdm import tqdm
 
 from core.attention import AttentionMode, to_diffusers_backend
 
+from .training_method import trains_denoiser_weights
+
 
 def block_swap_h2d_args(trainer):
     """Policy gate + H2D args for FLUX.2 training block swap.
 
-    FLUX.2 training block swap is supported ONLY via the H2D-only + frozen-base
-    (LoRA) + gradient-checkpointing path. The standard (non-H2D) training swap has
+    FLUX.2 training block swap is supported ONLY via the H2D-only +
+    frozen-transformer + gradient-checkpointing path. The standard (non-H2D) training swap has
     a pre-existing index inconsistency and is NOT functional, so anything that
     would activate it must raise a clear error instead.
 
@@ -59,18 +61,17 @@ def block_swap_h2d_args(trainer):
             "(the standard swap path is not yet functional)."
         )
 
-    # Gate 2: requires a frozen base (LoRA training, not full-parameter FT).
-    # The training mode is known at setup time via train_config['training_method'];
-    # LoRA adapters are applied after this point, so we key off the mode rather than
-    # inspecting requires_grad here. The offloader also has a lazy Full-FT
-    # auto-detect+disable as a backstop.
-    training_method = str(trainer.config.get("training_method", "lora") or "lora").strip().lower()
-    if training_method != "lora":
+    # Gate 2: requires a frozen transformer. requires_grad cannot be inspected
+    # here (the adapter unfreezes later), so the mode decides. A text-encoder-only
+    # full FT keeps the transformer frozen and is allowed. The offloader's lazy
+    # Full-FT detect is no substitute: it silently falls back to the standard swap
+    # path, which Gate 1 above refuses as non-functional.
+    if trains_denoiser_weights(trainer):
         raise ValueError(
-            "FLUX.2 training block swap (H2D-only) requires a frozen base, i.e. LoRA "
-            f"training. Current training_method={training_method!r} updates the base "
-            "weights (Full-FT), which needs D2H persistence and cannot use H2D-only "
-            "block swap. Use training_method='lora' or disable Block Swap "
+            "FLUX.2 training block swap (H2D-only) requires a frozen transformer. "
+            "This run trains the transformer weights, which needs D2H persistence "
+            "and cannot use H2D-only block swap. Use training_method='lora', train "
+            "only the text encoder (train_unet=False), or disable Block Swap "
             "(blocks_to_swap=0)."
         )
 

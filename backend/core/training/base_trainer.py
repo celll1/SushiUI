@@ -244,6 +244,18 @@ class BucketsExhaustedError(RuntimeError):
     pass
 
 
+class PartialOptimizerStepError(RuntimeError):
+    """Raised when a fused backward died after applying some of its updates.
+
+    There is no snapshot to roll back to (tens of GiB of weights) and the batch
+    cannot be retried without applying those updates twice, so the run stops.
+    Deliberately neither a ``NothingTrainedError`` (whose weights are the base
+    model's) nor a ``BucketsExhaustedError`` (whose weights are worth an
+    emergency checkpoint); this one writes none.
+    """
+    pass
+
+
 _MEMORY_BUDGET_ADVICE = (
     "The OOM was raised against this process's memory budget, which "
     "torch.cuda.set_per_process_memory_fraction and other resident allocations "
@@ -5836,6 +5848,15 @@ class BaseTrainer(ABC):
             sensenova_prefix=sensenova_prefix,
         )
 
+        # The applied-update window is this WHOLE call, not each backward inside
+        # it. Narrower (per backward) would clear the count between micro-chunks,
+        # hiding a chunk that applied its updates before a later one died; wider
+        # (per batch) would carry a COMPLETED iteration's count into the next
+        # one's forward, where an ordinary OOM would then be misread as a
+        # half-applied step -- MNT > 1 calls this once per iteration.
+        from .optimizers.update_census import reset_applied_updates
+        reset_applied_updates()
+
         _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
         _micro_bs = _disp_info[4] if _disp_info else None
         try:
@@ -5858,6 +5879,9 @@ class BaseTrainer(ABC):
                     # Do NOT set _actdispatch_oom / _batch_was_unfittable: those are
                     # OOM-only signals that must not be poisoned by a dying context.
                     raise FatalCudaError(str(e)) from e
+                # Before any recovery decision: if this backward already applied
+                # updates, neither skipping nor retrying is sound.
+                self._refuse_partial_fused_step(e)
                 self._actdispatch_oom = True  # tell dispatch_end to flag this bucket
                 # REACTIVE recovery. With the memory-fraction cap an over-budget
                 # allocation RAISES here instead of silently spilling to shared host
@@ -5899,8 +5923,22 @@ class BaseTrainer(ABC):
                                 raise
                             if _cls_off == "fatal":
                                 raise FatalCudaError(str(e_off)) from e_off
+                            self._refuse_partial_fused_step(e_off)
                             e = e_off
                             self._oom_recovery_cleanup()
+                if fused_backward_active(self):
+                    # Micro-splitting under a fused path is not gradient
+                    # accumulation: each chunk's hooks apply their own optimizer
+                    # step, so a chunk that OOMs after an earlier one succeeded
+                    # leaves the weights mid-step. The PROACTIVE splitter already
+                    # refuses for this reason (see _activation_dispatch_begin);
+                    # this is the same rule on the reactive ladder, which had
+                    # kept it. Offload was tried above and is the last rung.
+                    self._batch_was_unfittable = True
+                    print(f"{self.log_prefix} [OOM] batch_size={batch_size} still out of memory "
+                          f"under the fused backward pass, which cannot micro-split; SKIPPING BATCH "
+                          f"(bucket excluded) ({str(e)[:120]})")
+                    return 0.0, 0.0, 0.0, True
                 for _retry_micro in (max(1, batch_size // 2), 1):
                     if _retry_micro >= batch_size:
                         continue
@@ -5915,6 +5953,7 @@ class BaseTrainer(ABC):
                             raise
                         if _cls2 == "fatal":
                             raise FatalCudaError(str(e2)) from e2
+                        self._refuse_partial_fused_step(e2)
                         e = e2
                         self._oom_recovery_cleanup()
                 # Even micro-batch=1 OOMs -> the bucket can't fit a single sample.
@@ -6033,9 +6072,11 @@ class BaseTrainer(ABC):
         micro_bs = None
         step_threshold = disp.threshold_bytes
         if mode == "escalate":
-            if getattr(self, "use_fused_backward", False):
+            if fused_backward_active(self):
                 # Fused backward cannot micro-split (per-param updates fire during
-                # backward), so the escalate ladder becomes: offload -> offload with a
+                # backward -- fused optimizer GROUPS step from their hooks too, so
+                # they are covered by the same rule), so the escalate ladder
+                # becomes: offload -> offload with a
                 # LOWERED threshold_bytes to widen the offloadable set -> un-fittable.
                 # Offload is value-exact (no gradient error), so pushing more saved
                 # tensors to CPU is the correct lever before declaring the bucket
@@ -6191,6 +6232,63 @@ class BaseTrainer(ABC):
         groups = getattr(self, "fused_optimizer_groups", None)
         if groups is not None:
             groups.step_incomplete_groups()
+
+    def _refuse_partial_fused_step(self, exc: Exception) -> None:
+        """Stop the run if the OOM being recovered from left a half-applied step.
+
+        Called from every OOM handler in ``_forward_backward_with_oom_recovery``,
+        which otherwise skips the batch or retries it -- and the retry re-applies
+        the updates already written, then reports success.
+
+        Conservative in one direction only: an OOM raised after the LAST hook
+        fired counts as partial too, stopping a run whose weights were in fact
+        consistent. That is the safe side of a rare case.
+        """
+        from .optimizers.update_census import applied_updates
+        if not fused_backward_active(self):
+            return
+        applied = applied_updates()
+        if applied <= 0:
+            return
+        raise PartialOptimizerStepError(
+            self._partial_fused_step_message(applied, exc)
+        ) from exc
+
+    def _resume_point_sentence(self) -> str:
+        """Where the last CONSISTENT weights are, in this run's actual terms."""
+        last = getattr(self, "_last_periodic_checkpoint_step", None)
+        if last is not None:
+            return f"Resume from the last periodic checkpoint (step {last})."
+        resumed = getattr(self, "_resume_checkpoint_label", None)
+        if resumed:
+            return (f"This invocation wrote no periodic checkpoint of its own, so the "
+                    f"last consistent weights are the ones it resumed from ({resumed}).")
+        every = getattr(self, "_periodic_save_every", None)
+        if every:
+            why = (f"the run did not reach its first checkpoint interval "
+                   f"(save_every={every})")
+        elif every == 0:
+            why = "save_every=0 disables periodic checkpointing"
+        else:
+            why = "no periodic checkpoint was written"
+        return (f"There is no checkpoint to resume from ({why}), so the run must be "
+                f"started again.")
+
+    def _partial_fused_step_message(self, applied: int, exc: Exception) -> str:
+        resume = self._resume_point_sentence()
+        return (
+            f"Training stopped: an out-of-memory error interrupted a fused "
+            f"backward pass after {applied} parameter update(s) had already been "
+            f"applied. Each parameter is updated from its own post-accumulate-grad "
+            f"hook the moment its gradient exists, so those parameters carry this "
+            f"step's update and the rest do not: the in-memory weights are a "
+            f"mixture of two steps. They cannot be repaired -- there is no "
+            f"snapshot to roll back to, and re-running the batch would apply "
+            f"those updates twice -- so the batch is NOT skipped and no "
+            f"checkpoint is written from memory. {resume} "
+            + _MEMORY_BUDGET_ADVICE
+            + f" The out-of-memory error was: {str(exc)[:200]}"
+        )
 
     def _execute_forward_backward(
         self,
@@ -6468,23 +6566,32 @@ class BaseTrainer(ABC):
         if accum > 1:
             loss_for_backward = loss_for_backward / accum
         self._reset_fused_group_counters()
-        if self.use_grad_scaler:
-            self.grad_scaler.scale(loss_for_backward).backward()
-        else:
-            loss_for_backward.backward()
-        four_phase = getattr(self, "sensenova_four_phase", None)
-        if four_phase is not None:
-            # The backward above stopped at the boundary K/V leaves; take their
-            # gradient, then run phase 3 HERE rather than at the optimizer-step
-            # site. The update census asserts completeness inside the MNT loop,
-            # which is upstream of that site, so a deferred phase 3 would report
-            # the understanding half as never updated on a correct run. Deferring
-            # is what the MNT>1 batching in sensenova_four_phase would want, and
-            # it is unreachable anyway: this route refuses accumulation, so every
-            # backward is its own step.
-            four_phase.capture()
-            four_phase.flush()
-        self._flush_fused_group_partials()
+        _applied_before = self._applied_updates_now()
+        try:
+            if self.use_grad_scaler:
+                self.grad_scaler.scale(loss_for_backward).backward()
+            else:
+                loss_for_backward.backward()
+            four_phase = getattr(self, "sensenova_four_phase", None)
+            if four_phase is not None:
+                # The backward above stopped at the boundary K/V leaves; take
+                # their gradient, then run phase 3 HERE rather than at the
+                # optimizer-step site. The update census asserts completeness
+                # inside the MNT loop, which is upstream of that site, so a
+                # deferred phase 3 would report the understanding half as never
+                # updated on a correct run. Deferring is what the MNT>1 batching
+                # in sensenova_four_phase would want, and it is unreachable
+                # anyway: this route refuses accumulation, so every backward is
+                # its own step.
+                four_phase.capture()
+                four_phase.flush()
+            self._flush_fused_group_partials()
+        except BaseException as _exc:
+            # Scoped to the backward: an exception raised before or after it
+            # cannot have interrupted the hooks, and keeps its ordinary
+            # emergency save.
+            self._note_partial_step_taint(_applied_before, _exc)
+            raise
 
         # Extract values before deleting tensors
         loss_value = loss.item()
@@ -6495,6 +6602,54 @@ class BaseTrainer(ABC):
         del loss, loss_for_backward, pred_loss, recon_loss
 
         return loss_value, pred_loss_value, recon_loss_value
+
+    @staticmethod
+    def _applied_updates_now() -> int:
+        from .optimizers.update_census import applied_updates
+        return applied_updates()
+
+    def _note_partial_step_taint(self, applied_before: int, exc: BaseException) -> None:
+        """Record that an exception left this backward's updates half-applied.
+
+        The OOM route refuses with ``PartialOptimizerStepError`` before any save.
+        Every other way out of a backward -- a non-CUDA RuntimeError, a
+        non-RuntimeError (the schedule-free KeyError this file documents at
+        ``_setup_fused_backward_pass``), a fatal CUDA error with a live context,
+        Ctrl-C -- lands in the interrupt or emergency handler, which would
+        otherwise write those weights plus a paired state.json and optimizer
+        state that resume would trust. This is what tells them not to.
+        """
+        if not fused_backward_active(self):
+            return
+        applied = self._applied_updates_now() - applied_before
+        if applied <= 0:
+            return
+        self._partial_step_taint = {
+            "applied": applied,
+            "kind": type(exc).__name__,
+            "detail": str(exc)[:200],
+        }
+
+    def _refuse_save_after_partial_step(self, when: str, global_step: int) -> bool:
+        """True (having said why) if a half-applied step must not be written out.
+
+        Deliberately writes nothing at all, not even a quarantined weights-only
+        artefact: the optimizer state is half-applied too, and under a fatal CUDA
+        error neither can be asserted to be merely one step off. The last
+        periodic checkpoint is intact and is the resume point.
+        """
+        taint = getattr(self, "_partial_step_taint", None)
+        if not taint:
+            return False
+        print(f"\n{self.log_prefix} [FAILED] {when} inside a fused backward pass that had "
+              f"already applied {taint['applied']} parameter update(s) "
+              f"({taint['kind']}: {taint['detail']}).")
+        print(f"{self.log_prefix} [FAILED] No checkpoint, training state, optimizer state "
+              f"or EMA file is written for step {global_step}: the in-memory weights carry "
+              f"part of that step and the optimizer state carries part of its own, and "
+              f"nothing on disk should be resumable from them.")
+        print(f"{self.log_prefix} [FAILED] {self._resume_point_sentence()}")
+        return True
 
     # ============================================================
     # Training Step
@@ -9847,6 +10002,18 @@ class BaseTrainer(ABC):
         self._epochs_entered = 0
         self._backwards_completed = 0
         self._batches_skipped = 0
+        # What "resume from the last periodic checkpoint" refers to, or None
+        # when none has been written yet -- in which case _resume_point_sentence
+        # falls back to what this invocation resumed from, and says which of
+        # "save_every=0" and "not reached yet" is the actual reason.
+        self._last_periodic_checkpoint_step = None
+        self._periodic_save_every = save_every_n_steps
+        self._resume_checkpoint_label = (
+            getattr(self, "_loaded_checkpoint_path", None)
+            or resume_from_checkpoint
+            or self.resume_from_checkpoint
+        )
+        self._partial_step_taint = None
 
         try:
             # resume_seq: 0 for a fresh run, one past the highest recorded seq when
@@ -11937,6 +12104,12 @@ class BaseTrainer(ABC):
                                 loss_weight_maps_batch=loss_weight_maps_batch,
                                 sensenova_prefix=mnt_sensenova_prefix,
                             )
+                        except PartialOptimizerStepError:
+                            # Half-applied step: the safety net below would swallow
+                            # it as a recoverable OOM (it is raised FROM one) and
+                            # skip the batch, which is the behaviour it exists to
+                            # prevent.
+                            raise
                         except FatalCudaError:
                             # Sticky CUDA-context corruption, already classified by the
                             # inner recovery path -- do not swallow it here. Re-raise so
@@ -12360,6 +12533,7 @@ class BaseTrainer(ABC):
                             if self.run_id is not None:
                                 self._log_metrics_to_db(step=global_step, force_flush=True)
                             self.save_checkpoint(step=global_step, epoch=epoch)
+                            self._last_periodic_checkpoint_step = global_step
                             # Save training state (epoch progress) for mid-epoch resume
                             self.save_training_state(step=global_step, epoch=epoch, batch_idx=self._epoch_batch_position(batch_idx), multi_noise_timesteps=multi_noise_timesteps)
                             # Save optimizer state (momentum, variance, etc.)
@@ -12517,6 +12691,9 @@ class BaseTrainer(ABC):
             except Exception:
                 pass
             print(f"\n{self.log_prefix} Training interrupted by user")
+            if self._refuse_save_after_partial_step("The interrupt landed", global_step):
+                self.writer.close()
+                raise
             print(f"{self.log_prefix} Saving checkpoint at step {global_step}, epoch {epoch}...")
 
             # Try to save checkpoint (even if it fails, continue to save state)
@@ -12586,6 +12763,20 @@ class BaseTrainer(ABC):
                     self._danbooru_collector.stop()
             except Exception:
                 pass
+            if isinstance(e, PartialOptimizerStepError):
+                # The emergency checkpoint would be the half-applied weights this
+                # refusal exists to keep off disk.
+                print(f"\n{self.log_prefix} [FAILED] {e}")
+                print(f"{self.log_prefix} [FAILED] No checkpoint written: the "
+                      f"in-memory weights are inconsistent")
+                self.writer.close()
+                raise
+
+            if self._refuse_save_after_partial_step(
+                    f"{type(e).__name__} was raised", global_step):
+                self.writer.close()
+                raise
+
             if isinstance(e, NothingTrainedError):
                 # No backward completed, so the weights are the base model's.
                 # Writing them back out is the expensive no-op this refusal

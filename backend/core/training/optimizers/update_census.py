@@ -41,6 +41,21 @@ step of a correct run. ``expect(..., exempt=...)`` takes their names.
 
 Keys are ``id(param)``, following ``fused_grad_norm``: names come from the
 expectation set, which is built once.
+
+THE APPLIED-UPDATE LEDGER
+------------------------
+Separate from the census and always on: a plain count of updates applied since
+the current backward pass began (``reset_applied_updates`` runs immediately
+before every ``backward()``). It answers one question the census cannot -- "did
+this backward apply anything before it died?" -- which decides whether an OOM
+caught mid-backward can be treated as a skipped batch or has left the weights a
+mixture of two steps (``BaseTrainer._refuse_partial_fused_step``). The census is
+opt-in and, by design, is not asserted for an abandoned batch, so it is blind
+here.
+
+Module-level because the update sites have no reference to the trainer, and one
+training run per process (each is its own subprocess) makes a single counter
+unambiguous.
 """
 
 from typing import Dict, Iterable, List, Optional, Set
@@ -156,9 +171,31 @@ def get_update_census(optimizer) -> Optional[UpdateCensus]:
 
 def record_param_update(optimizer, param: nn.Parameter) -> None:
     """Record that ``param`` was updated, if a census is attached and armed."""
+    note_update_applied()
     census = getattr(optimizer, CENSUS_ATTR, None)
     if census is not None and census.enabled:
         census.record(param)
+
+
+# -- applied-update ledger (see the module docstring) -----------------------
+
+_applied_updates = 0
+
+
+def note_update_applied(count: int = 1) -> None:
+    """An update has been WRITTEN to ``count`` parameter(s)."""
+    global _applied_updates
+    _applied_updates += count
+
+
+def reset_applied_updates() -> None:
+    """Open a new window. Belongs immediately before every ``backward()``."""
+    global _applied_updates
+    _applied_updates = 0
+
+
+def applied_updates() -> int:
+    return _applied_updates
 
 
 def trainable_params_of(optimizer) -> List[nn.Parameter]:

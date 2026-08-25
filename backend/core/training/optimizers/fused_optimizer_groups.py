@@ -27,6 +27,7 @@ import torch
 from torch.optim import Optimizer
 
 from .fused_grad_norm import record_fused_grad_norm
+from .update_census import note_update_applied
 
 
 class FusedOptimizerGroups:
@@ -47,10 +48,20 @@ class FusedOptimizerGroups:
 
         Args:
             optimizers: List of optimizer instances (one per group)
-            max_grad_norm: Maximum gradient norm for clipping (0 to disable)
+            max_grad_norm: must be 0 -- this class cannot clip (see below)
         """
+        if max_grad_norm and max_grad_norm > 0:
+            raise ValueError(
+                f"FusedOptimizerGroups cannot clip by global norm (max_grad_norm="
+                f"{max_grad_norm}): each group applies its update from a "
+                f"post-accumulate-grad hook, before the remaining gradients exist, "
+                f"so no global norm is ever available. A per-parameter clip under "
+                f"that name would be a different algorithm. BaseTrainer passes 0.0 "
+                f"and reports the ignored setting once through "
+                f"_warn_grad_clipping_ignored_under_fused."
+            )
         self.optimizers = optimizers
-        self.max_grad_norm = max_grad_norm
+        self.max_grad_norm = 0.0
 
         # Counters and mappings
         self.optimizer_hooked_count: Dict[int, int] = {}
@@ -75,9 +86,10 @@ class FusedOptimizerGroups:
 
                         def optimizer_hook(tensor: torch.Tensor, idx=opt_idx):
                             """Hook called when gradient is ready for this parameter"""
-                            # Gradient clipping (per parameter)
-                            if self.max_grad_norm > 0:
-                                torch.nn.utils.clip_grad_norm_(tensor, self.max_grad_norm)
+                            # No clipping: a per-parameter clip is not the global-norm
+                            # clip max_grad_norm names, so BaseTrainer constructs this
+                            # class with max_grad_norm=0.0 and says so once through
+                            # _warn_grad_clipping_ignored_under_fused.
 
                             # Before the group's zero_grad(set_to_none=True) below,
                             # which is what leaves the trainer nothing to measure.
@@ -94,6 +106,10 @@ class FusedOptimizerGroups:
                                 # Step optimizer
                                 self.optimizers[i].step()
                                 self.optimizers[i].zero_grad(set_to_none=True)
+                                # This group's weights now carry an update the
+                                # groups after it do not (see the ledger in
+                                # update_census).
+                                note_update_applied(self.num_parameters_per_group[i])
 
                         # Register hook
                         handle = parameter.register_post_accumulate_grad_hook(optimizer_hook)
@@ -156,6 +172,7 @@ class FusedOptimizerGroups:
             if 0 < count < self.num_parameters_per_group[i]:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+                note_update_applied(count)
                 stepped.append(i)
         self.reset_counters()
         return stepped

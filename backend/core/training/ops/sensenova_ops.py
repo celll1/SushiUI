@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 
 import torch
 from torch import nn
@@ -801,10 +801,11 @@ class _TrainingPrefixCache:
 
 def forward_und_prefix_layers(
     model: Any,
-    input_ids: torch.Tensor,
+    input_ids: Optional[torch.Tensor],
     indexes: torch.Tensor,
     attention_mask: Any,
     *,
+    inputs_embeds: Optional[torch.Tensor] = None,
     checkpoint_layers: bool = True,
 ) -> _TrainingPrefixCache:
     """Run the understanding decoder stack and return a differentiable prefix.
@@ -813,9 +814,27 @@ def forward_und_prefix_layers(
     seam) rather than through ``past_key_values.update()``: that write is a
     checkpoint-segment side effect, so a non-reentrant recompute would append a
     second time, and a side-effected tensor is not an output autograd can route
-    a gradient through. Bitwise parity with vendor ``_t2i_prefix_forward`` was
-    verified on the real checkpoint, checkpointed and not (Phase U-0).
+    a gradient through.
+
+    U-0's bitwise K/V parity against vendor ``_t2i_prefix_forward`` (42/42
+    layers, checkpointed and not) was measured on ``probes/sensenova_und_prefix
+    .training_prefix_forward``, a probe-local twin of this loop rather than this
+    function -- so the claim transfers by the two being the same construction,
+    not by this function having been run under it. Noted rather than repaired
+    because it is also why re-running that gate for U-3 would have proved
+    nothing: the twin has no ``inputs_embeds`` parameter to exercise.
+
+    ``inputs_embeds`` is the reference-conditioned entry (Phase U-3): vendor
+    ``_build_it2i_inputs`` splices the understanding ViT's rows into the token
+    embeddings and hands back EMBEDS, so a loop that only ever calls
+    ``embed_tokens`` cannot consume them. Same exclusive-or contract as vendor
+    ``Qwen3Model.forward``; the decoder stack below is byte-identical either way,
+    which is the whole of what reference conditioning needs from this loop.
     """
+    if (input_ids is None) == (inputs_embeds is None):
+        raise ValueError(
+            "SenseNova prefix loop takes exactly one of input_ids or inputs_embeds"
+        )
     layers = getattr(model, "layers", None)
     if layers is None:
         raise ValueError("SenseNova understanding prefix model has no decoder layers")
@@ -831,7 +850,9 @@ def forward_und_prefix_layers(
     # Vendor Qwen3Model.forward sets this on the pre-built-mask path.
     model.current_index = indexes[0].max()
 
-    hidden_states = model.embed_tokens(input_ids)
+    hidden_states = (
+        model.embed_tokens(input_ids) if inputs_embeds is None else inputs_embeds
+    )
     cache_layers: "list[_TrainingPrefixLayer]" = []
     for layer in layers:
         mask = attention_mask[layer.attention_type]
@@ -862,6 +883,103 @@ def forward_und_prefix_layers(
     return _TrainingPrefixCache(cache_layers)
 
 
+class _PrefixInputs(NamedTuple):
+    """The three vendor prefix arguments, plus which entry ``tokens`` is.
+
+    Positionally compatible with the plain ``(ids, indexes, mask)`` triple both
+    vendor builders return, because the four-phase split stores this opaquely
+    and replays it, and ``encode_prompt`` reads ``[1]`` for the t extent.
+    SENSENOVA_TRAINING_DESIGN.md 13.7.
+    """
+
+    tokens: torch.Tensor
+    indexes: torch.Tensor
+    attention_mask: Any
+    embeds: bool = False
+
+
+def assert_reference_tower_frozen(transformer: Any) -> None:
+    """The understanding ViT is not a training target, asserted rather than assumed.
+
+    ``iter_sensenova_lora_targets`` walks ``language_model.model.layers`` only, so
+    ``vision_model`` is outside the 294 by construction -- but "outside the
+    enumeration" is a property of one function, and a reference item is the first
+    thing that runs the tower under a trainable configuration at all. Why it is
+    not a target is SENSENOVA_TRAINING_DESIGN.md 5.2 ground 3 and 13.7, not
+    restated here.
+
+    Returns silently on a tree with no ``vision_model``, the same convention the
+    target enumerator uses for an unexpected tree shape. Reachable only from the
+    reference path, which cannot run at all without the tower.
+    """
+    tower = getattr(transformer, "vision_model", None)
+    if tower is None:
+        return
+    trainable = [
+        name for name, parameter in tower.named_parameters() if parameter.requires_grad
+    ]
+    if trainable:
+        raise RuntimeError(
+            "SenseNova reference conditioning requires a frozen understanding "
+            f"vision tower, but {len(trainable)} of its parameters require grad "
+            f"(first: {trainable[0]}). The tower is outside the 294 decoder "
+            "targets every writer emits, so any gradient it received would train "
+            "weights no checkpoint carries and no inference path could load."
+        )
+
+
+def _build_prefix_inputs(
+    trainer: Any, transformer: Any, prompt: str, ref_images: list
+) -> _PrefixInputs:
+    """Build the vendor prefix inputs for one item, reference-conditioned or not.
+
+    Always under ``no_grad``: the token embeddings and -- with references -- the
+    understanding ViT are frozen on every route (13.7), and the differentiable
+    part of the understanding branch starts at the decoder stack that consumes
+    this. One function for all three callers, so the reference and text-only
+    prefixes cannot drift apart.
+    """
+    from core.models.sensenova.vendor.utils import SYSTEM_MESSAGE_FOR_GEN
+
+    with torch.no_grad():
+        if not ref_images:
+            query = transformer._build_t2i_query(
+                prompt,
+                system_message=SYSTEM_MESSAGE_FOR_GEN,
+                append_text="<think>\n\n</think>\n\n<img>",
+            )
+            return _PrefixInputs(
+                *transformer._build_t2i_text_inputs(trainer.tokenizer, query),
+                embeds=False,
+            )
+
+        from core.models.sensenova.sensenova_pipeline_ops import (
+            _IMG_CONTEXT_TOKEN,
+            _embed_reference_images,
+            _splice_reference_image_tokens,
+        )
+
+        pixel_values, grid_hw = _embed_reference_images(transformer, ref_images)
+        # Never set on the text-only path; _build_it2i_inputs asserts on it
+        # matching at least one token.
+        transformer.img_context_token_id = trainer.tokenizer.convert_tokens_to_ids(
+            _IMG_CONTEXT_TOKEN
+        )
+        query = transformer._build_t2i_query(
+            _splice_reference_image_tokens(
+                prompt, len(ref_images), grid_hw, transformer.downsample_ratio
+            ),
+            system_message=SYSTEM_MESSAGE_FOR_GEN,
+            append_text="<think>\n\n</think>\n\n<img>",
+        )
+        return _PrefixInputs(
+            *transformer._build_it2i_inputs(
+                trainer.tokenizer, query, pixel_values, grid_hw
+            ),
+            embeds=True,
+        )
+
+
 def _build_trainable_prefix(trainer: Any, transformer: Any, inputs) -> Any:
     """Run ``forward_und_prefix_layers`` under the autocast the adapters need.
 
@@ -871,16 +989,18 @@ def _build_trainable_prefix(trainer: Any, transformer: Any, inputs) -> Any:
     prefix pass raises a dtype mismatch at layer 0 (found by running it, U-0;
     re-running the K/V parity gate with autocast on costs nothing numerically).
     """
-    input_ids, indexes, attention_mask = inputs
+    tokens, indexes, attention_mask = inputs[0], inputs[1], inputs[2]
+    embeds = bool(inputs[3]) if len(inputs) > 3 else False
     dtype = getattr(trainer, "training_dtype", torch.float32)
     device_type = torch.device(getattr(trainer, "device", "cpu")).type
     autocast_enabled = device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)
     with torch.autocast(device_type=device_type, dtype=dtype, enabled=autocast_enabled):
         return forward_und_prefix_layers(
             transformer.language_model.model,
-            input_ids,
+            None if embeds else tokens,
             indexes,
             attention_mask,
+            inputs_embeds=tokens if embeds else None,
             checkpoint_layers=bool(getattr(trainer, "gradient_checkpointing", True)),
         )
 
@@ -901,37 +1021,29 @@ def encode_prompt(
 
     With ``reference_image_paths`` this runs inference's cond branch verbatim
     (understanding-tower ViT embeds spliced into the text prefix); img_cond and
-    uncond are CFG-only and carry no loss.
+    uncond are CFG-only and carry no loss. Reference conditioning composes with
+    a trainable prefix: the spliced rows traverse the same decoder layers in the
+    same pass (SENSENOVA_TRAINING_DESIGN.md 13.7).
     """
     if not isinstance(prompt, str):
         raise TypeError("SenseNova training encodes one prompt at a time")
-
-    from core.models.sensenova.vendor.utils import SYSTEM_MESSAGE_FOR_GEN
 
     transformer = trainer.transformer
     ref_images = _load_reference_images(reference_image_paths)
     phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
     four_phase = getattr(trainer, "sensenova_four_phase", None)
+    if requires_grad:
+        assert_understanding_training_supported(transformer)
+        if ref_images:
+            assert_reference_tower_frozen(transformer)
     if requires_grad and four_phase is not None:
         # Phase 1 of the four-phase split (8.3.2). Built under no_grad because
         # phase 3 recomputes it; only the boundary K/V survives this phase.
-        assert_understanding_training_supported(transformer)
-        if ref_images:
-            raise NotImplementedError(
-                "SenseNova understanding-branch training is text-only in this "
-                "implementation; reference-conditioned items need the reference "
-                "tower's differentiable path, which is not wired yet"
-            )
         if phase_evictor is not None:
             phase_evictor.enter_prefix()
             phase_evictor.assert_understanding_resident()
-        query = transformer._build_t2i_query(
-            prompt,
-            system_message=SYSTEM_MESSAGE_FOR_GEN,
-            append_text="<think>\n\n</think>\n\n<img>",
-        )
+        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
         with torch.no_grad():
-            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
             cache = _build_trainable_prefix(trainer, transformer, inputs)
         leaf_cache = four_phase.cut(cache, inputs)
         del cache
@@ -944,73 +1056,34 @@ def encode_prompt(
             cache=leaf_cache, text_length=int(inputs[1][0].max()) + 1
         )
     if requires_grad:
-        assert_understanding_training_supported(transformer)
-        if ref_images:
-            raise NotImplementedError(
-                "SenseNova understanding-branch training is text-only in this "
-                "implementation; reference-conditioned items need the reference "
-                "tower's differentiable path, which is not wired yet"
-            )
         if phase_evictor is not None:
             raise RuntimeError(
                 "SenseNova understanding-branch training cannot run with MoT phase "
                 "eviction: the understanding half must stay resident until backward, "
                 "but the evictor moves it to CPU for the denoise phase"
             )
-        query = transformer._build_t2i_query(
-            prompt,
-            system_message=SYSTEM_MESSAGE_FOR_GEN,
-            append_text="<think>\n\n</think>\n\n<img>",
-        )
-        with torch.no_grad():
-            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
+        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
         cache = _build_trainable_prefix(trainer, transformer, inputs)
-        indexes = inputs[1]
         _assert_immutable_prefix_cache(
             cache,
             len(transformer.language_model.model.layers),
             trainable=True,
         )
         return SenseNovaTrainingPrefix(
-            cache=cache, text_length=int(indexes[0].max()) + 1
+            cache=cache, text_length=int(inputs[1][0].max()) + 1
         )
 
     if phase_evictor is not None:
         phase_evictor.enter_prefix()
+    inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
     with torch.no_grad():
-        if ref_images:
-            from core.models.sensenova.sensenova_pipeline_ops import (
-                _IMG_CONTEXT_TOKEN,
-                _embed_reference_images,
-                _splice_reference_image_tokens,
-            )
-
-            pixel_values, grid_hw = _embed_reference_images(transformer, ref_images)
-            # Never set on the Phase 1 text-only path; _build_it2i_inputs asserts
-            # on it matching at least one token.
-            transformer.img_context_token_id = trainer.tokenizer.convert_tokens_to_ids(
-                _IMG_CONTEXT_TOKEN
-            )
-            query = transformer._build_t2i_query(
-                _splice_reference_image_tokens(
-                    prompt, len(ref_images), grid_hw, transformer.downsample_ratio
-                ),
-                system_message=SYSTEM_MESSAGE_FOR_GEN,
-                append_text="<think>\n\n</think>\n\n<img>",
-            )
-            inputs = transformer._build_it2i_inputs(
-                trainer.tokenizer, query, pixel_values, grid_hw
-            )
-            cache, _ = transformer._it2i_prefix_forward(*inputs)
-        else:
-            query = transformer._build_t2i_query(
-                prompt,
-                system_message=SYSTEM_MESSAGE_FOR_GEN,
-                append_text="<think>\n\n</think>\n\n<img>",
-            )
-            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
-            cache, _ = transformer._t2i_prefix_forward(*inputs)
-        indexes = inputs[1]
+        forward = (
+            transformer._it2i_prefix_forward
+            if inputs.embeds
+            else transformer._t2i_prefix_forward
+        )
+        cache, _ = forward(inputs.tokens, inputs.indexes, inputs.attention_mask)
+        indexes = inputs.indexes
     expected_layers = len(transformer.language_model.model.layers)
     _assert_immutable_prefix_cache(cache, expected_layers)
     if phase_evictor is not None:

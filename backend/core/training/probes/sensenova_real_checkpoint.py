@@ -532,14 +532,21 @@ class _ExitSmokeDataset:
         prompt: str,
         width: int = EXIT_SMOKE_WIDTH,
         height: int = EXIT_SMOKE_HEIGHT,
+        reference_images: list[str] | None = None,
     ):
-        self.items = [{
+        item = {
             "image_path": str(image_path),
             "caption": prompt,
             "width": int(width),
             "height": int(height),
             "dataset_unique_id": self.unique_id,
-        }]
+        }
+        # The key production sets from related_images["reference"]; the trainer
+        # reads it per item, so presence here is the whole of "this item is
+        # reference-conditioned" (7.2 judgement 1).
+        if reference_images:
+            item["reference_images"] = [str(p) for p in reference_images]
+        self.items = [item]
         self._reloaded = False
 
     def reload_for_epoch(self, epoch_num: int, run_id: int | None = None):

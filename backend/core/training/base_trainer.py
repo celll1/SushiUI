@@ -63,6 +63,52 @@ def setup_fused_grad_norm(trainer, optimizers):
     return accumulator
 
 
+# Optimizers for which _setup_fused_backward_pass installs per-parameter hooks
+# (the num_optimizer_groups == 0 branch of the Block Swap setup).
+FUSED_BACKWARD_OPTIMIZERS = (
+    "adafactor", "adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
+)
+
+
+def refuse_grad_scaler_under_fused_path(trainer, optimizer_type: str, mode: str) -> None:
+    """FP16 GradScaler is not honoured by per-parameter fused updates.
+
+    ``_execute_forward_backward`` scales the loss, so the gradients reaching the
+    post-accumulate-grad hooks still carry the scale factor. The MAGNITUDE
+    survives that: every optimizer this product offers is Adam-family, Adafactor
+    or sign-based, where the scale cancels between numerator and denominator
+    (measured over 10 CPU steps at scale 2**20, grads 1e-4: adamw
+    scaled/unscaled = 1.0001, adafactor exactly 1.0). What does not survive is
+    the rest of GradScaler's contract: the hooks apply and free each gradient, so
+    the inf/NaN check never runs and ``update()`` never does either. An
+    overflowing step is applied instead of skipped, which leaves NaN in the
+    optimizer state permanently (measured: still NaN five finite steps later),
+    and the scale stays pinned at its initial value, so nothing backs off.
+
+    A fused-aware scaler is implementable -- unscale by the public
+    ``get_scale()``, skip the individual non-finite parameter, hold the scale
+    fixed -- but is not implemented. What per-parameter hooks cannot reproduce is
+    GradScaler's whole-step, all-or-nothing skip.
+    """
+    if not getattr(trainer, "use_grad_scaler", False):
+        return
+    raise ValueError(
+        f"FP16 mixed precision is unsupported with the {mode} that Block Swap "
+        f"requires (training_dtype=fp16, mixed_precision=True, "
+        f"blocks_to_swap={getattr(trainer, 'blocks_to_swap', 0)}, "
+        f"num_optimizer_groups={getattr(trainer, 'num_optimizer_groups', 0)}, "
+        f"optimizer={optimizer_type}). The per-parameter post-accumulate-grad "
+        f"hooks apply and free each gradient during the backward pass, so "
+        f"GradScaler's inf/NaN check never runs and its scale is never updated: "
+        f"an overflowing step is applied instead of skipped, which leaves NaN in "
+        f"the optimizer state permanently, and the scale stays at its initial "
+        f"value so nothing backs off. "
+        f"Options: (1) set training_dtype=bf16, which needs no gradient scaling, "
+        f"(2) disable Block Swap (blocks_to_swap=0), which runs the normal "
+        f"unscale_()/step()/update() path."
+    )
+
+
 def fused_backward_active(trainer) -> bool:
     """True when the per-parameter hooks, not optimizer.step(), apply the updates."""
     return bool(getattr(trainer, "use_fused_backward", False)) or \
@@ -1113,6 +1159,18 @@ class BaseTrainer(ABC):
         # because Anima reads cpu_offload_checkpointing / fp8_base_dtype /
         # anima_lora_scope / etc. during those calls.
         self.config = dict(train_config) if train_config else {}
+
+        # FP16 + a Block Swap fused path: refuse here, before the model load and
+        # the latent/text caching that setup_optimizer sits behind. The calls in
+        # the two _setup_fused_* methods stay as the backstop.
+        if self.use_grad_scaler and self.blocks_to_swap > 0:
+            _optimizer_type = str(self.config.get("optimizer", "adamw8bit")).lower()
+            if self.num_optimizer_groups > 0:
+                refuse_grad_scaler_under_fused_path(
+                    self, _optimizer_type, "fused optimizer groups")
+            elif _optimizer_type in FUSED_BACKWARD_OPTIMIZERS:
+                refuse_grad_scaler_under_fused_path(
+                    self, _optimizer_type, "fused backward pass")
 
         # Full-parameter save: embed the trained VAE into the single-file checkpoint.
         # Kept as Optional[bool]: None = per-arch default. Each full-FT save adapter
@@ -3687,9 +3745,7 @@ class BaseTrainer(ABC):
 
                 # Fused optimizer groups: works with non-8bit optimizers only
                 self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
-            elif optimizer_type.lower() in [
-                "adafactor", "adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
-            ]:
+            elif optimizer_type.lower() in FUSED_BACKWARD_OPTIMIZERS:
                 if getattr(self, "use_ema", False):
                     raise NotImplementedError(
                         "use_ema is not yet supported together with the fused backward "
@@ -3851,6 +3907,8 @@ class BaseTrainer(ABC):
         Args:
             optimizer_type: Optimizer type ("adafactor" or "adamw8bit")
         """
+        refuse_grad_scaler_under_fused_path(self, optimizer_type, "fused backward pass")
+
         print(f"{self.log_prefix} Setting up fused backward pass for {optimizer_type}...")
 
         # Check PyTorch version
@@ -3963,6 +4021,8 @@ class BaseTrainer(ABC):
             total_steps: Total training steps
             lr_scheduler_type: LR scheduler type
         """
+        refuse_grad_scaler_under_fused_path(self, optimizer_type, "fused optimizer groups")
+
         print(f"{self.log_prefix} Setting up fused optimizer groups...")
 
         # Check PyTorch version

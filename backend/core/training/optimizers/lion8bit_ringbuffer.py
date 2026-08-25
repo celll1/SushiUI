@@ -49,6 +49,9 @@ from .fused_backward_registration import register_fused_backward_hooks
 # Gradient-norm recording (the hooks clear param.grad before it can be measured)
 from .fused_grad_norm import record_fused_grad_norm
 
+# Updated-parameter census (G-RB3): which parameters an update actually reached
+from .update_census import record_param_update
+
 # Stochastic rounding helpers (shared with AdamW8bit_RingBuffer)
 from .stochastic_rounding import (
     Fp32ScratchPool,
@@ -521,9 +524,26 @@ class Lion8bit_RingBuffer(Optimizer):
                 if p.grad is None:
                     continue
 
-                # Skip parameters on CPU (offloaded by Block Swap)
-                if not p.is_cuda:
-                    continue
+                # Was a silent `continue`: step() never revisits what it skips,
+                # so a CPU-resident parameter went untrained for the whole run.
+                # The 8-bit update is a CUDA kernel and raises; the FP32 path
+                # below runs on CPU tensors. Same as AdamW8bit_RingBuffer.step().
+                if group['use_8bit'] and not p.is_cuda:
+                    raise RuntimeError(
+                        f"Lion8bit_RingBuffer.step() reached a parameter "
+                        f"{tuple(p.shape)} on {p.device} with 8-bit state. The update "
+                        f"is a CUDA kernel and cannot be applied there, and step() "
+                        f"does not revisit parameters, so skipping it would leave "
+                        f"this parameter untrained for the whole run. Under Block "
+                        f"Swap this optimizer updates through its own "
+                        f"post-accumulate-grad hooks "
+                        f"(register_lion8bit_fused_backward), which run while the "
+                        f"parameter is still resident; reaching step() with a CPU "
+                        f"parameter means those hooks were not registered. Options: "
+                        f"(1) register them "
+                        f"(BaseTrainer._setup_fused_backward_pass), (2) keep the "
+                        f"parameters resident (blocks_to_swap=0)."
+                    )
 
                 # Initialize state if needed
                 if len(self.state[p]) == 0:
@@ -633,6 +653,9 @@ class Lion8bit_RingBuffer(Optimizer):
                 # Stochastic rounding: FP32 image -> BF16 param (no-op when off)
                 stochastic_round_(p, p_fp32)
 
+                # Every branch above has applied this parameter's update (G-RB3).
+                record_param_update(self, p)
+
         return loss
 
 
@@ -736,6 +759,10 @@ def register_lion8bit_fused_backward(optimizer, model):
 
             # Stochastic rounding: FP32 image -> BF16 param
             stochastic_round_(param, p_fp32)
+
+            # The update reached this parameter (G-RB3). Recorded here rather
+            # than at hook entry so an early return above is not counted.
+            record_param_update(optimizer, param)
 
             # Clear gradient (already applied)
             param.grad = None

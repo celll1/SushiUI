@@ -48,6 +48,9 @@ from .fused_backward_registration import register_fused_backward_hooks
 # Gradient-norm recording (the hooks clear param.grad before it can be measured)
 from .fused_grad_norm import record_fused_grad_norm
 
+# Updated-parameter census (G-RB3): which parameters an update actually reached
+from .update_census import record_param_update
+
 # Stochastic rounding helpers (shared with Lion8bit_RingBuffer)
 from .stochastic_rounding import (
     Fp32ScratchPool,
@@ -746,10 +749,25 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if p.grad is None:
                     continue
 
-                # Skip parameters on CPU (offloaded by Block Swap)
-                # Optimizer updates will be applied when layer returns to GPU
-                if not p.is_cuda:
-                    continue
+                # Was a silent `continue`: step() never revisits what it skips,
+                # so a CPU-resident parameter went untrained for the whole run.
+                # The 8-bit update is a CUDA kernel and raises; the FP32 path
+                # below runs on CPU tensors, so it is no longer skipped.
+                if use_8bit and not p.is_cuda:
+                    raise RuntimeError(
+                        f"AdamW8bit_RingBuffer.step() reached a parameter "
+                        f"{tuple(p.shape)} on {p.device} with 8-bit state. The update "
+                        f"is a CUDA kernel and cannot be applied there, and step() "
+                        f"does not revisit parameters, so skipping it would leave "
+                        f"this parameter untrained for the whole run. Under Block "
+                        f"Swap this optimizer updates through its own "
+                        f"post-accumulate-grad hooks (patch_adamw8bit_ringbuffer), "
+                        f"which run while the parameter is still resident; reaching "
+                        f"step() with a CPU parameter means those hooks were not "
+                        f"registered. Options: (1) register them "
+                        f"(BaseTrainer._setup_fused_backward_pass), (2) keep the "
+                        f"parameters resident (blocks_to_swap=0)."
+                    )
 
                 # Initialize state on first use
                 if len(self.state[p]) == 0:
@@ -1009,6 +1027,9 @@ class AdamW8bit_RingBuffer(Optimizer):
                         if use_stochastic_rounding:
                             self._copy_stochastic_bf16(p, p_fp32)
 
+                # Every branch above has applied this parameter's update (G-RB3).
+                record_param_update(self, p)
+
         # Schedule-Free: Increment k after all parameter updates
         if self.schedule_free:
             self.k += 1
@@ -1233,6 +1254,10 @@ def patch_adamw8bit_ringbuffer(model: Optional[nn.Module], optimizer: AdamW8bit_
 
             # Stochastic rounding: FP32 image -> BF16 param
             stochastic_round_(param, p_fp32)
+
+            # The update reached this parameter (G-RB3). Recorded here rather
+            # than at hook entry so an early return above is not counted.
+            record_param_update(optimizer, param)
 
             # Clear gradient (already applied)
             param.grad = None

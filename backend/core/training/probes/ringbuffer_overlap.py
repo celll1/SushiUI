@@ -22,10 +22,18 @@ an allocator and a warm PCIe path, which is the thing being compared):
 * ``adafactor``     -- zero state traffic, the reference line.
 
 All optimizer arms drive the **fused post-accumulate-grad seam**, which is the seam a
-Block-Swap full FT uses and the only one where the update runs inside backward. Note
-that seam hands ``state['exp_avg']`` to the CUDA kernel unchanged
-(``adamw8bit_ringbuffer.py:1205-1215``): a host buffer is read over UVA per element,
-not staged with a bulk copy the way ``step()`` does it.
+Block-Swap full FT uses and the only one where the update runs inside backward.
+
+**[corrected, U-2-6]** This docstring used to say that seam reads the host buffer
+"over UVA per element, not staged with a bulk copy", because the Python hook hands
+``state['exp_avg']`` to the extension unchanged. That is true of the Python layer and
+false of what runs: ``cuda/adamw8bit_cuda.cpp:145-243`` (and the Lion binding at
+``:170-250``) stage the host state with ``.to(device, non_blocking=true)`` on a
+**dedicated per-device transfer stream**, order the update kernel behind it with a
+CUDA event, and put the D2H writeback back on that same stream so it overlaps the
+following parameters' backward. The 26.5 GB/s below is a bulk DMA at PCIe 4.0 x16
+line rate, which is what that machinery produces and not what per-element UVA reads
+would. The measurements are unaffected; the mechanism attributed to them was wrong.
 
 Read-only with respect to production code.
 

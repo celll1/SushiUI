@@ -1064,28 +1064,49 @@ Lion の 32.4 GB は**隠れる**。ただし MoT が image token に対して g
 なお **hook の発火順 = 勾配確定順 = 逆 layer 順で決定的**なので、prefetch schedule は
 導出可能である（閾値の下で効かせたい場合の余地）。
 
-#### upgrade に必要な項目（4 → **3**。1 項目は実測で不要と判明）
+#### upgrade に必要な項目（4 → 3 → **残り 1**。U-2-6 で 2 項目が着地、機構の誤りも訂正）
 
-1. `BaseTrainer` が `get_state_buffer`（`RingBufferAllocator` ベース）を
-   optimizer_kwargs に渡す配線（**現在ゼロ**）。
+1. ~~`BaseTrainer` が `get_state_buffer`（`RingBufferAllocator` ベース）を
+   optimizer_kwargs に渡す配線（**現在ゼロ**）。~~ **【DONE、U-2-6】**
+   `_ringbuffer_optimizer_kwargs()` が `optimizer_state_host_resident` のときに
+   `HostOptimizerStateAllocator` を渡す。**ただし基底の指定が誤っていた** —
+   `RingBufferAllocator` は**再利用されるアリーナへの view** を返す
+   （`free_layer` / wrap-around 付き、層パラメータ 1 回分の寿命用）ので、
+   run 全体を生きる optimizer state に使うと **2 つのパラメータの moment が同じ
+   バイトを共有して静かに壊れる**。**永続・非再利用・パラメータ単位**の専用
+   allocator が要る。また **pinned 済みバッファを返すこと**が必須で、返さないと
+   optimizer 側の `pin_memory()` が第 2 の確保を作り **host RAM が 2 倍**になる
+   （実測: 保持する版 2.04x 対 出荷版 1.04x）。
+   **switch には API 面がまだ無い**（`param_defaults` → `routes` →
+   `training_config` → `openapi` → frontend の連鎖が必要）。
 2. ~~**hook 経路への state H2D → 更新 → D2H の移植。**~~ **【撤回、`5dce52ee`】
-   不要である。** この項目は「fused hook 経路には転送が丸ごと無く
-   `state['exp_avg']` をそのまま CUDA kernel に渡すので、CPU state + fused hook は
-   現状動かない組み合わせ」という推論だったが、**実測では動く。**
-   host buffer は **pinned なので kernel が UVA 経由で直接アドレスでき**、
-   **GPU state と bit 一致の結果**を出す（同一 seed で moved fraction / drift /
-   checksum / state 占有率が最終桁まで一致し、GPU state は 98.5% 減る）。
-   **ステージングされた転送が無いことは欠陥ではなく、この経路の動作原理だった。**
-   G-RB1 が閾値の上で完全に吸収されることを示したのも、まさにこの zero-copy 経路
-   である。
-3. 専用 transfer stream + 次パラメータ state の prefetch + event 同期。
-   **閾値の下**（SenseNova の想定解像度帯）でのみ意味を持つ。
-4. **`if not param.is_cuda: return` のサイレントスキップを fail-loud にする**
-   （`:1082`。コメントは "Update will be applied when layer returns to GPU" と書くが、
-   hook は既に発火して return しており、再適用する経路は無い）。4 相 eviction と
-   順序が 1 箇所でも狂うと「更新されない half が生まれるのに loss は下がる」という
-   §6.1 と同型の故障になる。**step ごとの updated-param census == trainable 数**の
-   検証を契約に入れる（G-RB3）。
+   不要である。** ただし **【U-2-6 で機構を訂正】理由が誤っていた。**
+   ここには「host buffer は pinned なので kernel が UVA 経由で直接アドレスでき、
+   ステージングされた転送が無いことがこの経路の動作原理」と書いてあったが、
+   **転送はステージングされている。** 素通しなのは Python 層だけで、実際には
+   C++ 拡張が行う（`cuda/adamw8bit_cuda.cpp:145-243`、Lion は
+   `cuda/lion8bit_cuda.cpp:170-250`）: **device ごとにキャッシュされた専用
+   transfer stream** 上での H2D、**CUDA event** による update kernel の順序付け、
+   同じ stream 上での D2H writeback。移植が不要なのは「転送が無いから」ではなく
+   **「すでに一段下の層に実装されているから」**である。
+   G-RB1 の 26.5 GB/s（PCIe 4.0 x16 線速）はこのバルク DMA が出す値で、
+   per-element の UVA read が出す値ではない。**`git log 8c13c493..327614d6` が
+   空**なので、この転送機構は G-RB1 実測コミットの祖先であり、
+   **G-RB1 はステージング経路を測っていた。**
+3. ~~専用 transfer stream~~ + **次パラメータ state の prefetch** + ~~event 同期~~。
+   **【U-2-6】stream と event 同期は上記のとおり実装済み。残るのは prefetch だけ。**
+   狙いは明確で、**H2D は完全に露出している** — hook 発火時に発行され、その直後に
+   それを待つ kernel が走るので何とも重ならない（D2H は既に後続の backward と
+   重なっている）。hook 発火順は決定的なので schedule は導出可能。
+   **閾値の下**（SenseNova の想定解像度帯）でのみ意味を持つ。**未実装。**
+4. ~~**`if not param.is_cuda: return` のサイレントスキップを fail-loud にする**
+   （`:1082`）~~ **【DONE】hook 側は `3a7c9560` で既に済んでいた**
+   （本項が引く `:1082` の記述は当時から stale）。**U-2-6 が見つけた残りは
+   `step()` 側**の同型のスキップ（`adamw8bit_ringbuffer.py:751` /
+   `lion8bit_ringbuffer.py:525`、同じ嘘のコメント付き）で、こちらを fail-loud
+   にした。8-bit は CUDA kernel なので raise、FP32 経路は CPU テンソルで走る
+   ので**スキップをやめて実行**する。
+   **step ごとの updated-param census == trainable 数**（G-RB3）は実装済み。
 
 #### トレードオフ（「一択」と断定しない）
 
@@ -1116,8 +1137,35 @@ opt-in を開く条件として事前登録した gate。実施は U-2-6（§13.
 | gate | 問い | 状態 |
 |---|---|---|
 | **G-RB1（帯域隠蔽）** | state の往復は backward に隠れるか、直列加算になるか | **CLOSED（`8c13c493`）**: 閾値の上では完全に吸収され、閾値は閉形式で書ける。SenseNova の想定解像度帯は閾値の下。詳細は上の実測ボックス。**モデルを載せずに「閾値」を測る形にしたのが要点** — 16.2B の step wall は測れないが、閾値は parameter 数に依存しないので合成で測れる |
-| **G-RB2（ホスト RAM）** | pinned state が実行ホストに載るか | pinned 割当の合計と process peak RSS を**事前 announce 付き**で記録（~50 GB 級になりうるため gpu-probe の host-RAM 規律の対象） |
-| **G-RB3（correctness）** | サイレント CPU-skip が起きていないか | **step ごとの updated-param census == trainable 数**。U-2-5 の「588 Linear update-nonzero census」に統合する |
+| **G-RB2（ホスト RAM）** | pinned state が実行ホストに載るか | **CLOSED（U-2-6）**。下の実測ボックス参照。**問い自体は書かれたままでは検証不能**（「載るか」は実行ホスト依存で、16.2 B は確保できない）ので、**測れる内容に分解して消化した**: (1) host 常駐が実際に有効になること（flag ではなく state テンソルの device census で）、(2) **pinned bytes/param の実測**、(3) **peak working set ≒ pinned 実バイト**（＝二重確保が無いこと。ここが実際に落ちうる箇所だった）。(4) fit 判定はこれらの掛け算 |
+| **G-RB3（correctness）** | サイレント CPU-skip が起きていないか | **CLOSED（U-2-6）**。`optimizers/update_census.py`。fused backward 実測で **32/32 が更新、negative control は 31/32 を名前付きで捕捉**。コストは **588 パラメータで 47.8 µs/step**（81 ns/param、device 仕事も同期も無し）。U-2-5 の「588 Linear update-nonzero census」に統合する |
+
+> **【G-RB2 実測、U-2-6】RTX 6000 Ada、402,653,184 個の bf16 パラメータ、
+> `set_per_process_memory_fraction(0.72)`、announce 付き、`1 case 1 process`。**
+> **1 process で 8 case を回した最初の版は host の数字が使い物にならなかった** —
+> working set は縮まないので、2 番目以降の case は 0.375 GiB の pinned を確保
+> しながら RSS delta ほぼ 0 を報告する。**delta に現れるのはその process が
+> 初めて行った確保だけである。**
+>
+> | optimizer | mode | GPU state B/param | host state B/param | pinned | pinned 実サイズ | peak wset | peak GPU |
+> |---|---|---:|---:|---:|---:|---:|---:|
+> | `adamw8bit_ringbuffer` | GPU（既定） | 2.031250 | 0 | – | 0 | 1.380 GiB | 4.027 GiB |
+> | `adamw8bit_ringbuffer` | HOST | **0.031250** | 2.000000 | 100% | 0.750 GiB | 2.151 GiB | 3.277 GiB |
+> | `lion8bit_ringbuffer` | GPU（既定） | 1.015625 | 0 | – | 0 | 1.379 GiB | 3.646 GiB |
+> | `lion8bit_ringbuffer` | HOST | **0.015625** | 1.000000 | 100% | 0.375 GiB | 1.776 GiB | 3.271 GiB |
+>
+> - **単価は §6.5 の HOST 行を桁まで再現**し、GPU state は **98.5% 減**。
+> - **二重確保は無い**: peak wset の HOST − GPU 差は AdamW **+0.771 GiB / 0.750 GiB
+>   pinned = 1.028x**、Lion **+0.397 / 0.375 = 1.059x**。allocator が pinned 済み
+>   バッファを返さないと **2.04x** になる（optimizer 側の `pin_memory()` が
+>   第 2 の確保を作るため）。
+> - HOST 側の peak GPU が GPU 側より **0.75 GiB 低い**（3.277 対 4.027）のは、
+>   ちょうど AdamW の GPU state が消えた分である。
+> - **16.2 B への 32.4 GB / ~50 GB は依然として構造上の外挿である。**
+>   実測なのは**単価だけ**で、合計は掛け算にすぎない。
+> - **announce は 2 回とも GPU 側を低く見積もった**（3.0 GiB と申告して実測 4.78 GiB。
+>   weights + grads + GPU state に加えて stochastic rounding の scratch と
+>   拡張のステージングバッファが乗る）。probe の announce は実測値に直した。
 
 G-RB3 が最も重要である。upgrade 項目 4 のサイレントスキップは、**loss が正常に下がる
 まま一部の half が更新されない**という §6.1 と同型の故障を作るので、
@@ -2077,16 +2125,22 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
     取っていない。**断定しないこと。**
     また **16.2B の step wall そのものは未実測**で、上の投影が乗る土台が無い
     （U-2-4 が測る）。
-12. **G-RB2 — pinned host RAM（upgrade 後 32.4 GB、4 相 eviction 併用で ~50 GB 級）が
-    実行ホストに載るか。** 搭載 RAM 依存で、構造値のみ。
-13. **G-RB3 — サイレント CPU-skip の不在。** `if not param.is_cuda: return`
-    （`adamw8bit_ringbuffer.py:1082`）が 4 相 eviction と順序衝突しないことは未検証。
+12. ~~**G-RB2 — pinned host RAM が実行ホストに載るか。**~~ **CLOSED（U-2-6）。**
+    単価は実測（AdamW host 2.0 / Lion 1.0 B/param、100% pinned、二重確保無し）。
+    **16.2 B への 32.4 GB / ~50 GB は依然として構造上の外挿**である。§6.5 の実測ボックス。
+13. ~~**G-RB3 — サイレント CPU-skip の不在。**~~ **CLOSED（U-2-6）。**
+    census は fused backward 実測で 32/32、negative control 31/32 を捕捉。
+    なお本項が引いていた `adamw8bit_ringbuffer.py:1082` の記述は **`3a7c9560`
+    以来 stale** だった（hook 側は当時すでに fail-loud）。U-2-6 が直したのは
+    `step()` 側の同型のスキップである。
+    **残る未検証**: census と **4 相 eviction の順序**の相互作用（§8.3.2 / U-2-4 と
+    合わせて見る必要がある。合成パラメータでは eviction が走らない）。
 
-**なお「Ring Buffer optimizer の CPU state が現状どの学習経路からも有効化されない」は
-未測定事項ではなく、コードから確定している事実である**（§6.5 前提事実 1）。
-**ただし「配線したら動くか」はもはや未測定ではない** — probe から allocator を渡すと
-**GPU state と bit 一致の結果を出す**（`5dce52ee`、§6.5 upgrade 項目 2 の撤回）。
-残っているのは production 側の配線と、閾値下の最適化と、fail-loud 化である。
+**§6.5 前提事実 1（「CPU state はどの学習経路からも有効化されない」）は
+U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator を渡す。
+**ただし switch に API 面が無い**ので、**製品から起動した run では依然 GPU 確保**
+である。残っているのは **API 面**と、**閾値下の prefetch**（stream と event 同期は
+実装済み。§6.5 upgrade 項目 3）である。
 
 既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
 （§7.2）、ConvRot base の train / inference skew（§5.3）。

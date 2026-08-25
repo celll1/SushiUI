@@ -1680,7 +1680,10 @@ class TaggerTrainer:
             # Default 256 batches ≈ 4096 samples ≈ 689 MB for 84k-tag vocab.
             val_max_batches = int(cfg.get("val_max_batches", 256)) or None
             val_metrics: Dict[str, Any] = {}
-            if val_loader and epoch % int(cfg.get("validate_every", 1)) == 0:
+            # max(1, ...): 0 would divide by zero here, and "never validate" is
+            # already spelled val_split=0 (no val_loader), so 0 has no meaning.
+            validate_every = max(1, int(cfg.get("validate_every", 1) or 1))
+            if val_loader and epoch % validate_every == 0:
                 val_metrics = self._validate(model, val_loader, device, amp_dtype if use_amp else None,
                                              max_batches=val_max_batches)
                 epoch_f1  = val_metrics.get("f1", 0.0)

@@ -30,7 +30,8 @@ class ParameterChangeTracker:
             interval:   Compute metrics every N optimizer steps
         """
         self.components = {k: v for k, v in components.items() if v is not None}
-        self.interval = interval
+        # compute() takes `step % interval`; 0 would raise instead of tracking.
+        self.interval = max(1, int(interval or 1))
 
         # Reference snapshot for C (set once at init, never updated)
         self._reference: Dict[str, List[torch.Tensor]] = {}

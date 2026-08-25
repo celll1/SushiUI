@@ -223,6 +223,37 @@ class FatalCudaError(RuntimeError):
     pass
 
 
+class NothingTrainedError(RuntimeError):
+    """Raised when a run has completed no backward pass, so its weights are the
+    base model's. The emergency handler deliberately writes no checkpoint for
+    it: saving an untrained model is the expensive thing this refusal exists to
+    avoid, and the base weights are already on disk.
+    """
+    pass
+
+
+class BucketsExhaustedError(RuntimeError):
+    """Raised when a run that HAS trained loses its last fittable bucket.
+
+    Deliberately not a ``NothingTrainedError``: those weights are worth saving,
+    so this falls through to the emergency-save path. ``_unfittable_buckets``
+    grows during training, so this is reachable after thousands of successful
+    steps -- and ``save_every=0`` is a supported configuration, which would make
+    the emergency checkpoint the only copy of the run's work.
+    """
+    pass
+
+
+_MEMORY_BUDGET_ADVICE = (
+    "The OOM was raised against this process's memory budget, which "
+    "torch.cuda.set_per_process_memory_fraction and other resident allocations "
+    "can put well below the installed VRAM -- free VRAM on the card does not "
+    "mean the budget was not reached. Lower the training resolution, raise "
+    "blocks_to_swap / enable activation offload, or raise the process memory "
+    "budget, then restart the run."
+)
+
+
 def _vramdiag(tag: str):
     """Compact CUDA-memory snapshot print (used behind the debug_vram flag)."""
     try:
@@ -803,6 +834,7 @@ def predict_original_latent_unified(
 # Split to its own module (plan P8). Re-exported here so existing importers of
 # ``base_trainer.ParameterChangeTracker`` keep working (zero caller churn).
 from core.training.parameter_change_tracker import ParameterChangeTracker
+from core.training.periodic_intervals import due as interval_due, normalize_interval
 
 
 # ============================================================
@@ -8574,6 +8606,14 @@ class BaseTrainer(ABC):
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
             use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
         """
+        # 0 means "never" for every optional periodic action; see
+        # periodic_intervals. gradient_accumulation_steps is not optional, so 0
+        # folds to 1 rather than disabling the optimizer step.
+        save_every_n_steps = normalize_interval(save_every_n_steps)
+        sample_every_n_steps = normalize_interval(sample_every_n_steps)
+        debug_latents_every = normalize_interval(debug_latents_every)
+        gradient_accumulation_steps = normalize_interval(gradient_accumulation_steps, minimum=1)
+
         if self.is_sensenova:
             from core.training.ops.training_method import is_full_finetune
             _sensenova_full_ft = is_full_finetune(self)
@@ -8611,6 +8651,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batch size: {batch_size}")
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+        if save_every_n_steps == 0:
+            print(f"{self.log_prefix} Periodic checkpointing: DISABLED (save_every=0); "
+                  f"only interrupt/emergency saves will write a checkpoint")
 
         # Compute dataset fingerprint for change detection on resume
         # This is stored in training state and compared when resuming
@@ -9795,6 +9838,16 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [DanbooruAug] Setup failed (continuing without): {_dae}")
             self._danbooru_collector = None
 
+        # "Did this invocation train anything?" -- asserted before reporting
+        # success, so a run whose every batch was dropped or skipped cannot
+        # finish green. This is the only product-default detector for that: the
+        # optimizer update census is opt-in AND is deliberately not asserted for
+        # a skipped batch, which is exactly the case that produces a no-op run.
+        # Reset per call, not per resume.
+        self._epochs_entered = 0
+        self._backwards_completed = 0
+        self._batches_skipped = 0
+
         try:
             # resume_seq: 0 for a fresh run, one past the highest recorded seq when
             # resuming (this run already has metric rows from a prior session). New
@@ -9819,6 +9872,7 @@ class BaseTrainer(ABC):
             for epoch in range(start_epoch, num_epochs):
                 # Recorded with each metric (for epoch-boundary markers in the UI).
                 self._current_epoch = epoch
+                self._epochs_entered += 1
                 self._epoch_batch_offset = 0  # only the resumed epoch is truncated
                 print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
 
@@ -10121,23 +10175,7 @@ class BaseTrainer(ABC):
                         batches = [_image_all_items[i:i+batch_size] for i in range(0, len(_image_all_items), batch_size)]
                         batches = batches + ltx2_video_batches + acestep_audio_batches
 
-                # Drop batches whose resolution bucket previously OOM'd at even one
-                # sample (un-fittable on this hardware/config). Covers the non-crop
-                # path and acts as a safety net for crop; the crop re-bucketing above
-                # already excludes such items. Idempotent.
-                if self._unfittable_buckets and batches:
-                    def _bucket_of(_b):
-                        try:
-                            it = _b[0][0] if isinstance(_b[0], tuple) else _b[0]
-                            return (it.get("bucket_width") or it.get("width"),
-                                    it.get("bucket_height") or it.get("height"))
-                        except Exception:
-                            return None
-                    _n0 = len(batches)
-                    batches = [b for b in batches if _bucket_of(b) not in self._unfittable_buckets]
-                    if len(batches) < _n0:
-                        print(f"{self.log_prefix} [OOM] dropped {_n0 - len(batches)} batch(es) in "
-                              f"un-fittable buckets ({len(self._unfittable_buckets)} excluded)")
+                batches = self._drop_unfittable_batches(batches)
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)
@@ -11398,6 +11436,7 @@ class BaseTrainer(ABC):
                         # Update global_step for skipped batch (to maintain step counting)
                         # Each batch would have processed multi_noise_timesteps steps
                         global_step += multi_noise_timesteps
+                        self._batches_skipped += 1
                         continue
 
                     # Stack batch with size validation
@@ -11431,6 +11470,7 @@ class BaseTrainer(ABC):
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
                         print(f"{self.log_prefix} WARNING: No valid latents in batch, skipping")
+                        self._batches_skipped += 1
                         continue
 
                     # Create batch tensors (ONCE, reused across MNT iterations)
@@ -11590,6 +11630,7 @@ class BaseTrainer(ABC):
                             # MNT iterations, so leaving this one un-advanced drifts
                             # progress/resume totals relative to the other skip path.
                             global_step += multi_noise_timesteps
+                            self._batches_skipped += 1
                             continue
 
                     # Free individual item lists (no longer needed, batch tensors are created)
@@ -11646,7 +11687,7 @@ class BaseTrainer(ABC):
                         #   - Old logic: mnt_idx=0, global_step=192 → 192 % 200 != 0 → NO save (BUG)
                         #   - New logic: mnt_idx=0, check if 192..223 contains a multiple of 200 → YES → save
                         debug_save_path = None
-                        if mnt_idx == 0 and debug_dir is not None:
+                        if mnt_idx == 0 and debug_dir is not None and debug_latents_every > 0:
                             # batch_start_step = global_step (current step before MNT loop increments)
                             # batch_end_step = global_step + multi_noise_timesteps - 1 (inclusive)
                             batch_start_step = global_step
@@ -11954,6 +11995,11 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} [OOM] bucket {_cur_bucket_wh[0]}x{_cur_bucket_wh[1]} "
                                       f"won't fit one sample -> excluding it from subsequent epochs "
                                       f"({len(self._unfittable_buckets)} bucket(s) excluded so far)")
+
+                        if not cuda_error_skip:
+                            self._backwards_completed += 1
+                        else:
+                            self._batches_skipped += 1
 
                         # G-RB3: every trainable parameter must have received an
                         # update during that backward. Skipped when the batch was
@@ -12303,7 +12349,7 @@ class BaseTrainer(ABC):
                         torch.cuda.empty_cache()
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)
-                    if global_step % save_every_n_steps == 0:
+                    if interval_due(global_step, save_every_n_steps):
                         # Transient Windows file locks (antivirus / indexer) can raise
                         # PermissionError mid-save; a single such failure must NOT kill a
                         # multi-hour run. Treat the periodic save as best-effort: log and
@@ -12431,6 +12477,11 @@ class BaseTrainer(ABC):
                     # Use actual_total_steps (which may be recalculated on MNT change during resume)
                     if global_step >= actual_total_steps:
                         print(f"\n{self.log_prefix} Reached target steps ({actual_total_steps}), stopping training")
+                        # Skipped batches advance global_step, so a run whose every
+                        # batch was skipped reaches the target having trained nothing
+                        # and would exit here rather than through the epoch-exhaustion
+                        # path below.
+                        self._assert_trained_something()
                         return  # Exit training loop
 
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
@@ -12450,6 +12501,8 @@ class BaseTrainer(ABC):
                     self._danbooru_collector.stop()
             except Exception:
                 pass
+
+            self._assert_trained_something()
 
         except KeyboardInterrupt:
             # Stop cpu_prefetch worker if it was running (no-op otherwise)
@@ -12533,6 +12586,15 @@ class BaseTrainer(ABC):
                     self._danbooru_collector.stop()
             except Exception:
                 pass
+            if isinstance(e, NothingTrainedError):
+                # No backward completed, so the weights are the base model's.
+                # Writing them back out is the expensive no-op this refusal
+                # exists to prevent.
+                print(f"\n{self.log_prefix} [FAILED] {e}")
+                print(f"{self.log_prefix} [FAILED] No checkpoint written: nothing was trained")
+                self.writer.close()
+                raise
+
             # Emergency checkpoint save on any unhandled exception (CUDA errors, etc.)
             print(f"\n{self.log_prefix} [EMERGENCY] Training failed with error: {type(e).__name__}: {str(e)[:200]}")
             print(f"{self.log_prefix} [EMERGENCY] Attempting to save emergency checkpoint at step {global_step}, epoch {epoch}...")
@@ -12658,6 +12720,97 @@ class BaseTrainer(ABC):
 
         # Cleanup resources
         self.cleanup()
+
+    def _drop_unfittable_batches(self, batches):
+        """Drop batches in buckets that OOM'd at batch size 1, refusing if none survive.
+
+        Covers the non-crop path and backs up the crop re-bucketing, which
+        already excludes such items. Idempotent. Emptying the epoch is raised,
+        not logged: the loop below would otherwise iterate over nothing and the
+        run would report success having trained nothing. Which exception depends
+        on whether anything HAS been trained -- see BucketsExhaustedError.
+        """
+        if not self._unfittable_buckets or not batches:
+            return batches
+
+        def _bucket_of(_b):
+            try:
+                it = _b[0][0] if isinstance(_b[0], tuple) else _b[0]
+                return (it.get("bucket_width") or it.get("width"),
+                        it.get("bucket_height") or it.get("height"))
+            except Exception:
+                return None
+
+        n0 = len(batches)
+        kept = [b for b in batches if _bucket_of(b) not in self._unfittable_buckets]
+        if len(kept) < n0:
+            print(f"{self.log_prefix} [OOM] dropped {n0 - len(kept)} batch(es) in "
+                  f"un-fittable buckets ({len(self._unfittable_buckets)} excluded)")
+        if not kept:
+            if getattr(self, "_backwards_completed", 0) > 0:
+                raise BucketsExhaustedError(self._buckets_exhausted_message(n0))
+            raise NothingTrainedError(self._nothing_trainable_message(n0))
+        return kept
+
+    def _assert_trained_something(self):
+        """Refuse to report success for a run that completed no backward pass.
+
+        Independent of the optimizer update census, which is opt-in and skips
+        abandoned batches by design. Covers every whole-batch skip -- OOM,
+        corrupted image, no valid latents, missing condition images -- not only
+        the OOM bucket exclusion. An empty epoch range (a resume at or past the
+        last epoch) is a legitimate no-op and is not caught.
+        """
+        if getattr(self, "_epochs_entered", 0) > 0 and getattr(self, "_backwards_completed", 0) == 0:
+            raise NothingTrainedError(self._nothing_trainable_message(0))
+
+    def _nothing_trainable_message(self, batches_before_drop: int = 0) -> str:
+        """Message for a run that has nothing left to train on.
+
+        Deliberately does not claim the card is exhausted: the excluding OOM is
+        raised against whatever budget the process runs under, which
+        ``set_per_process_memory_fraction`` can put well below the installed
+        VRAM.
+        """
+        buckets = ", ".join(f"{w}x{h}" for w, h in sorted(self._unfittable_buckets))
+        if buckets:
+            head = (f"Training has nothing left to run: every resolution bucket that "
+                    f"remained OOM'd at batch size 1 and was excluded ({buckets}).")
+        else:
+            head = ("Training has nothing left to run: no batch completed a backward "
+                    "pass (every batch was skipped or dropped, or the dataset "
+                    "produced none).")
+        if batches_before_drop:
+            head += f" All {batches_before_drop} batch(es) of this epoch were dropped."
+        skipped = getattr(self, "_batches_skipped", 0)
+        if skipped:
+            head += (f" {skipped} batch(es) were skipped before their backward pass "
+                     f"(OOM, corrupted image, no valid latents, or missing condition "
+                     f"images -- see the WARNING lines above).")
+        return (
+            head + " No parameter was updated, so this run is failed rather than "
+            "reported complete. " + _MEMORY_BUDGET_ADVICE
+        )
+
+    def _buckets_exhausted_message(self, batches_before_drop: int = 0) -> str:
+        """Message for a run that trained, then lost its last fittable bucket.
+
+        Must not repeat _nothing_trainable_message's "no parameter was updated":
+        here thousands may have been, and the emergency checkpoint about to be
+        written is what carries them.
+        """
+        buckets = ", ".join(f"{w}x{h}" for w, h in sorted(self._unfittable_buckets))
+        done = getattr(self, "_backwards_completed", 0)
+        head = (f"Training cannot continue: every remaining resolution bucket has "
+                f"OOM'd at batch size 1 and been excluded ({buckets}).")
+        if batches_before_drop:
+            head += f" All {batches_before_drop} batch(es) of this epoch were dropped."
+        return (
+            head + f" {done} backward pass(es) completed before this, so the weights "
+            f"are NOT the base model's -- an emergency checkpoint is being written "
+            f"to preserve that work, and this run is failed rather than reported "
+            f"complete. " + _MEMORY_BUDGET_ADVICE
+        )
 
     def _full_parameter_grad_components(self):
         """``id(param)`` -> component, from the full-parameter adapter. Cached.

@@ -939,13 +939,28 @@ _add_training_feature_unsupported(
 # (U-2-2 step 3), and SenseNovaFullParameterAdapter collects the understanding
 # half when this flag is set -- so the reason this entry used to give ("full
 # fine-tuning is refused for this architecture as a whole") is no longer true
-# and has been replaced with the one that is. The mechanism exists and the
-# backend does not refuse it; what is missing is a measured run, which is
-# U-2-5's exit smoke (SENSENOVA_TRAINING_DESIGN.md 13.4). This entry keeps the
-# control off the UI until then; it is not enforced trainer-side.
+# and has been replaced with the one that is.
+#
+# The reason this entry gave NEXT ("no measured run yet") was discharged by
+# U-2-5: both the understanding-only and the both-half branches have now been
+# run end to end on the real checkpoint. So it has been replaced in turn, by the
+# measurement itself -- the both-half run peaked at 32.66 GiB of VRAM, 94.5% of
+# the gate on a 48 GB card, with a 51.97-61.67 GiB host RSS peak. The entry
+# stays because THAT is a reason; lifting it is a budget decision with numbers
+# attached, not a missing one. It is not enforced trainer-side: the API path
+# accepts train_text_encoder=true.
+#
+# EVERY NUMBER IN THE REASON BELOW IS MEASURED. A first attempt at this string
+# quoted "15.14 GiB of dequantized host weights", which is neither: it is
+# SENSENOVA_TRAINING_DESIGN.md 6.4's ANALYTIC `Q + q_max` transient peak of the
+# int8-side conversion, and the dequantized host weights for two halves are
+# 30.1875 GiB. The whole point of retiring the previous reason was that a
+# measurement had falsified it; replacing it with a second unmeasured claim
+# would have given that away. The host figures here are the two measured RSS
+# peaks (they differ; see the design doc's non-reproduction box).
 _add_training_feature_unsupported(
     "sensenova", "text_encoder_training",
-    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises. LoRA trains it through train_text_encoder; under full fine-tuning it is the second 294-Linear half, which doubles the dequantized weights and has no measured run yet, so only the generation half is offered here",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises. LoRA trains it through train_text_encoder; under full fine-tuning it is the second 294-Linear half, and training both halves measured a 32.66 GiB VRAM peak (94.5% of a 48 GB card) with a 51.97-61.67 GiB host RSS peak, so only the generation half is offered here",
     methods=["full_finetune"])
 
 # --- Sample generation during training --------------------------------------

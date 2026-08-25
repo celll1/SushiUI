@@ -76,11 +76,34 @@ def _host_rss_bytes() -> int:
 
 
 def _host_peak_bytes() -> int:
-    """Peak working set of THIS process, from the OS rather than a sampler."""
+    """Peak working set of THIS process, from the OS rather than a sampler.
+
+    NOT a high-water mark of anything this process owns, and reported alongside
+    ``_host_peak_commit_bytes`` for that reason. ``peak_wset`` counts RESIDENT
+    mmap'd file pages, so a warm page cache over the 17.6 GiB base moves it, and
+    Windows trims a working set under memory pressure, so it can fall. Two
+    identical both-branch arms measured 61.67 and 51.97 GiB peak (26.07 vs 9.04
+    GiB after load) -- the second followed a 32 GiB arm in the same session.
+    Treat the LARGER as the bound.
+    """
     import psutil
 
     info = psutil.Process(os.getpid()).memory_info()
     return int(getattr(info, "peak_wset", info.rss))
+
+
+def _host_peak_commit_bytes() -> int:
+    """Peak commit charge (private, backed) of THIS process -- the reproducible one.
+
+    Unlike the working set this counts only what the process has committed, so
+    it is neither inflated by resident file mappings nor trimmable by the OS.
+    This is the quantity a host-RAM budget should be written against. Falls back
+    to the working-set peak where the platform has no such counter.
+    """
+    import psutil
+
+    info = psutil.Process(os.getpid()).memory_info()
+    return int(getattr(info, "peak_pagefile", 0)) or _host_peak_bytes()
 
 
 def _linear_digest(weight: torch.Tensor) -> str:
@@ -114,6 +137,87 @@ def _digest_map(transformer, branch: str = "gen") -> dict[str, list[float]]:
     return {
         path: _linear_digest(m.weight) for path, m in _gen_targets(transformer, branch)
     }
+
+
+def _halves(branch: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(trained halves, frozen halves) for a branch."""
+    trained = ("gen", "und") if branch == "both" else (branch,)
+    return trained, tuple(h for h in ("gen", "und") if h not in trained)
+
+
+def _effective_format(branch: str, save_format: str) -> str:
+    """The format the writer actually lands on (loader.py's own rule)."""
+    _trained, frozen = _halves(branch)
+    return "bf16" if (save_format == "mixed" and not frozen) else save_format
+
+
+def expected_read_shape(branch: str, effective_format: str) -> dict[str, str]:
+    """What the production reader must produce per half, by format (6.4).
+
+    ``"int8"`` means every Linear of that half is an ``Int8Linear``; ``"float"``
+    means every one holds a floating ``nn.Parameter``. The trained half is
+    floating under every format except ``int8``; the frozen half keeps its int8
+    codes only under ``mixed``, since that is the whole of what ``mixed`` means.
+
+    A function rather than four lines inside the reload arm because the arm had
+    the ``gen``-branch answer HARDCODED, which is why the two formats that had
+    never been read back could not be.
+    """
+    trained, _frozen = _halves(branch)
+    return {
+        half: (
+            "int8" if effective_format == "int8"
+            else "float" if half in trained
+            else ("int8" if effective_format == "mixed" else "float")
+        )
+        for half in ("gen", "und")
+    }
+
+
+def train_arm_failures(
+    *,
+    moved,
+    unmoved,
+    of: int,
+    predicted_unmoved,
+    steps,
+) -> list[str]:
+    """Every post-run verdict the train arm reaches, as data rather than raises.
+
+    Collected instead of raised so the JSON is written first: these are FACTS
+    ABOUT THE RUN, not preconditions, and a 25 GiB run that fails one of them
+    should not also lose the numbers that say how it failed.
+
+    The census clause is the U-2-5 criterion itself (13.4). It is NOT "everything
+    moved": ``predicted_unmoved`` carries the paths a t2i loss structurally
+    cannot reach, and equality against it is what makes the criterion fire on a
+    dead hook while staying silent on the five layer-41 projections.
+    """
+    failures: list[str] = []
+    if list(steps) != list(range(1, EXIT_SMOKE_STEPS + 1)):
+        failures.append(f"expected {EXIT_SMOKE_STEPS} steps, got {list(steps)}")
+    if sorted(unmoved) != sorted(predicted_unmoved):
+        failures.append(
+            f"update-nonzero census: {len(moved)} of {of} moved; the unmoved set "
+            f"is {sorted(unmoved)} but und_gradient_unreachable_paths() predicts "
+            f"{sorted(predicted_unmoved)}"
+        )
+    return failures
+
+
+def u2_5_unmoved_expectation(paths, num_layers: int) -> list[str]:
+    """The paths a t2i loss structurally cannot move, within an enumeration.
+
+    The U-2-5 criterion is not "everything moved": the understanding half's
+    layer-41 attention-onward projections receive nothing, because the prefix
+    keeps ``past_key_values`` and discards ``last_hidden_state``. Intersected
+    with ``paths`` rather than returned whole, so the generation enumeration
+    (``*_mot_gen``) correctly expects none of them.
+    """
+    from core.models.sensenova.sensenova_lora import und_gradient_unreachable_paths
+
+    unreachable = und_gradient_unreachable_paths(num_layers)
+    return sorted(p for p in paths if p in unreachable)
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +350,6 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     trainer.train(datasets=[dataset], **train)
     train_wall_time_s = time.perf_counter() - train_started
 
-    if steps != list(range(1, EXIT_SMOKE_STEPS + 1)):
-        raise AssertionError(f"expected {EXIT_SMOKE_STEPS} steps, got {steps}")
-
     after = _digest_map(trainer.transformer, branch)
     moved = sorted(p for p in before if after[p] != before[p])
     unmoved = sorted(p for p in before if after[p] == before[p])
@@ -264,18 +365,36 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             "fraction": float(changed) / float(now.numel()),
         }
 
+    # THE U-2-5 CRITERION, as an assertion rather than a number to read off
+    # (13.4): the set that did not move must be exactly the paths
+    # und_gradient_unreachable_paths() predicts, intersected with this branch's
+    # enumeration -- empty on `gen`, five on `und` and `both`. "Everything moved"
+    # is the WRONG assertion here and is supposed to fail on those five.
+    predicted_unmoved = u2_5_unmoved_expectation(
+        before, len(trainer.transformer.language_model.model.layers)
+    )
+    failures = train_arm_failures(
+        moved=moved, unmoved=unmoved, of=len(before),
+        predicted_unmoved=predicted_unmoved, steps=steps,
+    )
+
     census = trainer._update_census
     checkpoint = output_dir / f"{RUN_NAME}_step_{EXIT_SMOKE_STEPS:06d}.safetensors"
     entry = checkpoint if checkpoint.is_file() else Path(str(checkpoint) + ".index.json")
-    if not entry.is_file():
-        raise AssertionError(f"the run saved neither {checkpoint} nor its shard index")
+    # A post-run FACT about the run, like the census and the step list -- not a
+    # precondition. Raising here discarded everything the run had just measured.
+    saved = entry.is_file()
+    if not saved:
+        failures.append(
+            f"the run saved neither {checkpoint} nor its shard index"
+        )
 
     peak_allocated = int(torch.cuda.max_memory_allocated())
     peak_reserved = int(torch.cuda.max_memory_reserved())
     written_bytes = sum(
         p.stat().st_size for p in entry.parent.glob(f"{entry.stem.split('.')[0]}*")
         if p.is_file()
-    )
+    ) if saved else 0
     return {
         "arm": "train",
         "four_phase_eviction": bool(args.four_phase),
@@ -301,10 +420,15 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             "unmoved": len(unmoved),
             "of": len(before),
             "unmoved_paths": unmoved[:10],
+            "predicted_unmoved": predicted_unmoved,
+            "expected_moved": len(before) - len(predicted_unmoved),
+            "holds": not failures,
         },
         "sampled_element_moved_fraction": sampled_moved_fraction,
         "save_format_requested": args.save_format,
+        "save_format_effective": _effective_format(branch, args.save_format),
         "checkpoint_entry": str(entry),
+        "failures": failures,
         "checkpoint_bytes": written_bytes,
         "checkpoint_gib": written_bytes / 1024 ** 3,
         "post_train_digests": after,
@@ -318,6 +442,9 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             "before_load_gib": host_before_load / 1024 ** 3,
             "after_load_gib": host_after_load / 1024 ** 3,
             "peak_gib": _host_peak_bytes() / 1024 ** 3,
+            # The reproducible sibling: peak_wset is not comparable between
+            # sessions, peak commit is.
+            "peak_commit_gib": _host_peak_commit_bytes() / 1024 ** 3,
         },
         "wall_time_s": {
             "model_load": model_load_wall_time_s,
@@ -345,31 +472,111 @@ def _run_reload_arm(args: argparse.Namespace) -> dict[str, Any]:
     load_wall_time_s = time.perf_counter() - started
     transformer = components["transformer"]
 
-    gen = _gen_targets(transformer)
-    und = [
-        (path, module)
-        for path, _p, _a, module in iter_sensenova_lora_targets(transformer, branch="und")
+    # The FILE's own words, not the training arm's: the reader is what a later
+    # run has, and the metadata is what it reads. Cross-checked against the
+    # training arm below rather than trusted from either side alone.
+    # Raised rather than defaulted: falling back to the training arm's own
+    # answer makes the cross-check below compare a value with itself, which is
+    # exactly the "the file's own words" property this block claims. The writer
+    # always emits both keys, so absence means the file is not one of ours.
+    metadata = components.get("metadata") or {}
+    missing = [
+        key for key in ("sensenova_trained_branch", "sensenova_save_format")
+        if not metadata.get(key)
     ]
-    gen_float = [p for p, m in gen if isinstance(getattr(m, "weight", None), nn.Parameter)
-                 and m.weight.dtype.is_floating_point]
-    und_int8 = [p for p, m in und if type(m) is Int8Linear]
+    if missing:
+        raise AssertionError(
+            f"the checkpoint at {entry} carries no {', '.join(missing)} in its "
+            f"metadata, so the reload arm cannot read the branch and format from "
+            f"the file itself. save_sensenova_full_finetune_checkpoint always "
+            f"writes both."
+        )
+    branch = metadata["sensenova_trained_branch"]
+    effective = metadata["sensenova_save_format"]
+    trained_halves, frozen_halves = _halves(branch)
 
-    digests = {path: _linear_digest(m.weight) for path, m in gen}
+    def _targets(half: str) -> list[tuple[str, Any]]:
+        return [
+            (path, module)
+            for path, _p, _a, module in iter_sensenova_lora_targets(
+                transformer, branch=half
+            )
+        ]
+
+    def _float_count(pairs) -> int:
+        return sum(
+            1 for _p, m in pairs
+            if isinstance(getattr(m, "weight", None), nn.Parameter)
+            and m.weight.dtype.is_floating_point
+        )
+
+    per_half = {}
+    for half in ("gen", "und"):
+        pairs = _targets(half)
+        per_half[half] = {
+            "linears": len(pairs),
+            "float_materialized": _float_count(pairs),
+            "int8": sum(1 for _p, m in pairs if type(m) is Int8Linear),
+            "role": "trained" if half in trained_halves else "frozen",
+        }
+
+    want = expected_read_shape(branch, effective)
+    failures: list[str] = []
+    for half, stats in per_half.items():
+        want_int8 = want[half] == "int8"
+        got = stats["int8"] if want_int8 else stats["float_materialized"]
+        if got != stats["linears"]:
+            failures.append(
+                f"{half} half ({stats['role']}) under save format {effective!r}: "
+                f"expected all {stats['linears']} Linear(s) to be "
+                f"{'Int8Linear' if want_int8 else 'floating nn.Parameter'}, got {got}"
+            )
+
     saved = expected["post_train_digests"]
-    mismatched = sorted(p for p in saved if digests.get(p) != saved[p])
+    if effective == "int8":
+        # Requantization is lossy by construction, so byte equality is the wrong
+        # question and its absence would mean nothing.
+        digest_result = {"compared": False, "why": "int8 requantization is lossy"}
+    else:
+        digests: dict[str, str] = {}
+        for half in trained_halves:
+            digests.update({p: _linear_digest(m.weight) for p, m in _targets(half)})
+        mismatched = sorted(p for p in saved if digests.get(p) != saved[p])
+        digest_result = {
+            "compared": True,
+            "matches": len(saved) - len(mismatched),
+            "of": len(saved),
+            "mismatched": mismatched[:10],
+        }
+        if mismatched:
+            failures.append(
+                f"{len(mismatched)} of {len(saved)} trained-half weight(s) do not "
+                f"match the training arm byte for byte (first: {mismatched[0]})"
+            )
+
+    # Both sides are now independent: the branch came from the file, this is the
+    # training arm's. With the old fallback in place this compared a value with
+    # itself whenever the metadata key was absent.
+    for key, mine in (("branch", branch), ("save_format_effective", effective)):
+        theirs = expected.get(key)
+        if theirs is not None and theirs != mine:
+            failures.append(
+                f"checkpoint metadata says {key} {mine!r}, the training arm said "
+                f"{theirs!r}"
+            )
 
     return {
         "arm": "reload",
         "checkpoint_entry": entry,
         "load_wall_time_s": load_wall_time_s,
-        "gen_linears": len(gen),
-        "gen_float_materialized": len(gen_float),
-        "und_linears": len(und),
-        "und_still_int8": len(und_int8),
-        "digest_matches": len(saved) - len(mismatched),
-        "digest_mismatched": mismatched[:10],
-        "digest_of": len(saved),
+        "branch_from_metadata": branch,
+        "save_format_effective": effective,
+        "save_format_requested": metadata.get("sensenova_save_format_requested"),
+        "per_half": per_half,
+        "digests": digest_result,
+        "failures": failures,
         "host_rss_peak_gib": _host_peak_bytes() / 1024 ** 3,
+        "host_peak_commit_gib": _host_peak_commit_bytes() / 1024 ** 3,
     }
 
 
@@ -398,6 +605,11 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in result.items()
                       if k != "post_train_digests"}, indent=2))
+    # Written and printed FIRST: a criterion that fails is the measurement, and
+    # a run that cost 25 GiB of writes should not also cost its own numbers.
+    failures = result.get("failures") or []
+    if failures:
+        raise AssertionError("; ".join(failures))
     return 0
 
 

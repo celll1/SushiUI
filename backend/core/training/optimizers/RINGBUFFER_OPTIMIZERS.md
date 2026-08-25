@@ -44,6 +44,15 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 > 「Ring Buffer」として説明する CPU 常駐と DMA 転送は既定では走りません。
 > 以下の記述は、**allocator を渡した場合に設計上どう動くか**として読んでください。
 >
+> **【2026-08-25 実測】未配線ではあるが、壊れてはいません。** probe から
+> `get_state_buffer` を渡すと（`probes/optimizer_bf16_and_vram.py --arm cpuring`）
+> **GPU state と bit 一致の結果**を出します（同一 seed で moved fraction / drift /
+> parameter checksum / state 占有率が最終桁まで一致、GPU state は 98.5% 減）。
+> **fused hook 経路も含めて動きます** — hook は `state['exp_avg']` を kernel に
+> そのまま渡し、host buffer は pinned なので kernel が **UVA 経由で直接アドレス**
+> します。ステージングされた H2D/D2H が無いのは欠陥ではなく、この経路の動作原理です。
+> 残っているのは **production 側で allocator を渡す配線**だけです。
+>
 > 配線に必要な作業と、それを前提にした設計上の帰結は
 > [`docs/guides/SENSENOVA_TRAINING_DESIGN.md`](../../../../docs/guides/SENSENOVA_TRAINING_DESIGN.md)
 > §6.5 に整理してあります（SenseNova の full FT 予算がこの差で 30 GB 変わるため）。
@@ -1392,6 +1401,24 @@ class LoRATrainer(BaseTrainer):
 > **さらに 99.6% の行は allocator を渡した場合の値**であり（冒頭の注記）、
 > 既定の配線で得られるのは "8-bit GPU allocation" の行の方である。
 
+#### per-parameter state の実測（2026-08-25、`5dce52ee`。3 点フィット・残差 0 バイト）
+
+**下の worked example と違い、これは実測である。** 3 つのパラメータ数で測って
+per-parameter の傾きを定数項（量子化マップ、SR scratch）から分離してある。
+
+| optimizer / 経路 | B/param |
+|---|---:|
+| `torch.optim.AdamW`（bf16 param） | 4.000000 |
+| `adamw8bit`（bnb、`step()` 経路） | 2.031250 |
+| `adamw8bit`（fused / Block Swap 経路、`410fe689` 以降） | 2.031250（**それ以前は 4.000000**） |
+| `adamw8bit_ringbuffer`（GPU state） | 2.031250 |
+| `lion8bit_ringbuffer`（GPU state） | 1.015625 |
+| `adamw8bit_ringbuffer`（HOST state） | GPU **0.031250** / host 2.0 |
+| `lion8bit_ringbuffer`（HOST state） | GPU **0.015625** / host 1.0 |
+| `adafactor` | 0.002991（**shape 依存。他 shape へ外挿しないこと**） |
+
+2.0 ではなく **2.031250** なのは absmax のぶんである。
+
 **例**: 350M parameters (LoRA rank=128)。**以下は仮定の worked example であり、
 実測値ではない。**
 
@@ -1417,7 +1444,36 @@ Schedule-Free の `z` と標準 AdamW の `exp_avg` を同時に数えており�
 > 成果物も無い。しかも**これらはすべて CPU state 経路の値**であり、その経路は
 > 導入時（`190c876e`）から一度も配線されたことがない（冒頭の注記）。
 > したがって以下は**帯域からの見積もりとして読むべきで、測定値として引用しないこと**。
-> 実測が必要なら測定条件つきで取り直すこと。
+>
+> **【2026-08-25】測定条件つきの実測は取り直した**（G-RB1、`8c13c493`、
+> `probes/ringbuffer_overlap.py`）。結果は下の「G-RB1 実測」を参照。
+> **下の表の数値は差し替えていない**（出所不明のまま残す）ので、
+> **引用するなら G-RB1 の方**を使うこと。
+
+#### G-RB1 実測（2026-08-25、RTX 6000 Ada、100.66 M params 固定、warmup 5、1 arm 1 process）
+
+**host state のコストは、閾値を超えると完全に吸収される。** 「ほぼ隠れる」ではなく、
+HOST arm の純 compute 超過分が GPU arm の超過分と一致する。
+
+- host/GPU の step wall 比: **4.17（64 tokens）→ 1.32（2048）→ 1.00（4096 以上、
+  65536 まで）**（AdamW）。Lion は **2048 で 1.00** に到達。
+  直列加算なら 4096 tokens で 47.95 ms のはずが、実測は **33.41 ms**。
+- 転送のみ: **AdamW 15.21 ms / Lion 8.22 ms**（ちょうど半分 = state 2 本 対 1 本）。
+  **26.5 / 24.5 GB/s** は PCIe 4.0 x16 の線速で、uint8 連続領域への zero-copy UVA
+  アクセスが帯域効率を落としていないことを示す。
+- **閾値の閉形式**（実測と ~2% 一致、パラメータ数に依存しない）:
+
+  ```
+  N_tokens >= 2 * (state bytes/param) * achieved_FLOPS / (6 * PCIe bytes/s)
+  ```
+
+  実測定数 **80.7 TFLOP/s**（bf16）・**26.5 GB/s** で
+  **AdamW 2038 tokens / Lion 1019 tokens**。
+- HOST arm と GPU arm が同じ仕事をしていることは検証済み（上の bit 一致）。
+
+**機構は未解明**: なぜ in-order stream がこれを吸収するのかは特定できていない。
+壁時計が `sum` ではなく `max(compute, transfer)` の形になるという事実までが射程で、
+プロファイラは取っていない。**断定しないこと。**
 
 **Ring Buffer Transfer Time**（350M params）:
 

@@ -448,7 +448,10 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 2. **勾配蓄積の意味論が変わる。** hook は backward ごとに step するので、
    **fused backward 下では effective batch = 物理 batch = 1** になる。
    B1 + gradient accumulation で effective batch を作る現行 SenseNova 契約
-   （§11 Phase 1）と衝突する。accumulation-aware hook は未実装。
+   （§11 Phase 1）と衝突する。
+   **【`0d843213` で実測確定】これは「accumulation-aware hook が未実装」という
+   実装上の欠落ではなく、原理的な非両立である**（詳細と実測値は §13.4 U-2-2）。
+   現状は拒否ではなく**警告**として出荷されている。
 3. **optimizer は Adafactor か Ring Buffer 系に限られる。**（**【2026-08-24 訂正】**
    ここは一度「Adafactor 一択」と書いたが誤りだったので撤回した。詳細と根拠は
    **§6.5**。）`torch.optim.AdamW` は fp32 state 129.6 GB かつ per-parameter seam が
@@ -544,6 +547,13 @@ SenseNova への含意:
   full FT の contract で既定 True に上書きする** — 全 arch 共通の既定
   （`param_defaults.py:2208`、False）は変えず、レガシー利用者のいない新規経路だけを
   正しい既定で開ける。永続 fp32 master は棄却済みのまま（下記）。
+  - **【実測で裏付けられた、`5dce52ee`、2026-08-25】** stochastic rounding OFF では、
+    測定した**全 optimizer** で **moved@1 == moved@20** — すなわち
+    **要素の 84.5% が 20 step を通して一度も動かない**（「遅い」のではなく「凍結」）。
+    累積 drift は学習率が要求する量の **18%** にとどまる。ON にすると drift は
+    期待値に到達する。**`torch.optim.AdamW` だけは SR でも救えない**（per-parameter
+    seam が無い）。合成パラメータと厳密既知の勾配による測定で、モデルは載せていない。
+    上の推奨 (1)(2) はこれで実測の裏付けを得た。
 - **永続 fp32 master を SenseNova のために復活させる提案はしない。** リポジトリ全体で
   既に棄却された選択肢であり、gen branch 8.1B でも 32.4 GB になる。再提案するなら
   棄却理由（直列化・resume 非安全・OOM）を覆す新しい論拠が要る。
@@ -681,7 +691,37 @@ parameter に当たる**ことであり（`base_trainer.py:3611-3624`）、state
 している**。`num_optimizer_groups=0` + 自前 hook という Ring Buffer の経路は、その
 非互換リストの対象外である。
 
-#### 予算比較（構造上の見積もり。実測値ではない）
+#### per-parameter state の実測（`5dce52ee`。3 点フィット・残差 0 バイト）
+
+**下の予算表は 16.2B への外挿なので構造上の見積もりだが、その単価は実測に置き換わった。**
+モデルをロードせず、合成パラメータと厳密既知の勾配で、1 arm 1 process 測定。
+
+| optimizer / 経路 | 実測 B/param |
+|---|---:|
+| `torch.optim.AdamW`（bf16 param） | 4.000000 |
+| `adamw8bit`（bnb、`step()` 経路） | 2.031250 |
+| `adamw8bit`（**fused / Block Swap 経路、`410fe689` 以降**） | **2.031250**（それ以前は **4.000000**） |
+| `adamw8bit_ringbuffer`（GPU state） | 2.031250 |
+| `lion8bit_ringbuffer`（GPU state） | 1.015625 |
+| `adamw8bit_ringbuffer`（HOST state） | GPU **0.031250** / host 2.0 |
+| `lion8bit_ringbuffer`（HOST state） | GPU **0.015625** / host 1.0 |
+| `adafactor` | 0.002991（**shape 依存**） |
+
+- **2.0 ではなく 2.031250** — 差は absmax である。§6.5 が別途 0.51 GB と書いている
+  ぶんがここに含まれている。
+- **`adafactor` の値は shape 依存なので、SenseNova の実 shape を測らずに 16.2B へ
+  外挿してはならない。** 下の表の「~0.1 GB オーダー」は依然として概算である。
+- **`adamw8bit` は Block Swap 下で 8-bit ではなかった**（実測 4.000000 B/param）。
+  fused `step_param` が `zeros_like(p)` で moment を確保して手書き AdamW を回しており、
+  **名前が約束する量の 2 倍**を、量子化なしで使っていた。`410fe689` が bitsandbytes
+  自身の `init_state` / `prefetch_state` / `update_step` に委譲して解決した。
+  副次的な利点が 2 つある: **state 形式が `step()` 経路と同一になったので、Block Swap
+  の ON/OFF をまたぐ resume に変換アームが不要**であり、**CUDA 拡張のビルド要件も
+  増えない**（bitsandbytes は kernel を同梱している）。
+- **fused backward の即時解放も直接確認された**: backward 後に residency が残る勾配は
+  24 本中 **0 本**（非 fused 経路は 24 本）。
+
+#### 予算比較（16.2B への外挿。**単価は実測、合計は構造上の見積もり**）
 
 both-branch full FT（両 half bf16 32.4 GB）を 48 GB カードで回す場合。
 
@@ -708,23 +748,69 @@ absmax は「param が CPU に移っても**常に GPU に置く**」と実装�
 backward の時間窓に発生する**。4 相 eviction と併用すれば weight 往復 32.4 GB/step が
 同じバスに乗り、**PCIe 合計 ~97 GB/step 級**（いずれも構造値）。
 
-**隠れるかどうかはここでは判定しない。** 実装から言えるのは上限側の事実だけである —
-現実装の転送は `.cuda(non_blocking=True)` による**計算 stream 上の on-demand 転送**で、
-専用 stream も prefetch 深度も無い（当該ファイルに `torch.cuda.Stream` /
-`cuda.Event` は 1 つも無い）。このままなら隠れず直列加算になる。ただし
-**hook の発火順 = 勾配確定順 = 逆 layer 順で決定的**なので、**prefetch schedule は
-導出可能**である。この点は記録に値する。
+> **【G-RB1 実測、`8c13c493`、2026-08-25】この節は以前「隠れず直列加算になる、が
+> 実装から言える上限側の事実」と書いていた。実測はこれを覆した — 閾値の上では
+> 完全に吸収される。** 以下が実測値である（RTX 6000 Ada、パラメータ数
+> 100.66 M 固定、warmup 5、1 arm 1 process）。
+>
+> - **host/GPU の step wall 比は AdamW で 4096 tokens/step、Lion で 2048 から
+>   1.00 に到達し、65536 まで 1.00 のまま**である。「1 に近い」ではなく、
+>   **HOST arm の純 compute 超過分が GPU arm の超過分と一致する**（直列加算なら
+>   4096 tokens で 47.95 ms のはずが、実測 33.41 ms）。低 token 側では比 4.17
+>   （64 tokens、AdamW）まで開く。
+> - **転送だけを切り出すと AdamW 15.21 ms / Lion 8.22 ms でちょうど半分**
+>   （state 2 本 対 1 本）。26.5 / 24.5 GB/s は PCIe 4.0 x16 の線速で、
+>   uint8 連続領域への zero-copy UVA アクセスが帯域効率を落としていないことを示す。
+> - **閾値は転送量に厳密に比例し、閉形式で書ける**（実測と ~2% 一致）:
+>
+>   ```
+>   N_tokens >= 2 * (state bytes/param) * achieved_FLOPS / (6 * PCIe bytes/s)
+>   ```
+>
+>   実測定数 **80.7 TFLOP/s**（bf16）・**26.5 GB/s** で
+>   **AdamW 2038 tokens / Lion 1019 tokens**。
+> - HOST arm と GPU arm が同じ仕事をしていることは仮定ではなく検証済み — 同一 seed・
+>   同一入力・10 step で moved fraction / mean drift / parameter checksum /
+>   state 占有率が**最終桁まで一致**する。
+>
+> **以前引用していた「2.8〜11.5 倍」は warmup 無しの暫定値で、11.5 倍は再現しない。
+> 確定値として引用しないこと。**
+>
+> **機構は未解明**: なぜ in-order stream がこれを吸収するのかは特定できていない。
+> 壁時計が `sum` ではなく `max(compute, transfer)` の形になるという事実までが射程で、
+> プロファイラは取っていない。**断定しないこと。**
 
-#### upgrade に必要な 4 項目
+**SenseNova は閾値の下側にいる（実測に基づく位置づけ）。** /32 token grid・batch 1
+なので **1024² で 1024 image tokens** — AdamW の 2038 を下回り、Lion の 1019 と
+ほぼ同じである。1536² で 2304、2048² で 4096。**つまり SenseNova の想定解像度帯では
+転送はおおむね直列に乗る。**
+
+**16.2B への投影（実測帯域からの投影であって実測ではない）**: AdamW の 64.8 GB 往復は
+約 **2.45 s** を要し、compute 約 **1.64 s** に対して**隠れない**（+0.8 s/step）。
+Lion の 32.4 GB は**隠れる**。ただし MoT が image token に対して gen 側 half しか
+計算しないなら compute は約 **0.82 s** に落ち、**Lion も隠れなくなる**。
+**この投影が乗っている SenseNova の実 step wall は、本リポジトリに実測値が存在しない**
+（U-2-4 が測る場所である）。
+
+なお **hook の発火順 = 勾配確定順 = 逆 layer 順で決定的**なので、prefetch schedule は
+導出可能である（閾値の下で効かせたい場合の余地）。
+
+#### upgrade に必要な項目（4 → **3**。1 項目は実測で不要と判明）
 
 1. `BaseTrainer` が `get_state_buffer`（`RingBufferAllocator` ベース）を
    optimizer_kwargs に渡す配線（**現在ゼロ**）。
-2. **hook 経路への state H2D → 更新 → D2H の移植。** `step()` 側には CPU state を
-   `.cuda(non_blocking=True)` で持ち上げて書き戻す処理があるが
-   （`adamw8bit_ringbuffer.py:798-828`）、**fused hook 経路にはこの転送が丸ごと無く**、
-   `state['exp_avg']` をそのまま CUDA kernel に渡す（`:1113-1119`）。つまり
-   **「CPU state + fused hook」は現状動かない組み合わせ**である。
+2. ~~**hook 経路への state H2D → 更新 → D2H の移植。**~~ **【撤回、`5dce52ee`】
+   不要である。** この項目は「fused hook 経路には転送が丸ごと無く
+   `state['exp_avg']` をそのまま CUDA kernel に渡すので、CPU state + fused hook は
+   現状動かない組み合わせ」という推論だったが、**実測では動く。**
+   host buffer は **pinned なので kernel が UVA 経由で直接アドレスでき**、
+   **GPU state と bit 一致の結果**を出す（同一 seed で moved fraction / drift /
+   checksum / state 占有率が最終桁まで一致し、GPU state は 98.5% 減る）。
+   **ステージングされた転送が無いことは欠陥ではなく、この経路の動作原理だった。**
+   G-RB1 が閾値の上で完全に吸収されることを示したのも、まさにこの zero-copy 経路
+   である。
 3. 専用 transfer stream + 次パラメータ state の prefetch + event 同期。
+   **閾値の下**（SenseNova の想定解像度帯）でのみ意味を持つ。
 4. **`if not param.is_cuda: return` のサイレントスキップを fail-loud にする**
    （`:1082`。コメントは "Update will be applied when layer returns to GPU" と書くが、
    hook は既に発火して return しており、再適用する経路は無い）。4 相 eviction と
@@ -738,11 +824,11 @@ backward の時間窓に発生する**。4 相 eviction と併用すれば weigh
 |---|---|---|
 | GPU state | ~0.1 GB（factored） | absmax 0.51 GB のみ |
 | ホスト RAM | 追加なし | pinned 32.4 GB（Lion 16.2 GB） |
-| PCIe/step | 追加なし | 64.8 GB（Lion 32.4 GB）。隠蔽可否は gate |
+| PCIe/step | 追加なし | 64.8 GB（Lion 32.4 GB）。**閾値の上では実測で完全に吸収される**（G-RB1）。SenseNova の想定解像度帯は閾値の**下**なのでおおむね直列 |
 | 状態の情報量 | factored 2nd moment（per-element の 1st/2nd moment を持たない） | AdamW の full moment 構造を保つが **8-bit blockwise 量子化誤差**を持つ |
 | stochastic rounding | 外付け wrapper 経由（§6.3） | **native 内蔵**（`_NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS`、`base_trainer.py:3351`） |
-| fused seam | 追加実装ゼロ | 内蔵 hook は既存だが **state shuttle 未配線 = upgrade 必須** |
-| 追加前提 | gate 解錠のみ | gate 解錠 + upgrade 4 項目 + **CUDA 拡張の JIT ビルド**（CUDA toolkit + ninja。`adamw8bit_cuda.py:191-199` が optimizer 生成時に `load()` する） |
+| fused seam | 追加実装ゼロ | 内蔵 hook が**そのまま host state で動く**（実測。旧記述「state shuttle 未配線 = upgrade 必須」は撤回） |
+| 追加前提 | gate 解錠のみ | gate 解錠 + upgrade **3 項目**（うち allocator 配線が必須、残り 2 は閾値下の最適化と fail-loud 化）+ **CUDA 拡張の JIT ビルド**（CUDA toolkit + ninja。`adamw8bit_cuda.py:191-199` が optimizer 生成時に `load()` する。**`adamw8bit` はこの要件を持たない** — bnb 同梱 kernel に委譲するため） |
 
 **提示形**: both-branch Full-FT の許可 optimizer は **Adafactor と Ring Buffer 系の
 両方**とし、**初版の既定は Adafactor**。ただしその根拠は品質ではなく
@@ -753,14 +839,13 @@ AdamW8bit_RB は upgrade 完了と gate 通過を条件に opt-in で開く。
 併記する（state 1 本なので容量・帯域が半分。ただし `schedule_free` は明示的に
 非対応で raise する。`lion8bit_ringbuffer.py:98-104`）。
 
-#### 実測 gate（G-RB1 / G-RB2 / G-RB3）
+#### 実測 gate（G-RB1 **CLOSED** / G-RB2 / G-RB3）
 
-上の予算・帯域はすべて構造値なので、opt-in を開く条件を事前登録の gate として置く。
-実施は U-2-6（§13.4）の exit criteria。
+opt-in を開く条件として事前登録した gate。実施は U-2-6（§13.4）の exit criteria。
 
-| gate | 問い | 測り方 |
+| gate | 問い | 状態 |
 |---|---|---|
-| **G-RB1（帯域隠蔽）** | state の往復は backward に隠れるか、直列加算になるか | 同一 checkpoint / shape / seed で Adafactor arm と AdamW8bit_RB arm の **step wall と peak** を**別 process**で測定 |
+| **G-RB1（帯域隠蔽）** | state の往復は backward に隠れるか、直列加算になるか | **CLOSED（`8c13c493`）**: 閾値の上では完全に吸収され、閾値は閉形式で書ける。SenseNova の想定解像度帯は閾値の下。詳細は上の実測ボックス。**モデルを載せずに「閾値」を測る形にしたのが要点** — 16.2B の step wall は測れないが、閾値は parameter 数に依存しないので合成で測れる |
 | **G-RB2（ホスト RAM）** | pinned state が実行ホストに載るか | pinned 割当の合計と process peak RSS を**事前 announce 付き**で記録（~50 GB 級になりうるため gpu-probe の host-RAM 規律の対象） |
 | **G-RB3（correctness）** | サイレント CPU-skip が起きていないか | **step ごとの updated-param census == trainable 数**。U-2-5 の「588 Linear update-nonzero census」に統合する |
 
@@ -1640,10 +1725,16 @@ Phase U（§13）関連。
 
 Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6 で消化する**:
 
-11. **G-RB1 — state 往復 64.8 GB/step（Lion 32.4 GB）が backward に隠れるか。**
-    現実装は計算 stream 上の on-demand 転送で専用 stream も prefetch も無いため
-    **隠れず直列加算になる**というのが実装から言える上限側の事実だが、
-    upgrade 後にどうなるかは未測定。
+11. ~~**G-RB1 — state 往復 64.8 GB/step（Lion 32.4 GB）が backward に隠れるか。**~~
+    **CLOSED（`8c13c493`）: 閾値の上では完全に隠れる。** 閾値は閉形式で書け
+    （AdamW 2038 tokens / Lion 1019 tokens @ 80.7 TFLOP/s・26.5 GB/s）、実測と 2% 一致。
+    **旧記述「隠れず直列加算になる」は閾値の下でのみ真だった**（§6.5）。
+    **SenseNova の想定解像度帯は閾値の下側**である（1024² で 1024 image tokens）。
+    残る未解明: **なぜ in-order stream が吸収するのかの機構**。壁時計が
+    `max(compute, transfer)` の形になるという事実までが射程で、プロファイラは
+    取っていない。**断定しないこと。**
+    また **16.2B の step wall そのものは未実測**で、上の投影が乗る土台が無い
+    （U-2-4 が測る）。
 12. **G-RB2 — pinned host RAM（upgrade 後 32.4 GB、4 相 eviction 併用で ~50 GB 級）が
     実行ホストに載るか。** 搭載 RAM 依存で、構造値のみ。
 13. **G-RB3 — サイレント CPU-skip の不在。** `if not param.is_cuda: return`
@@ -1651,7 +1742,9 @@ Ring Buffer optimizer 関連（§6.5）。**事前登録の gate として U-2-6
 
 **なお「Ring Buffer optimizer の CPU state が現状どの学習経路からも有効化されない」は
 未測定事項ではなく、コードから確定している事実である**（§6.5 前提事実 1）。
-未測定なのは、それを配線した後の挙動の方である。
+**ただし「配線したら動くか」はもはや未測定ではない** — probe から allocator を渡すと
+**GPU state と bit 一致の結果を出す**（`5dce52ee`、§6.5 upgrade 項目 2 の撤回）。
+残っているのは production 側の配線と、閾値下の最適化と、fail-loud 化である。
 
 既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
 （§7.2）、ConvRot base の train / inference skew（§5.3）。
@@ -1911,17 +2004,29 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
   loss・grad SHA-256 が現行実装と一致すること（**回帰していないことの証明**）、
   MNT>1 smoke、既存の蒸留 LoRA の推論ロード回帰。→ **5 項目すべて PASS**（§13.6）。
 - **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版。U-2-2: fused backward の
-  gate 解錠 + EMA 拒否 + **effective batch = 1** の contract（§6.2 改訂の条件 1-4）。
+  gate 解錠 + EMA 拒否 + **effective batch = 物理 batch = 1 を受け入れる**契約
+  （§6.2 改訂の条件 1-4）。
   **許可 optimizer は Adafactor と Ring Buffer 系（`adamw8bit_ringbuffer` /
   `lion8bit_ringbuffer`）で、初版の既定は Adafactor**（§6.5。「Adafactor 一択」では
   ない）。U-2-3: stochastic rounding 既定 True（§6.3）+ dropout guard。
   U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
   U-2-5: exit smoke — **588 Linear の update-nonzero census** で bf16 丸め欠陥の
   「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
-  U-2-6: **Ring Buffer optimizer の upgrade 4 項目**（§6.5。`get_state_buffer` の配線 /
-  hook 経路への state H2D→更新→D2H 移植 / 専用 stream + prefetch + event 同期 /
-  サイレント CPU-skip の fail-loud 化）。**依存は U-2-2、exit は G-RB1 / G-RB2 /
-  G-RB3**（§6.5）。これが通るまで Ring Buffer 系は opt-in を開かない。
+  U-2-6: **Ring Buffer optimizer の upgrade 3 項目**（§6.5。`get_state_buffer` の配線 /
+  閾値下向けの専用 stream + prefetch / サイレント CPU-skip の fail-loud 化。
+  **state shuttle の移植は実測により不要と判明したので落とした**）。
+  **依存は U-2-2、exit は G-RB2 / G-RB3**（G-RB1 は `8c13c493` で CLOSED）。
+  これが通るまで Ring Buffer 系は opt-in を開かない。
+  - **【`0d843213` で確定】U-2-2 の「effective batch = 1」は選択肢ではなく前提である。**
+    fused backward と gradient accumulation は**原理的に両立しない** — accumulation は
+    window 終端で全パラメータの総和勾配が同時に存在することを要求し、それは
+    fused backward が回避している常駐そのものだからである。実測: 定数勾配・AdamW・
+    `accum=4` で、fused は非 fused の **3.88 倍の距離**を移動し、「4 回の独立した step」と
+    厳密一致した。**素の SGD では両者が完全一致する**ので、この乖離は harness ではなく
+    **optimizer の非線形性による本物の差**である（線形な更新則なら和は一致する）。
+    したがって U-2 は **effective batch = 物理 batch = 1 を受け入れる**か、
+    別機構（pinned host への accumulator 退避など。**コスト付きの新機構であって
+    修正ではない**）を作るかの二択になる。現状は**拒否ではなく警告**として出荷済み。
 - **U-3 — und × reference。** 依存は U-1 + Phase 3（**Phase 3 は DONE なので、
   実質の依存は U-1 だけになった**）。**`vision_model`（und tower の
   ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、

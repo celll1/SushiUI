@@ -1,4 +1,4 @@
-"""SenseNova MoT LoRA training adapter (generation branch, optional understanding)."""
+"""SenseNova MoT training adapters (LoRA, and full parameter over one MoT half)."""
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -13,6 +13,7 @@ from core.models.sensenova.sensenova_lora import (
 )
 
 from .base_adapter import (
+    BaseFullParameterAdapter,
     BaseLoRAAdapter,
     is_lora_wrappable_linear,
     LORA_COMPONENT_TEXT_ENCODER_1,
@@ -216,4 +217,149 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
         print(
             f"[SenseNovaLoRAAdapter] Saved LoRA checkpoint "
             f"({len(lora_layers)} layers, {metadata['lora_targets']}) -> {output_path}"
+        )
+
+
+class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
+    """Train the decoder Linears the loader materialized, and nothing else.
+
+    Everything comes from ``trainer.transformer``; ``trainer.text_encoder`` is
+    never read, because ``load_components`` sets it to None and the generic
+    full-FT collector gates every group it builds on that module (and on
+    ``trainer.unet``, also None) being present -- falling through to it collects
+    zero parameters while the loss falls normally.
+
+    Scope is the loader's scope by construction: this adapter and
+    ``load_components`` share ``resolve_full_finetune_branch`` and
+    ``iter_sensenova_lora_targets``, so the dequantized set and the optimized set
+    are one set rather than two that agree. ``train_unet`` is the generation
+    half, ``train_text_encoder`` the understanding one.
+
+    The generation modules outside the decoder (``fm_head``, the generation ViT,
+    the embedders, the ``*_norm_mot_gen`` norms) are deliberately not trained:
+    they are not quantized, so the loader does not materialize them, and
+    including them would break that identity. SENSENOVA_TRAINING_DESIGN.md 6.2
+    leaves the question open.
+    """
+
+    def _resolve_scope(self) -> Tuple[str, List[Tuple[str, Any, str, nn.Module]]]:
+        """(branch, targets) -- the same enumeration the loader materialized."""
+        from core.models.sensenova.loader import SENSENOVA_BRANCH_LINEAR_COUNTS
+        from core.training.ops.sensenova_ops import resolve_full_finetune_branch
+
+        trainer = self.trainer
+        transformer = getattr(trainer, "transformer", None)
+        if transformer is None:
+            raise RuntimeError(
+                "SenseNova full fine-tuning requires a loaded transformer"
+            )
+        branch = resolve_full_finetune_branch(trainer)
+        targets = list(iter_sensenova_lora_targets(transformer, branch=branch))
+        expected = SENSENOVA_BRANCH_LINEAR_COUNTS[branch]
+        if len(targets) != expected:
+            raise RuntimeError(
+                f"SenseNova full fine-tuning expects {expected} decoder Linear(s) "
+                f"on the {branch} branch, found {len(targets)}"
+            )
+
+        unmaterialized = [
+            path
+            for path, _, _, module in targets
+            if not isinstance(getattr(module, "weight", None), nn.Parameter)
+        ]
+        if unmaterialized:
+            # The int8 modules hold weight and scale as buffers, so this is the
+            # silent-no-op case: requires_grad_(True) below would do nothing and
+            # the optimizer would see an empty parameter list.
+            raise RuntimeError(
+                f"SenseNova full fine-tuning found {len(unmaterialized)} of "
+                f"{len(targets)} {branch}-branch decoder Linear(s) still holding "
+                f"their weight as a buffer rather than a Parameter (first: "
+                f"{unmaterialized[0]}). Those are the quantized modules the load "
+                f"path is supposed to have dequantized "
+                f"(loader.materialize_int8_decoder_linears); requires_grad_(True) "
+                f"is a no-op on them, so training would collect nothing while the "
+                f"loss fell normally."
+            )
+        return branch, targets
+
+    def prepare_models_for_training(self):
+        from core.training.ops.sensenova_ops import (
+            assert_full_finetune_contract,
+            assert_understanding_training_supported,
+        )
+
+        trainer = self.trainer
+        # Config channel only; setup_optimizer re-checks with the real name.
+        assert_full_finetune_contract(trainer)
+        branch, targets = self._resolve_scope()
+        if branch in ("und", "both"):
+            assert_understanding_training_supported(trainer.transformer)
+
+        trainer.transformer.requires_grad_(False)
+        for _, _, _, module in targets:
+            module.requires_grad_(True)
+        trainer.transformer.train()
+
+        trainable = sum(
+            p.numel() for p in trainer.transformer.parameters() if p.requires_grad
+        )
+        print(
+            f"[SenseNovaFullParameterAdapter] {branch} branch: {len(targets)} decoder "
+            f"Linear(s), {trainable:,} trainable parameter element(s); everything "
+            f"else in the transformer is frozen"
+        )
+
+    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+        """Generation group then understanding group, the order
+        ``BaseTrainer._build_component_lr_list`` reports for this architecture
+        (a resume remaps learning rates by index).
+
+        Second gate, not a duplicate: a caller that builds the optimizer without
+        going through ``prepare_models_for_training`` would otherwise get
+        whatever ``requires_grad`` happened to be set, including nothing.
+        """
+        branch, targets = self._resolve_scope()
+        trainer = self.trainer
+        unet_lr = getattr(trainer, "unet_lr", None) or 1e-6
+        # The chain SenseNova's LoRA adapter and SDXL's TE1 group both use: the
+        # understanding half is this architecture's prompt encoder.
+        und_lr = (
+            getattr(trainer, "text_encoder_1_lr", None)
+            or getattr(trainer, "text_encoder_lr", None)
+            or unet_lr
+        )
+        groups: List[Dict[str, Any]] = []
+        for half, lr in (("gen", unet_lr), ("und", und_lr)):
+            if branch not in (half, "both"):
+                continue
+            # Asking the enumerator which half a module belongs to, rather than
+            # re-deriving it from the module path here.
+            params = [
+                parameter
+                for _, _, _, module in iter_sensenova_lora_targets(
+                    trainer.transformer, branch=half
+                )
+                for parameter in module.parameters()
+                if parameter.requires_grad
+            ]
+            if params:
+                groups.append({"params": params, "lr": lr})
+        if not groups:
+            raise RuntimeError(
+                f"SenseNova full fine-tuning collected no trainable parameter from "
+                f"the {branch} branch's {len(targets)} decoder Linear(s). "
+                f"prepare_models_for_training must run first."
+            )
+        return groups
+
+    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+        """Refused: writing any of the three candidate formats would pick one."""
+        raise NotImplementedError(
+            "SenseNova full fine-tuning cannot save a checkpoint yet: the output "
+            "format is undecided (mixed int8+bf16, both halves bf16, or the "
+            "trained half requantized to int8 -- see "
+            "docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). This is why full "
+            "fine-tuning is still refused for this architecture before a run "
+            "starts. Use training_method='lora'."
         )

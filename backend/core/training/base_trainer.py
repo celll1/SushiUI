@@ -3578,6 +3578,13 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
 
+        # The authoritative optimizer name: an argument, not the config value
+        # load_components checked before the 17.6 GiB load.
+        from core.training.ops.training_method import is_full_finetune
+        if getattr(self, "is_sensenova", False) and is_full_finetune(self):
+            from core.training.ops.sensenova_ops import assert_full_finetune_contract
+            assert_full_finetune_contract(self, optimizer_type)
+
         # Lion's Schedule-Free kernel writes the wrong sequence into the
         # parameter. Schedule-Free keeps a POSITION sequence z and derives the
         # weights from it; lion8bit_schedulefree_kernel.cu instead uses z for
@@ -3794,6 +3801,36 @@ class BaseTrainer(ABC):
                     f"(2) use 'adamw8bit' or 'adafactor', which have a fused backward pass, "
                     f"(3) disable Block Swap (blocks_to_swap=0)."
                 )
+        elif (getattr(self, "is_sensenova", False)
+              and is_full_finetune(self)
+              and self.num_optimizer_groups == 0
+              and optimizer_type.lower() in FUSED_BACKWARD_OPTIMIZERS):
+            # The hooks have no block-swap dependency; the setup above sits
+            # inside `blocks_to_swap > 0` only because that is the one place
+            # every other architecture needs them. SenseNova refuses a non-zero
+            # blocks_to_swap and would otherwise hold every gradient of the half
+            # it trains resident until optimizer.step().
+            self._setup_fused_backward_pass(optimizer_type)
+
+        if (getattr(self, "is_sensenova", False) and is_full_finetune(self)
+                and not fused_backward_active(self)):
+            # Loud, because unfused is not a degraded mode here: it is 15.1 GiB
+            # of resident gradients on a route budgeted for none. Reachable by
+            # widening the optimizer contract without adding the name to
+            # FUSED_BACKWARD_OPTIMIZERS, or by a PyTorch too old for
+            # register_post_accumulate_grad_hook (which _setup_fused_backward_pass
+            # warns about and returns from).
+            raise RuntimeError(
+                f"SenseNova full fine-tuning did not install its fused backward "
+                f"pass (optimizer={optimizer_type}, blocks_to_swap="
+                f"{self.blocks_to_swap}, num_optimizer_groups="
+                f"{self.num_optimizer_groups}). Without it every gradient of the "
+                f"materialized half stays resident until optimizer.step(), which "
+                f"this route's memory budget assumes never happens. This is an "
+                f"internal inconsistency, not a setting: the optimizer contract "
+                f"and FUSED_BACKWARD_OPTIMIZERS disagree, or this PyTorch build "
+                f"has no register_post_accumulate_grad_hook."
+            )
 
         # Last, because the Block Swap setup above installs step_param and can
         # replace self.optimizer: stochastic rounding has to wrap whatever
@@ -8339,13 +8376,29 @@ class BaseTrainer(ABC):
             use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
         """
         if self.is_sensenova:
+            from core.training.ops.training_method import is_full_finetune
+            _sensenova_full_ft = is_full_finetune(self)
             if batch_size != 1:
                 raise ValueError(
-                    "SenseNova training requires batch_size=1; use "
-                    "gradient_accumulation_steps for a larger effective batch"
+                    "SenseNova training requires batch_size=1"
+                    + ("" if _sensenova_full_ft else
+                       "; use gradient_accumulation_steps for a larger effective batch")
                 )
             if self.blocks_to_swap != 0:
                 raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+            if _sensenova_full_ft and int(gradient_accumulation_steps or 1) != 1:
+                # The argument, not the config value assert_full_finetune_contract
+                # read: train() is called with its own. Full fine-tuning here runs
+                # under the fused backward pass, which applies and frees each
+                # gradient as it appears, so nothing survives to be accumulated.
+                raise ValueError(
+                    f"SenseNova full fine-tuning requires gradient_accumulation_steps=1, "
+                    f"got {gradient_accumulation_steps}. Its updates are applied per "
+                    f"parameter during backward and each gradient is freed as it is "
+                    f"applied, so every backward would become its own optimizer step "
+                    f"rather than one step over the effective batch. LoRA training on "
+                    f"this architecture does support gradient_accumulation_steps."
+                )
             text_encoding_mode = "onthefly_gpu"
             latent_encoding_mode = "onthefly_gpu"
 

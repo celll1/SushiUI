@@ -38,6 +38,7 @@ from .adapters import (
     Krea2FullParameterAdapter,
     Ltx2FullParameterAdapter,
     AceStepFullParameterAdapter,
+    SenseNovaFullParameterAdapter,
 )
 
 
@@ -199,6 +200,15 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_acestep:
             self.adapter = AceStepFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AceStepFullParameterAdapter")
+        elif self.is_sensenova:
+            # Above the SD1.5 fallthrough because that fallthrough is not a
+            # crash here, it is a silent zero: SenseNova keeps both MoT halves
+            # inside self.transformer and sets self.unet and self.text_encoder
+            # to None, and every group the SD1.5 adapter builds is gated on one
+            # of those two being present. The run would collect no parameter at
+            # all, after the loader had already dequantized a half for it.
+            self.adapter = SenseNovaFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using SenseNovaFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

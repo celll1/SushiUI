@@ -64,6 +64,131 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
     )
 
 
+# The optimizer this route runs under. Two conditions, both required: a
+# per-parameter fused-backward seam, and state that fits beside the materialized
+# half. `adamw8bit` has the seam (FUSED_BACKWARD_OPTIMIZERS, patched in
+# _setup_fused_backward_pass) but its measured 2.031250 B/param is 16.5 GB of
+# state over the gen half's 8.10 G parameters, 32.9 GB over both. The two
+# ring-buffer optimizers have the same seam and, until `get_state_buffer` is
+# supplied to them, the same 2.031250 B/param on the GPU -- their CPU-state mode
+# is unreachable today (base_trainer._ringbuffer_optimizer_kwargs). They are
+# U-2-6's, behind gates G-RB2 and G-RB3, and stay closed here.
+SENSENOVA_FULL_FINETUNE_OPTIMIZERS = ("adafactor",)
+
+
+def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> None:
+    """Refuse the full-fine-tune configurations this route does not implement.
+
+    Called twice per run: from ``load_components`` before the 17.6 GiB load,
+    reading ``config['optimizer']``, and from ``setup_optimizer`` with the name
+    the run was actually started with, which is an argument rather than a config
+    read and can disagree. Options that exist on both channels are checked on
+    both, for the same reason.
+
+    Every clause is a condition of the memory budget in
+    SENSENOVA_TRAINING_DESIGN.md 6.2/6.3/6.5, not a preference.
+    """
+    settings = getattr(trainer, "config", None) or {}
+
+    weight_dtype = getattr(trainer, "weight_dtype", None)
+    training_dtype = getattr(trainer, "training_dtype", None)
+    wrong_dtypes = [
+        f"{name}={dtype}"
+        for name, dtype in (("weight_dtype", weight_dtype),
+                            ("training_dtype", training_dtype))
+        if dtype is not None and dtype is not torch.bfloat16
+    ]
+    if wrong_dtypes:
+        raise ValueError(
+            "SenseNova full fine-tuning requires bf16 ("
+            f"{', '.join(wrong_dtypes)}). The trainable half is dequantized from "
+            "int8 into weight_dtype at load, so this setting decides what the "
+            "base itself becomes: fp16 would materialize an fp16 base whose "
+            "updates cannot be carried by stochastic rounding, and fp32 a "
+            "30.2 GiB one. Set weight_dtype=bf16 and training_dtype=bf16."
+        )
+    if getattr(trainer, "use_grad_scaler", False):
+        raise ValueError(
+            "SenseNova full fine-tuning does not support FP16 gradient scaling. "
+            "Its updates are applied by per-parameter post-accumulate-grad hooks, "
+            "which free each gradient as they apply it, so GradScaler never runs "
+            "its inf/NaN check and never updates its scale. Set training_dtype=bf16."
+        )
+
+    if bool(settings.get("use_ema", False)) or bool(getattr(trainer, "use_ema", False)):
+        raise ValueError(
+            "SenseNova full fine-tuning does not support use_ema. The EMA update "
+            "is attached to the single optimizer.step() call site, and this route "
+            "updates each parameter from its own post-accumulate-grad hook, which "
+            "bypasses that call site: the shadow would silently never update. "
+            "Set use_ema=false."
+        )
+
+    groups = max(
+        int(settings.get("num_optimizer_groups", 0) or 0),
+        int(getattr(trainer, "num_optimizer_groups", 0) or 0),
+    )
+    if groups:
+        raise ValueError(
+            f"SenseNova full fine-tuning requires num_optimizer_groups=0, got "
+            f"{groups}. Fused optimizer groups call a batched optimizer.step() "
+            "instead of the per-parameter hooks this route's memory budget "
+            "depends on -- and they are only set up under Block Swap, which this "
+            "architecture does not implement, so a non-zero value here would "
+            "leave the run with no fused path at all."
+        )
+
+    accumulation = int(settings.get("gradient_accumulation_steps", 1) or 1)
+    if accumulation != 1:
+        raise ValueError(
+            f"SenseNova full fine-tuning requires gradient_accumulation_steps=1, "
+            f"got {accumulation}. Its updates are applied per parameter during "
+            "backward and each gradient is freed as it is applied, so no gradient "
+            "survives to be summed across backward passes: every backward would "
+            "become its own optimizer step, and the run would move further per "
+            "reported step than the effective batch implies (measured 3.88x at "
+            "accum=4 with AdamW). Physical batch 1 with no accumulation is what "
+            "this route trains. LoRA training on this architecture does support "
+            "gradient_accumulation_steps."
+        )
+
+    if optimizer_type is None and settings.get("optimizer") is None:
+        # Absence carries no information on the config channel; the call from
+        # setup_optimizer always names one, and that is the authoritative check.
+        return
+    name = str(
+        optimizer_type if optimizer_type is not None else settings["optimizer"]
+    ).strip().lower()
+    if name in SENSENOVA_FULL_FINETUNE_OPTIMIZERS:
+        return
+    extra = ""
+    if name == "adamw":
+        extra = (
+            " torch.optim.AdamW updates every parameter inside one step() with no "
+            "per-parameter seam, so stochastic rounding cannot be attached to it; "
+            "measured under round-to-nearest, 84.5% of a bf16 tensor's elements "
+            "never move at any step count, while the loss falls normally."
+        )
+    elif name in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer"):
+        extra = (
+            " The ring-buffer optimizers are the intended second option, but their "
+            "CPU-resident state is not wired up yet (nothing supplies "
+            "get_state_buffer, so they allocate 8-bit state on the GPU), and the "
+            "host-RAM and update-census gates for them are open."
+        )
+    raise ValueError(
+        f"SenseNova full fine-tuning does not support optimizer='{name}'. "
+        f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)}. This route "
+        f"applies each update from that parameter's own post-accumulate-grad hook, "
+        f"so the optimizer needs a per-parameter seam AND state small enough to sit "
+        f"beside the materialized bf16 half: adamw8bit has the seam but its measured "
+        f"2.031250 B/param is 16.5 GB of state over the generation half's 8.10 G "
+        f"parameters (32.9 GB over both halves), against Adafactor's factored second "
+        f"moment.{extra} Set optimizer=adafactor, or use training_method='lora', "
+        f"which accepts every optimizer this product offers."
+    )
+
+
 def _quantized_linear_flavours() -> "dict[str, type]":
     """The EXACT quantized-Linear classes this guard knows how to census.
 
@@ -231,12 +356,12 @@ def load_components(trainer: Any) -> None:
 
     training_method = resolve_training_method(trainer)
     # Resolved BEFORE the 17.6 GiB load so a contradictory train_unet /
-    # train_text_encoder pair is refused without paying for it.
-    branch = (
-        resolve_full_finetune_branch(trainer)
-        if training_method == _FULL_FINETUNE_METHOD
-        else None
-    )
+    # train_text_encoder pair -- or a configuration the fused backward pass
+    # cannot serve -- is refused without paying for it.
+    branch = None
+    if training_method == _FULL_FINETUNE_METHOD:
+        branch = resolve_full_finetune_branch(trainer)
+        assert_full_finetune_contract(trainer)
 
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]

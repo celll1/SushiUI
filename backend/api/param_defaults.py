@@ -2759,6 +2759,30 @@ BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
 }
 
 
+# Full fine-tune default for train_text_encoder, by architecture. Everywhere
+# else that flag names a separate model that stays frozen unless asked for; on
+# SenseNova it names the understanding half of the same MoT decoder that
+# denoises, so the shared True would train 16.2 B parameters instead of 8.1 and
+# dequantize 15.1 GiB of host RAM at load instead of 7.5
+# (SENSENOVA_TRAINING_DESIGN.md 6.2 defaults to the generation half).
+FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH: Dict[str, bool] = {
+    "_default": True,
+    "sensenova": False,
+}
+
+
+def resolve_full_finetune_train_text_encoder(value, arch: str) -> bool:
+    """Resolve a possibly-None full-FT train_text_encoder to the per-arch default.
+
+    An explicit boolean always wins; None looks up
+    FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH.
+    """
+    if value is not None:
+        return bool(value)
+    return bool(FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH.get(
+        arch, FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH["_default"]))
+
+
 def resolve_bundle_vae(value, arch: str) -> bool:
     """Resolve a possibly-None bundle_vae config value to the per-arch default.
 

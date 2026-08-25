@@ -811,7 +811,7 @@ _add_training_unsupported(
 
 _add_training_unsupported(
     "sensenova", "full_finetune",
-    "SenseNova full fine-tuning is not implemented for its weight-only INT8 base; use LoRA training")
+    "SenseNova full fine-tuning has no checkpoint format to save into: it emits the model itself, and this architecture's inference loader reads a weight-only INT8 checkpoint. Until that format is decided a run would train and then be unable to write a result, so it is refused before it starts; use LoRA training")
 _add_training_unsupported(
     "sensenova", "relora",
     "SenseNova ReLoRA cannot merge dense updates back into its weight-only INT8 base; use LoRA training")
@@ -897,12 +897,13 @@ _add_training_feature_unsupported(
     methods=["lora", "relora"])
 # SenseNova is Z-Image's mirror image: LoRA DOES train the understanding branch
 # (train_text_encoder injects 294 understanding-branch adapters and the prompt
-# prefix is built by a differentiable pass), while full fine-tuning of that half
-# is not implemented -- SenseNovaFullParameterAdapter does not exist and
-# full_finetune is refused for this architecture outright.
+# prefix is built by a differentiable pass). SenseNovaFullParameterAdapter does
+# collect that half now, but full_finetune is refused for this architecture
+# outright (no checkpoint format), so this entry follows the method that is
+# refused rather than claiming the half itself is unreachable.
 _add_training_feature_unsupported(
     "sensenova", "text_encoder_training",
-    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises; LoRA trains it through train_text_encoder, but no full-parameter path for it is implemented",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises; LoRA trains it through train_text_encoder, and full fine-tuning is refused for this architecture as a whole",
     methods=["full_finetune"])
 
 # --- Sample generation during training --------------------------------------

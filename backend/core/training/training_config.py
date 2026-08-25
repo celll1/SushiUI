@@ -27,6 +27,22 @@ def _normalize_params(p: Dict[str, Any]) -> Dict[str, Any]:
     return p
 
 
+def _detect_arch(base_model_path: str) -> str:
+    """The architecture a config is being generated for, or ``"unknown"``.
+
+    Two channels, the pair ``_apply_sensenova_training_contract`` uses: the
+    detector, then the path name if it raises.
+    """
+    try:
+        from core.model_loader import ModelLoader
+        return ModelLoader.detect_model_type(base_model_path)
+    except Exception:
+        lowered = (base_model_path or "").lower()
+        if "sensenova" in lowered or "sense-nova" in lowered:
+            return "sensenova"
+        return "unknown"
+
+
 def _build_train_section(
     p: Dict[str, Any],
     *,
@@ -622,7 +638,9 @@ class TrainingConfigGenerator:
 
         See generate_lora_config for argument descriptions. Differences:
         - learning_rate default 1e-6 (vs 1e-4 for LoRA)
-        - train_text_encoder default True
+        - train_text_encoder default from
+          param_defaults.resolve_full_finetune_train_text_encoder (True, except
+          where the flag names half the denoiser)
         - max_step_saves_to_keep default 3
         - noise_process default "add_noise", strict_validation default True
         - Component LRs only emitted if not None (vs always-emit for LoRA)
@@ -663,9 +681,13 @@ class TrainingConfigGenerator:
             })
 
         # Full FT defaults differ from LoRA defaults
+        from api.param_defaults import resolve_full_finetune_train_text_encoder
+
         full_ft_defaults = {
             "learning_rate": 1e-6,
-            "train_text_encoder": True,
+            "train_text_encoder": resolve_full_finetune_train_text_encoder(
+                None, _detect_arch(base_model_path)
+            ),
             "noise_process": "add_noise",
             "strict_validation": True,
         }
@@ -701,7 +723,7 @@ class TrainingConfigGenerator:
                             total_steps=total_steps,
                             epochs=epochs,
                             train_unet=p.get("train_unet", True),
-                            train_text_encoder=p.get("train_text_encoder", True),
+                            train_text_encoder=p["train_text_encoder"],
                             train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=False,
                             bucketing_always_emit=False,

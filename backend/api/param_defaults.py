@@ -2321,6 +2321,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "blocks_to_swap": 0,
     "use_pinned_memory": False,
     "sensenova_mot_phase_eviction": False,
+    # SenseNova full fine-tune only: split the single backward at the prefix KV
+    # cache so a TRAINED understanding half can still be CPU-evicted
+    # (SENSENOVA_TRAINING_DESIGN.md 8.3.2). Requires train_text_encoder and
+    # sensenova_mot_phase_eviction; costs one recomputed understanding forward
+    # per step, measured (n=25, p50) at 0.190 s against a 1.758 s generation
+    # forward+backward at 1024px / 467 prefix tokens, i.e. a 1.09-1.10x step.
+    "sensenova_four_phase_eviction": False,
     # SenseNova full fine-tune only: on-disk format of the saved model.
     # SENSENOVA_FULL_FINETUNE_SAVE_FORMATS below carries the measured sizes.
     "sensenova_full_finetune_save_format": "mixed",

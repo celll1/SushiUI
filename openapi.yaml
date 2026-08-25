@@ -18918,6 +18918,32 @@ components:
             weights resident. Emergency saves may run after CPU normalization.
             Requires batch_size=1, blocks_to_swap=0,
             num_optimizer_groups=0 and reference conditioning disabled.
+        sensenova_four_phase_eviction:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova full fine-tuning only. Splits the single backward at the
+            prefix KV cache so the understanding half can be CPU-evicted even
+            while it is being TRAINED, which `sensenova_mot_phase_eviction`
+            alone cannot do (it moves that half to CPU for the denoise phase,
+            and a trained half must survive to backward).
+
+            The step becomes four phases: understanding forward with the
+            boundary K/V handed on as grad-requiring leaves; generation forward
+            and backward terminating in those leaves' gradient; then a
+            RECOMPUTED understanding forward and its own backward. Requires
+            `train_text_encoder: true`, `sensenova_mot_phase_eviction: true`
+            and `network.type: full_finetune`; all three are refused before the
+            checkpoint loads.
+
+            Measured cost of the split on the distributed checkpoint at 1024px
+            with a 467-token prefix (n=25, p50): the recomputed understanding
+            forward is 0.190 s against a 1.758 s generation forward+backward,
+            and the four-phase step is 1.09-1.10x the single-backward step. The
+            weight round trips belong to `sensenova_mot_phase_eviction` and are
+            paid by its three-phase form too, so the split adds no transfer.
+            Under `multi_noise_timesteps` > 1 the split runs once per iteration,
+            and says so on the training_log channel.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

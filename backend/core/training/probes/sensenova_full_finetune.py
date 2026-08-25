@@ -99,19 +99,21 @@ def _linear_digest(weight: torch.Tensor) -> str:
     return hashlib.sha256(w.view(torch.uint8).numpy().tobytes()).hexdigest()
 
 
-def _gen_targets(transformer) -> list[tuple[str, Any]]:
+def _gen_targets(transformer, branch: str = "gen") -> list[tuple[str, Any]]:
     from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
 
     return [
         (path, module)
         for path, _parent, _attr, module in iter_sensenova_lora_targets(
-            transformer, branch="gen"
+            transformer, branch=branch
         )
     ]
 
 
-def _digest_map(transformer) -> dict[str, list[float]]:
-    return {path: _linear_digest(m.weight) for path, m in _gen_targets(transformer)}
+def _digest_map(transformer, branch: str = "gen") -> dict[str, list[float]]:
+    return {
+        path: _linear_digest(m.weight) for path, m in _gen_targets(transformer, branch)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +136,9 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     train_config = dict(config["train_config"])
     train_config["sensenova_full_finetune_save_format"] = args.save_format
+    train_config["sensenova_mot_phase_eviction"] = bool(args.four_phase)
+    train_config["sensenova_four_phase_eviction"] = bool(args.four_phase)
+    train_understanding = args.branch in ("und", "both")
 
     torch.cuda.reset_peak_memory_stats()
     host_before_load = _host_rss_bytes()
@@ -145,8 +150,8 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         run_id=None,
         learning_rate=LEARNING_RATE,
         unet_lr=LEARNING_RATE,
-        train_unet=True,
-        train_text_encoder=False,
+        train_unet=args.branch in ("gen", "both"),
+        train_text_encoder=train_understanding,
         device="cuda",
         weight_dtype="bf16",
         training_dtype="bf16",
@@ -165,16 +170,22 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     if not is_full_finetune(trainer):
         raise AssertionError("the trainer did not resolve as a full fine-tune")
     branch = resolve_full_finetune_branch(trainer)
-    if branch != "gen":
-        raise AssertionError(f"expected the gen branch, got {branch!r}")
+    if branch != args.branch:
+        raise AssertionError(f"expected the {args.branch} branch, got {branch!r}")
+    if args.four_phase:
+        if getattr(trainer, "sensenova_four_phase", None) is None:
+            raise AssertionError("four-phase eviction was requested but not installed")
+        if getattr(trainer, "sensenova_phase_evictor", None) is None:
+            raise AssertionError("four-phase eviction requires the MoT evictor")
     adapter_name = type(trainer.adapter).__name__
     if adapter_name != "SenseNovaFullParameterAdapter":
         raise AssertionError(
             f"the SD1.5 fallthrough was taken: adapter is {adapter_name}"
         )
-    targets = _gen_targets(trainer.transformer)
-    if len(targets) != EXPECTED_TARGETS:
-        raise AssertionError(f"expected {EXPECTED_TARGETS} targets, got {len(targets)}")
+    targets = _gen_targets(trainer.transformer, branch)
+    expected_targets = EXPECTED_TARGETS * (2 if branch == "both" else 1)
+    if len(targets) != expected_targets:
+        raise AssertionError(f"expected {expected_targets} targets, got {len(targets)}")
 
     groups = trainer.setup_trainable_parameters()
     parameter_groups = [
@@ -184,10 +195,11 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     ]
     trainable_elements = sum(g["elements"] for g in parameter_groups)
 
-    before = _digest_map(trainer.transformer)
+    before = _digest_map(trainer.transformer, branch)
     sampled = [path for path, _ in targets[:SAMPLED_LINEARS]]
     sampled_before = {
-        path: dict(targets)[path].weight.detach().clone() for path in sampled
+        path: dict(targets)[path].weight.detach().to("cpu", copy=True)
+        for path in sampled
     }
 
     # Armed here, before train() builds the optimizer: it is the mechanism that
@@ -196,11 +208,18 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     losses: list[float] = []
     steps: list[int] = []
+    # train()'s finally nulls sensenova_phase_evictor, so reading it afterwards
+    # reports None whether four-phase ran or was never installed. Sample it while
+    # the run is live instead.
+    evictor_states: list[str] = []
 
     def progress_callback(phase, step, total, epoch=0, loss=None):
         del total, epoch
         if phase != "training":
             return
+        live = getattr(trainer, "sensenova_phase_evictor", None)
+        if live is not None:
+            evictor_states.append(str(live.state))
         if loss is None or not math.isfinite(float(loss)):
             raise AssertionError(f"non-finite SenseNova full-FT loss: {loss!r}")
         steps.append(int(step))
@@ -230,12 +249,14 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     if steps != list(range(1, EXIT_SMOKE_STEPS + 1)):
         raise AssertionError(f"expected {EXIT_SMOKE_STEPS} steps, got {steps}")
 
-    after = _digest_map(trainer.transformer)
+    after = _digest_map(trainer.transformer, branch)
     moved = sorted(p for p in before if after[p] != before[p])
     unmoved = sorted(p for p in before if after[p] == before[p])
     sampled_moved_fraction = {}
     for path in sampled:
-        now = dict(_gen_targets(trainer.transformer))[path].weight.detach()
+        # .cpu(): four-phase teardown normalizes every weight to host memory, so
+        # the post-run tensor and the pre-run clone can sit on different devices.
+        now = dict(_gen_targets(trainer.transformer, branch))[path].weight.detach().cpu()
         changed = (now != sampled_before[path]).sum().item()
         sampled_moved_fraction[path] = {
             "elements": int(now.numel()),
@@ -257,6 +278,8 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     )
     return {
         "arm": "train",
+        "four_phase_eviction": bool(args.four_phase),
+        "evictor_states_during_run": evictor_states,
         "adapter": adapter_name,
         "branch": branch,
         "targets": len(targets),
@@ -359,6 +382,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--expect", default=None,
                         help="the train arm's JSON, for --arm reload")
     parser.add_argument("--save-format", default="mixed")
+    parser.add_argument("--branch", choices=("gen", "und", "both"), default="gen")
+    parser.add_argument("--four-phase", action="store_true",
+                        help="arm sensenova_four_phase_eviction (8.3.2)")
     parser.add_argument("--prompt", default="a red square on a white background")
     parser.add_argument("--seed", type=int, default=1234)
     return parser.parse_args()

@@ -880,8 +880,12 @@ def test_contract_normalises_train_text_encoder_and_refuses_it_with_eviction():
             _apply_sensenova_training_contract("model", "lora", train, {})
     message = str(excinfo.value)
     assert "sensenova_mot_phase_eviction" in message
-    # The refusal must not read as a fundamental impossibility.
-    assert "scope limit of this implementation" in message
+    # The refusal must not read as a fundamental impossibility. It used to say
+    # so in words ("scope limit of this implementation"); since U-2-4 shipped the
+    # phase split it names the setting that lifts it, which is a stronger form of
+    # the same requirement.
+    assert "sensenova_four_phase_eviction" in message
+    assert "full-finetune only" in message
 
     train = {"batch_size": 1, "blocks_to_swap": 0, "train_text_encoder": "maybe"}
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):

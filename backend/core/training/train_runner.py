@@ -222,7 +222,38 @@ def _apply_sensenova_training_contract(
     train_understanding = _normalize_sensenova_bool(
         train_config, "train_text_encoder", False
     )
-    if train_understanding and phase_eviction:
+    four_phase = _normalize_sensenova_bool(
+        train_config,
+        "sensenova_four_phase_eviction",
+        TRAINING_DEFAULTS["sensenova_four_phase_eviction"],
+    )
+    if four_phase:
+        # The lift of the refusal below, and its preconditions. Every clause is
+        # restated by ops.sensenova_ops.assert_four_phase_contract inside the
+        # trainer; what this adds is that the message arrives before the load.
+        if not is_full_finetune:
+            raise ValueError(
+                "SenseNova sensenova_four_phase_eviction requires "
+                "network.type='full_finetune': the split leaves the generation "
+                "half on CPU at the step boundary, which is only safe on the "
+                "fused backward route where each half is updated by its own "
+                "per-parameter hooks while it is resident."
+            )
+        if not train_understanding:
+            raise ValueError(
+                "SenseNova sensenova_four_phase_eviction requires "
+                "train_text_encoder: it exists so a TRAINED understanding half "
+                "can still be evicted. With that half frozen, "
+                "sensenova_mot_phase_eviction alone already does this."
+            )
+        if not phase_eviction:
+            raise ValueError(
+                "SenseNova sensenova_four_phase_eviction requires "
+                "sensenova_mot_phase_eviction: on its own the split only adds a "
+                "second backward and a recomputed understanding forward, with "
+                "both halves resident exactly as they are without it."
+            )
+    elif train_understanding and phase_eviction:
         # An explicit error, not a silent auto-disable: both flags are opt-in,
         # and quietly dropping either one breaks a contract the user set (a VRAM
         # budget, or which weights get trained).
@@ -230,10 +261,10 @@ def _apply_sensenova_training_contract(
             "SenseNova train_text_encoder cannot be combined with "
             "sensenova_mot_phase_eviction: the understanding half must stay "
             "GPU-resident until backward, while the evictor moves it to CPU for "
-            "the denoise phase. This is a scope limit of this implementation, not "
-            "a fundamental incompatibility -- a phase split that keeps the "
-            "understanding half through backward is deferred to the "
-            "understanding full-finetune phase. Disable one of the two."
+            "the denoise phase. Set sensenova_four_phase_eviction to split the "
+            "backward at the prefix KV cache instead, which keeps the "
+            "understanding half through its own backward; that route is "
+            "full-finetune only. Otherwise disable one of the two."
         )
     if phase_eviction:
         groups = _normalize_sensenova_integer(

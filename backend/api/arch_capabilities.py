@@ -259,6 +259,14 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     "text_encoder_training": ["train_text_encoder"],
     "training_samples": ["sample_every", "sample_prompts"],
     "vae": ["vae_dtype", "bundle_vae"],
+    # ONE feature, two keys, because they are one interlocked setting rather
+    # than two: `sensenova_four_phase_eviction` is only ever legal on top of
+    # `sensenova_mot_phase_eviction`, and only then to keep a TRAINED
+    # understanding half evictable (train_runner._apply_sensenova_training_
+    # contract). Splitting them into two features would let a client offer the
+    # split on its own, which is refused before the model loads.
+    "sensenova_mot_eviction": ["sensenova_mot_phase_eviction",
+                               "sensenova_four_phase_eviction"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -268,6 +276,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "text_encoder_training": "text encoder training",
     "training_samples": "sample generation during training",
     "vae": "VAE settings",
+    "sensenova_mot_eviction": "SenseNova MoT phase eviction (with the four-phase backward split)",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -314,6 +323,36 @@ def _add_training_required_value(arch: str, param: str, value: Any, reason: str,
     if methods:
         entry["methods"] = list(methods)
     TRAINING_REQUIRED_VALUES.setdefault(arch, {})[param] = entry
+
+# ---------------------------------------------------------------------------
+# TRAINING_FEATURE_ADVISORY[arch][feature] = {"level": ..., "reason": ...,
+#                                             "methods"?: [...]}
+#
+# A FIFTH axis, and the only one that constrains nothing: the feature IS
+# implemented and IS accepted, and the entry says what switching it on costs.
+# The control stays VISIBLE and ENABLED and the client shows `reason` beside it;
+# `level` (`high_memory` / `experimental`) is advice, never a gate. A pair
+# declared here must not also be declared unsupported -- asserted below, because
+# holding both is what this axis replaced (SENSENOVA_TRAINING_DESIGN.md 13.4
+# U-2-2 item 7).
+#
+# INVARIANT: every figure in a `reason` is traceable to a measurement with its
+# conditions, and every ratio names its denominator (the entry below quoted
+# "94.5% of a 48 GB card" for what is 94.5% of the probe's gate and 68% of the
+# card; `sensenova_capability_advisory_test.py` holds the arithmetic).
+# ---------------------------------------------------------------------------
+TRAINING_ADVISORY_LEVELS = ("experimental", "high_memory")
+
+TRAINING_FEATURE_ADVISORY: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+def _add_training_feature_advisory(arch: str, feature: str, level: str,
+                                   reason: str,
+                                   methods: Optional[List[str]] = None) -> None:
+    entry: Dict[str, Any] = {"level": level, "reason": reason}
+    if methods:
+        entry["methods"] = list(methods)
+    TRAINING_FEATURE_ADVISORY.setdefault(arch, {})[feature] = entry
 
 # ---------------------------------------------------------------------------
 # ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming
@@ -933,35 +972,26 @@ _add_training_feature_unsupported(
     "zimage", "text_encoder_training",
     "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it",
     methods=["lora", "relora"])
-# SenseNova is Z-Image's mirror image: LoRA DOES train the understanding branch
-# (train_text_encoder injects 294 understanding-branch adapters and the prompt
-# prefix is built by a differentiable pass). Full fine-tuning is accepted now
-# (U-2-2 step 3), and SenseNovaFullParameterAdapter collects the understanding
-# half when this flag is set -- so the reason this entry used to give ("full
-# fine-tuning is refused for this architecture as a whole") is no longer true
-# and has been replaced with the one that is.
-#
-# The reason this entry gave NEXT ("no measured run yet") was discharged by
-# U-2-5: both the understanding-only and the both-half branches have now been
-# run end to end on the real checkpoint. So it has been replaced in turn, by the
-# measurement itself -- the both-half run peaked at 32.66 GiB of VRAM, 94.5% of
-# the gate on a 48 GB card, with a 51.97-61.67 GiB host RSS peak. The entry
-# stays because THAT is a reason; lifting it is a budget decision with numbers
-# attached, not a missing one. It is not enforced trainer-side: the API path
-# accepts train_text_encoder=true.
-#
-# EVERY NUMBER IN THE REASON BELOW IS MEASURED. A first attempt at this string
-# quoted "15.14 GiB of dequantized host weights", which is neither: it is
-# SENSENOVA_TRAINING_DESIGN.md 6.4's ANALYTIC `Q + q_max` transient peak of the
-# int8-side conversion, and the dequantized host weights for two halves are
-# 30.1875 GiB. The whole point of retiring the previous reason was that a
-# measurement had falsified it; replacing it with a second unmeasured claim
-# would have given that away. The host figures here are the two measured RSS
-# peaks (they differ; see the design doc's non-reproduction box).
-_add_training_feature_unsupported(
-    "sensenova", "text_encoder_training",
-    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises. LoRA trains it through train_text_encoder; under full fine-tuning it is the second 294-Linear half, and training both halves measured a 32.66 GiB VRAM peak (94.5% of a 48 GB card) with a 51.97-61.67 GiB host RSS peak, so only the generation half is offered here",
+# SenseNova is Z-Image's mirror image: LoRA and full fine-tuning BOTH train the
+# understanding branch, and nothing refuses either -- so the claim is a memory
+# budget, not a missing mechanism, and it lives on the advisory axis instead
+# (why: SENSENOVA_TRAINING_DESIGN.md 13.4 U-2-2 item 7).
+_add_training_feature_advisory(
+    "sensenova", "text_encoder_training", "high_memory",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises, so under full fine-tuning it is a second 294-Linear half rather than a separate encoder. It is implemented and accepted, not refused: the understanding-only and both-half branches were both run end to end on the real checkpoint (SENSENOVA_TRAINING_DESIGN.md 13.4 U-2-5). Training BOTH halves measured a 32.66 GiB VRAM peak at 64px, 3 steps, adafactor, batch 1, bf16, gradient checkpointing on -- 94.5% of the probe's own 34.551 GiB cap (set_per_process_memory_fraction(0.72) of the ~47.99 GiB the 48 GB card reports), i.e. 68% of the card itself -- with a 51.97-61.67 GiB host RSS peak (two runs, see the design doc's non-reproduction box). The generation half alone peaked at 26.16 GiB under the same conditions. Nothing above 64px has been measured, and no quality claim is attached to any of it",
     methods=["full_finetune"])
+
+# --- SenseNova MoT phase eviction (with the four-phase split) ---------------
+# The mechanism is SenseNova's alone: it evicts the MoT weight half the current
+# phase does not use, which no other architecture has to evict.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_mot_eviction",
+        "per-phase MoT weight-half CPU eviction is specific to SenseNova's two-half decoder; this architecture has no idle weight half to evict and its training VRAM mechanism is block swap")
+_add_training_feature_advisory(
+    "sensenova", "sensenova_mot_eviction", "experimental",
+    "One interlocked setting, not two toggles. sensenova_mot_phase_eviction keeps only the phase-active half resident and is available under LoRA and full fine-tuning; sensenova_four_phase_eviction splits the single backward at the prefix KV cache so a TRAINED understanding half can still be evicted, and is refused before the model loads unless train_text_encoder, sensenova_mot_phase_eviction and training_method=full_finetune all hold. Conversely train_text_encoder together with sensenova_mot_phase_eviction is refused WITHOUT the split, because the three-state evictor moves the understanding half to CPU before its backward. Understanding training without eviction needs neither. Measured cost of the split at 1024px / 467 prefix tokens (n=25, p50): a 0.190 s recomputed understanding forward against a 1.758 s generation forward+backward, i.e. a 1.09-1.10x step; it adds no weight transfer beyond the three-phase form's",
+    methods=["lora", "full_finetune"])
 
 # --- Sample generation during training --------------------------------------
 # NOT declared for SenseNova: its sampling integration is in flight, and a
@@ -1048,6 +1078,30 @@ for _arch, _params in TRAINING_REQUIRED_VALUES.items():
                         and _feature in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {})), (
                 f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] restates "
                 f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}]")
+            assert not (_param in _keys
+                        and _feature in TRAINING_FEATURE_ADVISORY.get(_arch, {})), (
+                f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] pins a parameter "
+                f"TRAINING_FEATURE_ADVISORY[{_arch}][{_feature}] presents as a "
+                f"choice")
+assert set(TRAINING_FEATURE_ADVISORY) <= TRAINING_DECLARED_ARCHS, (
+    f"TRAINING_FEATURE_ADVISORY names undeclared archs: "
+    f"{set(TRAINING_FEATURE_ADVISORY) - TRAINING_DECLARED_ARCHS}")
+for _arch, _features in TRAINING_FEATURE_ADVISORY.items():
+    for _feature, _entry in _features.items():
+        assert _feature in TRAINING_FEATURE_PARAMS, (
+            f"TRAINING_FEATURE_ADVISORY[{_arch}] names unknown feature {_feature!r}")
+        assert _entry["level"] in TRAINING_ADVISORY_LEVELS, (
+            f"TRAINING_FEATURE_ADVISORY[{_arch}][{_feature}] has unknown level "
+            f"{_entry['level']!r}")
+        assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
+            f"TRAINING_FEATURE_ADVISORY[{_arch}][{_feature}] scopes unknown "
+            f"training methods")
+        # THE PARTITION. "the mechanism is absent" and "the mechanism is here,
+        # and here is what it costs" are opposite claims about the same pair;
+        # holding both is the three-answers-to-one-question failure this axis
+        # was added to end.
+        assert _feature not in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {}), (
+            f"{_arch}/{_feature} is declared both unsupported and advisory")
 
 
 def training_feature_unsupported_reason(arch: Optional[str], feature: str,
@@ -1064,6 +1118,22 @@ def training_feature_unsupported_reason(arch: Optional[str], feature: str,
     if methods and method is not None and method not in methods:
         return None
     return entry["reason"]
+
+
+def training_feature_advisories(arch: Optional[str],
+                                method: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """What ``arch`` says ABOUT features it does implement: feature -> entry.
+
+    Never a refusal and never a hide: a caller shows the control and the
+    ``reason`` beside it. Empty for an unknown/None arch.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for feature, entry in (TRAINING_FEATURE_ADVISORY.get(arch or "") or {}).items():
+        methods = entry.get("methods")
+        if methods and method is not None and method not in methods:
+            continue
+        out[feature] = {"level": entry["level"], "reason": entry["reason"]}
+    return out
 
 
 def training_required_values(arch: Optional[str],

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, archDisplayName } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -248,6 +248,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   blocks_to_swap: 0,
   use_pinned_memory: false,
   sensenova_mot_phase_eviction: false,
+  sensenova_four_phase_eviction: false,
   sensenova_full_finetune_save_format: "mixed",
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
@@ -706,6 +707,41 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
 
+  // FIFTH capability axis, and the opposite claim from the one above: a feature
+  // the backend DOES implement and DOES accept, with what it costs. Shown next
+  // to the control, never used to hide or disable it — a control that is
+  // disabled here while the API runs the parameter is the three-way
+  // contradiction this axis replaced.
+  const featureAdvisory = (feature: string): TrainingFeatureAdvisory | undefined =>
+    trainingFeatureAdvisory(
+      archCapabilities, getModelArchitecture(baseModelPath), feature, trainingMethod
+    );
+  const textEncoderTrainingAdvisory = featureAdvisory("text_encoder_training");
+  const motEvictionAdvisory = featureAdvisory("sensenova_mot_eviction");
+  const motEvictionUnsupported = unsupportedTrainingFeature("sensenova_mot_eviction");
+  // The three preconditions train_runner checks before the checkpoint loads.
+  // undefined = the split is selectable; a string = why it is not, in the same
+  // terms the backend would have refused in.
+  const fourPhaseBlockedReason: string | undefined =
+    trainingMethod !== "full_finetune"
+      ? "The backward split is implemented for full fine-tuning only: it leaves the generation half on CPU at the step boundary, which is safe only on the fused backward route."
+      : !trainTextEncoder
+      ? "Needs Train Text Encoder: the split exists so a TRAINED understanding half can still be evicted. With that half frozen, MoT Phase Eviction alone already does this."
+      : !params.sensenova_mot_phase_eviction
+      ? "Needs MoT Phase Eviction: on its own the split only adds a second backward and a recomputed understanding forward, with both halves resident."
+      : undefined;
+  // The refusal in the OTHER direction (train_runner: train_text_encoder cannot
+  // be combined with MoT Phase Eviction). Under full fine-tuning the split lifts
+  // it; under LoRA nothing does — the split is full-fine-tune only — so the
+  // remedy this names differs by method.
+  const evictionPairRefusal: string | undefined =
+    trainTextEncoder && params.sensenova_mot_phase_eviction
+      && !params.sensenova_four_phase_eviction
+      ? trainingMethod === "full_finetune"
+        ? "Train Text Encoder with MoT Phase Eviction is refused before the model loads unless the Four-Phase Backward Split is on: the three-phase evictor moves the understanding half to CPU before its own backward. Turn the split on, or turn one of the other two off."
+        : "Train Text Encoder with MoT Phase Eviction is refused before the model loads. The Four-Phase Backward Split that would lift it is implemented for full fine-tuning only, so here the remedy is to turn one of the two off."
+      : undefined;
+
   // FOURTH capability axis: config values this base model REQUIRES under the
   // selected method (SenseNova's full-fine-tune contract fixes the optimizer;
   // every SenseNova run is batch 1). The backend refuses a run that violates
@@ -896,6 +932,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
       sensenova_mot_phase_eviction: params.sensenova_mot_phase_eviction,
+      sensenova_four_phase_eviction: params.sensenova_four_phase_eviction,
       sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
@@ -1153,7 +1190,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
       "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction",
-      "sensenova_full_finetune_save_format",
+      "sensenova_four_phase_eviction", "sensenova_full_finetune_save_format",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -1319,6 +1356,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     const arch = getModelArchitecture(baseModelPath);
 
+    // SenseNova: the flag selects the second 294-Linear MoT half, so a `true`
+    // carried over from another architecture turns the run into the both-half
+    // configuration (32.66 GiB VRAM, up to 61.67 GiB host) without anyone
+    // choosing it. Starting value only — checking the box is offered, and the
+    // advisory next to it says what it costs. Same one line as Z-Image below,
+    // and the same value as TRAINING_DEFAULTS["train_text_encoder"].
+    if (arch === "sensenova") {
+      updateParam("train_text_encoder", false);
+    }
+
     // Dtype presets based on architecture:
     // - SD1.5/SDXL/DEUS: VAE=fp16, weight=fp32, training=fp16, save=fp16
     // - Z-Image/FLUX.2: VAE=fp32, weight=bf16, training=bf16, save=bf16
@@ -1441,10 +1488,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (trainingSamplesUnsupported && params.sample_every) {
       updateParam("sample_every", 0);
     }
+    if (motEvictionUnsupported) {
+      if (params.sensenova_mot_phase_eviction) updateParam("sensenova_mot_phase_eviction", false);
+      if (params.sensenova_four_phase_eviction) updateParam("sensenova_four_phase_eviction", false);
+    }
+    // Not a preference: the split is refused before the model loads once any of
+    // its three preconditions stops holding, so leaving it set submits a run the
+    // backend rejects.
+    if (fourPhaseBlockedReason && params.sensenova_four_phase_eviction) {
+      updateParam("sensenova_four_phase_eviction", false);
+    }
+    // The two eviction params are dependencies as well as reads: a preset or a
+    // copy-from-run writes them without touching arch or method, and
+    // `fourPhaseBlockedReason` does not move when only the split itself is
+    // written — so an identity-keyed list would park it true inside a control
+    // that is not even rendered. Same trap the value-keyed effect below names.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, trainingMethod, archCapabilities, availableModels,
       blockSwapUnsupported, fusedGroupsUnsupported, referenceImagesUnsupported,
-      textEncoderTrainingUnsupported, trainingSamplesUnsupported]);
+      textEncoderTrainingUnsupported, trainingSamplesUnsupported,
+      motEvictionUnsupported, fourPhaseBlockedReason,
+      params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction]);
 
   // Keep the pinned parameters at their required values, and record what was
   // replaced. Recorded rather than applied silently: the backend refuses (or
@@ -1902,6 +1966,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blocksToSwap,
       usePinnedMemory,
       sensenovaMotPhaseEviction: params.sensenova_mot_phase_eviction,
+      sensenovaFourPhaseEviction: params.sensenova_four_phase_eviction,
       sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
       numOptimizerGroups,
       multiNoiseTimesteps,
@@ -2096,6 +2161,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.blocksToSwap !== undefined) updateParam("blocks_to_swap", config.blocksToSwap);
     if (config.usePinnedMemory !== undefined) updateParam("use_pinned_memory", config.usePinnedMemory);
     if (config.sensenovaMotPhaseEviction !== undefined) updateParam("sensenova_mot_phase_eviction", config.sensenovaMotPhaseEviction);
+    if (config.sensenovaFourPhaseEviction !== undefined) updateParam("sensenova_four_phase_eviction", config.sensenovaFourPhaseEviction);
     if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
@@ -4159,19 +4225,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
 
               {/* Train Text Encoder */}
-              <div className="flex items-center space-x-2" title={textEncoderTrainingUnsupported}>
-                <input
-                  type="checkbox"
-                  id="train-text-encoder"
-                  checked={trainTextEncoder && !textEncoderTrainingUnsupported}
-                  onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={!!textEncoderTrainingUnsupported}
-                  className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
-                />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${textEncoderTrainingUnsupported ? 'text-gray-500' : 'text-gray-300'}`}>
-                  Train Text Encoder {textEncoderTrainingUnsupported && '(not supported for this model)'}
-                  {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
-                </label>
+              <div>
+                <div className="flex items-center space-x-2" title={textEncoderTrainingUnsupported ?? textEncoderTrainingAdvisory?.reason}>
+                  <input
+                    type="checkbox"
+                    id="train-text-encoder"
+                    checked={trainTextEncoder && !textEncoderTrainingUnsupported}
+                    onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
+                    disabled={!!textEncoderTrainingUnsupported}
+                    className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${textEncoderTrainingUnsupported ? 'text-gray-500' : 'text-gray-300'}`}>
+                    Train Text Encoder {textEncoderTrainingUnsupported && '(not supported for this model)'}
+                    {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory?.level === "high_memory" && ' (high memory)'}
+                    {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
+                  </label>
+                </div>
+                {/* Advisory, not a refusal: the run is accepted either way. */}
+                {!textEncoderTrainingUnsupported && textEncoderTrainingAdvisory && (
+                  <p className="text-xs text-amber-400 mt-1">{textEncoderTrainingAdvisory.reason}</p>
+                )}
               </div>
 
               {/* Train Image Encoder - DEUS support removed */}
@@ -4530,7 +4603,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </p>
         </div>
 
-        {isSenseNovaModel(baseModelPath) && trainingMethod === "lora" && (
+        {/* One interlocked setting, not two independent toggles — the backend
+            refuses eviction + train_text_encoder without the split, and the
+            split without either of them. Gated on the capability tables, so a
+            method that stops advertising it loses the section. The arch check is
+            belt-and-braces for the window before /schema/arch-capabilities
+            resolves, when the table answers "supported" for everything. */}
+        {isSenseNovaModel(baseModelPath) && !motEvictionUnsupported && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
           <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
             <h3 className="text-sm font-medium text-gray-300">SenseNova Training Memory</h3>
             <div className="flex items-center space-x-2">
@@ -4538,7 +4617,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="checkbox"
                 id="sensenova-mot-phase-eviction"
                 checked={params.sensenova_mot_phase_eviction ?? false}
-                onChange={(e) => updateParam("sensenova_mot_phase_eviction", e.target.checked)}
+                onChange={(e) => {
+                  updateParam("sensenova_mot_phase_eviction", e.target.checked);
+                  if (!e.target.checked) updateParam("sensenova_four_phase_eviction", false);
+                }}
                 className="w-4 h-4"
               />
               <label htmlFor="sensenova-mot-phase-eviction" className="text-xs text-gray-300 cursor-pointer">
@@ -4548,6 +4630,35 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-500">
               Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1. This architecture has no block swap, so the Block Swap controls are not offered for it.
             </p>
+
+            {trainingMethod === "full_finetune" && (
+              <>
+                <div className="flex items-center space-x-2" title={fourPhaseBlockedReason}>
+                  <input
+                    type="checkbox"
+                    id="sensenova-four-phase-eviction"
+                    checked={params.sensenova_four_phase_eviction ?? false}
+                    onChange={(e) => updateParam("sensenova_four_phase_eviction", e.target.checked)}
+                    disabled={!!fourPhaseBlockedReason}
+                    className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <label htmlFor="sensenova-four-phase-eviction" className={`text-xs cursor-pointer ${fourPhaseBlockedReason ? 'text-gray-500' : 'text-gray-300'}`}>
+                    Four-Phase Backward Split
+                  </label>
+                </div>
+                {fourPhaseBlockedReason && (
+                  <p className="text-xs text-gray-500">{fourPhaseBlockedReason}</p>
+                )}
+              </>
+            )}
+            {/* Outside the full-fine-tune block: the pair is refused under LoRA
+                too, and there the split is not the way out. */}
+            {evictionPairRefusal && (
+              <p className="text-xs text-red-400">{evictionPairRefusal}</p>
+            )}
+            {motEvictionAdvisory && (
+              <p className="text-xs text-amber-400">{motEvictionAdvisory.reason}</p>
+            )}
           </div>
         )}
 

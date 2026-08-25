@@ -71,9 +71,17 @@ def setup_update_census(trainer, optimizers):
     early, is updated by nothing for the whole run while the loss falls
     normally. The census counts the updates that were actually applied and
     compares against the parameters the optimizers own. Off by default: it costs
-    a set insertion per parameter per step and a set difference per step, which
-    is small but not free, and it is a diagnostic rather than a route
-    requirement. See optimizers/update_census.py.
+    a set insertion per parameter per step and a set difference per step (47.8
+    us/step over 588 parameters), which is small but not free, and it is a
+    diagnostic rather than a route requirement.
+
+    Armed by ``optimizer_update_census`` in the run's train_config -- the same
+    channel ``use_ema`` / ``gradient_checkpointing`` come through, so an exit
+    smoke arms it by writing one key into the config it already builds rather
+    than by constructing a trainer and setting an attribute. No API/UI surface;
+    see the BaseTrainer.__init__ comment for why. Setting the attribute directly
+    still works, and is still what a probe holding a live trainer does.
+    See optimizers/update_census.py.
     """
     if not getattr(trainer, "optimizer_update_census", False):
         return None
@@ -105,6 +113,29 @@ def setup_update_census(trainer, optimizers):
           + (f", {len(census.exempt)} path(s) exempt as gradient-unreachable"
              if census.exempt else ""))
     return census
+
+
+def grad_norm_bucket(component):
+    """``LORA_COMPONENT_*`` -> the grad-norm slot it is reported under.
+
+    One mapping for both halves of ``_calculate_grad_norms``: the LoRA branch
+    reads it from the injecting adapter's ``lora_components``, the full-FT branch
+    from ``BaseFullParameterAdapter.grad_norm_components``. An unknown or missing
+    component is the main trainable model, which is what the LoRA branch already
+    did for a layer no adapter registered.
+    """
+    from core.training.adapters.base_adapter import (
+        LORA_COMPONENT_TEXT_ENCODER,
+        LORA_COMPONENT_TEXT_ENCODER_1,
+        LORA_COMPONENT_TEXT_ENCODER_2,
+        LORA_COMPONENT_VISION_ENCODER,
+    )
+    return {
+        LORA_COMPONENT_TEXT_ENCODER_1: 'te1',
+        LORA_COMPONENT_TEXT_ENCODER_2: 'te2',
+        LORA_COMPONENT_TEXT_ENCODER: 'te',
+        LORA_COMPONENT_VISION_ENCODER: 've',
+    }.get(component, 'unet')
 
 
 def census_exempt_names(trainer):
@@ -1104,23 +1135,35 @@ class BaseTrainer(ABC):
         # expectation. Honoured by the RingBuffer optimizers only.
         self.optimizer_stochastic_rounding = optimizer_stochastic_rounding
 
-        # Ring-buffer optimizer state on pinned host memory instead of the GPU
-        # (the mode those optimizers are named for). Off, and with no API
-        # surface yet: exposing it as a user option needs the param_defaults ->
-        # routes -> training_config -> openapi chain, and the below-threshold
-        # cost is not measured for any production model. Set by tests, probes
-        # and by callers that have measured the trade for their own run; see
-        # _ringbuffer_optimizer_kwargs and host_state_allocator.py.
-        self.optimizer_state_host_resident = False
+        # Two diagnostics/mode switches with NO API surface, deliberately: they
+        # are config-channel only (this dict), so the UI and the OpenAPI schema
+        # do not offer them and only a hand-written YAML, a probe or an exit
+        # smoke that owns its config can arm them. Neither is a quality setting
+        # and neither has a result the UI can display, which is why the
+        # param_defaults -> routes -> openapi -> panel chain is not spent on
+        # them; the config channel is what makes them armable without
+        # constructing a trainer by hand. SENSENOVA_TRAINING_DESIGN.md 6.5.
+        #
+        # optimizer_state_host_resident: ring-buffer optimizer state on pinned
+        # host memory instead of the GPU (the mode those optimizers are named
+        # for). Measured at 0.031250 B/param on the GPU against 2.031250 (G-RB2,
+        # e6bdcc38); the below-threshold transfer cost is not measured for any
+        # production model, and the one route that would want it allows
+        # adafactor only. See _ringbuffer_optimizer_kwargs, host_state_allocator.
+        self.optimizer_state_host_resident = bool(
+            _tc.get("optimizer_state_host_resident", False))
         self._host_state_allocator = None
 
-        # Per-step updated-parameter census (G-RB3). Off, no API surface yet.
-        # FUSED-BACKWARD ONLY: setup_update_census() is called from
-        # _setup_fused_backward_pass, because the failure it detects (a hook that
-        # never fires) exists only where hooks apply the updates. Setting it on a
-        # non-fused run is reported, not silently ignored -- see
-        # _warn_update_census_inactive(). See optimizers/update_census.py.
-        self.optimizer_update_census = False
+        # optimizer_update_census (G-RB3): per-step census of which parameters an
+        # update actually reached. FUSED-BACKWARD ONLY: setup_update_census() is
+        # called from _setup_fused_backward_pass, because the failure it detects
+        # (a hook that never fires) exists only where hooks apply the updates.
+        # Setting it on a non-fused run is reported, not silently ignored (see
+        # the note in setup_optimizer). It RAISES on a shortfall, which is the
+        # other reason it is not a checkbox: on a false positive it would take
+        # down a run that is training correctly. See optimizers/update_census.py.
+        self.optimizer_update_census = bool(
+            _tc.get("optimizer_update_census", False))
         self._update_census = None
 
         # Resume training
@@ -12576,6 +12619,37 @@ class BaseTrainer(ABC):
         # Cleanup resources
         self.cleanup()
 
+    def _full_parameter_grad_components(self):
+        """``id(param)`` -> component, from the full-parameter adapter. Cached.
+
+        The trainable set of a full fine-tune is fixed once
+        ``prepare_models_for_training`` has run, so this is built once per run
+        rather than per step. A diagnostic must not be able to abort training:
+        an adapter that raises while classifying (SenseNova's re-resolves its
+        scope, which asserts the materialized Linear count) is reported once and
+        then treated as having no opinion, which is the pre-existing
+        module-derived bucketing.
+        """
+        cached = getattr(self, '_full_param_grad_components', None)
+        if cached is not None:
+            return cached
+        components = {}
+        resolve = getattr(getattr(self, 'adapter', None), 'grad_norm_components', None)
+        if callable(resolve):
+            try:
+                components = resolve() or {}
+            except Exception as exc:
+                emit_training_warning(
+                    f"{type(self.adapter).__name__}.grad_norm_components() failed "
+                    f"({type(exc).__name__}: {exc}); per-component gradient norms "
+                    f"fall back to one bucket per module for this run",
+                    code="grad_norm_components_failed",
+                    prefix=getattr(self, 'log_prefix', '[Trainer]'),
+                )
+                components = {}
+        self._full_param_grad_components = components
+        return components
+
     def _calculate_grad_norms(self):
         """
         Calculate gradient norms for different parameter groups.
@@ -12585,8 +12659,9 @@ class BaseTrainer(ABC):
                       text_encoder_2_grad_norm, unet_grad_norm, vision_encoder_grad_norm)
             text_encoder_1/2 are non-zero only where the two encoders are
             distinguishable (SDXL LoRA + Full FT, SD1.5 which reports its single
-            CLIP as TE1); other architectures' TE LoRA lands in the combined
-            text_encoder bucket.
+            CLIP as TE1, SenseNova whose understanding MoT half is its prompt
+            encoder and reports as TE1 under both training methods); other
+            architectures' TE LoRA lands in the combined text_encoder bucket.
 
         Under fused backward the squared norms come from the accumulator the
         hooks filled before clearing each gradient; otherwise they are measured
@@ -12617,13 +12692,7 @@ class BaseTrainer(ABC):
             # they landed in the total only, leaving grad_norm_unet at 0.0.
             # Local import: core.training.adapters pulls every arch's model
             # modules, which base_trainer must not require at module load.
-            from core.training.adapters.base_adapter import (
-                LORA_COMPONENT_UNET,
-                LORA_COMPONENT_TEXT_ENCODER,
-                LORA_COMPONENT_TEXT_ENCODER_1,
-                LORA_COMPONENT_TEXT_ENCODER_2,
-                LORA_COMPONENT_VISION_ENCODER,
-            )
+            from core.training.adapters.base_adapter import LORA_COMPONENT_UNET
             components = getattr(getattr(self, 'adapter', None), 'lora_components', None) or {}
             unclassified = []
             for lora_name, lora_layer in self.lora_layers.items():
@@ -12635,16 +12704,7 @@ class BaseTrainer(ABC):
                     if _has_grad(param):
                         grad_count += 1
 
-                        if component == LORA_COMPONENT_TEXT_ENCODER_1:
-                            entries.append((param, 'te1'))
-                        elif component == LORA_COMPONENT_TEXT_ENCODER_2:
-                            entries.append((param, 'te2'))
-                        elif component == LORA_COMPONENT_TEXT_ENCODER:
-                            entries.append((param, 'te'))
-                        elif component == LORA_COMPONENT_VISION_ENCODER:
-                            entries.append((param, 've'))
-                        else:
-                            entries.append((param, 'unet'))
+                        entries.append((param, grad_norm_bucket(component)))
 
             if unclassified and not hasattr(self, '_grad_norm_unclassified_warned'):
                 print(f"{self.log_prefix} [GradNorm] WARNING: {len(unclassified)} LoRA layer(s) "
@@ -12702,6 +12762,22 @@ class BaseTrainer(ABC):
                 for param in self.controlnet.parameters():
                     if _has_grad(param):
                         entries.append((param, 'unet'))
+
+            # The loops above bucket by the MODULE a parameter was found on,
+            # which is right only where one module is one component. SenseNova
+            # keeps both MoT halves inside transformer_original, so the
+            # understanding half was reported as U-Net and no separate
+            # MoT-Understanding norm existed for a `und` or `both` run. The
+            # adapter that built the optimizer groups classifies its own
+            # parameters; every adapter that does not override it returns {} and
+            # nothing below changes.
+            overrides = self._full_parameter_grad_components()
+            if overrides:
+                entries = [
+                    (param, grad_norm_bucket(overrides[id(param)]))
+                    if id(param) in overrides else (param, bucket)
+                    for param, bucket in entries
+                ]
 
         if recorded is None:
             from .optimizers.fused_grad_norm import squared_norms_from_grads

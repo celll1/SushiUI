@@ -80,8 +80,9 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
 #                         supplies get_state_buffer when
 #                         optimizer_state_host_resident is set) and measured at
 #                         0.031250 B/param on the GPU with 2.0 pinned on the
-#                         host -- but that switch has NO API surface, so a run
-#                         started from the product gets the 16.5 GB figure. The
+#                         host -- but that switch is config-channel only (a key
+#                         in the run YAML, no API/UI surface), so a run started
+#                         from the product gets the 16.5 GB figure. The
 #                         exclusion stands on what a user can actually select.
 #   lion8bit_ringbuffer   1.015625 B/param -> 8.2 GB / 16.5 GB: HALF the AdamW
 #                         pair, one moment instead of two (0.015625 GPU /

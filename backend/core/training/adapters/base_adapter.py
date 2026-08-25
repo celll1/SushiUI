@@ -387,3 +387,22 @@ class BaseFullParameterAdapter(ABC):
             output_path: Path to save checkpoint
         """
         pass
+
+    def grad_norm_components(self) -> Dict[int, str]:
+        """``id(param)`` -> ``LORA_COMPONENT_*`` for this adapter's parameters.
+
+        The full-FT counterpart of ``BaseLoRAAdapter.lora_components``, and it
+        exists for the same reason: the adapter knows which component a
+        parameter belongs to, and every other way of deciding is a name test.
+        ``_calculate_grad_norms`` buckets full-FT parameters by the MODULE it
+        found them on (``unet`` / ``text_encoder`` / ``transformer_original``),
+        which is right for every architecture that keeps one component per
+        module and wrong for one that does not: SenseNova's two MoT halves are
+        both inside ``transformer_original``, so the understanding half was
+        reported as U-Net.
+
+        Empty by default -- an adapter that does not override this keeps the
+        module-derived bucketing exactly as it was. Called once per run and
+        cached by the trainer.
+        """
+        return {}

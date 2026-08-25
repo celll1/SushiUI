@@ -364,6 +364,37 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
         return groups
 
+    def grad_norm_components(self) -> Dict[int, str]:
+        """Both MoT halves live in ``transformer_original``; split them by half.
+
+        Without this every trained parameter is reported as U-Net, because the
+        full-FT grad-norm loop buckets by the module it walked -- so a ``und`` or
+        ``both`` run showed one merged number and no separate understanding
+        norm. The mapping is the one Phase 1 LoRA already registers
+        (``SenseNovaLoRAAdapter`` puts the understanding half under
+        ``LORA_COMPONENT_TEXT_ENCODER_1``), so the two methods report the same
+        two components under the same two names, and
+        ``_build_component_lr_list``'s ``MoT-Generation`` / ``MoT-Understanding``
+        groups line up with them.
+
+        Driven by the enumerator that built the optimizer groups, not by a name
+        test on the parameter path (dd0b10c7).
+        """
+        branch, _ = self._resolve_scope()
+        components: Dict[int, str] = {}
+        for half, component in (
+            ("gen", LORA_COMPONENT_UNET),
+            ("und", LORA_COMPONENT_TEXT_ENCODER_1),
+        ):
+            if branch not in (half, "both"):
+                continue
+            for _, _, _, module in iter_sensenova_lora_targets(
+                self.trainer.transformer, branch=half
+            ):
+                for parameter in module.parameters():
+                    components[id(parameter)] = component
+        return components
+
     def _resolve_save_format(self) -> str:
         """The requested on-disk format, refused rather than defaulted if unknown."""
         from api.param_defaults import (

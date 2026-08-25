@@ -143,12 +143,15 @@ class HostStateOffTest(unittest.TestCase):
         self.assertIsNone(stub._host_state_allocator)
 
     def test_base_trainer_default_is_off(self):
-        # Read off the class body rather than constructing a trainer: the mode
-        # has no API surface, so nothing can turn it on by accident.
+        # Read off __init__ rather than constructing a trainer. The switch is
+        # config-channel only (no API/UI surface), so what is pinned is that the
+        # key is read from train_config and that its default is off; nothing can
+        # turn it on by accident. The evaluation of that expression against a
+        # config lives in optimizer_diagnostic_switch_config_test.py.
         source = Path(BACKEND_ROOT / "core" / "training" / "base_trainer.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("self.optimizer_state_host_resident = False", source)
+        self.assertIn('_tc.get("optimizer_state_host_resident", False)', source)
 
 
 @unittest.skipUnless(CUDA, "the 8-bit state path is a CUDA kernel")

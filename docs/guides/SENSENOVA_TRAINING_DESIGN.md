@@ -17,8 +17,12 @@
 > バイト一致再ロードした（§13.4 U-2-5）。品質は主張しない。
 > **Phase U-2 は offload 合成（2b-4 / §8.3.1）を除いて完了**である。
 > それ以外の未測定事項は §13.4 U-2-5 末尾に列挙してある
-> （品質・収束・解像度上限・`int8` 形式の往復と resume・保存 checkpoint での生成・
-> und × reference・MNT>1 と学習中 sample）。
+> （品質・収束・und × reference・MNT>1 と学習中 sample）。
+> **【2026-08-25、解像度キャンペーン `d1df3443`】§8.3.3 を追加した。訂正である** —
+> 本文書が書いていた「学習 step はロード時 high-water を一度も超えていない」は
+> **偽**（成立するのは 4 相 ON の both arm だけ）、64px の residency 数値は
+> **image token 4 個の点**で取られたものだった。同時に **解像度上限・`int8` 形式の
+> 往復と resume・保存 checkpoint での生成**の 3 件が実測で閉じた。
 > Date: 2026-08-25
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -507,7 +511,11 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 5. **経路 (a) の 588 版は per-Linear に「dequant → int8 解放」の順**で行う。一括だと
    ロード時に int8 15.1 GiB と bf16 32.4 GB が同時実体化する。
 6. **解像度上限は実測 gate で引く。** pixel-space の activation が唯一の解像度比例項
-   である。
+   である。**【2026-08-25 実測、§8.3.3】gate を引いた**: `both` は 4 相 ON なら
+   512 / 1024px とも通り（定常 step peak 18.76 / 19.26 GiB）、**4 相 OFF は 512px が
+   gate の 98.2%・余白 0.61 GiB、1024px は OOM** である。`gen` は 512 / 1024px とも
+   26.24 / 26.80 GiB で通る。**1024px 超は未測定で、activation 項は superlinear
+   （token 4 倍で 4.6 倍）なので外挿してはならない。**
 
 したがって **both-branch full FT は「メモリで不可能」ではなく「未実装の前提が
 6 つある」**。ロードマップ上の既定は依然 gen-only（忘却 profile が根拠）だが、
@@ -1576,6 +1584,12 @@ half-eviction が効くと想定した領域（activation が支配的になる�
 「5.61 倍の減速は本質的コストである」も、この測定からは結論できない。exit を主張する
 なら、activation が支配する解像度で同一 checkpoint / seed / GC 条件の OFF / ON を
 別 process で取り直す必要がある。
+**【2026-08-25 追記】この gate は依然として未解決である。** 解像度キャンペーン
+（§8.3.3）が OFF / ON を 512 / 1024px で取ったのは **both branch full FT × 4 相
+eviction** であって、ここで言う Phase 1 LoRA の 3 状態 half-eviction ではない。
+加えて **gate の前提「activation が支配する解像度」は 1024px でも成立していない**
+（gen の activation 項は 1024px で 0.718 GiB、weight residency 25.1 GiB に対して
+小さい）。
 
 **減速の数値は再測定が必要**: 上の ON arm は `sensenova_phase_eviction.py` の
 staging 実装、すなわち host 側で `.to("cpu")`（pageable）→ `pin_memory()` の
@@ -1644,12 +1658,29 @@ und branch を学習対象にする場合（§13）の eviction 契約をここ�
   > `load_components` が 588 Linear を materialize して `.to(device)` した時点で
   > **両 half が同時に GPU に載り**、evictor はその後（`_prepare_models` の後）に
   > 作られる。実測でも `model_resident == peak_allocated`（32.66 GiB、完全一致）で、
-  > **学習 step は一度もロード時の high-water を超えていない**。
+  > ~~**学習 step は一度もロード時の high-water を超えていない**。~~
+  > **【訂正、§8.3.3】この一般化は偽である。** 成立したのは **4 相 ON の both run
+  > だけ**で、成立の理由は eviction である。4 相 OFF なら 512px で +1.2758 GiB、
+  > gen branch は 64px の時点で +1.0405 GiB、und branch は +1.1373 GiB
+  > **超えている**（いずれも本文書が既に載せていた数値である）。
   > すなわち 4 相 eviction が下げるのは **step の常駐量**であって
   > **ロード時の high-water ではない**。24 GB 級を狙うなら、loader 側で
   > half を 1 つずつ置く（§6.2 条件 5 の「per-Linear に dequant → 解放」を
   > **placement にも**適用する）変更が別途要る。**step 中の最小常駐量は測っていない**
-  > （peak しか記録していないため）。詳細は §13.4 の U-2-4 実測。
+  > （窓ごとの peak と窓終端の allocated までである）。詳細は §13.4 の U-2-4 実測。
+  > > **【解像度キャンペーン実測、2026-08-25】この撤回は行き過ぎだった。**
+  > > 上の U-2-4 実測は **step と load を分離していなかった**（peak しか記録して
+  > > いなかった）。分離して測ると、**~19-21 GB という見積もりは自分が記述していた
+  > > 対象＝ step については当たっていた** — 4 相 ON の定常 step peak は
+  > > **512px で 18.7607 GiB、1024px で 19.2586 GiB** である（§8.3.3）。
+  > > 外れていたのは **load 時 high-water に対して**であり、上の段落が言っている
+  > > 「4 相が下げるのは step の常駐量であってロード時 high-water ではない」は
+  > > **そのまま正しい**。
+  > > **ただし `reserved` は追随しない** — caching allocator が load 時 high-water
+  > > （33.9 / 34.2 GiB）を run 中ずっと保持するので、**プロセスが握る量は下がらない**。
+  > > 「24 GB 級カードで走る」は依然として偽であり、loader 側 placement の変更が
+  > > 要るという結論は変わらない。
+  > > **1024px では 4 相 OFF が OOM し ON が通る** = 走るか走らないかの差である。
 - `und_backward → prefix` は **no-op** にできる（und 常駐のまま次 step へ）ので、
   転送は 1 往復節約できる。
 - **MNT > 1 では境界勾配を累積してから相 3 を 1 回だけ回す。** KV 葉の `.grad` は
@@ -1745,6 +1776,146 @@ B1、GC ON、native attention、und 側の勾配は **both branch の LoRA rank 
     warmup を入れた現在は成分の和と一致する（0.3363 + 0.3296 = 0.666）。
 - **測っていないもの**: bf16 の und Linear での比（上記は int8 Linear の値である）、
   1024px 以外の解像度、pinned 転送の非同期化。
+
+### 8.3.3 解像度キャンペーン（2026-08-25、probe は `d1df3443`）
+
+**この節は追加ではなく訂正である。** 本文書が繰り返し書いていた 2 つの主張が実測で
+覆った。probe は `core/training/probes/sensenova_full_finetune.py`
+（`--resolution` / `--steps` / `--no-save` と step 窓の記録は `d1df3443` で追加）と
+`probes/sensenova_real_checkpoint.py`、arm ごとに別プロセス。design は run 前に固定し、
+11 arm の生 JSON は作業ディレクトリ側にしか無い（過去の U-2 run と同じ扱いである）
+ので、**引用に値する数値は本節に転記してある**。
+
+**(1)「学習 step はロード時 high-water を一度も超えていない」は偽である。**
+成立したのは **4 相 eviction ON の both run だけ**で、成立の理由は eviction である。
+**反例は本文書の実測ボックス自身が持っていた** — U-2-2 の gen@64px は
+26.1603 − 25.1198 = **+1.0405 GiB**、U-2-5 の und@64px は 26.2571 − 25.1198 =
+**+1.1373 GiB**。§8.3.2 と §13.4 の該当箇所は訂正済み。
+
+**(2) 64px は構造上、解像度の情報を持たない。** `patch_size 16` × `merge_size 2`
+なので image token 数は `(res/32)^2` である。
+
+| 解像度 | image token |
+|---:|---:|
+| 64 | 4 |
+| 512 | 256 |
+| 1024 | 1024 |
+
+すなわち U-2 のすべての residency 実測は、**activation 項がほとんど存在しない点**で
+取られていた。64px の数値を解像度非依存の値として読まないこと。
+
+**測定条件**: 実 checkpoint、RTX 6000 Ada（device total **47.988 GiB**）、
+`set_per_process_memory_fraction(0.72)` = **34.551 GiB** の per-process gate、
+adafactor lr 1e-6、B1、accumulation 1、`blocks_to_swap=0`、GC ON、bf16、
+native attention、SR 強制 ON、**12 step**（1 warmup + 11 定常窓）、VRAM arm は保存なし。
+**gate はカードではない** — 超過した arm はカードを埋めずに自プロセス内で OOM する。
+host は 93.585 GiB。**以下はすべて実測値。品質・収束は一切主張しない。**
+
+#### 測定行列
+
+| arm | branch | res | 4 相 | load peak | step peak | step − load | reserved peak |
+|---|---|---:|---|---:|---:|---:|---:|
+| C1 | gen | 64 | off | 25.1198 | 26.0821 | **+0.9623** | 26.168 |
+| A1 | gen | 512 | off | 25.1198 | 26.2377 | **+1.1179** | 26.338 |
+| A2 | gen | 1024 | off | 25.1198 | 26.7996 | **+1.6798** | 27.170 |
+| B1 | both | 512 | off | 32.6606 | **33.9364**（gate の 98.2%） | +1.2758 | 34.109 |
+| B2 | both | 512 | **on** | 32.6606 | 32.6606（step 1）→ **18.7607 定常** | 0 | 33.906 |
+| B3 | both | 1024 | off | 32.6606 | 34.0373 で **OOM** | — | 34.414 |
+| B4 | both | 1024 | **on** | 32.6606 | 32.6606（step 1）→ **19.2586 定常** | 0 | 34.221 |
+
+単位はすべて GiB（`peak_allocated`）。
+
+- **gen の step コストは「解像度非依存の固定部 + activation」に分解できる。**
+  固定部 **0.9623 GiB**（64px の step − load。4 token なので activation は無視できる）に対し、
+  activation は **+0.156 GiB @512 / +0.718 GiB @1024**。**token 4 倍で activation 4.6 倍**
+  であり、線形ではない。
+  **固定部 0.9623 GiB の帰属は測っていない。** 候補は Adafactor の factored state、
+  SR の per-step scratch、allocator の挙動で、**どれも分離していない**
+  （§13.4 U-2-2 が「0.70 GiB が未説明」と書いた項目と同じ性質の残差である）。
+- **4 相 eviction の A/B。** 512px では定常 step peak を **33.9364 → 18.7607 =
+  −15.18 GiB** にし、train ループ壁時計は **42.672 s → 80.508 s = 1.89 倍**になった。
+  1024px では **OFF が OOM、ON が 19.2586 GiB 定常**であり、**run が成立するか
+  しないかの差**である。
+- **ただし `reserved` は追随しない。** `both` の 4 arm はいずれも peak reserved が
+  **33.9〜34.4 GiB** のまま、すなわち caching allocator はロード時 high-water を
+  run 中ずっと保持する。**4 相が下げるのは step が必要とする量であって、
+  プロセスが握る量ではない。**「20 GiB で走る」は依然として偽であり、
+  そうするには §8.3.2 が名指しする **loader 側の placement 変更**が要る。
+- **断片化: 定常 drift は完了した全 arm で 0.0**、12 step arm の窓 2-12 は記録精度で
+  完全一致した。**11 窓は速い断片化を否定するが、遅い断片化は否定しない。**
+- **VRAM はバイト単位で再現する。** A1 と C3 は**別の base ファイル**から走って
+  step peak が同一（28,172,539,904 byte）だった。
+
+#### この機構を提供できる解像度（実測に基づく）
+
+- **gen @512**: 26.2377 GiB、gate headroom 8.31 GiB。
+- **gen @1024**: 26.7996 GiB、gate headroom 7.75 GiB。
+- **both + 4 相 ON**: 512 で 18.7607、1024 で 19.2586（定常）。
+- **both + 4 相 OFF @512**: 33.9364 = gate の 98.2%、**余白 0.61 GiB**。
+  これは **step 自身が足す 1.28 GiB より小さい**ので、caption が長い・reference 画像が
+  付く・MNT>1 のいずれかで超えうる。
+- **both + 4 相 OFF @1024**: **不可（OOM）**。
+- **1024px 超および非正方は未測定**であり、activation 項が superlinear である以上
+  **外挿してはならない**。`und` branch の 512/1024 も未測定である。
+
+#### B3 の OOM は run を落とさなかった（欠陥）
+
+`Tried to allocate 192.00 MiB` で失敗したが、**カードには 9.95 GiB の空きがあり、
+拒否したのは 0.72 の per-process gate である**。したがって **both@1024 の真の所要量は
+「> 34.55 GiB」以上のことは分かっていない。**
+
+問題は落ち方である。trainer は回復可能 OOM として **bucket 1024x1024 を除外し、
+以後の batch をすべて drop し、run 自体は完走扱いで終わった** — **588 個中 0 個の
+parameter が動いた run** である。捕まえたのは **probe 側**の step 数チェックと
+update-nonzero census（`moved_census`）であって、**trainer 側の
+`optimizer_update_census` ではない**: そちらは既定 OFF（train_config の
+キーのみ。§13.4 U-2-5）であるうえ、**batch が放棄された step では意図的に
+skip される**（`cuda_error_skip`。`base_trainer.py` の census 呼び出し地点）。
+すなわち**この測定の時点では、製品の既定構成にこの故障を検出する手段が無かった**。
+**本節はこれを実測された欠陥として記録するにとどめる** — `base_trainer.py` は
+本作業の所有外で、**修正（1 batch も学習しなかった run を成功として報告させない）は
+別コミットで着地する**。arch 非依存の欠陥であり、SenseNova 固有ではない。
+
+#### 閉じた 2 件（§12 の未測定事項）
+
+- **`int8` 形式の実 run 往復と resume（CLOSED）。** C1 が int8 で保存
+  （**18,885,547,920 byte = 17.5885 GiB**）、C2 が本番 reader で別プロセスから
+  読み戻して **588/588 が `Int8Linear`**（gen 294 = trained、und 294 = frozen）、
+  0.618 s。**digest 比較はしていない** — int8 の再量子化は非可逆だからである。
+  C3 がその file を `model_path` として `FullParameterTrainer` に**再投入**し、
+  294 target・6 step 有限 loss・**294/294 が動いた**（failure 0）。
+  **再学習の base になれる唯一の形式の resume が、議論ではなく実測になった。**
+- **保存 checkpoint からの生成（CLOSED、構造のみ）。** D1 が `mixed`/gen を保存
+  （**26,982,323,721 byte = 25.1292 GiB**）、D2 が**本番 reader + 本番生成経路**で
+  512×512 / 8 step / seed 1234 を回し、denoise テンソルは有限、**PNG 233,867 byte を
+  書いた**（generation peak 25.4259 GiB、wall 2.10 s）。
+  **主張はここまでである — 品質は測っていない。**
+  なお D1 の byte 数は U-2-2 の 26,982,323,715 byte と **6 byte 違う**ので、
+  campaign の conclusions が書いている「U-2-2 を厳密に再現した」は
+  **同 file の arm フィールドと食い違う**。差の原因は測っていない。
+
+#### host メモリ量は依然として再現しない（`ce713b58` の主張を訂正）
+
+`ce713b58` は `peak_wset` が構造的に再現しないことを突き止め、代わりに
+`peak_pagefile`（commit charge）を「**予算を書くならこちら**」として追加した。
+**本キャンペーンがその値を載せた最初の run であり、その主張は支持されなかった** —
+**同一コマンド・同一作業の B3 を 2 本走らせて commit が 67.953 と 89.096 GiB**
+（差 21.14 GiB）、一方 **peak working set は 49.108 と 49.108 で一致**した。
+results.json は 2 本目だけを arm として保持し、両者は `_campaign.conclusions` にある。
+**機構は分離していない。**
+
+**運用**: host 側はどちらの量も**「数十 GiB」より細かく引用しないこと**。
+93.6 GiB のホストで `both` の run を回すなら **commit ~90 GiB** を見込む
+（gen arm は ~65 GiB、C3 は 51.2 GiB）。**VRAM は対照的にバイト単位で再現する**ので、
+予算の根拠にできるのは VRAM 側だけである。
+
+#### §8.3 の gate との関係（閉じていない）
+
+本キャンペーンが A/B したのは **both branch full FT × 4 相 eviction** であって、
+§8.3 の gate が要求している **Phase 1 LoRA の 3 状態 half-eviction** ではない。
+さらに gate の前提「activation が支配する解像度」自体が**この測定では成立していない** —
+1024px でも activation は gen で 0.718 GiB、weight residency 25.1 GiB に対して
+小さい。**したがって §8.3 の gate は依然として未解決である**（§8.3.1、§11 Phase 2b-0）。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -2202,8 +2373,12 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   **実 run で実証されたのは `mixed`（gen / und の両向き）と `bf16`（both）**である
   （§13.4 の U-2-2 / U-2-5 実測）— それぞれ 25.129 / 25.129 / 32.682 GiB を保存し、
   本番 reader で 294/294・294/294・588/588 バイト一致で読み戻した。
-  **`int8` の実 run 往復は未実施**（合成ツリーのテストのみ）。これは
-  **再学習の base になれる唯一の形式**なので、resume の実測も同時に空いている。
+  ~~**`int8` の実 run 往復は未実施**（合成ツリーのテストのみ）。これは
+  **再学習の base になれる唯一の形式**なので、resume の実測も同時に空いている。~~
+  **【CLOSED、2026-08-25、§8.3.3】** `int8` を実 run で保存（17.5885 GiB）→
+  本番 reader が別プロセスで **588/588 を `Int8Linear`** として読み戻し →
+  その file を学習 base として再投入し **294/294 が動いた**。
+  **resume も実測になった。** digest 比較だけは行っていない（再量子化が非可逆）。
 - ~~**materialize 時の `weight_dtype` 契約が未決定である。**~~ **決定済み
   （`601d0271`）: bf16 のみ。ロードより前に拒否する。**
   `materialize_int8_decoder_linears` は `trainer.weight_dtype` **へ向けて** dequant
@@ -2306,9 +2481,14 @@ Phase U（§13）関連。
    提供するのは選択肢であって効果の主張ではない（§13）。
    **U-2-5 も同じ位置にある** — und half の full FT は 3 branch とも実 run で
    通ったが、示したのは「壊れていない」ことだけである。
-   **さらに U-2-5 が新たに開けた未測定事項**: 解像度上限（全 run が 64px で、
+   ~~**さらに U-2-5 が新たに開けた未測定事項**: 解像度上限（全 run が 64px で、
    both branch は既に gate の 94.5%）、`int8` 形式の実 run 往復とそれに載る resume、
-   保存 checkpoint での生成、host RSS peak の再現性（同一 arm で 9.7 GiB 動いた）。
+   保存 checkpoint での生成、host RSS peak の再現性（同一 arm で 9.7 GiB 動いた）。~~
+   **【2026-08-25、§8.3.3】このうち 3 件は閉じた**（解像度上限 / `int8` の往復と
+   resume / 保存 checkpoint での生成）。**host メモリ量の再現性は閉じず、
+   逆向きに解決した** — `ce713b58` が代替として導入した `peak_pagefile` も
+   再現せず（同一作業の 2 run で commit 67.953 対 89.096 GiB、working set は一致）、
+   **どちらの量も「数十 GiB」より細かく引用できない**。
    一覧は §13.4 の「U-2-5 測っていないもの」。
 8. **旧ビルドが新形式（gen+und）LoRA を無警告で部分適用するバージョン skew。**
    新ビルド側は `check_lora_application` の metadata 突き合わせで検知できるように
@@ -2356,8 +2536,23 @@ U-2-6 で解消された** — `_ringbuffer_optimizer_kwargs()` が allocator �
 なので、**UI から起動した run では依然 GPU 確保**である。残っているのは
 **閾値下の prefetch**（stream と event 同期は実装済み。§6.5 upgrade 項目 3）である。
 
-既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
-（§7.2）、ConvRot base の train / inference skew（§5.3）。
+解像度キャンペーン（§8.3.3）が**残した**もの。**これは campaign 自身の
+`_campaign.not_measured` であって、本文書が後から作った一覧ではない**:
+
+14. **`und` branch の 512 / 1024px。** 測ったのは `gen` と `both` だけである。
+15. **1024px 超および非正方。** activation 項は superlinear（token 4 倍で 4.6 倍）
+    なので**外挿してはならない**。
+16. **step コストの固定部 ~0.96 GiB の帰属。** Adafactor の factored state、
+    SR の per-step scratch、allocator の挙動が候補で、**どれも分離していない**。
+17. **`both` @1024 の 4 相 OFF を gate 無しのカードで走らせた場合。**
+    B3 の OOM は 0.72 の per-process gate に対するもので、カードには 9.95 GiB の
+    空きがあった。**真の所要量は「> 34.55 GiB」までしか分かっていない。**
+18. **commit charge が同一作業の 2 run で 21 GiB 動いた機構。**
+19. **品質・収束**（変わらず）、および **offload 合成（2b-4 / §8.3.1）**。
+
+既存（不変）: half-eviction の有効性（§8.3 の gate。§8.3.3 の A/B は別 arm であり
+これを閉じない）、凍結 und での reference 忠実度（§7.2）、ConvRot base の
+train / inference skew（§5.3）。
 
 **ただし half-eviction の依存関係は強まった。** Phase 2b は weights + gradients だけで
 32.4 GB を占め、und half 7.55 GiB の退避が唯一の余白であるため、この gate は
@@ -3195,9 +3390,12 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
       各遷移が実際の D2H / H2D を行う。
     - **VRAM: peak 32.66 GiB allocated / 33.91 GiB reserved、gate 34.55 GiB の 94.5%。
       §8.3.2 の ~19-21 GB には着地しなかった。** 理由は §8.3.2 に転記した placement の
-      順序であり、`model_resident == peak_allocated`（32.66 GiB が完全一致）が
-      「学習 step はロード時 high-water を一度も超えていない」ことを示している。
-      **step 中の最小常駐量は測っていない。**
+      順序であり、`model_resident == peak_allocated`（32.66 GiB が完全一致）だった。
+      ~~これは「学習 step はロード時 high-water を一度も超えていない」ことを示している。~~
+      **【訂正、§8.3.3】この等号が成立したのは、この arm が 4 相 ON だからである** —
+      同じ both branch でも 4 相 OFF なら 512px で **+1.2758 GiB** 超える。
+      また ~19-21 GB は **step については当たっていた**（4 相 ON の定常 step peak は
+      18.76 / 19.26 GiB）。**step 中の最小常駐量は測っていない。**
     - **host RAM: ロード前 0.98 GiB → ロード後 26.07 GiB、プロセス peak 61.67 GiB**
       （実行ホスト 93.6 GiB、開始時 空き 56.6 GiB）。gen only の U-2-2（32.10 GiB）に
       対し、もう 1 つの half を materialize する分だけ増えている。
@@ -3205,9 +3403,10 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     - **保存**: `mixed` を要求したが **both branch では int8 に残す half が無い**ので
       `bf16` へ縮退し、それを告知した（§6.4 の既知挙動）。9 shard + index、
       **32.68 GiB**。
-    - **測っていないもの**: 品質、収束、解像度上限、この checkpoint の再ロード
-      （`--arm reload` は回していない）、4 相 OFF との A/B（64px では両 arm とも
-      ロード時 high-water が peak を支配するので、この shape では差が出ない）。
+    - **測っていないもの**: 品質、収束、この checkpoint の再ロード
+      （`--arm reload` は回していない）。~~解像度上限、4 相 OFF との A/B（64px では
+      両 arm ともロード時 high-water が peak を支配するので、この shape では
+      差が出ない）。~~ **後 2 者は §8.3.3 で 512 / 1024px の実測になった。**
 
     #### 【U-2-4】監査で見つかった 6 件（全件修正済み）
 
@@ -3431,28 +3630,47 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     - **品質・収束**。3 step・64px・画像 1 枚であり、§11 Phase 2b の exit criteria は
       「壊れていないこと」だけを主張する。短 horizon では stochastic rounding の
       誤差が信号と同程度なので（§6.3）、**A/B は測定として無効になる**。
-    - **解像度上限**。全 run が 64px である。both branch は 64px で既に gate の 94.5% を
+    - ~~**解像度上限**。全 run が 64px である。both branch は 64px で既に gate の 94.5% を
       使っており、しかも `model_resident == peak_allocated` なので
-      **解像度を上げたときに step 側が high-water を超える点は測っていない**。
+      **解像度を上げたときに step 側が high-water を超える点は測っていない**。~~
+      **【CLOSED、§8.3.3】** 512 / 1024px で測った。なお前提が 2 つ誤っていた —
+      **64px は image token 4 個**なので activation をほぼ含まず、
+      `model_resident == peak_allocated` が成立したのは **4 相 ON の arm だけ**である
+      （gen / und は 64px で既に high-water を超えていた）。
+      **1024px 超は依然として未測定**である。
     - **offload との合成（U-2-4 の 2b-4 / §8.3.1）**。`LayerOffloadConductor` の
       サブモジュール粒度は依然として未調査。
-    - **4 相 ON / OFF の A/B**。64px では両 arm ともロード時 high-water が peak を
-      支配するので、この shape では差が出ない（U-2-4 と同じ理由）。
+    - ~~**4 相 ON / OFF の A/B**。64px では両 arm ともロード時 high-water が peak を
+      支配するので、この shape では差が出ない（U-2-4 と同じ理由）。~~
+      **【CLOSED、§8.3.3】** 512px で定常 step peak **−15.18 GiB**・壁時計 **1.89 倍**、
+      1024px は **OFF が OOM / ON が 19.26 GiB 定常**。
+      **`reserved` は下がらない**（allocator が load 時 high-water を保持する）。
       **und-only での 4 相 run も回していない**（要らないので回さなかった。
       「要らない」は上記のとおりコードからの結論である）。
-    - **`int8` 形式の実 run 往復**。3 形式のうち `mixed`（両向き）と `bf16` は
+    - ~~**`int8` 形式の実 run 往復**。3 形式のうち `mixed`（両向き）と `bf16` は
       実 checkpoint で往復したが、`int8` は合成ツリーのテストだけである。
       これは**再学習の base になれる唯一の形式**なので（§6.4）、
-      resume の実測も同時に空いたままである。
-    - **保存した checkpoint での生成**。reader が読めることまでで、
-      推論そのものは 3 branch とも走らせていない。
+      resume の実測も同時に空いたままである。~~
+      **【CLOSED、§8.3.3】** 保存 17.5885 GiB → 本番 reader で 588/588 `Int8Linear` →
+      学習 base として再投入し 294/294 が動いた。**resume も実測になった。**
+    - ~~**保存した checkpoint での生成**。reader が読めることまでで、
+      推論そのものは 3 branch とも走らせていない。~~
+      **【CLOSED、§8.3.3。ただし `mixed`/gen の 1 branch のみ】**
+      本番 reader + 本番生成経路で 512×512 / 8 step を回し PNG を書いた。
+      **構造の主張であって品質は測っていない。**
+      `und` / `both` の checkpoint からの生成は依然として走らせていない。
     - **`+12.85 MiB` の残差**（U-2-2）。本 run の 262,320 byte 差は桁が違うので
       説明にならない。
     - **host RSS peak の再現性**。上記のとおり同一 arm で peak 9.70 GiB /
       ロード後 17.03 GiB 動いた。機構（working set の性質 + セッション履歴）は
       特定したが、**working set の変動と run 自体の非決定性の切り分けは測っていない**。
-      `peak_commit_gib` は今回の 2 run には**存在しない**（今回追加したため）ので、
-      **再現量としての host 予算は次の run から取れる**。
+      ~~`peak_commit_gib` は今回の 2 run には**存在しない**（今回追加したため）ので、
+      **再現量としての host 予算は次の run から取れる**。~~
+      **【訂正、§8.3.3】次の run から取れなかった。** `peak_commit_gib` を載せた
+      最初の測定（解像度キャンペーン）で、**同一コマンド・同一作業の 2 run が
+      commit 67.953 対 89.096 GiB**（差 21.14 GiB）、一方 **peak working set は
+      49.108 対 49.108 で一致**した。すなわち **commit も再現量ではない。**
+      **どちらの量も「数十 GiB」より細かく引用しないこと。**
     - **step 中の最小常駐量**（peak しか記録していない。U-2-4 から継続）。
     - **grad norm の大小**。both run では 2 half に分かれて出るが、§13.6 の訂正表の
       とおり**どちらが大きいかは設計判断の根拠にしない**。

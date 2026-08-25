@@ -286,6 +286,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
         from core.training.ops.sensenova_ops import (
             assert_full_finetune_contract,
+            assert_full_finetune_dropout_free,
             assert_understanding_training_supported,
         )
 
@@ -293,6 +294,11 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         # Config channel only; setup_optimizer re-checks with the real name.
         assert_full_finetune_contract(trainer)
         branch, targets = self._resolve_scope()
+        # Every branch, not just the understanding ones: load_components stamps
+        # train() on the whole decoder, and the prefix the loss is conditioned on
+        # is built by the understanding half on every step regardless of what is
+        # trained.
+        assert_full_finetune_dropout_free(trainer.transformer)
         if branch in ("und", "both"):
             assert_understanding_training_supported(trainer.transformer)
 

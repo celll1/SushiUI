@@ -549,8 +549,12 @@ def test_only_a_sensenova_full_finetune_gets_fused_backward_without_block_swap(
 ):
     """blocks_to_swap=0 everywhere; only one of the three installs the hooks.
 
-    SenseNova refuses a non-zero blocks_to_swap (three places), and everywhere
-    else the fused backward pass is only set up inside `blocks_to_swap > 0`.
+    SenseNova refuses a non-zero blocks_to_swap in five places, with the same
+    message (`base_trainer.py:1393`, `:1995`, `:8400`, `sensenova_ops.py:459`,
+    `train_runner.py:176`), plus a sixth refusal of a different kind where
+    `arch/sensenova.py:19-20` raises NotImplementedError from setup_block_swap.
+    Everywhere else the fused backward pass is only set up inside
+    `blocks_to_swap > 0`.
     Its full fine-tune would otherwise hold every gradient of the half it trains
     resident until optimizer.step().
     """

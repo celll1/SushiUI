@@ -66,13 +66,23 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
 
 # The optimizer this route runs under. Two conditions, both required: a
 # per-parameter fused-backward seam, and state that fits beside the materialized
-# half. `adamw8bit` has the seam (FUSED_BACKWARD_OPTIMIZERS, patched in
-# _setup_fused_backward_pass) but its measured 2.031250 B/param is 16.5 GB of
-# state over the gen half's 8.10 G parameters, 32.9 GB over both. The two
-# ring-buffer optimizers have the same seam and, until `get_state_buffer` is
-# supplied to them, the same 2.031250 B/param on the GPU -- their CPU-state mode
-# is unreachable today (base_trainer._ringbuffer_optimizer_kwargs). They are
-# U-2-6's, behind gates G-RB2 and G-RB3, and stay closed here.
+# half. Each name below is excluded by the condition that actually applies to it
+# (measured B/param from SENSENOVA_TRAINING_DESIGN.md 6.5's table, scaled over
+# the gen half's 8,103,395,328 parameters and over both halves):
+#
+#   adamw8bit             2.031250 B/param -> 16.5 GB / 32.9 GB. Has the seam
+#                         (FUSED_BACKWARD_OPTIMIZERS, patched in
+#                         _setup_fused_backward_pass); excluded on state size.
+#   adamw8bit_ringbuffer  2.031250 B/param -> 16.5 GB / 32.9 GB on the GPU,
+#                         because its CPU-state mode is unreachable today
+#                         (nothing supplies get_state_buffer; see
+#                         base_trainer._ringbuffer_optimizer_kwargs). Excluded
+#                         on state size AND by its open gates.
+#   lion8bit_ringbuffer   1.015625 B/param -> 8.2 GB / 16.5 GB: HALF the AdamW
+#                         pair, one moment instead of two. The state-size
+#                         argument does NOT exclude it. It is excluded only by
+#                         U-2-6's open gates G-RB2 / G-RB3.
+#   adafactor             0.002991 B/param (shape-dependent) -- the admitted one.
 SENSENOVA_FULL_FINETUNE_OPTIMIZERS = ("adafactor",)
 
 
@@ -170,11 +180,18 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
             "never move at any step count, while the loss falls normally."
         )
     elif name in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer"):
+        state = (
+            "2.031250 B/param, the same 16.5 GB over the generation half as "
+            "adamw8bit" if name == "adamw8bit_ringbuffer"
+            else "1.015625 B/param, 8.2 GB over the generation half -- half the "
+            "AdamW pair, since Lion keeps one moment"
+        )
         extra = (
-            " The ring-buffer optimizers are the intended second option, but their "
-            "CPU-resident state is not wired up yet (nothing supplies "
-            "get_state_buffer, so they allocate 8-bit state on the GPU), and the "
-            "host-RAM and update-census gates for them are open."
+            f" The ring-buffer optimizers are the intended second option. Their "
+            f"CPU-resident state is not wired up yet (nothing supplies "
+            f"get_state_buffer), so they allocate 8-bit state on the GPU at a "
+            f"measured {state}, and the host-RAM and update-census gates for them "
+            f"are open."
         )
     raise ValueError(
         f"SenseNova full fine-tuning does not support optimizer='{name}'. "
@@ -187,6 +204,106 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
         f"moment.{extra} Set optimizer=adafactor, or use training_method='lora', "
         f"which accepts every optimizer this product offers."
     )
+
+
+def enforce_full_finetune_stochastic_rounding(trainer: Any) -> bool:
+    """Turn stochastic rounding on for this route, and say so.
+
+    Not a default and not a refusal, because the transport cannot express the
+    difference between the two: ``routes.py`` declares
+    ``optimizer_stochastic_rounding`` as a plain ``bool`` and
+    ``training_config`` writes the YAML key only when it is true, so an omitted
+    key and an explicit false both reach the trainer as ``False``. Refusing on
+    ``False`` would refuse every request; accepting it would run this route the
+    way the contract already refuses ``optimizer=adamw`` for -- 84.5% of a bf16
+    tensor's elements never moving at any step count, with the loss falling
+    normally (SENSENOVA_TRAINING_DESIGN.md 6.3).
+
+    So it is a route requirement, listed per architecture in
+    ``param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH``, applied
+    here and announced on the trainer's stdout. That stdout reaches the backend
+    server's console only -- there is no training-log WebSocket channel and no
+    frontend consumer -- so a user who unticked the box gets no product-surface
+    notice. Acceptable only while both step-3 gates are closed; opening them
+    needs a user-visible channel first (SENSENOVA_TRAINING_DESIGN.md 13.4).
+    Returns True when it changed the setting.
+    """
+    from api.param_defaults import full_finetune_forces_stochastic_rounding
+
+    if not full_finetune_forces_stochastic_rounding("sensenova"):
+        return False
+    if getattr(trainer, "optimizer_stochastic_rounding", False):
+        return False
+    trainer.optimizer_stochastic_rounding = True
+    prefix = getattr(trainer, "log_prefix", "[SenseNova]")
+    print(
+        f"{prefix} SenseNova full fine-tuning: optimizer_stochastic_rounding was "
+        f"off and has been turned on for this run. It is not optional here. The "
+        f"trainable half is bf16 with no fp32 master, and under round-to-nearest "
+        f"84.5% of a bf16 tensor's elements never move at any step count while "
+        f"the loss falls normally (measured, SENSENOVA_TRAINING_DESIGN.md 6.3). "
+        f"This route cannot be run with it off; LoRA training on this "
+        f"architecture honours the setting."
+    )
+    return True
+
+
+def assert_full_finetune_stochastic_rounding_attached(
+    trainer: Any, optimizer_type: Any = None
+) -> None:
+    """Fail if the update seam is not actually carrying stochastic rounding.
+
+    Checks the mechanism, not the flag: ``_attach_stochastic_rounding`` reports
+    coverage by wrapping ``step_param`` (the entry point this route's
+    post-accumulate-grad hooks call), and the hooks resolve
+    ``self.optimizer.step_param`` at call time, so the wrapper installed after
+    hook registration is the one that runs. A route whose flag is set but whose
+    seam is unwrapped writes round-to-nearest while every log line says
+    otherwise, which is the failure this whole contract exists to prevent.
+
+    Trap for U-2-6: neither ring-buffer optimizer defines ``step_param`` -- they
+    register their own hooks and return early from
+    ``_setup_fused_backward_pass`` -- yet both round stochastically inside their
+    own update (``_NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS``). Admitting them to
+    SENSENOVA_FULL_FINETUNE_OPTIMIZERS without treating that membership as
+    coverage makes this raise on a correct configuration, with a message that is
+    false for them in both halves.
+    """
+    from api.param_defaults import full_finetune_forces_stochastic_rounding
+    from core.training.optimizers.stochastic_rounding import NATIVE_ATTR, WRAPPED_ATTR
+
+    if not full_finetune_forces_stochastic_rounding("sensenova"):
+        # Same table the enforcement reads, so the two cannot disagree about
+        # whether this route is supposed to be covered.
+        return
+
+    groups = getattr(trainer, "fused_optimizer_groups", None)
+    optimizers = (
+        list(groups.optimizers) if groups is not None
+        else [getattr(trainer, "optimizer", None)]
+    )
+    for optimizer in optimizers:
+        step_param = getattr(optimizer, "step_param", None)
+        if not callable(step_param):
+            raise RuntimeError(
+                f"SenseNova full fine-tuning found no per-parameter step_param on "
+                f"{type(optimizer).__name__} (optimizer={optimizer_type}). Its "
+                f"post-accumulate-grad hooks call optimizer.step_param, and "
+                f"stochastic rounding is interposed on it; without it the run "
+                f"would neither update per parameter nor carry sub-ULP updates."
+            )
+        covered = getattr(step_param, WRAPPED_ATTR, False) or getattr(
+            step_param, NATIVE_ATTR, False
+        )
+        if not covered:
+            raise RuntimeError(
+                f"SenseNova full fine-tuning has optimizer_stochastic_rounding set "
+                f"but nothing is interposed on {type(optimizer).__name__}."
+                f"step_param (optimizer={optimizer_type}). The bf16 updates this "
+                f"route applies would be rounded to nearest, which discards every "
+                f"update below half a ULP. This is an internal inconsistency, not "
+                f"a setting."
+            )
 
 
 def _quantized_linear_flavours() -> "dict[str, type]":
@@ -422,6 +539,18 @@ def _load_reference_images(reference_image_paths: Optional[List[str]]) -> list:
     return [Image.open(path) for path in paths]
 
 
+def _decoder_attention_dropout(transformer: nn.Module, context: str) -> float:
+    """The vendor decoder stack's configured attention dropout."""
+    language_model = getattr(transformer, "language_model", None)
+    llm = getattr(language_model, "model", None) if language_model is not None else None
+    if llm is None or getattr(llm, "layers", None) is None:
+        raise RuntimeError(
+            f"SenseNova {context} requires the vendor language_model.model decoder "
+            f"stack; this tree does not expose it"
+        )
+    return float(getattr(getattr(llm, "config", None), "attention_dropout", 0.0) or 0.0)
+
+
 def assert_understanding_training_supported(transformer: nn.Module) -> None:
     """Refuse configurations the differentiable prefix pass cannot serve.
 
@@ -432,21 +561,39 @@ def assert_understanding_training_supported(transformer: nn.Module) -> None:
     K/V would silently differ from the ones the forward produced. Upstream's
     default is 0.0, so this refuses nothing that exists today.
     """
-    language_model = getattr(transformer, "language_model", None)
-    llm = getattr(language_model, "model", None) if language_model is not None else None
-    if llm is None or getattr(llm, "layers", None) is None:
-        raise RuntimeError(
-            "SenseNova understanding-branch training requires the vendor "
-            "language_model.model decoder stack; this tree does not expose it"
-        )
-    config = getattr(llm, "config", None)
-    dropout = float(getattr(config, "attention_dropout", 0.0) or 0.0)
+    dropout = _decoder_attention_dropout(transformer, "understanding-branch training")
     if dropout != 0.0:
         raise RuntimeError(
             "SenseNova understanding-branch training requires attention_dropout=0.0, "
             f"got {dropout}. The vendor attention applies dropout whenever the module "
             "is in train() mode, which the training path stamps, so a checkpointed "
             "prefix recompute would not reproduce the K/V of its own forward."
+        )
+
+
+def assert_full_finetune_dropout_free(transformer: nn.Module) -> None:
+    """Refuse a non-zero ``attention_dropout`` for a full fine-tune of any half.
+
+    The understanding-branch guard above covers the halves it names, but the
+    default branch for this route is generation-only, and that configuration
+    stamps ``train()`` on the WHOLE MoT decoder -- both halves live in one
+    ``language_model``. The prompt prefix is built by the understanding half on
+    every step (``encode_prompt``, under ``no_grad`` but not under ``eval()``),
+    so a non-zero dropout would randomly zero attention weights in the
+    conditioning the loss is computed against, differently on every step and
+    differently from inference, with nothing raising. Upstream's default is 0.0,
+    so this refuses nothing that exists today.
+    """
+    dropout = _decoder_attention_dropout(transformer, "full fine-tuning")
+    if dropout != 0.0:
+        raise RuntimeError(
+            "SenseNova full fine-tuning requires attention_dropout=0.0, got "
+            f"{dropout}. The training path stamps train() on the whole MoT decoder, "
+            "and the vendor attention applies dropout whenever the module is in "
+            "that mode, so the prompt prefix -- which the understanding half builds "
+            "on every step, including when only the generation half is trained -- "
+            "would be a different random projection each step and would not match "
+            "the one inference builds."
         )
 
 

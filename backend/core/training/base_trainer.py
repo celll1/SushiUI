@@ -3582,8 +3582,14 @@ class BaseTrainer(ABC):
         # load_components checked before the 17.6 GiB load.
         from core.training.ops.training_method import is_full_finetune
         if getattr(self, "is_sensenova", False) and is_full_finetune(self):
-            from core.training.ops.sensenova_ops import assert_full_finetune_contract
+            from core.training.ops.sensenova_ops import (
+                assert_full_finetune_contract,
+                enforce_full_finetune_stochastic_rounding,
+            )
             assert_full_finetune_contract(self, optimizer_type)
+            # Before the optimizer is built: the adamw8bit patch and the
+            # ring-buffer kwargs below both read the flag as they construct.
+            enforce_full_finetune_stochastic_rounding(self)
 
         # Lion's Schedule-Free kernel writes the wrong sequence into the
         # parameter. Schedule-Free keeps a POSITION sequence z and derives the
@@ -3836,6 +3842,12 @@ class BaseTrainer(ABC):
         # replace self.optimizer: stochastic rounding has to wrap whatever
         # actually ends up performing the update.
         self._attach_stochastic_rounding(optimizer_type)
+
+        if getattr(self, "is_sensenova", False) and is_full_finetune(self):
+            from core.training.ops.sensenova_ops import (
+                assert_full_finetune_stochastic_rounding_attached,
+            )
+            assert_full_finetune_stochastic_rounding_attached(self, optimizer_type)
 
     def _fused_backward_target_module(self):
         """Return the main trainable module the ring-buffer optimizers register their

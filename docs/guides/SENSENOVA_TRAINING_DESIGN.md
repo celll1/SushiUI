@@ -1577,7 +1577,7 @@ generation の非対応が training の非対応を含意しないことは既�
 |---|---|---|
 | 主機構 | MoT half-eviction（DONE、既定 OFF） | `LayerOffloadConductor`（gen 半分のみ、PENDING、§8.3.1 の未解決問題あり） |
 | und 半分 | 凍結済み。prefix cache 成功後から次の prefix まで CPU 退避 | 同左 |
-| 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-35` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
+| 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-36` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
 
 7.55 GiB は構造上 CPU 退避の候補になる understanding-side weight 量であり、allocator の
 peak allocated / reserved が同量減る保証ではない。Phase 0 で観測した約 15.06 GiB の差は
@@ -1594,23 +1594,29 @@ half-eviction の exit 判定には、同一 checkpoint・seed・shape・GC 条�
 [`layer_offload_conductor.py:24-32`](../../backend/core/memory_management/layer_offload_conductor.py)）で、
 他 arch の学習 `setup_block_swap` は全てこちらを使う（anima / krea2 / ideogram4 /
 acestep / ltx2 等の `ops/*_ops.py`）。**しかも下に verbatim 引用している
-`kv_cache_streaming.py:27-35` 自身が "training-side offload belongs to
+`kv_cache_streaming.py:27-36` 自身が "training-side offload belongs to
 LayerOffloadConductor" と書いており、引用を残したまま表の機構名だけが誤っていた** —
 文書内で自己矛盾していた形なので、経緯ごとここに残す。
 
 **2 機構の合成は未解決の設計問題である**（旧記述「互いに素な weight 集合を持つため
 素直に合成できる」からの格下げ）。詳細は §8.3.1。
 
-`kv_cache_streaming.py:27-35` の verbatim:
+`kv_cache_streaming.py:27-36` の verbatim（2026-08-26 更新: サンプル生成向け
+streaming 実装後の文面。"training-side offload belongs to LayerOffloadConductor"
+の主張自体は変わっておらず、上の機構名訂正はそのまま成立する — この streamer が
+`train_step` に無関係という結論と、それが学習中のサンプル生成には関係するという
+追記は別の主張である）:
 
-> this streamer does NOT apply to training -- a training step is a single-timestep
-> forward/backward with no multi-step denoise loop, so no persistent read-many KV
-> cache exists to stream; training-side offload belongs to LayerOffloadConductor.
-> What DOES transfer is the MoT half-eviction CONCEPT from mot_phase_eviction.py:
-> if fine-tuning freezes the understanding branch (likely for image-gen tunes),
-> its weight-half can be CPU-evicted during training for a similar VRAM saving.
-> Evaluate that when training is built; reuse the layer-selection logic, not this
-> module.
+> this streamer does NOT apply to `train_step` -- a training step is a
+> single-timestep forward/backward with no multi-step denoise loop, so no
+> persistent read-many KV cache exists to stream; training-side weight offload
+> belongs to LayerOffloadConductor. It DOES apply to a training-time SAMPLE,
+> which runs the same multi-step denoise loop a standalone generation does; see
+> `ops/sensenova_ops.py::_maybe_install_sample_kv_streaming`. The MoT
+> half-eviction CONCEPT from mot_phase_eviction.py is a separate mechanism
+> covering `train_step` itself: if fine-tuning freezes the understanding
+> branch, its weight-half can be CPU-evicted during training for a similar
+> VRAM saving; reuse the layer-selection logic, not this module.
 
 **DONE（driver）**: 推論用 callback は再利用せず、学習専用の `full / prefix /
 denoise` state machine を実装した。2 周目の `denoise -> prefix` は gen D2H 完了後に

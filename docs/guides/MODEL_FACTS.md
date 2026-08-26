@@ -2351,7 +2351,7 @@ Paths below are relative to `backend/core/training/`.
       hook points, cadences, and CUDA streams, with no shared coordinator.
       `enable_block_swap` remains unsupported/warned for this arch, same as
       above.
-    - **No applicability to SenseNova training**: a training step is a
+    - **No applicability to `train_step`**: a training step is a
       single-timestep forward/backward with no multi-step denoise loop, so
       there is no persistent read-many KV cache to stream; training-side
       offload belongs to `LayerOffloadConductor`. What DID transfer is the
@@ -2359,7 +2359,11 @@ Paths below are relative to `backend/core/training/`.
       training freezes the understanding branch and CPU-evicts the idle half
       per phase through its own state machine
       (`training/sensenova_phase_eviction.py`), reusing this module's
-      layer-selection logic and not its streaming machinery.
+      layer-selection logic and not its streaming machinery. This streamer
+      DOES apply to a training-time sample, which runs the same multi-step
+      denoise loop as a standalone generation, gated on its own
+      `sensenova_sample_kv_cache_streaming` flag
+      (`ops/sensenova_ops.py::_maybe_install_sample_kv_streaming`).
   - **2026-08-22 production incident: rare non-deterministic output
     corruption ("TV static"), MoT eviction and KV streaming both OFF.** A
     live report of an off-bucket (768x1152) generation producing garbage,

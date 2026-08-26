@@ -1127,6 +1127,12 @@ class BaseTrainer(ABC):
             "sensenova_four_phase_grad_reduction",
             _TD_PHASE_EVICTION["sensenova_four_phase_grad_reduction"],
         ))
+        # Training-time sample only; see the KV cache streaming module and
+        # ops/sensenova_ops.py::_maybe_install_sample_kv_streaming.
+        self.sensenova_sample_kv_cache_streaming = bool(_tc.get(
+            "sensenova_sample_kv_cache_streaming",
+            _TD_PHASE_EVICTION["sensenova_sample_kv_cache_streaming"],
+        ))
         # Validated by SenseNovaFullParameterAdapter, its only reader.
         self.sensenova_full_finetune_save_format = str(_tc.get(
             "sensenova_full_finetune_save_format",
@@ -7865,6 +7871,84 @@ class BaseTrainer(ABC):
         )
         return self.arch.sample(self, sample_ctx)
 
+    def _step0_marker_path(self) -> Path:
+        return self.output_dir / "samples" / ".step0_done"
+
+    def _step0_sample_done_for_this_run(self, step0_sample_path: Path) -> bool:
+        """True only when the marker names THIS run's own DB row, not merely
+        when the PNG exists -- path existence alone matches a different run
+        that reused the same run_name (routes.py's ``mkdir(exist_ok=True)``
+        inherits the previous run's output_dir and everything in it)."""
+        if self.run_id is None or not step0_sample_path.exists():
+            return False
+        marker_path = self._step0_marker_path()
+        if not marker_path.exists():
+            return False
+        try:
+            return marker_path.read_text().strip() == str(self.run_id)
+        except OSError:
+            return False
+
+    def _mark_step0_sample_done(self) -> None:
+        if self.run_id is None:
+            return
+        marker_path = self._step0_marker_path()
+        try:
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(str(self.run_id))
+        except OSError:
+            pass
+
+    def _run_step0_sample_if_due(
+        self,
+        *,
+        sample_every_n_steps: int,
+        sample_width: int,
+        sample_height: int,
+        sample_guidance_scale: float,
+        sample_steps: int,
+        sample_seed: int,
+        sample_schedule_type: str,
+        global_step: int,
+    ) -> None:
+        """Step-0 base-model verification sample.
+
+        Covers a relaunch after a crash between this sample's own save and the
+        first checkpoint (both would otherwise dispatch a second "step 0"
+        generation); a crash DURING the sample leaves no PNG and is not
+        covered, since the guard has nothing to key off yet.
+        """
+        if not (sample_every_n_steps > 0 and global_step == 0):
+            return
+        step0_sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+        if self._step0_sample_done_for_this_run(step0_sample_path):
+            print(f"{self.log_prefix} [Step 0] Skipping sample: {step0_sample_path.name} "
+                  f"was already produced by this run (run_id={self.run_id}; marker matches).")
+            return
+        if step0_sample_path.exists():
+            print(f"{self.log_prefix} [Step 0] {step0_sample_path.name} exists but its marker "
+                  f"does not name this run (run_id={self.run_id}); regenerating so the base-model "
+                  f"check reflects this run, not whatever produced the existing file.")
+        step0_prompt = self._sample_prompts[0].get('positive', 'a beautiful landscape') if self._sample_prompts else 'a beautiful landscape'
+        print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
+        print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+        sample = self._dispatch_sample(
+            step0_prompt,
+            width=sample_width,
+            height=sample_height,
+            num_inference_steps=sample_steps,
+            guidance_scale=sample_guidance_scale,
+            seed=sample_seed,
+            current_step=0,
+            schedule_type=sample_schedule_type,
+        )
+        # None => architecture can't sample yet; skip saving.
+        if sample is not None:
+            step0_sample_path.parent.mkdir(parents=True, exist_ok=True)
+            sample.save(step0_sample_path)
+            self._mark_step0_sample_done()
+            print(f"{self.log_prefix} [Step 0] Saved sample to {step0_sample_path.relative_to(self.output_dir)}")
+
     def _flux2_unpack_latents_with_ids(self, x: torch.Tensor, x_ids: torch.Tensor) -> torch.Tensor:
         """Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)"""
         x_list = []
@@ -10356,28 +10440,17 @@ class BaseTrainer(ABC):
             else:
                 print(f"{self.log_prefix} [ParamTracker] No trainable components found, disabled")
 
-        # Generate step 0 sample to verify base model output
-        if sample_every_n_steps > 0 and global_step == 0:
-            step0_prompt = self._sample_prompts[0].get('positive', 'a beautiful landscape') if self._sample_prompts else 'a beautiful landscape'
-            print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
-            print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-            sample = self._dispatch_sample(
-                step0_prompt,
-                width=sample_width,
-                height=sample_height,
-                num_inference_steps=sample_steps,
-                guidance_scale=sample_guidance_scale,
-                seed=sample_seed,
-                current_step=0,
-                schedule_type=sample_schedule_type,
-            )
-
-            # Save step 0 sample (None => architecture can't sample yet; skip)
-            if sample is not None:
-                sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
-                sample_path.parent.mkdir(parents=True, exist_ok=True)
-                sample.save(sample_path)
-                print(f"{self.log_prefix} [Step 0] Saved sample to {sample_path.relative_to(self.output_dir)}")
+        # Generate step 0 sample to verify base model output.
+        self._run_step0_sample_if_due(
+            sample_every_n_steps=sample_every_n_steps,
+            sample_width=sample_width,
+            sample_height=sample_height,
+            sample_guidance_scale=sample_guidance_scale,
+            sample_steps=sample_steps,
+            sample_seed=sample_seed,
+            sample_schedule_type=sample_schedule_type,
+            global_step=global_step,
+        )
 
         # ------------------------------------------------------------------
         # Online Danbooru augmentation (image-generation) setup
@@ -13164,10 +13237,19 @@ class BaseTrainer(ABC):
                         batch_start_step = global_step - multi_noise_timesteps + 1
                         batch_end_step = global_step
 
-                        # Check step 0 (only if batch starts at 0)
-                        if batch_start_step == 0:
-                            should_generate_sample = True
-                            sample_step = 0
+                        # batch_start_step <= 0 (not just == 0): an MNT window
+                        # that never completes (e.g. an OOM-discard mid-window
+                        # on the run's first batch) can leave global_step at
+                        # multi_noise_timesteps - 1 without global_step ever
+                        # having been exactly 0, which still yields <= 0 here.
+                        # Routed through the same run-identifying guard as the
+                        # pre-loop call so this can't re-overwrite THIS run's
+                        # own already-saved step-0 sample.
+                        if batch_start_step <= 0:
+                            step0_sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+                            if not self._step0_sample_done_for_this_run(step0_sample_path):
+                                should_generate_sample = True
+                                sample_step = 0
                         else:
                             # Check if any multiple of sample_every_n_steps falls within [batch_start, batch_end]
                             next_sample_step = ((batch_start_step // sample_every_n_steps) + 1) * sample_every_n_steps
@@ -13224,6 +13306,8 @@ class BaseTrainer(ABC):
                             if reference_image_path:
                                 png_metadata.add_text("reference_image_path", reference_image_path)
                             sample.save(sample_path, pnginfo=png_metadata)
+                            if sample_step == 0 and sample_idx == 0:
+                                self._mark_step0_sample_done()
                             print(f"{self.log_prefix} Saved sample to {sample_path}")
 
                             # Log to TensorBoard

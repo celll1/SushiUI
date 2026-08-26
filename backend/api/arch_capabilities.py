@@ -272,6 +272,10 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
                                "sensenova_four_phase_eviction",
                                "sensenova_four_phase_shared_prefix",
                                "sensenova_four_phase_grad_reduction"],
+    # Independent of sensenova_mot_eviction: the streamer replaces the
+    # per-layer resident KV cache during a training-time SAMPLE only, never
+    # during train_step, and does not touch MoT weight-half placement.
+    "sensenova_sample_kv_streaming": ["sensenova_sample_kv_cache_streaming"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -282,6 +286,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "training_samples": "sample generation during training",
     "vae": "VAE settings",
     "sensenova_mot_eviction": "SenseNova MoT phase eviction (with the four-phase backward split)",
+    "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -995,6 +1000,17 @@ _add_training_feature_advisory(
     "sensenova", "sensenova_mot_eviction", "experimental",
     "One interlocked setting, not two toggles. sensenova_mot_phase_eviction keeps only the phase-active half resident. Under LoRA it stands alone, on any branch. Under full fine-tuning it is the MORE constrained of the two flags, not the freer one: it is refused before the model loads unless train_unet and train_text_encoder are BOTH set, because a single-branch full fine-tune materializes only the half it trains and leaves the other one quantized, and the evictor requires the two halves to hold the same kind of weight (measured in both directions on the real checkpoint, SENSENOVA_TRAINING_DESIGN.md 13.7). Training both halves in turn requires sensenova_four_phase_eviction, which splits the single backward at the prefix KV cache so a TRAINED understanding half can still be evicted, and which is itself refused before the load unless train_text_encoder, sensenova_mot_phase_eviction and training_method=full_finetune all hold. So under full fine-tuning the only accepted shape is both halves plus the split; train_text_encoder together with sensenova_mot_phase_eviction WITHOUT the split is refused, because the three-state evictor moves the understanding half to CPU before its backward. Understanding training without eviction needs neither flag. Two costs, measured apart and not interchangeable. The SPLIT alone, at 1024px with a 467-token prefix and understanding gradients supplied by a rank-4 both-branch LoRA over int8 halves (n=25, p50; SENSENOVA_TRAINING_DESIGN.md 8.3.2, the U-2-4 box): a 0.190 s recomputed understanding forward against a 1.758 s generation forward+backward, i.e. a 1.09-1.10x step, and it adds no weight transfer beyond the three-phase form's. What a both-branch full fine-tune actually pays is that split PLUS the eviction transfers -- a 7.60 GiB int8 half staged to pinned host memory and back measured 0.666 s per round trip and the step makes two, and a bf16 half is 15.09 GiB, so the full-fine-tune route moves twice that volume. End to end the train loop went 42.67 s to 80.51 s over 12 steps at 512px, i.e. 1.89x with eviction included (SENSENOVA_TRAINING_DESIGN.md 8.3.3). What it buys: the steady step peak falls from 33.94 to 18.76 GiB at 512px, and at 1024px the both-branch step fits at 19.26 GiB where without it the probe OOMed against its 34.551 GiB cap",
     methods=["lora", "full_finetune"])
+
+# --- SenseNova training-time sample KV cache streaming ----------------------
+# Independent of sensenova_mot_eviction (disjoint tensors/hooks; see
+# ops/sensenova_ops.py::_maybe_install_sample_kv_streaming). Accepted and
+# inert on every other architecture -- it only fires inside SenseNova's own
+# sample generation path -- so it is declared unsupported here rather than
+# folded into an existing feature key.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_sample_kv_streaming",
+        "2-slot flash-KV prefix streaming for a training-time sample is specific to SenseNova's sample generation path (ops/sensenova_ops.py::_maybe_install_sample_kv_streaming); this architecture's training-time sampling has no equivalent mechanism")
 
 # --- Sample generation during training --------------------------------------
 # NOT declared for SenseNova: its sampling integration is in flight, and a

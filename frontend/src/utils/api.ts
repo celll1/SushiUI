@@ -7179,6 +7179,11 @@ export interface TrainingRunCreateRequest {
   // "mixed" (default) | "bf16" | "int8". See openapi.yaml for the measured
   // sizes and the int8 requantization loss census.
   sensenova_full_finetune_save_format?: string;  // "mixed" (default) | "bf16" | "int8"
+  // SenseNova only, applies to the in-training sample only (not train_step):
+  // streams each layer's prefix KV cache from pinned host memory through a
+  // 2-slot GPU ring instead of holding the full KV cache resident during the
+  // sample's denoise loop. Independent of the phase-eviction flags above.
+  sensenova_sample_kv_cache_streaming?: boolean;
   base_model_path: string;
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion

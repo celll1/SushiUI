@@ -259,6 +259,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_four_phase_shared_prefix: false,
   sensenova_four_phase_grad_reduction: "sum",
   sensenova_full_finetune_save_format: "mixed",
+  sensenova_sample_kv_cache_streaming: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -1057,6 +1058,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenova_four_phase_shared_prefix: params.sensenova_four_phase_shared_prefix,
       sensenova_four_phase_grad_reduction: params.sensenova_four_phase_grad_reduction,
       sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
+      sensenova_sample_kv_cache_streaming: params.sensenova_sample_kv_cache_streaming,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1324,6 +1326,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction",
       "sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",
       "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
+      "sensenova_sample_kv_cache_streaming",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -2131,6 +2134,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenovaFourPhaseSharedPrefix: params.sensenova_four_phase_shared_prefix,
       sensenovaFourPhaseGradReduction: params.sensenova_four_phase_grad_reduction,
       sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
+      sensenovaSampleKvCacheStreaming: params.sensenova_sample_kv_cache_streaming,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -2328,6 +2332,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sensenovaFourPhaseSharedPrefix !== undefined) updateParam("sensenova_four_phase_shared_prefix", config.sensenovaFourPhaseSharedPrefix);
     if (config.sensenovaFourPhaseGradReduction !== undefined) updateParam("sensenova_four_phase_grad_reduction", config.sensenovaFourPhaseGradReduction);
     if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
+    if (config.sensenovaSampleKvCacheStreaming !== undefined) updateParam("sensenova_sample_kv_cache_streaming", config.sensenovaSampleKvCacheStreaming);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4924,6 +4929,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {motEvictionAdvisory && (
               <p className="text-xs text-amber-400">{motEvictionAdvisory.reason}</p>
             )}
+          </div>
+        )}
+
+        {isSenseNovaModel(baseModelPath) && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Sample Generation</h3>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="sensenova-sample-kv-cache-streaming"
+                checked={params.sensenova_sample_kv_cache_streaming ?? false}
+                onChange={(e) => updateParam("sensenova_sample_kv_cache_streaming", e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="sensenova-sample-kv-cache-streaming" className="text-xs text-gray-300 cursor-pointer">
+                Stream Sample KV Cache
+              </label>
+            </div>
+            <p className="text-xs text-gray-500">
+              Applies only to the in-training sample image, not to training steps. Streams each layer&apos;s prefix KV cache from pinned host memory through a 2-slot GPU ring instead of holding the full per-layer, per-branch KV cache resident during the sample&apos;s denoise loop. Independent of MoT Phase Eviction above. If the install fails, the sample runs with the full resident cache and a warning is logged.
+            </p>
           </div>
         )}
 

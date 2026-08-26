@@ -242,6 +242,10 @@ def _build_train_section(
             "sensenova_four_phase_grad_reduction",
             _TD["sensenova_four_phase_grad_reduction"],
         )
+        train["sensenova_sample_kv_cache_streaming"] = p.get(
+            "sensenova_sample_kv_cache_streaming",
+            _TD["sensenova_sample_kv_cache_streaming"],
+        )
         train["block_swap_h2d_only"] = p.get("block_swap_h2d_only", False)
         train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)

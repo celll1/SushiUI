@@ -53,16 +53,24 @@ ARCH_COMPONENT_SETS = (
 PIPELINE_COMPONENT_ATTRS = ("unet", "text_encoder", "text_encoder_2", "vae")
 
 
-def component_cuda_bytes(component) -> int:
-    """Bytes ``component`` currently holds in CUDA memory (0 if CPU-only or
-    uncountable). Used to skip already-CPU components — notably MiniMax-H3's
-    memory-mapped 48 GiB text encoder, which must never be handed to `.to()`
-    while it is on CPU."""
+def component_cuda_bytes(component) -> Optional[int]:
+    """Bytes ``component`` currently holds in CUDA memory.
+
+    0 means "measured, and none of it is on the GPU" — that is what keeps
+    MiniMax-H3's memory-mapped 48 GiB text encoder from ever being handed to
+    `.to()` while it sits on CPU. ``None`` means "not measurable": the object
+    exposes no `parameters()`, so residency is UNKNOWN and the caller must not
+    read it as CPU-resident. Collapsing the two into 0 silently skipped
+    `ltx2_components["pipeline"]`, a DiffusionPipeline with no `parameters()`.
+    """
     if component is None:
         return 0
+    parameters = getattr(component, "parameters", None)
+    if not callable(parameters):
+        return None
     total = 0
     try:
-        for p in component.parameters():
+        for p in parameters():
             if p.is_cuda:
                 total += p.numel() * p.element_size()
         buffers = getattr(component, "buffers", None)
@@ -75,31 +83,52 @@ def component_cuda_bytes(component) -> int:
     return total
 
 
-def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int:
-    """Move one component off the GPU if any part of it is there.
+def _run_pid_stage_cpu(name: str, component) -> None:
+    """PiD's VAE wrapper stages its own decoder net independently of `.to()`."""
+    pid_cpu = getattr(component, "_stage_pid_cpu", None)
+    if callable(pid_cpu):
+        try:
+            pid_cpu()
+        except Exception as e:
+            print(f"[VRAM] WARNING: PiD decoder offload for '{name}' failed: {e}")
 
-    Appends ``(name, bytes)`` to ``released`` and returns the byte count. A
-    failure is logged WITH the component name (a silent `except: pass` here is
-    exactly what made a retention incident undiagnosable) and returns 0.
+
+def offload_component_to_cpu(name: str, component, released: List[tuple]) -> int:
+    """Move one component off the GPU if any part of it is there, or if its
+    residency cannot be measured.
+
+    Appends ``(name, bytes)`` to ``released`` and returns the byte count (0 for
+    an unmeasurable component that was still moved). A failure is logged WITH
+    the component name (a silent `except: pass` here is exactly what made a
+    retention incident undiagnosable) and returns 0.
     """
     nbytes = component_cuda_bytes(component)
+    if nbytes is None:
+        # Unknown residency: offload defensively, the way the per-arch cleanup
+        # blocks did with their `hasattr(comp, 'to')` test. Tensors are excluded
+        # because `Tensor.to()` returns a copy instead of moving in place, so it
+        # would free nothing while looking like it had.
+        mover = getattr(component, "to", None)
+        if not callable(mover) or isinstance(component, torch.Tensor):
+            _run_pid_stage_cpu(name, component)
+            return 0
+        try:
+            component.to("cpu")
+        except Exception as e:
+            print(f"[VRAM] WARNING: failed to offload '{name}' to CPU: {e}")
+            return 0
+        _run_pid_stage_cpu(name, component)
+        released.append((name, 0))
+        return 0
     if nbytes <= 0:
-        # PiD's wrapper stages its own decoder net independently of `.to()`.
-        pid_cpu = getattr(component, "_stage_pid_cpu", None)
-        if callable(pid_cpu):
-            try:
-                pid_cpu()
-            except Exception as e:
-                print(f"[VRAM] WARNING: PiD decoder offload for '{name}' failed: {e}")
+        _run_pid_stage_cpu(name, component)
         return 0
     try:
         component.to("cpu")
-        pid_cpu = getattr(component, "_stage_pid_cpu", None)
-        if callable(pid_cpu):
-            pid_cpu()
     except Exception as e:
         print(f"[VRAM] WARNING: failed to offload '{name}' to CPU: {e}")
         return 0
+    _run_pid_stage_cpu(name, component)
     released.append((name, nbytes))
     return nbytes
 
@@ -549,32 +578,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 del self.inpaint_pipeline
                 self.inpaint_pipeline = None
 
-            # Clean up every component-dict architecture through the shared
-            # inventory (ARCH_COMPONENT_SETS). offload_component_to_cpu only
-            # calls `.to()` on a component that actually holds CUDA memory --
-            # that is what keeps MiniMax-H3's memory-mapped 48 GiB text encoder
-            # (always CPU-resident) from being copied into anonymous memory
-            # moments before it is dropped.
-            for _attr, _label, _flag in ARCH_COMPONENT_SETS:
-                _components = getattr(self, _attr, None)
-                if _components is None:
-                    continue
-                print(f"[Pipeline] Cleaning up {_label} components...")
-                _released: List[tuple] = []
-                for comp_name, comp in _components.items():
-                    offload_component_to_cpu(f"{_label}.{comp_name}", comp, _released)
-                    del comp
-                setattr(self, _attr, None)
-                if hasattr(self, _flag):
-                    setattr(self, _flag, False)
-                if _attr == "ltx2_components":
-                    # Reset the offload guard so a later LTX-2.3 load re-attaches
-                    # the cpu-offload hooks on the fresh pipeline.
-                    self._ltx2_offload_enabled = False
-                elif _attr == "minimax_h3_components":
-                    # See prompt_cache's module docstring for why unload clears it.
-                    from core.models.minimax_h3 import prompt_cache
-                    prompt_cache.clear()
+            self._cleanup_component_architectures()
 
             # Force garbage collection
             gc.collect()
@@ -3601,6 +3605,37 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                    "to use /generate/outpaint/audio.",
         )
 
+    def _cleanup_component_architectures(self) -> None:
+        """Drop every component-dict architecture through the shared inventory
+        (ARCH_COMPONENT_SETS), offloading each component first.
+
+        offload_component_to_cpu only calls `.to()` on a component that actually
+        holds CUDA memory or whose residency cannot be measured -- that is what
+        keeps MiniMax-H3's memory-mapped 48 GiB text encoder (an nn.Module,
+        always CPU-resident) from being copied into anonymous memory moments
+        before it is dropped.
+        """
+        for attr, label, flag in ARCH_COMPONENT_SETS:
+            components = getattr(self, attr, None)
+            if components is None:
+                continue
+            print(f"[Pipeline] Cleaning up {label} components...")
+            released: List[tuple] = []
+            for comp_name, comp in components.items():
+                offload_component_to_cpu(f"{label}.{comp_name}", comp, released)
+                del comp
+            setattr(self, attr, None)
+            if hasattr(self, flag):
+                setattr(self, flag, False)
+            if attr == "ltx2_components":
+                # Reset the offload guard so a later LTX-2.3 load re-attaches
+                # the cpu-offload hooks on the fresh pipeline.
+                self._ltx2_offload_enabled = False
+            elif attr == "minimax_h3_components":
+                # See prompt_cache's module docstring for why unload clears it.
+                from core.models.minimax_h3 import prompt_cache
+                prompt_cache.clear()
+
     def _iter_loaded_components(self):
         """Yield ``(label, component)`` for every component of the loaded model,
         deduplicated by identity (the three SD pipelines share their modules)."""
@@ -3685,6 +3720,57 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _release_auxiliary_gpu_holders(self) -> List[str]:
+        """Unload/offload the backend's NON-generation GPU holders.
+
+        The loaded model is not the only thing in this process that can be
+        holding the GPU when a training run starts; any of these reproduces the
+        original incident with an identical "release succeeded" log.
+
+        Out of scope, deliberately:
+        - RTX VSR (`core/upscaler.py:_run_rtx_vsr`) allocates inside a
+          `with nvvfx.VideoSuperRes(...)` block and keeps no module across
+          calls, so there is nothing to offload between generations.
+        - The diffusion tile upscaler runs through this same manager's
+          components, already covered by _iter_loaded_components.
+        """
+        released: List[str] = []
+
+        try:
+            from core.extensions.tipo_manager import tipo_manager
+            if getattr(tipo_manager, "model", None) is not None:
+                tipo_manager.unload_model()
+                released.append("tipo")
+        except Exception as e:
+            print(f"[VRAM] WARNING: TIPO unload failed: {e}")
+
+        try:
+            from core.extensions.tagger_manager import tagger_manager
+            if getattr(tagger_manager, "session", None) is not None:
+                # `auto_unload` is a per-request parameter, so a session can
+                # outlive the request that made it. Dropping the session is the
+                # only lever: an ONNX Runtime CUDA arena is not torch memory, so
+                # torch.cuda.empty_cache() cannot reclaim it and it never shows
+                # up in /debug/vram.
+                tagger_manager.unload_model()
+                released.append("tagger_onnx_session")
+        except Exception as e:
+            print(f"[VRAM] WARNING: tagger session unload failed: {e}")
+
+        try:
+            from core import upscaler as _upscaler
+            _cached = _upscaler._spandrel_cache.get("model")
+            if _cached is not None:
+                # _run_spandrel_tiled stages the cached model with a `.to(device)`
+                # OUTSIDE its own try, so a mid-move OOM strands it on the GPU
+                # with no finally to undo it.
+                offload_component_to_cpu("upscaler.spandrel", _cached, [])
+                released.append("upscaler.spandrel")
+        except Exception as e:
+            print(f"[VRAM] WARNING: spandrel upscaler offload failed: {e}")
+
+        return released
+
     def release_gpu_memory(self, reason: str = "") -> Dict[str, Any]:
         """Move every GPU-resident component of the loaded model back to CPU
         WITHOUT unloading it, and drop keep-models-hot residency.
@@ -3718,6 +3804,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         except Exception as e:
             print(f"[VRAM] WARNING: TAESD offload failed: {e}")
 
+        auxiliary = self._release_auxiliary_gpu_holders()
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -3731,12 +3819,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         print(f"[VRAM] release_gpu_memory{suffix}: offloaded {len(names)} component(s) "
               f"{names} totalling {freed_bytes / 1024 ** 3:.2f} GB; "
               f"keep-hot residents cleared: {sorted(kept) if kept else 'none'}; "
+              f"auxiliary holders released: {auxiliary or 'none'}; "
               f"torch allocated {allocated_before / 1024 ** 3:.2f} -> "
               f"{allocated_after / 1024 ** 3:.2f} GB")
         return {
             "components": names,
             "freed_bytes": freed_bytes,
             "keep_hot_cleared": sorted(kept),
+            "auxiliary": auxiliary,
             "allocated_before": allocated_before,
             "allocated_after": allocated_after,
         }
@@ -4571,29 +4661,37 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                        "frames; there is no single-image path.",
             )
 
-        # If img2img pipeline is not loaded, create it from txt2img pipeline
-        if not self.img2img_pipeline:
-            if not self.txt2img_pipeline:
-                raise RuntimeError("No model loaded. Please load a model first.")
-
-            print("Creating img2img pipeline from txt2img pipeline...")
-            # Check if SDXL
-            is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
-
-            # Create img2img pipeline from txt2img components
-            if is_sdxl:
-                self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**self.txt2img_pipeline.components)
-            else:
-                self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**self.txt2img_pipeline.components)
-
-            self.img2img_pipeline = self.img2img_pipeline.to(self.device)
-            print("img2img pipeline created successfully")
-
         # See generate_txt2img for why the SD/SDXL body needs an outer guard.
+        # The guard opens ABOVE the pipeline construction below, because that
+        # block's `.to(self.device)` stages the U-Net, both text encoders and the
+        # VAE — an OOM there leaks exactly what this guard exists to cover. A
+        # `raise RuntimeError("No model loaded")` under the guard is harmless: a
+        # null pipeline reports zero CUDA bytes and nothing is moved.
         try:
+            # If img2img pipeline is not loaded, create it from txt2img pipeline
+            if not self.img2img_pipeline:
+                if not self.txt2img_pipeline:
+                    raise RuntimeError("No model loaded. Please load a model first.")
+
+                print("Creating img2img pipeline from txt2img pipeline...")
+                # Check if SDXL
+                is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
+
+                # Create img2img pipeline from txt2img components
+                if is_sdxl:
+                    self.img2img_pipeline = StableDiffusionXLImg2ImgPipeline(**self.txt2img_pipeline.components)
+                else:
+                    self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**self.txt2img_pipeline.components)
+
+                self.img2img_pipeline = self.img2img_pipeline.to(self.device)
+                print("img2img pipeline created successfully")
+
             return self._generate_img2img_sd(params, init_image, progress_callback, step_callback)
         except BaseException:
-            self._offload_after_failed_generation(self.img2img_pipeline, "img2img")
+            # `or txt2img_pipeline`: construction can fail before the img2img
+            # attribute is assigned, and both pipelines share the same modules.
+            self._offload_after_failed_generation(
+                self.img2img_pipeline or self.txt2img_pipeline, "img2img")
             raise
         finally:
             self._offload_controlnets_after_generation()
@@ -5348,26 +5446,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                        "frames; there is no single-image path.",
             )
 
-        # If inpaint pipeline is not loaded, create it from txt2img pipeline
-        if not self.inpaint_pipeline:
-            if not self.txt2img_pipeline:
-                raise RuntimeError("No model loaded. Please load a model first.")
-
-            # Check if current model is SDXL
-            is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
-
-            if is_sdxl:
-                self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**self.txt2img_pipeline.components)
-            else:
-                self.inpaint_pipeline = StableDiffusionInpaintPipeline(**self.txt2img_pipeline.components)
-
-            self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
-
-        # See generate_txt2img for why the SD/SDXL body needs an outer guard.
+        # See generate_txt2img for why the SD/SDXL body needs an outer guard, and
+        # generate_img2img for why it opens above the construction block.
         try:
+            # If inpaint pipeline is not loaded, create it from txt2img pipeline
+            if not self.inpaint_pipeline:
+                if not self.txt2img_pipeline:
+                    raise RuntimeError("No model loaded. Please load a model first.")
+
+                # Check if current model is SDXL
+                is_sdxl = isinstance(self.txt2img_pipeline, StableDiffusionXLPipeline)
+
+                if is_sdxl:
+                    self.inpaint_pipeline = StableDiffusionXLInpaintPipeline(**self.txt2img_pipeline.components)
+                else:
+                    self.inpaint_pipeline = StableDiffusionInpaintPipeline(**self.txt2img_pipeline.components)
+
+                self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
+
             return self._generate_inpaint_sd(params, init_image, mask_image, progress_callback, step_callback)
         except BaseException:
-            self._offload_after_failed_generation(self.inpaint_pipeline, "inpaint")
+            self._offload_after_failed_generation(
+                self.inpaint_pipeline or self.txt2img_pipeline, "inpaint")
             raise
         finally:
             self._offload_controlnets_after_generation()

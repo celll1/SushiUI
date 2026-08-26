@@ -76,6 +76,7 @@ def test_visible_frontend_controls_are_sent_and_restored():
         assert f"{key}: params.{key}" in request, key
         assert f'"{key}"' in restore, key
 
-    assert "base_resolutions: params.base_resolutions" in request
+    assert "[Math.max(...params.base_resolutions!)]" in request
+    assert 'type={enableBucketing ? "checkbox" : "radio"}' in source
+    assert 'updateParam("base_resolutions", [res])' in source
     assert "Cache latents to disk (reduces VRAM usage)" not in source
-

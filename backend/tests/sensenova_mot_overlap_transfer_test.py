@@ -555,6 +555,10 @@ def test_the_transfer_streams_object_routes_and_joins_both_streams():
     MUTANT: routing both directions to one stream (serializing the swap while
     still paying every correctness cost), or joining only one of them, which
     leaves ``assert_generation_resident`` passing on a queued copy.
+    MUTANT: ``stream_context`` ignoring its argument (``self._cuda.stream(
+    self.d2h)``) -- entered with both streams below, since entering with only
+    the d2h one cannot tell the two apart, and the evictor-level test runs
+    against the injected fake rather than this class.
     """
     cuda = _FakeCuda()
     streams = _TransferStreams("cuda:0", cuda=cuda)
@@ -569,7 +573,9 @@ def test_the_transfer_streams_object_routes_and_joins_both_streams():
 
     with streams.stream_context(streams.d2h):
         pass
-    assert cuda.entered == [streams.d2h]
+    with streams.stream_context(streams.h2d):
+        pass
+    assert cuda.entered == [streams.d2h, streams.h2d]
 
     streams.join()
     assert cuda.current.waited == [streams.d2h, streams.h2d]
@@ -587,10 +593,19 @@ def test_the_h2d_destination_is_allocated_outside_the_side_streams_context():
     the allocation between the enter and the exit below.
     MUTANT: dropping ``record_stream`` on the destination lets the default
     stream free a block the side stream is still writing.
+    MUTANT: hoisting ``destination.copy_`` above the ``with`` -- only the record
+    needs the context -- runs every transfer on the DEFAULT stream, so the flag
+    becomes pure overhead at the full correctness cost and zero overlap. The
+    copy is logged for that reason: with only the record logged, that mutant
+    produces an identical sequence.
     """
     log = []
 
     class _Dest(torch.Tensor):
+        def copy_(self, source, non_blocking=False):
+            log.append(("copy", tuple(source.shape)))
+            return torch.Tensor.copy_(self, source, non_blocking=non_blocking)
+
         def record_stream(self, stream):
             log.append(("record", stream))
 
@@ -624,7 +639,7 @@ def test_the_h2d_destination_is_allocated_outside_the_side_streams_context():
         )
 
     assert [entry[0] for entry in log] == [
-        "alloc", "alloc", "enter", "record", "record", "exit"
+        "alloc", "alloc", "enter", "copy", "record", "copy", "record", "exit"
     ]
     assert sources[0] is contiguous and sources[1] is transposed
     for name, original in (("weight", contiguous), ("scale", transposed)):
@@ -632,8 +647,9 @@ def test_the_h2d_destination_is_allocated_outside_the_side_streams_context():
         assert isinstance(destination, _Dest)
         assert destination.dtype == original.dtype
         assert destination.shape == original.shape
-        # What ``.to(device)`` produced, including the non-contiguous case.
-        assert destination.stride() == original.to("cpu").stride()
+        # ``empty_like`` preserves the source's layout, so the non-contiguous
+        # buffer keeps its stride rather than being silently made contiguous.
+        assert destination.stride() == original.stride()
         assert torch.equal(destination.float(), original.float())
 
 
@@ -793,6 +809,62 @@ def test_a_failed_transition_drains_the_window_before_it_unwinds():
     assert joins and joins[0] < recovery
     # ...and copies were outstanding when that first join happened.
     assert any(entry == ("issue", "d2h") for entry in harness.log[: joins[0]])
+
+
+def test_the_drain_synchronizes_the_device_after_joining_the_streams():
+    """``_sync_transfers`` is a join AND a device sync, in that order. Every
+    other test of it runs on a ``"meta"`` evictor, where ``_sync_device`` is
+    None and ``_sync`` is a silent no-op, so they observe only the join.
+
+    MUTANT: reducing ``_sync_transfers`` to ``self._streams.join()``.
+    ``join()`` only makes the DEFAULT STREAM wait on the side streams -- the
+    HOST does not -- so ``_run_overlapped``'s frame unwinds and hands pinned
+    blocks back to the caching host allocator while their d2h copies are still
+    reading them, which is the corruption this path exists to prevent.
+    """
+    harness = _Harness()
+    calls = []
+
+    def explode(modules, *, warn_once, pageable=False, non_blocking=False, sources=None):
+        del modules, warn_once, pageable, sources, non_blocking
+        calls.append(1)
+        if len(calls) > 6:
+            raise RuntimeError("copy failed")
+        harness.log.append(("issue", "d2h"))
+
+    original = SenseNovaTrainingPhaseEvictor._best_effort_cpu
+
+    def spy(self):
+        harness.log.append(("best-effort", None))
+        return original(self)
+
+    def synchronize(device=None):
+        harness.log.append(("sync", device))
+
+    # No CUDA is touched: only the two calls `_sync_device` and `_sync` make are
+    # patched, so a "cuda:0" evictor resolves its sync device off-hardware.
+    with patch("torch.cuda.is_available", lambda: True), patch(
+        "torch.cuda.synchronize", synchronize
+    ):
+        evictor = SenseNovaTrainingPhaseEvictor(
+            transformer(), "cuda:0", overlap_transfer=True,
+            streams_factory=harness.factory,
+        )
+        with harness.patched(), patch.object(
+            SenseNovaTrainingPhaseEvictor, "_best_effort_cpu", spy
+        ):
+            with patch.object(sensenova_phase_eviction, "_move_modules_to_cpu", explode):
+                with pytest.raises(RuntimeError, match="copy failed"):
+                    evictor.enter_prefix()
+
+    device = torch.device("cuda:0")
+    assert harness.log[0] == ("sync", device)           # the leading barrier
+    joins = [i for i, entry in enumerate(harness.log) if entry == ("join", None)]
+    recovery = harness.log.index(("best-effort", None))
+    assert joins and joins[0] < recovery
+    # The unwinding drain: join the side streams, THEN block the host on them.
+    assert harness.log[joins[0] + 1] == ("sync", device)
+    assert joins[0] + 1 < recovery
 
 
 def test_a_failed_transition_still_normalizes_and_locks_the_evictor():

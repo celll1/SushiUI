@@ -164,6 +164,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   base_resolutions: [1024],
   bucket_strategy: "resize",
   multi_resolution_mode: "max",
+  res_curriculum_enable: false,
+  res_curriculum_warmup_steps: 0,
+  res_curriculum_warmup_scale: 0.5,
   // Epoch-dynamic crop augmentation (SDXL only)
   crop_augment_enable: false,
   crop_full_image_prob: 0.7,
@@ -192,6 +195,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   output_dtype: "fp32",
   vae_dtype: "fp16",
   mixed_precision: true,
+  gradient_checkpointing: true,
+  torch_compile: "off",
+  torch_compile_dynamic: null,
   // Attention backend for training: "native" | "flash" | "tq" (sage is inference-only).
   // Overwritten by trainingDefaults on startup; literal here is the no-backend fallback.
   attention_backend: "native",
@@ -534,7 +540,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const baseResolutions = params.base_resolutions ?? [1024];
   const bucketStrategy = (params.bucket_strategy ?? "resize") as "resize" | "crop" | "random_crop";
   const multiResolutionMode = (params.multi_resolution_mode ?? "max") as "max" | "random";
-  const cacheLatentsToDisk = params.cache_latents_to_disk ?? true;
   const forceRecache = params.force_recache ?? false;
 
   // Component-specific training (Phase 3g: migrated to params)
@@ -574,6 +579,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Latent encoding mode
   const latentEncodingMode = params.latent_encoding_mode ?? "swap_onthefly";
   const latentEncodingSwapInterval = params.latent_encoding_swap_interval ?? 256;
+  const usesLatentDiskCache = latentEncodingMode === "pre_encoded_cache";
 
   // Block Swap settings (training VRAM optimization)
   const blocksToSwap = params.blocks_to_swap ?? 0;
@@ -706,6 +712,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
+  const selectedModel = availableModels.find((model) => model.path === baseModelPath);
+  const pixelSpaceMiniT2I = (
+    (selectedModel?.architecture === "minit2i" && selectedModel.vae_type === "none")
+    || (fromScratchMiniT2I && scratchVaeType === "none")
+  );
+  const latentEncodingAvailable = !vaeUnsupported && !pixelSpaceMiniT2I;
 
   // FIFTH capability axis, and the opposite claim from the one above: a feature
   // the backend DOES implement and DOES accept, with what it costs. Shown next
@@ -815,6 +827,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const arch = getModelArchitecture(modelPath);
     return arch === "sd15" || arch === "sdxl";
   };
+  const isSDXLModel = (modelPath: string): boolean =>
+    getModelArchitecture(modelPath) === "sdxl";
 
   // The architectures actually present in the model list, labelled from the
   // backend's ARCH_DISPLAY_NAMES (GET /schema/arch-capabilities). Both the list
@@ -858,8 +872,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       minit2i_label_drop_rate: params.minit2i_label_drop_rate,
       minit2i_lr_factor: params.minit2i_lr_factor,
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
+      minit2i_lora_scope: params.minit2i_lora_scope,
+      minit2i_te_lora_scope: params.minit2i_te_lora_scope,
       minit2i_scratch_init_from: params.minit2i_scratch_init_from,
       minit2i_inherit_final_layer: params.minit2i_inherit_final_layer,
+      // Architecture-specific controls shown by this form.
+      anima_lora_scope: params.anima_lora_scope,
+      train_llm_adapter: params.train_llm_adapter,
+      anima_attn_mlp_lr_factor: params.anima_attn_mlp_lr_factor,
+      anima_mod_lr_factor: params.anima_mod_lr_factor,
+      anima_llm_adapter_lr_factor: params.anima_llm_adapter_lr_factor,
+      lens_lora_scope: params.lens_lora_scope,
+      lens_img_lr_factor: params.lens_img_lr_factor,
+      lens_txt_lr_factor: params.lens_txt_lr_factor,
+      ideogram4_lora_scope: params.ideogram4_lora_scope,
+      ideogram4_train_uncond: params.ideogram4_train_uncond,
+      ideogram4_uncond_loss_weight: params.ideogram4_uncond_loss_weight,
+      ideogram4_lr_factor: params.ideogram4_lr_factor,
       // Krea 2 config (sent so UI values reach the backend, not just defaults).
       krea2_lora_scope: params.krea2_lora_scope,
       krea2_lr_factor: params.krea2_lr_factor,
@@ -924,7 +953,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       debug_latents: params.debug_latents,
       debug_latents_every: params.debug_latents_every,
       enable_bucketing: params.enable_bucketing,
-      base_resolutions: params.enable_bucketing ? params.base_resolutions : undefined,
+      // This also bounds oversized images when aspect-ratio bucketing is off.
+      base_resolutions: params.base_resolutions,
       bucket_strategy: params.enable_bucketing ? params.bucket_strategy : undefined,
       multi_resolution_mode: params.enable_bucketing ? params.multi_resolution_mode : undefined,
       // Epoch-dynamic crop augmentation (SDXL only; requires bucketing)
@@ -940,8 +970,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       full_crop_position_mode: params.full_crop_position_mode,
       crop_microcond_mode: params.crop_microcond_mode,
       crop_plan_seed: params.crop_plan_seed,
-      cache_latents_to_disk: params.cache_latents_to_disk,
-      force_recache: params.force_recache,
+      // Legacy dataset mirror. latent_encoding_mode is authoritative.
+      cache_latents_to_disk: params.latent_encoding_mode === "pre_encoded_cache",
+      force_recache: params.latent_encoding_mode === "pre_encoded_cache"
+        ? params.force_recache
+        : false,
       train_unet: params.train_unet,
       train_text_encoder: params.train_text_encoder,
       train_image_encoder: params.train_image_encoder,
@@ -963,6 +996,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       audio_loss_weight: params.audio_loss_weight,
       text_encoding_mode: params.text_encoding_mode,
       text_encoding_swap_interval: params.text_encoding_swap_interval,
+      text_encoding_prefetch_depth: params.text_encoding_prefetch_depth,
       use_reference_images: params.use_reference_images,
       vision_encoder_path: params.vision_encoder_path || null,
       train_vision_encoder: params.train_vision_encoder,
@@ -972,6 +1006,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       param_tracking_interval: params.param_tracking_interval,
       latent_encoding_mode: params.latent_encoding_mode,
       latent_encoding_swap_interval: params.latent_encoding_swap_interval,
+      gradient_checkpointing: params.gradient_checkpointing,
+      cpu_offload_checkpointing: params.cpu_offload_checkpointing,
+      async_cpu_offload_checkpointing: params.async_cpu_offload_checkpointing,
+      fp8_base_dtype: params.fp8_base_dtype,
+      torch_compile: params.torch_compile,
+      torch_compile_dynamic: params.torch_compile_dynamic,
+      res_curriculum_enable: params.res_curriculum_enable,
+      res_curriculum_warmup_steps: params.res_curriculum_warmup_steps,
+      res_curriculum_warmup_scale: params.res_curriculum_warmup_scale,
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
       sensenova_mot_phase_eviction: params.sensenova_mot_phase_eviction,
@@ -1209,9 +1252,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "mixed_precision", "attention_backend", "attention_impl", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
       "audio_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
+      "text_encoding_prefetch_depth",
       "latent_encoding_mode", "latent_encoding_swap_interval",
+      "gradient_checkpointing", "torch_compile", "torch_compile_dynamic",
+      "cpu_offload_checkpointing", "async_cpu_offload_checkpointing", "fp8_base_dtype",
+      "res_curriculum_enable", "res_curriculum_warmup_steps", "res_curriculum_warmup_scale",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
-      "minit2i_inherit_final_layer",
+      "minit2i_inherit_final_layer", "minit2i_lora_scope", "minit2i_te_lora_scope",
+      "anima_lora_scope", "train_llm_adapter", "anima_attn_mlp_lr_factor",
+      "anima_mod_lr_factor", "anima_llm_adapter_lr_factor",
+      "lens_lora_scope", "lens_img_lr_factor", "lens_txt_lr_factor",
+      "ideogram4_lora_scope", "ideogram4_train_uncond",
+      "ideogram4_uncond_loss_weight", "ideogram4_lr_factor",
       "krea2_lora_scope", "krea2_lr_factor", "krea2_discrete_flow_shift",
       "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
       "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
@@ -1287,6 +1339,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     if (incoming.base_resolutions !== undefined) {
       patch.base_resolutions = incoming.base_resolutions === null ? [1024] : incoming.base_resolutions;
+    }
+    // Migrate configs written before latent_encoding_mode became authoritative.
+    if (incoming.latent_encoding_mode === undefined && incoming.cache_latents_to_disk === true) {
+      patch.latent_encoding_mode = "pre_encoded_cache";
     }
     // sample_prompts: only overwrite when non-empty (preserve default)
     if (incoming.sample_prompts && incoming.sample_prompts.length > 0) {
@@ -1984,7 +2040,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       fullCropPositionMode: params.full_crop_position_mode,
       cropMicrocondMode: params.crop_microcond_mode,
       cropPlanSeed: params.crop_plan_seed,
-      cacheLatentsToDisk,
+      cacheLatentsToDisk: usesLatentDiskCache,
       forceRecache,
       trainUnet,
       trainTextEncoder,
@@ -2663,6 +2719,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
           {/* Train a MiniT2I from scratch (in-memory random init; no init model on disk).
               The trainer builds the model from variant + latent VAE; Full Fine-tune only. */}
+          {(!baseModelPath || isMiniT2IModel(baseModelPath) || fromScratchMiniT2I) && (
           <div className="mt-2 p-3 bg-gray-800/60 border border-gray-700 rounded space-y-2">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -2733,6 +2790,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </>
             )}
           </div>
+          )}
 
           {/* REPA (Representation Alignment) — MiniT2I only. Aligns a DiT hidden state
               with frozen clean-image features to accelerate convergence (arXiv:2410.06940). */}
@@ -5581,6 +5639,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         )}
 
         {/* SigLIP2 Vision Encoder — info only; selector is near Base Model, train/LR are in Component-Specific LR */}
+        {isSDOrSDXLModel(baseModelPath) && (
         <div className="border border-gray-700 rounded p-4 space-y-2">
           <h3 className="text-sm font-medium text-gray-300 mb-2">SigLIP2 Vision Encoder</h3>
           <div className="text-xs text-gray-500 space-y-1">
@@ -5589,6 +5648,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-yellow-500/80">⚠️ SD 1.5 / SDXL モデルのみ対応。VE 選択はモデル選択欄の下にあります。</p>
           </div>
         </div>
+        )}
 
         {/* Priority Training */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
@@ -5890,6 +5950,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
 
         {/* Latent Encoding Mode */}
+        {latentEncodingAvailable && (
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
 
@@ -5897,7 +5958,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
             <select
               value={latentEncodingMode}
-              onChange={(e) => updateParam("latent_encoding_mode", e.target.value)}
+              onChange={(e) => {
+                const mode = e.target.value;
+                updateParam("latent_encoding_mode", mode);
+                if (mode !== "pre_encoded_cache") updateParam("force_recache", false);
+              }}
               disabled={!!requiredValue("latent_encoding_mode")}
               title={requiredValue("latent_encoding_mode")?.reason}
               className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
@@ -5930,6 +5995,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
           )}
 
+          {usesLatentDiskCache && (
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                id="force-recache"
+                checked={forceRecache}
+                onChange={(e) => updateParam("force_recache", e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-400">Force regenerate latent cache</span>
+            </label>
+          )}
+
           <div className="text-xs text-gray-500 space-y-1">
             <p><strong>Swap On-the-Fly:</strong> VAE swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer (~64MB for 256 steps). Recommended for VRAM efficiency.</p>
             <p><strong>Pre-Encoded Cache:</strong> Pre-encode all images to latents and cache to disk. Uses more disk space but no VRAM for VAE during training.</p>
@@ -5937,10 +6015,62 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p><strong>On-the-Fly GPU:</strong> Encode images on GPU without cache. VAE stays on GPU, uses more VRAM.</p>
           </div>
         </div>
+        )}
 
         {/* Advanced Settings */}
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Advanced Settings</h3>
+
+          <div className="space-y-3 pb-3 border-b border-gray-700">
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.gradient_checkpointing ?? true}
+                onChange={(e) => updateParam("gradient_checkpointing", e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+              />
+              <span className="text-sm text-gray-300">Gradient checkpointing</span>
+            </label>
+            <p className="text-xs text-gray-500">
+              Recomputes activations during backward to reduce VRAM. Disabling it can be
+              faster, but substantially increases peak memory.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">torch.compile</label>
+                <select
+                  value={params.torch_compile ?? "off"}
+                  onChange={(e) => updateParam("torch_compile", e.target.value)}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                >
+                  <option value="off">Off</option>
+                  <option value="default">Default</option>
+                  <option value="reduce-overhead">Reduce overhead</option>
+                  <option value="max-autotune">Max autotune</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Dynamic shapes</label>
+                <select
+                  value={params.torch_compile_dynamic == null ? "auto" : String(params.torch_compile_dynamic)}
+                  onChange={(e) => updateParam(
+                    "torch_compile_dynamic",
+                    e.target.value === "auto" ? null : e.target.value === "true"
+                  )}
+                  disabled={(params.torch_compile ?? "off") === "off"}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm disabled:opacity-50"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="true">Enabled</option>
+                  <option value="false">Disabled</option>
+                </select>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">
+              Compilation is opt-in and may spend extra time compiling each resolution shape.
+            </p>
+          </div>
 
           {/* Save Checkpoint Every */}
           <div>
@@ -6457,7 +6587,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
         {/* Bucketing Options */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 mb-3">Aspect Ratio Bucketing</h3>
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Training Resolution &amp; Aspect Ratio Bucketing</h3>
 
           {/* Enable Bucketing Toggle */}
           <div className="flex items-center space-x-3">
@@ -6476,9 +6606,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             Allows training on images with different aspect ratios by bucketing them into similar sizes
           </p>
 
-          {/* Bucketing Settings (only shown if enabled) */}
-          {enableBucketing && (
-            <>
+          {/* Base resolutions also bound oversized images when bucketing is off. */}
+          <>
               {/* Base Resolutions */}
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
@@ -6519,7 +6648,57 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <p className="text-xs text-gray-500 mt-2">
                   Selected: {baseResolutions.length > 0 ? baseResolutions.join(", ") : "None"}
                 </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Without bucketing, oversized images are fitted into the largest selected
+                  resolution area while smaller images keep their source size.
+                </p>
               </div>
+
+              <div className="border-t border-gray-700 pt-3 space-y-3">
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.res_curriculum_enable ?? false}
+                    onChange={(e) => updateParam("res_curriculum_enable", e.target.checked)}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded"
+                  />
+                  <span className="text-sm text-gray-300">Lower-resolution warmup</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Starts below the selected base resolutions, then switches to them at an
+                  epoch boundary. This reduces early-step attention cost.
+                </p>
+                {params.res_curriculum_enable && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Warmup steps</label>
+                      <NumberInput
+                        min={0} step={1}
+                        value={params.res_curriculum_warmup_steps ?? 0}
+                        defaultValue={0}
+                        placeholder="e.g. 500"
+                        onCommit={(v) => updateParam("res_curriculum_warmup_steps", v)}
+                        className="w-full px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Linear scale</label>
+                      <NumberInput
+                        min={0.1} max={0.99} step="any" parse="float"
+                        value={params.res_curriculum_warmup_scale ?? 0.5}
+                        defaultValue={0.5}
+                        placeholder="0.5"
+                        onCommit={(v) => updateParam("res_curriculum_warmup_scale", v)}
+                        className="w-full px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+            {/* Bucketing-specific settings */}
+            {enableBucketing && (
+              <>
 
               {/* Multi-Resolution Mode (only show if multiple resolutions) */}
               {baseResolutions.length > 1 && (
@@ -6557,6 +6736,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
 
               {/* Epoch-dynamic crop augmentation (SDXL only) */}
+              {isSDXLModel(baseModelPath) && (
               <div className="border-t border-gray-700 pt-3">
                 <label className="flex items-center space-x-2 cursor-pointer">
                   <input
@@ -6724,44 +6904,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                 )}
               </div>
+              )}
             </>
-          )}
-
-          {/* Cache Latents (always shown, works with or without bucketing) */}
-          <div className="flex items-center space-x-3 pt-2 border-t border-gray-700">
-            <input
-              type="checkbox"
-              id="cache-latents"
-              checked={cacheLatentsToDisk}
-              onChange={(e) => updateParam("cache_latents_to_disk", e.target.checked)}
-              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-            />
-            <label htmlFor="cache-latents" className="text-sm text-gray-400">
-              Cache latents to disk (reduces VRAM usage)
-            </label>
-          </div>
-          <p className="text-xs text-gray-500">
-            Pre-encode images to latents and cache to disk. Significantly reduces VRAM during training (VAE stays on CPU). Text encoding cache is configured separately via "Text Encoding Mode".
-          </p>
-        </div>
-
-        {/* Force Recache */}
-        <div className="space-y-2">
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="force-recache"
-              checked={forceRecache}
-              onChange={(e) => updateParam("force_recache", e.target.checked)}
-              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-            />
-            <label htmlFor="force-recache" className="text-sm text-gray-400">
-              Force regenerate latent cache
-            </label>
-          </div>
-          <p className="text-xs text-gray-500">
-            Force regenerate latent cache even if valid cache exists. Use this if you switched to a different VAE or if cache validation fails.
-          </p>
+            )}
+          </>
         </div>
         </div>
 

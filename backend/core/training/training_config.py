@@ -497,6 +497,7 @@ class TrainingConfigGenerator:
         # NOTE: caption_processing settings are NOT saved to YAML
         # They are read from the database (Dataset.caption_processing) at training time
         cache_latents_to_disk = p.get("cache_latents_to_disk", False)
+        force_recache = p.get("force_recache", False)
         base_resolutions = p.get("base_resolutions")
         datasets_array = []
         if dataset_configs:
@@ -508,6 +509,7 @@ class TrainingConfigGenerator:
                     "caption_ext": "txt",
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                     "cache_latents_to_disk": cache_latents_to_disk,
+                    "force_recache": force_recache,
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -517,6 +519,7 @@ class TrainingConfigGenerator:
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
+                "force_recache": force_recache,
                 "resolution": base_resolutions or [512, 768, 1024],
             })
 
@@ -670,6 +673,7 @@ class TrainingConfigGenerator:
             raise ValueError("Cannot specify both total_steps and epochs")
 
         cache_latents_to_disk = p.get("cache_latents_to_disk", False)
+        force_recache = p.get("force_recache", False)
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
@@ -679,6 +683,7 @@ class TrainingConfigGenerator:
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     "cache_latents_to_disk": cache_latents_to_disk,
+                    "force_recache": force_recache,
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -688,6 +693,7 @@ class TrainingConfigGenerator:
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
+                "force_recache": force_recache,
             })
 
         # Full FT defaults differ from LoRA defaults
@@ -802,6 +808,7 @@ class TrainingConfigGenerator:
             raise ValueError("Cannot specify both total_steps and epochs")
 
         cache_latents_to_disk = p.get("cache_latents_to_disk", False)
+        force_recache = p.get("force_recache", False)
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
@@ -811,6 +818,7 @@ class TrainingConfigGenerator:
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     "cache_latents_to_disk": cache_latents_to_disk,
+                    "force_recache": force_recache,
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -820,6 +828,7 @@ class TrainingConfigGenerator:
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
                 "cache_latents_to_disk": cache_latents_to_disk,
+                "force_recache": force_recache,
             })
 
         # ControlNet-specific network config

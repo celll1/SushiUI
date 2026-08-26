@@ -1821,6 +1821,25 @@ def update_training_progress(
         db.commit()
 
 
+def _resolve_save_every_n_steps(save_every_unit: str, save_every: int,
+                                 dataset_item_count: int, batch_size: int) -> int:
+    """
+    Convert a `save_every`/`save_every_unit` pair to save_every_n_steps.
+
+    This is an approximation used only to seed the trainer's save cadence
+    before bucketing/dataloader construction; the trainer recalculates the
+    real steps-per-epoch once the actual batch count is known. It does not
+    account for gradient_accumulation_steps or dataset repeats/multiplicity
+    (neither did the four call sites this replaces, which computed this
+    identically). Ceil division so a trailing partial batch counts as a step,
+    matching how the trainer's own dataloader yields a final short batch.
+    """
+    if save_every_unit == 'epochs':
+        steps_per_epoch = (dataset_item_count + batch_size - 1) // batch_size
+        return save_every * steps_per_epoch
+    return save_every
+
+
 def main():
     """Main training entry point."""
     # Fix Windows cp932 encoding issue: force UTF-8 for stdout/stderr
@@ -2559,13 +2578,10 @@ def main():
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
+            save_every_n_steps = _resolve_save_every_n_steps(
+                save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
-                # Calculate steps per epoch (approximate, will be recalculated by trainer)
-                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
-                save_every_n_steps = save_every * steps_per_epoch
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
-            else:
-                save_every_n_steps = save_every
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
@@ -2977,12 +2993,10 @@ def main():
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
+            save_every_n_steps = _resolve_save_every_n_steps(
+                save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
-                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
-                save_every_n_steps = save_every * steps_per_epoch
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
-            else:
-                save_every_n_steps = save_every
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
@@ -3432,13 +3446,10 @@ def main():
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
+            save_every_n_steps = _resolve_save_every_n_steps(
+                save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
-                # Calculate steps per epoch (approximate, will be recalculated by trainer)
-                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
-                save_every_n_steps = save_every * steps_per_epoch
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
-            else:
-                save_every_n_steps = save_every
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 
@@ -3788,12 +3799,10 @@ def main():
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
 
+            save_every_n_steps = _resolve_save_every_n_steps(
+                save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
-                steps_per_epoch = (len(dataset_items) + train_config.get('batch_size', 1) - 1) // train_config.get('batch_size', 1)
-                save_every_n_steps = save_every * steps_per_epoch
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
-            else:
-                save_every_n_steps = save_every
 
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
 

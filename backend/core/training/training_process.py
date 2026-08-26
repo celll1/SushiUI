@@ -470,14 +470,28 @@ class TrainingProcessManager:
         return self.processes.get(run_id)
 
     def is_live(self, run_id: int) -> bool:
-        """Whether a spawned child for ``run_id`` is still alive.
+        """Whether ``run_id`` is claimed by a training process that is not known
+        to have finished.
 
-        ``is_running`` is a flag the monitor task clears only once it observes
-        the exit; the child's returncode is the ground truth.
+        A REGISTERED-BUT-NOT-YET-SPAWNED entry (``process.process is None``)
+        counts as live. create_process and the child spawn are seconds apart —
+        pre-flight rescan, the pre-training VRAM release — and reading that
+        window as "not live" let a second request reap the first request's
+        registry entry and spawn its own child: two trainers on one GPU, the
+        first orphaned with nothing left that could stop it. Chosen over an
+        asyncio.Lock around register->spawn because create_process consults this
+        same predicate, so one rule covers both entry points; the caller that
+        registers is responsible for removing the entry if the spawn never
+        happens (see start_training_run's failure path).
+
+        Once spawned, ``is_running`` is a flag the monitor task clears only after
+        it observes the exit, so the child's returncode is the ground truth.
         """
         process = self.processes.get(run_id)
-        if process is None or process.process is None:
+        if process is None:
             return False
+        if process.process is None:
+            return True
         return process.process.returncode is None
 
     async def remove_process(self, run_id: int) -> None:

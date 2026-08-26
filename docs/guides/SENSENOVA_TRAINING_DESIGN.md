@@ -1629,9 +1629,10 @@ streaming 実装後の文面。"training-side offload belongs to LayerOffloadCon
 **DONE（driver）**: 推論用 callback は再利用せず、学習専用の `full / prefix /
 denoise` state machine を実装した。2 周目の `denoise -> prefix` は gen D2H 完了後に
 und H2D、`prefix -> denoise` は und D2H 完了後に gen H2D とし、同一 phase は no-op。
-転送は correctness 優先の blocking copy とする。H2D 非同期化は未実装で、将来の
-opt-in 最適化として残す（下の実測は既定 ON を正当化しなかったが、その測定自体が
-機構の有効性を判定していない — §8.3 の gate を参照）。
+転送は correctness 優先の blocking copy とする。非同期化は単独の
+`non_blocking=True` ではなく、residency と失敗回復を含む再設計を要する（§8.6）。
+下の実測は既定 ON を正当化しなかったが、その測定自体が機構の有効性を判定して
+いない — §8.3 の gate を参照。
 prefix 失敗時は `prefix` に留まるため retry で余分な転送を起こさず、LoRA の
 forward / backward / optimizer / save 中は gen half を GPU に維持する。selector は
 LoRA injection 後の live tree から Parameter と永続 buffer を選び、non-persistent
@@ -2347,8 +2348,79 @@ allocator が pinned block を OS に返却しないため、run の間ずっと
 `sensenova_mot_pageable_staging`（デフォルト `False`、`sensenova_mot_phase_eviction`
 必須）は evict した half を pinned ではなく通常の pageable host メモリへ退避する
 opt-in の代替モードで、この sticky な高水位を OS が回収可能な host RAM と交換する。
-転送速度への影響は未計測。実装は `sensenova_phase_eviction.py`（PAGEABLE STAGING）
-と `mot_cpu_staging.py`（PAGEABLE ESCAPE HATCH）を参照。
+転送速度への影響は未計測であり、**性能用のknobではない**。実装は
+`sensenova_phase_eviction.py`（PAGEABLE STAGING）と `mot_cpu_staging.py`
+（PAGEABLE ESCAPE HATCH）を参照。
+
+### 8.6 同期half転送によるGPU idleと最適化境界
+
+#### 現状のクリティカルパス
+
+both-branch full FTの4相経路では、MNT=1の1 iterationに次の2回のswapが入る。
+
+1. `prefix -> denoise`: und halfをD2Hし、gen halfをH2Dする。
+2. `denoise -> und_backward`: gen halfをD2Hし、und halfをH2Dする。
+
+次iterationの`und_backward -> prefix`はundが既にresidentなので転送しない。現実装は
+D2H/H2Dともblockingであり、各swapが完了するまで次phaseのGPU計算を開始できない。
+したがってTask Manager等で見える周期的なGPU idleは、Pythonの転送計画生成ではなく、
+主としてこのphase境界のPCIe転送待ちである。`474a36aa`はimmutableな転送計画をrun開始時に
+キャッシュしたが、転送byte数も同期点も変えない。
+
+実checkpointのbf16 halfは15.09375 GiB（§8.5）なので、4相・MNT=1のsteady stateは算術上、
+1 iterationに**D2H 30.1875 GiB + H2D 30.1875 GiB = 合計60.375 GiB**を移す。最初の
+iterationだけは初期`full -> prefix`でgen halfのD2Hがもう1回入る。この値はtensor headerから
+得た転送対象量であり、実効帯域やwall timeの実測ではない。既存の0.3363 s D2H / 0.3296 s
+H2Dは7.60 GiBのint8 halfでの測定であり、bf16 wall timeへ線形外挿してはならない。
+
+#### なぜ単純な非同期copyを採らないか
+
+`non_blocking=True`だけでは、待ち時間を隠す相手が存在しない。whole-half方式では次phaseの
+forward/backwardがincoming half全体を必要とするため、H2Dをqueueしても計算開始前には
+結局完了待ちが必要になる。さらにD2HとH2Dを同時進行させるには、次の不変条件をすべて
+維持しなければならない。
+
+- device上のresident量を原則1 halfに保ち、48 GBで一時的な両half常駐を起こさない。
+- copy中のhost/device tensorをallocatorが再利用しないよう、stream/eventと
+  `record_stream()`相当の寿命管理を行う。
+- 途中のtensor転送が失敗した場合、in-flight copyを完了または中止してから
+  best-effort CPU正規化を行う。
+- fused backward hookが更新を適用する時点で、そのParameterとgradientを同じdeviceに置く。
+
+現在の同期実装はこれらを転送の逐次完了によって保証している。非同期化は速度flagではなく、
+転送state machineと失敗回復の再設計である。
+
+#### 選択肢と意味
+
+| 選択肢 | 期待できること | 制約 / 判断 |
+|---|---|---|
+| 4相evictionを維持 | 48 GB内のresident peakを抑える | 同期転送idleを支払う。現在の安全な基準経路 |
+| eviction OFF | 転送2 swapを消す | weights、gradients、optimizer、activationを含む実peakが48 GBに収まることを同一条件のprobeで証明できた場合のみ候補 |
+| shared MNT prefix | MNT=Nでswapを2N回から2回へ減らす | MNT=1では効果なし。und更新をN回から1回へ変えるため、単なる性能最適化ではない（§8.3.5） |
+| pageable staging | stickyなpinned host高水位を避ける | host memory用。転送高速化を主張しない。通常はpinnedより遅くなり得る |
+| whole-half H2Dだけ非同期化 | CPU threadのblock時間を短く見せる | GPU計算前に待つためstep wall改善は限定的。単独では採用しない |
+| layer単位prefetch/evict | PCIe転送と隣接layerの計算を重ねられる可能性 | 本命だが、layer residency、checkpoint再計算、fused hook、失敗回復を統合する新しいoffloaderが必要 |
+
+48 GB環境で最初に行うべき判断は、非同期化ではなく**同一run条件でeviction OFFが本当に
+載るか**のA/Bである。載らなければ転送は容量成立のための必須コストであり、次の研究対象は
+whole-half copyの小手先ではなくlayer単位overlapになる。
+
+#### 測定gate
+
+最適化案を採用する前に、同一checkpoint、解像度、attention backend、seed、optimizerで
+少なくとも次を測る。現在の主対象はRTX 6000 Ada 48 GB、B1、both full FT、1024pxで、
+2048px以上は別armとする。
+
+- warmup後30 iteration以上のinput-batch wall、optimizer update wall、phase別D2H/H2D wall。
+- `torch.cuda.max_memory_allocated/reserved`とhost working set / pinned bytesの高水位。
+- gen/undのupdated-parameter census、loss有限性、保存・resume後のoptimizer state一致。
+- OOM、user interrupt、転送例外の各failure injectionで、partial residencyを再利用しないこと。
+
+同期実装のphase wallは、phase境界の外側で`perf_counter`を取れば新しいGPU同期を増やさず
+測定できる。非同期案ではCUDA eventが必要だが、per-tensor eventをUIへ送らず、sampled計測を
+run内で集約する。採用条件は単にGPU利用率が滑らかになることではなく、**peakを予算内に
+保ったままsteady-state step wallが再現可能に短縮し、数値・更新・failure recoveryの各gateを
+通ること**である。
 
 ---
 

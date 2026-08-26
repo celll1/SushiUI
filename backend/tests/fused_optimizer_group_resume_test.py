@@ -56,6 +56,7 @@ class _Probe:
     _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
     _optimizer_state_param_count = staticmethod(BaseTrainer._optimizer_state_param_count)
     _fast_forward_lr_schedulers = BaseTrainer._fast_forward_lr_schedulers
+    _fast_forward_one_lr_scheduler = staticmethod(BaseTrainer._fast_forward_one_lr_scheduler)
     _build_component_lr_list = BaseTrainer._build_component_lr_list
     _record_configured_group_lrs = BaseTrainer._record_configured_group_lrs
     _name_configured_groups = BaseTrainer._name_configured_groups
@@ -530,6 +531,23 @@ def test_fixed_fast_forward_advances_every_schedule(tmp_path):
     _simulate_checkpoint_lr(probe)
     _quiet(probe._reassert_config_lr_on_resume)
     assert _group_lrs(probe) == pytest.approx([0.5e-4] * 3)
+
+
+def test_lambda_fast_forward_evaluates_only_the_resumed_step(tmp_path):
+    calls = []
+
+    def schedule(step):
+        calls.append(step)
+        return min(1.0, step / 1000.0)
+
+    probe = _single_probe(tmp_path, lr_lambda=schedule)
+    calls.clear()  # LambdaLR evaluates step zero during construction.
+    probe._fast_forward_lr_schedulers(99_180)
+
+    assert calls == [99_180]
+    assert probe.lr_scheduler.last_epoch == 99_180
+    assert probe.lr_scheduler._step_count == 99_181
+    assert probe.optimizer.param_groups[0]["lr"] == pytest.approx(1e-4)
 
 
 def test_fast_forward_is_unchanged_without_fused_groups(tmp_path):

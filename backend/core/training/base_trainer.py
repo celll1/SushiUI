@@ -3176,8 +3176,32 @@ class BaseTrainer(ABC):
         for scheduler in all_lr_schedulers(self):
             if scheduler is None:
                 continue
-            for _ in range(global_step):
-                scheduler.step()
+            self._fast_forward_one_lr_scheduler(scheduler, global_step)
+
+    @staticmethod
+    def _fast_forward_one_lr_scheduler(scheduler, global_step: int) -> None:
+        """Move a fresh scheduler to ``global_step`` without needless replay."""
+        from torch.optim.lr_scheduler import LambdaLR
+
+        if isinstance(scheduler, LambdaLR):
+            step = int(global_step)
+            values = [
+                base_lr * lr_lambda(step)
+                for base_lr, lr_lambda in zip(
+                    scheduler.base_lrs, scheduler.lr_lambdas
+                )
+            ]
+            scheduler.last_epoch = step
+            scheduler._step_count = step + 1
+            scheduler._last_lr = values
+            for group, value in zip(scheduler.optimizer.param_groups, values):
+                group["lr"] = value
+            return
+
+        # ReLoRA's scheduler has restart history and cannot be positioned from
+        # the final step alone.
+        for _ in range(global_step):
+            scheduler.step()
 
     def save_optimizer_state(self, step: int):
         """

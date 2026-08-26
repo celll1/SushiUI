@@ -4425,6 +4425,126 @@ RuntimeError: SenseNova MoT weight halves are missing or asymmetric at layer 0
 - **`separate_by_reference`**（bucketing 無効時は通らない。Phase 3 から継続）。
 - **reference token の cache**（§7.4 の「初版では実装しない」は依然そのまま）。
 
+### 13.8 causal_fastpath の本番規模測定（2026-08-26: correctness-neutral / performance-neutral）
+
+7ac7bcd8 が `causal_fastpath`（§4.2 (1)、§13.3）を導入したときに添えたのは
+attention 演算単体を比較する分離ハーネスの数字であり、実 training step での
+whole-step 効果は未測定だった。本節はその測定結果を記録する。**結論:
+whole-step では correctness-neutral かつ performance-neutral。** 両方を
+はっきり書き分け、分離ベンチマークの数字が「学習が速くなる」根拠として
+独り歩きしないようにする。
+
+#### (1) 分離 attention ベンチマーク（ISOLATED — training-step の測定ではない）
+
+commit message、および MODEL_FACTS.md の sensenova 行が引用する
+「~21% faster / ~34% less peak memory（L=1600 vs L≈350-450）」「enable_gqa
+~9x slower」は、attention 演算単体を比較する分離ハーネスの数字であり、
+**学習 1 step の wall clock ではない**。以下 (2) が本番規模・実 checkpoint
+での training-step 測定である。
+
+#### (2) 本番規模の whole-step 測定
+
+**構成**: `M:\model\sensenova\sensenova_int8.safetensors`（load 時に int8 から
+bf16 へ dequantize）、`FullParameterTrainer`、`train_unet=True`、
+`train_text_encoder=True`、`sensenova_mot_phase_eviction=True`、
+`sensenova_four_phase_eviction=True`、optimizer は adafactor（このルートが
+受理する唯一の optimizer）、dataset 37、batch_size 1、
+gradient_checkpointing True、解像度 256×256、3 warmup + 10 計測 step、
+1 arm = 1 プロセス、RTX 6000 Ada。
+
+| arm | mean s/iter | stdev | mean encode_prompt（und prefix）s | peak VRAM alloc/reserved | peak host RSS |
+|---|---|---|---|---|---|
+| eager_native（eager 強制、backend=native） | 1.5090 | 0.0173 | 0.1250 | 35.07 / 36.54 GB | 54.25 GB |
+| fast_native（実 classifier、backend=native） | 1.4992 | 0.0165 | 0.1165 | 35.07 / 36.54 GB | 46.42 GB |
+| fast_flash（実 classifier、backend=flash） | 1.5363 | 0.0861 | 0.1152 | 35.07 / 36.53 GB | 52.51 GB |
+
+fast_native は eager_native 比 −0.65%。fast_flash は逆に **+1.81% 遅い**
+（1 step が 1.77s に張り出した外れ値が原因で、その stdev はクリーンな
+他 2 arm の約 5 倍）。どちらも run-to-run のノイズ域内（クリーンな 2 arm の
+stdev は mean の約 1.1-1.2%）。backend 選択は dispatch レベルで確認済み:
+fast_flash は "[Attention] using FLASH backend"（fallback suffix なし）を、
+他の 2 arm は "using NATIVE backend" をログした。
+
+**なぜ効果が消えるか、これが一番重要な点である**: und prefix
+（encode_prompt）は step 全体の 7.5-8.3%しか占めず、train_step（denoise
+branch）が 92%以上を占める。und prefix 単体には期待どおりの一貫した効果が
+ある: eager 0.1250s → fast_native 0.1165s（−6.9%）→ fast_flash 0.1152s
+（−7.9%）、(1) の分離ベンチマークと同方向。しかし step の約 8%を占める
+部分での 7-9%改善は、whole-step では 1%未満の上限に潰れ、それすら
+run-to-run ノイズに埋もれる。
+
+**解像度についての明記**（256px を 2048px の代替として誤読させないため）:
+画像生成トークン数は `(res/32)^2` で増える: 256px → 64 token、
+1024px → 1,024 token、2048px → 4,096 token（256→2048 で 64 倍）。und
+prefix はキャプション由来（本測定の実測平均 506 token、範囲 449-567）で、
+**解像度に応じて増えない**。したがって 2048px での und prefix の step 占有率は
+256px で観測した ~8%より**小さくなる**。**256px はこの変更にとって
+最も有利な解像度であり、それでも whole-step の signal は検出されなかった。**
+
+#### (3) K/V 乖離（forward-only、実 checkpoint、backend=flash）
+
+実 caption（1003 文字）、text-only prefix、42 layer、558 token。layer 0 の
+K/V は bit-identical（絶対差 0.0）。layer 1-41 は residual stream 経由で
+乖離する。layer 41 での whole-tensor relative L2（`||diff||2 / ||baseline||2`）:
+keys 2.11%、values 3.98%（layer 1 の keys 0.66% / values 0.71% から
+おおむね単調増加）。これは、U-0 が fp32 で確認した代数的等価性
+（loss 同一・whole-gradient relative L2 = 0.000%）の上に乗る、bf16 の
+kernel-switch drift が depth 方向に蓄積したものである。
+
+**⚠️ 未確認事項として明記する**: bf16-vs-fp32 のベースライン drift は本モデル
+では測定していない。したがって commit message の「bf16 での差は bf16 vs
+fp32 の差より小さい」という主張は、**本番規模で独立に確認されたものではない**
+— それは別の toy-geometry probe からの主張であり、本番規模で確認済みと
+読めるように書いてはならない。
+
+**方法論上の注意（記録すべき罠）**: k_proj/q_proj の per-element /
+per-parameter max relative difference は、この文脈では無意味である。Qwen3 の
+k_norm が k_proj 出力の多くをゼロ近くに寄せるため、ベースラインがほぼゼロの
+箇所で小さい絶対差が比率を爆発させる（素の per-element max は 656,250%に
+達したが、これはベースラインがほぼゼロであることのアーティファクトであり、
+発見ではない）。**whole-tensor relative L2 を使うこと。**
+
+#### (4) 構造的事実 2 件（コード確認済み）
+
+1. **run 121 は実際にこの経路を通っていた。** `training_runs.id=121` の
+   `config_yaml`（2026-08-26 に `training.db` を直接読んで確認）は
+   `train_text_encoder: true`、`train_unet: true`、
+   `sensenova_mot_phase_eviction: true`、`sensenova_four_phase_eviction: true`、
+   `base_resolutions: [2048]`、`batch_size: 1`、`use_reference_images: false`、
+   `attention_backend: flash`。
+2. **eviction を伴う causal_fastpath 経路は full fine-tune 限定だが、
+   causal_fastpath 自体は full fine-tune 限定ではない — この 2 つを
+   混同しないこと。** `train_runner._apply_sensenova_training_contract` は
+   `train_text_encoder=True` かつ `sensenova_mot_phase_eviction=True` の
+   組み合わせを **LoRA では config-contract レベルで pre-load 拒否する**
+   （`ValueError: ... cannot be combined with ...`、
+   `backend/tests/sensenova_four_phase_ui_exposure_test.py` の
+   `test_the_pair_refusal_is_shown_under_lora_too_with_its_own_remedy` /
+   `test_the_split_is_refused_outside_full_fine_tuning` で固定）。これは
+   **runtime assertion ではなく config レベルの拒否**である。加えて、
+   実行時のワイヤリングでも `sensenova_ops.train_step` の `boundary_leaf` は
+   `getattr(trainer, "sensenova_four_phase", None) is not None` で決まり、
+   `LoRATrainer` はこの属性を一度も設定しない（four-phase context は
+   full-fine-tune 限定、と `lora_trainer.py` 自身のコメントが明言）ため、
+   four-phase split は LoRA に実装されていない。**しかし**
+   `causal_fastpath` そのもの（`train_text_encoder=True` かつ text-only
+   prefix、eviction flag なし）は LoRA でも到達可能であり、これはすでに
+   Phase U-1（`3d837202`..`327276df`）として DONE・shipped の経路である
+   （§13.6 参照）。したがって「production で causal_fastpath に到達する
+   run はすべて full fine-tune かつ両 eviction flag on」という言い方は
+   **誤りであり書かない**。正しい言い方は「**eviction flag を伴う**
+   causal_fastpath 経路（本節 (2) の測定条件そのもの）は full fine-tune
+   限定」である。
+
+#### (5) 未測定 — gap として記録
+
+- **実 width/depth での whole-gradient relative L2** は算出していない。
+  loss は近い値で推移した（step 4: 0.09454 vs 0.09452；step 7: 0.15032 vs
+  0.15015）が、gradient の L2 は計算していない。
+- **4 相の phase-transition sequence** は個別に検証していない。ただし
+  全 arm が両 eviction flag ON のまま 13 step（3 warmup + 10 計測）を
+  有限 loss で完走しており、両者が共存することの直接証拠にはなる。
+
 ---
 
 ## 14. References

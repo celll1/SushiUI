@@ -191,7 +191,7 @@ def test_negative_control_vae_stop_at_step_zero_exported_untrained_weights(tmp_p
     t = _make_vae_trainer(tmp_path)
     t.val_batch = None
     t.stopped = True
-    assert t._backwards_completed == 0 and t.global_step == 0
+    assert t.global_step == 0
 
     assert _shipped_vae_tail(t) is True
     assert t.checkpoints == [(0, True)]   # a checkpoint of weights nothing touched
@@ -204,7 +204,6 @@ def test_vae_stop_at_step_zero_now_writes_nothing(tmp_path):
     (t.output_dir / ".stop_training").write_text("", encoding="utf-8")
 
     assert t.train(_dataset_items(tmp_path)) is True
-    assert t._backwards_completed == 0
     assert t.global_step == 0
     assert t.checkpoints == []
     assert t.exports == []
@@ -215,7 +214,7 @@ def test_vae_stop_mid_accumulation_window_writes_nothing(tmp_path):
     """Regression for the auditor's F1 reproduction: accum=2, the stop sentinel
     lands after the first micro-step of the window. One backward has run but
     no optimizer step has, so global_step is still 0 and nothing may be
-    written -- even though `_backwards_completed` is nonzero."""
+    written."""
     t = _make_vae_trainer(tmp_path, total_steps=2, gradient_accumulation_steps=2)
     (t.output_dir).mkdir(parents=True, exist_ok=True)
     real_micro_step = t._train_micro_step
@@ -231,7 +230,7 @@ def test_vae_stop_mid_accumulation_window_writes_nothing(tmp_path):
     t._train_micro_step = _stop_after_first_micro
 
     assert t.train(_dataset_items(tmp_path)) is True
-    assert t._backwards_completed == 1
+    assert calls["n"] == 1
     assert t.global_step == 0
     assert t.checkpoints == []
     assert t.exports == []
@@ -241,21 +240,11 @@ def test_vae_run_that_trains_is_unchanged(tmp_path):
     t = _make_vae_trainer(tmp_path, total_steps=3)
 
     assert t.train(_dataset_items(tmp_path)) is False
-    assert t._backwards_completed == 3
     assert t.global_step == 3
     assert t.checkpoints == [(3, True)]
     assert t.exports == [3]
     # The optimizer really moved the one trainable parameter.
     assert float(t.vae.w.detach()) != 0.5
-
-
-def test_vae_counter_counts_backwards_not_optimizer_steps(tmp_path):
-    """Accumulation: two micro-steps (two backwards) per optimizer step."""
-    t = _make_vae_trainer(tmp_path, total_steps=2, gradient_accumulation_steps=2)
-
-    t.train(_dataset_items(tmp_path))
-    assert t.global_step == 2
-    assert t._backwards_completed == 4
 
 
 def test_vae_resume_at_target_is_still_a_legitimate_noop(tmp_path):
@@ -272,7 +261,6 @@ def test_vae_resume_at_target_is_still_a_legitimate_noop(tmp_path):
     t.load_base_vae = _load_and_resume
 
     assert t.train(_dataset_items(tmp_path)) is False
-    assert t._backwards_completed == 0
     assert t.checkpoints == [(3, True)]
     assert t.exports == [3]
 
@@ -305,12 +293,8 @@ def test_vae_finalize_never_discards_a_resumed_run(tmp_path):
     assert t.exports == [800]
 
 
-def test_vae_counter_is_incremented_only_at_the_backward():
-    body = VAE_SRC[VAE_SRC.index("def _train_micro_step"):]
-    body = body[:body.index("\n    def ", 1)]
-    assert body.count("self._backwards_completed += 1") == 1
-    assert body.index("backward()") < body.index("self._backwards_completed += 1")
-    assert VAE_SRC.count("self._backwards_completed += 1") == 1
+def test_vae_does_not_count_backwards_it_never_reads():
+    assert "_backwards_completed" not in VAE_SRC
 
 
 # ==========================================================================

@@ -177,9 +177,6 @@ class VaeTrainer:
         # and is checkpointed so a resume continues into a FRESH pass.
         self.train_sampler = None
         self.global_step = 0
-        # Backward-pass census. A run that completed none has the base VAE's
-        # weights, so it neither reports success nor writes them back out.
-        self._backwards_completed = 0
         self.stopped = False
         self._last_val_step = -1
         self._last_ckpt_step = -1
@@ -744,8 +741,6 @@ class VaeTrainer:
         np.random.seed(seed % (2**32))
         torch.manual_seed(seed)
 
-        self._backwards_completed = 0
-
         self._detect_resume_seq()
         self.load_base_vae()
         self.select_trainable()
@@ -976,7 +971,6 @@ class VaeTrainer:
             )
 
         (loss / accum).backward()
-        self._backwards_completed += 1
         return float(loss.detach()), parts
 
     # ------------------------------------------------------------------

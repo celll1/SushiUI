@@ -2373,6 +2373,17 @@ iterationだけは初期`full -> prefix`でgen halfのD2Hがもう1回入る。�
 得た転送対象量であり、実効帯域やwall timeの実測ではない。既存の0.3363 s D2H / 0.3296 s
 H2Dは7.60 GiBのint8 halfでの測定であり、bf16 wall timeへ線形外挿してはならない。
 
+**計測（instrumentation、PHASE 1）**: 上記が算術のままである状態を解消するため、
+`SenseNovaTrainingPhaseEvictor._transition`が各transitionのd2h/h2d秒数と転送byte数を
+方向別に累積し、train loopがstepごとに1回drainして`sn_d2h_s` / `sn_h2d_s` /
+`sn_d2h_gib` / `sn_h2d_gib`（および実行時のCUDA high-water `sn_peak_alloc_gib` /
+`sn_peak_resv_gib`、こちらはrun累積で毎step値ではない）として
+extra metricsへ出す。byte数は実際にcopyが起きるtensorのみを数える
+（既にstage済み/常駐のtensorは0）。timerは各transitionの先頭で
+`torch.cuda.synchronize()`してから開始する。これを省くと最初のblocking copyが
+直前phaseのqueue済み計算を吸ってd2h側が過大になる（§8.3.2で撤回した数値と同じ欠陥）。
+先頭syncは待ち時間を増やさない——次の文のcopyがどのみち同じ計算を待つためである。
+
 #### なぜ単純な非同期copyを採らないか
 
 `non_blocking=True`だけでは、待ち時間を隠す相手が存在しない。whole-half方式では次phaseの

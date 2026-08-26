@@ -59,6 +59,25 @@ EXTRA_METRIC_DEFS = {
     # not a loss, hence the secondary axis. Emitted only on a skip.
     "sn_und_grad_dropped": {"label": "SenseNova und grad dropped", "color": "#f87171",
                             "dashed": True, "axis": "right"},
+    # SenseNova MoT phase eviction: per-step wall time and volume of the half
+    # swaps, split by direction (see sensenova_phase_eviction's TRANSFER
+    # ACCOUNTING). Seconds and GiB are both orders away from the loss scale, so
+    # they share the secondary axis for the same reason "lr" does.
+    "sn_d2h_s": {"label": "SenseNova D2H (s)", "color": "#38bdf8", "dashed": False,
+                 "axis": "right"},
+    "sn_h2d_s": {"label": "SenseNova H2D (s)", "color": "#a78bfa", "dashed": False,
+                 "axis": "right"},
+    "sn_d2h_gib": {"label": "SenseNova D2H (GiB)", "color": "#22d3ee", "dashed": True,
+                   "axis": "right"},
+    "sn_h2d_gib": {"label": "SenseNova H2D (GiB)", "color": "#c084fc", "dashed": True,
+                   "axis": "right"},
+    # RUN-CUMULATIVE CUDA high-water (never reset), so these are monotone step
+    # curves, not per-step usage: they say when the peak last moved, not what a
+    # step cost. Emitted only alongside the swap counters above.
+    "sn_peak_alloc_gib": {"label": "SenseNova peak allocated (GiB)", "color": "#34d399",
+                          "dashed": False, "axis": "right"},
+    "sn_peak_resv_gib": {"label": "SenseNova peak reserved (GiB)", "color": "#fb923c",
+                         "dashed": False, "axis": "right"},
     # Per-component actual LRs (only emitted when a run trains more than one
     # optimizer param group at potentially-different LRs, e.g. UNet+TE1/TE2 or
     # +VisionEncoder runs -- see base_trainer.py's per-step logging site next

@@ -74,6 +74,12 @@ a ratio from that tree, not a device measurement -- see
 recovery would need the in-flight copy tracked and synchronized before
 touching it. Neither is disqualifying; both are unresolved.
 
+TRANSFER ACCOUNTING. Every transition tallies seconds and bytes per direction
+into plain attributes, drained once per step by the train loop (see
+``drain_transfer_stats``). Section 8.6 of SENSENOVA_TRAINING_DESIGN.md states
+this loop's per-iteration transfer volume as ARITHMETIC; these counters are the
+measurement it never had.
+
 PAGEABLE STAGING -- opt-in, off by default
 (``sensenova_mot_pageable_staging``). Trades the pinned pool's sticky
 high-water (torch's caching host allocator never returns a pinned block to
@@ -85,6 +91,7 @@ attribute, so this flag needed no change to ``BaseTrainer``.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Iterable
 
 import torch
@@ -168,6 +175,21 @@ class SenseNovaTrainingPhaseEvictor:
         self._pageable = bool(pageable_staging)
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
+        self.d2h_seconds = 0.0
+        self.h2d_seconds = 0.0
+        self.d2h_bytes = 0
+        self.h2d_bytes = 0
+        try:
+            self._device_obj = torch.device(device)
+        except (TypeError, ValueError, RuntimeError):
+            self._device_obj = None
+        self._sync_device = (
+            self._device_obj
+            if self._device_obj is not None
+            and self._device_obj.type == "cuda"
+            and torch.cuda.is_available()
+            else None
+        )
         self._assert_pairing_covers_both_halves()
         self._evict_generation_plan = self._evict_plan("generation")
         self._swap_generation_plan = self._swap_plan("generation")
@@ -270,6 +292,58 @@ class SenseNovaTrainingPhaseEvictor:
         plan.extend(("h2d", (module,), in_half) for module in in_extras)
         return tuple(plan)
 
+    def _sync(self) -> None:
+        if self._sync_device is not None:
+            torch.cuda.synchronize(self._sync_device)
+
+    def _will_copy(self, tensor, operation: str) -> bool:
+        """Whether this operation actually copies ``tensor``, mirroring the
+        short-circuits in ``_stage_tensor`` (d2h) and ``Tensor.to`` (h2d) so an
+        already-staged / already-resident tensor is charged zero bytes."""
+        if operation == "d2h":
+            if tensor.device.type != "cpu":
+                return True
+            return not (self._pageable or tensor.is_pinned())
+        if self._device_obj is None:
+            return True
+        return tensor.device.type != self._device_obj.type or (
+            self._device_obj.index is not None
+            and tensor.device.index != self._device_obj.index
+        )
+
+    def _pending_bytes(self, modules, operation: str) -> int:
+        total = 0
+        for module in modules:
+            for parameter in module._parameters.values():
+                if parameter is None or not self._will_copy(parameter.data, operation):
+                    continue
+                total += parameter.data.numel() * parameter.data.element_size()
+            for name, buffer in module._buffers.items():
+                if buffer is None or name in module._non_persistent_buffers_set:
+                    continue
+                if self._will_copy(buffer, operation):
+                    total += buffer.numel() * buffer.element_size()
+        return total
+
+    def drain_transfer_stats(self) -> Dict[str, float]:
+        """Return this step's transfer totals and reset them.
+
+        Drained ONCE per step by the train loop: ``log_extra_metric`` overwrites
+        rather than accumulates, and a four-phase step contains two swaps. The
+        evictor deliberately has no trainer backref, so the pull is one-way.
+        """
+        stats = {
+            "d2h_seconds": self.d2h_seconds,
+            "h2d_seconds": self.h2d_seconds,
+            "d2h_bytes": self.d2h_bytes,
+            "h2d_bytes": self.h2d_bytes,
+        }
+        self.d2h_seconds = 0.0
+        self.h2d_seconds = 0.0
+        self.d2h_bytes = 0
+        self.h2d_bytes = 0
+        return stats
+
     def _transition(self, operations, next_state: str) -> None:
         if self.state == "failed":
             raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
@@ -282,13 +356,29 @@ class SenseNovaTrainingPhaseEvictor:
                     half for operation, _, half in operations if operation == "d2h"
                 ):
                     self._assert_grad_free(self._half(half), half)
+            # Leading sync: the first blocking copy would otherwise absorb the
+            # tail of the preceding phase's still-queued compute and inflate the
+            # d2h bucket (the mistake behind the retracted number in
+            # SENSENOVA_TRAINING_DESIGN.md 8.3.2). It adds no net wait -- the copy
+            # blocks on that same work one statement later.
+            self._sync()
             for operation, modules, _half in operations:
+                moved = self._pending_bytes(modules, operation)
+                started = time.perf_counter()
                 if operation == "d2h":
                     _move_modules_to_cpu(
                         modules, warn_once=self._warn_once, pageable=self._pageable
                     )
                 else:
                     _move_modules_to_device(modules, self.device)
+                self._sync()
+                elapsed = time.perf_counter() - started
+                if operation == "d2h":
+                    self.d2h_seconds += elapsed
+                    self.d2h_bytes += moved
+                else:
+                    self.h2d_seconds += elapsed
+                    self.h2d_bytes += moved
         except Exception:
             self.state = "failed"
             self._best_effort_cpu()

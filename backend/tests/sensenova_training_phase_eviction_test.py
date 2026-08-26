@@ -203,6 +203,105 @@ def test_generation_and_training_evictors_share_one_staging_implementation():
     assert torch.equal(module.scale, torch.zeros(1))
 
 
+# --------------------------------------------------------------------------
+# transfer accounting (SENSENOVA_TRAINING_DESIGN.md 8.6 had arithmetic only)
+# --------------------------------------------------------------------------
+
+# Every selected module of ``transformer()`` owns one persistent buffer of 2
+# float32 -> 8 B, and each half holds 42 of them.
+_MODULE_BYTES = 8
+_HALF_BYTES = 42 * _MODULE_BYTES
+
+
+def _relocate_to_cpu(modules, *, warn_once, pageable=False):
+    """Stand-in for ``_move_modules_to_cpu`` that really moves meta tensors to
+    CPU (the real one allocates pinned host memory, which needs CUDA)."""
+    del warn_once, pageable
+    for module in modules:
+        for parameter in module._parameters.values():
+            if parameter is not None:
+                parameter.data = torch.zeros_like(parameter.data, device="cpu")
+        for name, buffer in list(module._buffers.items()):
+            if buffer is not None and name not in module._non_persistent_buffers_set:
+                module._buffers[name] = torch.zeros_like(buffer, device="cpu")
+
+
+def _accounted():
+    return patch(
+        "core.training.sensenova_phase_eviction._move_modules_to_cpu", _relocate_to_cpu
+    )
+
+
+def test_transfer_byte_counters_match_the_moved_half():
+    """MUTANT: charging every tensor instead of the ones the operation will
+    actually copy makes the one-sided ``full -> prefix`` report a nonzero h2d.
+    """
+    evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
+    with _accounted():
+        evictor.enter_prefix()
+        assert (evictor.d2h_bytes, evictor.h2d_bytes) == (_HALF_BYTES, 0)
+        evictor.enter_denoise()
+
+    assert evictor.d2h_bytes == 2 * _HALF_BYTES   # gen evicted, then und
+    assert evictor.h2d_bytes == _HALF_BYTES       # gen brought back
+
+
+def test_both_directions_are_timed_into_separate_buckets():
+    """MUTANT: accumulating both directions into one bucket, or reusing the d2h
+    elapsed for the h2d, leaves one of these two totals at zero."""
+    evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
+    with _accounted():
+        evictor.enter_prefix()
+        assert evictor.d2h_seconds > 0.0 and evictor.h2d_seconds == 0.0
+        evictor.enter_denoise()
+
+    assert evictor.d2h_seconds > 0.0
+    assert evictor.h2d_seconds > 0.0
+    assert evictor.d2h_seconds != evictor.h2d_seconds
+
+
+def test_drain_resets_so_consecutive_steps_do_not_double_count():
+    """MUTANT: a drain that reads without resetting turns the per-step series
+    into a run-cumulative one -- the second step below would report both."""
+    evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
+    with _accounted():
+        evictor.enter_prefix()
+        evictor.enter_denoise()
+        first = evictor.drain_transfer_stats()
+        assert evictor.drain_transfer_stats() == {
+            "d2h_seconds": 0.0, "h2d_seconds": 0.0, "d2h_bytes": 0, "h2d_bytes": 0
+        }
+        evictor.enter_prefix()      # denoise -> prefix, a full swap
+        evictor.enter_denoise()
+        second = evictor.drain_transfer_stats()
+
+    assert first["d2h_bytes"] == 2 * _HALF_BYTES and first["h2d_bytes"] == _HALF_BYTES
+    assert second["d2h_bytes"] == 2 * _HALF_BYTES
+    assert second["h2d_bytes"] == 2 * _HALF_BYTES
+
+
+def test_a_non_cuda_device_never_synchronizes():
+    """MUTANT: dropping the device guard in ``_sync`` makes every synthetic-tree
+    test raise on a machine without CUDA, and needlessly sync on one with it."""
+    evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
+    calls = []
+    with _accounted(), patch(
+        "torch.cuda.synchronize", lambda *a, **k: calls.append(a)
+    ):
+        evictor.enter_prefix()
+        evictor.enter_denoise()
+
+    assert evictor._sync_device is None
+    assert calls == []
+
+
+def test_transfer_metrics_are_registered_for_the_chart():
+    from core.training.metric_registry import EXTRA_METRIC_DEFS
+
+    for name in ("sn_d2h_s", "sn_h2d_s", "sn_d2h_gib", "sn_h2d_gib"):
+        assert EXTRA_METRIC_DEFS[name]["axis"] == "right"
+
+
 def test_partial_transfer_failure_is_fatal_and_normalized_to_cpu():
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "cpu")
     calls = 0

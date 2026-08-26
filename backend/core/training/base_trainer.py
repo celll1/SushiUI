@@ -13116,6 +13116,31 @@ class BaseTrainer(ABC):
                         except Exception:
                             pass
 
+                        # SenseNova MoT phase eviction: this step's half swaps.
+                        # Drained ONCE here because log_extra_metric overwrites,
+                        # and a four-phase step performs two swaps -- per-swap
+                        # calls would silently report only the last one.
+                        _sn_evictor = getattr(self, "sensenova_phase_evictor", None)
+                        if _sn_evictor is not None:
+                            try:
+                                _sn = _sn_evictor.drain_transfer_stats()
+                            except Exception:
+                                _sn = None
+                            if _sn is not None:
+                                self.log_extra_metric("sn_d2h_s", _sn["d2h_seconds"])
+                                self.log_extra_metric("sn_h2d_s", _sn["h2d_seconds"])
+                                self.log_extra_metric("sn_d2h_gib", _sn["d2h_bytes"] / 2 ** 30)
+                                self.log_extra_metric("sn_h2d_gib", _sn["h2d_bytes"] / 2 ** 30)
+                                if torch.cuda.is_available():
+                                    self.log_extra_metric(
+                                        "sn_peak_alloc_gib",
+                                        torch.cuda.max_memory_allocated() / 2 ** 30,
+                                    )
+                                    self.log_extra_metric(
+                                        "sn_peak_resv_gib",
+                                        torch.cuda.max_memory_reserved() / 2 ** 30,
+                                    )
+
                         # TensorBoard logging (per-iteration for loss only)
                         self.writer.add_scalar("train/loss", mnt_loss_value, global_step)
                         self.writer.add_scalar("train/pred_loss", mnt_pred_loss_value, global_step)

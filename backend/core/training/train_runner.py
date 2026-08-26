@@ -663,6 +663,40 @@ def _assert_training_scope_is_nonempty(
     )
 
 
+def _apply_reference_training_contract(
+    base_model_path: str, train_config: Dict[str, Any]
+) -> None:
+    """Normalize and reject reference settings before model loading."""
+    from core.model_loader import ModelLoader
+
+    model_type = ModelLoader.detect_model_type(base_model_path)
+    use_references = _normalize_scope_flag(
+        train_config, "use_reference_images", False
+    )
+    train_ve = _normalize_scope_flag(train_config, "train_vision_encoder", False)
+    ve_path = train_config.get("vision_encoder_path")
+    is_sd_ve = model_type in ("sd15", "sdxl")
+
+    if ve_path and not is_sd_ve:
+        raise ValueError(
+            "vision_encoder_path is supported only for SD1.5/SDXL training; "
+            f"selected architecture is {model_type}"
+        )
+    if train_ve and not ve_path:
+        raise ValueError("train_vision_encoder=true requires vision_encoder_path")
+    if is_sd_ve and ve_path:
+        train_config["use_reference_images"] = True
+    elif is_sd_ve and use_references:
+        raise ValueError(
+            "SD1.5/SDXL use_reference_images=true requires vision_encoder_path"
+        )
+    elif use_references and model_type not in ("flux2", "sensenova"):
+        raise ValueError(
+            "use_reference_images is supported only for FLUX.2, SenseNova, "
+            "and SD1.5/SDXL with a SigLIP2 vision encoder"
+        )
+
+
 def _prepare_training_process_config(
     config: Dict[str, Any], base_model_path: str
 ):
@@ -672,6 +706,7 @@ def _prepare_training_process_config(
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
     _assert_training_scope_is_nonempty(network_type, train_config)
+    _apply_reference_training_contract(base_model_path, train_config)
     _apply_sensenova_training_contract(
         base_model_path, network_type, train_config, process_config
     )

@@ -7346,6 +7346,7 @@ export interface TrainingRunCreateRequest {
   };
   cache_latents_to_disk?: boolean;
   force_recache?: boolean;
+  // FLUX.2/SenseNova explicit arm; SD/SDXL mirrors a selected SigLIP2 VE.
   use_reference_images?: boolean;
   // Vision Encoder (SigLIP2) — SD/SDXL only
   vision_encoder_path?: string | null;

@@ -471,7 +471,7 @@ def test_gate2_trainer_no_longer_refuses_reference_runs():
 
 def test_gate3_sensenova_is_not_warned_as_ignored():
     source = _source("core/training/base_trainer.py")
-    assert "if not (self.is_flux2 or self.is_sensenova):" in source
+    assert "self.is_flux2 or self.is_sensenova or _sd_ve_arch" in source
     assert "only supported for FLUX.2, will be ignored" not in source
 
 
@@ -493,9 +493,11 @@ def test_gates5_and_6_stay_flux2_only_and_sensenova_is_wired_elsewhere():
     assert "item.get(\"reference_images\") or []" in source
 
 
-def test_arch_capabilities_no_longer_declares_sensenova_reference_unsupported():
+def test_arch_capabilities_declares_all_reference_training_paths():
     from api.arch_capabilities import training_feature_unsupported_reason
 
     assert training_feature_unsupported_reason("sensenova", "reference_images") is None
     assert training_feature_unsupported_reason("flux2", "reference_images") is None
-    assert training_feature_unsupported_reason("sdxl", "reference_images")
+    assert training_feature_unsupported_reason("sd15", "reference_images") is None
+    assert training_feature_unsupported_reason("sdxl", "reference_images") is None
+    assert training_feature_unsupported_reason("zimage", "reference_images")

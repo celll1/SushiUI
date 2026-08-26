@@ -15422,8 +15422,8 @@ class TrainingRunCreateRequest(BaseModel):
     sdxl_te_max_len: int = TRAINING_DEFAULTS["sdxl_te_max_len"]
     sdxl_te_train_encoder: bool = TRAINING_DEFAULTS["sdxl_te_train_encoder"]
 
-    # Reference image conditioning (FLUX.2 only)
-    use_reference_images: bool = False  # Enable reference image latent conditioning during training
+    # Reference image conditioning (FLUX.2, SenseNova, or SD/SDXL with SigLIP2 VE)
+    use_reference_images: bool = False
 
     # SigLIP2 Vision Encoder
     vision_encoder_path: Optional[str] = None  # Path to SigLIP2 vision encoder safetensors

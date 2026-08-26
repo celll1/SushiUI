@@ -19135,9 +19135,12 @@ components:
 
             Costs a bounded transient extra device residency: at most four
             incoming modules are admitted ahead of their outgoing twins'
-            completion. Falls back to the serial path, with a log line, if a
-            pinned host allocation ever fails during the run, and is inert on a
-            non-CUDA device. Refused with `sensenova_mot_pageable_staging`
+            completion, and each incoming module's destination is allocated on
+            the default stream so it can still reuse the block its outgoing twin
+            just freed. Falls back to the serial path, with a log line, if a
+            pinned host allocation ever fails during the run, and says so once
+            and runs serially on a non-CUDA device. Refused with
+            `sensenova_mot_pageable_staging`
             because an async copy against pageable host memory is staged
             through a driver bounce buffer and is effectively host-synchronous,
             so the pair would pay the overlap's costs for no concurrency.

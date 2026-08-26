@@ -4871,6 +4871,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   updateParam("sensenova_mot_phase_eviction", e.target.checked);
                   if (!e.target.checked) updateParam("sensenova_four_phase_eviction", false);
                   if (!e.target.checked) updateParam("sensenova_mot_pageable_staging", false);
+                  if (!e.target.checked) updateParam("sensenova_mot_overlap_transfer", false);
                 }}
                 className="w-4 h-4"
               />
@@ -4926,7 +4927,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
             {params.sensenova_mot_phase_eviction && (
               <p className="text-xs text-gray-500">
-                Issues a swap&apos;s outgoing and incoming halves on separate CUDA streams instead of back to back, so the two directions can use their own copy engines. The transfer term&apos;s arithmetic ceiling drops from the sum of the two directions to the larger of them; what a real run reaches is unmeasured. Holds a few extra modules on GPU while a swap is in flight, and cannot be combined with Pageable Host Staging.
+                A half swap moves one module out and its twin in, pair by pair. This issues each pair&apos;s two legs on separate CUDA streams instead of back to back, so the two directions can use their own copy engines. The transfer term&apos;s arithmetic ceiling drops from the sum of the two directions to the larger of them; what a real run reaches is unmeasured. Holds at most four extra modules on GPU while a swap is in flight, and cannot be combined with Pageable Host Staging.
               </p>
             )}
 

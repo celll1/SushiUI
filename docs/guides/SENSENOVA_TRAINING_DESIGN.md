@@ -2394,19 +2394,39 @@ H2D/D2H独立copy engineの上で同時に走らせられる。転送項の算�
 OVERLAPPED TRANSFER注記を参照。下の4不変条件はこのmodeでは次のように満たされる。
 
 - residentは1 half + 最大`_OVERLAP_WINDOW_PAIRS`（=4）module。bf16の最大単一weight
-  0.09375 GiBに対し0.375 GiB（1 halfの約2.5%）。incomingのallocationはoutgoingの
-  解放より先に要求されるため、allocatorは再利用ではなく**実際に増える**。
-- d2h元は`parameter.data`の再代入で即座に最後の参照を失うため`record_stream()`する。
-  h2d元のpinned tensorはeventをwaitするまで明示的に保持する。
-- 例外時は`_best_effort_cpu`の**先頭**でstreamをjoinしてからdeviceを同期する。
-  `_module_already_staged_cpu`はdeviceとpin flagしか見ずcontent妥当性を見ないため、
-  landしていないpinned bufferが「staged済み」として黙ってskipされる欠陥を塞ぐ。
+  0.09375 GiBに対し0.375 GiB（1 halfの約2.5%）。**この上限が上限であるのは、incoming
+  destinationをdefault stream上でallocateしているからである**。torchのdevice caching
+  allocatorはfree blockを所有streamで区分し（`get_free_block`は`block->stream !=
+  p.stream()`で打ち切る）、side stream contextの中で確保したdestinationには
+  default streamが解放したblockが決して回ってこない。その場合はmodule毎に
+  `cudaMalloc`が走り、増分は4 moduleではなく1 half丸ごとになる。実装では
+  `_move_modules_to_device`がdestinationをcontextの外でallocateし、copyだけを
+  side streamに載せ、destinationに`record_stream(side)`する。
+- d2h元は`parameter.data`の再代入でmodel側の参照を失う。`sources` listがそれを
+  生かしたまま`record_stream()`し、h2d元のpinned tensorはeventをwaitするまで保持する。
+- transitionの**先頭**でdeviceを同期する。serial時は計測の切り分けだが、overlap時は
+  correctnessである——side streamは直前phaseのqueue済み計算がまだ書いているweightを
+  読み、かつ解放する。末尾の`join()`はdefault streamをside streamに待たせるだけで、
+  逆向きには効かない。
+- 例外時は`_run_overlapped`が巻き戻る**前に**windowをdrainする（in-flightのpinned
+  blockがcopy中のままcaching host allocatorへ返るのを防ぐ）。続く`_best_effort_cpu`も
+  **先頭**でstreamをjoinしてからdeviceを同期する。`_module_already_staged_cpu`は
+  deviceとpin flagしか見ずcontent妥当性を見ないため、landしていないpinned bufferが
+  「staged済み」として黙ってskipされる欠陥を塞ぐ。
 - pinned確保が一度でも失敗したら、以降のrun全体をserial経路へ落として1回だけ告知する。
   pageable memory相手の非同期copyはdriverのbounce buffer経由で実質host同期になる。
+  非CUDA deviceでも同様に1回だけ告知してserialで走る。
 
 `sn_d2h_s` / `sn_h2d_s`はこのmodeでは**単位が変わる**（blocking copy周りのhost wallでは
 なく、各方向のstream上のCUDA event時間になり、両方向が並走するため合計はtransitionの
-wallを超える）。どちらのmodeで採られた値かは`sn_swap_overlap`で判別する。
+wallを超える）。どちらのmodeで採られた値かは`sn_swap_overlap`で判別する。この値は
+step内の各transitionが**実際に走った経路**のANDであり、run途中のdowngradeを跨いだstep
+（event時間とhost wallの混合）は0側に倒れる。
+
+なお、serial経路はoperation毎にdeviceを同期しない。`pinned.copy_(cuda,
+non_blocking=False)`も`Tensor.to`もhostをblockするため冗長であり、四phase stepあたり
+約250回のdevice全体barrierを足したうえ、その待ち時間自体を測っているはずのbucketへ
+計上してしまう。load-bearingなbarrierはtransition先頭の1回だけである。
 
 #### なぜ単純な非同期copyを採らないか（PHASE 2以前の記述）
 

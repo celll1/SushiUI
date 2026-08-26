@@ -69,19 +69,38 @@ incoming legs can run concurrently on two side streams; the arithmetic ceiling
 is ``max(d2h, h2d)``. What the flag actually buys is UNMEASURED -- it ships off
 for that reason.
 
-Four things make it safe rather than merely faster:
+Six things make it safe rather than merely faster:
 
   * ``record_stream`` on every d2h source. ``stage_modules_to_pinned_cpu``
-    reassigns ``parameter.data``, dropping the last reference to the CUDA source
-    immediately; with the copy still in flight the caching allocator would
-    otherwise be free to hand that block to the concurrent h2d destination.
+    reassigns ``parameter.data``, dropping the model's reference to the CUDA
+    source immediately; with the copy still in flight the caching allocator
+    would otherwise be free to hand that block to the concurrent h2d
+    destination. The ``sources`` list keeps the tensor alive across that
+    reassignment so the ``record_stream`` call is still legal when it lands.
   * the pinned h2d source is held in the in-flight record until its event has
     been waited on. Torch may event-guard a pinned ``non_blocking`` h2d, but that
     is not verified here, and the caching HOST allocator would otherwise be free
     to re-hand the block to the next ``_stage_tensor``.
-  * every stream is joined before ``_transition`` returns.
+  * the h2d DESTINATION is allocated on the DEFAULT stream, and only the copy
+    into it is issued on the side stream (see ``_move_modules_to_device``).
+    Torch's device caching allocator partitions free blocks by OWNING STREAM, so
+    a destination requested inside the side stream's context could never be
+    handed a block the outgoing half just freed on the default stream -- every
+    incoming module would ``cudaMalloc`` fresh and the window bound below would
+    be a whole half instead of a few modules. It also leaves the destination
+    default-stream-owned, so the next phase's compute reads a block whose
+    lifetime that stream already controls.
+  * ``_transition`` synchronizes the device BEFORE it issues anything. Under
+    overlap that is a CORRECTNESS barrier and not only the timing one section
+    8.6 introduced it as: the side streams read, and free, weights the preceding
+    phase's still-queued compute may still be writing, and the join below only
+    makes the default stream wait on the side streams, never the reverse.
+  * every stream is joined before ``_transition`` returns, which is also what
+    orders the side-stream writes before the next phase's compute reads them.
     ``assert_generation_resident`` and its twin check DEVICE PLACEMENT only and
-    would pass on a queued-but-unfinished copy.
+    would pass on a queued-but-unfinished copy. A transition that raises drains
+    the same way before it unwinds, so no pinned block is returned to the
+    caching host allocator with its copy still in flight.
   * the window is ``_OVERLAP_WINDOW_PAIRS`` deep, so the transient extra device
     residency is bounded by that many modules rather than by a whole half.
 
@@ -99,7 +118,10 @@ measurement it never had. The seconds change UNIT of measurement between the two
 modes -- host wall time around a blocking copy when serial, CUDA event time on
 the side stream when overlapped, where the two directions run concurrently and
 their sum therefore exceeds the transition's wall. ``overlap_active`` says which
-mode produced them and is charted as ``sn_swap_overlap``.
+mode produced them and is charted as ``sn_swap_overlap``. It is derived from
+what each transition ACTUALLY RAN and AND-ed across the drain window, so a step
+that straddles a mid-run downgrade -- part event milliseconds, part host wall
+seconds -- reports serial rather than claiming a unit half its total is not in.
 
 PAGEABLE STAGING -- opt-in, off by default
 (``sensenova_mot_pageable_staging``). Trades the pinned pool's sticky
@@ -144,13 +166,21 @@ _OVERLAP_DOWNGRADE_MESSAGE = (
     "the serial transfer path."
 )
 
+_OVERLAP_NON_CUDA_MESSAGE = (
+    "[SenseNova] MoT overlapped transfer is inert on this run: the evictor's "
+    "device is not a live CUDA one, so there are no independent copy engines to "
+    "issue the two directions on. Continuing on the serial transfer path."
+)
+
 # Pairs of (outgoing, incoming) modules allowed in flight at once. Each pair
 # admitted ahead of its twin's completion is one module of transient extra
 # device residency: at bf16 the largest single MoT weight is 0.09375 GiB, so
 # four pairs bound it at 0.375 GiB, ~2.5% of a half. Small enough to budget as
-# real (the allocator GROWS by it -- the incoming block is requested before the
-# outgoing one is released, so there is nothing to reuse), deep enough to keep
-# both copy engines fed while the host retires the oldest pair.
+# real, deep enough to keep both copy engines fed while the host retires the
+# oldest pair. The bound is only a bound because the incoming destination is
+# allocated on the DEFAULT stream (see _move_modules_to_device): a side-stream
+# allocation cannot be handed a default-stream-owned free block at all, so the
+# growth would be a whole half rather than this window.
 _OVERLAP_WINDOW_PAIRS = 4
 
 
@@ -190,25 +220,54 @@ def _module_already_staged_cpu(module: nn.Module, *, pageable: bool = False) -> 
 
 def _move_modules_to_device(
     modules: Iterable[nn.Module], device: Any, *, non_blocking: bool = False,
-    sources: Optional[List[torch.Tensor]] = None,
+    sources: Optional[List[torch.Tensor]] = None, streams=None, stream=None,
 ) -> None:
     """``sources`` collects the host tensors each copy reads FROM. Under
-    ``non_blocking`` the reassignment below drops the model's only reference to
-    a pinned block whose copy is still in flight; the caller holds these until
-    the copy's event has been waited on."""
+    ``non_blocking`` the reassignment below drops the model's reference to a
+    pinned block whose copy is still in flight; the caller holds these until the
+    copy's event has been waited on.
+
+    ``streams``/``stream`` split the move in two. The destination is allocated
+    HERE, under whatever stream is current (the default one), and only the copy
+    into it is issued on ``stream``. Issuing the allocation on the side stream
+    instead would defeat the whole point: torch's device caching allocator
+    partitions free blocks by owning stream, so a side-stream request can never
+    be handed a block the outgoing half just freed on the default stream and
+    each incoming module would ``cudaMalloc`` fresh. ``record_stream`` on the
+    destination is the other half of that split -- the default-stream owner must
+    respect the side stream's write when it eventually frees the block.
+
+    Without ``streams`` this is ``Tensor.to``, which short-circuits an
+    already-resident tensor; the split path keeps that short-circuit by taking
+    it only for a tensor that is actually on the host.
+    """
     def _collect(tensor):
         if sources is not None and tensor.device.type == "cpu":
             sources.append(tensor)
 
+    plan: List[tuple] = []
+
+    def _place(tensor):
+        _collect(tensor)
+        if streams is None or tensor.device.type != "cpu":
+            return tensor.to(device, non_blocking=non_blocking)
+        destination = torch.empty_like(tensor, device=device)
+        plan.append((destination, tensor))
+        return destination
+
     for module in modules:
         for parameter in module._parameters.values():
             if parameter is not None:
-                _collect(parameter.data)
-                parameter.data = parameter.data.to(device, non_blocking=non_blocking)
+                parameter.data = _place(parameter.data)
         for name, buffer in list(module._buffers.items()):
             if buffer is not None and name not in module._non_persistent_buffers_set:
-                _collect(buffer)
-                module._buffers[name] = buffer.to(device, non_blocking=non_blocking)
+                module._buffers[name] = _place(buffer)
+    if not plan:
+        return
+    with streams.stream_context(stream):
+        for destination, source in plan:
+            destination.copy_(source, non_blocking=non_blocking)
+            destination.record_stream(stream)
 
 
 class _InFlight(NamedTuple):
@@ -224,26 +283,32 @@ class _InFlight(NamedTuple):
 
 class _TransferStreams:
     """The two side streams and their events, isolated behind one object so the
-    overlap path is reachable from the CPU-only synthetic tree by injection."""
+    overlap path is reachable from the CPU-only synthetic tree by injection.
 
-    def __init__(self, device: Any):
+    ``cuda`` is that seam one level down: the evictor injects a whole fake
+    ``_TransferStreams``, while a test of THIS class injects a fake ``torch.cuda``
+    into the real one, so the routing and join wiring is covered rather than
+    replaced."""
+
+    def __init__(self, device: Any, *, cuda=torch.cuda):
         self.device = device
-        self.d2h = torch.cuda.Stream(device=device)
-        self.h2d = torch.cuda.Stream(device=device)
+        self._cuda = cuda
+        self.d2h = cuda.Stream(device=device)
+        self.h2d = cuda.Stream(device=device)
 
     def stream_for(self, operation: str):
         return self.d2h if operation == "d2h" else self.h2d
 
     def stream_context(self, stream):
-        return torch.cuda.stream(stream)
+        return self._cuda.stream(stream)
 
     def record_event(self, stream):
-        event = torch.cuda.Event(enable_timing=True)
+        event = self._cuda.Event(enable_timing=True)
         event.record(stream)
         return event
 
     def join(self) -> None:
-        current = torch.cuda.current_stream(self.device)
+        current = self._cuda.current_stream(self.device)
         current.wait_stream(self.d2h)
         current.wait_stream(self.h2d)
 
@@ -294,7 +359,11 @@ class SenseNovaTrainingPhaseEvictor:
         self._streams_factory = streams_factory
         self._streams = None
         self._overlap_downgraded = False
-        self.overlap_active = False
+        # None until a transition has run. AND-ed across the drain window; see
+        # this module's TRANSFER ACCOUNTING note for why it is derived from what
+        # ran rather than from what was configured.
+        self._overlap_ran: Optional[bool] = None
+        self._overlap_this_transition = False
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
         self.d2h_seconds = 0.0
@@ -337,6 +406,13 @@ class SenseNovaTrainingPhaseEvictor:
                     f"+ {len(extras)} unpaired. Refusing the batched order, which "
                     f"holds both halves in host memory at once"
                 )
+
+    @property
+    def overlap_active(self) -> bool:
+        """True iff EVERY transition since the last drain ran the two-stream
+        path to completion. False before the first transition, and False for a
+        step that straddled a downgrade."""
+        return bool(self._overlap_ran)
 
     @property
     def understanding_modules(self) -> tuple:
@@ -439,13 +515,17 @@ class SenseNovaTrainingPhaseEvictor:
         if self._streams is None:
             self._streams = self._streams_factory(self.device)
             if self._streams is None:
-                self._overlap_downgraded = True   # non-CUDA: never retry
+                self._downgrade_overlap(_OVERLAP_NON_CUDA_MESSAGE)   # never retry
         return self._streams
 
-    def _downgrade_overlap(self) -> None:
+    def _downgrade_overlap(self, message: str = _OVERLAP_DOWNGRADE_MESSAGE) -> None:
+        """Serial for the rest of the run, said once. Also clears the CURRENT
+        transition's flag: its seconds are now part event milliseconds and part
+        host wall, so it must not be charted as an overlapped one."""
+        self._overlap_this_transition = False
         if not self._overlap_downgraded:
             self._overlap_downgraded = True
-            print(_OVERLAP_DOWNGRADE_MESSAGE)
+            print(message)
 
     def _will_copy(self, tensor, operation: str) -> bool:
         """Whether this operation actually copies ``tensor``, mirroring the
@@ -476,23 +556,29 @@ class SenseNovaTrainingPhaseEvictor:
                     total += buffer.numel() * buffer.element_size()
         return total
 
-    def drain_transfer_stats(self) -> Dict[str, float]:
+    def drain_transfer_stats(self) -> Dict[str, Any]:
         """Return this step's transfer totals and reset them.
 
         Drained ONCE per step by the train loop: ``log_extra_metric`` overwrites
         rather than accumulates, and a four-phase step contains two swaps. The
         evictor deliberately has no trainer backref, so the pull is one-way.
+
+        ``overlap_active`` travels WITH the totals rather than being read off
+        the evictor afterwards: it is the unit label for the two seconds, and
+        reading it after the reset would label them by the next step's mode.
         """
         stats = {
             "d2h_seconds": self.d2h_seconds,
             "h2d_seconds": self.h2d_seconds,
             "d2h_bytes": self.d2h_bytes,
             "h2d_bytes": self.h2d_bytes,
+            "overlap_active": self.overlap_active,
         }
         self.d2h_seconds = 0.0
         self.h2d_seconds = 0.0
         self.d2h_bytes = 0
         self.h2d_bytes = 0
+        self._overlap_ran = None
         return stats
 
     def _charge(self, operation: str, seconds: float, moved: int) -> None:
@@ -504,6 +590,12 @@ class SenseNovaTrainingPhaseEvictor:
             self.h2d_bytes += moved
 
     def _run_serial(self, operations) -> None:
+        """No per-operation sync: both primitives are host-blocking here
+        (``pinned.copy_(cuda, non_blocking=False)`` and ``Tensor.to`` both end in
+        a stream synchronize), so one would add a device-wide barrier per module
+        -- ~250 per four-phase step -- and charge its own latency to the
+        transfer bucket it is supposed to be measuring. The barrier that IS
+        load-bearing is the leading one in ``_transition``."""
         for operation, modules, _half in operations:
             moved = self._pending_bytes(modules, operation)
             started = time.perf_counter()
@@ -513,7 +605,6 @@ class SenseNovaTrainingPhaseEvictor:
                 )
             else:
                 _move_modules_to_device(modules, self.device)
-            self._sync()
             self._charge(operation, time.perf_counter() - started, moved)
 
     def _retire(self, entry: _InFlight) -> None:
@@ -526,40 +617,58 @@ class SenseNovaTrainingPhaseEvictor:
 
     def _run_overlapped(self, operations, streams) -> None:
         inflight: deque = deque()
-        for index, (operation, modules, _half) in enumerate(operations):
-            if self._overlap_downgraded:
-                while inflight:
+        try:
+            for index, (operation, modules, _half) in enumerate(operations):
+                if self._overlap_downgraded:
+                    while inflight:
+                        self._retire(inflight.popleft())
+                    streams.join()
+                    self._run_serial(tuple(operations)[index:])
+                    return
+                while len(inflight) >= 2 * _OVERLAP_WINDOW_PAIRS:
                     self._retire(inflight.popleft())
-                streams.join()
-                self._run_serial(tuple(operations)[index:])
-                return
-            while len(inflight) >= 2 * _OVERLAP_WINDOW_PAIRS:
-                self._retire(inflight.popleft())
-            self._charge(operation, 0.0, self._pending_bytes(modules, operation))
-            stream = streams.stream_for(operation)
-            sources: List[torch.Tensor] = []
-            with streams.stream_context(stream):
-                start = streams.record_event(stream)
+                self._charge(operation, 0.0, self._pending_bytes(modules, operation))
+                stream = streams.stream_for(operation)
+                sources: List[torch.Tensor] = []
                 if operation == "d2h":
-                    _move_modules_to_cpu(
-                        modules, warn_once=self._warn_once, pageable=False,
-                        non_blocking=True, sources=sources,
-                    )
+                    # The destination is HOST memory here, so the whole leg runs
+                    # under the side stream's context.
+                    with streams.stream_context(stream):
+                        start = streams.record_event(stream)
+                        _move_modules_to_cpu(
+                            modules, warn_once=self._warn_once, pageable=False,
+                            non_blocking=True, sources=sources,
+                        )
+                        end = streams.record_event(stream)
                     for source in sources:
                         if source.is_cuda:
                             source.record_stream(stream)
                     sources = []   # record_stream replaces the keepalive here
                 else:
+                    # NOT under the stream context: the destination is DEVICE
+                    # memory and must be allocated on the default stream, or the
+                    # window bound is a whole half. _move_modules_to_device
+                    # enters the context for the copies alone. The events bracket
+                    # that stream's own work either way.
+                    start = streams.record_event(stream)
                     _move_modules_to_device(
-                        modules, self.device, non_blocking=True, sources=sources
+                        modules, self.device, non_blocking=True, sources=sources,
+                        streams=streams, stream=stream,
                     )
-                end = streams.record_event(stream)
-            inflight.append(_InFlight(operation, start, end, tuple(sources)))
-            if self._warn_once.get("pin_failed"):
-                self._downgrade_overlap()
-        while inflight:
-            self._retire(inflight.popleft())
-        streams.join()
+                    end = streams.record_event(stream)
+                inflight.append(_InFlight(operation, start, end, tuple(sources)))
+                if self._warn_once.get("pin_failed"):
+                    self._downgrade_overlap()
+            while inflight:
+                self._retire(inflight.popleft())
+            streams.join()
+        except BaseException:
+            # `inflight` and every keepalive in it are released as this frame
+            # unwinds, handing pinned blocks back to the caching host allocator
+            # while their copies may still be reading them. Drain first --
+            # _best_effort_cpu's own sync happens strictly later.
+            self._sync_transfers()
+            raise
 
     def _transition(self, operations, next_state: str) -> None:
         if self.state == "failed":
@@ -573,18 +682,29 @@ class SenseNovaTrainingPhaseEvictor:
                     half for operation, _, half in operations if operation == "d2h"
                 ):
                     self._assert_grad_free(self._half(half), half)
-            # Leading sync: the first blocking copy would otherwise absorb the
-            # tail of the preceding phase's still-queued compute and inflate the
-            # d2h bucket (the mistake behind the retracted number in
-            # SENSENOVA_TRAINING_DESIGN.md 8.3.2). It adds no net wait -- the copy
-            # blocks on that same work one statement later.
+            # Leading sync, load-bearing twice over and NOT removable as
+            # redundant. Serially it is attribution: the first blocking copy
+            # would otherwise absorb the tail of the preceding phase's
+            # still-queued compute and inflate the d2h bucket (the mistake
+            # behind the retracted number in SENSENOVA_TRAINING_DESIGN.md 8.3.2),
+            # and it adds no net wait, since the copy blocks on that same work
+            # one statement later. Under overlap it is CORRECTNESS: the side
+            # streams read and free weights that compute may still be writing,
+            # and the join at the end of the transition only makes the default
+            # stream wait on the side streams, never the reverse.
             self._sync()
             streams = self._overlap_streams()
-            self.overlap_active = streams is not None
+            self._overlap_this_transition = streams is not None
             if streams is None:
                 self._run_serial(operations)
             else:
                 self._run_overlapped(operations, streams)
+            # Derived from what RAN: _downgrade_overlap clears the flag mid-plan.
+            self._overlap_ran = (
+                self._overlap_this_transition
+                if self._overlap_ran is None
+                else (self._overlap_ran and self._overlap_this_transition)
+            )
         except Exception:
             self.state = "failed"
             self._best_effort_cpu()

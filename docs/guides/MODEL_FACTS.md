@@ -2265,9 +2265,13 @@ Paths below are relative to `backend/core/training/`.
       independent H2D and D2H copy engines can run concurrently. The
       transfer term's arithmetic ceiling drops from `d2h + h2d` to
       `max(d2h, h2d)`; what a run actually reaches is unmeasured. Costs at
-      most four modules of transient extra device residency, falls back to
-      the serial path on a pinned-allocation failure, and is inert without
-      CUDA. `SENSENOVA_TRAINING_DESIGN.md` §8.6.
+      most four modules of transient extra device residency — each incoming
+      destination is allocated on the DEFAULT stream, so it can still be
+      handed the block its outgoing twin just freed; a side-stream
+      allocation could not be, and the cost would be a whole half. Falls
+      back to the serial path on a pinned-allocation failure, and says so
+      once and runs serially without CUDA.
+      `SENSENOVA_TRAINING_DESIGN.md` §8.6.
   - **`sensenova_kv_cache_streaming`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): collapses the persistent per-layer
     flash-KV prefix cache into a **2-slot GPU ring shared across every layer

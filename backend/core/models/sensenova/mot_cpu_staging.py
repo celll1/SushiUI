@@ -105,9 +105,10 @@ def stage_modules_to_pinned_cpu(
     ``pageable=True``, which has no pin attempt to fail.
 
     ``non_blocking=True`` leaves the copies in flight on the current stream; the
-    device sources are appended to ``sources`` so the caller can ``record_stream``
-    them before the model's reassignment drops the last reference to a block the
-    allocator would otherwise hand to a concurrent copy."""
+    device sources are appended to ``sources``, which is what keeps them alive
+    once the reassignment below drops the MODEL's reference, so the caller can
+    still ``record_stream`` a block the allocator would otherwise be free to hand
+    to a concurrent copy."""
     def _stage(tensor):
         staged = _stage_tensor(
             tensor, warn_once, warn_message, pageable=pageable,

@@ -517,10 +517,12 @@ prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）から�
 3. **optimizer は per-parameter seam と state 容量の両方を満たすものに限られる。**
    `torch.optim.AdamW` は fp32 state 129.6 GB かつ per-parameter seam が
    無いので stochastic rounding もかけられず（§6.3）、素の `adamw8bit` は state
-   32.4 GB で超過する。**【`601d0271` で確定】出荷された allowlist は
-   `("adafactor",)` のみ**である（`SENSENOVA_FULL_FINETUNE_OPTIMIZERS`）。
-   Ring Buffer 系を併記していた旧文は誤りだったので撤回した — 根拠は §6.5 末尾の
-   「訂正」。
+   32.4 GB で超過する。**【2026-08-26 で確定】出荷された allowlist は
+   `("adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer")`**
+   （`SENSENOVA_FULL_FINETUNE_OPTIMIZERS`）。**Ring Buffer 系は
+   `optimizer_state_host_resident` があるときだけ**で、無ければ load 前に拒否する
+   （`assert_ringbuffer_host_state`）。`adamw8bit` はこの逃げ道を持たないので
+   排除のまま。根拠と算術は §6.5 の admission 節。
 4. **`use_ema` は fused backward と併用拒否**（実装済みの raise、`:3642-3652`）。
    **`601d0271` はこれを SenseNova full FT の契約でも config / 属性の両 channel で
    拒否する**（`assert_full_finetune_contract`）— hook 経路は `optimizer.step()` の
@@ -1180,10 +1182,20 @@ backward の時間窓に発生する**。4 相 eviction と併用すれば weigh
 > 壁時計が `sum` ではなく `max(compute, transfer)` の形になるという事実までが射程で、
 > プロファイラは取っていない。**断定しないこと。**
 
-**SenseNova は閾値の下側にいる（実測に基づく位置づけ）。** /32 token grid・batch 1
-なので **1024² で 1024 image tokens** — AdamW の 2038 を下回り、Lion の 1019 と
-ほぼ同じである。1536² で 2304、2048² で 4096。**つまり SenseNova の想定解像度帯では
-転送はおおむね直列に乗る。**
+**【2026-08-26 訂正】実運用解像度は 1024² ではなく 2048² であり、そこでは閾値の
+上側にいる。** /32 token grid（`sensenova_pipeline_ops.TOKEN_GRID_ALIGN = 32`）・
+batch 1 なので **1024² で 1024 image tokens、1536² で 2304、2048² で 4096**。
+§8.5 の実測が「**2048px がこのモデルの実運用解像度**」と確定させたので、
+基準になるのは 4096 tokens である — AdamW の 2038 / Lion の 1019 のいずれも上回る。
+
+ただし **MoT の実効閾値は素の閾値ではない。** 両 half を学習する場合、image token
+に対して計算するのは gen 側 half だけで、state 転送は両 half 分が乗る。閉形式
+`N >= 2 * (state bytes/param) * FLOPS / (6 * PCIe bytes/s)` の分子だけが倍になる
+ので、**実効閾値はおよそ 2 倍（AdamW ~4076 / Lion ~2038）**である。したがって
+2048² では **AdamW は約 1% しか超えず、Lion は 2 倍の余裕で超える**。
+**これは「速い」という主張ではない** — 閾値は「転送が隠れるか」の境界であって、
+step wall の実測ではなく、本ルートの RB optimizer での step は測っていない
+（比較基準は §8.5 の Adafactor arm。下の「admission」参照）。
 
 **16.2B への投影（実測帯域からの投影であって実測ではない）**: AdamW の 64.8 GB 往復は
 約 **2.45 s** を要し、compute 約 **1.64 s** に対して**隠れない**（+0.8 s/step）。
@@ -1208,11 +1220,20 @@ Lion の 32.4 GB は**隠れる**。ただし MoT が image token に対して g
    allocator が要る。また **pinned 済みバッファを返すこと**が必須で、返さないと
    optimizer 側の `pin_memory()` が第 2 の確保を作り **host RAM が 2 倍**になる
    （実測: 保持する版 2.04x 対 出荷版 1.04x）。
-   **switch は config channel 限定**（run の train_config = YAML の
-   `optimizer_state_host_resident` キー。`BaseTrainer.__init__` が読む）。
-   **API / UI 面は意図的に張らない** — 対象は Ring Buffer 系 2 つだけで、
-   本ルートの allowlist は `("adafactor",)` なので、選べる場所では効かず、
-   効く場所では未実測になる。理由は `BaseTrainer.__init__` のコメントと §13.4 U-2-5。
+   **【2026-08-26 訂正】switch は config channel 限定ではなくなった。**
+   以前ここには「API / UI 面は意図的に張らない — allowlist が `("adafactor",)`
+   なので選べる場所では効かず、効く場所では未実測」と書いてあった。
+   allowlist に Ring Buffer 系が入った時点でこの理由は成立しない。むしろ
+   **optimizer 名が API field で residency flag が config 限定という非対称が、
+   product から始めた run に GPU 上の 8-bit state を確保させて step 1 で OOM
+   させる**（両 half で AdamW 32.9 GB / Lion 16.5 GB）。
+   よって `optimizer_state_host_resident` は
+   `param_defaults.TRAINING_DEFAULTS` → Pydantic → `openapi.yaml` →
+   `training_config._build_train_section` → api.ts → TrainingConfig.tsx の
+   フルチェーンを持つ（既定 `False`）。YAML キーはその下でそのまま生きているので、
+   手編集の run（121 など）はフォーム無しで arm できる。
+   テスト: `backend/tests/optimizer_diagnostic_switch_config_test.py`
+   （`optimizer_update_census` の方は config channel 限定のまま）。
 2. ~~**hook 経路への state H2D → 更新 → D2H の移植。**~~ **【撤回、`5dce52ee`】
    不要である。** ただし **【U-2-6 で機構を訂正】理由が誤っていた。**
    ここには「host buffer は pinned なので kernel が UVA 経由で直接アドレスでき、
@@ -1305,35 +1326,54 @@ G-RB3 が最も重要である。upgrade 項目 4 のサイレントスキップ
 まま一部の half が更新されない**という §6.1 と同型の故障を作るので、
 「速いか」ではなく「正しいか」を先に閉じる。
 
-#### 【`601d0271` で訂正】出荷された allowlist は `("adafactor",)` のみ
+#### 【2026-08-26】出荷された allowlist は 3 つ。Ring Buffer 系は host-resident 条件付き
 
-**本節の「提示形」は「Adafactor と Ring Buffer 系の両方を許可し、既定は Adafactor」
-だった。実装はそうしていない。** `SENSENOVA_FULL_FINETUNE_OPTIMIZERS`
-（`ops/sensenova_ops.py`）は `("adafactor",)` である。Ring Buffer 系を
-allowlist に入れる案は **2 つの独立した理由で誤っていた**ので、再発しないよう
-理由を残す。
+**`SENSENOVA_FULL_FINETUNE_OPTIMIZERS`（`ops/sensenova_ops.py`）は
+`("adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer")` である。**
+`601d0271` の時点では `("adafactor",)` で、その理由は 2 つ書かれていた。
+**両方とも解消したので、記録として残したうえで置き換える。**
 
-1. **§13.4 U-2-6 が G-RB2 / G-RB3 を exit gate として事前登録しており、
-   どちらも開いている。** allowlist に入れることは gate を通さずに opt-in を
-   開けることと同じで、本節自身の「これが通るまで Ring Buffer 系は opt-in を
-   開かない」に反する。
-2. **`adamw8bit` を排除している state 容量の議論は、`adamw8bit_ringbuffer` を
-   同じだけ排除する。** 上の実測表が両者に **同一の 2.031250 B/param** を与えており
-   （host state モードは `get_state_buffer` を供給する呼び出し側が存在しないので
-   起動しない = 前提事実 1）、GPU 上での単価は文字通り等しい。
-   `lion8bit_ringbuffer` だけは **1.015625 B/param** で半分だが、そちらは理由 1 が
-   そのまま当たる。
+1. ~~§13.4 U-2-6 の G-RB2 / G-RB3 が exit gate として開いている~~ →
+   **どちらも CLOSED（U-2-6、上の実測ボックス）。**
+2. ~~`adamw8bit` を排除する state 容量の議論が `adamw8bit_ringbuffer` にも当たる~~ →
+   **当たるのは host state モードが起動しない場合だけ**である。当時それは
+   「`get_state_buffer` を供給する呼び出し側が無い」ことによっていたが、
+   `BaseTrainer._ringbuffer_optimizer_kwargs` が供給するようになり、その switch は
+   API/UI 面を持つようになった（上の upgrade 項目 1 の訂正）。
+   **`adamw8bit` にはこの逃げ道が無く、排除は据え置きである。**
+
+**したがって admission は「名前」ではなく「条件」である。**
+`assert_ringbuffer_host_state`（`ops/sensenova_ops.py`）が
+`optimizer_state_host_resident` の無い Ring Buffer 系を **checkpoint load 前に拒否**する。
+契約チェックの他の全条項と同じく **2 channel 両方**で見る
+（`assert_full_finetune_contract` と
+`train_runner._apply_sensenova_full_finetune_contract`）。
+さらに optimizer 構築後に **flag ではなく state テンソルの device census** で
+検証する（`base_trainer._assert_ringbuffer_state_host_resident` →
+`host_state_allocator.assert_state_host_resident`。state は lazy 確保なので
+census 前に強制初期化する）。**Lion も同時に admit した** — state は AdamW の半分で、
+実効閾値も 2 倍の余裕で超える（上の訂正）ので、AdamW を入れて Lion を外すのは逆である。
 
 **scope を合わせた算術**（U-2-1 が実 checkpoint ヘッダから取った half あたり
-**8,103,395,328** 要素。§6.4 の表）:
+**8,103,395,328** 要素、両 half **16,206,790,656**。§6.4 の表）:
 
-| optimizer | B/param（実測） | gen half のみ（このルートの既定 branch） | 両 half |
-|---|---:|---:|---:|
-| `adamw8bit` / `adamw8bit_ringbuffer`（GPU state） | 2.031250 | **16.5 GB** | **32.9 GB** |
-| `lion8bit_ringbuffer`（GPU state） | 1.015625 | 8.2 GB | 16.5 GB |
+| optimizer | GPU B/param（実測） | gen half のみ | 両 half | host B/param | 両 half の pinned host |
+|---|---:|---:|---:|---:|---:|
+| `adamw8bit`（host モード無し） | 2.031250 | 16.5 GB | 32.9 GB | – | – |
+| `adamw8bit_ringbuffer`（GPU state） | 2.031250 | 16.5 GB | 32.9 GB | 0 | 0 |
+| `adamw8bit_ringbuffer`（**host state**） | 0.031250 | 0.25 GB | 0.51 GB | 2.0 | **30.19 GiB** |
+| `lion8bit_ringbuffer`（GPU state） | 1.015625 | 8.2 GB | 16.5 GB | 0 | 0 |
+| `lion8bit_ringbuffer`（**host state**） | 0.015625 | 0.13 GB | 0.25 GB | 1.0 | **15.09 GiB** |
 
-上の「予算比較」表は **both-branch 16.2B への外挿**なので、gen-only を既定とする
-このルートの数字はここで別に置く。**単価は実測、合計は掛け算である。**
+**単価は実測、合計は掛け算である。**
+
+**host RAM が律速側である。** §8.5 の実測 arm（both branch・2048px・eviction OFF）は
+**peak working set 49.11 GiB / peak commit 67.95-89.10 GiB、host 搭載 93.6 GiB**。
+ここに pinned が丸ごと乗るので、投影は AdamW で **~79.3 GiB wset / 98-119 GiB commit
+（marginal）**、Lion で **~64.2 GiB wset（余裕あり）**。**投影であって実測ではない。**
+実行前に `BaseTrainer._announce_host_state_budget` が
+「params × B/param = pinned GiB」と現在の working set を印字する
+（gpu-probe の host-RAM 規律）。
 
 ---
 
@@ -2511,7 +2551,9 @@ peak working set 49.11 GiB、peak commit charge 67.95-89.10 GiB（§8.3.3 の
   stream 区分された free list が half 丸ごと（15 GiB 級）を取り残していない、という
   本番条件での確認である — `419625c9` が塞いだ欠陥そのものである。
 - **適用範囲。** 物理 B1、reference 画像なし、学習中 sample なし、`--no-save`、
-  Adafactor、native attention。2048px の eviction OFF が持つ約 11.3 GiB の余白は、
+  Adafactor、native attention、**`multi_noise_timesteps` は probe が設定しないので
+  既定の 1**（→ MNT>1 の run と秒の絶対値を比較してはならない。比だけが移る。
+  §13.4 U-2-6 の「step wall の比較基準」）。2048px の eviction OFF が持つ約 11.3 GiB の余白は、
   バッチ増、U-3 の reference ViT tower、学習中 sampling、長時間 run の断片化が
   食う先である。**eviction は「OFF が載らない場合の opt-in fallback」として残る。
   死んだコードではなく、削除してはならない。**
@@ -3579,13 +3621,26 @@ census は「294 個すべてが動いた」ではなく「**294 個中 289 個�
     **API / UI 面は意図的に張っていない**: census は不足を検出すると `raise` するので
     checkbox にすると false positive が正しい run を落とすし、結果は stdout の
     census で UI に出す先が無い。`optimizer_state_host_resident`（§6.5）も
-    同じ config channel・同じ理由で同じ扱いにした。
+    当初は同じ扱いにしたが、**2026-08-26 に反転してフルの parameter chain を
+    張った** — Ring Buffer 系が「この flag があるとき限り」admit されるように
+    なった以上、optimizer 名だけが API field でこの flag が config 限定という
+    非対称は、product から始めた run を step 1 で OOM させる経路そのものである
+    （§6.5）。census の側は据え置き。
     テスト: `backend/tests/optimizer_diagnostic_switch_config_test.py`。
   U-2-6: **Ring Buffer optimizer の upgrade 3 項目**（§6.5。`get_state_buffer` の配線 /
   閾値下向けの専用 stream + prefetch / サイレント CPU-skip の fail-loud 化。
   **state shuttle の移植は実測により不要と判明したので落とした**）。
   **依存は U-2-2、exit は G-RB2 / G-RB3**（G-RB1 は `8c13c493` で CLOSED）。
-  これが通るまで Ring Buffer 系は opt-in を開かない。
+  ~~これが通るまで Ring Buffer 系は opt-in を開かない。~~
+  **【2026-08-26】G-RB2 / G-RB3 とも CLOSED。allowlist は
+  `("adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer")` になり、
+  Ring Buffer 系は `optimizer_state_host_resident` を条件として admit される
+  （§6.5 の admission 節）。残る未実装は「閾値下向けの prefetch」だけで、
+  2048px = 4096 tokens は閾値の上なので本ルートの適用範囲外である。**
+  - **step wall の比較基準（U-2-4 / §8.5）。** RB optimizer 側の step は
+    測っていない。比較するなら基準は §8.5 の **2048px・eviction OFF・Adafactor
+    arm の 7.5284 s/step** である。ただし **この arm は MNT=1** で、run 121 は
+    **MNT=4** なので、**移せるのは比だけで秒の絶対値は移せない。**
   - **⚠️ U-2-6 の罠（`24220b5c` が仕掛けた assertion に当たる）。**
     Ring Buffer 系は **`step_param` を定義しない** — 自前で
     post-accumulate-grad hook を登録し、`base_trainer._setup_fused_backward_pass`

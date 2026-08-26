@@ -23,7 +23,7 @@
 
 Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**必要な時だけGPUに転送**することで、**GPU VRAMを削減**する設計の最適化手法です。
 
-> ### ⚠️ 現状: CPU state モードは配線済み・既定は OFF・UI からは選べない
+> ### ⚠️ 現状: CPU state モードは配線済み・既定は OFF・UI から選べる
 >
 > **【U-2-6 で更新】** 以前ここには「この引数を供給している呼び出し側が存在しない
 > （導入コミット `190c876e` 以来一度も配線されたことがない）」と書いてありました。
@@ -38,13 +38,14 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 > **2 つのパラメータの moment が同じバイトを共有すると静かに壊れます**。
 > したがって専用の**永続・非再利用・パラメータ単位** allocator を使います。
 >
-> **ただし既定は OFF で、この switch には API / UI 面がありません。**
-> 読めるのは **run の train_config（YAML）の `optimizer_state_host_resident`
-> キーだけ**です（`BaseTrainer.__init__`。`use_ema` などと同じ config channel）。
-> `param_defaults` → `routes` → `openapi` → frontend の連鎖は**意図的に張って
-> いません**（理由は `BaseTrainer.__init__` のコメント）。したがって
-> **UI から起動した run では今も `None` に解決され、8-bit state は
-> GPU に確保されます**（"Ring Buffer disabled: GPU allocation" 分岐）。
+> **既定は OFF ですが、【2026-08-26】この switch は API / UI 面を持ちました。**
+> `param_defaults.TRAINING_DEFAULTS` → Pydantic → `openapi.yaml` →
+> `training_config._build_train_section` → api.ts → TrainingConfig.tsx。
+> run の train_config（YAML）の `optimizer_state_host_resident` キーも
+> そのまま channel として生きています（`BaseTrainer.__init__`）。
+> **OFF のままなら 8-bit state は従来どおり GPU に確保されます**
+> （"Ring Buffer disabled: GPU allocation" 分岐）。SenseNova の
+> full fine-tune ルートだけはこの 2 つの optimizer を **ON のときしか受け付けません**。
 >
 > 実測（U-2-6、RTX 6000 Ada、402.7 M bf16 パラメータ、**1 case 1 process**）:
 >
@@ -84,8 +85,8 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 > **【2026-08-25 → U-2-6 で更新】配線は完了しました。**
 > `BaseTrainer._ringbuffer_optimizer_kwargs()` が `optimizer_state_host_resident`
 > のときに `HostOptimizerStateAllocator`（`host_state_allocator.py`）を渡します。
-> ただし **この switch は config channel 限定です**（run の YAML に
-> `optimizer_state_host_resident: true` を書く。API / UI 面は無い）。
+> この switch は **API / UI 面と YAML キーの両方**から設定できます
+> （【2026-08-26】以前は config channel 限定でした）。
 > 実測は §「パフォーマンス」ではなく
 > [`docs/guides/SENSENOVA_TRAINING_DESIGN.md`](../../../../docs/guides/SENSENOVA_TRAINING_DESIGN.md)
 > §6.5 を参照してください。
@@ -109,7 +110,7 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 
 「⚙️ 配線済・既定 OFF」= `BaseTrainer._ringbuffer_optimizer_kwargs()` が
 `optimizer_state_host_resident` のときに allocator を渡す。既定は OFF で、
-その switch は train_config（YAML）からのみ設定できる（冒頭の注記）。
+その switch は API / UI と train_config（YAML）の両方から設定できる（冒頭の注記）。
 
 `Lion8bit_RingBuffer` の Schedule-Free は拒否される。`lion8bit_schedulefree_kernel.cu`
 は Schedule-Free の位置系列であるべき `z` を Lion の momentum EMA として使い、

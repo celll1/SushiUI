@@ -93,11 +93,12 @@ def resolve_group_lrs(
       (``self.learning_rate``). ``fallback_lr`` is then REQUIRED; omitting it
       is a caller bug and raises ``ValueError``.
     * longer than ``n_groups`` -> the leading ``n_groups`` entries are used and
-      a warning is printed. This is not fatal on purpose: it happens for real
-      under ``num_optimizer_groups > 0`` (fused optimizer groups), where
-      ``self.optimizer`` is only ``optimizers[0]`` and therefore holds fewer
-      groups than the component list describes. Raising there would turn a
-      cosmetic mismatch into a failed resume.
+      a warning is printed. Not fatal on purpose, though unreachable from
+      ``BaseTrainer`` today: ``_configured_component_lr_description`` (since
+      4e8edb62) only ever returns a list whose length already equals
+      ``n_groups``, for exactly this reason -- both consumers write by index,
+      so a mismatched length would assign some component another component's
+      rate. Kept non-fatal for other callers that build ``cfg_lr`` differently.
     """
     if n_groups <= 0:
         return []

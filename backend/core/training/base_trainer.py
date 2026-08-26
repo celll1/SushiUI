@@ -45,6 +45,88 @@ from core.training.training_events import emit_training_warning
 from core.training.image_preprocessing import flatten_to_rgb
 
 
+# Marks an optimizer file holding one state per fused optimizer group. Absent in
+# files written before fused groups were saved at all (and in every
+# single-optimizer run, whose format is unchanged).
+FUSED_GROUP_STATES_KEY = "_sushi_fused_group_states"
+
+
+# safetensors'/torch's OWN reader messages, for the loaders that stringify the
+# cause into a plain RuntimeError instead of chaining it. Deliberately does NOT
+# contain "safetensor"/"corrupted"/"truncated": those match a structural refusal
+# that merely names a checkpoint file, which then reloads every older checkpoint
+# (17-25 GiB apiece on SenseNova) to be refused for the same reason.
+_CORRUPTION_TEXT_MARKERS = (
+    "error while deserializing header",
+    "metadataincompletebuffer",
+    "header too large",
+    "header too small",
+    "invalid header length",
+    "file not fully covered by metadata",
+    "pytorchstreamreader failed",
+)
+
+
+def _corruption_exception_types() -> Tuple[type, ...]:
+    from json import JSONDecodeError
+    from pickle import UnpicklingError
+    from zipfile import BadZipFile
+
+    types: List[type] = [EOFError, UnpicklingError, BadZipFile, JSONDecodeError]
+    try:
+        from safetensors import SafetensorError
+        types.append(SafetensorError)
+    except Exception:
+        pass
+    return tuple(types)
+
+
+def is_checkpoint_corruption_error(exc: BaseException) -> bool:
+    """True only when the checkpoint FILE could not be READ.
+
+    Keyed on the reader's exception type (walking ``__cause__``/``__context__``,
+    since loaders re-raise as RuntimeError), not on the prose of the message: a
+    structural refusal -- wrong branch, wrong save format, unsupported option --
+    is not a corruption signal even when it names a ``.safetensors`` path, and
+    treating it as one makes the fallback reload every older checkpoint.
+    """
+    types = _corruption_exception_types()
+    seen = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, types):
+            return True
+        text = str(current).lower()
+        if any(marker in text for marker in _CORRUPTION_TEXT_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def all_optimizers(trainer) -> List[Any]:
+    """Every optimizer that owns trainable parameters, in parameter order.
+
+    ``trainer.optimizer`` alone is only the first entry of this list.
+    """
+    fused = getattr(trainer, "fused_optimizer_groups", None)
+    optimizers = list(getattr(fused, "optimizers", None) or []) if fused is not None else []
+    if optimizers:
+        return optimizers
+    optimizer = getattr(trainer, "optimizer", None)
+    return [optimizer] if optimizer is not None else []
+
+
+def all_lr_schedulers(trainer) -> List[Any]:
+    """The scheduler driving each entry of :func:`all_optimizers`."""
+    fused = getattr(trainer, "fused_optimizer_groups", None)
+    if fused is not None:
+        schedulers = list(getattr(trainer, "lr_schedulers", None) or [])
+        if schedulers:
+            return schedulers
+    return [getattr(trainer, "lr_scheduler", None)]
+
+
 def setup_fused_grad_norm(trainer, optimizers):
     """Give every fused-backward hook a place to record gradient norms.
 
@@ -1516,20 +1598,7 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Successfully loaded checkpoint as base model")
                 self._loaded_checkpoint_path = checkpoint_to_load
             except Exception as e:
-                error_str = str(e).lower()
-                # Check for corruption-related errors
-                is_corruption = any(x in error_str for x in [
-                    "incomplete metadata",
-                    "file not fully covered",
-                    "deserializing header",
-                    "safetensor",
-                    "corrupted",
-                    "truncated",
-                    "unexpected end",
-                    "invalid header",
-                ])
-
-                if is_corruption:
+                if is_checkpoint_corruption_error(e):
                     print(f"{self.log_prefix} WARNING: Checkpoint appears corrupted: {e}")
                     print(f"{self.log_prefix} Attempting to fall back to previous checkpoint...")
 
@@ -3087,33 +3156,77 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Loaded training state: epoch={state['epoch']}, batch_idx={state['batch_idx']}")
         return state
 
+    @staticmethod
+    def _optimizer_state_param_count(state_dict: Dict[str, Any]) -> int:
+        return sum(len(g.get("params", [])) for g in state_dict.get("param_groups", []) or [])
+
+    def _fast_forward_lr_schedulers(self, global_step: int):
+        """Advance EVERY scheduler to the resumed step.
+
+        Under fused optimizer groups each optimizer has its own scheduler and
+        the training loop steps them all; advancing only ``self.lr_scheduler``
+        would resume groups 1..N-1 at schedule position 0.
+        """
+        for scheduler in all_lr_schedulers(self):
+            if scheduler is None:
+                continue
+            for _ in range(global_step):
+                scheduler.step()
+
     def save_optimizer_state(self, step: int):
         """
         Save optimizer state dict to .pt file.
 
+        Under fused optimizer groups all N optimizers are written, under
+        ``_sushi_fused_group_states``. A single-optimizer run writes the plain
+        ``state_dict()`` it always wrote, so its files are unchanged.
+
+        A fused file read by a build that predates this key fails safely and
+        quietly: ``optimizer.load_state_dict()`` raises ``KeyError`` on the
+        wrapper dict, the pre-existing salvage path finds no usable prefix and
+        prints "Partial optimizer load not applicable", and the run continues
+        with fresh optimizer state rather than crashing.
+
         Args:
             step: Current global step
         """
-        if self.optimizer is None:
+        optimizers = all_optimizers(self)
+        if not optimizers:
             return
 
         # Use full run_name with zero-padded step (consistent with model checkpoint naming)
         optimizer_file = self.output_dir / f"{self.run_name}_step_{step:06d}_optimizer.pt"
 
-        # Save optimizer state dict. Tag the optimizer class so a resume that
-        # switches optimizer (e.g. bnb AdamW8bit -> AdamW8bit_RingBuffer) can
-        # detect the source format and convert the state instead of crashing.
-        opt_state = self.optimizer.state_dict()
-        try:
-            opt_state["_sushi_opt_class"] = type(self.optimizer).__name__
-        except Exception:
-            pass
-        torch.save(opt_state, optimizer_file)
-        print(f"{self.log_prefix} Saved optimizer state to {optimizer_file.name}")
+        # Tag the optimizer class so a resume that switches optimizer (e.g. bnb
+        # AdamW8bit -> AdamW8bit_RingBuffer) can detect the source format and
+        # convert the state instead of crashing.
+        states = []
+        for optimizer in optimizers:
+            state = optimizer.state_dict()
+            try:
+                state["_sushi_opt_class"] = type(optimizer).__name__
+            except Exception:
+                pass
+            states.append(state)
+
+        if len(states) == 1:
+            payload: Dict[str, Any] = states[0]
+        else:
+            payload = {
+                FUSED_GROUP_STATES_KEY: states,
+                "_sushi_opt_class": states[0].get("_sushi_opt_class"),
+            }
+        torch.save(payload, optimizer_file)
+        suffix = "" if len(states) == 1 else f" ({len(states)} fused optimizer groups)"
+        print(f"{self.log_prefix} Saved optimizer state to {optimizer_file.name}{suffix}")
 
     def load_optimizer_state(self, step: int) -> bool:
         """
         Load optimizer state dict from .pt file.
+
+        Restores every fused optimizer group, re-slicing the saved states by
+        global parameter order when ``num_optimizer_groups`` changed since the
+        checkpoint.
 
         Args:
             step: Step number to load optimizer state for
@@ -3123,7 +3236,8 @@ class BaseTrainer(ABC):
         """
         import re
 
-        if self.optimizer is None:
+        optimizers = all_optimizers(self)
+        if not optimizers:
             print(f"{self.log_prefix} WARNING: Cannot load optimizer state (optimizer not initialized)")
             return False
 
@@ -3145,6 +3259,140 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Starting with fresh optimizer state")
             return False
 
+        try:
+            payload = torch.load(optimizer_file, map_location='cpu')
+        except Exception as e:
+            print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
+            print(f"{self.log_prefix} Continuing with fresh optimizer state")
+            return False
+
+        saved_states, fused_save = self._split_saved_optimizer_states(payload)
+
+        if len(optimizers) == 1 and len(saved_states) == 1:
+            return self._load_one_optimizer_state(
+                optimizers[0], saved_states[0], optimizer_file.name)
+
+        live_counts = [sum(len(g["params"]) for g in optimizer.param_groups)
+                       for optimizer in optimizers]
+        saved_counts = [self._optimizer_state_param_count(state) for state in saved_states]
+
+        if live_counts == saved_counts:
+            results = [
+                self._load_one_optimizer_state(
+                    optimizer, state, f"{optimizer_file.name} [group {i}]")
+                for i, (optimizer, state) in enumerate(zip(optimizers, saved_states))
+            ]
+            return all(results)
+
+        is_pre_fix_partial = (
+            not fused_save and len(saved_states) == 1
+            and len(optimizers) > 1 and sum(saved_counts) < sum(live_counts)
+        )
+        if is_pre_fix_partial and saved_counts[0] == live_counts[0]:
+            # Written before fused groups were saved at all: only optimizer 0's
+            # moments exist on disk, and no remap can invent the rest. The
+            # ``sum(saved) < sum(live)`` check keeps this from matching a
+            # genuinely different, smaller optimizer file whose total happens
+            # to equal one live group's size by coincidence.
+            emit_training_warning(
+                f"{optimizer_file.name} predates fused-optimizer-group state saving: it "
+                f"holds only optimizer group 0 of {len(optimizers)}. That group's moments "
+                f"resume; the other {len(optimizers) - 1} start fresh, because their state "
+                f"was never written.",
+                code="optimizer_state_partial_fused_resume",
+                prefix=self.log_prefix,
+            )
+            return self._load_one_optimizer_state(
+                optimizers[0], saved_states[0], optimizer_file.name)
+
+        if sum(live_counts) == sum(saved_counts):
+            # num_optimizer_groups changed (either direction, 0 included). Both
+            # layouts partition the SAME flat parameter list in the same order,
+            # so the saved per-group states re-slice onto the live ones exactly.
+            print(f"{self.log_prefix} Optimizer state was saved as {len(saved_states)} "
+                  f"group(s) and this run has {len(optimizers)}; re-slicing "
+                  f"{sum(saved_counts)} parameters' state by global order")
+            remapped = self._repartition_optimizer_states(saved_states, optimizers)
+            results = [
+                self._load_one_optimizer_state(
+                    optimizer, state, f"{optimizer_file.name} [group {i}]")
+                for i, (optimizer, state) in enumerate(zip(optimizers, remapped))
+            ]
+            return all(results)
+
+        if is_pre_fix_partial:
+            # saved_counts[0] != live_counts[0] here, or the branch above would
+            # have matched: still a pre-fix file, just also resumed under a
+            # different num_optimizer_groups than it was saved with.
+            cause = ("that file may predate fused-optimizer-group state saving "
+                      "(it holds one group of a run that had more).")
+        elif len(optimizers) > 1 or len(saved_states) > 1:
+            # A genuine size mismatch under grouped optimizers. Unlike a
+            # single-optimizer resume (which salvages a common prefix via
+            # _load_one_optimizer_state), this path cannot: the fused groups
+            # are arbitrary chunks of the flat parameter list, not per-component
+            # boundaries, so there is no structural check that a size change is
+            # a trailing addition/removal rather than an unrelated parameter
+            # set. Resetting everything is the safe choice, not evidence that
+            # the parameter set changed.
+            cause = ("the trainable parameter set may not have changed at all: "
+                      "grouped-optimizer resumes reset every group on any size "
+                      "change instead of keeping the common prefix a "
+                      "single-optimizer resume would.")
+        else:
+            cause = "the trainable parameter set changed since that checkpoint."
+
+        emit_training_warning(
+            f"the optimizer state in {optimizer_file.name} covers {sum(saved_counts)} "
+            f"parameter tensor(s) in {len(saved_states)} group(s) and this run has "
+            f"{sum(live_counts)} in {len(optimizers)}; nothing was restored and every "
+            f"moment starts fresh, because {cause}",
+            code="optimizer_state_not_restored",
+            prefix=self.log_prefix,
+        )
+        return False
+
+    @staticmethod
+    def _split_saved_optimizer_states(payload) -> Tuple[List[Dict[str, Any]], bool]:
+        """``(per-group states, was written by the fused path)``."""
+        if isinstance(payload, dict) and isinstance(payload.get(FUSED_GROUP_STATES_KEY), list):
+            return list(payload[FUSED_GROUP_STATES_KEY]), True
+        return [payload], False
+
+    def _repartition_optimizer_states(
+        self, saved_states: List[Dict[str, Any]], optimizers: List[Any]
+    ) -> List[Dict[str, Any]]:
+        """Re-slice saved per-group state onto a different number of optimizers.
+
+        Each ``state`` is keyed by an index into ITS OWN optimizer's flat
+        parameter order, and the fused split is a contiguous partition of the
+        adapter's flat list, so concatenating by group order recovers a global
+        index that both layouts agree on.
+        """
+        flat: Dict[int, Any] = {}
+        offset = 0
+        for state in saved_states:
+            for key, value in (state.get("state") or {}).items():
+                flat[offset + int(key)] = value
+            offset += self._optimizer_state_param_count(state)
+
+        tag = saved_states[0].get("_sushi_opt_class") if saved_states else None
+        remapped = []
+        cursor = 0
+        for optimizer in optimizers:
+            live = optimizer.state_dict()
+            count = self._optimizer_state_param_count(live)
+            state = {i: flat[cursor + i] for i in range(count) if (cursor + i) in flat}
+            entry = {"state": state, "param_groups": live.get("param_groups", [])}
+            if tag is not None:
+                entry["_sushi_opt_class"] = tag
+            remapped.append(entry)
+            cursor += count
+        return remapped
+
+    def _load_one_optimizer_state(self, optimizer, optimizer_state, label: str) -> bool:
+        """Load one saved state dict into one optimizer."""
+
         def move_tensors_to_device(obj, device):
             """Recursively move all tensors in nested dict/list to target device."""
             if isinstance(obj, torch.Tensor):
@@ -3159,9 +3407,6 @@ class BaseTrainer(ABC):
                 return obj
 
         try:
-            # Load optimizer state dict
-            optimizer_state = torch.load(optimizer_file, map_location='cpu')
-
             # If the checkpoint was written by a compatible-but-different 8-bit
             # optimizer (e.g. bnb AdamW8bit -> AdamW8bit_RingBuffer), convert the
             # state (key remap + absmax copy; the quantization scheme is identical)
@@ -3172,7 +3417,7 @@ class BaseTrainer(ABC):
                     maybe_convert_optimizer_state,
                 )
                 _converted, _carry_step = maybe_convert_optimizer_state(
-                    optimizer_state, self.optimizer, log_prefix=self.log_prefix
+                    optimizer_state, optimizer, log_prefix=self.log_prefix
                 )
                 if _converted is not None:
                     optimizer_state = _converted
@@ -3187,12 +3432,12 @@ class BaseTrainer(ABC):
 
             # Attempt to load state dict with error handling
             try:
-                self.optimizer.load_state_dict(optimizer_state)
+                optimizer.load_state_dict(optimizer_state)
 
                 # IMPORTANT: After load_state_dict(), move all tensors in optimizer.state to GPU
                 # load_state_dict() may create new tensor references, so we need to move again
                 moved_count = 0
-                for param_state in self.optimizer.state.values():
+                for param_state in optimizer.state.values():
                     for key, value in param_state.items():
                         if isinstance(value, torch.Tensor) and not value.is_cuda:
                             param_state[key] = value.to(self.device)
@@ -3203,11 +3448,11 @@ class BaseTrainer(ABC):
                 # Carry the step counter across a cross-implementation conversion
                 # so AdamW bias correction continues from the right step (bnb keeps
                 # step per-param; Ring Buffer uses a global step_count).
-                if _carry_step > 0 and hasattr(self.optimizer, "step_count"):
-                    self.optimizer.step_count = _carry_step
+                if _carry_step > 0 and hasattr(optimizer, "step_count"):
+                    optimizer.step_count = _carry_step
                     print(f"{self.log_prefix} [OptConvert] carried step_count={_carry_step}")
 
-                print(f"{self.log_prefix} Successfully loaded optimizer state from {optimizer_file.name}")
+                print(f"{self.log_prefix} Successfully loaded optimizer state from {label}")
                 return True
             except Exception as e:
                 # The usual cause here is a param-GROUP count change between runs —
@@ -3219,7 +3464,7 @@ class BaseTrainer(ABC):
                 # off (or on) mid-training non-destructive for the model's optimizer.
                 print(f"{self.log_prefix} WARNING: Failed to load optimizer state directly: {e}")
                 try:
-                    cur_sd = self.optimizer.state_dict()
+                    cur_sd = optimizer.state_dict()
                     cur_groups = cur_sd.get("param_groups", [])
                     saved_groups = optimizer_state.get("param_groups", [])
                     saved_state = optimizer_state.get("state", {})
@@ -3239,8 +3484,8 @@ class BaseTrainer(ABC):
                     overlap_params = sum(len(cur_groups[i]["params"]) for i in range(n))
                     filtered_state = {k: v for k, v in saved_state.items() if int(k) < overlap_params}
                     partial = {"state": filtered_state, "param_groups": cur_groups}
-                    self.optimizer.load_state_dict(partial)
-                    for param_state in self.optimizer.state.values():
+                    optimizer.load_state_dict(partial)
+                    for param_state in optimizer.state.values():
                         for key, value in param_state.items():
                             if isinstance(value, torch.Tensor) and not value.is_cuda:
                                 param_state[key] = value.to(self.device)
@@ -3255,7 +3500,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} (momentum/variance will be reset)")
                     return False
         except Exception as e:
-            print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
+            print(f"{self.log_prefix} ERROR: Failed to restore optimizer state from {label}: {e}")
             print(f"{self.log_prefix} Continuing with fresh optimizer state")
             return False
 
@@ -3389,20 +3634,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Successfully loaded fallback checkpoint: {ckpt_path.name}")
                 return (True, ckpt_path_str)
             except Exception as e:
-                error_str = str(e).lower()
-                # Check for corruption-related errors
-                is_corruption = any(x in error_str for x in [
-                    "incomplete metadata",
-                    "file not fully covered",
-                    "deserializing header",
-                    "safetensor",
-                    "corrupted",
-                    "truncated",
-                    "unexpected end",
-                    "invalid header",
-                ])
-
-                if is_corruption:
+                if is_checkpoint_corruption_error(e):
                     print(f"{self.log_prefix} WARNING: Checkpoint corrupted: {ckpt_path.name}")
                     print(f"{self.log_prefix}   Error: {e}")
                     if i + 1 < len(sorted_checkpoints):
@@ -3615,8 +3847,10 @@ class BaseTrainer(ABC):
         self._configured_group_lrs = None
         self._configured_group_names = None
 
-        optimizer = getattr(self, "optimizer", None)
-        groups = list(getattr(optimizer, "param_groups", []) or []) if optimizer else []
+        # Every fused group's groups, not just optimizers[0]'s: the resume writes
+        # back by index over the same flattened list.
+        groups = [g for optimizer in all_optimizers(self)
+                  for g in list(getattr(optimizer, "param_groups", []) or [])]
         if not groups:
             return
 
@@ -3786,10 +4020,13 @@ class BaseTrainer(ABC):
         3-group Anima full FT it turned [2e-5, 4e-5, 1e-5] into
         [1e-4, 1e-4, 1e-4].
         """
-        if not hasattr(self, 'optimizer') or self.optimizer is None:
+        optimizers = all_optimizers(self)
+        if not optimizers:
             return
 
-        groups = list(getattr(self.optimizer, 'param_groups', []) or [])
+        schedulers = all_lr_schedulers(self)
+        groups = [g for optimizer in optimizers
+                  for g in list(getattr(optimizer, 'param_groups', []) or [])]
         if not groups:
             return
 
@@ -3812,14 +4049,18 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} LR re-assertion: {len(component_lrs)} configured rate(s) "
               f"for {len(groups)} param group(s), described by {source}")
 
-        reassert_config_lr(
-            self.optimizer,
-            getattr(self, 'lr_scheduler', None),
-            component_lrs,
-            log_prefix=self.log_prefix,
-            component_names=component_names,
-            fallback_lr=self.learning_rate,
-        )
+        offset = 0
+        for i, optimizer in enumerate(optimizers):
+            count = len(list(getattr(optimizer, 'param_groups', []) or []))
+            reassert_config_lr(
+                optimizer,
+                schedulers[i] if i < len(schedulers) else None,
+                component_lrs[offset:offset + count],
+                log_prefix=self.log_prefix,
+                component_names=component_names[offset:offset + count],
+                fallback_lr=self.learning_rate,
+            )
+            offset += count
 
     def _resolved_optimizer_hyperparameters(self) -> Dict[str, Any]:
         """weight_decay / betas / eps exactly as the user configured them.
@@ -4648,9 +4889,9 @@ class BaseTrainer(ABC):
         diffusers' get_scheduler() at this call site), F = lr_floor_ratio.
 
         Built as a plain torch.optim.lr_scheduler.LambdaLR (not a diffusers
-        scheduler) so the existing resume fast-forward loop (`for _ in
-        range(global_step): self.lr_scheduler.step()`) advances it correctly
-        via last_epoch, exactly like diffusers' own LambdaLR-based schedulers.
+        scheduler) so the resume fast-forward (`_fast_forward_lr_schedulers`)
+        advances it correctly via last_epoch, exactly like diffusers' own
+        LambdaLR-based schedulers.
         """
         from torch.optim.lr_scheduler import LambdaLR
 
@@ -9899,9 +10140,8 @@ class BaseTrainer(ABC):
                             None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
-                    # Fast-forward lr_scheduler to match the checkpoint
-                    for _ in range(global_step):
-                        self.lr_scheduler.step()
+                    # Fast-forward every lr_scheduler to match the checkpoint
+                    self._fast_forward_lr_schedulers(global_step)
 
                     # Load optimizer state (momentum, variance, etc.) BEFORE the
                     # LR re-assertion below: torch's Optimizer.load_state_dict
@@ -9967,9 +10207,8 @@ class BaseTrainer(ABC):
                             None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
-                    # Fast-forward lr_scheduler to match the checkpoint
-                    for _ in range(global_step):
-                        self.lr_scheduler.step()
+                    # Fast-forward every lr_scheduler to match the checkpoint
+                    self._fast_forward_lr_schedulers(global_step)
 
                     # Load optimizer state (momentum, variance, etc.) BEFORE the
                     # LR re-assertion below -- see the note in the "latest"

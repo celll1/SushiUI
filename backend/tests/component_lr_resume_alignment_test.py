@@ -571,7 +571,8 @@ def test_lens_group_names_reach_the_log():
 
 def test_fused_optimizer_groups_snapshot_the_flattened_rate():
     """``_setup_fused_optimizer_groups`` rebuilds every optimizer at the run's
-    base LR; the snapshot must describe THAT, not the adapter's discarded rates.
+    base LR; the snapshot must describe THAT, not the adapter's discarded rates
+    -- and must cover all N optimizers, not just ``optimizers[0]``.
     """
     probe = _Probe(learning_rate=1e-4, unet_lr=2e-5, num_optimizer_groups=2)
     probe.optimizer = torch.optim.AdamW([{"params": _params(), "lr": 1e-4}])
@@ -579,7 +580,7 @@ def test_fused_optimizer_groups_snapshot_the_flattened_rate():
         optimizers=[probe.optimizer,
                     torch.optim.AdamW([{"params": _params(), "lr": 1e-4}])])
     probe._record_configured_group_lrs([2e-5])   # what the adapter had asked for
-    assert probe._configured_group_lrs == [1e-4]
+    assert probe._configured_group_lrs == [1e-4, 1e-4]
 
 
 # ---------------------------------------------------------------------------

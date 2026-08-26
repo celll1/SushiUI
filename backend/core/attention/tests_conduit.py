@@ -28,6 +28,8 @@ _BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 
+import dataclasses  # noqa: E402
+
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
@@ -37,6 +39,7 @@ from core.attention import (  # noqa: E402
     normalize_backend,
     resolve_backend,
 )
+from core.attention.registry import BACKENDS  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 _results = []
@@ -151,6 +154,87 @@ def test_gqa_native(layout):
         return
     err = _rel_err(out, ref)
     status = PASS if err < 1e-2 else FAIL
+    record(name, status, f"rel_L2_err={err:.4e}")
+
+
+# --------------------------------------------------------------------------
+# GQA pre-expansion on the native path vs. no expansion elsewhere (CPU-only).
+#
+# Krea2 (48q/12kv) and SenseNova hit dispatch.py's R3 auto-enable_gqa with
+# unequal q/kv head counts; native SDPA's own enable_gqa broadcast is far
+# slower than pre-expanding K/V, so the conduit expands before calling the
+# native kernel and leaves flash/sage untouched (they either broadcast GQA
+# natively or are already downgraded to native on unequal heads).
+# --------------------------------------------------------------------------
+def _spy_backend(name, capture):
+    """Swap ``BACKENDS[name].fn`` for a spy that records call kwargs then
+    delegates to the original fn. Returns a restore callback."""
+    original = BACKENDS[name]
+
+    def spy_fn(q, k, v, **kwargs):
+        capture["q_heads"] = q.shape[2]
+        capture["k_heads"] = k.shape[2]
+        capture["enable_gqa"] = kwargs.get("enable_gqa")
+        return original.fn(q, k, v, **kwargs)
+
+    BACKENDS[name] = dataclasses.replace(original, fn=spy_fn)
+    return lambda: BACKENDS.__setitem__(name, original)
+
+
+def test_gqa_native_preexpands_kv():
+    name = "GQA native pre-expands K/V before the kernel call"
+    capture = {}
+    restore = _spy_backend("native", capture)
+    try:
+        q, k, v = _make_qkv("BSHD", 1, 16, 8, 32, "cpu", torch.float32, h_kv=2)
+        dispatch_attention(q, k, v, backend="native", layout="BSHD", mode=AttentionMode.INFERENCE)
+    finally:
+        restore()
+
+    ok = capture.get("k_heads") == capture.get("q_heads") == 8 and capture.get("enable_gqa") is False
+    record(name, PASS if ok else FAIL, f"captured={capture}")
+
+
+def test_gqa_flash_does_not_preexpand():
+    """flash must receive the ORIGINAL (unexpanded) kv heads: it broadcasts
+    GQA natively, so pre-expanding would cost a 4x K/V copy for nothing."""
+    name = "GQA flash path is not pre-expanded"
+    capture = {}
+    original = BACKENDS["flash"]
+
+    def spy_fn(q, k, v, **kwargs):
+        capture["q_heads"] = q.shape[2]
+        capture["k_heads"] = k.shape[2]
+        capture["enable_gqa"] = kwargs.get("enable_gqa")
+        # Shape-correct stand-in output; the real flash kernel is not invoked.
+        return q.clone()
+
+    BACKENDS["flash"] = dataclasses.replace(original, fn=spy_fn)
+    try:
+        q, k, v = _make_qkv("BSHD", 1, 16, 8, 32, "cpu", torch.float32, h_kv=2)
+        dispatch_attention(q, k, v, backend="flash", layout="BSHD", mode=AttentionMode.INFERENCE)
+    finally:
+        BACKENDS["flash"] = original
+
+    ok = capture.get("k_heads") == 2 and capture.get("q_heads") == 8
+    record(name, PASS if ok else FAIL, f"captured={capture}")
+
+
+def test_gqa_native_output_matches_enable_gqa_reference():
+    """Pre-expanded K/V through native must match SDPA's own enable_gqa=True
+    broadcast bit-for-bit-close (both apply the same repeat_interleave
+    grouping before the dot product)."""
+    name = "GQA native output == enable_gqa=True reference (CPU, fp32)"
+    torch.manual_seed(7)
+    q, k, v = _make_qkv("BSHD", 2, 24, 8, 32, "cpu", torch.float32, h_kv=2)
+
+    out = dispatch_attention(q, k, v, backend="native", layout="BSHD", mode=AttentionMode.INFERENCE)
+
+    qb, kb, vb = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+    ref = F.scaled_dot_product_attention(qb, kb, vb, enable_gqa=True).transpose(1, 2)
+
+    err = _rel_err(out, ref)
+    status = PASS if err < 1e-5 else FAIL
     record(name, status, f"rel_L2_err={err:.4e}")
 
 
@@ -289,6 +373,11 @@ def main():
     # R3: GQA native path, both layouts.
     for layout in ("BSHD", "BHSD"):
         test_gqa_native(layout)
+
+    # GQA pre-expansion vs. no-expansion (CPU-safe; always run).
+    test_gqa_native_preexpands_kv()
+    test_gqa_flash_does_not_preexpand()
+    test_gqa_native_output_matches_enable_gqa_reference()
 
     # Guards + normalization + SLA passthrough (CPU-safe where possible).
     test_guards()

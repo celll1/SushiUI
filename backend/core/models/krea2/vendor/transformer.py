@@ -21,8 +21,9 @@
 #     ``dispatch_attention_fn``; the per-module ``_attn_backend`` / ``_attn_mode``
 #     attributes select the kernel (native SDPA / FlashAttention / SageAttention)
 #     exactly like minit2i vendor/mmjit.py. GQA (48 query / 12 kv heads) is handled
-#     by the conduit (native auto-enables enable_gqa; sage downgrades on unequal
-#     heads).
+#     by the conduit: on the native path it pre-expands K/V (repeat_interleave)
+#     instead of using SDPA's own ``enable_gqa`` broadcast, which is far slower;
+#     sage downgrades on unequal heads; flash broadcasts GQA natively.
 #   * ``maybe_adjust_dtype_for_device`` (absent in 0.38) is inlined.
 #   * The PEFT / AttentionMixin machinery (LoRA) is dropped for the Phase A
 #     inference build; module and parameter NAMES are preserved verbatim so the

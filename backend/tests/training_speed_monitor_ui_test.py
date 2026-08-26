@@ -23,5 +23,7 @@ def test_monitor_explains_iteration_batch_and_optimizer_cadence():
     assert "fused ? 1 : accumulation" in SOURCE
     assert "Input-batch wall:" in SOURCE
     assert "Wall/update:" in SOURCE
+    assert "Input batch/update wall:" in SOURCE
+    assert "Update cadence: every iter (fused)" in SOURCE
     assert "Sample passes/update:" in SOURCE
     assert "Eviction included" in SOURCE

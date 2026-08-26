@@ -189,12 +189,35 @@ def test_the_two_encoding_modes_are_the_overwritten_pair(param):
     assert config[param] == "onthefly_gpu"
 
 
-def test_the_declared_optimizer_is_the_allowlist_the_trainer_holds():
-    """One value, and the same one -- the table must not be a second opinion."""
-    assert SENSENOVA_FULL_FINETUNE_OPTIMIZERS == ("adafactor",)
+def test_the_declared_optimizer_set_is_the_allowlist_the_trainer_holds():
+    """The same set, not a second opinion.
+
+    MUTANT: add a name to SENSENOVA_FULL_FINETUNE_OPTIMIZERS without adding it
+    to the table and the form offers a shorter list than the run accepts; add it
+    to the table only and the form offers a value refused before the load.
+    """
     entry = training_required_values("sensenova", "full_finetune")["optimizer"]
+    assert entry["values"] == list(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)
+    # `value` is the default member of that set, not a fourth opinion.
     assert entry["value"] in SENSENOVA_FULL_FINETUNE_OPTIMIZERS
-    assert len(SENSENOVA_FULL_FINETUNE_OPTIMIZERS) == 1
+    # And the condition the two ring-buffer members carry is stated where the
+    # form shows it, since selecting one without the flag is refused.
+    assert "optimizer_state_host_resident" in entry["reason"]
+
+
+@pytest.mark.parametrize("optimizer", ["adafactor", "adamw8bit_ringbuffer",
+                                       "lion8bit_ringbuffer"])
+def test_every_offered_optimizer_is_actually_accepted(optimizer):
+    """A value in `values` the run refuses is the failure this axis prevents.
+
+    The ring-buffer pair carries the residency condition its `reason` names;
+    with the flag set every offered value passes the pre-load contract.
+    """
+    config = _shipped_train_config(optimizer=optimizer,
+                                   optimizer_state_host_resident=True)
+    with _sensenova():
+        assert _apply_sensenova_training_contract(
+            "model", "full_finetune", config, {"sample": {}})
 
 
 def test_method_scoping_narrows_and_an_unknown_arch_is_unconstrained():
@@ -250,7 +273,7 @@ def test_the_openapi_spec_documents_the_served_key():
     entry = schema["training_required_values"]["additionalProperties"][
         "additionalProperties"]
     assert set(entry["required"]) == {"value", "reason"}
-    assert set(entry["properties"]) == {"value", "reason", "methods"}
+    assert set(entry["properties"]) == {"value", "reason", "methods", "values"}
     assert "training_required_values" in (
         spec["paths"]["/schema/arch-capabilities"]["get"]["description"])
 

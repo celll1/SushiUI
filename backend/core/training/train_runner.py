@@ -416,7 +416,9 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
     from api.param_defaults import (
         SENSENOVA_FULL_FINETUNE_SAVE_FORMATS, TRAINING_DEFAULTS,
     )
-    from core.training.ops.sensenova_ops import SENSENOVA_FULL_FINETUNE_OPTIMIZERS
+    from core.training.ops.sensenova_ops import (
+        SENSENOVA_FULL_FINETUNE_OPTIMIZERS, assert_ringbuffer_host_state,
+    )
 
     optimizer = train_config.get("optimizer")
     if optimizer is not None:
@@ -430,6 +432,12 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
                 f"per-parameter seam and state small enough to sit beside the "
                 f"dequantized bf16 half."
             )
+        # The optimizer name and the residency flag arrive on different channels
+        # and can disagree; checked on both, like every other clause here.
+        assert_ringbuffer_host_state(name, _normalize_sensenova_bool(
+            train_config, "optimizer_state_host_resident",
+            TRAINING_DEFAULTS["optimizer_state_host_resident"],
+        ))
     # Refused here rather than at the first save: the adapter resolves this
     # value only when it writes, and save_every defaults to 100 steps, so an
     # unknown format authored in a hand-written YAML would take the run down

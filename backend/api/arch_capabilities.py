@@ -340,8 +340,16 @@ TRAINING_REQUIRED_VALUES: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 def _add_training_required_value(arch: str, param: str, value: Any, reason: str,
-                                 methods: Optional[List[str]] = None) -> None:
+                                 methods: Optional[List[str]] = None,
+                                 values: Optional[List[Any]] = None) -> None:
+    """``value`` is what a client pins the control to; ``values``, when given, is
+    the full admitted set and ``value`` is its default member. A client offers
+    exactly ``values`` and leaves a current member alone -- pinning a run that
+    already selected another admitted value would be a silent override of its own.
+    """
     entry: Dict[str, Any] = {"value": value, "reason": reason}
+    if values:
+        entry["values"] = list(values)
     if methods:
         entry["methods"] = list(methods)
     TRAINING_REQUIRED_VALUES.setdefault(arch, {})[param] = entry
@@ -1059,8 +1067,9 @@ _add_training_required_value(
     "SenseNova training runs at physical batch 1; under LoRA use gradient_accumulation_steps for a larger effective batch")
 _add_training_required_value(
     "sensenova", "optimizer", "adafactor",
-    "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half",
-    methods=["full_finetune"])
+    "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half. Adafactor meets both unconditionally (0.002991 B/param, factored second moment). The two ring-buffer optimizers meet the second one only with optimizer_state_host_resident, which moves their 8-bit state to pinned host memory (measured 2.0 B/param for AdamW, 1.0 for Lion, i.e. 30.19 / 15.09 GiB pinned over both MoT halves) and leaves absmax on the GPU; without it they allocate a measured 2.031250 / 1.015625 B/param of GPU state (32.9 / 16.5 GB over both halves) beside the materialized bf16 weights, and the run is refused before the checkpoint loads. No step-wall comparison between them has been measured on this route",
+    methods=["full_finetune"],
+    values=["adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer"])
 _add_training_required_value(
     "sensenova", "gradient_accumulation_steps", 1,
     "each gradient is freed as it is applied during backward, so none survives to be summed across backward passes",
@@ -1197,6 +1206,8 @@ def training_required_values(arch: Optional[str],
         if methods and method is not None and method not in methods:
             continue
         out[param] = {"value": entry["value"], "reason": entry["reason"]}
+        if entry.get("values"):
+            out[param]["values"] = list(entry["values"])
     return out
 
 

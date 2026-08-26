@@ -15171,6 +15171,12 @@ class TrainingRunCreateRequest(BaseModel):
     # explicit, None ("not specified") lets the architecture decide -- see
     # param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH.
     optimizer_stochastic_rounding: Optional[bool] = TRAINING_DEFAULTS["optimizer_stochastic_rounding"]
+    # Ring-buffer optimizers only: 8-bit state as pinned host memory instead of
+    # on the GPU. Required by SenseNova full fine-tuning for those two names,
+    # which is why it is a request field rather than a config-only key.
+    optimizer_state_host_resident: bool = TRAINING_DEFAULTS[
+        "optimizer_state_host_resident"
+    ]
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -16149,9 +16155,9 @@ async def update_training_run(
             config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
 
         # The request model has no field for config-channel-only train keys
-        # (optimizer_update_census, optimizer_state_host_resident, the clip-length
-        # overrides), so regenerating would drop them -- run 121 lost its census
-        # that way. Carry them across; panel-owned keys are not carried.
+        # (optimizer_update_census, the clip-length overrides), so regenerating
+        # would drop them -- run 121 lost its census that way. Carry them across;
+        # panel-owned keys are not carried.
         from core.training.training_config import preserve_unmodelled_train_keys
         config_yaml, preserved_config_keys = preserve_unmodelled_train_keys(
             run.config_yaml, config_yaml)

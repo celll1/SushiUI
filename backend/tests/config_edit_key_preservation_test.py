@@ -13,16 +13,19 @@ edit -- the run kept training and its update detector was simply gone. The other
 edit path, ``PATCH /training/runs/{id}/config`` (the Monitor's raw-YAML editor),
 writes the submitted text verbatim and never had the problem.
 
-This is general: the census is one instance. ``optimizer_state_host_resident``
-and the video clip-length overrides sit in the same position, and any future
-config-channel key would too.
+This is general: the census is one instance. The video clip-length overrides sit
+in the same position, and any future config-channel key would too.
+(``optimizer_state_host_resident`` used to sit there as well; it became a real
+parameter when SenseNova full fine-tuning started admitting the two ring-buffer
+optimizers *on condition of it*, so it is panel-owned now and this file's
+concern is only that its round trip works.)
 
 THE DECISION
 ------------
-No API surface is added. ``255a3ab5`` declined one for the two switches on
-reasons this change does not disturb (the census raises, so a checkbox lets a
-false positive kill a healthy run; its output is a stdout census; host-resident
-state applies only to the ring-buffer optimizers). The observed harm was not
+No API surface is added by THIS change. ``255a3ab5`` declined one for the two
+switches; the census's half of that reasoning still holds (it raises, so a
+checkbox lets a false positive kill a healthy run, and its output is a stdout
+census). The observed harm was not
 that the keys were unreachable -- run 121 proves they were reachable -- but that
 a second route destroyed them. So the regenerating route preserves keys the
 request model cannot express, and reports which, while keys the panel *can*
@@ -66,7 +69,6 @@ _TRAIN_RUNNER_SOURCE = (
 # can set. Asserted exactly, so a new one cannot be introduced unnoticed.
 CONFIG_CHANNEL_ONLY_KEYS = {
     "optimizer_update_census",
-    "optimizer_state_host_resident",
     "allowed_clip_lengths",
     "clip_stride",
     "ltx2_clip_lengths",
@@ -146,7 +148,6 @@ class RegenerationDropNegativeControlTest(unittest.TestCase):
     def test_every_config_channel_only_key_survives(self):
         carried = {
             "optimizer_update_census": True,
-            "optimizer_state_host_resident": True,
             "ltx2_clip_lengths": [17, 33],
             "ltx2_clip_stride": 4,
         }
@@ -297,6 +298,38 @@ class SenseNovaBlockSwapFlagRoundTripTest(unittest.TestCase):
                 self.assertEqual(train["sensenova_four_phase_grad_reduction"], "mean")
 
 
+class HostResidentStateRoundTripTest(unittest.TestCase):
+    """The flag SenseNova full fine-tuning conditions its ring-buffer optimizers
+    on has to reach the YAML, and clearing it has to clear it.
+
+    MUTANT: leave it out of ``_build_train_section`` and a form that ticks the
+    box produces a config whose optimizer is refused before the load, with a
+    message about a setting the user did set.
+    """
+
+    KEY = "optimizer_state_host_resident"
+
+    def test_it_round_trips_through_both_generators(self):
+        for method in ("lora", "full_finetune"):
+            with self.subTest(method=method):
+                train = _train_section(_generate(method, **{self.KEY: True}))
+                self.assertIs(train[self.KEY], True)
+
+    def test_off_leaves_the_key_out_and_a_panel_edit_does_not_resurrect_it(self):
+        old = _generate(**{self.KEY: True})
+        fixed, preserved = preserve_unmodelled_train_keys(
+            old, _generate(**{self.KEY: False}))
+        # Panel-owned: absent means the user turned it off, not "unmodelled".
+        self.assertEqual(preserved, [])
+        self.assertNotIn(self.KEY, _train_section(fixed))
+
+    def test_a_panel_edit_keeps_it_when_it_is_still_set(self):
+        old = _generate(**{self.KEY: True})
+        fixed, _ = preserve_unmodelled_train_keys(
+            old, _generate(learning_rate=5e-5, **{self.KEY: True}))
+        self.assertIs(_train_section(fixed)[self.KEY], True)
+
+
 class ConfigChannelCensusTest(unittest.TestCase):
     """Which trainer-read keys no request field can set -- pinned exactly."""
 
@@ -375,14 +408,19 @@ class EditPathWiringTest(unittest.TestCase):
         spec = (REPO_ROOT / "openapi.yaml").read_text(encoding="utf-8")
         self.assertIn("preserved_config_keys", spec)
 
-    def test_no_api_parameter_was_added(self):
-        """255a3ab5's decision stands: neither switch became a request field."""
+    def test_the_census_is_still_not_an_api_parameter(self):
+        """255a3ab5's decision stands for the census.
+
+        Its sibling ``optimizer_state_host_resident`` took the full parameter
+        chain instead (optimizer_diagnostic_switch_config_test.py records why),
+        so it is deliberately not in this list.
+        """
         from api.param_defaults import TRAINING_DEFAULTS
         from api.routes import TrainingRunCreateRequest
 
-        for key in ("optimizer_update_census", "optimizer_state_host_resident"):
-            self.assertNotIn(key, TRAINING_DEFAULTS)
-            self.assertNotIn(key, TrainingRunCreateRequest.model_fields)
+        self.assertNotIn("optimizer_update_census", TRAINING_DEFAULTS)
+        self.assertNotIn("optimizer_update_census",
+                         TrainingRunCreateRequest.model_fields)
 
 
 if __name__ == "__main__":

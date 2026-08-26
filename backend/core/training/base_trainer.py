@@ -1331,9 +1331,11 @@ class BaseTrainer(ABC):
         # optimizer_state_host_resident: ring-buffer optimizer state on pinned
         # host memory instead of the GPU (the mode those optimizers are named
         # for). Measured at 0.031250 B/param on the GPU against 2.031250 (G-RB2,
-        # e6bdcc38); the below-threshold transfer cost is not measured for any
-        # production model, and the one route that would want it allows
-        # adafactor only. See _ringbuffer_optimizer_kwargs, host_state_allocator.
+        # e6bdcc38). ALSO an API/UI parameter, unlike the census below: SenseNova
+        # full fine-tuning admits the two ring-buffer optimizers only with it,
+        # and a config-only switch guarding an API-selectable optimizer name is
+        # how a run ends up with 32.9 GB of 8-bit state on the GPU.
+        # See _ringbuffer_optimizer_kwargs, host_state_allocator.
         self.optimizer_state_host_resident = bool(
             _tc.get("optimizer_state_host_resident", False))
         self._host_state_allocator = None
@@ -4218,6 +4220,45 @@ class BaseTrainer(ABC):
             kwargs["get_state_buffer"] = self._host_state_allocator
         return kwargs
 
+    # Measured HOST bytes per parameter of host-resident 8-bit ring-buffer state
+    # (SENSENOVA_TRAINING_DESIGN.md 6.5's G-RB2 table): AdamW keeps two moments,
+    # Lion one. absmax stays on the GPU and is not counted here.
+    _RINGBUFFER_HOST_STATE_BYTES_PER_PARAM = {
+        "adamw8bit_ringbuffer": 2.0,
+        "lion8bit_ringbuffer": 1.0,
+    }
+
+    def _announce_host_state_budget(self, optimizer_type: str, param_groups) -> None:
+        """Say what the pinned host allocation costs BEFORE it is taken.
+
+        The allocation is unpageable and lives for the whole run, so the number
+        has to be visible before the machine is committed to it, not inferred
+        afterwards from a swap storm.
+        """
+        if not getattr(self, "optimizer_state_host_resident", False):
+            return
+        per_param = self._RINGBUFFER_HOST_STATE_BYTES_PER_PARAM.get(
+            optimizer_type.lower())
+        if per_param is None:
+            return
+        params = sum(p.numel() for group in param_groups for p in group["params"])
+        line = (
+            f"{self.log_prefix} HOST RAM announce: {optimizer_type} with "
+            f"optimizer_state_host_resident will pin "
+            f"{format_param_count(params)} params x {per_param:g} B/param = "
+            f"{params * per_param / 1024 ** 3:.2f} GiB of host memory "
+            f"(unpageable, held for the whole run)"
+        )
+        try:
+            import psutil
+            info = psutil.Process().memory_info()
+            peak = getattr(info, "peak_wset", info.rss)
+            line += (f"; process working set now {info.rss / 1024 ** 3:.2f} GiB "
+                     f"(peak {peak / 1024 ** 3:.2f} GiB)")
+        except Exception as exc:
+            line += f"; current working set unavailable ({exc})"
+        print(line)
+
     # Optimizers that apply stochastic rounding inside their own update, so
     # _attach_stochastic_rounding() must leave them alone.
     _NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
@@ -4406,6 +4447,7 @@ class BaseTrainer(ABC):
 
             # Pass cautious and Schedule-Free options to RingBuffer optimizers
             if "ringbuffer" in optimizer_type.lower():
+                self._announce_host_state_budget(optimizer_type, param_groups)
                 optimizer_kwargs.update(self._ringbuffer_optimizer_kwargs())
                 if self.optimizer_stochastic_rounding:
                     print(f"{self.log_prefix} Stochastic rounding enabled for BF16 parameter updates")
@@ -4634,6 +4676,38 @@ class BaseTrainer(ABC):
             )
             assert_full_finetune_stochastic_rounding_attached(self, optimizer_type)
             assert_four_phase_fused_backward(self)
+            self._assert_ringbuffer_state_host_resident(optimizer_type)
+
+    def _assert_ringbuffer_state_host_resident(self, optimizer_type: str) -> None:
+        """Prove the 8-bit state is where the budget says, not that a flag is set.
+
+        A ``get_state_buffer`` that handed back CUDA tensors leaves the flag true
+        and the bytes on the GPU, which is the misbudget this route cannot
+        absorb. The state is allocated lazily by the first backward, so it is
+        forced here: the failure then lands at optimizer setup, next to the
+        announce, instead of inside step 1's autograd engine.
+        """
+        if optimizer_type.lower() not in self._RINGBUFFER_HOST_STATE_BYTES_PER_PARAM:
+            return
+        from .optimizers.host_state_allocator import assert_state_host_resident
+
+        if not hasattr(self.optimizer, "_init_param_state"):
+            raise RuntimeError(
+                f"optimizer={optimizer_type} was requested but this run holds a "
+                f"{type(self.optimizer).__name__}, which has no ring-buffer "
+                f"state: the factory raised and setup_optimizer fell back to "
+                f"torch AdamW, whose fp32 state does not fit this route."
+            )
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                if len(self.optimizer.state[param]) == 0:
+                    self.optimizer._init_param_state(param)
+        census = assert_state_host_resident(self.optimizer)
+        host = sum(b["cpu"] for b in census.values())
+        cuda = sum(b["cuda"] for b in census.values())
+        print(f"{self.log_prefix} Ring-buffer optimizer state census: "
+              f"{host / 1024 ** 3:.2f} GiB host (all pinned), "
+              f"{cuda / 1024 ** 3:.2f} GiB on the GPU (absmax)")
 
     def _fused_backward_target_module(self):
         """Return the main trainable module the ring-buffer optimizers register their

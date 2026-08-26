@@ -70,36 +70,66 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
     )
 
 
-# The optimizer this route runs under. Two conditions, both required: a
+# The optimizers this route runs under. Two conditions, both required: a
 # per-parameter fused-backward seam, and state that fits beside the materialized
-# half. Each name below is excluded by the condition that actually applies to it
-# (measured B/param from SENSENOVA_TRAINING_DESIGN.md 6.5's table, scaled over
-# the gen half's 8,103,395,328 parameters and over both halves):
+# half. Measured B/param from SENSENOVA_TRAINING_DESIGN.md 6.5's table, scaled
+# over the gen half's 8,103,395,328 parameters and over both halves:
 #
 #   adamw8bit             2.031250 B/param -> 16.5 GB / 32.9 GB. Has the seam
 #                         (FUSED_BACKWARD_OPTIMIZERS, patched in
-#                         _setup_fused_backward_pass); excluded on state size.
-#   adamw8bit_ringbuffer  2.031250 B/param -> 16.5 GB / 32.9 GB on the GPU.
-#                         Excluded on state size. Its host-resident mode is now
-#                         reachable (base_trainer._ringbuffer_optimizer_kwargs
-#                         supplies get_state_buffer when
-#                         optimizer_state_host_resident is set) and measured at
-#                         0.031250 B/param on the GPU with 2.0 pinned on the
-#                         host -- but that switch is config-channel only (a key
-#                         in the run YAML, no API/UI surface), so a run started
-#                         from the product gets the 16.5 GB figure. The
-#                         exclusion stands on what a user can actually select.
-#   lion8bit_ringbuffer   1.015625 B/param -> 8.2 GB / 16.5 GB: HALF the AdamW
-#                         pair, one moment instead of two (0.015625 GPU /
-#                         1.0 host in host-resident mode). The state-size
-#                         argument does not exclude it, and G-RB2 / G-RB3 are
-#                         now discharged (U-2-6). What is still missing is the
-#                         step wall this route would pay for it: SenseNova sits
-#                         BELOW G-RB1's transfer-hiding threshold (1024 image
-#                         tokens at 1024^2 against Lion's 1019), and U-2-4 has
-#                         not measured a real step. Admitted only when that is.
-#   adafactor             0.002991 B/param (shape-dependent) -- the admitted one.
-SENSENOVA_FULL_FINETUNE_OPTIMIZERS = ("adafactor",)
+#                         _setup_fused_backward_pass); excluded on state size,
+#                         and it has no host-resident mode to escape into.
+#   adamw8bit_ringbuffer  2.031250 B/param on the GPU -- the same 16.5 / 32.9 GB
+#                         -- or 0.031250 GPU plus 2.0 pinned on the host with
+#                         optimizer_state_host_resident. ADMITTED ONLY IN THAT
+#                         MODE (assert_ringbuffer_host_state).
+#   lion8bit_ringbuffer   half of the AdamW pair, one moment instead of two:
+#                         1.015625 GPU, or 0.015625 GPU / 1.0 host. Same
+#                         condition.
+#   adafactor             0.002991 B/param (shape-dependent), no condition.
+#
+# G-RB1's transfer-hiding threshold does not exclude either ring-buffer optimizer
+# at this route's resolution. The token grid is /32 (TOKEN_GRID_ALIGN), so 2048px
+# is 4096 image tokens, against thresholds of 2038 (AdamW) / 1019 (Lion); under
+# MoT with both halves trainable only the gen half computes over image tokens
+# while both halves' state transfers, which roughly doubles the effective
+# threshold -- AdamW then clears by ~1%, Lion by 2x. No speed claim follows: this
+# route's step wall under either has not been measured (6.5 / 13.4 U-2-4).
+SENSENOVA_FULL_FINETUNE_OPTIMIZERS = (
+    "adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
+)
+
+# Measured GPU B/param when host-resident state is OFF (6.5's G-RB2 table), and
+# the parameter count of both MoT halves (U-2-1, off the real checkpoint header).
+_RINGBUFFER_GPU_STATE_BYTES_PER_PARAM = {
+    "adamw8bit_ringbuffer": 2.031250,
+    "lion8bit_ringbuffer": 1.015625,
+}
+_SENSENOVA_BOTH_HALVES_PARAMS = 16_206_790_656
+
+
+def assert_ringbuffer_host_state(name: str, host_resident: bool) -> None:
+    """Refuse a ring-buffer optimizer whose 8-bit state would land on the GPU.
+
+    The optimizer NAME is an API field while ``optimizer_state_host_resident`` is
+    a config key, so the two channels can disagree; without this a run started
+    from the product would allocate the GPU-state figure below on top of the
+    materialized halves and OOM inside step 1.
+    """
+    per_param = _RINGBUFFER_GPU_STATE_BYTES_PER_PARAM.get(name)
+    if per_param is None or host_resident:
+        return
+    gpu_gb = per_param * _SENSENOVA_BOTH_HALVES_PARAMS / 1e9
+    raise ValueError(
+        f"SenseNova full fine-tuning accepts optimizer='{name}' only with "
+        f"optimizer_state_host_resident=true. Left on the GPU its 8-bit state is "
+        f"a measured {per_param} B/param, i.e. {gpu_gb:.1f} GB over both MoT "
+        f"halves ({gpu_gb / 2:.1f} GB over one), on top of the materialized bf16 "
+        f"weights -- which does not fit the 48 GB budget this route is designed "
+        f"against (SENSENOVA_TRAINING_DESIGN.md 6.5). With the flag set the same "
+        f"state is pinned host memory and the GPU keeps only absmax. Set "
+        f"optimizer_state_host_resident=true, or use optimizer=adafactor."
+    )
 
 
 def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> None:
@@ -191,6 +221,11 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
         optimizer_type if optimizer_type is not None else settings["optimizer"]
     ).strip().lower()
     if name in SENSENOVA_FULL_FINETUNE_OPTIMIZERS:
+        assert_ringbuffer_host_state(
+            name,
+            bool(settings.get("optimizer_state_host_resident", False))
+            or bool(getattr(trainer, "optimizer_state_host_resident", False)),
+        )
         return
     extra = ""
     if name == "adamw":
@@ -200,24 +235,12 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
             "measured under round-to-nearest, 84.5% of a bf16 tensor's elements "
             "never move at any step count, while the loss falls normally."
         )
-    elif name in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer"):
-        state = (
-            "2.031250 B/param, the same 16.5 GB over the generation half as "
-            "adamw8bit" if name == "adamw8bit_ringbuffer"
-            else "1.015625 B/param, 8.2 GB over the generation half -- half the "
-            "AdamW pair, since Lion keeps one moment"
-        )
-        extra = (
-            f" The ring-buffer optimizers are the intended second option. Their "
-            f"host-resident state mode is wired up now but has no setting to turn "
-            f"it on, so a run started from the product allocates 8-bit state on "
-            f"the GPU at a measured {state}. What is not measured is the step "
-            f"time this route would pay: its resolution band sits below the "
-            f"threshold at which host state stops costing wall clock."
-        )
     raise ValueError(
         f"SenseNova full fine-tuning does not support optimizer='{name}'. "
-        f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)}. This route "
+        f"Supported: {', '.join(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)} (the two "
+        f"ring-buffer optimizers additionally require "
+        f"optimizer_state_host_resident, which moves their 8-bit state to pinned "
+        f"host memory). This route "
         f"applies each update from that parameter's own post-accumulate-grad hook, "
         f"so the optimizer needs a per-parameter seam AND state small enough to sit "
         f"beside the materialized bf16 half: adamw8bit has the seam but its measured "

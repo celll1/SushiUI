@@ -308,23 +308,23 @@ def test_saving_defaults_to_the_mixed_format(tmp_path):
 # The contract
 # ---------------------------------------------------------------------------
 
-def test_adafactor_is_the_only_optimizer_this_route_accepts():
-    """The ring-buffer pair is U-2-6's, behind gates G-RB2/G-RB3, and stays shut.
+def test_adafactor_is_one_of_three_optimizers_this_route_accepts():
+    """Adafactor unconditionally; the ring-buffer pair only host-resident.
 
-    Their CPU-resident state is what would make them fit; nothing supplies
-    ``get_state_buffer``, so today they allocate the same 2.031250 B/param on
-    the GPU that adamw8bit does.
+    G-RB2/G-RB3 are discharged (U-2-6) and the host-resident mode now has a
+    setting, so the pair is admitted -- under the condition that makes their
+    state fit, checked by ``assert_ringbuffer_host_state``.
     """
     trainer = _full_ft_trainer("gen", _Decoder())
-    assert SENSENOVA_FULL_FINETUNE_OPTIMIZERS == ("adafactor",)
+    assert SENSENOVA_FULL_FINETUNE_OPTIMIZERS == (
+        "adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer")
     assert_full_finetune_contract(trainer, "adafactor")
     # An absent config key is not a refusal on the pre-load channel: it carries
     # no information, and setup_optimizer's call always names one.
     trainer.config = {}
     assert_full_finetune_contract(trainer)
 
-    for name in ("adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
-                 "lion", "prodigy", "adafactor8bit"):
+    for name in ("adamw8bit", "lion", "prodigy", "adafactor8bit"):
         with pytest.raises(ValueError, match=f"optimizer='{name}'"):
             assert_full_finetune_contract(trainer, name)
 
@@ -338,18 +338,32 @@ def test_the_optimizer_refusal_states_the_two_conditions_and_the_measured_cost()
     assert "per-parameter seam" in message
     assert "2.031250 B/param" in message and "16.5 GB" in message
     assert "8.10 G" in message  # the gen half, which is this route's default
+    # And it names the condition the admitted ring-buffer pair carries, so a
+    # user reading an adamw8bit refusal can see the neighbouring option.
+    assert "optimizer_state_host_resident" in message
 
-    with pytest.raises(ValueError) as ring:
-        assert_full_finetune_contract(trainer, "adamw8bit_ringbuffer")
-    ring_message = str(ring.value)
-    # The reason changed with U-2-6 and the message has to follow it. The
-    # host-resident state mode IS wired up now (base_trainer supplies
-    # get_state_buffer), so "nothing supplies get_state_buffer" is no longer
-    # true; what still excludes it is that the switch has no setting, so a run
-    # started from the product allocates the state on the GPU.
-    assert "get_state_buffer" not in ring_message
-    assert "no setting to turn" in ring_message
-    assert "2.031250 B/param" in ring_message
+
+@pytest.mark.parametrize(
+    "name,per_param", [("adamw8bit_ringbuffer", "2.03125"),
+                       ("lion8bit_ringbuffer", "1.015625")])
+def test_a_ring_buffer_optimizer_is_refused_without_host_resident_state(
+        name, per_param):
+    """MUTANT: make assert_ringbuffer_host_state a no-op and the run allocates
+    that many bytes per parameter of 8-bit state on the GPU, on top of the
+    materialized bf16 halves."""
+    trainer = _full_ft_trainer("gen", _Decoder())
+    with pytest.raises(ValueError) as excinfo:
+        assert_full_finetune_contract(trainer, name)
+    message = str(excinfo.value)
+    assert "optimizer_state_host_resident" in message
+    assert per_param in message
+
+    trainer.optimizer_state_host_resident = True
+    assert_full_finetune_contract(trainer, name)
+    del trainer.optimizer_state_host_resident
+    # The config channel arms it too, since the two can disagree.
+    trainer.config["optimizer_state_host_resident"] = True
+    assert_full_finetune_contract(trainer, name)
 
 
 def test_adamw_is_refused_by_name_with_the_reason_it_cannot_be_repaired():

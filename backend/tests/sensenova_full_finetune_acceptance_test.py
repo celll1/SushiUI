@@ -180,13 +180,31 @@ def test_each_envelope_clause_still_refuses_before_the_process_loads_anything(
             )
 
 
-def test_the_allowed_optimizer_is_the_only_allowed_optimizer():
-    assert SENSENOVA_FULL_FINETUNE_OPTIMIZERS == ("adafactor",)
+def test_the_allowed_optimizers_are_the_only_allowed_optimizers():
+    assert SENSENOVA_FULL_FINETUNE_OPTIMIZERS == (
+        "adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer")
     train = _train(optimizer="adafactor")
     with _sensenova():
         assert _apply_sensenova_training_contract(
             "model", "full_finetune", train, {"sample": {}}
         )
+
+
+@pytest.mark.parametrize(
+    "optimizer", ["adamw8bit_ringbuffer", "lion8bit_ringbuffer"])
+def test_a_ring_buffer_optimizer_needs_host_resident_state(optimizer):
+    """MUTANT: drop the assert_ringbuffer_host_state call from
+    _apply_sensenova_full_finetune_contract and a product-started run allocates
+    16.5-32.9 GB of 8-bit state on the GPU and OOMs inside step 1."""
+    with _sensenova():
+        with pytest.raises(ValueError, match="optimizer_state_host_resident"):
+            _apply_sensenova_training_contract(
+                "model", "full_finetune", _train(optimizer=optimizer),
+                {"sample": {}})
+        assert _apply_sensenova_training_contract(
+            "model", "full_finetune",
+            _train(optimizer=optimizer, optimizer_state_host_resident=True),
+            {"sample": {}})
 
 
 @pytest.mark.parametrize("save_format", ["mixed", "bf16", "int8"])

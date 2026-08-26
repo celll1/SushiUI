@@ -22,22 +22,27 @@ THE DECISION
 Both are read from the run's ``train_config`` -- the channel ``use_ema``,
 ``gradient_checkpointing`` and ``sensenova_full_finetune_save_format`` already
 come through, and the one every trainer construction in ``train_runner`` already
-passes. Neither gets a ``param_defaults`` -> ``routes`` -> ``openapi`` ->
-frontend chain, deliberately:
+passes.
 
-* the census RAISES on a shortfall, so as a checkbox a false positive would take
-  down a correct run, and its result is a stdout census with nothing for the UI
-  to display;
-* host-resident state only applies to the two ring-buffer optimizers, and the
-  one route whose budget wants it allows ``adafactor`` alone
-  (``SENSENOVA_FULL_FINETUNE_OPTIMIZERS``), so the option would be inert
-  wherever it is selectable and unmeasured wherever it is not.
+``optimizer_update_census`` stops there and gets no ``param_defaults`` ->
+``routes`` -> ``openapi`` -> frontend chain: it RAISES on a shortfall, so as a
+checkbox a false positive would take down a correct run, and its result is a
+stdout census with nothing for the UI to display.
+
+``optimizer_state_host_resident`` DID get that chain, and this file records the
+reversal rather than hiding it. The original reason was that the option "would
+be inert wherever it is selectable and unmeasured wherever it is not" -- true
+while ``SENSENOVA_FULL_FINETUNE_OPTIMIZERS`` was ``("adafactor",)``. It is not
+true now that the two ring-buffer optimizers are admitted *on condition of this
+flag*: a config-only switch guarding an API-selectable optimizer name is the
+asymmetry that made a product-started run allocate 8-bit state on the GPU.
 
 NEGATIVE CONTROLS
 -----------------
 ``ShippedBehaviourTest`` reproduces the old assignment and shows it ignores the
-config, and ``NoApiSurfaceTest`` records that neither key can be armed from an
-API request, an OpenAPI schema or the generated YAML.
+config; ``NoApiSurfaceTest`` records that the census still cannot be armed from
+an API request, an OpenAPI schema or the generated YAML, and
+``HostResidentHasAFullChainTest`` that its sibling now can.
 """
 
 from __future__ import annotations
@@ -177,13 +182,16 @@ class ShippedBehaviourTest(unittest.TestCase):
 
 
 class NoApiSurfaceTest(unittest.TestCase):
-    """Negative control: neither switch can be armed from the product API.
+    """Negative control: the census cannot be armed from the product API.
 
     Recorded rather than assumed, because "config-channel only" is the decision
-    -- if a later change gives one of them a request field, this test fails and
-    the reason above has to be revisited (and, per
-    docs/guides/ADD_A_PARAMETER.md, the rest of the chain added).
+    -- if a later change gives it a request field, this test fails and the
+    reason above has to be revisited (and, per docs/guides/ADD_A_PARAMETER.md,
+    the rest of the chain added). Its sibling took exactly that route; see
+    ``HostResidentHasAFullChainTest``.
     """
+
+    CONFIG_ONLY = ("optimizer_update_census",)
 
     # Prose may name them -- PUT /training/runs/{id} documents that it carries
     # them across a regeneration (config_edit_key_preservation_test.py). What is
@@ -196,9 +204,9 @@ class NoApiSurfaceTest(unittest.TestCase):
         REPO_ROOT / "frontend" / "src" / "utils" / "api.ts",
     )
 
-    def test_no_layer_of_the_parameter_chain_declares_either_switch(self):
+    def test_no_layer_of_the_parameter_chain_declares_the_census(self):
         declaration = re.compile(
-            r"^\s*[\"']?(%s)[\"']?\s*[:=?]" % "|".join(SWITCHES))
+            r"^\s*[\"']?(%s)[\"']?\s*[:=?]" % "|".join(self.CONFIG_ONLY))
         for path in self.DECLARATION_FILES:
             if not path.is_file():
                 continue
@@ -207,26 +215,64 @@ class NoApiSurfaceTest(unittest.TestCase):
                 with self.subTest(path=path.name, lineno=lineno):
                     self.assertIsNone(declaration.match(line), line.strip())
 
-    def test_neither_switch_is_a_request_field(self):
+    def test_the_census_is_not_a_request_field(self):
         from api.routes import TrainingRunCreateRequest
 
-        for name in SWITCHES:
+        for name in self.CONFIG_ONLY:
             with self.subTest(name):
                 self.assertNotIn(name, TrainingRunCreateRequest.model_fields)
 
-    def test_no_generated_config_can_emit_either_switch(self):
+    def test_no_generated_config_can_emit_the_census(self):
         from core.training.training_config import train_section_key_vocabulary
 
-        for name in SWITCHES:
+        for name in self.CONFIG_ONLY:
             with self.subTest(name):
                 self.assertNotIn(name, train_section_key_vocabulary())
 
-    def test_training_defaults_has_neither_key(self):
+    def test_training_defaults_has_no_census_key(self):
         from api.param_defaults import TRAINING_DEFAULTS
 
-        for name in SWITCHES:
+        for name in self.CONFIG_ONLY:
             with self.subTest(name):
                 self.assertNotIn(name, TRAINING_DEFAULTS)
+
+
+class HostResidentHasAFullChainTest(unittest.TestCase):
+    """The reversal, asserted at every layer ADD_A_PARAMETER.md names.
+
+    MUTANT: drop any one of these and the flag becomes config-only again while
+    the optimizer NAME stays an API field -- which is the asymmetry that lets a
+    product-started run put 8-bit state on the GPU.
+    """
+
+    NAME = "optimizer_state_host_resident"
+
+    def test_default_is_off_in_the_single_source_of_truth(self):
+        from api.param_defaults import TRAINING_DEFAULTS
+
+        self.assertIs(TRAINING_DEFAULTS[self.NAME], False)
+
+    def test_it_is_a_request_field_defaulting_to_that_value(self):
+        from api.param_defaults import TRAINING_DEFAULTS
+        from api.routes import TrainingRunCreateRequest
+
+        field = TrainingRunCreateRequest.model_fields[self.NAME]
+        self.assertIs(field.default, TRAINING_DEFAULTS[self.NAME])
+
+    def test_the_generator_can_emit_it(self):
+        from core.training.training_config import train_section_key_vocabulary
+
+        self.assertIn(self.NAME, train_section_key_vocabulary())
+
+    def test_openapi_and_the_frontend_declare_it(self):
+        for path in (REPO_ROOT / "openapi.yaml",
+                     REPO_ROOT / "frontend" / "src" / "utils" / "api.ts"):
+            with self.subTest(path=path.name):
+                self.assertIn(self.NAME, path.read_text(encoding="utf-8"))
+
+    def test_the_config_channel_still_works(self):
+        # The YAML key keeps arming it, so a hand-edited run 121 needs no form.
+        self.assertIs(_resolve(self.NAME, {self.NAME: True}), True)
 
 
 class UnchangedElsewhereTest(unittest.TestCase):

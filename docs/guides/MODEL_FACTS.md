@@ -2264,11 +2264,17 @@ Paths below are relative to `backend/core/training/`.
       incoming legs on two CUDA streams instead of back to back, so the
       independent H2D and D2H copy engines can run concurrently. The
       transfer term's arithmetic ceiling drops from `d2h + h2d` to
-      `max(d2h, h2d)`; what a run actually reaches is unmeasured. Costs at
-      most four modules of transient extra device residency — each incoming
-      destination is allocated on the DEFAULT stream, so it can still be
-      handed the block its outgoing twin just freed; a side-stream
-      allocation could not be, and the cost would be a whole half. Falls
+      `max(d2h, h2d)`; **a real full-FT run reached none of it on an
+      RTX 6000 Ada — 6.1025 s/step vs 5.9947 s serial at 64px, 1.8%
+      slower, with per-direction busy times essentially unchanged. The
+      cause was not isolated, so this is "no benefit appeared here", not a
+      disproof of the mechanism; the flag stays default-off because of it.**
+      Costs at most four modules of transient extra device residency — each
+      incoming destination is allocated on the DEFAULT stream, so it can
+      still be handed the block its outgoing twin just freed; a side-stream
+      allocation could not be, and the cost would be a whole half (measured:
+      `reserved - allocated` stayed at 1.257 GiB with the flag on AND off).
+      Falls
       back to the serial path on a pinned-allocation failure, and says so
       once and runs serially without CUDA.
       `SENSENOVA_TRAINING_DESIGN.md` §8.6.

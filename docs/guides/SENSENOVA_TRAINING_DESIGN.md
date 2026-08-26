@@ -2295,6 +2295,39 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 見る。SenseNova 用の追加は不要だが、CLAUDE.md の Block Swap × 8bit optimizer の
 制約はそのまま適用される。
 
+### 8.5 学習側 half-eviction の転送順序（pinned host 二重確保の解消）
+
+**観測**: run 121（本番学習）で pinned host RAM が約 38.5 GiB まで積み上がった。
+原因は `_swap_plan` の旧実装が「outgoing half を全部 d2h してから incoming half を
+全部 h2d」というバッチ順序を取っていたことである。incoming half の pinned tensor は
+`_move_modules_to_device` が `parameter.data` を device tensor に差し替えた瞬間にしか
+解放されず、バッチ順序はその差し替えを incoming half の最後の module まで遅延させる
+ため、両 half が同時に pinned host に載る窓ができる。
+
+**機構**: `sensenova_phase_eviction.py` の `_swap_plan` を pair 単位で d2h → h2d を
+交互に実行する順序に変更した（`select_mot_weight_modules(require_exact_symmetry=True)`
+が返す generation/understanding のペアリングを使用）。これにより pinned host の
+高水位は「片 half + pair 1 個分」に縮む。
+
+**ledger 実測（合成木、`sensenova_mot_staging_highwater_test.py`）**: 42 layer ×
+{attn 1028B, mlp 2048B, norm 64B} の合成モジュール木で、実 allocator を使わない
+byte 台帳により測定した値。
+
+| 順序 | pinned host 高水位 |
+|---|---:|
+| バッチ（旧） | 263,760 B（= 2 half） |
+| pairwise 交互（新） | 133,928 B（= 1 half + 最大 module） |
+| teardown / 失敗時の best-effort 正規化（新実装でも） | 263,760 B（= 2 half、両 half を CPU に戻す設計上不可避） |
+
+**bf16 の算術換算（実測ではない）**: 実チェックポイントの 1 half は bf16 で
+15.09375 GiB、最大の単一 weight は bf16 で 0.09375 GiB（§6.4「メモリ算術は実測
+である」の safetensors ヘッダ実測値を流用）。合成木の高水位の比を実モデルの bf16 サイズに
+そのまま当てはめると、バッチ順序で **30.1875 GiB**（= 2 × 15.09375）、
+pairwise 交互で **15.1875 GiB**（= 15.09375 + 0.09375）になる。**これは合成木の
+ledger 比率を実モデルの既知サイズに掛けただけの算術であり、実行環境で計測した
+数値ではない**。teardown / 失敗時は上表のとおり新実装でも 2 half（30.1875 GiB
+相当）に戻ることに注意。
+
 ---
 
 ## 9. 既存コードベースへの統合ポイント

@@ -103,16 +103,17 @@ def test_state_machine_orders_two_cycles_and_is_idempotent():
         evictor.teardown()
         evictor.teardown()
 
-    assert events[:7] == [
-        ("d2h", "gen"),
-        ("d2h", "und"),
-        ("h2d", "gen"),
-        ("d2h", "gen"),
-        ("h2d", "und"),
-        ("d2h", "und"),
-        ("h2d", "gen"),
-    ]
-    assert events[7:] == [("d2h", "gen")] * 42 + [("d2h", "und")] * 42
+    def swap(out, incoming):
+        return [("d2h", out), ("h2d", incoming)] * 42
+
+    assert events == (
+        [("d2h", "gen")] * 42          # full -> prefix (one-sided)
+        + swap("und", "gen")           # prefix -> denoise, interleaved
+        + swap("gen", "und")           # denoise -> prefix, interleaved
+        + swap("und", "gen")           # prefix -> denoise, interleaved
+        + [("d2h", "gen")] * 42        # teardown normalizes both halves
+        + [("d2h", "und")] * 42
+    )
 
 
 def test_parameter_objects_are_not_replaced():

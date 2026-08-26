@@ -29,6 +29,32 @@ again. Two reasons, and only the second is new:
     quantized weight without its scale would not merely lose a saving, it would
     split one module's tensors across two devices.
 
+TRANSFER ORDER. A two-sided transition is interleaved PAIRWISE -- stage one
+outgoing module to pinned CPU, then move its incoming twin to the device, and
+repeat -- rather than running the whole outgoing half to CPU and only then
+loading the whole incoming half. The batched order holds both halves in pinned
+host memory at once, because the incoming half's pinned tensors are released
+only when ``_move_modules_to_device`` reassigns ``parameter.data``, which the
+batched order defers until every outgoing module is already staged.
+Interleaved, the ledger-measured pinned high-water on the synthetic tree
+(``sensenova_mot_staging_highwater_test.py``) is one half plus one module;
+torch's caching host allocator reuses freed pinned blocks by SIZE CLASS rather
+than byte range, so cross-pair reuse only converges once a layer's distinct
+tensor sizes have each been freed once, and whatever peak is reached is never
+returned to the OS, so it stays sticky for the run. That bound covers the
+steady-state phase cycle only: ``teardown()`` and a failed transition's
+best-effort recovery deliberately put BOTH halves back on CPU (there is no
+GPU left to keep either one on), so their host high-water is the two-halves
+peak this interleave otherwise avoids, not the bound above (see
+``_best_effort_cpu``). The run-121 observation that motivated this change and
+the bf16 arithmetic extrapolated from it are recorded in
+SENSENOVA_TRAINING_DESIGN.md 8.5, not repeated here.
+
+The device invariant is unchanged and for the same reason: within a pair the
+d2h still precedes the h2d, and the pairs carry identical tensor signatures, so
+the incoming half grows on device exactly as fast as the outgoing one shrinks.
+Device residency stays at one half throughout, never their sum.
+
 What IS new for four-phase is that the evicted half now carries gradients, so
 ``_assert_grad_free`` refuses to move a half whose Parameters still hold
 ``.grad``: under fused backward the hook nulls each gradient as it applies it, so
@@ -60,6 +86,24 @@ def _move_modules_to_cpu(
     )
 
 
+def _module_already_pinned_cpu(module: nn.Module) -> bool:
+    """True iff every owned tensor is already pinned CPU -- the same condition
+    ``_stage_tensor`` short-circuits on, checked once per module instead of
+    once per tensor so ``_best_effort_cpu`` skips a module outright rather than
+    entering it and no-op'ing tensor by tensor."""
+    for parameter in module._parameters.values():
+        if parameter is not None:
+            data = parameter.data
+            if not (data.device.type == "cpu" and data.is_pinned()):
+                return False
+    for name, buffer in module._buffers.items():
+        if buffer is None or name in module._non_persistent_buffers_set:
+            continue
+        if not (buffer.device.type == "cpu" and buffer.is_pinned()):
+            return False
+    return True
+
+
 def _move_modules_to_device(modules: Iterable[nn.Module], device: Any) -> None:
     for module in modules:
         for parameter in module._parameters.values():
@@ -83,11 +127,36 @@ class SenseNovaTrainingPhaseEvictor:
         )
         self._gen_modules = selection.gen_modules
         self._und_modules = selection.und_modules
+        self._pairs = selection.pairs
+        self._gen_unpaired = selection.gen_unpaired
+        self._und_unpaired = selection.und_unpaired
         self.transformer = transformer
         self.device = device
         self.four_phase = bool(four_phase)
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
+        self._assert_pairing_covers_both_halves()
+
+    def _assert_pairing_covers_both_halves(self) -> None:
+        """Refuse to run at all unless every selected module is either paired or
+        a declared per-side extra (see this module's TRANSFER ORDER for why the
+        batched fallback this refuses is not acceptable); a partially
+        interleaved transition would be worse still, stranding a module on the
+        wrong device for a phase that then reads it."""
+        for half, modules, paired, extras in (
+            ("generation", self._gen_modules, [p[0] for p in self._pairs], self._gen_unpaired),
+            ("understanding", self._und_modules, [p[1] for p in self._pairs], self._und_unpaired),
+        ):
+            covered = {id(module) for module in (*paired, *extras)}
+            if len(paired) + len(extras) != len(modules) or covered != {
+                id(module) for module in modules
+            }:
+                raise RuntimeError(
+                    f"SenseNova eviction cannot interleave the {half} half: "
+                    f"{len(modules)} selected module(s) against {len(paired)} paired "
+                    f"+ {len(extras)} unpaired. Refusing the batched order, which "
+                    f"holds both halves in pinned host memory at once"
+                )
 
     @property
     def understanding_modules(self) -> tuple:
@@ -102,6 +171,8 @@ class SenseNovaTrainingPhaseEvictor:
     def _best_effort_cpu(self) -> Exception | None:
         first_error = None
         for module in (*self._gen_modules, *self._und_modules):
+            if _module_already_pinned_cpu(module):
+                continue
             try:
                 _move_modules_to_cpu((module,), warn_once=self._warn_once)
             except Exception as exc:
@@ -132,17 +203,49 @@ class SenseNovaTrainingPhaseEvictor:
                     f"consumed it, so this half would be moved without being updated"
                 )
 
+    def _half(self, half: str):
+        return self._gen_modules if half == "generation" else self._und_modules
+
+    def _evict_plan(self, half: str):
+        """One-sided: stage a half to CPU with nothing coming back the other way."""
+        return tuple(("d2h", (module,), half) for module in self._half(half))
+
+    def _swap_plan(self, evicted: str):
+        """Two-sided, interleaved pair by pair (see this module's TRANSFER ORDER).
+
+        Unpaired extras cannot interleave -- they have no twin whose transfer
+        pays for theirs. Outgoing extras go FIRST (staging only ever shrinks
+        device residency) and incoming extras LAST.
+        """
+        if evicted == "generation":
+            out_at, in_at = 0, 1
+            out_extras, in_extras = self._gen_unpaired, self._und_unpaired
+            out_half, in_half = "generation", "understanding"
+        else:
+            out_at, in_at = 1, 0
+            out_extras, in_extras = self._und_unpaired, self._gen_unpaired
+            out_half, in_half = "understanding", "generation"
+        plan = [("d2h", (module,), out_half) for module in out_extras]
+        for pair in self._pairs:
+            plan.append(("d2h", (pair[out_at],), out_half))
+            plan.append(("h2d", (pair[in_at],), in_half))
+        plan.extend(("h2d", (module,), in_half) for module in in_extras)
+        return tuple(plan)
+
     def _transition(self, operations, next_state: str) -> None:
         if self.state == "failed":
             raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
         try:
-            for operation, modules in operations:
+            if self.four_phase:
+                # Pre-flight over the WHOLE outgoing half, before any module
+                # moves: the interleave would otherwise strand half a swap on a
+                # gradient found late in the sweep.
+                for half in dict.fromkeys(
+                    half for operation, _, half in operations if operation == "d2h"
+                ):
+                    self._assert_grad_free(self._half(half), half)
+            for operation, modules, _half in operations:
                 if operation == "d2h":
-                    if self.four_phase:
-                        self._assert_grad_free(
-                            modules,
-                            "generation" if modules is self._gen_modules else "understanding",
-                        )
                     _move_modules_to_cpu(modules, warn_once=self._warn_once)
                 else:
                     _move_modules_to_device(modules, self.device)
@@ -163,12 +266,9 @@ class SenseNovaTrainingPhaseEvictor:
             self.state = "prefix"
             return
         if self.state == "full":
-            operations = (("d2h", self._gen_modules),)
+            operations = self._evict_plan("generation")
         elif self.state == "denoise":
-            operations = (
-                ("d2h", self._gen_modules),
-                ("h2d", self._und_modules),
-            )
+            operations = self._swap_plan("generation")
         else:
             raise RuntimeError(f"Invalid SenseNova eviction state: {self.state}")
         self._transition(operations, "prefix")
@@ -180,13 +280,7 @@ class SenseNovaTrainingPhaseEvictor:
             return
         if self.state != "prefix":
             raise RuntimeError("SenseNova denoise phase requires a completed prefix phase")
-        self._transition(
-            (
-                ("d2h", self._und_modules),
-                ("h2d", self._gen_modules),
-            ),
-            "denoise",
-        )
+        self._transition(self._swap_plan("understanding"), "denoise")
 
     def enter_und_backward(self) -> None:
         """Phase 3: bring the understanding half back for its own backward."""
@@ -205,13 +299,7 @@ class SenseNovaTrainingPhaseEvictor:
                 "SenseNova und_backward phase requires a completed denoise phase, "
                 f"got {self.state}"
             )
-        self._transition(
-            (
-                ("d2h", self._gen_modules),
-                ("h2d", self._und_modules),
-            ),
-            "und_backward",
-        )
+        self._transition(self._swap_plan("generation"), "und_backward")
 
     def _assert_half_resident(self, modules, half: str, states) -> None:
         if self.state not in states:

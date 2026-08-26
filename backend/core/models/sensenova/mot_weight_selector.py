@@ -12,6 +12,11 @@ from torch import nn
 class MotWeightSelection:
     gen_modules: Tuple[nn.Module, ...]
     und_modules: Tuple[nn.Module, ...]
+    #: (generation, understanding) twins, populated only under
+    #: ``require_exact_symmetry`` -- see ``_pair_layer_modules``.
+    pairs: Tuple[Tuple[nn.Module, nn.Module], ...] = ()
+    gen_unpaired: Tuple[nn.Module, ...] = ()
+    und_unpaired: Tuple[nn.Module, ...] = ()
 
 
 def _owns_persistent_tensor(module: nn.Module) -> bool:
@@ -54,12 +59,62 @@ def _select_layer_modules(
     return gen, und
 
 
+_ADAPTER_MARKERS = (".lora_down", ".lora_up")
+
+
+def _is_adapter(path: str) -> bool:
+    return any(marker in path for marker in _ADAPTER_MARKERS)
+
+
 def _strip_adapters(entries):
-    return [
-        (path, module)
-        for path, module in entries
-        if ".lora_down" not in path and ".lora_up" not in path
-    ]
+    return [(path, module) for path, module in entries if not _is_adapter(path)]
+
+
+def _pair_layer_modules(layer_index: int, gen, und):
+    """Pair each generation module with its understanding twin, by base signature.
+
+    The symmetry check compares SETS of base signatures, which is strictly
+    weaker than pairability: duplicate signatures collapse in a set, so a layer
+    holding both ``dup.leaf_mot_gen`` and ``dup_mot_gen.leaf`` against a single
+    ``dup.leaf`` passes symmetry with 2 generation modules against 1
+    understanding module. A positional zip over the two returned lists would
+    mis-pair such a tree silently, so the index below rejects a duplicate key
+    and a leftover on either side instead.
+
+    Adapters are the one documented exception: the symmetry check excludes them
+    from BOTH signature sets, so nothing guarantees a counterpart. They are
+    returned as per-side extras rather than treated as a pairing failure.
+    """
+    gen_index: dict = {}
+    for path, module in _strip_adapters(gen):
+        key = _base_signature(path, module)
+        if key in gen_index:
+            raise RuntimeError(
+                f"SenseNova MoT weight halves are not pairable at layer {layer_index}: "
+                f"two generation modules share the base signature {key[0]!r}"
+            )
+        gen_index[key] = module
+    pairs = []
+    for path, module in _strip_adapters(und):
+        key = _base_signature(path, module)
+        peer = gen_index.pop(key, None)
+        if peer is None:
+            raise RuntimeError(
+                f"SenseNova MoT weight halves are not pairable at layer {layer_index}: "
+                f"understanding module {path!r} has no unused generation twin"
+            )
+        pairs.append((peer, module))
+    if gen_index:
+        leftover = sorted(key[0] for key in gen_index)
+        raise RuntimeError(
+            f"SenseNova MoT weight halves are not pairable at layer {layer_index}: "
+            f"generation modules {leftover[:3]} have no understanding twin"
+        )
+    return (
+        pairs,
+        [module for path, module in gen if _is_adapter(path)],
+        [module for path, module in und if _is_adapter(path)],
+    )
 
 
 def select_mot_weight_modules(
@@ -91,10 +146,18 @@ def select_mot_weight_modules(
 
     The INFERENCE evictor leaves symmetry unchecked and classifies purely by
     path, so understanding wrappers travel with the understanding half.
+
+    ``pairs``/``gen_unpaired``/``und_unpaired`` are populated only under
+    ``require_exact_symmetry``, because only there is there a guarantee to rest
+    a pairing on. The training evictor's interleaved transition consumes them;
+    ``_pair_layer_modules`` documents why the symmetry check alone is not enough.
     """
     layers: Iterable[nn.Module] = transformer.language_model.model.layers
     all_gen: list[nn.Module] = []
     all_und: list[nn.Module] = []
+    all_pairs: list[tuple[nn.Module, nn.Module]] = []
+    gen_unpaired: list[nn.Module] = []
+    und_unpaired: list[nn.Module] = []
     layer_count = 0
     for layer_index, layer in enumerate(layers):
         layer_count += 1
@@ -112,6 +175,10 @@ def select_mot_weight_modules(
                     "SenseNova MoT weight halves are missing or asymmetric at "
                     f"layer {layer_index} (missing_gen={missing[:3]}, extra_gen={extra[:3]})"
                 )
+            pairs, gen_extras, und_extras = _pair_layer_modules(layer_index, gen, und)
+            all_pairs.extend(pairs)
+            gen_unpaired.extend(gen_extras)
+            und_unpaired.extend(und_extras)
         all_gen.extend(module for _, module in gen)
         all_und.extend(module for _, module in und)
 
@@ -120,4 +187,10 @@ def select_mot_weight_modules(
             "SenseNova MoT eviction requires exactly 42 non-empty decoder layers "
             f"(found {layer_count})"
         )
-    return MotWeightSelection(tuple(all_gen), tuple(all_und))
+    return MotWeightSelection(
+        tuple(all_gen),
+        tuple(all_und),
+        tuple(all_pairs),
+        tuple(gen_unpaired),
+        tuple(und_unpaired),
+    )

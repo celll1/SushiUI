@@ -687,8 +687,10 @@ class SenseNovaTrainingPhaseEvictor:
             # would otherwise absorb the tail of the preceding phase's
             # still-queued compute and inflate the d2h bucket (the mistake
             # behind the retracted number in SENSENOVA_TRAINING_DESIGN.md 8.3.2),
-            # and it adds no net wait, since the copy blocks on that same work
-            # one statement later. Under overlap it is CORRECTNESS: the side
+            # and what it waits for is the work the copy blocks on one statement
+            # later. It is still one device-wide barrier per transition that the
+            # pre-8.6 path did not take, so this is not "the synchronization
+            # points are unchanged". Under overlap it is CORRECTNESS: the side
             # streams read and free weights that compute may still be writing,
             # and the join at the end of the transition only makes the default
             # stream wait on the side streams, never the reverse.

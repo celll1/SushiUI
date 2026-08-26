@@ -2382,7 +2382,9 @@ extra metricsへ出す。byte数は実際にcopyが起きるtensorのみを数�
 （既にstage済み/常駐のtensorは0）。timerは各transitionの先頭で
 `torch.cuda.synchronize()`してから開始する。これを省くと最初のblocking copyが
 直前phaseのqueue済み計算を吸ってd2h側が過大になる（§8.3.2で撤回した数値と同じ欠陥）。
-先頭syncは待ち時間を増やさない——次の文のcopyがどのみち同じ計算を待つためである。
+先頭syncが待つのは次の文のcopyがどのみち待つ計算である。ただしこれはtransitionごとに
+1回、8.6以前には存在しなかったdevice全体barrierであり、「同期点は変わっていない」とは
+言えない。
 
 **重なり合わせ（overlap、PHASE 2）**: `sensenova_mot_overlap_transfer`
 （デフォルト `False`、`sensenova_mot_phase_eviction` 必須、

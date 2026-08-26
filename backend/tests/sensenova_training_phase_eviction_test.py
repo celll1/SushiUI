@@ -296,6 +296,74 @@ def test_a_non_cuda_device_never_synchronizes():
     assert calls == []
 
 
+def test_a_cuda_device_takes_the_barrier_it_resolves():
+    """The positive half of the guard above. Both barrier-ordering tests patch
+    ``_sync`` ITSELF, and every other evictor here runs on ``"meta"``, so
+    nothing pins that ``_sync`` reaches ``torch.cuda.synchronize`` at all.
+
+    MUTANT: narrowing the ``_sync_device`` guard to
+    ``self._device_obj.type == "cuda:0"`` (never true -- ``torch.device`` splits
+    the index off the type) leaves ``_sync`` a no-op on real hardware, so the
+    barrier this commit raised to a correctness invariant silently disappears in
+    production while every existing test stays green.
+    """
+    calls = []
+    # Only the two calls the guard and the barrier make are patched; no CUDA
+    # allocation happens on this synthetic tree.
+    with patch("torch.cuda.is_available", lambda: True), patch(
+        "torch.cuda.synchronize", lambda *a, **k: calls.append(a)
+    ):
+        evictor = SenseNovaTrainingPhaseEvictor(transformer(), "cuda:0")
+        with _accounted():
+            evictor.enter_prefix()
+
+    assert evictor._sync_device == torch.device("cuda:0")
+    assert calls == [(torch.device("cuda:0"),)]   # one per transition
+
+
+def test_the_staging_sources_list_holds_the_original_device_tensors():
+    """``sources`` is what keeps a d2h source alive across the reassignment
+    below it: ``parameter.data = staged`` drops the MODEL's reference the moment
+    the copy is issued, and the overlap path's ``record_stream`` on that block
+    runs strictly later.
+
+    MUTANT: deleting the two ``sources.append`` lines leaves the CUDA source
+    unreferenced from the reassignment onwards, so the caching allocator is free
+    to hand the block to the concurrent h2d destination and ``record_stream``
+    never runs on it. Every other test of this property replaces
+    ``_move_modules_to_cpu`` with a fake that appends a source of its own.
+    """
+    seen = []
+
+    def stage(tensor, warn_once, warn_message, *, pageable=False, non_blocking=False):
+        del warn_once, warn_message, pageable, non_blocking
+        seen.append(tensor)
+        return torch.zeros_like(tensor)   # a new object, as the real one returns
+
+    module = nn.Module()
+    module.register_parameter("weight", nn.Parameter(torch.ones(2, device="meta")))
+    module.register_buffer("scale", torch.ones(2, device="meta"))
+    module.register_buffer("host", torch.ones(2))                     # already staged
+    module.register_buffer("scratch", torch.ones(1, device="meta"), persistent=False)
+    device_buffer = module._buffers["scale"]
+    sources = []
+
+    with patch.object(mot_cpu_staging, "_stage_tensor", stage):
+        stage_modules_to_pinned_cpu(
+            (module,), warn_once={}, non_blocking=True, sources=sources
+        )
+
+    offered = [tensor for tensor in seen if tensor.device.type != "cpu"]
+    assert len(offered) == 2                       # the parameter and the buffer
+    assert len(sources) == 2
+    assert all(held is given for held, given in zip(sources, offered))
+    # The buffer's slot no longer refers to it; this list is the only reference.
+    assert sources[1] is device_buffer
+    assert module._buffers["scale"] is not device_buffer
+    # An already-CPU source has nothing to keep alive and is not collected.
+    assert not any(tensor.device.type == "cpu" for tensor in sources)
+
+
 def test_a_transition_takes_exactly_one_barrier_and_takes_it_first():
     """The leading ``_sync`` in ``_transition`` is load-bearing twice over:
     serially it stops the first blocking copy from absorbing the preceding

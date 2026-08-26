@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
@@ -17,6 +17,36 @@ interface TrainingMonitorProps {
   onDelete?: () => void;
   onEditConfig?: () => void;
 }
+
+interface TrainingCadence {
+  batchSize: number;
+  mnt: number;
+  optimizerEvery: number;
+  fused: boolean;
+  eviction: boolean;
+}
+
+const yamlScalar = (yaml: string | undefined, key: string): string | undefined => {
+  if (!yaml) return undefined;
+  return yaml.match(new RegExp(`^\\s*${key}:\\s*([^#\\r\\n]+)`, "m"))?.[1]?.trim();
+};
+
+const yamlInt = (yaml: string | undefined, key: string, fallback: number): number => {
+  const value = Number.parseInt(yamlScalar(yaml, key) ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const yamlBool = (yaml: string | undefined, key: string): boolean =>
+  ["true", "1", "yes", "on"].includes((yamlScalar(yaml, key) ?? "").toLowerCase());
+
+const formatIterationRate = (seconds: number | null): string => {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "Calculating...";
+  if (seconds < 1) return `${(1 / seconds).toFixed(2)} iter/s`;
+  return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s/iter`;
+};
+
+const formatSeconds = (seconds: number): string =>
+  `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
 
 export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete, onEditConfig }: TrainingMonitorProps) {
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
@@ -43,6 +73,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [debugVisualization, setDebugVisualization] = useState<DebugLatentVisualization | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
   const [, setTimeTick] = useState(0); // Force re-render for time update
+  const [recentSecondsPerIteration, setRecentSecondsPerIteration] = useState<number | null>(null);
+  const speedWindowRef = useRef<Array<{ step: number; at: number }>>([]);
 
   // Dataset scan progress (drift detection / rescan) — shown until training proper starts
   const [scanMessage, setScanMessage] = useState<string | null>(null);
@@ -73,6 +105,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // and the gap before the first poll tick). Same call carries the notice backlog.
   useEffect(() => {
     let cancelled = false;
+    getTrainingRun(currentRun.id)
+      .then((detail) => {
+        if (!cancelled && detail.config_yaml) {
+          setCurrentRun((prev) => ({ ...prev, config_yaml: detail.config_yaml }));
+        }
+      })
+      .catch(() => {});
     getTrainingStatus(currentRun.id)
       .then((status) => {
         if (!cancelled) {
@@ -83,6 +122,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       .catch(() => {});
     return () => { cancelled = true; };
   }, [currentRun.id]);
+
+  useEffect(() => {
+    speedWindowRef.current = [];
+    setRecentSecondsPerIteration(null);
+  }, [currentRun.id, currentRun.last_resumed_at]);
 
   // Live notices for this run.
   useEffect(() => {
@@ -112,6 +156,24 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
         setEpochInfo({ current: status.current_epoch ?? null, total: status.total_epochs ?? null });
         // Also the recovery path when the SSE connection dropped and reconnected.
         if (status.warnings?.length) mergeNotices(status.warnings);
+        const now = performance.now();
+        if (status.status === "running" && status.phase === "training") {
+          const window = speedWindowRef.current;
+          if (window.length && status.current_step < window[window.length - 1].step) {
+            window.length = 0;
+          }
+          window.push({ step: status.current_step, at: now });
+          while (window.length > 2 && now - window[0].at > 20_000) window.shift();
+          const first = window[0];
+          const advanced = status.current_step - first.step;
+          const elapsed = now - first.at;
+          setRecentSecondsPerIteration(
+            advanced > 0 && elapsed > 0 ? elapsed / 1000 / advanced : null
+          );
+        } else {
+          speedWindowRef.current = [];
+          setRecentSecondsPerIteration(null);
+        }
         const updatedRun = {
           ...currentRun,
           progress: status.progress,
@@ -132,7 +194,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [currentRun.status, currentRun.id]);
+  }, [currentRun.status, currentRun.id, currentRun.config_yaml]);
 
   // Update time display every second
   useEffect(() => {
@@ -319,7 +381,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // Calculate elapsed time and ETA
   const calculateTimeInfo = () => {
     if (!currentRun.started_at || currentRun.status === "pending") {
-      return { elapsed: "N/A", eta: "N/A" };
+      return { elapsed: "N/A", eta: "N/A", averageSecondsPerIteration: null };
     }
 
     // Use last_resumed_at if available (resume case), otherwise use started_at (first start)
@@ -337,7 +399,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
     // Calculate ETA (only if training is running and progress > 0)
     if (currentRun.status !== "running" || currentRun.progress <= 0 || currentRun.current_step === 0) {
-      return { elapsed, eta: "N/A" };
+      return { elapsed, eta: "N/A", averageSecondsPerIteration: null };
     }
 
     // Calculate progress based on steps completed since resume (or from start)
@@ -346,16 +408,17 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const remainingSteps = currentRun.total_steps - currentRun.current_step;
 
     if (stepsCompleted <= 0) {
-      return { elapsed, eta: "Calculating..." };
+      return { elapsed, eta: "Calculating...", averageSecondsPerIteration: null };
     }
 
     if (remainingSteps <= 0) {
-      return { elapsed, eta: "Completed" };
+      return { elapsed, eta: "Completed", averageSecondsPerIteration: elapsedMs / stepsCompleted / 1000 };
     }
 
     // ETA = (elapsed time / steps completed) * remaining steps
-    const msPerStep = elapsedMs / stepsCompleted;
-    const remainingMs = msPerStep * remainingSteps;
+    const averageSecondsPerIteration = elapsedMs / stepsCompleted / 1000;
+    const etaSecondsPerIteration = recentSecondsPerIteration ?? averageSecondsPerIteration;
+    const remainingMs = etaSecondsPerIteration * 1000 * remainingSteps;
 
     // Format ETA
     const remainingSeconds = Math.floor(remainingMs / 1000);
@@ -364,10 +427,39 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const etaSecs = remainingSeconds % 60;
     const eta = `${etaHours}h ${etaMinutes}m ${etaSecs}s`;
 
-    return { elapsed, eta };
+    return { elapsed, eta, averageSecondsPerIteration };
   };
 
   const timeInfo = calculateTimeInfo();
+  const cadence = useMemo<TrainingCadence>(() => {
+    const yaml = currentRun.config_yaml;
+    const optimizer = (yamlScalar(yaml, "optimizer") ?? "").toLowerCase();
+    const blocksToSwap = yamlInt(yaml, "blocks_to_swap", 0);
+    const optimizerGroups = yamlInt(yaml, "num_optimizer_groups", 0);
+    const isSenseNovaFull = currentRun.training_method === "full_finetune" &&
+      currentRun.base_model_path.toLowerCase().includes("sensenova");
+    const fusedOptimizers = new Set([
+      "adafactor", "adamw8bit", "paged_adamw8bit", "lion8bit", "paged_lion8bit",
+      "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
+    ]);
+    const fused = optimizerGroups > 0 ||
+      (blocksToSwap > 0 && fusedOptimizers.has(optimizer)) ||
+      (isSenseNovaFull && optimizer === "adafactor");
+    const accumulation = yamlInt(yaml, "gradient_accumulation_steps", 1);
+    return {
+      batchSize: yamlInt(yaml, "batch_size", 1),
+      mnt: yamlInt(yaml, "multi_noise_timesteps", 1),
+      optimizerEvery: fused ? 1 : accumulation,
+      fused,
+      eviction: yamlBool(yaml, "sensenova_mot_phase_eviction") ||
+        yamlBool(yaml, "sensenova_four_phase_eviction"),
+    };
+  }, [currentRun.config_yaml, currentRun.training_method, currentRun.base_model_path]);
+  const recentSpeedLabel = recentSecondsPerIteration !== null
+    ? formatIterationRate(recentSecondsPerIteration)
+    : speedWindowRef.current.length > 1
+      ? "No iteration in window"
+      : "Calculating...";
 
   return (
     <div className="h-full flex flex-col">
@@ -420,9 +512,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                   {currentRun.phase === "crop_precompute" && "Planning crop schedule"}
                   {currentRun.phase === "latent_cache" && "Latent Cache"}
                   {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
-                  {currentRun.phase === "training" && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
+                  {currentRun.phase === "training" && `Iteration ${currentRun.current_step} / ${currentRun.total_steps}`}
                   {currentRun.phase === "initializing" && "Initializing..."}
-                  {!currentRun.phase && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}
+                  {!currentRun.phase && `Iteration ${currentRun.current_step} / ${currentRun.total_steps}`}
                 </span>
                 <span>
                   {currentRun.phase === "training" || !currentRun.phase
@@ -491,6 +583,13 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <span className="text-gray-400">LR:</span>{" "}
                 <span className="font-mono">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
               </div>
+              <div title="Rolling wall-clock throughput over the latest 20 seconds. One iteration is one forward/backward at one MNT timestep.">
+                <span className="text-gray-400">Speed:</span>{" "}
+                <span className="font-mono text-cyan-400">{recentSpeedLabel}</span>
+                {timeInfo.averageSecondsPerIteration !== null && (
+                  <span className="ml-1 text-gray-500">(avg {formatIterationRate(timeInfo.averageSecondsPerIteration)})</span>
+                )}
+              </div>
               <div>
                 <span className="text-gray-400">Elapsed:</span>{" "}
                 <span className="font-mono text-blue-400">{timeInfo.elapsed}</span>
@@ -500,6 +599,23 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <span className="font-mono text-green-400">{timeInfo.eta}</span>
               </div>
             </div>
+            {currentRun.phase === "training" && recentSecondsPerIteration !== null && (
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-gray-700/70 pt-2 text-xxs text-gray-400">
+                <span title="One dataset batch is reused for each configured MNT timestep.">
+                  Input-batch wall: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.mnt)}</span>
+                  {cadence.mnt > 1 && ` (MNT×${cadence.mnt})`}
+                </span>
+                <span title={cadence.fused ? "Derived wall throughput per update cadence, not isolated optimizer kernel time. Fused backward updates during every backward; configured gradient accumulation is not effective." : "Derived wall throughput per update cadence, not isolated optimizer kernel time."}>
+                  Wall/update: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.optimizerEvery)}</span>
+                  {cadence.optimizerEvery > 1 && ` / ${cadence.optimizerEvery} iters`}
+                  {cadence.fused && " (fused, every iter)"}
+                </span>
+                <span title="Sample presentations contributing to one optimizer update. With MNT, the same input batch is presented at multiple timesteps.">
+                  Sample passes/update: <span className="font-mono text-gray-300">{cadence.batchSize * cadence.optimizerEvery}</span>
+                </span>
+                {cadence.eviction && <span title="Eviction transfers and split phases are already included in wall-clock iteration time.">Eviction included</span>}
+              </div>
+            )}
           </div>
 
           {/* Controls */}

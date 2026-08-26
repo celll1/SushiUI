@@ -2369,9 +2369,12 @@ D2H/H2Dともblockingであり、各swapが完了するまで次phaseのGPU計�
 
 実checkpointのbf16 halfは15.09375 GiB（§8.5）なので、4相・MNT=1のsteady stateは算術上、
 1 iterationに**D2H 30.1875 GiB + H2D 30.1875 GiB = 合計60.375 GiB**を移す。最初の
-iterationだけは初期`full -> prefix`でgen halfのD2Hがもう1回入る。この値はtensor headerから
-得た転送対象量であり、実効帯域やwall timeの実測ではない。既存の0.3363 s D2H / 0.3296 s
-H2Dは7.60 GiBのint8 halfでの測定であり、bf16 wall timeへ線形外挿してはならない。
+iterationだけは初期`full -> prefix`でgen halfのD2Hがもう1回入る。**この算術は実測で
+確認された**（下の「実測」）: 4相ONのarmはすべて d2h 30.189 + h2d 30.189 =
+**60.378 GiB/step** を記録し、解像度を64pxから2048pxへ32倍にしても値は動かない
+（swap量はweight量だけで決まる）。wall timeは別問題である。既存の0.3363 s D2H /
+0.3296 s H2Dは7.60 GiBのint8 halfでの測定であり、bf16 wall timeへ線形外挿しては
+ならない（bf16 halfの実測は下表の1.22-1.29 s / 方向）。
 
 **計測（instrumentation、PHASE 1）**: 上記が算術のままである状態を解消するため、
 `SenseNovaTrainingPhaseEvictor._transition`が各transitionのd2h/h2d秒数と転送byte数を
@@ -2391,8 +2394,8 @@ extra metricsへ出す。byte数は実際にcopyが起きるtensorのみを数�
 `sensenova_mot_pageable_staging` とは**併用不可**でload前に拒否）。`_swap_plan`は既に
 pair単位でd2h→h2dを交互に並べているため、同一swapの2方向はPCIeの全二重性と
 H2D/D2H独立copy engineの上で同時に走らせられる。転送項の算術上の上限は
-`d2h + h2d`から`max(d2h, h2d)`へ下がる。**実際にどこまで届くかは未計測であり、
-そのためdefault offで出荷している**。実装は`sensenova_phase_eviction.py`の
+`d2h + h2d`から`max(d2h, h2d)`へ下がる。**実測ではこの機械で利得が現れなかったため
+（下の「実測」）、default offのまま据え置く**。実装は`sensenova_phase_eviction.py`の
 OVERLAPPED TRANSFER注記を参照。下の4不変条件はこのmodeでは次のように満たされる。
 
 - residentは1 half + 最大`_OVERLAP_WINDOW_PAIRS`（=4）module。bf16の最大単一weight
@@ -2450,32 +2453,109 @@ forward/backwardがincoming half全体を必要とするため、H2Dをqueueし�
 device一致は`_assert_grad_free`のpre-flightが従来どおり担保する）。ここで否定されている
 「whole-half H2Dだけ非同期化」——隠す相手のいない片方向のqueue——は依然採らない。
 
+#### 実測（2026-08-26、probe は `9461b6c6`）
+
+instrument は `core/training/probes/sensenova_full_finetune.py`
+（`--overlap-transfer` / `--no-phase-eviction` / `--vram-fraction` /
+`--warmup-steps` と step ごとの転送量・VRAM 報告を `9461b6c6` で追加）。
+実 plain-int8 base、RTX 6000 Ada 48 GB、both branch full FT、物理 B1、Adafactor、
+LR 1e-6、seed 1234、`--no-save`、reference 画像なし、学習中 sample なし、
+native attention。**arm ごとに別プロセスで 1 本ずつ走らせ、下の値はすべて
+warmup 後の定常 step の中央値である** — arm あたり run は 1 本なので、
+複数 run の統計でも信頼区間の付く値でもない。
+
+| arm | res | eviction | overlap | step/warmup | step wall s | d2h s | h2d s | d2h GiB | h2d GiB | alloc GiB | reserved GiB |
+|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| a0_smoke_overlap_on | 64 | ON 4相 | ON | 4/1 | 6.3091 | 1.2487 | 1.2285 | 30.189 | 30.189 | 32.661 | 33.918 |
+| a1_baseline_serial | 64 | ON 4相 | OFF | 8/3 | 5.9947 | 1.2738 | 1.2491 | 30.189 | 30.189 | 32.661 | 33.918 |
+| a2_duplex_overlap | 64 | ON 4相 | ON | 8/3 | 6.1025 | 1.2479 | 1.2248 | 30.189 | 30.189 | 32.661 | 33.918 |
+| a3_no_eviction | 64 | OFF | — | 4/1 | 3.3644 | — | — | — | — | 33.800 | 34.234 |
+| off_r512 | 512 | OFF | — | 5/2 | 3.3904 | — | — | — | — | 33.915 | 34.074 |
+| off_r2048 | 2048 | OFF | — | 4/1 | 7.5284 | — | — | — | — | 35.872 | 36.711 |
+| on_r2048 | 2048 | ON 4相 | OFF | 4/1 | 10.6140 | 1.2909 | 1.2639 | 30.189 | 30.189 | 32.661 | 34.027 |
+
+a0/a1/a2 の VRAM gate は probe 既定の `--vram-fraction 0.72`、a3 / off_r512 /
+off_r2048 / on_r2048 は `1.0` である。**2048px がこのモデルの実運用解像度**で、
+512 は運用対象ではなく、1024 の arm は意図的に走らせていない。host 側は全 arm で
+peak working set 49.11 GiB、peak commit charge 67.95-89.10 GiB（§8.3.3 の
+「commit は再現しない」がそのまま再現した）。pinned host の高水位そのものは §8.5。
+
+- **60.375 GiB/iteration の算術は確認された。** d2h 30.189 + h2d 30.189 =
+  60.378 GiB/step が 4 相 ON の全 arm で一致し、64px と 2048px で同値である。
+  転送量は解像度非依存で、compute だけが解像度に依存する。
+- **§8.6 が「48 GB で最初に行うべき判断」と書いた eviction OFF / ON の A/B は
+  答えが出た。測定したどの解像度でも eviction 側が負けた。** 2048px では eviction が
+  step あたり **+3.0856 s**（10.6140 対 7.5284、+41%）を支払って、
+  allocated **3.211 GiB** / reserved **2.684 GiB** を節約する。
+  **eviction OFF は 2048px で載る** — reserved 36.711 GiB に対し 47.988 GiB の
+  card で余白は約 11.3 GiB である。§8.3.3 の「both + 4 相 OFF @1024 は不可（OOM）」は
+  0.72 の per-process gate が出した拒否であって、card の限界ではない（同節の記述どおり）。
+- **転送が step wall に占める割合は解像度とともに下がる。** step ごとの占有率の
+  中央値は 64px で **0.4211**、2048px で **0.2420**（いずれも eviction ON・serial）。
+  swap 量が解像度非依存なのに compute はそうではないためである。**原理的には
+  eviction の判定は解像度依存になりうる** — 今回はどの解像度でも符号が変わらなかった、
+  というだけである。
+- **duplex（`sensenova_mot_overlap_transfer`）はこの機械では利得を出さなかった。**
+  64px で 6.1025 s 対 serial 5.9947 s、すなわち **1.8% 遅い**。方向別の busy time も
+  ほとんど動いていない（d2h 1.2738 → 1.2479、h2d 1.2491 → 1.2248）。2 方向が実際に
+  重なっていれば 2.52 s の転送のうち約 1.25 s が消え、step は 4.75 s 付近に落ちた
+  はずである。**ここで確定したのは「この機械では利得が現れなかった」ことだけである** —
+  PCIe が全二重で動かないとも、機構が反証されたとも書かない。**原因は切り分けていない。**
+  flag は default OFF のままで、この測定はその据え置きの根拠である。
+- **serial arm と overlap arm では秒の単位が変わる**（blocking copy 周りの host wall と、
+  並走する stream 上の CUDA event 時間）。したがって両者を跨いで比較できるのは
+  **step wall だけ**であり、上の duplex の結論は step wall で論じている。
+- **`reserved - allocated` は overlap ON / OFF の両方で 64px の 1.257 GiB のまま、
+  2048px の eviction ON でも 1.367 GiB だった。** これは caching allocator の
+  stream 区分された free list が half 丸ごと（15 GiB 級）を取り残していない、という
+  本番条件での確認である — `419625c9` が塞いだ欠陥そのものである。
+- **適用範囲。** 物理 B1、reference 画像なし、学習中 sample なし、`--no-save`、
+  Adafactor、native attention。2048px の eviction OFF が持つ約 11.3 GiB の余白は、
+  バッチ増、U-3 の reference ViT tower、学習中 sampling、長時間 run の断片化が
+  食う先である。**eviction は「OFF が載らない場合の opt-in fallback」として残る。
+  死んだコードではなく、削除してはならない。**
+- **既定は変えない。** `sensenova_mot_phase_eviction`、`sensenova_four_phase_eviction`、
+  `sensenova_mot_overlap_transfer`、`sensenova_mot_pageable_staging` はいずれも
+  `False` のまま（`backend/api/param_defaults.py:2325`, `:2332`, `:2352`, `:2359`）。
+  この測定は既定を変える根拠ではなく、出荷済みの既定を支持する根拠である。
+
 #### 選択肢と意味
 
 | 選択肢 | 期待できること | 制約 / 判断 |
 |---|---|---|
-| 4相evictionを維持 | 48 GB内のresident peakを抑える | 同期転送idleを支払う。現在の安全な基準経路 |
-| eviction OFF | 転送2 swapを消す | weights、gradients、optimizer、activationを含む実peakが48 GBに収まることを同一条件のprobeで証明できた場合のみ候補 |
+| 4相evictionを維持 | 48 GB内のresident peakを抑える | 同期転送idleを支払う。2048pxで+3.0856 s/step（+41%）に対し節約はallocated 3.211 GiB（実測）。**OFFが載らない構成のためのfallback**であり、既定の推奨経路ではない |
+| eviction OFF | 転送2 swapを消す | **測定したどの解像度でも速い側**（2048pxで7.5284 s対10.6140 s）。2048pxで reserved 36.711 GiB、余白約11.3 GiB（B1・reference画像なし・sampleなしの条件下）。バッチ増や reference tower はこの余白から出る |
 | shared MNT prefix | MNT=Nでswapを2N回から2回へ減らす | MNT=1では効果なし。und更新をN回から1回へ変えるため、単なる性能最適化ではない（§8.3.5） |
 | pageable staging | stickyなpinned host高水位を避ける | host memory用。転送高速化を主張しない。通常はpinnedより遅くなり得る |
 | whole-half H2Dだけ非同期化 | CPU threadのblock時間を短く見せる | GPU計算前に待つためstep wall改善は限定的。単独では採用しない |
-| overlap transfer（PHASE 2） | 同一swapの2方向を並走させ、転送項の上限を`d2h + h2d`から`max(d2h, h2d)`へ | 算術上の上限であり実測値ではない。resident +最大4 module、pageable stagingとは併用不可 |
+| overlap transfer（PHASE 2） | 同一swapの2方向を並走させ、転送項の上限を`d2h + h2d`から`max(d2h, h2d)`へ | **実測ではこの機械で利得なし**（64pxで6.1025 s対serial 5.9947 s = 1.8%遅い、方向別busy timeもほぼ不変）。原因は切り分けていないので機構の反証ではない。default OFF据え置き。resident +最大4 module、pageable stagingとは併用不可 |
 | layer単位prefetch/evict | PCIe転送と隣接layerの計算を重ねられる可能性 | 本命だが、layer residency、checkpoint再計算、fused hook、失敗回復を統合する新しいoffloaderが必要 |
 
-48 GB環境で最初に行うべき判断は、非同期化ではなく**同一run条件でeviction OFFが本当に
-載るか**のA/Bである。載らなければ転送は容量成立のための必須コストであり、次の研究対象は
-whole-half copyの小手先ではなくlayer単位overlapになる。
+48 GB環境で最初に行うべき判断として本節が挙げていた「同一run条件でeviction OFFが本当に
+載るか」のA/Bは、**上の実測で済んだ**（B1・reference画像なしの条件では2048pxまで載り、
+かつ速い）。したがって転送は現時点で容量成立のための必須コストではない。**ただしその
+判定は上の適用範囲の内側でのみ成立する**ので、余白を食う構成（バッチ増、U-3のreference
+ViT tower、学習中sampling）では再びeviction側の判断になりうる。whole-half copyの
+小手先ではなくlayer単位overlapが次の研究対象である、という位置づけは変わらない。
 
-#### 測定gate
+#### 測定gate（何が済み、何が済んでいないか）
 
 最適化案を採用する前に、同一checkpoint、解像度、attention backend、seed、optimizerで
-少なくとも次を測る。現在の主対象はRTX 6000 Ada 48 GB、B1、both full FT、1024pxで、
-2048px以上は別armとする。
+少なくとも次を測る。現在の主対象はRTX 6000 Ada 48 GB、B1、both full FTで、
+実運用解像度は2048pxである。
 
-- warmup後30 iteration以上のinput-batch wall、optimizer update wall、phase別D2H/H2D wall。
-- `torch.cuda.max_memory_allocated/reserved`とhost working set / pinned bytesの高水位。
-- gen/undのupdated-parameter census、loss有限性、保存・resume後のoptimizer state一致。
+**済（上の実測、2026-08-26）** — timing と VRAM の半分だけである。
+
+- 定常step wall、方向別D2H/H2D wallと転送byte、eviction OFF/ONとoverlap ON/OFFの各arm。
+  ただし窓は4-8 stepであって、本gateが要求していた30 iteration以上ではない。
+- `torch.cuda.max_memory_allocated/reserved`、host working set / commit charge の高水位。
+
+**未測定 — gate全体が満たされたと読まないこと。**
+
+- 各armでのgen/undのupdated-parameter census、および保存・resume後のoptimizer state一致
+  （loss有限性は走ったが、census はこれらのarmでは取っていない）。
 - OOM、user interrupt、転送例外の各failure injectionで、partial residencyを再利用しないこと。
+- batch > 1、reference画像あり、学習中samplingありの挙動。
 
 同期実装のphase wallは、phase境界の外側で`perf_counter`を取れば新しいGPU同期を増やさず
 測定できる。非同期案ではCUDA eventが必要だが、per-tensor eventをUIへ送らず、sampled計測を

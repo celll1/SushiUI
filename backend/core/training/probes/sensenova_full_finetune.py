@@ -29,6 +29,15 @@ model.
 Nothing here claims quality. Phase 2b's exit criteria are "training is not
 broken" only; the horizon is far too short for stochastic rounding's error to be
 below the signal (6.3).
+
+The train arm doubles as the MoT PHASE-SWAP INSTRUMENT: per-step wall time and
+the evictor's own per-direction seconds and bytes, summarized over the
+post-warmup steps, beside the run's allocated AND reserved CUDA peaks. Section
+8.6 states this loop's transfer volume as arithmetic and ships
+``sensenova_mot_overlap_transfer`` off because what it buys is unmeasured; these
+flags (``--overlap-transfer``, ``--phase-eviction``, ``--vram-fraction``,
+``--warmup-steps``, ``--label``) are how an arm measures it. They change nothing
+for a caller that names none of them.
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ from core.training.probes.sensenova_real_checkpoint import (  # noqa: E402
     EXIT_SMOKE_STEPS,
     EXIT_SMOKE_WIDTH,
     EXPECTED_TARGETS,
+    VRAM_GATE_FRACTION,
     _ExitSmokeDataset,
     _apply_vram_gate,
     _cuda_memory,
@@ -259,6 +269,131 @@ class _StepPeakRecorder:
         }
 
 
+def _clock() -> float:
+    """A step-boundary timestamp with the device's queue drained first."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    return time.perf_counter()
+
+
+def _stat(values: list[float]) -> dict[str, Any]:
+    import statistics
+
+    clean = [float(v) for v in values if v is not None]
+    if not clean:
+        return {"n": 0, "median": None, "min": None, "max": None}
+    return {
+        "n": len(clean),
+        "median": statistics.median(clean),
+        "min": min(clean),
+        "max": max(clean),
+    }
+
+
+# The evictor series base_trainer logs from its single per-step drain.
+_SN_METRIC_KEYS = (
+    "sn_d2h_s", "sn_h2d_s", "sn_d2h_gib", "sn_h2d_gib", "sn_swap_overlap",
+    "sn_peak_alloc_gib", "sn_peak_resv_gib",
+)
+
+
+class _StepTransferRecorder:
+    """Per-step swap cost, taken from the trainer's OWN drain rather than a second one.
+
+    ``base_trainer`` calls ``drain_transfer_stats()`` exactly once per step and
+    the drain RESETS the evictor's accumulators, so a probe that also drained
+    would read whichever of the two ran second -- zeros for one side, and the
+    trainer's own charted series silently emptied. This wraps
+    ``trainer.log_extra_metric`` instead: the drain stays single, and what is
+    recorded here is byte for byte what the trainer recorded.
+
+    ``sn_peak_alloc_gib`` / ``sn_peak_resv_gib`` are the trainer's reading of the
+    CUDA peak counters at the drain point, which ``_StepPeakRecorder`` resets
+    once per step -- they are per-window, not process-wide, and the run-level
+    peaks in the report come from that recorder instead.
+    """
+
+    def __init__(self):
+        self._pending: dict[str, Any] = {}
+        self.steps: list[dict[str, Any]] = []
+        self._mark: float | None = None
+
+    def install(self, trainer) -> None:
+        real = trainer.log_extra_metric
+
+        def recording(name, value):
+            if name in _SN_METRIC_KEYS:
+                self._pending[name] = value
+            return real(name, value)
+
+        trainer.log_extra_metric = recording
+
+    def start(self) -> None:
+        self._mark = _clock()
+
+    def close_step(self, step: int) -> None:
+        now = _clock()
+        wall = None if self._mark is None else now - self._mark
+        self._mark = now
+        entry: dict[str, Any] = {"step": int(step), "wall_s": wall}
+        entry.update({key: self._pending.get(key) for key in _SN_METRIC_KEYS})
+        self._pending = {}
+        self.steps.append(entry)
+
+    def summary(self, warmup: int) -> dict[str, Any]:
+        """Statistics over the POST-WARMUP steps only.
+
+        The first swaps are not steady state: every pinned staging block is a
+        fresh device-synchronizing ``cudaHostAlloc``, and torch's caching host
+        allocator only converges once each distinct tensor size has been freed
+        once. SENSENOVA_TRAINING_DESIGN.md 8.6 retracted a transfer number
+        measured without this exclusion.
+        """
+        warmup = max(0, int(warmup))
+        steady = self.steps[warmup:]
+        notes: list[str] = []
+        if not steady:
+            notes.append(
+                f"no steady-state steps: {len(self.steps)} step(s) ran and "
+                f"{warmup} were excluded as warmup"
+            )
+        wall = [s["wall_s"] for s in steady]
+        d2h_s = [s["sn_d2h_s"] for s in steady]
+        h2d_s = [s["sn_h2d_s"] for s in steady]
+        ratios = [
+            (s["sn_d2h_s"] + s["sn_h2d_s"]) / s["wall_s"]
+            for s in steady
+            if s["wall_s"] and s["sn_d2h_s"] is not None and s["sn_h2d_s"] is not None
+        ]
+        overlap_flags = [
+            s["sn_swap_overlap"] for s in steady if s["sn_swap_overlap"] is not None
+        ]
+        if steady and not any(s["sn_d2h_s"] is not None for s in steady):
+            notes.append(
+                "no evictor transfer series was logged: either the phase evictor "
+                "is off or it never transitioned"
+            )
+        return {
+            "warmup_steps": warmup,
+            "steady_state_steps": len(steady),
+            "step_wall_s": _stat(wall),
+            "d2h_s": _stat(d2h_s),
+            "h2d_s": _stat(h2d_s),
+            "d2h_gib_per_step": _stat([s["sn_d2h_gib"] for s in steady]),
+            "h2d_gib_per_step": _stat([s["sn_h2d_gib"] for s in steady]),
+            # The transfer share of a step, read directly. Under overlap the two
+            # seconds are concurrent CUDA-event times on two streams, so their
+            # sum can exceed the step wall and this ratio can pass 1.0; that is
+            # the unit changing, not a step spending more than its own time.
+            "transfer_share_of_step": _stat(ratios),
+            "overlap_active_all_steps": bool(overlap_flags) and all(
+                float(v) == 1.0 for v in overlap_flags
+            ),
+            "overlap_active_any_step": any(float(v) == 1.0 for v in overlap_flags),
+            "notes": notes,
+        }
+
+
 def train_arm_failures(
     *,
     moved,
@@ -316,7 +451,8 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     from core.training.ops.sensenova_ops import resolve_full_finetune_branch
     from core.training.ops.training_method import is_full_finetune
 
-    vram_gate = _apply_vram_gate()
+    phase_eviction = _resolve_phase_eviction(args)
+    vram_gate = _apply_vram_gate(_vram_fraction(args))
     config = trainer_exit_smoke_config()
     workdir = Path(args.workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -328,9 +464,14 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     train_config = dict(config["train_config"])
     train_config["sensenova_full_finetune_save_format"] = args.save_format
-    train_config["sensenova_mot_phase_eviction"] = bool(args.four_phase)
+    train_config["sensenova_mot_phase_eviction"] = phase_eviction
     train_config["sensenova_four_phase_eviction"] = bool(args.four_phase)
     train_config["use_reference_images"] = bool(args.reference)
+    # Left unset when the caller named neither flag, so the installer reads
+    # TRAINING_DEFAULTS (OFF) exactly as it did before this arm could ask.
+    overlap_requested = getattr(args, "overlap_transfer", None)
+    if overlap_requested is not None:
+        train_config["sensenova_mot_overlap_transfer"] = bool(overlap_requested)
     train_understanding = args.branch in ("und", "both")
 
     reference_paths: list[str] = []
@@ -383,6 +524,10 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             raise AssertionError("four-phase eviction was requested but not installed")
         if getattr(trainer, "sensenova_phase_evictor", None) is None:
             raise AssertionError("four-phase eviction requires the MoT evictor")
+    if phase_eviction and getattr(trainer, "sensenova_phase_evictor", None) is None:
+        raise AssertionError("phase eviction was requested but no evictor was installed")
+    if not phase_eviction and getattr(trainer, "sensenova_phase_evictor", None) is not None:
+        raise AssertionError("phase eviction was refused but an evictor was installed")
     adapter_name = type(trainer.adapter).__name__
     if adapter_name != "SenseNovaFullParameterAdapter":
         raise AssertionError(
@@ -419,6 +564,12 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     # the run is live instead.
     evictor_states: list[str] = []
     step_peaks = _StepPeakRecorder()
+    transfers = _StepTransferRecorder()
+    transfers.install(trainer)
+    # What the evictor ACTUALLY ran, sampled live: the flag says what was asked
+    # for, and a run that lost the overlap to a pin failure looks identical from
+    # the config alone.
+    overlap_observed: dict[str, Any] = {}
 
     def progress_callback(phase, step, total, epoch=0, loss=None):
         del total, epoch
@@ -427,10 +578,17 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         live = getattr(trainer, "sensenova_phase_evictor", None)
         if live is not None:
             evictor_states.append(str(live.state))
+            overlap_observed["configured"] = bool(getattr(live, "_overlap", False))
+            overlap_observed["downgraded"] = bool(
+                getattr(live, "_overlap_downgraded", False)
+            )
         if loss is None or not math.isfinite(float(loss)):
             raise AssertionError(f"non-finite SenseNova full-FT loss: {loss!r}")
         steps.append(int(step))
         losses.append(float(loss))
+        # Before the peak recorder: its _sample resets the peak counters, and the
+        # step wall must be closed on the step's own synchronize.
+        transfers.close_step(int(step))
         step_peaks.close_step(int(step))
 
     train = dict(config["train"])
@@ -501,6 +659,7 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     _ops.encode_prompt = _recording_encode_prompt
     train_started = time.perf_counter()
     step_peaks.open_first_window()
+    transfers.start()
     try:
         trainer.train(datasets=[dataset], **train)
     finally:
@@ -580,13 +739,21 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
         p.stat().st_size for p in entry.parent.glob(f"{entry.stem.split('.')[0]}*")
         if p.is_file()
     ) if saved else 0
+    transfer_summary = transfers.summary(int(getattr(args, "warmup_steps", 0)))
     return {
         "arm": "train",
+        "label": getattr(args, "label", None),
         "resolution": resolution,
         "observed_step_image_shapes": observed_shapes,
         "requested_steps": total_steps,
         "saved_checkpoint": bool(saved),
         "four_phase_eviction": bool(args.four_phase),
+        "phase_eviction": phase_eviction,
+        "overlap_transfer_requested": overlap_requested,
+        "overlap_transfer_observed": dict(overlap_observed),
+        "vram_fraction": _vram_fraction(args),
+        "transfer_per_step": transfers.steps,
+        "transfer_steady_state": transfer_summary,
         "reference_conditioned": bool(args.reference),
         "reference_image_paths": reference_paths,
         "prefix_records": prefix_records,
@@ -629,7 +796,13 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
             "model_resident_gib": model_resident["allocated"] / 1024 ** 3,
             "peak_allocated_bytes": peak_allocated,
             "peak_allocated_gib": peak_allocated / 1024 ** 3,
+            "peak_reserved_bytes": peak_reserved,
             "peak_reserved_gib": peak_reserved / 1024 ** 3,
+            # RESERVED matters as much as allocated here. The overlap path's
+            # destination-allocation rule exists so a side-stream copy can reuse
+            # a block the default stream just freed; if it did not hold, the
+            # allocator grows by a whole half and only this number shows it.
+            "peak_reserved_minus_allocated_gib": (peak_reserved - peak_allocated) / 1024 ** 3,
             "load_peak_reserved_gib": load_peak_reserved / 1024 ** 3,
             "gate_budget_gib": vram_gate.get("budget_bytes", 0) / 1024 ** 3,
             "device_total_gib": vram_gate.get("device_total_bytes", 0) / 1024 ** 3,
@@ -796,7 +969,7 @@ def _run_resume_arm(args: argparse.Namespace) -> dict[str, Any]:
     from core.training.ops.sensenova_ops import resolve_full_finetune_branch
 
     expected = json.loads(Path(args.expect).read_text(encoding="utf-8"))
-    vram_gate = _apply_vram_gate()
+    vram_gate = _apply_vram_gate(_vram_fraction(args))
     config = trainer_exit_smoke_config()
     workdir = Path(args.workdir)
     resolution = int(expected["resolution"])
@@ -808,7 +981,7 @@ def _run_resume_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     train_config = dict(config["train_config"])
     train_config["sensenova_full_finetune_save_format"] = args.save_format
-    train_config["sensenova_mot_phase_eviction"] = bool(args.four_phase)
+    train_config["sensenova_mot_phase_eviction"] = _resolve_phase_eviction(args)
     train_config["sensenova_four_phase_eviction"] = bool(args.four_phase)
     train_config["use_reference_images"] = False
     branch_arg = expected["branch"]
@@ -1031,6 +1204,31 @@ def _run_resume_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _vram_fraction(args: argparse.Namespace) -> float:
+    fraction = getattr(args, "vram_fraction", None)
+    return VRAM_GATE_FRACTION if fraction is None else float(fraction)
+
+
+def _resolve_phase_eviction(args: argparse.Namespace) -> bool:
+    """Eviction follows ``--four-phase`` unless the caller named it explicitly.
+
+    Unset reproduces the pre-flag behaviour exactly. Explicitly off UNDER
+    ``--four-phase`` is refused here rather than several frames deeper in
+    ``assert_four_phase_contract``, since the split has nothing to evict.
+    """
+    requested = getattr(args, "phase_eviction", None)
+    if requested is None:
+        return bool(args.four_phase)
+    if args.four_phase and not requested:
+        raise ValueError(
+            "--no-phase-eviction cannot be combined with --four-phase: the split "
+            "exists so an evicted understanding half can still be trained, and "
+            "without eviction it is a second backward and a recomputed forward "
+            "for nothing"
+        )
+    return bool(requested)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", choices=("train", "reload", "resume"), required=True)
@@ -1045,6 +1243,30 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--branch", choices=("gen", "und", "both"), default="gen")
     parser.add_argument("--four-phase", action="store_true",
                         help="arm sensenova_four_phase_eviction (8.3.2)")
+    parser.add_argument("--phase-eviction", dest="phase_eviction",
+                        action="store_true", default=None,
+                        help="arm sensenova_mot_phase_eviction independently of "
+                             "--four-phase; unset follows --four-phase")
+    parser.add_argument("--no-phase-eviction", dest="phase_eviction",
+                        action="store_false",
+                        help="run with both halves resident, for the arm that "
+                             "asks whether that fits at all")
+    parser.add_argument("--overlap-transfer", dest="overlap_transfer",
+                        action="store_true", default=None,
+                        help="set sensenova_mot_overlap_transfer; unset leaves "
+                             "TRAINING_DEFAULTS (off)")
+    parser.add_argument("--no-overlap-transfer", dest="overlap_transfer",
+                        action="store_false")
+    parser.add_argument("--vram-fraction", type=float, default=VRAM_GATE_FRACTION,
+                        help="per-process VRAM cap; raise it only for an arm "
+                             "whose question is whether a configuration fits in "
+                             "the whole card")
+    parser.add_argument("--warmup-steps", type=int, default=3,
+                        help="leading steps EXCLUDED from the steady-state "
+                             "transfer statistics (the first pinned staging "
+                             "allocations are cudaHostAlloc, not a copy)")
+    parser.add_argument("--label", default=None,
+                        help="echoed into the JSON so arm outputs self-identify")
     parser.add_argument("--reference", action="store_true",
                         help="give the item a reference image, so the prefix is "
                              "reference-conditioned (Phase U-3)")
@@ -1061,6 +1283,62 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _format_summary(result: dict[str, Any]) -> str:
+    """A compact transfer/VRAM digest for whoever reads stdout.
+
+    Tolerant of every key: an arm that has no transfer series still prints its
+    identity rather than raising over a missing one.
+    """
+    def num(value, fmt="{:.4f}") -> str:
+        return "n/a" if value is None else fmt.format(float(value))
+
+    steady = result.get("transfer_steady_state") or {}
+    vram = result.get("vram") or {}
+    observed = result.get("overlap_transfer_observed") or {}
+    wall = steady.get("step_wall_s") or {}
+    d2h = steady.get("d2h_s") or {}
+    h2d = steady.get("h2d_s") or {}
+    share = steady.get("transfer_share_of_step") or {}
+    lines = [
+        "=" * 68,
+        f"SENSENOVA SWAP MEASUREMENT  label={result.get('label')!r} "
+        f"arm={result.get('arm')!r}",
+        f"  branch={result.get('branch')!r} resolution={result.get('resolution')} "
+        f"steps={result.get('requested_steps')} "
+        f"warmup={steady.get('warmup_steps')} "
+        f"steady={steady.get('steady_state_steps')}",
+        f"  phase_eviction={result.get('phase_eviction')} "
+        f"four_phase={result.get('four_phase_eviction')} "
+        f"overlap_requested={result.get('overlap_transfer_requested')} "
+        f"overlap_configured={observed.get('configured')} "
+        f"overlap_downgraded={observed.get('downgraded')} "
+        f"vram_fraction={result.get('vram_fraction')}",
+        f"  overlap_active: all_steps={steady.get('overlap_active_all_steps')} "
+        f"any_step={steady.get('overlap_active_any_step')}",
+        f"  step wall  s: median {num(wall.get('median'))} "
+        f"min {num(wall.get('min'))} max {num(wall.get('max'))}",
+        f"  d2h       s: median {num(d2h.get('median'))} "
+        f"min {num(d2h.get('min'))} max {num(d2h.get('max'))}",
+        f"  h2d       s: median {num(h2d.get('median'))} "
+        f"min {num(h2d.get('min'))} max {num(h2d.get('max'))}",
+        f"  GiB/step   : d2h {num((steady.get('d2h_gib_per_step') or {}).get('median'), '{:.3f}')} "
+        f"h2d {num((steady.get('h2d_gib_per_step') or {}).get('median'), '{:.3f}')}",
+        f"  (d2h+h2d)/step_wall: median {num(share.get('median'))} "
+        f"min {num(share.get('min'))} max {num(share.get('max'))}",
+        f"  VRAM peak  : allocated {num(vram.get('peak_allocated_gib'), '{:.3f}')} GiB  "
+        f"reserved {num(vram.get('peak_reserved_gib'), '{:.3f}')} GiB  "
+        f"reserved-allocated {num(vram.get('peak_reserved_minus_allocated_gib'), '{:.3f}')} GiB",
+        f"  host RSS   : peak {num((result.get('host_rss') or {}).get('peak_gib'), '{:.2f}')} GiB  "
+        f"commit {num((result.get('host_rss') or {}).get('peak_commit_gib'), '{:.2f}')} GiB",
+    ]
+    for note in steady.get("notes") or []:
+        lines.append(f"  NOTE: {note}")
+    for failure in result.get("failures") or []:
+        lines.append(f"  FAILURE: {failure}")
+    lines.append("=" * 68)
+    return "\n".join(lines)
+
+
 def main() -> int:
     _require_repo_venv()
     args = _parse_args()
@@ -1070,6 +1348,7 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in result.items()
                       if k != "post_train_digests"}, indent=2))
+    print(_format_summary(result))
     # Written and printed FIRST: a criterion that fails is the measurement, and
     # a run that cost 25 GiB of writes should not also cost its own numbers.
     failures = result.get("failures") or []

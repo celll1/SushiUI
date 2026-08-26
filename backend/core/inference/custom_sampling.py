@@ -6970,9 +6970,7 @@ def custom_inpaint_sampling_loop(
     # uint8 cast and corrupt colors. Belt-and-suspenders for every post-decode pass.
     image = (image.clip(0, 1) * 255).round().astype("uint8")
 
-    # Clean up ControlNet after generation
-    from core.extensions.controlnet_manager import controlnet_manager
-    controlnet_manager.remove_lllite_patches()
-    controlnet_manager.offload_controlnets_to_cpu()
-
+    # ControlNet/LLLite cleanup is the CALLER's job (pipeline.generate_* finally,
+    # training_inference's finally): only the caller sees the failure paths this
+    # success-path tail never reaches.
     return Image.fromarray(image[0])

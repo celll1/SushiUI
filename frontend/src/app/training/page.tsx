@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { X } from "lucide-react";
 import Sidebar from "@/components/common/Sidebar";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import TrainingList from "@/components/training/TrainingList";
@@ -28,6 +29,7 @@ function TrainingPageContent() {
   const [showConfig, setShowConfig] = useState(false);
   const [editRunId, setEditRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [preservedConfigKeys, setPreservedConfigKeys] = useState<string[]>([]);
 
   // Tagger training state
   const [taggerRuns, setTaggerRuns] = useState<TaggerTrainingRun[]>([]);
@@ -146,11 +148,13 @@ function TrainingPageContent() {
     setSelectedRunId(null);
     setEditRunId(null);
     setShowConfig(true);
+    setPreservedConfigKeys([]);
   };
 
   const handleEditRun = (runId: number) => {
     setEditRunId(runId);
     setShowConfig(true);
+    setPreservedConfigKeys([]);
   };
 
   const handleRunCreated = (newRun: TrainingRun) => {
@@ -167,11 +171,15 @@ function TrainingPageContent() {
     setShowConfig(false);
     setEditRunId(null);
     setSelectedRunId(updatedRun.id);
+    // TrainingConfig unmounts in this same commit (showConfig -> false), so
+    // its own preserved-keys notice can never render. Surface it here instead.
+    setPreservedConfigKeys(updatedRun.preserved_config_keys ?? []);
   };
 
   const handleSelectRun = (id: number) => {
     setSelectedRunId(id);
     setShowConfig(false);
+    setPreservedConfigKeys([]);
     if (isMobile) setShowMobileDetail(true);
   };
 
@@ -382,6 +390,18 @@ function TrainingPageContent() {
 
               {/* Model Training Config or Monitor */}
               <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
+                {!showConfig && preservedConfigKeys.length > 0 && (
+                  <div className="m-3 sm:m-4 flex items-start justify-between gap-2 rounded border border-blue-500 bg-blue-900/20 p-2.5 sm:p-3 text-xs sm:text-sm text-blue-300">
+                    <span>Kept config-only keys this form cannot edit: {preservedConfigKeys.join(", ")}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPreservedConfigKeys([])}
+                      className="flex-shrink-0 text-blue-300 hover:text-white"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
                 {showConfig ? (
                   <TrainingConfig
                     onClose={() => {

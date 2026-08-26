@@ -5,7 +5,9 @@ Generates YAML configuration files based on training parameters.
 """
 
 from typing import Dict, Any, Optional, List
+from functools import lru_cache
 from pathlib import Path
+import ast
 import yaml
 
 from core.training.dataset_params import extract_dataset_params
@@ -455,6 +457,121 @@ def _build_train_section(
     train["energy_normalize_by_pixels"] = p.get("energy_normalize_by_pixels", True)
 
     return train
+
+
+def _train_dict_literal_keys(node: "ast.Dict", out: set) -> None:
+    for key, value in zip(node.keys, node.values):
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            out.add(key.value)
+        elif key is None:
+            # `**({...} if cond else {...})` -- the merged keys are the train
+            # section's own, so recurse into the unpacked expression.
+            for sub in ast.walk(value):
+                if isinstance(sub, ast.Dict):
+                    _train_dict_literal_keys(sub, out)
+
+
+@lru_cache(maxsize=1)
+def train_section_key_vocabulary() -> frozenset:
+    """Every ``train`` key the generators can emit, read off their own AST.
+
+    Derived rather than listed so a generator key cannot drift out of sync with
+    this set. A key outside it cannot be produced by any request, which is what
+    ``preserve_unmodelled_train_keys`` uses to tell a config-channel-only key
+    apart from one the panel deliberately turned off.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    keys: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_train_section":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "train" for t in sub.targets
+                ):
+                    if isinstance(sub.value, ast.Dict):
+                        _train_dict_literal_keys(sub.value, keys)
+                elif isinstance(sub, ast.AnnAssign) and isinstance(
+                    sub.target, ast.Name
+                ) and sub.target.id == "train" and isinstance(sub.value, ast.Dict):
+                    _train_dict_literal_keys(sub.value, keys)
+                elif (
+                    isinstance(sub, ast.Subscript)
+                    and isinstance(sub.ctx, ast.Store)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id == "train"
+                    and isinstance(sub.slice, ast.Constant)
+                    and isinstance(sub.slice.value, str)
+                ):
+                    keys.add(sub.slice.value)
+        elif isinstance(node, ast.Dict):
+            # generate_vae_config builds its train section as a literal.
+            for key, value in zip(node.keys, node.values):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "train"
+                    and isinstance(value, ast.Dict)
+                ):
+                    _train_dict_literal_keys(value, keys)
+    if not keys:
+        raise RuntimeError(
+            "train_section_key_vocabulary() derived no keys; the generator's "
+            "shape changed and preserve_unmodelled_train_keys would preserve "
+            "everything"
+        )
+    return frozenset(keys)
+
+
+def _process_train_section(config: Any) -> Optional[Dict[str, Any]]:
+    try:
+        process = config["config"]["process"][0]
+    except (TypeError, KeyError, IndexError):
+        return None
+    train = process.get("train") if isinstance(process, dict) else None
+    return train if isinstance(train, dict) else None
+
+
+def preserve_unmodelled_train_keys(
+    old_yaml: Optional[str], new_yaml: str
+) -> "tuple[str, List[str]]":
+    """Carry train keys the request model cannot express across a regeneration.
+
+    ``PUT /training/runs/{id}`` rebuilds the YAML from the request model, which
+    drops any key that model has no field for -- run 121 lost its
+    ``optimizer_update_census`` that way. Keys outside
+    ``train_section_key_vocabulary()`` are copied from the old config; keys
+    inside it belong to the panel, so an absent one means "turned off" and is
+    left absent.
+
+    Returns the (possibly rewritten) YAML and the sorted preserved key names.
+    """
+    if not old_yaml:
+        return new_yaml, []
+    try:
+        old_config = yaml.safe_load(old_yaml)
+        new_config = yaml.safe_load(new_yaml)
+    except yaml.YAMLError:
+        return new_yaml, []
+
+    old_train = _process_train_section(old_config)
+    new_train = _process_train_section(new_config)
+    if not old_train or new_train is None:
+        return new_yaml, []
+
+    vocabulary = train_section_key_vocabulary()
+    carried = {
+        k: v
+        for k, v in old_train.items()
+        if k not in new_train and k not in vocabulary
+    }
+    if not carried:
+        return new_yaml, []
+
+    new_train.update(carried)
+    return (
+        yaml.dump(new_config, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True),
+        sorted(carried),
+    )
 
 
 class TrainingConfigGenerator:

@@ -43,6 +43,7 @@ API request, an OpenAPI schema or the generated YAML.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -184,7 +185,10 @@ class NoApiSurfaceTest(unittest.TestCase):
     docs/guides/ADD_A_PARAMETER.md, the rest of the chain added).
     """
 
-    FILES = (
+    # Prose may name them -- PUT /training/runs/{id} documents that it carries
+    # them across a regeneration (config_edit_key_preservation_test.py). What is
+    # asserted is that no layer *declares* either as a settable parameter.
+    DECLARATION_FILES = (
         BACKEND_ROOT / "api" / "param_defaults.py",
         BACKEND_ROOT / "api" / "routes.py",
         BACKEND_ROOT / "core" / "training" / "training_config.py",
@@ -192,14 +196,30 @@ class NoApiSurfaceTest(unittest.TestCase):
         REPO_ROOT / "frontend" / "src" / "utils" / "api.ts",
     )
 
-    def test_no_layer_of_the_parameter_chain_mentions_either_switch(self):
-        for path in self.FILES:
+    def test_no_layer_of_the_parameter_chain_declares_either_switch(self):
+        declaration = re.compile(
+            r"^\s*[\"']?(%s)[\"']?\s*[:=?]" % "|".join(SWITCHES))
+        for path in self.DECLARATION_FILES:
             if not path.is_file():
                 continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            for name in SWITCHES:
-                with self.subTest(path=path.name, switch=name):
-                    self.assertNotIn(name, text)
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                with self.subTest(path=path.name, lineno=lineno):
+                    self.assertIsNone(declaration.match(line), line.strip())
+
+    def test_neither_switch_is_a_request_field(self):
+        from api.routes import TrainingRunCreateRequest
+
+        for name in SWITCHES:
+            with self.subTest(name):
+                self.assertNotIn(name, TrainingRunCreateRequest.model_fields)
+
+    def test_no_generated_config_can_emit_either_switch(self):
+        from core.training.training_config import train_section_key_vocabulary
+
+        for name in SWITCHES:
+            with self.subTest(name):
+                self.assertNotIn(name, train_section_key_vocabulary())
 
     def test_training_defaults_has_neither_key(self):
         from api.param_defaults import TRAINING_DEFAULTS

@@ -269,7 +269,8 @@ def test_drain_resets_so_consecutive_steps_do_not_double_count():
         evictor.enter_denoise()
         first = evictor.drain_transfer_stats()
         assert evictor.drain_transfer_stats() == {
-            "d2h_seconds": 0.0, "h2d_seconds": 0.0, "d2h_bytes": 0, "h2d_bytes": 0
+            "d2h_seconds": 0.0, "h2d_seconds": 0.0, "d2h_bytes": 0, "h2d_bytes": 0,
+            "overlap_active": False,
         }
         evictor.enter_prefix()      # denoise -> prefix, a full swap
         evictor.enter_denoise()
@@ -293,6 +294,40 @@ def test_a_non_cuda_device_never_synchronizes():
 
     assert evictor._sync_device is None
     assert calls == []
+
+
+def test_a_transition_takes_exactly_one_barrier_and_takes_it_first():
+    """The leading ``_sync`` in ``_transition`` is load-bearing twice over:
+    serially it stops the first blocking copy from absorbing the preceding
+    phase's still-queued compute and inflating the d2h bucket (the defect behind
+    the retracted number in 8.3.2), and under ``sensenova_mot_overlap_transfer``
+    it is the only thing that stops the side streams reading and freeing weights
+    that compute is still writing.
+
+    MUTANT: deleting it as redundant -- the copies block the host anyway -- makes
+    the sequence start at a copy.
+    MUTANT: syncing per operation instead (~250 device-wide barriers per
+    four-phase step, each charging its own latency to the bucket it is supposed
+    to be measuring) shows up as more than one entry.
+    """
+    evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
+    order = []
+
+    def sync(self):
+        order.append("sync")
+
+    def d2h(modules, *, warn_once, pageable=False):
+        _relocate_to_cpu(modules, warn_once=warn_once, pageable=pageable)
+        order.append("copy")
+
+    with patch.object(SenseNovaTrainingPhaseEvictor, "_sync", sync), patch(
+        "core.training.sensenova_phase_eviction._move_modules_to_cpu", d2h
+    ):
+        evictor.enter_prefix()
+
+    assert order[0] == "sync"
+    assert order.count("sync") == 1
+    assert order.count("copy") == 42
 
 
 def test_transfer_metrics_are_registered_for_the_chart():

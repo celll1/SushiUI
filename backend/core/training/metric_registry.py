@@ -80,6 +80,9 @@ EXTRA_METRIC_DEFS = {
     # 1 while sensenova_mot_overlap_transfer is running the two-stream path.
     # Not decorative: it is what tells a reader which unit the two seconds
     # series above are in, including mid-run if a pin failure downgrades it.
+    # AND-ed over the step's transitions, so the step that straddles such a
+    # downgrade -- whose seconds are part event time, part host wall -- reads 0
+    # rather than claiming a unit half of its total is not in.
     "sn_swap_overlap": {"label": "SenseNova swap overlapped", "color": "#facc15",
                         "dashed": True, "axis": "right"},
     # RUN-CUMULATIVE CUDA high-water (never reset), so these are monotone step

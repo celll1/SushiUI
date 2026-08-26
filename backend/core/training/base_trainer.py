@@ -13133,9 +13133,11 @@ class BaseTrainer(ABC):
                                 self.log_extra_metric("sn_h2d_gib", _sn["h2d_bytes"] / 2 ** 30)
                                 # Which unit the two seconds series are in --
                                 # see metric_registry's note on sn_swap_overlap.
+                                # Taken from the drained dict, not off the
+                                # evictor: the drain resets it.
                                 self.log_extra_metric(
                                     "sn_swap_overlap",
-                                    1.0 if getattr(_sn_evictor, "overlap_active", False) else 0.0,
+                                    1.0 if _sn.get("overlap_active") else 0.0,
                                 )
                                 if torch.cuda.is_available():
                                     self.log_extra_metric(

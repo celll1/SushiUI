@@ -1177,7 +1177,8 @@ class ControlNetManager:
     def remove_lllite_patches(self):
         """Remove all LLLite patches and restore original forward methods"""
         if not self.lllite_patched_layers and self.current_lllite_modules is None:
-            print(f"[ControlNetManager] No LLLite patches to remove")
+            # Silent: now called from every generation's finally, not just after
+            # an LLLite run.
             return
 
         print(f"[ControlNetManager] Removing {len(self.lllite_patched_layers)} LLLite patches")
@@ -1224,18 +1225,40 @@ class ControlNetManager:
         print(f"[ControlNetManager] LLLite patches removed")
 
     def offload_controlnets_to_cpu(self):
-        """Move all loaded ControlNet models to CPU to free GPU memory"""
-        if not self.loaded_controlnets:
+        """Move every cached ControlNet AND LLLite state dict to CPU.
+
+        Both caches grow per distinct model path and are never evicted, so an
+        LLLite left on the GPU (its state dict is loaded with device="cuda")
+        stayed resident for the process lifetime. `device` in the LLLite record
+        is the COMPUTE device for the next _build_lllite_modules call and is
+        deliberately not rewritten here.
+        """
+        if not self.loaded_controlnets and not self.loaded_lllites:
             return
 
-        print(f"[ControlNetManager] Offloading {len(self.loaded_controlnets)} ControlNet(s) to CPU")
+        print(f"[ControlNetManager] Offloading {len(self.loaded_controlnets)} ControlNet(s) and "
+              f"{len(self.loaded_lllites)} LLLite(s) to CPU")
 
         if torch.cuda.is_available():
             allocated_before = torch.cuda.memory_allocated() / 1024**3
             print(f"[ControlNetManager VRAM] Before offload: Allocated={allocated_before:.2f}GB")
 
         for model_path, controlnet in self.loaded_controlnets.items():
-            controlnet.to('cpu')
+            try:
+                controlnet.to('cpu')
+            except Exception as e:
+                print(f"[ControlNetManager] WARNING: failed to offload ControlNet '{model_path}': {e}")
+
+        for model_path, lllite in self.loaded_lllites.items():
+            try:
+                state_dict = lllite.get('state_dict') or {}
+                for key, tensor in list(state_dict.items()):
+                    if getattr(tensor, "is_cuda", False):
+                        state_dict[key] = tensor.to('cpu')
+                # Per-generation conditioning image; stale after this generation.
+                lllite.pop('control_image', None)
+            except Exception as e:
+                print(f"[ControlNetManager] WARNING: failed to offload LLLite '{model_path}': {e}")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -1243,7 +1266,7 @@ class ControlNetManager:
             allocated_after = torch.cuda.memory_allocated() / 1024**3
             print(f"[ControlNetManager VRAM] After offload: Allocated={allocated_after:.2f}GB")
 
-        print(f"[ControlNetManager] ControlNets offloaded to CPU")
+        print(f"[ControlNetManager] ControlNets and LLLites offloaded to CPU")
 
 # Global ControlNet manager instance
 controlnet_manager = ControlNetManager()

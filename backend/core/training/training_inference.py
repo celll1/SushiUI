@@ -496,6 +496,12 @@ class TrainingPreviewGenerator:
         finally:
             t.move_main_model_to_cpu()
             t.move_vae_to_cpu()
+            try:
+                from core.extensions.controlnet_manager import controlnet_manager
+                controlnet_manager.remove_lllite_patches()
+                controlnet_manager.offload_controlnets_to_cpu()
+            except Exception as e:
+                print(f"[TrainingInference] WARNING: ControlNet offload failed: {e}")
             torch.cuda.empty_cache()
 
         return image, actual_seed

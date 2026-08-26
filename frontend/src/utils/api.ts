@@ -7137,6 +7137,12 @@ export interface TrainingRun {
   updated_at: string;
   /** Detail payload only; absent on the summary rows returned by the run list. */
   warnings?: TrainingLogEvent[];
+  /**
+   * PUT /training/runs/{id} only: train-section keys carried over because the
+   * request model has no field for them (config-channel switches set by
+   * hand-editing the YAML).
+   */
+  preserved_config_keys?: string[];
 }
 
 export interface DatasetConfigItem {

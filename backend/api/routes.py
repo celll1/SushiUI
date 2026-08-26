@@ -16117,6 +16117,17 @@ async def update_training_run(
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
 
+        # The request model has no field for config-channel-only train keys
+        # (optimizer_update_census, optimizer_state_host_resident, the clip-length
+        # overrides), so regenerating would drop them -- run 121 lost its census
+        # that way. Carry them across; panel-owned keys are not carried.
+        from core.training.training_config import preserve_unmodelled_train_keys
+        config_yaml, preserved_config_keys = preserve_unmodelled_train_keys(
+            run.config_yaml, config_yaml)
+        if preserved_config_keys:
+            print(f"[Training] Preserved config-channel keys on run {run_id}: "
+                  f"{', '.join(preserved_config_keys)}")
+
         # Update config_yaml and base_model_path in database
         run.config_yaml = config_yaml
         run.base_model_path = request.base_model_path
@@ -16154,7 +16165,7 @@ async def update_training_run(
         db.commit()
 
         print(f"[Training] Updated run {run_id}: {run.run_name}")
-        return run.to_dict()
+        return {**run.to_dict(), "preserved_config_keys": preserved_config_keys}
 
     except HTTPException:
         raise

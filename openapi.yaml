@@ -5236,7 +5236,17 @@ paths:
     put:
       tags: [training]
       summary: Update a training run
-      description: Regenerate the run's YAML configuration from parameters. Not allowed while the run is running or starting.
+      description: |
+        Regenerate the run's YAML configuration from parameters. Not allowed
+        while the run is running or starting.
+
+        Train-section keys this request model has no field for (config-channel
+        switches such as `optimizer_update_census` and
+        `optimizer_state_host_resident`, set by hand-editing the YAML through
+        `PATCH /training/runs/{run_id}/config`) are carried across the
+        regeneration and listed in `preserved_config_keys`. Keys the request
+        model *can* express are rewritten from the request, so clearing one in
+        the panel clears it in the config.
       parameters:
         - name: run_id
           in: path
@@ -5257,6 +5267,16 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  preserved_config_keys:
+                    type: array
+                    description: |
+                      Train-section keys carried over from the previous config
+                      because the request model cannot express them. Empty for
+                      configs that use no config-channel-only keys.
+                    items:
+                      type: string
+                    example: ["optimizer_update_census"]
         '400':
           description: Run is running or parameters invalid
           content:

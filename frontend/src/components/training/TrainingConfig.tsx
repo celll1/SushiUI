@@ -138,6 +138,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   optimizer_use_radam: false,
   // Tri-state: null = "not specified", let the architecture decide.
   optimizer_stochastic_rounding: null,
+  optimizer_state_host_resident: false,
   lora_rank: 16,
   lora_alpha: 16,
   lora_dtype: "fp32",
@@ -954,6 +955,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_schedule_free_weight_lr_power: localScheduleFreeWeightLrPowerText ? parseFloat(localScheduleFreeWeightLrPowerText) : 2.0,
       optimizer_use_radam: params.optimizer_use_radam,
       optimizer_stochastic_rounding: params.optimizer_stochastic_rounding,
+      optimizer_state_host_resident: params.optimizer_state_host_resident,
       lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_rank : undefined,
       lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_alpha : undefined,
       lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_dtype : undefined,
@@ -1288,6 +1290,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
       "optimizer_use_radam", "optimizer_stochastic_rounding",
+      "optimizer_state_host_resident",
       "save_every", "save_every_unit", "max_step_saves_to_keep", "resume_from_checkpoint",
       "train_unet", "train_text_encoder", "train_image_encoder",
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
@@ -1717,7 +1720,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const startsNewContract = pinnedForRef.current !== requiredValues;
     pinnedForRef.current = requiredValues;
     const changed = Object.entries(requiredValues)
-      .filter(([param, entry]) => (params as any)[param] !== entry.value);
+      // `entry.values` (the full admitted set) means the current value is only
+      // drift if it is outside that set; `entry.value` is then just the member
+      // to fall back to.
+      .filter(([param, entry]) => (entry.values
+        ? !entry.values.includes((params as any)[param])
+        : (params as any)[param] !== entry.value));
     for (const [param, entry] of changed) {
       updateParam(param as keyof TrainingRunCreateRequest, entry.value as any);
     }
@@ -1763,6 +1771,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     // Reset options that are not supported by the new optimizer
     if (!config.supportsCautious) updateParam("optimizer_cautious", false);
+    // Host-resident state is a ring-buffer-only allocator choice; every other
+    // optimizer accepts and ignores it, so leaving it set would show a ticked
+    // box doing nothing.
+    if (!optimizer.endsWith("_ringbuffer")) {
+      updateParam("optimizer_state_host_resident", false);
+    }
   }, [params.optimizer, updateParam]);
 
   const loadDatasets = async () => {
@@ -2159,6 +2173,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenovaSampleKvCacheStreaming: params.sensenova_sample_kv_cache_streaming,
       sensenovaMotPageableStaging: params.sensenova_mot_pageable_staging,
       sensenovaMotOverlapTransfer: params.sensenova_mot_overlap_transfer,
+      optimizerStateHostResident: params.optimizer_state_host_resident,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -2359,6 +2374,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sensenovaSampleKvCacheStreaming !== undefined) updateParam("sensenova_sample_kv_cache_streaming", config.sensenovaSampleKvCacheStreaming);
     if (config.sensenovaMotPageableStaging !== undefined) updateParam("sensenova_mot_pageable_staging", config.sensenovaMotPageableStaging);
     if (config.sensenovaMotOverlapTransfer !== undefined) updateParam("sensenova_mot_overlap_transfer", config.sensenovaMotOverlapTransfer);
+    if (config.optimizerStateHostResident !== undefined) updateParam("optimizer_state_host_resident", config.optimizerStateHostResident);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4204,17 +4220,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <select
                   value={optimizer}
                   onChange={(e) => updateParam("optimizer", e.target.value)}
-                  disabled={!!requiredValue("optimizer")}
+                  disabled={!!requiredValue("optimizer")
+                            && !requiredValue("optimizer")!.values}
                   title={requiredValue("optimizer")?.reason}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
                 >
-                  {/* Narrowed to the required one when the backend fixes it, so
-                      the list never offers a value the run is refused for. */}
+                  {/* Narrowed to the admitted set when the backend constrains
+                      it, so the list never offers a value the run is refused
+                      for. One admitted value also disables the control. */}
                   {requiredValue("optimizer") ? (
-                    <option value={String(requiredValue("optimizer")!.value)}>
-                      {OPTIMIZER_CONFIGS[String(requiredValue("optimizer")!.value)]?.label
-                       ?? String(requiredValue("optimizer")!.value)}
-                    </option>
+                    (requiredValue("optimizer")!.values
+                     ?? [requiredValue("optimizer")!.value]).map((v) => (
+                      <option key={String(v)} value={String(v)}>
+                        {OPTIMIZER_CONFIGS[String(v)]?.label ?? String(v)}
+                      </option>
+                    ))
                   ) : (
                     <>
                   <option value="adamw">AdamW</option>
@@ -4371,6 +4391,35 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   );
                 })()}
+
+                {/* Ring-buffer-only allocator choice. SenseNova full
+                    fine-tuning REFUSES those two optimizers without it. */}
+                {optimizer.endsWith("_ringbuffer") && (
+                  <div className="col-span-2">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="optimizer-state-host-resident"
+                        checked={params.optimizer_state_host_resident ?? false}
+                        onChange={(e) => updateParam("optimizer_state_host_resident", e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="optimizer-state-host-resident" className="text-xs text-gray-300 cursor-pointer">
+                        Host-resident optimizer state (pinned CPU memory)
+                      </label>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Allocates the 8-bit optimizer state as pinned host memory
+                      instead of GPU memory; absmax stays on the GPU. Measured:
+                      GPU state falls from 2.031250 to 0.031250 bytes per
+                      parameter (AdamW) or 1.015625 to 0.015625 (Lion), against
+                      2.0 / 1.0 bytes per parameter pinned on the host. The host
+                      allocation cannot be paged out and is held for the whole
+                      run. SenseNova full fine-tuning requires this for these two
+                      optimizers and refuses the run without it.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Optimizer Hyperparameters */}

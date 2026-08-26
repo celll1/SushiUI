@@ -146,6 +146,11 @@ def _build_train_section(
         # omit the key only when unspecified, so the loader can tell "the
         # user asked for this off" from "the user never touched this".
         train["optimizer_stochastic_rounding"] = p["optimizer_stochastic_rounding"]
+    if p.get("optimizer_state_host_resident"):
+        # Ring-buffer optimizers only; omitted when off so every other run's YAML
+        # is unchanged. SenseNova full fine-tuning refuses those two names
+        # without it (ops/sensenova_ops.assert_ringbuffer_host_state).
+        train["optimizer_state_host_resident"] = True
 
     # Component learning rates
     if component_lr_always_emit:

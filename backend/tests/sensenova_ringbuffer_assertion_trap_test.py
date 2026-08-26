@@ -101,17 +101,19 @@ class TrapStillClosesOnEveryoneElseTest(unittest.TestCase):
             assert_full_finetune_stochastic_rounding_attached(trainer, None)
 
 
-class AllowlistUnchangedTest(unittest.TestCase):
-    """Fixing the trap does not admit anyone.
+class AllowlistTest(unittest.TestCase):
+    """What the trap was guarding: the ring buffers are admitted now.
 
-    G-RB2 and G-RB3 are discharged (U-2-6), but the ring buffers stay out: the
-    host-resident mode that makes their state fit has no setting to turn it on,
-    and the step time this route would pay below G-RB1's threshold is not
-    measured. Recorded here so widening the list is a deliberate act.
+    G-RB2/G-RB3 are discharged (U-2-6) and ``optimizer_state_host_resident``
+    has a setting, so both were added -- which is exactly the act this file's
+    assertion trap would have broken. Pinned so widening it further, or letting
+    it drift, is a deliberate act.
     """
 
-    def test_allowlist_is_still_adafactor_only(self):
-        self.assertEqual(SENSENOVA_FULL_FINETUNE_OPTIMIZERS, ("adafactor",))
+    def test_allowlist_is_adafactor_plus_the_ring_buffer_pair(self):
+        self.assertEqual(
+            SENSENOVA_FULL_FINETUNE_OPTIMIZERS,
+            ("adafactor", "adamw8bit_ringbuffer", "lion8bit_ringbuffer"))
 
 
 if __name__ == "__main__":

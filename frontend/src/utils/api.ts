@@ -1895,6 +1895,10 @@ export interface TrainingRequiredValue {
   reason: string;
   // Training methods the requirement applies to; absent = all of them.
   methods?: string[];
+  // The full admitted set when the contract admits more than one value; `value`
+  // is then its default member. Absent = `value` is the only legal one. A
+  // control offers exactly these and leaves a current member alone.
+  values?: (string | number | boolean)[];
 }
 
 // The config values `arch` requires under `method`, param -> {value, reason}.
@@ -7433,6 +7437,9 @@ export interface TrainingRunCreateRequest {
   // Tri-state: true/false are explicit; null/undefined ("not specified")
   // lets the architecture decide (e.g. some full fine-tune routes force it on).
   optimizer_stochastic_rounding?: boolean | null;
+  // Ring-buffer optimizers only: 8-bit state as pinned host memory instead of
+  // on the GPU. Required by SenseNova full fine-tuning for those two names.
+  optimizer_state_host_resident?: boolean;
   // LoRA
   lora_dtype?: "fp32" | "fp16" | "bf16";
   // Component training (image encoder)

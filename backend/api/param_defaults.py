@@ -2208,6 +2208,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Tri-state: None ("not specified") lets the architecture decide (e.g.
     # SenseNova full fine-tune forces it on, but refuses an explicit False).
     "optimizer_stochastic_rounding": None,
+    # Ring-buffer optimizers only (adamw8bit_ringbuffer, lion8bit_ringbuffer):
+    # allocate their 8-bit state as pinned host memory instead of on the GPU
+    # (measured 2.0 / 1.0 host B/param against 2.031250 / 1.015625 on the GPU;
+    # absmax stays on the GPU either way). The host allocation is unpageable and
+    # lives for the whole run. SenseNova full fine-tuning REQUIRES it for those
+    # two optimizers (ops/sensenova_ops.assert_ringbuffer_host_state).
+    "optimizer_state_host_resident": False,
     # LoRA specific
     "lora_rank": 16,
     "lora_alpha": 16,

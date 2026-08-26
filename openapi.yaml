@@ -169,8 +169,10 @@ paths:
           silently. `training_feature_params` / `training_feature_labels` are its
           sibling maps (arming config keys, human-readable label).
         * `training_required_values` — architecture name -> TRAINING CONFIG
-          PARAMETER -> `{value, reason, methods?}`: the value that architecture
-          REQUIRES, optionally narrowed to the listed training methods. The one
+          PARAMETER -> `{value, reason, methods?, values?}`: the value that
+          architecture REQUIRES, optionally narrowed to the listed training
+          methods. `values`, when present, is the full admitted set and `value`
+          is its default member. The one
           axis that says what a parameter must BE rather than what is missing —
           SenseNova's full fine-tune fixes the optimizer, and every SenseNova run
           is batch 1. The backend applies these before the model loads, either by
@@ -5241,9 +5243,8 @@ paths:
         while the run is running or starting.
 
         Train-section keys this request model has no field for (config-channel
-        switches such as `optimizer_update_census` and
-        `optimizer_state_host_resident`, set by hand-editing the YAML through
-        `PATCH /training/runs/{run_id}/config`) are carried across the
+        switches such as `optimizer_update_census`, set by hand-editing the YAML
+        through `PATCH /training/runs/{run_id}/config`) are carried across the
         regeneration and listed in `preserved_config_keys`. Keys the request
         model *can* express are rewritten from the request, so clearing one in
         the panel clears it in the config.
@@ -9500,6 +9501,21 @@ components:
                     - type: string
                     - type: number
                     - type: boolean
+                values:
+                  type: array
+                  description: |
+                    The FULL admitted set, when the contract admits more than
+                    one value; `value` is then its default member rather than
+                    the only legal one. Absent means `value` is the only one. A
+                    client offers exactly these and leaves a current member
+                    alone (SenseNova full fine-tuning admits `adafactor` plus
+                    the two ring-buffer optimizers, the latter only with
+                    `optimizer_state_host_resident`).
+                  items:
+                    oneOf:
+                      - type: string
+                      - type: number
+                      - type: boolean
                 reason:
                   type: string
                   description: One-line factual reason the value is fixed there.
@@ -18537,6 +18553,30 @@ components:
             step count. An explicit `false` on such a route is refused rather
             than silently overridden.
           example: null
+        optimizer_state_host_resident:
+          type: 'boolean'
+          default: false
+          description: |
+            Ring-buffer optimizers only (`adamw8bit_ringbuffer`,
+            `lion8bit_ringbuffer`). Allocates their 8-bit optimizer state as
+            PINNED HOST memory instead of on the GPU; `absmax` stays on the GPU
+            either way. Measured (SENSENOVA_TRAINING_DESIGN.md 6.5, G-RB2):
+            GPU state falls from 2.031250 to 0.031250 B/param for AdamW and
+            from 1.015625 to 0.015625 for Lion, against 2.0 / 1.0 B/param
+            pinned on the host. The host allocation is UNPAGEABLE and is held
+            for the whole run — over SenseNova's two 8,103,395,328-parameter
+            MoT halves that is 30.19 GiB (AdamW) or 15.09 GiB (Lion), which the
+            trainer announces before taking it.
+
+            Accepted and ignored by every other optimizer. SenseNova full
+            fine-tuning REQUIRES it for those two names and refuses them without
+            it before the checkpoint loads; no other architecture requires it.
+
+            No speed claim: the state's round trip is hidden by compute only
+            above a measured token threshold (2038 tokens for AdamW, 1019 for
+            Lion), and no step wall has been measured for either optimizer on
+            the SenseNova route.
+          example: false
         network_type:
           type: 'string'
           nullable: true

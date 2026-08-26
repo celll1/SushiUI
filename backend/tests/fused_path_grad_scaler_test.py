@@ -240,6 +240,11 @@ class _StubTrainer:
     _build_component_lr_list = BaseTrainer._build_component_lr_list
     _resolved_optimizer_hyperparameters = BaseTrainer._resolved_optimizer_hyperparameters
     _ringbuffer_optimizer_kwargs = BaseTrainer._ringbuffer_optimizer_kwargs
+    _announce_host_state_budget = BaseTrainer._announce_host_state_budget
+    _assert_ringbuffer_state_host_resident = (
+        BaseTrainer._assert_ringbuffer_state_host_resident)
+    _RINGBUFFER_HOST_STATE_BYTES_PER_PARAM = (
+        BaseTrainer._RINGBUFFER_HOST_STATE_BYTES_PER_PARAM)
     _setup_fused_backward_pass = BaseTrainer._setup_fused_backward_pass
     _setup_fused_optimizer_groups = BaseTrainer._setup_fused_optimizer_groups
     _fused_backward_target_module = BaseTrainer._fused_backward_target_module

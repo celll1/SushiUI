@@ -31,6 +31,8 @@ NEGATIVE CONTROL
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -54,6 +56,12 @@ CUDA = torch.cuda.is_available()
 
 class _Stub:
     _ringbuffer_optimizer_kwargs = BaseTrainer._ringbuffer_optimizer_kwargs
+    _announce_host_state_budget = BaseTrainer._announce_host_state_budget
+    _assert_ringbuffer_state_host_resident = \
+        BaseTrainer._assert_ringbuffer_state_host_resident
+    _RINGBUFFER_HOST_STATE_BYTES_PER_PARAM = \
+        BaseTrainer._RINGBUFFER_HOST_STATE_BYTES_PER_PARAM
+    log_prefix = "[StubTrainer]"
     optimizer_cautious = False
     optimizer_schedule_free = False
     optimizer_warmup_steps = 0
@@ -143,15 +151,117 @@ class HostStateOffTest(unittest.TestCase):
         self.assertIsNone(stub._host_state_allocator)
 
     def test_base_trainer_default_is_off(self):
-        # Read off __init__ rather than constructing a trainer. The switch is
-        # config-channel only (no API/UI surface), so what is pinned is that the
-        # key is read from train_config and that its default is off; nothing can
-        # turn it on by accident. The evaluation of that expression against a
-        # config lives in optimizer_diagnostic_switch_config_test.py.
+        # Read off __init__ rather than constructing a trainer: what is pinned
+        # is that the key is read from train_config and defaults to off, so
+        # nothing turns it on by accident. It now ALSO has an API/UI surface
+        # (optimizer_diagnostic_switch_config_test.py records why), and the YAML
+        # key stays the channel underneath it.
         source = Path(BACKEND_ROOT / "core" / "training" / "base_trainer.py").read_text(
             encoding="utf-8"
         )
         self.assertIn('_tc.get("optimizer_state_host_resident", False)', source)
+
+    def test_no_announce_when_the_switch_is_off(self):
+        stub = _Stub()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            stub._announce_host_state_budget(
+                "adamw8bit_ringbuffer", [{"params": [torch.zeros(1024)]}])
+        self.assertEqual(buffer.getvalue(), "")
+
+
+class HostRamAnnounceTest(unittest.TestCase):
+    """The pinned budget is stated BEFORE the allocation is taken.
+
+    MUTANT: delete the call in setup_optimizer and a run commits an unpageable
+    30.19 GiB (SenseNova both halves, AdamW) with nothing said in advance.
+    """
+
+    def _announce(self, name: str, numel: int) -> str:
+        stub = _Stub()
+        stub.optimizer_state_host_resident = True
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            stub._announce_host_state_budget(
+                name, [{"params": [torch.zeros(numel)]}])
+        return buffer.getvalue()
+
+    def test_adamw_announces_two_bytes_per_parameter(self):
+        line = self._announce("adamw8bit_ringbuffer", 1024 ** 3)
+        self.assertIn("HOST RAM announce", line)
+        self.assertIn("2 B/param", line)
+        self.assertIn("2.00 GiB of host memory", line)
+        self.assertIn("unpageable", line)
+
+    def test_lion_announces_half_of_that(self):
+        line = self._announce("lion8bit_ringbuffer", 1024 ** 3)
+        self.assertIn("1 B/param", line)
+        self.assertIn("1.00 GiB", line)
+
+    def test_the_current_working_set_is_reported_next_to_it(self):
+        line = self._announce("adamw8bit_ringbuffer", 1024)
+        self.assertIn("working set", line)
+
+    def test_a_non_ringbuffer_name_announces_nothing(self):
+        self.assertEqual(self._announce("adamw8bit", 1024), "")
+
+
+class StateResidencyAssertionTest(unittest.TestCase):
+    """The trainer checks the census, not the flag.
+
+    MUTANT: replace the call with ``if self.optimizer_state_host_resident:
+    pass`` and a ``get_state_buffer`` that handed back CUDA tensors leaves the
+    flag true and 32.9 GB on the GPU -- the misbudget this route cannot absorb.
+    """
+
+    class _FakeOptimizer:
+        def __init__(self, buffers):
+            self.param = torch.zeros(64)
+            self.param_groups = [{"params": [self.param]}]
+            self.state = {self.param: {}}
+            self._buffers = buffers
+            self.inits = 0
+
+        def _init_param_state(self, p):
+            self.state[p] = {"exp_avg": self._buffers(p)}
+            self.inits += 1
+
+    def _trainer(self, buffers):
+        stub = _Stub()
+        stub.optimizer = self._FakeOptimizer(buffers)
+        return stub
+
+    def test_lazy_state_is_forced_so_the_census_is_not_vacuous(self):
+        # _init_param_state runs on the first BACKWARD, so an unforced census
+        # would inspect an empty state dict and pass on any configuration.
+        stub = self._trainer(
+            lambda p: torch.zeros(p.numel(), dtype=torch.uint8))
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                stub._assert_ringbuffer_state_host_resident("adamw8bit_ringbuffer")
+        self.assertEqual(stub.optimizer.inits, 1)
+
+    @unittest.skipUnless(CUDA, "the failing case allocates a CUDA tensor")
+    def test_cuda_resident_state_fails_loudly(self):
+        stub = self._trainer(
+            lambda p: torch.zeros(p.numel(), dtype=torch.uint8, device="cuda"))
+        with self.assertRaises(AssertionError) as raised:
+            stub._assert_ringbuffer_state_host_resident("adamw8bit_ringbuffer")
+        self.assertIn("bytes on CUDA", str(raised.exception))
+
+    @unittest.skipUnless(CUDA, "pinning requires a CUDA context")
+    def test_pinned_host_state_passes_and_is_reported(self):
+        allocator = HostOptimizerStateAllocator()
+        stub = self._trainer(lambda p: allocator(p, dtype=torch.uint8))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            stub._assert_ringbuffer_state_host_resident("adamw8bit_ringbuffer")
+        self.assertIn("state census", buffer.getvalue())
+
+    def test_a_non_ringbuffer_optimizer_is_not_touched(self):
+        stub = self._trainer(lambda p: torch.zeros(p.numel(), dtype=torch.uint8))
+        stub._assert_ringbuffer_state_host_resident("adafactor")
+        self.assertEqual(stub.optimizer.inits, 0)
 
 
 @unittest.skipUnless(CUDA, "the 8-bit state path is a CUDA kernel")

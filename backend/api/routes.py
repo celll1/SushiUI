@@ -16227,6 +16227,13 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_training_db
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+# How long the pre-training VRAM release queues behind in-flight generations
+# before giving up and starting the run anyway (with a warning). Long enough for
+# a running denoise to finish, short enough that a wedged gate never blocks the
+# start the user asked for.
+PRE_TRAINING_VRAM_RELEASE_WAIT_SECONDS = 300.0
+
+
 @router.post("/training/runs/{run_id}/start")
 async def start_training_run(run_id: int, db: Session = Depends(get_training_db)):
     """Start a training run"""
@@ -16644,14 +16651,46 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # an empty manager). Anything still resident here — including a
         # keep-models-hot set, which has no timeout — competes with the trainer
         # and, on Windows/WDDM, is paged to shared memory instead of failing.
+        #
+        # Under the lifecycle gate, like every other in-process mutation of the
+        # live model: moving the U-Net to CPU under a running denoise kills that
+        # generation, and a generation that survives re-stages and re-marks
+        # keep-hot residency in its own finally — putting the freed GiB straight
+        # back while this log claims success. wait_for_activities=False because
+        # subprocess training never touches these in-process modules. Run off the
+        # event loop: it is a multi-second call ending in cuda.synchronize().
         try:
             from core.pipeline import pipeline_manager
-            _release = pipeline_manager.release_gpu_memory(
-                reason=f"training run {run_id} start")
+            from core.model_state_coordinator import model_state_coordinator
+
+            def _report_release_wait(reasons):
+                message = "Waiting to release the backend's generation VRAM: " + ", ".join(reasons)
+                print(f"[API] {message}")
+                try:
+                    manager.send_training_log(run_id=run_id, level="info", message=message,
+                                              code="pre_training_vram_release_waiting")
+                except Exception:
+                    pass
+
+            def _release_under_gate():
+                with model_state_coordinator.mutation(
+                    f"training run {run_id} start",
+                    wait_timeout=PRE_TRAINING_VRAM_RELEASE_WAIT_SECONDS,
+                    wait_for_activities=False,
+                    on_wait=_report_release_wait,
+                ):
+                    return pipeline_manager.release_gpu_memory(
+                        reason=f"training run {run_id} start")
+
+            _release = await asyncio.to_thread(_release_under_gate)
             print(f"[API] Pre-training VRAM release: {_release['components']} "
                   f"({_release['freed_bytes'] / 1024 ** 3:.2f} GB), "
-                  f"keep-hot cleared: {_release['keep_hot_cleared'] or 'none'}")
+                  f"keep-hot cleared: {_release['keep_hot_cleared'] or 'none'}, "
+                  f"auxiliary: {_release.get('auxiliary') or 'none'}")
         except Exception as _rel_err:
+            # Includes ModelStateBusyError (the gate stayed blocked): a run that
+            # the user asked to start still starts, with the warning below —
+            # this is a VRAM optimization, not a precondition.
             print(f"[API] WARNING: pre-training VRAM release failed: {_rel_err}")
             try:
                 from core.training.training_events import merge_run_warnings
@@ -16687,6 +16726,13 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
     except Exception as e:
         db.rollback()
+        # A registered entry whose child never spawned reads as LIVE (see
+        # TrainingProcessManager.is_live). The request that registered it owns
+        # its removal — leaving it behind would make the run permanently
+        # unstartable.
+        _registered = training_process_manager.get_process(run_id)
+        if _registered is not None and _registered.process is None:
+            training_process_manager.processes.pop(run_id, None)
         from core.model_state_coordinator import ModelStateBusyError
         if isinstance(e, ModelStateBusyError):
             training_process_manager.processes.pop(run_id, None)
@@ -16703,8 +16749,13 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    # Allow stopping if status is "running" or "starting" (in case of early failure)
-    if run.status not in ["running", "starting"]:
+    # Allow stopping if status is "running" or "starting" (in case of early
+    # failure) — or whenever a live training process is registered for this run,
+    # whatever the row says. The DB status is not liveness: a child that hangs
+    # during teardown after "failed" was written is exactly the state
+    # /start refuses with a 409 telling the user to stop the run first, and
+    # refusing here too left the run unstartable until a backend restart.
+    if run.status not in ["running", "starting"] and not training_process_manager.is_live(run_id):
         raise HTTPException(status_code=400, detail=f"Cannot stop training with status '{run.status}'")
 
     try:

@@ -18118,8 +18118,13 @@ components:
         learning_rate:
           type: number
           format: float
+          exclusiveMinimum: 0
           default: 0.0001
-          description: Base learning rate
+          description: |
+            Base learning rate, and the fallback every component rate
+            (unet_lr, text_encoder_lr, ...) resolves to when left unset. Must
+            be > 0: at 0 every optimizer step is a no-op (the run trains
+            nothing); a negative value ascends the loss.
           example: 0.0001
         total_steps:
           type: integer
@@ -18387,7 +18392,11 @@ components:
           type: number
           format: float
           nullable: true
-          description: Learning rate for vision encoder (defaults to text_encoder_lr if null)
+          minimum: 0
+          description: |
+            Learning rate for vision encoder (defaults to text_encoder_lr if
+            null). 0 deliberately holds this component still while others
+            train; only a negative rate is refused.
           example: 0.0001
         # Per-bucket activation offload dispatcher (proactive VRAM management)
         activation_dispatch_enable:
@@ -18435,8 +18444,9 @@ components:
         krea2_lr_factor:
           type: number
           format: float
+          minimum: 0
           default: 1.0
-          description: Krea 2 LoRA learning-rate multiplier applied to unet_lr
+          description: Krea 2 LoRA learning-rate multiplier applied to unet_lr. Negative would ascend the loss.
           example: 1.0
         krea2_discrete_flow_shift:
           type: number
@@ -18492,7 +18502,18 @@ components:
           default: false
         optimizer_stochastic_rounding:
           type: 'boolean'
-          default: false
+          nullable: true
+          default: null
+          description: |
+            Tri-state. `true`/`false` are explicit user choices; `null` (the
+            default, or an omitted field) means "not specified", letting the
+            architecture decide -- some full fine-tune routes (e.g. SenseNova)
+            force this on by themselves when unspecified, because their
+            trainable weights are bf16 with no fp32 master and
+            round-to-nearest leaves a measured 84.5% of elements frozen at any
+            step count. An explicit `false` on such a route is refused rather
+            than silently overridden.
+          example: null
         network_type:
           type: 'string'
           nullable: true
@@ -18616,18 +18637,37 @@ components:
         unet_lr:
           type: 'number'
           nullable: true
+          minimum: 0
+          description: |
+            Defaults to learning_rate if null. 0 deliberately holds this
+            component still while another trains; only a negative rate is
+            refused.
         text_encoder_lr:
           type: 'number'
           nullable: true
+          minimum: 0
+          description: |
+            Defaults to learning_rate if null. 0 deliberately holds this
+            component still while another trains; only a negative rate is
+            refused.
         text_encoder_1_lr:
           type: 'number'
           nullable: true
+          minimum: 0
+          description: SDXL TE1 LR, defaults to text_encoder_lr if null. Same 0-vs-negative rule as unet_lr.
         text_encoder_2_lr:
           type: 'number'
           nullable: true
+          minimum: 0
+          description: SDXL TE2 LR, defaults to text_encoder_lr if null. Same 0-vs-negative rule as unet_lr.
         image_encoder_lr:
           type: 'number'
           nullable: true
+          minimum: 0
+          description: |
+            Reserved for future image encoder LR. 0 deliberately holds this
+            component still while another trains; only a negative rate is
+            refused.
         anima_lora_scope:
           type: 'string'
           default: 'attention,mlp,llm_adapter'
@@ -18636,10 +18676,14 @@ components:
           default: 'img_attn,txt_attn,img_mlp,txt_mlp'
         lens_img_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for the Lens image stream. Negative would ascend the loss.
         lens_txt_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for the Lens text stream. Negative would ascend the loss.
         ideogram4_lora_scope:
           type: 'string'
           default: 'attn,mlp'
@@ -18651,7 +18695,9 @@ components:
           default: 1.0
         ideogram4_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for Ideogram 4 LoRA. Negative would ascend the loss.
         train_llm_adapter:
           type: 'boolean'
           default: true
@@ -18666,7 +18712,9 @@ components:
           default: 0.1
         minit2i_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for MiniT2I. Negative would ascend the loss.
         minit2i_flan_t5_path:
           type: 'string'
           default: ''
@@ -18696,19 +18744,27 @@ components:
           default: 0.5
         repa_proj_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on the REPA projector's own LR. Negative would ascend the loss.
         repa_encoder_resolution:
           type: 'integer'
           default: 0
         anima_attn_mlp_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for the Anima attention/MLP group. Negative would ascend the loss.
         anima_mod_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for the Anima AdaLN modulation group. Negative would ascend the loss.
         anima_llm_adapter_lr_factor:
           type: 'number'
+          minimum: 0
           default: 1.0
+          description: Multiplier on unet_lr for the Anima LLM-adapter group. Negative would ascend the loss.
         gradient_checkpointing:
           type: 'boolean'
           default: true
@@ -20072,7 +20128,9 @@ components:
           default: 16.0
         learning_rate:
           type: number
+          exclusiveMinimum: 0
           default: 0.0003
+          description: Must be > 0. At 0 every optimizer step is a no-op; a negative value ascends the loss.
         head_lr_multiplier:
           type: number
           default: 10.0
@@ -20102,13 +20160,19 @@ components:
           default: 60
         save_every_n_steps:
           type: integer
+          minimum: 0
           default: 500
+          description: 0 = never save. Negative is refused rather than silently treated as "never".
         save_every_n_epochs:
           type: integer
+          minimum: 0
           default: 0
+          description: 0 = never save. Negative is refused rather than silently treated as "never".
         keep_last_n_checkpoints:
           type: integer
+          minimum: 0
           default: 3
+          description: 0 = keep all. Negative is refused rather than silently treated as "keep all".
         checkpoint_save_mode:
           type: string
           default: 'lora'
@@ -20234,10 +20298,14 @@ components:
           example: "off"
         train_f1_eval_every_n_steps:
           type: integer
+          minimum: 0
           default: 100
+          description: 0 disables the feature. Negative is refused rather than silently treated as "disabled".
         train_f1_threshold_search_every_n_steps:
           type: integer
+          minimum: 0
           default: 500
+          description: 0 disables the feature. Negative is refused rather than silently treated as "disabled".
         train_f1_initial_threshold:
           type: number
           default: 0.35

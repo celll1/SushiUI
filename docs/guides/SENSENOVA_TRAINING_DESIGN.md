@@ -638,7 +638,7 @@ Krea 2 の実 checkpoint で **8.7% しか動かず intended drift の 4.9% し�
 bitsandbytes AdamW8bit の実 CUDA kernel 経由で **8.3% / 6.2%**、合成 400 step で
 **9.2% / 6.9%**。つまり凍結率は 91% 前後である（「~89%」は概ね正しい）。
 
-対策は `optimizer_stochastic_rounding`（`param_defaults.py:2208`、**既定 False**）で、
+対策は `optimizer_stochastic_rounding`（`param_defaults.py:2214`、**既定 None（tri-state）**）で、
 per-parameter の更新呼び出しの間だけパラメータと勾配を fp32 image に差し替え、
 結果を確率的に bf16 へ丸め戻す。per-parameter の seam を持たない optimizer
 （`torch.optim.AdamW` = `optimizer: adamw`）は**カバーできず**、名指しで警告される。
@@ -668,7 +668,7 @@ SenseNova への含意:
   唯一の optimizer で、非カバー時は名指しで警告されるだけである
   （`base_trainer.py:3426-3431`）。(2) `optimizer_stochastic_rounding` を **SenseNova
   full FT の contract で既定 True に上書きする** — 全 arch 共通の既定
-  （`param_defaults.py:2208`、False）は変えず、レガシー利用者のいない新規経路だけを
+  （`param_defaults.py:2214`、None）は変えず、レガシー利用者のいない新規経路だけを
   正しい既定で開ける。永続 fp32 master は棄却済みのまま（下記）。
   - **【実測で裏付けられた、`5dce52ee`、2026-08-25】** stochastic rounding OFF では、
     測定した**全 optimizer** で **moved@1 == moved@20** — すなわち

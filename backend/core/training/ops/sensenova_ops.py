@@ -397,15 +397,9 @@ def assert_four_phase_fused_backward(trainer: Any) -> None:
 def enforce_full_finetune_stochastic_rounding(trainer: Any) -> bool:
     """Turn stochastic rounding on for this route, and say so.
 
-    Not a default and not a refusal, because the transport cannot express the
-    difference between the two: ``routes.py`` declares
-    ``optimizer_stochastic_rounding`` as a plain ``bool`` and
-    ``training_config`` writes the YAML key only when it is true, so an omitted
-    key and an explicit false both reach the trainer as ``False``. Refusing on
-    ``False`` would refuse every request; accepting it would run this route the
-    way the contract already refuses ``optimizer=adamw`` for -- 84.5% of a bf16
-    tensor's elements never moving at any step count, with the loss falling
-    normally (SENSENOVA_TRAINING_DESIGN.md 6.3).
+    The transport is tri-state (unset/True/explicit False); this is the
+    trainer-side backstop for an unset value or hand-authored YAML, since
+    ``train_runner`` already refuses an explicit False before the load.
 
     So it is a route requirement, listed per architecture in
     ``param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH``, applied

@@ -636,7 +636,13 @@ class FlagWiringTest(unittest.TestCase):
 
         field = TrainingRunCreateRequest.model_fields["optimizer_stochastic_rounding"]
         self.assertEqual(field.default, TRAINING_DEFAULTS["optimizer_stochastic_rounding"])
-        self.assertIs(field.default, False)  # opt-in; this fix does not change it
+        # Tri-state now (see sensenova_full_finetune_stochastic_rounding_test's
+        # TransportIsTriStateTest): None means "not specified", not "off". A
+        # request that never touches this field still trains with
+        # round-to-nearest on every architecture except the ones in
+        # FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH, unchanged from
+        # before this fix -- only the explicit-False path changed.
+        self.assertIsNone(field.default)
 
     def test_full_finetune_config_writes_the_key(self):
         import yaml

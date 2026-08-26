@@ -744,7 +744,7 @@ export default function TaggerTrainingConfig({
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
               <NumberInput
                 step="any"
-                min={0}
+                min={Number.MIN_VALUE}
                 max={1}
                 parse="float"
                 value={config.learning_rate}

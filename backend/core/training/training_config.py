@@ -141,7 +141,10 @@ def _build_train_section(
             train["optimizer_schedule_free_weight_lr_power"] = p["optimizer_schedule_free_weight_lr_power"]
         if p.get("optimizer_use_radam"):
             train["optimizer_use_radam"] = p["optimizer_use_radam"]
-    if p.get("optimizer_stochastic_rounding"):
+    if p.get("optimizer_stochastic_rounding") is not None:
+        # Tri-state: write True or False explicitly (both are user choices);
+        # omit the key only when unspecified, so the loader can tell "the
+        # user asked for this off" from "the user never touched this".
         train["optimizer_stochastic_rounding"] = p["optimizer_stochastic_rounding"]
 
     # Component learning rates

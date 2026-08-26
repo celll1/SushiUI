@@ -1006,6 +1006,20 @@ def load_components(trainer: Any) -> None:
     # Training mode must be stamped even when the selected backend is native.
     setup_attention_backend(trainer, trainer.attention_backend)
 
+    # CANDIDATE fused frozen-base forward, opt-in via SUSHI_CONVROT_TRAIN_FUSED=1.
+    # Placed after requires_grad_(False) and after any full-FT materialization,
+    # so a trainable half is already real nn.Linear and cannot match; the helper
+    # raises if it ever does.
+    from core.models.common.quantized_frozen_training import (
+        enable_frozen_training_fused,
+        frozen_training_fused_requested,
+    )
+
+    if frozen_training_fused_requested():
+        enable_frozen_training_fused(
+            trainer.transformer, label="sensenova training transformer"
+        )
+
 
 def _load_reference_images(reference_image_paths: Optional[List[str]]) -> list:
     """Open reference PILs HERE, never through the trainer's image pipeline.

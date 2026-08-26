@@ -40,6 +40,14 @@ class ConvRotInt8Linear(Int8Linear):
     # -- H3 included, which shares this class -- are unaffected.
     _force_dequant: bool = False
 
+    # CANDIDATE frozen-base training path (opt-in, default off). Class defaults
+    # so ordinary loads cost nothing per instance and never touch state_dict;
+    # set per instance only by
+    # ``quantized_frozen_training.enable_frozen_training_fused``. Deliberately
+    # NOT `_force_dequant`/`_allow_int8_mm`/grad mode reused.
+    _frozen_training_fused: bool = False
+    _frozen_training_path: str = ""
+
     def __init__(
         self,
         in_features: int,
@@ -71,6 +79,14 @@ class ConvRotInt8Linear(Int8Linear):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self._force_dequant or (torch.is_grad_enabled() and x.requires_grad):
+            if self._frozen_training_fused and not self._force_dequant:
+                from core.models.common.quantized_frozen_training import (
+                    maybe_frozen_fused_forward,
+                )
+
+                out = maybe_frozen_fused_forward(self, x)
+                if out is not None:
+                    return out
             return self._dequant_forward(x)
         from comfy_kitchen import int8_linear
 

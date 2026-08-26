@@ -2483,8 +2483,9 @@ peak working set 49.11 GiB、peak commit charge 67.95-89.10 GiB（§8.3.3 の
 - **60.375 GiB/iteration の算術は確認された。** d2h 30.189 + h2d 30.189 =
   60.378 GiB/step が 4 相 ON の全 arm で一致し、64px と 2048px で同値である。
   転送量は解像度非依存で、compute だけが解像度に依存する。
-- **§8.6 が「48 GB で最初に行うべき判断」と書いた eviction OFF / ON の A/B は
-  答えが出た。測定したどの解像度でも eviction 側が負けた。** 2048px では eviction が
+- **本節が「48 GB で最初に行うべき判断」と書いた eviction OFF / ON の A/B は
+  答えが出た。A/B を取った 64px と 2048px の両方で eviction 側が負けた**
+  （64px は 5.9947 対 3.3644、512px は OFF arm しか走らせていない）。2048px では eviction が
   step あたり **+3.0856 s**（10.6140 対 7.5284、+41%）を支払って、
   allocated **3.211 GiB** / reserved **2.684 GiB** を節約する。
   **eviction OFF は 2048px で載る** — reserved 36.711 GiB に対し 47.988 GiB の
@@ -2524,7 +2525,7 @@ peak working set 49.11 GiB、peak commit charge 67.95-89.10 GiB（§8.3.3 の
 | 選択肢 | 期待できること | 制約 / 判断 |
 |---|---|---|
 | 4相evictionを維持 | 48 GB内のresident peakを抑える | 同期転送idleを支払う。2048pxで+3.0856 s/step（+41%）に対し節約はallocated 3.211 GiB（実測）。**OFFが載らない構成のためのfallback**であり、既定の推奨経路ではない |
-| eviction OFF | 転送2 swapを消す | **測定したどの解像度でも速い側**（2048pxで7.5284 s対10.6140 s）。2048pxで reserved 36.711 GiB、余白約11.3 GiB（B1・reference画像なし・sampleなしの条件下）。バッチ増や reference tower はこの余白から出る |
+| eviction OFF | 転送2 swapを消す | **A/Bを取った64px・2048pxの両方で速い側**（2048pxで7.5284 s対10.6140 s）。2048pxで reserved 36.711 GiB、余白約11.3 GiB（B1・reference画像なし・sampleなしの条件下）。バッチ増や reference tower はこの余白から出る |
 | shared MNT prefix | MNT=Nでswapを2N回から2回へ減らす | MNT=1では効果なし。und更新をN回から1回へ変えるため、単なる性能最適化ではない（§8.3.5） |
 | pageable staging | stickyなpinned host高水位を避ける | host memory用。転送高速化を主張しない。通常はpinnedより遅くなり得る |
 | whole-half H2Dだけ非同期化 | CPU threadのblock時間を短く見せる | GPU計算前に待つためstep wall改善は限定的。単独では採用しない |

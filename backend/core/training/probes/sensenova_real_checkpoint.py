@@ -88,16 +88,24 @@ def _cuda_memory() -> dict[str, int]:
     }
 
 
-def _apply_vram_gate() -> dict[str, Any]:
+def _apply_vram_gate(fraction: float = VRAM_GATE_FRACTION) -> dict[str, Any]:
+    """Cap this process at ``fraction`` of the device.
+
+    The default is the shared-GPU gate every existing caller relies on. An
+    override exists for one case only: an arm whose whole question is whether a
+    configuration fits in the WHOLE card. Gated at 0.72 such an arm OOMs on the
+    gate rather than on reality, which measures the gate.
+    """
     if not torch.cuda.is_available():
-        return {"applied": False}
-    torch.cuda.set_per_process_memory_fraction(VRAM_GATE_FRACTION, 0)
+        return {"applied": False, "fraction": float(fraction)}
+    fraction = float(fraction)
+    torch.cuda.set_per_process_memory_fraction(fraction, 0)
     total = int(torch.cuda.get_device_properties(0).total_memory)
     return {
         "applied": True,
-        "fraction": VRAM_GATE_FRACTION,
+        "fraction": fraction,
         "device_total_bytes": total,
-        "budget_bytes": int(total * VRAM_GATE_FRACTION),
+        "budget_bytes": int(total * fraction),
     }
 
 

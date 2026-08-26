@@ -109,10 +109,18 @@ def setup_update_census(trainer, optimizers):
         attach_update_census(optimizer, census)
         expected.extend(trainable_params_of(optimizer))
     count = census.expect(expected, names, exempt=census_exempt_names(trainer))
+    # Deferred, not exempt: the group stays in the expectation set and is
+    # required in full on the backward that closes each window. Raises rather
+    # than falling back, unlike the exemption above -- a deferral the census does
+    # not know about makes every non-final step of a CORRECT run fail.
+    deferred = census_deferred_parameters(trainer)
+    deferred_count = census.set_deferred(deferred) if deferred else 0
     print(f"{getattr(trainer, 'log_prefix', '[Trainer]')} Updated-parameter census armed "
           f"for {count} trainable parameter(s)"
           + (f", {len(census.exempt)} path(s) exempt as gradient-unreachable"
-             if census.exempt else ""))
+             if census.exempt else "")
+          + (f", {deferred_count} deferred to the end of each window"
+             if deferred_count else ""))
     return census
 
 
@@ -160,6 +168,19 @@ def census_exempt_names(trainer):
               f"resolve the gradient-unreachable exemption list; the updated-"
               f"parameter census may report the structurally dead paths as missing")
         return ()
+
+
+def census_deferred_parameters(trainer):
+    """Parameters whose update lands once per window rather than once per step.
+
+    Only SenseNova's shared-prefix four-phase window has one; empty everywhere
+    else, so every other architecture keeps the per-step requirement.
+    """
+    if not getattr(trainer, "is_sensenova", False):
+        return ()
+    from core.training.sensenova_four_phase import understanding_deferred_parameters
+
+    return understanding_deferred_parameters(trainer)
 
 
 # Optimizers for which _setup_fused_backward_pass installs per-parameter hooks
@@ -1013,6 +1034,17 @@ class BaseTrainer(ABC):
             _TD_PHASE_EVICTION["sensenova_four_phase_eviction"],
         ))
         self.sensenova_four_phase = None
+        # Share one boundary cut across an MNT window (8.3.5). Opt-in and OFF by
+        # default: it changes what the understanding half trains on, so it is not
+        # folded into the split above.
+        self.sensenova_four_phase_shared_prefix = bool(_tc.get(
+            "sensenova_four_phase_shared_prefix",
+            _TD_PHASE_EVICTION["sensenova_four_phase_shared_prefix"],
+        ))
+        self.sensenova_four_phase_grad_reduction = str(_tc.get(
+            "sensenova_four_phase_grad_reduction",
+            _TD_PHASE_EVICTION["sensenova_four_phase_grad_reduction"],
+        ))
         # Validated by SenseNovaFullParameterAdapter, its only reader.
         self.sensenova_full_finetune_save_format = str(_tc.get(
             "sensenova_full_finetune_save_format",
@@ -5921,7 +5953,17 @@ class BaseTrainer(ABC):
         prefix is therefore recomputed per iteration, the same resolution
         ``need_recompute_text_embeddings`` applies to the other architectures'
         trainable text encoders.
+
+        The SHARED-WINDOW four-phase route is the exception, and reuses the
+        prefix for the same reason the frozen branch does. What arrives there is
+        not a graph but the boundary LEAVES, which no optimizer step can stale
+        because the understanding half is bit-identically invariant until phase 3
+        runs at the window's end; every iteration's backward accumulates into
+        those same leaves rather than building a second set.
         """
+        four_phase = getattr(self, "sensenova_four_phase", None)
+        if four_phase is not None and four_phase.shared_window:
+            return None, None, None, prefix
         if (
             mnt_index > 0
             and bool(getattr(self, "train_text_encoder", False))
@@ -6794,17 +6836,15 @@ class BaseTrainer(ABC):
                 loss_for_backward.backward()
             four_phase = getattr(self, "sensenova_four_phase", None)
             if four_phase is not None:
-                # The backward above stopped at the boundary K/V leaves; take
-                # their gradient, then run phase 3 HERE rather than at the
-                # optimizer-step site. The update census asserts completeness
-                # inside the MNT loop, which is upstream of that site, so a
-                # deferred phase 3 would report the understanding half as never
-                # updated on a correct run. Deferring is what the MNT>1 batching
-                # in sensenova_four_phase would want, and it is unreachable
-                # anyway: this route refuses accumulation, so every backward is
-                # its own step.
-                four_phase.capture()
-                four_phase.flush()
+                # The backward above stopped at the boundary K/V leaves. Phase 3
+                # runs HERE, not at the optimizer-step seam, on both routes: the
+                # update census asserts completeness inside the MNT loop, which
+                # is upstream of that seam, and the fused grad norms are read
+                # there too, so phase 3 landing after it would report the
+                # understanding half as never updated AND drop its grad norm on
+                # a correct run. Under a shared window this is a no-op until the
+                # window's final backward, which does the one capture+flush.
+                four_phase.after_generation_backward()
             self._flush_fused_group_partials()
         except BaseException as _exc:
             # Scoped to the backward: an exception raised before or after it
@@ -6822,6 +6862,24 @@ class BaseTrainer(ABC):
         del loss, loss_for_backward, pred_loss, recon_loss
 
         return loss_value, pred_loss_value, recon_loss_value
+
+    def _assert_sensenova_step_seam_residency(self, four_phase) -> None:
+        """Which MoT half must be GPU-resident at the optimizer-step seam.
+
+        Named so it can be driven without the 1000-line train loop around it.
+        Which half is resident is decided by whether phase 3 ran with the
+        backward that just finished, NOT by whether the split is armed: on a
+        shared window's non-final iterations phase 3 has not run, the generation
+        half is still resident, and asserting the understanding half there raises
+        outside any try (the seam has no handler above it).
+        """
+        phase_evictor = getattr(self, "sensenova_phase_evictor", None)
+        if phase_evictor is None:
+            return
+        if four_phase is not None and four_phase.phase_three_ran:
+            phase_evictor.assert_understanding_resident()
+        else:
+            phase_evictor.assert_generation_resident()
 
     @staticmethod
     def _applied_updates_now() -> int:
@@ -12089,6 +12147,16 @@ class BaseTrainer(ABC):
                     )
 
                     for mnt_idx in range(multi_noise_timesteps):
+                        # A skipped batch discarded this window's shared boundary
+                        # cut. The remaining iterations have no cut to accumulate
+                        # into (the shared route does not re-encode) and no
+                        # begin_window to close, so they would train the
+                        # generation half against a dead window. End the batch;
+                        # the next one cuts afresh.
+                        _fp_abort = getattr(self, "sensenova_four_phase", None)
+                        if _fp_abort is not None and _fp_abort.window_aborted:
+                            break
+
                         # Sample timesteps for this MNT iteration
                         timesteps = timestep_sampler.sample(batch_size, self.device)
 
@@ -12138,6 +12206,12 @@ class BaseTrainer(ABC):
                                 captions=batch_captions,
                                 mnt_index=mnt_idx,
                             )
+                            # Declare the window the shared boundary cut serves.
+                            # No-op unless the shared route is armed.
+                            if mnt_idx == 0:
+                                _fp_window = getattr(self, "sensenova_four_phase", None)
+                                if _fp_window is not None:
+                                    _fp_window.begin_window(multi_noise_timesteps)
                         elif need_recompute_text_embeddings:
                             # Text Encoder trainable + MNT > 1: Re-encode text for each iteration
                             # This creates a fresh computation graph with gradient flow to Text Encoder.
@@ -12320,8 +12394,21 @@ class BaseTrainer(ABC):
                         # G-RB3: start this step's updated-parameter census. Armed
                         # on every backward, not only on optimizer steps: under
                         # the fused path each backward IS an optimizer step.
+                        # `expect_deferred` is the exception a deferral window
+                        # needs: on a shared four-phase window's non-final
+                        # backwards the understanding half is correctly not
+                        # updated, and is required in full again on the backward
+                        # that closes the window. Every other route answers True
+                        # here, so the census is unchanged for them.
                         if self._update_census is not None:
-                            self._update_census.begin_step(True)
+                            _fp_census = getattr(self, "sensenova_four_phase", None)
+                            self._update_census.begin_step(
+                                True,
+                                expect_deferred=(
+                                    _fp_census is None
+                                    or _fp_census.is_final_iteration()
+                                ),
+                            )
 
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
@@ -12389,7 +12476,37 @@ class BaseTrainer(ABC):
                                 # kills a run this path exists to keep alive.
                                 _four_phase = getattr(self, "sensenova_four_phase", None)
                                 if _four_phase is not None:
-                                    _four_phase.discard()
+                                    _dropped = _four_phase.discard()
+                                    if _dropped:
+                                        # A shared window's earlier iterations
+                                        # already applied their GENERATION
+                                        # updates; their understanding gradient
+                                        # dies with the cut. Announced and
+                                        # charted rather than left to widen the
+                                        # asymmetry silently.
+                                        from core.training.training_events import (
+                                            emit_training_warning,
+                                        )
+                                        emit_training_warning(
+                                            f"SenseNova four-phase: a skipped batch "
+                                            f"discarded the shared boundary cut after "
+                                            f"{_dropped} of its generation backward(s) "
+                                            f"had already applied their updates, so "
+                                            f"that window contributes nothing to the "
+                                            f"understanding half "
+                                            f"({_four_phase.dropped_backwards} "
+                                            f"backward(s) dropped this run).",
+                                            code="sensenova_four_phase_window_dropped",
+                                            prefix=self.log_prefix,
+                                        )
+                                        # Gated with the warning, not outside it:
+                                        # the per-iteration route never drops a
+                                        # window, so charting it there would add
+                                        # a permanently-zero series.
+                                        self.log_extra_metric(
+                                            "sn_und_grad_dropped",
+                                            float(_four_phase.dropped_backwards),
+                                        )
                                 gc.collect()
                                 try:
                                     torch.cuda.synchronize()
@@ -12636,14 +12753,7 @@ class BaseTrainer(ABC):
                                 # kept so a future route that defers it lands
                                 # before the grad norms rather than after.
                                 four_phase.flush()
-                            phase_evictor = getattr(
-                                self, "sensenova_phase_evictor", None
-                            )
-                            if phase_evictor is not None:
-                                if four_phase is not None:
-                                    phase_evictor.assert_understanding_resident()
-                                else:
-                                    phase_evictor.assert_generation_resident()
+                            self._assert_sensenova_step_seam_residency(four_phase)
                             if not self.use_fused_backward and self.fused_optimizer_groups is None:
                                 # Normal flow: optimizer.step() and zero_grad() here
                                 if self.use_grad_scaler:

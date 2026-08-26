@@ -358,11 +358,18 @@ def test_teardown_error_does_not_mask_train_result(train_fails, capsys):
 
 
 def test_optimizer_step_checks_generation_residency_first():
+    """The residency check must precede the step. It now lives behind a named
+    seam (``_assert_sensenova_step_seam_residency``) because the four-phase
+    shared window has to choose WHICH half to assert; the ordering guarantee is
+    unchanged, so this follows the call site rather than the inlined call."""
     source = inspect.getsource(BaseTrainer.train)
     step_branch = source.split("elif should_step_optimizer:", 1)[1]
-    assert step_branch.index("assert_generation_resident()") < step_branch.index(
-        "self.optimizer.step()"
-    )
+    assert step_branch.index(
+        "self._assert_sensenova_step_seam_residency("
+    ) < step_branch.index("self.optimizer.step()")
+    seam = inspect.getsource(BaseTrainer._assert_sensenova_step_seam_residency)
+    assert "assert_generation_resident()" in seam
+    assert "assert_understanding_resident()" in seam
     assert "assert_generation_resident" not in inspect.getsource(
         LoRATrainer.save_checkpoint
     )

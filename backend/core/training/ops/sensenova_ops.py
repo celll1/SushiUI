@@ -273,7 +273,50 @@ def assert_four_phase_contract(trainer: Any) -> None:
             "optimizer.step() there instead, and would meet CUDA gradients on CPU "
             "parameters."
         )
+    reduction = str(
+        settings.get("sensenova_four_phase_grad_reduction", None)
+        or getattr(trainer, "sensenova_four_phase_grad_reduction", "sum")
+    ).strip().lower()
+    if reduction not in ("sum", "mean"):
+        raise ValueError(
+            f"SenseNova sensenova_four_phase_grad_reduction must be 'sum' or "
+            f"'mean', got {reduction!r}."
+        )
     warn_four_phase_mnt_cost(trainer)
+
+
+def assert_shared_prefix_contract(trainer: Any) -> None:
+    """The shared window needs the split it shares (8.3.5).
+
+    Restated here for a trainer built directly; ``train_runner`` refuses it
+    before the load.
+    """
+    settings = getattr(trainer, "config", None) or {}
+
+    def either(key: str) -> bool:
+        return bool(settings.get(key, False)) or bool(getattr(trainer, key, False))
+
+    if not either("sensenova_four_phase_shared_prefix"):
+        return
+    if not either("sensenova_four_phase_eviction"):
+        raise ValueError(
+            "SenseNova sensenova_four_phase_shared_prefix requires "
+            "sensenova_four_phase_eviction: without the split there is no "
+            "boundary cut to share across the MNT window."
+        )
+    # train_runner refuses this earlier and in config terms (MoT eviction under a
+    # full fine-tune needs the both-halves branch). Restated here because a
+    # trainer built directly would otherwise meet it as a census-internal
+    # complaint: with only the understanding half trained, the deferred group IS
+    # the whole expectation set and `set_deferred` refuses it.
+    train_gen = settings.get("train_unet", getattr(trainer, "train_unet", True))
+    if not bool(train_gen):
+        raise ValueError(
+            "SenseNova sensenova_four_phase_shared_prefix requires train_unet: "
+            "with only the understanding half trained there is no half left "
+            "taking a per-iteration update, so deferring the whole trainable set "
+            "to the end of the window would leave nothing checked in between."
+        )
 
 
 def warn_four_phase_mnt_cost(trainer: Any) -> bool:
@@ -281,12 +324,12 @@ def warn_four_phase_mnt_cost(trainer: Any) -> bool:
 
     ``multi_noise_timesteps`` is NOT covered by this route's other clauses --
     ``assert_full_finetune_contract`` refuses gradient accumulation, which is a
-    different mechanism, and ``BaseTrainer`` only requires MNT >= 1. It is
-    correct under the split: each iteration runs its own complete cycle, and the
-    phase-3 recompute reads the same understanding weights its own phase-1
-    forward did (the generation hooks fire in between, and touch no understanding
-    weight). What it is not is free -- the split runs per MNT iteration, so the
-    two weight round trips it costs are per iteration, not per step.
+    different mechanism, and ``BaseTrainer`` only requires MNT >= 1.
+
+    Two messages, because the shared-prefix route removes the cost the
+    per-iteration one announces and replaces it with a change to what is
+    trained. Announcing the per-iteration cost under a shared window would name
+    a price the run is no longer paying.
     """
     settings = getattr(trainer, "config", None) or {}
     mnt = max(
@@ -295,14 +338,41 @@ def warn_four_phase_mnt_cost(trainer: Any) -> bool:
     )
     if mnt <= 1:
         return False
+    prefix = getattr(trainer, "log_prefix", "[SenseNova]")
+    shared = bool(settings.get("sensenova_four_phase_shared_prefix", False)) or bool(
+        getattr(trainer, "sensenova_four_phase_shared_prefix", False)
+    )
+    if shared:
+        reduction = str(
+            settings.get("sensenova_four_phase_grad_reduction", None)
+            or getattr(trainer, "sensenova_four_phase_grad_reduction", "sum")
+        )
+        emit_training_warning(
+            f"SenseNova four-phase eviction with multi_noise_timesteps={mnt} and "
+            f"a shared prefix: one understanding forward and one phase-3 backward "
+            f"per window, and two weight round trips per batch rather than "
+            f"{2 * mnt}. What this changes about training: the understanding half "
+            f"takes ONE update per window, computed from the '{reduction}' of the "
+            f"window's boundary gradient at the weights the window STARTED with, "
+            f"while the generation half takes {mnt}; its Adafactor step counter "
+            f"advances once per window, so its beta2 schedule moves {mnt}x slower; "
+            f"and that single update uses the scheduler's learning rate after all "
+            f"{mnt} iterations. Off (the default) each iteration runs its own "
+            f"complete cycle instead.",
+            code="sensenova_four_phase_shared_prefix",
+            prefix=prefix,
+        )
+        return True
     emit_training_warning(
         f"SenseNova four-phase eviction with multi_noise_timesteps={mnt}: the "
         f"backward split runs once per MNT iteration, so its two weight "
         f"round trips are paid {mnt} times per step rather than once. This is "
         f"correct, not degraded -- each iteration recomputes the understanding "
-        f"forward against the same weights its own forward used.",
+        f"forward against the same weights its own forward used. "
+        f"sensenova_four_phase_shared_prefix shares one cut across the window "
+        f"instead, which changes what the understanding half trains on.",
         code="sensenova_four_phase_mnt_cost",
-        prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+        prefix=prefix,
     )
     return True
 

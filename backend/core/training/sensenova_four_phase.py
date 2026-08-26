@@ -26,57 +26,103 @@ zero by ``assert_understanding_training_supported`` precisely so a recompute
 reproduces its own forward (the same property gradient checkpointing already
 depends on inside each phase).
 
-MNT > 1. The design says to accumulate the boundary gradient and run phase 3
-once. The SHAPES permit it: SenseNova is B1 by contract
-(``_collate_sensenova_b1_prefix`` allows exactly one prefix) and the MNT loop
-iterates TIMESTEPS for that one item, re-encoding ``captions[0]`` every
-iteration (``_sensenova_mnt_conditioning``), so every boundary K/V in a window
-has the same shape and would add.
+MNT > 1, two modes.
 
-What does not hold under MNT is the design's exactness premise, that the
-understanding weights are invariant across the window. The MNT loop steps the
-optimizer once per iteration -- that is why it re-encodes the prefix at all
-rather than retaining the graph -- so an accumulated gradient flushed at the end
-of the window would be back-propagated against understanding weights that
-earlier iterations had already moved. (Under gradient ACCUMULATION the premise
-would hold, since nothing steps until the window closes; that route is refused
-here for an unrelated reason.) Phase 3 therefore runs with its own backward, per
-iteration, which is exact: the recomputed forward reads the same understanding
-weights its own phase-1 forward did, the generation hooks that fire in between
-touching no understanding weight.
+DEFAULT (per-iteration). Each MNT iteration runs its own complete cycle: cut,
+generation backward, capture, phase 3. Exact, and the cost is the two weight
+round trips per iteration rather than per step, announced by
+``warn_four_phase_mnt_cost``.
 
-The cost is the two weight round trips per MNT iteration rather than per step,
-announced on the training_log channel by ``warn_four_phase_mnt_cost`` rather
-than refused. The update-frequency asymmetry the design records is unchanged.
-The pending list below is kept because it is the honest shape of the deferral
-the design asks for, and because ``flush`` is also reachable from the
-optimizer-step seam; it never holds more than one entry on any route that can
-arm four-phase today.
+SHARED WINDOW (``sensenova_four_phase_shared_prefix``, opt-in, default off).
+One phase 1, one ``cut()`` and one set of boundary leaves per MNT window; all N
+generation graphs read the SAME leaves, so autograd accumulates into
+``leaf.grad`` natively and the boundary costs one gradient buffer regardless of
+N. Phase 3 runs once, at the end of the window. The understanding half stays on
+CPU for the whole window, so transitions drop from 2N to 2 per batch -- the loop
+shape a FROZEN understanding half already has.
+
+Its exactness premise -- that the understanding weights are invariant across
+the window -- HOLDS, and does so for a reason the mechanism enforces rather than
+assumes: this route is fused-backward-only, so a parameter moves exactly when
+its own post-accumulate-grad hook fires, and the understanding parameters
+receive gradient from nothing but phase 3 (the generation forward reads the
+boundary K/V as detached leaves). No phase 3, no understanding update, so the
+weights the single deferred backward reads are bit-identically the ones its
+phase-1 forward read.
+
+What it changes is what is TRAINED, which is why it is a setting and not a
+silent optimisation: the understanding half takes ONE update per window from the
+window's summed (or averaged, per ``reduction``) boundary gradient instead of N
+sequential updates, its Adafactor ``state['step']`` advances once per window, and
+the generation:understanding update ratio becomes N:1.
 
 Requires the fused-backward route. Phase 3 leaves the generation half on CPU, so
 a subsequent ``optimizer.step()`` would meet CUDA gradients on CPU parameters;
 under fused backward there is no such call, each half being stepped by its own
 post-accumulate hooks while it is resident.
+
+GRADIENT NORMALISATION is selectable because ``.grad`` accumulates: ``sum``
+(the default) is the exact gradient of the window's SUMMED loss, ``mean``
+divides by the number of generation backwards the window ran, giving the
+gradient of its averaged loss. Neither reproduces the generation half, which
+takes N separate updates from N separate per-iteration gradients.
 """
 
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+from typing import Any, List, Sequence, Tuple
 
 import torch
+
+GRAD_REDUCTIONS = ("sum", "mean")
 
 
 class SenseNovaFourPhaseBackward:
     """One trainer's boundary cut. Installed as ``trainer.sensenova_four_phase``."""
 
-    def __init__(self, trainer: Any):
+    def __init__(
+        self,
+        trainer: Any,
+        *,
+        shared_window: bool = False,
+        reduction: str = "sum",
+    ):
+        reduction = str(reduction or "sum").strip().lower()
+        if reduction not in GRAD_REDUCTIONS:
+            raise ValueError(
+                f"SenseNova four-phase gradient reduction must be one of "
+                f"{', '.join(GRAD_REDUCTIONS)}, got {reduction!r}"
+            )
         self.trainer = trainer
+        self.shared_window = bool(shared_window)
+        self.reduction = reduction
         self._current: Tuple[Any, List[torch.Tensor]] | None = None
         self._pending: List[Tuple[Any, List[torch.Tensor]]] = []
+        self._window_size: int | None = None
+        self._window_backwards = 0
+        self._window_aborted = False
+        self._phase_three_ran = False
+        self.dropped_backwards = 0
 
     @property
     def pending_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def window_aborted(self) -> bool:
+        """A shared window was discarded mid-flight; the batch cannot continue."""
+        return self.shared_window and self._window_aborted
+
+    @property
+    def phase_three_ran(self) -> bool:
+        """Whether the LAST generation backward was followed by phase 3.
+
+        Distinct from ``is_final_iteration``, which answers about the NEXT
+        backward: at the step seam iteration N-2 satisfies that predicate while
+        the evictor is still in ``denoise``. This is what decides which half the
+        seam may assert resident.
+        """
+        return self._phase_three_ran
 
     def cut(self, cache: Any, inputs: Any) -> Any:
         """Return a cache of grad-requiring leaves and keep what phase 3 needs."""
@@ -98,13 +144,94 @@ class SenseNovaFourPhaseBackward:
             leaves.extend((keys, values))
             layers.append(_TrainingPrefixLayer(keys, values))
         self._current = (inputs, leaves)
+        self._window_size = None
+        self._window_backwards = 0
+        self._window_aborted = False
+        self._phase_three_ran = False
         return _TrainingPrefixCache(layers)
 
+    # -- shared window ------------------------------------------------------
+
+    def begin_window(self, size: int) -> None:
+        """Declare how many generation backwards will read this cut's leaves.
+
+        Independent of the counter it is checked against: the trainer names the
+        MNT count, ``capture`` counts the backwards that actually ran, and a
+        mismatch is what replaces the per-iteration cut/backward pairing.
+        """
+        if not self.shared_window:
+            return
+        size = int(size)
+        if size < 1:
+            raise ValueError(
+                f"SenseNova four-phase window size must be >= 1, got {size}"
+            )
+        if self._window_backwards:
+            raise RuntimeError(
+                "SenseNova four-phase: a new MNT window opened while the previous "
+                f"one still had {self._window_backwards} uncaptured generation "
+                "backward(s); their understanding gradient would be lost"
+            )
+        self._window_size = size
+
+    def is_final_iteration(self) -> bool:
+        """Whether the NEXT generation backward closes the window.
+
+        Off the shared route every iteration is its own window, so this is
+        True and the caller's per-iteration expectations are unchanged.
+        """
+        if not self.shared_window or self._window_size is None:
+            return True
+        return self._window_backwards >= self._window_size - 1
+
+    def after_generation_backward(self) -> None:
+        """Called once per generation backward, immediately after it returns."""
+        self._phase_three_ran = False
+        if not self.shared_window:
+            self.capture()
+            self.flush()
+            self._phase_three_ran = True
+            return
+        if self._window_aborted or self._current is None:
+            # The window was discarded mid-flight (see ``discard``); this
+            # iteration's generation update landed and its understanding
+            # gradient has nowhere to go.
+            self.dropped_backwards += 1
+            return
+        if self._window_size is None:
+            raise RuntimeError(
+                "SenseNova four-phase: a shared-prefix generation backward ran "
+                "before begin_window() declared the MNT window size, so nothing "
+                "knows when phase 3 is due"
+            )
+        self._window_backwards += 1
+        if self._window_backwards >= self._window_size:
+            self.capture()
+            self.flush()
+            self._phase_three_ran = True
+
     def capture(self) -> None:
-        """Take the boundary gradient the generation backward just produced."""
+        """Take the boundary gradient the generation backward(s) produced."""
         if self._current is None:
             return
         inputs, leaves = self._current
+        if self.shared_window:
+            if self._window_backwards == 0:
+                raise RuntimeError(
+                    "SenseNova four-phase: the shared boundary cut was captured "
+                    "without a single generation backward having read it; the "
+                    "understanding half would receive nothing"
+                )
+            if (
+                self._window_size is not None
+                and self._window_backwards != self._window_size
+            ):
+                raise RuntimeError(
+                    "SenseNova four-phase: the shared boundary cut was read by "
+                    f"{self._window_backwards} generation backward(s) but the MNT "
+                    f"window declared {self._window_size}; one iteration's "
+                    "understanding gradient is missing or double-counted"
+                )
         self._current = None
         if all(leaf.grad is None for leaf in leaves):
             raise RuntimeError(
@@ -118,6 +245,12 @@ class SenseNovaFourPhaseBackward:
         ]
         for leaf in leaves:
             leaf.grad = None
+        count = self._window_backwards
+        self._window_backwards = 0
+        self._window_size = None
+        if self.shared_window and self.reduction == "mean" and count > 1:
+            for grad in grads:
+                grad.div_(count)
         self._pending.append((inputs, grads))
 
     def flush(self) -> None:
@@ -153,13 +286,67 @@ class SenseNovaFourPhaseBackward:
             torch.autograd.backward(tensors, grad_tensors=grads)
             del cache, tensors
 
-    def discard(self) -> None:
-        """Drop everything outstanding -- a skipped batch, or teardown."""
+    def discard(self) -> int:
+        """Drop everything outstanding -- a skipped batch, or teardown.
+
+        Returns the number of generation backwards whose understanding gradient
+        is being thrown away. Per-iteration that is at most the current
+        iteration's, the asymmetry a skip has always had. Under a shared window
+        it is every backward the window has run so far, whose GENERATION updates
+        already landed, so the caller announces the count rather than letting the
+        asymmetry widen silently. Phase 3 cannot be run here instead: discard's
+        callers are a CUDA error and teardown.
+        """
+        dropped = self._window_backwards
         self._current = None
         self._pending = []
+        self._window_backwards = 0
+        self._window_size = None
+        self._window_aborted = bool(self.shared_window)
+        self._phase_three_ran = False
+        self.dropped_backwards += dropped
+        return dropped
 
 
-def install_four_phase_backward(trainer: Any) -> SenseNovaFourPhaseBackward:
-    context = SenseNovaFourPhaseBackward(trainer)
+def understanding_deferred_parameters(trainer: Any) -> Sequence[torch.nn.Parameter]:
+    """The parameters a shared window defers, for the update census.
+
+    Empty unless the shared route is armed. Taken from the modules the EVICTOR
+    stages to CPU for the denoise phase, so the census's reduced expectation set
+    and the half that is physically absent during the generation backward are
+    one set rather than two that agree.
+    """
+    four_phase = getattr(trainer, "sensenova_four_phase", None)
+    if four_phase is None or not four_phase.shared_window:
+        return ()
+    evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    if evictor is None:
+        raise RuntimeError(
+            "SenseNova four-phase shared prefix has no phase evictor to take the "
+            "deferred parameter set from"
+        )
+    deferred: List[torch.nn.Parameter] = []
+    for module in evictor.understanding_modules:
+        for parameter in module._parameters.values():
+            if parameter is not None and parameter.requires_grad:
+                deferred.append(parameter)
+    return deferred
+
+
+def install_four_phase_backward(
+    trainer: Any,
+    *,
+    shared_window: bool | None = None,
+    reduction: str | None = None,
+) -> SenseNovaFourPhaseBackward:
+    if shared_window is None:
+        shared_window = bool(
+            getattr(trainer, "sensenova_four_phase_shared_prefix", False)
+        )
+    if reduction is None:
+        reduction = getattr(trainer, "sensenova_four_phase_grad_reduction", "sum")
+    context = SenseNovaFourPhaseBackward(
+        trainer, shared_window=shared_window, reduction=reduction
+    )
     trainer.sensenova_four_phase = context
     return context

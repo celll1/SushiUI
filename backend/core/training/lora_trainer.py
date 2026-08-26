@@ -288,7 +288,16 @@ class LoRATrainer(BaseTrainer):
                     self.sensenova_phase_evictor = None
 
     def _setup_sensenova_phase_eviction(self) -> None:
-        if not (self.is_sensenova and self.sensenova_mot_phase_eviction):
+        if not self.is_sensenova:
+            return
+        from core.training.ops import sensenova_ops
+
+        # Same reason as the full-FT trainer: refuse the shared window without
+        # its split HERE, or the flag falls through the eviction gate below and
+        # silently does nothing. (The split itself is full-fine-tune only, which
+        # is why LoRA installs no four-phase context.)
+        sensenova_ops.assert_shared_prefix_contract(self)
+        if not self.sensenova_mot_phase_eviction:
             return
         from .sensenova_phase_eviction import install_training_phase_eviction
 

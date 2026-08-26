@@ -52,6 +52,13 @@ EXTRA_METRIC_DEFS = {
     # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
     # its own axis rather than the shared pooled Y-range.
     "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right"},
+    # SenseNova shared-prefix four-phase: cumulative count of generation
+    # backwards whose understanding gradient a skipped batch threw away. A
+    # skip mid-window drops every backward the window had run, whose generation
+    # updates already landed, so it is charted rather than only logged. A count,
+    # not a loss, hence the secondary axis. Emitted only on a skip.
+    "sn_und_grad_dropped": {"label": "SenseNova und grad dropped", "color": "#f87171",
+                            "dashed": True, "axis": "right"},
     # Per-component actual LRs (only emitted when a run trains more than one
     # optimizer param group at potentially-different LRs, e.g. UNet+TE1/TE2 or
     # +VisionEncoder runs -- see base_trainer.py's per-step logging site next

@@ -15368,6 +15368,16 @@ class TrainingRunCreateRequest(BaseModel):
     # a VRAM knob like the sibling above, not a diagnostic, and it does not raise
     # on a correct run.
     sensenova_four_phase_eviction: bool = TRAINING_DEFAULTS["sensenova_four_phase_eviction"]
+    # Shared-prefix MNT window on top of the split, and how it reduces the
+    # gradient it accumulates. Literal on the reduction for the same reason as
+    # the save format below: an unknown value would otherwise be discovered
+    # inside the trainer.
+    sensenova_four_phase_shared_prefix: bool = TRAINING_DEFAULTS[
+        "sensenova_four_phase_shared_prefix"
+    ]
+    sensenova_four_phase_grad_reduction: Literal["sum", "mean"] = TRAINING_DEFAULTS[
+        "sensenova_four_phase_grad_reduction"
+    ]
     # SenseNova full fine-tune save format. Measured sizes and the int8 loss
     # census are in openapi.yaml's description. Literal, not str: the adapter's
     # own refusal fires at the first save_every, which is the "train for hours,

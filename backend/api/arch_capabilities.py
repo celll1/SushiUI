@@ -265,8 +265,13 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # understanding half evictable (train_runner._apply_sensenova_training_
     # contract). Splitting them into two features would let a client offer the
     # split on its own, which is refused before the model loads.
+    # The shared-prefix pair rides the same feature: both are only legal on top
+    # of sensenova_four_phase_eviction, which is only legal on top of the
+    # eviction flag, so an arch without the mechanism must lose all four.
     "sensenova_mot_eviction": ["sensenova_mot_phase_eviction",
-                               "sensenova_four_phase_eviction"],
+                               "sensenova_four_phase_eviction",
+                               "sensenova_four_phase_shared_prefix",
+                               "sensenova_four_phase_grad_reduction"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {

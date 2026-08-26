@@ -136,6 +136,9 @@ class SenseNovaTrainingPhaseEvictor:
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
         self._assert_pairing_covers_both_halves()
+        self._evict_generation_plan = self._evict_plan("generation")
+        self._swap_generation_plan = self._swap_plan("generation")
+        self._swap_understanding_plan = self._swap_plan("understanding")
 
     def _assert_pairing_covers_both_halves(self) -> None:
         """Refuse to run at all unless every selected module is either paired or
@@ -266,9 +269,9 @@ class SenseNovaTrainingPhaseEvictor:
             self.state = "prefix"
             return
         if self.state == "full":
-            operations = self._evict_plan("generation")
+            operations = self._evict_generation_plan
         elif self.state == "denoise":
-            operations = self._swap_plan("generation")
+            operations = self._swap_generation_plan
         else:
             raise RuntimeError(f"Invalid SenseNova eviction state: {self.state}")
         self._transition(operations, "prefix")
@@ -280,7 +283,7 @@ class SenseNovaTrainingPhaseEvictor:
             return
         if self.state != "prefix":
             raise RuntimeError("SenseNova denoise phase requires a completed prefix phase")
-        self._transition(self._swap_plan("understanding"), "denoise")
+        self._transition(self._swap_understanding_plan, "denoise")
 
     def enter_und_backward(self) -> None:
         """Phase 3: bring the understanding half back for its own backward."""
@@ -299,7 +302,7 @@ class SenseNovaTrainingPhaseEvictor:
                 "SenseNova und_backward phase requires a completed denoise phase, "
                 f"got {self.state}"
             )
-        self._transition(self._swap_plan("generation"), "und_backward")
+        self._transition(self._swap_generation_plan, "und_backward")
 
     def _assert_half_resident(self, modules, half: str, states) -> None:
         if self.state not in states:

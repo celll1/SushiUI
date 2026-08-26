@@ -276,14 +276,20 @@ class PidVaeWrapper:
             import time
             t0 = time.time()
             print("[PidVaeWrapper] Staging PiD net to GPU for decode...")
-            model.net.to("cuda")
+            # Flag set BEFORE the move: nn.Module.to() moves parameters one at a
+            # time, so a mid-move OOM leaves some on cuda -- a flag still reading
+            # "cpu" would make the offload below skip them permanently.
             self._pid_device = "cuda"
+            model.net.to("cuda")
             print(f"[PidVaeWrapper] PiD net staged to GPU in {time.time() - t0:.2f}s")
         return model
 
     def _stage_pid_cpu(self):
-        if self._pid_model is not None and self._pid_device != "cpu":
-            print("[PidVaeWrapper] Offloading PiD net to CPU...")
+        # Unconditional on purpose: .to("cpu") on an already-CPU module is a
+        # no-op, and the flag cannot be trusted after a partial stage.
+        if self._pid_model is not None:
+            if self._pid_device != "cpu":
+                print("[PidVaeWrapper] Offloading PiD net to CPU...")
             self._pid_model.net.to("cpu")
             self._pid_device = "cpu"
             import gc

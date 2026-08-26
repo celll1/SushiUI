@@ -63,7 +63,7 @@ from transformers import Qwen3Config
 
 from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_weights_keys
 
-from core.attention import AttentionMode, dispatch_attention
+from core.attention import AttentionMode, dispatch_attention, resolve_backend
 
 try:
     from flash_attn import flash_attn_func  # type: ignore
@@ -217,6 +217,22 @@ def create_block_causal_mask(index: torch.Tensor):
     mask = (idx_j == idx_i) | (arange.unsqueeze(0) <= arange.unsqueeze(1))
 
     return torch.where(mask[None, None, :, :] > 0, torch.tensor(0.0), torch.tensor(float('-inf')))
+
+
+def is_plain_causal_thw_index(index: torch.Tensor) -> bool:
+    """True iff ``create_block_causal_mask(index)`` degenerates to plain causal.
+
+    ``create_block_causal_mask`` opens cell (i, j) when ``idx_i == idx_j`` or
+    ``j <= i``; ``index`` is a running (non-decreasing) count, so ``idx_i ==
+    idx_j`` for ``i != j`` happens exactly when it is NOT strictly increasing
+    -- when it IS, the OR collapses to plain causal, an exact equivalence.
+
+    One host sync (``.item()``), meant to be called ONCE per forward by the
+    caller -- never per layer, since every layer shares the same ``index``.
+    """
+    if index.numel() <= 1:
+        return True
+    return bool(torch.all(index[1:] > index[:-1]).item())
 
 
 def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12):
@@ -512,8 +528,12 @@ class Qwen3Attention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         *,
         return_kv: bool = False,
+        causal_fastpath: bool = False,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # SushiUI addition: ``causal_fastpath``. Equivalence proof and caller
+        # contract live next to ``is_plain_causal_thw_index`` above. Default-off.
+        #
         # SushiUI addition: ``return_kv`` additionally returns this call's post-RoPE
         # K/V. Opt-in and default-off, so every existing caller keeps the 2-tuple.
         # A differentiable prefix pass cannot let the K/V reach the next pass through
@@ -578,21 +598,68 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        if causal_fastpath:
+            if key_states.shape[-2] != query_states.shape[-2]:
+                # is_causal=True means top-left alignment on native SDPA but
+                # bottom-right on FlashAttention once K is longer than Q (KV
+                # cache present); the two backends would silently disagree.
+                # No caller passes past_key_values today, so this is a guard
+                # against a future caller, not a live path.
+                raise RuntimeError(
+                    "SenseNova causal_fastpath requires query/key sequence lengths to match "
+                    f"(got q={query_states.shape[-2]}, k={key_states.shape[-2]}); "
+                    "a KV cache is not supported with causal_fastpath."
+                )
+            # Equivalence proof: see is_plain_causal_thw_index above. Reads the
+            # same `_attn_backend`/`_attn_mode` stamping `_flash_or_sdpa` uses
+            # for forward_gen (und and gen share the Qwen3Attention class).
+            backend = getattr(self, "_attn_backend", "native")
+            mode = getattr(self, "_attn_mode", AttentionMode.INFERENCE)
 
-        attn_output, attn_weights = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,  # diff with Llama
-            **kwargs,
-        )
+            # dispatch.py:166 auto-sets enable_gqa=True whenever k/v heads
+            # differ from q heads, and torch SDPA's enable_gqa path is far
+            # slower than pre-expanding K/V (measured ~9x on this shape).
+            # FlashAttention broadcasts GQA natively and is not affected, so
+            # only pre-expand when the resolved backend is actually native.
+            # ``key_states``/``value_states`` themselves are left untouched --
+            # ``return_kv`` below must still return the un-expanded, per-kv-head
+            # tensors the four-phase boundary expects.
+            resolved = resolve_backend(backend, mode, query_states, key_states, None, layout="BHSD")
+            dispatch_key, dispatch_value = key_states, value_states
+            if resolved == "native" and key_states.shape[1] != query_states.shape[1]:
+                dispatch_key = repeat_kv(key_states, self.num_key_value_groups)
+                dispatch_value = repeat_kv(value_states, self.num_key_value_groups)
+
+            attn_output = dispatch_attention(
+                query_states,
+                dispatch_key,
+                dispatch_value,
+                attn_mask=None,
+                dropout_p=0.0 if not self.training else self.attention_dropout,
+                is_causal=True,
+                scale=self.scaling,
+                backend=backend,
+                mode=mode,
+                layout="BHSD",
+            )
+            attn_output = attn_output.transpose(1, 2).contiguous()
+            attn_weights = None
+        else:
+            attention_interface: Callable = eager_attention_forward
+            if self.config._attn_implementation != "eager":
+                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)

@@ -1166,6 +1166,12 @@ def forward_und_prefix_layers(
     # Vendor Qwen3Model.forward sets this on the pre-built-mask path.
     model.current_index = indexes[0].max()
 
+    # Equivalence proof: see is_plain_causal_thw_index in modeling_qwen3.py.
+    # Computed ONCE for the whole stack (one host sync), not per layer.
+    from core.models.sensenova.vendor.modeling_qwen3 import is_plain_causal_thw_index
+
+    causal_fastpath = is_plain_causal_thw_index(indexes[0])
+
     hidden_states = (
         model.embed_tokens(input_ids) if inputs_embeds is None else inputs_embeds
     )
@@ -1187,6 +1193,7 @@ def forward_und_prefix_layers(
                 past_key_values=None,
                 use_cache=False,
                 return_kv=True,
+                causal_fastpath=causal_fastpath,
             )
 
         if checkpoint_layers:

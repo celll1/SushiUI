@@ -175,7 +175,12 @@ int8 で 1 byte/param なので **decoder Linear の総パラメータ数は約 
 結果として production の forward は必ず **2 パス**である。
 
 1. **prefix phase** — text（および it2i の reference 画像）token。全 layer が
-   `forward_und`。eager attention 固定。per-layer KV cache を構築。
+   `forward_und`。per-layer KV cache を構築。既定は eager。ただし
+   `train_text_encoder=True` かつ `indexes[0]` が strictly increasing（reference
+   画像なしのテキストのみプレフィックス）のときに限り `causal_fastpath` が立ち、
+   `dispatch_attention` 経由で `_attn_backend` の kernel に到達する
+   （`is_plain_causal_thw_index`, `modeling_qwen3.py`）。reference 画像ありは
+   classifier が False を返して eager のまま。
 2. **denoise phase** — image token のみ。全 layer が `forward_gen`。flash 経路、
    image token 間は `causal=False`、`cat[prefix_KV(und), current_KV(gen)]` に attend。
 
@@ -386,8 +391,11 @@ Phase 1 の前提実装になった（DONE）。
 - **attention backend の mode。** vendored forward は `_attn_backend` / `_attn_mode` を
   読み、既定は `AttentionMode.INFERENCE`。学習では backward 可能な mode を
   stamp する必要がある（`sensenova_pipeline_ops.set_attention_backend` が stamp 器）。
-  `forward_und` は eager 固定で `_flash_or_sdpa` に到達しないため、影響を受けるのは
-  gen 側のみ。
+  `forward_und` は既定で eager だが、`train_text_encoder=True` かつ
+  `causal_fastpath`（プレーン causal に退化した mask、reference 画像なし）のときは
+  `dispatch_attention` に到達し `_attn_backend`/`_attn_mode` を読む。stamp の対象は
+  gen 側だけでなく und 側のこの経路も含む。多数派の設定（`train_text_encoder=False`
+  または reference 画像あり）は依然として und 側は eager のまま。
   - **stamp を戻す責任は呼び出し側にある。** stamp するのは load 時の
     `ops/sensenova_ops.setup_attention_backend` 1 箇所だけで、以後 TRAINING を
     貼り直す場所は存在しない。学習中 sample は生成のあいだ

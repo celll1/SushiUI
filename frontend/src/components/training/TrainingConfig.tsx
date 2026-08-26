@@ -542,6 +542,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const multiResolutionMode = (params.multi_resolution_mode ?? "max") as "max" | "random";
   const forceRecache = params.force_recache ?? false;
 
+  // Outside bucketing the trainer uses only max(base_resolutions) as an area
+  // ceiling, so retain one value rather than presenting inert extra choices.
+  useEffect(() => {
+    if (!enableBucketing && baseResolutions.length > 1) {
+      updateParam("base_resolutions", [Math.max(...baseResolutions)]);
+    }
+  }, [enableBucketing, baseResolutions, updateParam]);
+
   // Component-specific training (Phase 3g: migrated to params)
   const trainUnet = params.train_unet ?? true;
   const trainTextEncoder = params.train_text_encoder ?? true;
@@ -953,8 +961,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       debug_latents: params.debug_latents,
       debug_latents_every: params.debug_latents_every,
       enable_bucketing: params.enable_bucketing,
-      // This also bounds oversized images when aspect-ratio bucketing is off.
-      base_resolutions: params.base_resolutions,
+      // Without bucketing only one area ceiling is meaningful. Normalize old
+      // presets here too, even before the UI normalization effect has rendered.
+      base_resolutions: !params.enable_bucketing && (params.base_resolutions?.length ?? 0) > 1
+        ? [Math.max(...params.base_resolutions!)]
+        : params.base_resolutions,
       bucket_strategy: params.enable_bucketing ? params.bucket_strategy : undefined,
       multi_resolution_mode: params.enable_bucketing ? params.multi_resolution_mode : undefined,
       // Epoch-dynamic crop augmentation (SDXL only; requires bucketing)
@@ -6595,7 +6606,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="checkbox"
               id="enable-bucketing"
               checked={enableBucketing}
-              onChange={(e) => updateParam("enable_bucketing", e.target.checked)}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                updateParam("enable_bucketing", enabled);
+                if (!enabled && baseResolutions.length > 1) {
+                  updateParam("base_resolutions", [Math.max(...baseResolutions)]);
+                }
+              }}
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="enable-bucketing" className="text-sm text-gray-400">
@@ -6610,7 +6627,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <>
               {/* Base Resolutions */}
               <div>
-                <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
+                <label className="block text-sm text-gray-400 mb-1.5">
+                  {enableBucketing ? "Base Resolutions" : "Base Resolution"}
+                </label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
                     [256, 512, 768, 1024],
@@ -6621,11 +6640,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       {resGroup.map(res => (
                         <div key={res} className="flex items-center space-x-2">
                           <input
-                            type="checkbox"
+                            type={enableBucketing ? "checkbox" : "radio"}
+                            name={enableBucketing ? undefined : "base-resolution"}
                             id={`res-${res}`}
                             checked={baseResolutions.includes(res)}
                             onChange={(e) => {
-                              if (e.target.checked) {
+                              if (!enableBucketing) {
+                                updateParam("base_resolutions", [res]);
+                              } else if (e.target.checked) {
                                 updateParam("base_resolutions", [...baseResolutions, res].sort((a, b) => a - b));
                               } else {
                                 // Prevent unchecking the last resolution
@@ -6634,7 +6656,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                                 }
                               }
                             }}
-                            disabled={baseResolutions.length === 1 && baseResolutions.includes(res)}
+                            disabled={enableBucketing && baseResolutions.length === 1 && baseResolutions.includes(res)}
                             className="w-4 h-4"
                           />
                           <label htmlFor={`res-${res}`} className="text-sm text-gray-300 cursor-pointer">
@@ -6649,8 +6671,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Selected: {baseResolutions.length > 0 ? baseResolutions.join(", ") : "None"}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
-                  Without bucketing, oversized images are fitted into the largest selected
-                  resolution area while smaller images keep their source size.
+                  {enableBucketing
+                    ? "Each image is assigned to a resolution bucket according to the mode below."
+                    : "Oversized images are fitted into this resolution area while smaller images keep their source size."}
                 </p>
               </div>
 

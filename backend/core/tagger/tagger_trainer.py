@@ -730,6 +730,9 @@ class TaggerTrainer:
         self.vocab_lineage = vocab_lineage or {}
         self._stop_requested = False
         self._stop_event = threading.Event()
+        # Optimizer-step census (see _assert_trained_something). Reset in train().
+        self._epochs_entered = 0
+        self._optimizer_steps_completed = 0
         # GPU coordinator pause / resume signalling.  Created here so the
         # handle exists before train() runs and the trainer thread doesn't
         # have to allocate Events while holding the model.
@@ -755,6 +758,24 @@ class TaggerTrainer:
     def stop(self) -> None:
         self._stop_requested = True
         self._stop_event.set()
+
+    def _assert_trained_something(self) -> None:
+        """Refuse to report success for a run that completed no optimizer step.
+
+        An empty epoch range (a resume at or past the last epoch) is a
+        legitimate no-op and is not caught.
+        """
+        from core.training.base_trainer import NothingTrainedError
+
+        if self._epochs_entered > 0 and self._optimizer_steps_completed == 0:
+            raise NothingTrainedError(
+                f"Tagger training ran {self._epochs_entered} epoch(s) and "
+                f"completed no optimizer step: every batch was skipped, either "
+                f"as an entire batch of unreadable images, a NaN/Inf loss, or a "
+                f"non-finite gradient norm. The weights are the ones training "
+                f"started from and no checkpoint of them was written. Check the "
+                f"dataset's image paths and the loss configuration."
+            )
 
     # ------------------------------------------------------------------
 
@@ -1103,6 +1124,8 @@ class TaggerTrainer:
         resume_epoch    = 1   # first epoch to process (1-indexed)
         resume_batch_idx = -1  # last already-processed batch in resume_epoch (-1 = none)
         metrics_history: List[Dict] = []
+        self._epochs_entered = 0
+        self._optimizer_steps_completed = 0
 
         # ------------------------------------------------------------------
         # Resume from checkpoint
@@ -1237,6 +1260,7 @@ class TaggerTrainer:
             # Skip epochs that were fully completed before the resume point
             if epoch < resume_epoch:
                 continue
+            self._epochs_entered += 1
 
             # -------------------------------------------------------
             # Capture / restore epoch-start RNG state
@@ -1382,6 +1406,7 @@ class TaggerTrainer:
                         scaler.update()
                         continue
                     scaler.step(optimizer)
+                    self._optimizer_steps_completed += 1
                     scaler.update()
                 else:
                     loss.backward()
@@ -1392,6 +1417,7 @@ class TaggerTrainer:
                         optimizer.zero_grad(set_to_none=True)
                         continue
                     optimizer.step()
+                    self._optimizer_steps_completed += 1
 
                 # Injection (Danbooru pure-batch) updates: skip LR scheduler
                 # and step counter so resume reproducibility is preserved.
@@ -1601,6 +1627,14 @@ class TaggerTrainer:
                     del loader_iter
                 except Exception:
                     pass
+                # No optimizer step anywhere in the run means the weights are
+                # identical to the ones loaded, which are already on disk.
+                # Cumulative, so a stop after any real training still checkpoints.
+                if self._optimizer_steps_completed == 0:
+                    print(f"[TaggerTrainer] Stop requested before any optimizer "
+                          f"step completed; no checkpoint written (the weights "
+                          f"are unchanged from the ones training started with)")
+                    break
                 print(f"[TaggerTrainer] Stop requested. Saving checkpoint at step {global_step}...")
                 metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                 ckpt_name = f"step_{global_step:06d}"
@@ -1693,7 +1727,11 @@ class TaggerTrainer:
                 # than converging to a training-distribution-biased value (~0.42).
                 _f1_threshold = epoch_thr
 
-                if epoch_f1 > best_f1:
+                # `and self._optimizer_steps_completed > 0`: with no optimizer
+                # step completed the weights are the ones training started
+                # from, and best_f1 must stay in step with what was actually
+                # written to disk below.
+                if epoch_f1 > best_f1 and self._optimizer_steps_completed > 0:
                     best_f1        = epoch_f1
                     best_threshold = epoch_thr
                     metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
@@ -1715,41 +1753,48 @@ class TaggerTrainer:
             # epoch_start_rng is not needed for epoch-boundary resumes (batch_idx=-1
             # means we start the next epoch fresh and capture a new epoch_start_rng
             # at that time), so we omit it to keep the file compact.
-            metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-            _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
-            _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
-            _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
-                              self.vocabulary, epoch_boundary=True,
-                              save_enabled=_save_tag_metrics_enabled,
-                              hard_lo=_hard_lo, hard_hi=_hard_hi,
-                              calib_method=_calib_method,
-                              calib_eps=_calib_eps,
-                              calib_prior_strength=_calib_prior_strength)
-            _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
-                                save_enabled=_save_ood_ref_enabled)
-
-            # Epoch-based checkpoint (model only; training state = same as latest)
-            if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
-                ckpt_name = f"epoch_{epoch:04d}"
-                _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
-                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
-                _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
+            #
+            # Cumulative: an epoch that trains nothing after real earlier work
+            # still checkpoints; only an all-epochs-zero run is suppressed.
+            if self._optimizer_steps_completed == 0:
+                print(f"[TaggerTrainer] Epoch {epoch} completed no optimizer step; "
+                      f"not writing a checkpoint of untrained weights")
+            else:
+                metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
+                _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
+                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
+                _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
                                   self.vocabulary, epoch_boundary=True,
                                   save_enabled=_save_tag_metrics_enabled,
                                   hard_lo=_hard_lo, hard_hi=_hard_hi,
                                   calib_method=_calib_method,
                                   calib_eps=_calib_eps,
                                   calib_prior_strength=_calib_prior_strength)
-                _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
+                _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
                                     save_enabled=_save_ood_ref_enabled)
-                self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
-            _save_training_state(
-                self.output_dir, "latest",
-                epoch + 1, global_step, -1,
-                best_f1, best_threshold,
-                dataset_fingerprint=current_fingerprint,
-            )
-            _save_optimizer_state(optimizer, self.output_dir, "latest")
+
+                # Epoch-based checkpoint (model only; training state = same as latest)
+                if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
+                    ckpt_name = f"epoch_{epoch:04d}"
+                    _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
+                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
+                                      self.vocabulary, epoch_boundary=True,
+                                      save_enabled=_save_tag_metrics_enabled,
+                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                      calib_method=_calib_method,
+                                      calib_eps=_calib_eps,
+                                      calib_prior_strength=_calib_prior_strength)
+                    _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
+                                        save_enabled=_save_ood_ref_enabled)
+                    self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
+                _save_training_state(
+                    self.output_dir, "latest",
+                    epoch + 1, global_step, -1,
+                    best_f1, best_threshold,
+                    dataset_fingerprint=current_fingerprint,
+                )
+                _save_optimizer_state(optimizer, self.output_dir, "latest")
 
             # Rotate epoch histograms: prev ← cur, cur ← zero. This also finalizes
             # the per-epoch exposure delta used by train-count deficiency.
@@ -1799,13 +1844,19 @@ class TaggerTrainer:
             pass
 
         if self._stop_requested:
-            # Training was stopped mid-run; skip threshold search and "completed" event
+            # Training was stopped mid-run; skip threshold search and "completed"
+            # event. This exit reports no success, so the census below (which
+            # would fail the run) does not apply to it.
             return {
                 "best_f1": best_f1,
                 "best_threshold": best_threshold,
                 "total_steps": global_step,
                 "metrics_history": metrics_history,
             }
+
+        # Before the threshold search, which would otherwise spend a validation
+        # pass on -- and emit "completed" for -- a run that trained nothing.
+        self._assert_trained_something()
 
         # Final threshold grid search on validation set
         final_search = self._final_threshold_search(

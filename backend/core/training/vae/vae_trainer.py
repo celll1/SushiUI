@@ -177,6 +177,9 @@ class VaeTrainer:
         # and is checkpointed so a resume continues into a FRESH pass.
         self.train_sampler = None
         self.global_step = 0
+        # Backward-pass census. A run that completed none has the base VAE's
+        # weights, so it neither reports success nor writes them back out.
+        self._backwards_completed = 0
         self.stopped = False
         self._last_val_step = -1
         self._last_ckpt_step = -1
@@ -741,6 +744,8 @@ class VaeTrainer:
         np.random.seed(seed % (2**32))
         torch.manual_seed(seed)
 
+        self._backwards_completed = 0
+
         self._detect_resume_seq()
         self.load_base_vae()
         self.select_trainable()
@@ -865,6 +870,34 @@ class VaeTrainer:
             if save_every > 0 and self.global_step % save_every == 0:
                 self.save_checkpoint(self.global_step)
 
+        return self._finalize(total_steps)
+
+    def _finalize(self, total_steps: int) -> bool:
+        """Write the run's final artifacts, or refuse when nothing was trained.
+
+        ``global_step == 0`` means no optimizer step ran this run or an
+        earlier one, so the in-memory weights equal the base VAE's already on
+        disk. The exception arm below is an invariant assertion rather than a
+        reachable path: ``vae_config`` pins ``total_steps >= 1``, so the only
+        way to reach ``global_step == 0`` here is via the stop break, which
+        takes the ``self.stopped`` arm first.
+        """
+        if self.global_step == 0:
+            self._flush_metrics()
+            if self.stopped:
+                print(f"{self.log_prefix} Stopped before the first optimizer "
+                      f"step; no checkpoint or export written (the weights are "
+                      f"the base VAE's, unchanged).")
+                return self.stopped
+            from core.training.base_trainer import NothingTrainedError
+            raise NothingTrainedError(
+                f"VAE fine-tune completed no optimizer step over the "
+                f"{total_steps} step(s) it was asked for, so its weights are the "
+                f"base VAE's. No checkpoint or export was written. Check the "
+                f"dataset: every image it produced was unreadable, or it "
+                f"produced none."
+            )
+
         # Final validation + artifacts. Skipped when the periodic hooks already
         # ran at this exact step (so the last step is not measured/saved twice).
         if self.val_batch is not None and self._last_val_step != self.global_step:
@@ -943,6 +976,7 @@ class VaeTrainer:
             )
 
         (loss / accum).backward()
+        self._backwards_completed += 1
         return float(loss.detach()), parts
 
     # ------------------------------------------------------------------

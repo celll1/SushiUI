@@ -540,6 +540,11 @@ class TrainingPreviewGenerator:
                 is_lllite=False,
             )
             if cn is not None:
+                # load_controlnet only stages on the FIRST load; a cache hit
+                # returns the module exactly as it was left, and this path's own
+                # finally offloads it to CPU after every preview. Without this
+                # re-stage, preview #2 onward dies on a device mismatch.
+                cn = cn.to(device=self.trainer.device, dtype=self.trainer.training_dtype)
                 loaded_cns.append(cn)
         if not loaded_cns:
             return None

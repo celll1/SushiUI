@@ -15136,7 +15136,9 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["gradient_accumulation_steps"], ge=1
     )
     max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
-    learning_rate: float = TRAINING_DEFAULTS["learning_rate"]
+    # gt=0, not ge=0: 0 here trains nothing (every optimizer step a no-op),
+    # unlike a component rate, which can legitimately hold at 0.
+    learning_rate: float = Field(default=TRAINING_DEFAULTS["learning_rate"], gt=0)
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in
     # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only
@@ -15164,8 +15166,11 @@ class TrainingRunCreateRequest(BaseModel):
     optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
     optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
     optimizer_use_radam: bool = False  # Use RAdam (Rectified Adam) with Schedule-Free (adamw8bit_ringbuffer, lion8bit_ringbuffer)
-    # Stochastic rounding when writing BF16 parameter updates (adamw8bit_ringbuffer, lion8bit_ringbuffer)
-    optimizer_stochastic_rounding: bool = TRAINING_DEFAULTS["optimizer_stochastic_rounding"]
+    # Stochastic rounding when writing BF16 parameter updates
+    # (adamw8bit_ringbuffer, lion8bit_ringbuffer). Tri-state: True/False are
+    # explicit, None ("not specified") lets the architecture decide -- see
+    # param_defaults.FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH.
+    optimizer_stochastic_rounding: Optional[bool] = TRAINING_DEFAULTS["optimizer_stochastic_rounding"]
 
     # LoRA specific
     lora_rank: Optional[int] = 16
@@ -15212,34 +15217,41 @@ class TrainingRunCreateRequest(BaseModel):
     train_unet: bool = True
     train_text_encoder: bool = False
     train_image_encoder: bool = False  # Reserved for future image encoder training
-    unet_lr: Optional[float] = None  # Defaults to learning_rate if None
-    text_encoder_lr: Optional[float] = None  # Defaults to learning_rate if None
-    text_encoder_1_lr: Optional[float] = None  # SDXL TE1 LR (defaults to text_encoder_lr if None)
-    text_encoder_2_lr: Optional[float] = None  # SDXL TE2 LR (defaults to text_encoder_lr if None)
-    image_encoder_lr: Optional[float] = None  # Reserved for future image encoder LR
+    # ge=0, not gt=0: an explicit 0 deliberately holds this component still
+    # while another trains (resolve_component_lr treats "not None" as
+    # configured, zero included); only a negative rate -- which would ascend
+    # that component's loss -- is refused. None keeps the "defaults to
+    # learning_rate" fallback.
+    unet_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
+    text_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Defaults to learning_rate if None
+    text_encoder_1_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE1 LR (defaults to text_encoder_lr if None)
+    text_encoder_2_lr: Optional[float] = Field(default=None, ge=0)  # SDXL TE2 LR (defaults to text_encoder_lr if None)
+    image_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Reserved for future image encoder LR
 
     # Anima-specific LoRA training knobs (ignored for other architectures).
     # Single Source of Truth: backend/api/param_defaults.py TRAINING_DEFAULTS.
     anima_lora_scope: str = TRAINING_DEFAULTS["anima_lora_scope"]
     lens_lora_scope: str = TRAINING_DEFAULTS["lens_lora_scope"]
-    lens_img_lr_factor: float = TRAINING_DEFAULTS["lens_img_lr_factor"]
-    lens_txt_lr_factor: float = TRAINING_DEFAULTS["lens_txt_lr_factor"]
+    # ge=0: these are plain multipliers on unet_lr; a negative factor would
+    # ascend the loss for that component the same way a negative rate does.
+    lens_img_lr_factor: float = Field(default=TRAINING_DEFAULTS["lens_img_lr_factor"], ge=0)
+    lens_txt_lr_factor: float = Field(default=TRAINING_DEFAULTS["lens_txt_lr_factor"], ge=0)
     ideogram4_lora_scope: str = TRAINING_DEFAULTS["ideogram4_lora_scope"]
     ideogram4_train_uncond: bool = TRAINING_DEFAULTS["ideogram4_train_uncond"]
     ideogram4_uncond_loss_weight: float = TRAINING_DEFAULTS["ideogram4_uncond_loss_weight"]
-    ideogram4_lr_factor: float = TRAINING_DEFAULTS["ideogram4_lr_factor"]
+    ideogram4_lr_factor: float = Field(default=TRAINING_DEFAULTS["ideogram4_lr_factor"], ge=0)
     train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
     # MiniT2I (pixel-space MM-JiT) training.
     minit2i_lora_scope: str = TRAINING_DEFAULTS["minit2i_lora_scope"]
     minit2i_te_lora_scope: str = TRAINING_DEFAULTS["minit2i_te_lora_scope"]
     minit2i_label_drop_rate: float = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
-    minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
+    minit2i_lr_factor: float = Field(default=TRAINING_DEFAULTS["minit2i_lr_factor"], ge=0)
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
     minit2i_inherit_final_layer: bool = TRAINING_DEFAULTS["minit2i_inherit_final_layer"]
     # Krea 2 (single-stream flow-matching MMDiT) training.
     krea2_lora_scope: str = TRAINING_DEFAULTS["krea2_lora_scope"]
-    krea2_lr_factor: float = TRAINING_DEFAULTS["krea2_lr_factor"]
+    krea2_lr_factor: float = Field(default=TRAINING_DEFAULTS["krea2_lr_factor"], ge=0)
     krea2_discrete_flow_shift: float = TRAINING_DEFAULTS["krea2_discrete_flow_shift"]
     # REPA (Representation Alignment) — MiniT2I only.
     repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]
@@ -15248,12 +15260,12 @@ class TrainingRunCreateRequest(BaseModel):
     repa_siglip2_repo: str = TRAINING_DEFAULTS["repa_siglip2_repo"]
     repa_align_depth: int = TRAINING_DEFAULTS["repa_align_depth"]
     repa_weight: float = TRAINING_DEFAULTS["repa_weight"]
-    repa_proj_lr_factor: float = TRAINING_DEFAULTS["repa_proj_lr_factor"]
+    repa_proj_lr_factor: float = Field(default=TRAINING_DEFAULTS["repa_proj_lr_factor"], ge=0)
     repa_encoder_resolution: int = TRAINING_DEFAULTS["repa_encoder_resolution"]
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
-    anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
-    anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
-    anima_llm_adapter_lr_factor: float = TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"]
+    anima_attn_mlp_lr_factor: float = Field(default=TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"], ge=0)
+    anima_mod_lr_factor: float = Field(default=TRAINING_DEFAULTS["anima_mod_lr_factor"], ge=0)
+    anima_llm_adapter_lr_factor: float = Field(default=TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"], ge=0)
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration (Anima).
     tread_enable: bool = TRAINING_DEFAULTS["tread_enable"]
     tread_drop_ratio: float = TRAINING_DEFAULTS["tread_drop_ratio"]
@@ -15438,7 +15450,7 @@ class TrainingRunCreateRequest(BaseModel):
     # SigLIP2 Vision Encoder
     vision_encoder_path: Optional[str] = None  # Path to SigLIP2 vision encoder safetensors
     train_vision_encoder: bool = False  # Train vision encoder weights
-    vision_encoder_lr: Optional[float] = None  # Learning rate for vision encoder (defaults to text_encoder_lr)
+    vision_encoder_lr: Optional[float] = Field(default=None, ge=0)  # Learning rate for vision encoder (defaults to text_encoder_lr)
     gradient_routing_ve: bool = False  # Block TE gradient when batch has reference images
 
     # Parameter change tracking
@@ -18125,7 +18137,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     training_method: str = "lora"                  # "lora" | "full"
     lora_rank: int = 32
     lora_alpha: float = 16.0
-    learning_rate: float = 3e-4
+    # gt=0: the tagger's only base rate, with no component fallback beneath
+    # it to hold at zero -- same reasoning as TrainingRunCreateRequest.learning_rate.
+    learning_rate: float = Field(default=TAGGER_TRAINING_DEFAULTS["learning_rate"], gt=0)
     head_lr_multiplier: float = 10.0
     optimizer: str = "adamw8bit"
     warmup_steps: int = 100
@@ -18135,9 +18149,17 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     num_workers_override: Optional[int] = None
     tag_refresh_enable: bool = TAGGER_TRAINING_DEFAULTS["tag_refresh_enable"]
     tag_refresh_interval_seconds: int = TAGGER_TRAINING_DEFAULTS["tag_refresh_interval_seconds"]
-    save_every_n_steps: int = 500
-    save_every_n_epochs: int = 0
-    keep_last_n_checkpoints: int = 3
+    # ge=0: 0 means "never save" (tagger_trainer.py guards `> 0` before the
+    # modulo), matching TrainingRunCreateRequest.save_every's "negative is
+    # refused rather than silently folded" -- a negative value here was
+    # previously accepted and silently behaved as "never" too, with no
+    # indication the request was malformed.
+    save_every_n_steps: int = Field(default=TAGGER_TRAINING_DEFAULTS["save_every_n_steps"], ge=0)
+    save_every_n_epochs: int = Field(default=TAGGER_TRAINING_DEFAULTS["save_every_n_epochs"], ge=0)
+    # ge=0: 0 means "keep all" (tagger_trainer.py guards `> 0` before pruning).
+    keep_last_n_checkpoints: int = Field(
+        default=TAGGER_TRAINING_DEFAULTS["keep_last_n_checkpoints"], ge=0
+    )
     checkpoint_save_mode: str = "lora"
     mixed_precision: str = "bf16"
     use_flash_attention: bool = TAGGER_TRAINING_DEFAULTS["use_flash_attention"]
@@ -18187,9 +18209,15 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     # Legacy bool accepted (True→"path", False→"off").
     rescan_before_training:    Any   = TAGGER_TRAINING_DEFAULTS["rescan_before_training"]
     # Training F1: rolling buffer + periodic threshold search.
-    # N2 (eval_every) < N1 (search_every).  0 disables the feature.
-    train_f1_eval_every_n_steps:             int   = 100
-    train_f1_threshold_search_every_n_steps: int   = 500
+    # N2 (eval_every) < N1 (search_every).  0 disables the feature (both are
+    # guarded by `> 0` in tagger_trainer.py, so a negative was silently
+    # treated as "disabled" too, with no indication the request was malformed).
+    train_f1_eval_every_n_steps: int = Field(
+        default=TAGGER_TRAINING_DEFAULTS["train_f1_eval_every_n_steps"], ge=0
+    )
+    train_f1_threshold_search_every_n_steps: int = Field(
+        default=TAGGER_TRAINING_DEFAULTS["train_f1_threshold_search_every_n_steps"], ge=0
+    )
     train_f1_initial_threshold:              float = 0.35
     train_f1_buffer_batches:                 int   = 16
     # Online Danbooru augmentation

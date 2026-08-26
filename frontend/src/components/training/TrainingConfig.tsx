@@ -136,7 +136,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   optimizer_schedule_free_r: 0.0,
   optimizer_schedule_free_weight_lr_power: 2.0,
   optimizer_use_radam: false,
-  optimizer_stochastic_rounding: false,
+  // Tri-state: null = "not specified", let the architecture decide.
+  optimizer_stochastic_rounding: null,
   lora_rank: 16,
   lora_alpha: 16,
   lora_dtype: "fp32",
@@ -476,7 +477,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const optimizerScheduleFreeR = localScheduleFreeRText;
   const optimizerScheduleFreeWeightLrPower = localScheduleFreeWeightLrPowerText;
   const optimizerUseRadam = params.optimizer_use_radam ?? false;
-  const optimizerStochasticRounding = params.optimizer_stochastic_rounding ?? false;
+  // Tri-state: "auto" (null/undefined, architecture decides), "on", "off".
+  const optimizerStochasticRounding: "auto" | "on" | "off" =
+    params.optimizer_stochastic_rounding === true ? "on"
+    : params.optimizer_stochastic_rounding === false ? "off"
+    : "auto";
 
   // LoRA parameters (Phase 3d: migrated to params)
   const loraRank = params.lora_rank ?? 16;
@@ -683,6 +688,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const isKrea2Model = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "krea2";
+  };
+
+  const isLtx2Model = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "ltx2";
   };
 
   const isSenseNovaModel = (modelPath: string): boolean => {
@@ -2389,6 +2399,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       return;
     }
 
+    // Learning-rate bounds: submitted values are read from the local text
+    // buffers below, not from `params`, so this is the seam that actually
+    // decides what reaches the backend (backend: learning_rate gt=0,
+    // component rates ge=0, empty component rate = inherit base LR).
+    const baseLr = parseFloat(localLrText);
+    if (isNaN(baseLr) || baseLr <= 0) {
+      setError("Learning Rate must be a positive number greater than 0.");
+      return;
+    }
+    const componentRateFields: Array<[string, string]> = [
+      ["U-Net LR", localUnetLrText],
+      ["Text Encoder LR", localTextEncoderLrText],
+      ["TE1 LR", localTextEncoder1LrText],
+      ["TE2 LR", localTextEncoder2LrText],
+      ["Image Encoder LR", localImageEncoderLrText],
+      ["Vision Encoder LR", localVisionEncoderLrText],
+    ];
+    for (const [label, text] of componentRateFields) {
+      if (text === "") continue; // empty means "use base LR", legal
+      const v = parseFloat(text);
+      if (isNaN(v) || v < 0) {
+        setError(`${label} must be zero or a positive number (leave empty to use the base learning rate).`);
+        return;
+      }
+    }
+
     setLoading(true);
     setError(null);
 
@@ -2927,6 +2963,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         value={params.repa_proj_lr_factor ?? 1.0}
                         onChange={(e) => updateParam("repa_proj_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("repa_proj_lr_factor", 1.0); }}
+                        min={0}
                         className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
                       />
                     </div>
@@ -3989,7 +4026,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => setLocalLrText(e.target.value)}
                 onBlur={(e) => {
                   const v = parseFloat(e.target.value);
-                  if (!isNaN(v)) updateParam("learning_rate", v);
+                  // Must be > 0: this is the fallback every component rate
+                  // resolves to when unset, so 0 trains nothing and a
+                  // negative value ascends the loss (backend refuses it too).
+                  if (!isNaN(v) && v > 0) updateParam("learning_rate", v);
                 }}
                 placeholder="e.g., 1e-4"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -4273,19 +4313,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   const bf16Params = forcedBf16 || weightDtype === "bf16" || trainingDtype === "bf16";
                   return (
                     <div className="col-span-2">
-                      <label className={`flex items-center text-xs ${bf16Params ? "text-gray-300" : "text-gray-500"}`}>
-                        <input
-                          type="checkbox"
-                          disabled={!bf16Params}
-                          checked={bf16Params && optimizerStochasticRounding}
-                          onChange={(e) => updateParam("optimizer_stochastic_rounding", e.target.checked)}
-                          className="mr-2"
-                        />
+                      <label className={`block text-xs mb-1 ${bf16Params ? "text-gray-300" : "text-gray-500"}`}>
                         Stochastic Rounding (BF16 parameters)
                       </label>
+                      <select
+                        disabled={!bf16Params}
+                        value={optimizerStochasticRounding}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          updateParam(
+                            "optimizer_stochastic_rounding",
+                            v === "on" ? true : v === "off" ? false : null
+                          );
+                        }}
+                        className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                      >
+                        <option value="auto">Not specified (architecture decides)</option>
+                        <option value="on">On</option>
+                        <option value="off">Off</option>
+                      </select>
                       <p className="text-xs text-gray-500 mt-1">
                         {bf16Params
-                          ? "Rounds each BF16 parameter update up or down with probability equal to its fractional part. Without it, an update smaller than half a BF16 step is rounded away every step and the weight never changes."
+                          ? "Rounds each BF16 parameter update up or down with probability equal to its fractional part. Without it, an update smaller than half a BF16 step is rounded away every step and the weight never changes. Some full fine-tune routes force this on when not specified and refuse an explicit Off."
                           : `Unavailable: this run's parameters are ${weightDtype.toUpperCase()}. Stochastic rounding applies to BF16 parameters only. Set the weight or training dtype to BF16 to enable it.`}
                       </p>
                     </div>
@@ -4430,7 +4479,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="text"
                   value={unetLr}
                   onChange={(e) => setLocalUnetLrText(e.target.value)}
-                  onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("unet_lr", isNaN(v) ? null : v); }}
+                  onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("unet_lr", (isNaN(v) || v < 0) ? null : v); }}
                   placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -4448,7 +4497,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     type="text"
                     value={textEncoderLr}
                     onChange={(e) => setLocalTextEncoderLrText(e.target.value)}
-                    onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_lr", isNaN(v) ? null : v); }}
+                    onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
                     placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
@@ -4468,7 +4517,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         type="text"
                         value={textEncoder1Lr}
                         onChange={(e) => setLocalTextEncoder1LrText(e.target.value)}
-                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_1_lr", isNaN(v) ? null : v); }}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_1_lr", (isNaN(v) || v < 0) ? null : v); }}
                         placeholder={`Default: ${textEncoderLr || learningRate}`}
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
@@ -4483,7 +4532,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         type="text"
                         value={textEncoder2Lr}
                         onChange={(e) => setLocalTextEncoder2LrText(e.target.value)}
-                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_2_lr", isNaN(v) ? null : v); }}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_2_lr", (isNaN(v) || v < 0) ? null : v); }}
                         placeholder={`Default: ${textEncoderLr || learningRate}`}
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
@@ -4517,7 +4566,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="text"
                       value={visionEncoderLr}
                       onChange={(e) => setLocalVisionEncoderLrText(e.target.value)}
-                      onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("vision_encoder_lr", isNaN(v) ? null : v); }}
+                      onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("vision_encoder_lr", (isNaN(v) || v < 0) ? null : v); }}
                       placeholder={`Default: ${textEncoderLr || learningRate}`}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
@@ -5080,11 +5129,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                     >
                       <option value="">None (BF16 base)</option>
-                      <option value="fp8_e4m3fn">FP8 E4M3 (recommended)</option>
+                      <option value="fp8_e4m3fn">FP8 E4M3</option>
                       <option value="fp8_e5m2">FP8 E5M2</option>
                     </select>
                     <p className="text-xs text-gray-500 mt-1">
-                      Quantise the frozen Anima DiT base to FP8 before LoRA wrap (~50% VRAM saving).
+                      Quantise the frozen Anima DiT base to FP8 before LoRA wrap.
                     </p>
                   </div>
                 )}
@@ -5248,11 +5297,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                     >
                       <option value="">None (BF16 base)</option>
-                      <option value="fp8_e4m3fn">FP8 E4M3 (recommended)</option>
+                      <option value="fp8_e4m3fn">FP8 E4M3</option>
                       <option value="fp8_e5m2">FP8 E5M2</option>
                     </select>
                     <p className="text-xs text-gray-500 mt-1">
-                      Quantise the frozen Lens DiT base to FP8 before LoRA wrap (~50% VRAM saving).
+                      Quantise the frozen Lens DiT base to FP8 before LoRA wrap.
                     </p>
                   </div>
                 )}
@@ -5334,6 +5383,30 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                 )}
               </>
+            )}
+
+            {/* LTX-2.3-only options */}
+            {isLtx2Model(baseModelPath) && trainingMethod === "lora" && (
+              <div>
+                <label htmlFor="ltx2-fp8-base-dtype" className="block text-xs text-gray-300 mb-1">
+                  FP8 base weights (LoRA only)
+                </label>
+                <select
+                  id="ltx2-fp8-base-dtype"
+                  value={params.fp8_base_dtype ?? ""}
+                  onChange={(e) =>
+                    updateParam("fp8_base_dtype", e.target.value === "" ? null : e.target.value)
+                  }
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                >
+                  <option value="">None (BF16 base)</option>
+                  <option value="fp8_e4m3fn">FP8 E4M3</option>
+                  <option value="fp8_e5m2">FP8 E5M2</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Quantise the frozen LTX-2.3 DiT base to FP8 before LoRA wrap.
+                </p>
+              </div>
             )}
 
             {/* Ideogram 4 (flow-matching DiT) LoRA options */}

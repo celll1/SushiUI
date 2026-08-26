@@ -26,15 +26,20 @@ records the number. Measured here, on CPU, with no model:
 84.5% is the same number SENSENOVA_TRAINING_DESIGN.md 6.3 records from an
 independent measurement over all optimizers.
 
-WHY IT IS FORCED RATHER THAN DEFAULTED
---------------------------------------
-The flag cannot carry "unset": ``routes.py`` declares it ``bool`` with a False
-default and ``training_config`` writes the YAML key only when it is true, so an
-omitted key and an explicit false are the same value by the time a trainer sees
-it (``TransportCannotExpressUnsetTest`` proves this from the source rather than
-asserting it). Refusing on False would refuse every request; honouring it would
-run the route at 84.5% frozen. So it is a per-architecture route requirement in
-``param_defaults`` -- applied, printed, and then VERIFIED at the seam.
+WHY IT IS FORCED, AND WHY AN EXPLICIT FALSE IS NOW REFUSED
+------------------------------------------------------------
+The flag used to be unable to carry "unset": ``routes.py`` declared it plain
+``bool`` with a False default and ``training_config`` wrote the YAML key only
+when it was true, so an omitted key and an explicit false reached the trainer
+as the same value. The transport is now tri-state (``Optional[bool]``,
+``training_config`` writes the key for True/False and omits it only for None),
+which lets ``train_runner._apply_sensenova_full_finetune_contract`` refuse an
+EXPLICIT False upfront instead of silently overriding it; an unspecified
+(None) value still reaches ``enforce_full_finetune_stochastic_rounding``,
+which forces it on the way it always did, as a trainer-side backstop for any
+config that reaches the trainer with it False regardless (e.g. a
+hand-authored YAML). ``TransportIsTriStateTest`` proves the current wiring
+from the source rather than asserting it.
 """
 
 from __future__ import annotations
@@ -345,15 +350,14 @@ class ExplicitUserSettingTest(unittest.TestCase):
         self.assertIn("not optional", printed)
 
 
-class TransportCannotExpressUnsetTest(unittest.TestCase):
-    """Why this is forced rather than resolved per-arch like train_text_encoder.
+class TransportIsTriStateTest(unittest.TestCase):
+    """The transport can now carry "unset" distinctly from an explicit False.
 
-    ``resolve_full_finetune_train_text_encoder`` works because that value can
-    arrive as None. This one cannot, and these assertions read the source rather
-    than trusting the claim.
+    Mirrors ``resolve_full_finetune_train_text_encoder``, which already worked
+    this way. These assertions read the source rather than trusting the claim.
     """
 
-    def test_the_request_model_declares_a_plain_bool(self):
+    def test_the_request_model_declares_an_optional_bool(self):
         source = (Path(_BACKEND) / "api" / "routes.py").read_text(encoding="utf-8")
         found = [
             node
@@ -364,17 +368,37 @@ class TransportCannotExpressUnsetTest(unittest.TestCase):
         ]
         self.assertTrue(found)
         for node in found:
-            # `bool`, not `Optional[bool]`: absence is not representable.
-            self.assertIsInstance(node.annotation, ast.Name)
-            self.assertEqual(node.annotation.id, "bool")
+            # `Optional[bool]`, not a plain `bool`: absence is representable.
+            self.assertIsInstance(node.annotation, ast.Subscript)
+            self.assertEqual(node.annotation.value.id, "Optional")
+            self.assertEqual(node.annotation.slice.id, "bool")
 
-    def test_the_yaml_writer_emits_the_key_only_when_it_is_true(self):
+    def test_the_yaml_writer_emits_the_key_for_true_or_false_only_omits_for_none(self):
         source = (Path(_BACKEND) / "core" / "training" / "training_config.py").read_text(
             encoding="utf-8")
-        self.assertIn('if p.get("optimizer_stochastic_rounding"):', source)
+        self.assertIn('if p.get("optimizer_stochastic_rounding") is not None:', source)
 
-    def test_the_shipped_global_default_is_still_false(self):
-        self.assertIs(TRAINING_DEFAULTS["optimizer_stochastic_rounding"], False)
+    def test_the_shipped_global_default_is_none(self):
+        self.assertIsNone(TRAINING_DEFAULTS["optimizer_stochastic_rounding"])
+
+    def test_an_explicit_false_is_refused_before_the_load(self):
+        from core.training.train_runner import _apply_sensenova_full_finetune_contract
+
+        train_config = {"optimizer_stochastic_rounding": False}
+        with self.assertRaises(ValueError):
+            _apply_sensenova_full_finetune_contract(train_config)
+
+    def test_an_unset_value_is_not_refused_here(self):
+        from core.training.train_runner import _apply_sensenova_full_finetune_contract
+
+        train_config = {}
+        _apply_sensenova_full_finetune_contract(train_config)  # must not raise
+
+    def test_an_explicit_true_is_not_refused_here(self):
+        from core.training.train_runner import _apply_sensenova_full_finetune_contract
+
+        train_config = {"optimizer_stochastic_rounding": True}
+        _apply_sensenova_full_finetune_contract(train_config)  # must not raise
 
 
 class OtherArchitecturesUnchangedTest(unittest.TestCase):

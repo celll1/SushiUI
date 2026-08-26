@@ -337,9 +337,7 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
     Duplicating nothing: each clause below is checked again inside the trainer
     (``assert_full_finetune_contract`` before the load,
     ``BaseTrainer.train`` from its own arguments). What this adds is the point
-    at which it is checked -- here the run has not yet imported torch or read
-    the checkpoint, and the message reaches the user as a run failure rather
-    than as an exception raised minutes in.
+    at which it is checked -- before the checkpoint load, not minutes in.
 
     ``weight_dtype``/``training_dtype`` are NOT checked here: the full-finetune
     dispatch below forces both to bf16 for this architecture via
@@ -372,6 +370,17 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             "SenseNova full fine-tuning does not support use_ema: the EMA update "
             "is attached to the single optimizer.step() call site, which this "
             "route never reaches, so the shadow would silently never update."
+        )
+    if train_config.get("optimizer_stochastic_rounding") is False:
+        # Only reachable for an explicit False; a None (unset) is forced on
+        # silently by enforce_full_finetune_stochastic_rounding instead.
+        raise ValueError(
+            "SenseNova full fine-tuning requires optimizer_stochastic_rounding "
+            "and cannot run with it explicitly set to False: the trainable "
+            "half is bf16 with no fp32 master, and under round-to-nearest "
+            "84.5% of its elements never move at any step count while the "
+            "loss falls normally (measured, SENSENOVA_TRAINING_DESIGN.md 6.3). "
+            "Leave it unset to let this route enable it, or set it to True."
         )
     from api.param_defaults import (
         SENSENOVA_FULL_FINETUNE_SAVE_FORMATS, TRAINING_DEFAULTS,

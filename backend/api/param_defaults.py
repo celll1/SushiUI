@@ -2205,7 +2205,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "optimizer_schedule_free_r": 0.0,
     "optimizer_schedule_free_weight_lr_power": 2.0,
     "optimizer_use_radam": False,
-    "optimizer_stochastic_rounding": False,
+    # Tri-state: None ("not specified") lets the architecture decide (e.g.
+    # SenseNova full fine-tune forces it on, but refuses an explicit False).
+    "optimizer_stochastic_rounding": None,
     # LoRA specific
     "lora_rank": 16,
     "lora_alpha": 16,
@@ -2805,13 +2807,16 @@ def resolve_full_finetune_train_text_encoder(value, arch: str) -> bool:
 
 
 # Architectures whose full fine-tune runs with stochastic rounding regardless of
-# optimizer_stochastic_rounding. This is a route requirement, not a default: the
-# flag arrives as a materialized bool (routes.py declares it `bool`, and
-# training_config only writes the YAML key when it is true), so an explicit False
-# and an omitted key are the same value by the time a trainer sees it. Refusing
-# on False would refuse every request; honouring it would run the route with
-# round-to-nearest, where a measured 84.5% of a bf16 tensor's elements never move
-# at any step count (SENSENOVA_TRAINING_DESIGN.md 6.3).
+# an unspecified (None) optimizer_stochastic_rounding. The transport is
+# tri-state (routes.py declares it `Optional[bool]`, training_config emits the
+# YAML key for True or False and omits it only for None), so an explicit False
+# on a route listed here is refused upfront
+# (train_runner._apply_sensenova_full_finetune_contract) instead of being
+# silently overridden: honouring it would run the route with round-to-nearest,
+# where a measured 84.5% of a bf16 tensor's elements never move at any step
+# count (SENSENOVA_TRAINING_DESIGN.md 6.3). `enforce_full_finetune_stochastic_
+# rounding` still forces it on as a trainer-side backstop for any config that
+# reaches the trainer with it False regardless (e.g. a hand-authored YAML).
 FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH: Dict[str, bool] = {
     "_default": False,
     "sensenova": True,

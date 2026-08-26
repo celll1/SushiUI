@@ -7416,7 +7416,9 @@ export interface TrainingRunCreateRequest {
   optimizer_schedule_free_r?: number;
   optimizer_schedule_free_weight_lr_power?: number;
   optimizer_use_radam?: boolean;
-  optimizer_stochastic_rounding?: boolean;
+  // Tri-state: true/false are explicit; null/undefined ("not specified")
+  // lets the architecture decide (e.g. some full fine-tune routes force it on).
+  optimizer_stochastic_rounding?: boolean | null;
   // LoRA
   lora_dtype?: "fp32" | "fp16" | "bf16";
   // Component training (image encoder)

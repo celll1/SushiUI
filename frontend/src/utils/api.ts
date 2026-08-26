@@ -7212,6 +7212,9 @@ export interface TrainingRunCreateRequest {
   base_resolutions?: number[];
   bucket_strategy?: string;
   multi_resolution_mode?: string;
+  res_curriculum_enable?: boolean;
+  res_curriculum_warmup_steps?: number;
+  res_curriculum_warmup_scale?: number;
   // Epoch-dynamic crop augmentation (SDXL only)
   crop_augment_enable?: boolean;
   crop_full_image_prob?: number;
@@ -7236,18 +7239,27 @@ export interface TrainingRunCreateRequest {
   output_dtype?: string;
   vae_dtype?: string;
   mixed_precision?: boolean;
+  gradient_checkpointing?: boolean;
+  cpu_offload_checkpointing?: boolean;
+  async_cpu_offload_checkpointing?: boolean;
+  fp8_base_dtype?: string | null;
+  torch_compile?: string;
+  torch_compile_dynamic?: boolean | null;
   attention_backend?: string;
   attention_impl?: string;  // "conduit" | "diffusers" (training registry selector; SDXL/SD1.5)
   use_flash_attention?: boolean;
   min_snr_gamma?: number;
   text_encoding_mode?: string;
   text_encoding_swap_interval?: number;
+  text_encoding_prefetch_depth?: number;
   latent_encoding_mode?: string;
   latent_encoding_swap_interval?: number;
   // MiniT2I
   minit2i_label_drop_rate?: number;
   minit2i_lr_factor?: number;
   minit2i_flan_t5_path?: string;
+  minit2i_lora_scope?: string;
+  minit2i_te_lora_scope?: string;
   minit2i_scratch_init_from?: string;  // from-scratch: inherit weights from this model
   minit2i_inherit_final_layer?: boolean;  // from-scratch: also inherit the output head (final_layer.linear)
   // Krea 2 (single-stream flow-matching MMDiT)
@@ -7270,6 +7282,11 @@ export interface TrainingRunCreateRequest {
   repa_weight?: number;                // alignment loss weight (lambda)
   repa_proj_lr_factor?: number;        // projector LR multiplier (x unet_lr)
   repa_encoder_resolution?: number;    // 0 = follow encoder native image_size
+  // Ideogram4-specific
+  ideogram4_lora_scope?: string;
+  ideogram4_train_uncond?: boolean;
+  ideogram4_uncond_loss_weight?: number;
+  ideogram4_lr_factor?: number;
   // Online Danbooru augmentation (image-generation training)
   danbooru_aug_enable?: boolean;
   danbooru_aug_queries?: string;

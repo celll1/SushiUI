@@ -40,6 +40,22 @@ from .registry import BACKENDS
 _backend_used_logged = set()
 
 
+def _repeat_kv_bshd(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Expand kv heads on the canonical BSHD layout ([B, S, H_kv, D], heads at
+    dim 2) so the native path never calls SDPA's own ``enable_gqa`` broadcast.
+
+    Equivalent to ``torch.repeat_interleave(x, dim=2, repeats=n_rep)`` -- the
+    same grouping convention ``F.scaled_dot_product_attention(enable_gqa=True)``
+    applies internally (each kv head is shared by ``n_rep`` consecutive query
+    heads), so the result is numerically identical.
+    """
+    if n_rep == 1:
+        return x
+    b, s, h_kv, d = x.shape
+    x = x[:, :, :, None, :].expand(b, s, h_kv, n_rep, d)
+    return x.reshape(b, s, h_kv * n_rep, d)
+
+
 class AttentionMode(str, Enum):
     """Attention execution mode.
 
@@ -165,10 +181,22 @@ def dispatch_attention(
     # when heads are unequal.
     gqa = enable_gqa or (k.shape[2] != q.shape[2])
 
+    # SDPA's own enable_gqa broadcast is far slower than pre-expanding K/V
+    # (measured ~9x on a 32q/8kv, head_dim 128 shape -- see
+    # backend/core/models/sensenova/vendor/modeling_qwen3.py). Only the native
+    # kernel pays for enable_gqa, so only pre-expand there; flash/sage already
+    # broadcast GQA natively or are downgraded to native beforehand.
+    dispatch_k, dispatch_v = k, v
+    if resolved == "native" and gqa and k.shape[2] != q.shape[2]:
+        n_rep = q.shape[2] // k.shape[2]
+        dispatch_k = _repeat_kv_bshd(k, n_rep)
+        dispatch_v = _repeat_kv_bshd(v, n_rep)
+        gqa = False
+
     out = BACKENDS[resolved].fn(
         q,
-        k,
-        v,
+        dispatch_k,
+        dispatch_v,
         attn_mask=attn_mask,
         dropout_p=dropout_p,
         is_causal=is_causal,

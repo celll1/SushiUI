@@ -5364,11 +5364,14 @@ paths:
                       warnings:
                         type: array
                         description: >-
-                          Always empty here: starting a run clears the previous
-                          attempt's notices. Poll
-                          `GET /training/runs/{run_id}/status` or watch the
-                          `training_log` WebSocket message for the ones this
-                          attempt emits.
+                          Normally empty: starting a run clears the previous
+                          attempt's notices. Notices this attempt emits during
+                          the start request itself are already present — today
+                          that is `pre_training_vram_release_failed`, raised when
+                          the backend could not release its own generation VRAM
+                          before spawning the trainer (the run still starts).
+                          Poll `GET /training/runs/{run_id}/status` or watch the
+                          `training_log` WebSocket message for the rest.
                         items:
                           $ref: '#/components/schemas/TrainingLogEvent'
         '404':
@@ -5379,8 +5382,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: >-
-            A model load or component switch is changing the loaded model, so
-            the run cannot claim the lifecycle gate yet.
+            Either a model load or component switch is changing the loaded
+            model, so the run cannot claim the lifecycle gate yet; or this run
+            already has a live training process (a registered process that has
+            not exited, including one registered but not yet spawned). The
+            second case is cleared with `POST /training/runs/{run_id}/stop`,
+            which accepts the request whatever the run's status says.
           content:
             application/json:
               schema:
@@ -5389,6 +5396,14 @@ paths:
     post:
       tags: [training]
       summary: Stop a training run
+      description: |
+        Stops the run's training process and marks the run `stopped`.
+
+        Accepted when the run's status is `running` or `starting`, and also
+        whenever a live training process is registered for the run regardless of
+        its status — a child that hangs during teardown after `failed` was
+        written is precisely the state `POST /training/runs/{run_id}/start`
+        refuses with a 409, so it has to be stoppable from here.
       parameters:
         - name: run_id
           in: path
@@ -5403,6 +5418,14 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+        '400':
+          description: >-
+            The run is neither running nor starting and has no live training
+            process, so there is nothing to stop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Training run not found
           content:

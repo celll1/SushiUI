@@ -71,20 +71,7 @@ def _strip_adapters(entries):
 
 
 def _pair_layer_modules(layer_index: int, gen, und):
-    """Pair each generation module with its understanding twin, by base signature.
-
-    The symmetry check compares SETS of base signatures, which is strictly
-    weaker than pairability: duplicate signatures collapse in a set, so a layer
-    holding both ``dup.leaf_mot_gen`` and ``dup_mot_gen.leaf`` against a single
-    ``dup.leaf`` passes symmetry with 2 generation modules against 1
-    understanding module. A positional zip over the two returned lists would
-    mis-pair such a tree silently, so the index below rejects a duplicate key
-    and a leftover on either side instead.
-
-    Adapters are the one documented exception: the symmetry check excludes them
-    from BOTH signature sets, so nothing guarantees a counterpart. They are
-    returned as per-side extras rather than treated as a pairing failure.
-    """
+    """Pair twins by signature, rejecting duplicates; return adapters as extras."""
     gen_index: dict = {}
     for path, module in _strip_adapters(gen):
         key = _base_signature(path, module)
@@ -125,32 +112,10 @@ def select_mot_weight_modules(
 ) -> MotWeightSelection:
     """Select owned Parameters and persistent buffers from both decoder halves.
 
-    ``require_exact_symmetry`` (the TRAINING evictor) excludes LoRA children on
-    the generation side only, so a run that also carries understanding LoRA
-    fails this check rather than passing silently. That is the intended
-    outcome for the THREE-state evictor: it stages the understanding half to CPU
-    for the denoise phase, which cannot host a branch that must survive to
-    backward. ``train_runner._apply_sensenova_training_contract`` refuses that
-    combination up front with a readable message; this is the backstop.
-
-    ``allow_understanding_adapters`` is the four-phase evictor (8.3.2), which
-    brings the understanding half BACK for its own backward, so an understanding
-    adapter is no longer a reason to fail. It excludes adapters from both sides
-    of the signature comparison rather than from the generation side only; the
-    adapter modules themselves stay in the returned lists and travel with their
-    half. NOTE that on the only route which can set it today there are no adapter
-    modules to exclude -- four-phase is full-fine-tune only, and full fine-tuning
-    wraps nothing. It is the symmetry rule that generalizes here, not a
-    configuration that exists yet; the installer additionally gates the flag on
-    the training method so a bypassed front-line check cannot reach it from LoRA.
-
-    The INFERENCE evictor leaves symmetry unchecked and classifies purely by
-    path, so understanding wrappers travel with the understanding half.
-
-    ``pairs``/``gen_unpaired``/``und_unpaired`` are populated only under
-    ``require_exact_symmetry``, because only there is there a guarantee to rest
-    a pairing on. The training evictor's interleaved transition consumes them;
-    ``_pair_layer_modules`` documents why the symmetry check alone is not enough.
+    Training requires exact base symmetry and returns pairs for interleaved
+    eviction. Four-phase may exclude adapters from that comparison because it
+    brings the understanding half back for backward; adapters still travel with
+    their own half. Inference only classifies modules by path.
     """
     layers: Iterable[nn.Module] = transformer.language_model.model.layers
     all_gen: list[nn.Module] = []

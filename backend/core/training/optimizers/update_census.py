@@ -1,76 +1,13 @@
-"""Per-step census of which parameters an update actually reached.
+"""Track optimizer-owned parameters updated by fused backward hooks.
 
-Under the fused backward pass ``optimizer.step()`` is never called: every update
-is applied from that parameter's own post-accumulate-grad hook. A parameter
-whose hook returns early -- or never fires -- is therefore updated by nothing at
-all for the whole run, while the loss keeps falling normally. That failure mode
-has been found repeatedly in this code base (3a7c9560's silent CPU-skip in the
-hooks, the bf16 round-to-nearest defect), and it is invisible to loss curves by
-construction.
+The optional census checks every expected parameter after a backward. Exempt
+parameters are structurally gradient-unreachable; deferred parameters remain
+required, but only when their shared MNT window closes. Registration separately
+checks the opposite direction: trainable parameters missing from the optimizer.
 
-This module records the count directly: the update sites call ``record`` after
-applying an update, and ``assert_complete`` compares the set against the
-parameters the optimizer owns and that require a gradient. It is the mechanism
-behind G-RB3 in docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.
-
-Cost when enabled: one ``set.add(int)`` per parameter per step, plus a set
-difference per step. No device work and no synchronisation -- deliberately, so
-it can be left on during a real run. Measured at 47.8 us/step over 588
-parameters (81 ns/param).
-
-WHAT THIS DOES AND DOES NOT GUARANTEE
--------------------------------------
-The expectation set is built from ``optimizer.param_groups``, so what passes is
-"every parameter THE OPTIMIZER OWNS received an update". It is NOT "every
-trainable parameter of the model was updated": a parameter the optimizer does
-not own is invisible here, exactly as it is to hook registration, which is
-driven by the same param_groups. That other direction is a separate check and
-already exists -- ``fused_backward_registration`` walks the module and refuses a
-trainable parameter that is in no param_group. The two together cover both
-directions; neither covers both alone.
-
-STRUCTURALLY UNREACHABLE PARAMETERS
------------------------------------
-Some architectures own parameters that no gradient can reach by construction --
-not a defect, the model's shape. SenseNova's understanding branch has five: a
-prefix forward keeps ``past_key_values`` and discards ``last_hidden_state``, so
-the last layer's post-attention half feeds nothing
-(``sensenova_lora.und_gradient_unreachable_paths``). They are ``requires_grad``
-and owned by the optimizer, so a census that demanded them would raise on every
-step of a correct run. ``expect(..., exempt=...)`` takes their names.
-
-DEFERRED PARAMETERS (not exempt ones)
-------------------------------------
-A route may legitimately apply one group's update once per WINDOW of backwards
-rather than once per backward -- SenseNova's shared-prefix four-phase split
-defers the understanding half's single update to the end of an MNT window. On
-the window's non-final backwards those parameters are correctly not updated, so
-``begin_step(expect_deferred=False)`` drops them from that step's requirement.
-
-This is deliberately NOT ``exempt``. Exempt parameters leave the expectation set
-for the whole run; a deferred group stays in it and is required in full on every
-FINAL backward, so "one half never updates while the loss falls" is still caught
--- once per window instead of once per backward. ``set_deferred`` refuses an
-empty group and refuses one that covers the whole expectation set, either of
-which would make the reduced step check vacuous.
-
-Keys are ``id(param)``, following ``fused_grad_norm``: names come from the
-expectation set, which is built once.
-
-THE APPLIED-UPDATE LEDGER
-------------------------
-Separate from the census and always on: a plain count of updates applied since
-the current backward pass began (``reset_applied_updates`` runs immediately
-before every ``backward()``). It answers one question the census cannot -- "did
-this backward apply anything before it died?" -- which decides whether an OOM
-caught mid-backward can be treated as a skipped batch or has left the weights a
-mixture of two steps (``BaseTrainer._refuse_partial_fused_step``). The census is
-opt-in and, by design, is not asserted for an abandoned batch, so it is blind
-here.
-
-Module-level because the update sites have no reference to the trainer, and one
-training run per process (each is its own subprocess) makes a single counter
-unambiguous.
+An always-on process-local ledger counts writes since the current backward
+began, allowing OOM recovery to reject a retry after a partial fused step. See
+SENSENOVA_TRAINING_DESIGN.md 6.5.
 """
 
 from typing import Dict, Iterable, List, Optional, Set
@@ -100,18 +37,7 @@ class UpdateCensus:
         names: Optional[Dict[int, str]] = None,
         exempt: Optional[Iterable[str]] = None,
     ) -> int:
-        """Declare the parameters that must be updated every step.
-
-        ``exempt`` names parameters that no gradient can reach by construction
-        (see the module docstring). A name matches if it equals, or is a
-        dot-separated prefix of, the parameter's name -- so a module path like
-        ``...layers.41.self_attn.q_proj`` covers its ``.weight`` and ``.bias``.
-        Exempt parameters are dropped from the expectation set rather than
-        excused at assert time, so ``expected_count`` reports what is genuinely
-        required.
-
-        Replaces any previous expectation. Returns how many are expected.
-        """
+        """Replace the expectation set, excluding exact or prefix name matches."""
         names = names or {}
         self.exempt = set(exempt or ())
         expected: Dict[int, str] = {}
@@ -125,12 +51,7 @@ class UpdateCensus:
         return len(self._expected)
 
     def set_deferred(self, params: Iterable[nn.Parameter]) -> int:
-        """Declare the group whose update lands once per window, not per step.
-
-        See the module docstring. Must be called after ``expect``; the group is
-        intersected with the expectation set, and both degenerate results are
-        refused rather than accepted quietly.
-        """
+        """Defer a nonempty, proper subset of expected parameters to window end."""
         keys = {id(p) for p in params} & set(self._expected)
         if not keys:
             raise ValueError(
@@ -175,11 +96,7 @@ class UpdateCensus:
         self._updated.add(id(param))
 
     def missing(self) -> List[str]:
-        """Expected parameters that no update reached this step.
-
-        On a step that does not close a deferral window the deferred group is
-        not yet due; it is required in full on the step that does.
-        """
+        """Return expected parameters whose update is due but missing."""
         skip = frozenset() if self._expect_deferred else self._deferred
         return sorted(
             name

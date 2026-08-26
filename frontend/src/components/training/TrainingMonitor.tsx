@@ -566,7 +566,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
 
             {/* Metrics */}
-            <div className={`grid grid-cols-2 gap-1.5 text-xs ${epochInfo.current !== null ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs [&>div]:whitespace-nowrap">
               {epochInfo.current !== null && (
                 <div>
                   <span className="text-gray-400">Epoch:</span>{" "}
@@ -600,16 +600,33 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               </div>
             </div>
             {currentRun.phase === "training" && recentSecondsPerIteration !== null && (
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-gray-700/70 pt-2 text-xxs text-gray-400">
-                <span title="One dataset batch is reused for each configured MNT timestep.">
-                  Input-batch wall: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.mnt)}</span>
-                  {cadence.mnt > 1 && ` (MNT×${cadence.mnt})`}
-                </span>
-                <span title={cadence.fused ? "Derived wall throughput per update cadence, not isolated optimizer kernel time. Fused backward updates during every backward; configured gradient accumulation is not effective." : "Derived wall throughput per update cadence, not isolated optimizer kernel time."}>
-                  Wall/update: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.optimizerEvery)}</span>
-                  {cadence.optimizerEvery > 1 && ` / ${cadence.optimizerEvery} iters`}
-                  {cadence.fused && " (fused, every iter)"}
-                </span>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-gray-700/70 pt-2 text-xxs text-gray-400 [&>span]:whitespace-nowrap">
+                {cadence.mnt > 1 && cadence.optimizerEvery === cadence.mnt ? (
+                  <span title="The MNT window and gradient-accumulation window end at the same iteration.">
+                    Input batch/update wall: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.mnt)}</span>
+                    {` (MNT×${cadence.mnt})`}
+                  </span>
+                ) : (
+                  <>
+                    {cadence.mnt > 1 && (
+                      <span title="One dataset batch is reused for each configured MNT timestep.">
+                        Input-batch wall: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.mnt)}</span>
+                        {` (MNT×${cadence.mnt})`}
+                      </span>
+                    )}
+                    {cadence.optimizerEvery > 1 && (
+                      <span title="Derived wall throughput per update cadence, not isolated optimizer kernel time.">
+                        Wall/update: <span className="font-mono text-gray-300">≈{formatSeconds(recentSecondsPerIteration * cadence.optimizerEvery)}</span>
+                        {` / ${cadence.optimizerEvery} iters`}
+                      </span>
+                    )}
+                  </>
+                )}
+                {cadence.fused && (
+                  <span title="Fused backward applies parameter updates during every backward; configured gradient accumulation is not effective.">
+                    Update cadence: every iter (fused)
+                  </span>
+                )}
                 <span title="Sample presentations contributing to one optimizer update. With MNT, the same input batch is presented at multiple timesteps.">
                   Sample passes/update: <span className="font-mono text-gray-300">{cadence.batchSize * cadence.optimizerEvery}</span>
                 </span>

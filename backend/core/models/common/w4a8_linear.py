@@ -23,6 +23,12 @@ def require_w4a8_runtime() -> None:
 class W4A8Linear(nn.Module):
     """Linear holding packed INT4 codes plus group/channel scale sidecars."""
 
+    # CANDIDATE frozen-base training path (opt-in, default off). See
+    # ``quantized_frozen_training.enable_frozen_training_fused``; class defaults
+    # so ordinary loads are unaffected.
+    _frozen_training_fused: bool = False
+    _frozen_training_path: str = ""
+
     def __init__(
         self,
         in_features: int,
@@ -91,6 +97,14 @@ class W4A8Linear(nn.Module):
         except (ImportError, AttributeError) as exc:  # pragma: no cover - guarded at load
             raise RuntimeError("Comfy-Kitchen W4A8 runtime is unavailable") from exc
         if torch.is_grad_enabled() and x.requires_grad:
+            if self._frozen_training_fused:
+                from core.models.common.quantized_frozen_training import (
+                    maybe_frozen_fused_forward,
+                )
+
+                out = maybe_frozen_fused_forward(self, x)
+                if out is not None:
+                    return out
             weight = dequantize_w4a8_int8_weight(
                 self.weight,
                 self.weight_s_rel,

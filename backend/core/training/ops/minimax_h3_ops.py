@@ -244,6 +244,24 @@ def load_components(trainer) -> None:
               f"MiniMax-H3 — the released base is ALREADY weight-only FP8 and is kept "
               f"resident in its e4m3 codes (dequant inside the forward).")
 
+    # CANDIDATE fused frozen-base forward, opt-in via SUSHI_CONVROT_TRAIN_FUSED=1.
+    # The transformer is the right (and only) target: an `int8_convrot` or
+    # `w4a8_mixed` DiT loads ConvRotInt8Linear/W4A8Linear here, and the LoRA wrap
+    # makes them differentiable. On an `fp8_scaled`/`bf16` DiT this matches
+    # nothing and the printed count says 0. The `int8_convrot` TEXT ENCODER is
+    # deliberately not wired: `h3_pipeline_ops.encode_presentation` is
+    # `@torch.no_grad()` and its activations never require grad, so those Linears
+    # already run the fused kernel and never reach this path.
+    from core.models.common.quantized_frozen_training import (
+        enable_frozen_training_fused,
+        frozen_training_fused_requested,
+    )
+
+    if frozen_training_fused_requested():
+        enable_frozen_training_fused(
+            trainer.transformer, label="minimax_h3 training transformer"
+        )
+
     trainer.layer_offload_conductor = None
     if trainer.blocks_to_swap > 0:
         print(f"{trainer.log_prefix} Block Swap requested ({trainer.blocks_to_swap} blocks); "

@@ -24,15 +24,16 @@ changes outputs. Only the prefix HEAD is cacheable; see ``acquire()``'s
 docstring for why reassigning a slot's physical memory between denoise steps
 is still safe.
 
-Training note (SenseNova LoRA/full-FT, not yet built): this streamer does NOT
-apply to training -- a training step is a single-timestep forward/backward
-with no multi-step denoise loop, so no persistent read-many KV cache exists to
-stream; training-side offload belongs to LayerOffloadConductor. What DOES
-transfer is the MoT half-eviction CONCEPT from mot_phase_eviction.py: if
-fine-tuning freezes the understanding branch (likely for image-gen tunes),
-its weight-half can be CPU-evicted during training for a similar VRAM saving.
-Evaluate that when training is built; reuse the layer-selection logic, not
-this module.
+Training note: this streamer does NOT apply to ``train_step`` -- a training
+step is a single-timestep forward/backward with no multi-step denoise loop,
+so no persistent read-many KV cache exists to stream; training-side weight
+offload belongs to LayerOffloadConductor. It DOES apply to a training-time
+SAMPLE, which runs the same multi-step denoise loop a standalone generation
+does; see ``ops/sensenova_ops.py::_maybe_install_sample_kv_streaming``. The
+MoT half-eviction CONCEPT from mot_phase_eviction.py is a separate mechanism
+covering ``train_step`` itself: if fine-tuning freezes the understanding
+branch, its weight-half can be CPU-evicted during training for a similar
+VRAM saving; reuse the layer-selection logic, not this module.
 """
 
 from __future__ import annotations

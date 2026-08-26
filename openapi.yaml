@@ -19204,6 +19204,26 @@ components:
 
             Neither reproduces the generation half, which takes N separate
             updates from N separate per-iteration gradients.
+        sensenova_sample_kv_cache_streaming:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova U1.5 only. Applies to the in-training sample image only,
+            not to `train_step` (a single-timestep training forward has no
+            persistent read-many KV cache to stream). The sample runs the same
+            multi-step Euler denoise loop a standalone generation does, through
+            the same encode_prompt/denoise_loop functions, so the mechanism is
+            identical to the generation-time `sensenova_kv_cache_streaming`
+            flag: each layer's prefix KV cache streams from a pinned host
+            master through a 2-slot GPU ring, instead of holding the full
+            per-layer, per-branch KV cache resident on GPU for the sample's
+            denoise loop. Independent of `sensenova_mot_phase_eviction` and
+            `sensenova_four_phase_eviction` (separate mechanism, own pinned
+            pool). If the install fails, the sample runs with the full
+            resident KV cache and a `sensenova_sample_kv_cache_streaming_unavailable`
+            warning is emitted on the training_log channel; training itself is
+            unaffected. Ignored (accepted and warned) by every other
+            architecture.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

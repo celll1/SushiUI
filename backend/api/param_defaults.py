@@ -2344,6 +2344,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # SenseNova full fine-tune only: on-disk format of the saved model.
     # SENSENOVA_FULL_FINETUNE_SAVE_FORMATS below carries the measured sizes.
     "sensenova_full_finetune_save_format": "mixed",
+    # SenseNova only: for a training-time sample (not train_step), stream each
+    # layer's prefix KV cache from a pinned CPU master instead of holding the
+    # full per-layer, per-branch KV cache resident on GPU for the sample's
+    # denoise loop. Independent of sensenova_mot_phase_eviction (separate
+    # mechanism, own pinned pool). If the install fails, the sample runs with
+    # the full resident KV cache and a training_log warning is emitted.
+    "sensenova_sample_kv_cache_streaming": False,
     "block_swap_h2d_only": False,   # H2D-only swap (FLUX.2 LoRA training: no D2H of frozen base)
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1)
     "num_optimizer_groups": 0,

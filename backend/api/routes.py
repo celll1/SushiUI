@@ -15397,6 +15397,13 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_full_finetune_save_format: Literal["mixed", "bf16", "int8"] = TRAINING_DEFAULTS[
         "sensenova_full_finetune_save_format"
     ]
+    # SenseNova only, in-training sample only (not train_step): stream each
+    # layer's prefix KV cache from pinned host memory instead of holding the
+    # full per-layer, per-branch KV cache resident during the sample's denoise
+    # loop. Independent of the phase-eviction flags above.
+    sensenova_sample_kv_cache_streaming: bool = TRAINING_DEFAULTS[
+        "sensenova_sample_kv_cache_streaming"
+    ]
     block_swap_h2d_only: bool = TRAINING_DEFAULTS["block_swap_h2d_only"]  # FLUX.2 LoRA: H2D-only swap (no device->host of frozen base)
     block_swap_ring_size: int = TRAINING_DEFAULTS["block_swap_ring_size"]  # GPU weight-buffer ring slots (>=1)
     num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)

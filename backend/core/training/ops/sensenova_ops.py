@@ -1627,6 +1627,35 @@ def train_step(
     return loss, value, recon_value
 
 
+def _maybe_install_sample_kv_streaming(trainer: Any, transformer: Any):
+    """Install the 2-slot flash-KV prefix streamer for a training-time sample
+    (no applicability to ``train_step`` -- see module docstring). A failed
+    install is announced on ``training_log``, not just printed, since
+    ``add_warning`` is a no-op outside a live generation request."""
+    if not bool(getattr(trainer, "sensenova_sample_kv_cache_streaming", False)):
+        return None
+    from core.models.sensenova import kv_cache_streaming
+
+    streamer = kv_cache_streaming.install(transformer, trainer.device)
+    if streamer is None:
+        emit_training_warning(
+            "SenseNova training-time sample requested KV cache streaming, but "
+            "the mechanism could not be installed; this sample runs with the "
+            "full per-layer, per-branch KV cache resident instead.",
+            code="sensenova_sample_kv_cache_streaming_unavailable",
+            prefix=trainer.log_prefix,
+        )
+    return streamer
+
+
+def _teardown_sample_kv_streaming(transformer: Any, streamer: Any) -> None:
+    if streamer is None and getattr(transformer, "_kv_cache_streamer", None) is None:
+        return
+    from core.models.sensenova import kv_cache_streaming
+
+    kv_cache_streaming.uninstall(transformer, streamer)
+
+
 def generate_sample(
     trainer: Any,
     *,
@@ -1683,6 +1712,7 @@ def generate_sample(
     was_training = transformer.training
     evictor = getattr(trainer, "sensenova_phase_evictor", None)
     prefix = None
+    kv_streamer = None
     try:
         ref_images = _load_reference_images(
             [reference_image_path] if reference_image_path else None
@@ -1700,6 +1730,10 @@ def generate_sample(
         # torch.is_grad_enabled() otherwise, and this call happens before the
         # no_grad block below.
         ops.set_attention_backend(transformer, backend, AttentionMode.INFERENCE)
+        # Independent of the phase evictor (disjoint tensors/hooks, its own
+        # pinned pool and CUDA stream); must be installed before encode_prompt
+        # so its own KV-cache finalization sees ``transformer._kv_cache_streamer``.
+        kv_streamer = _maybe_install_sample_kv_streaming(trainer, transformer)
         with torch.no_grad():
             # The evictor's full/prefix/denoise machine is driven here exactly as
             # a training step drives it, so generation's own prefix->denoise
@@ -1750,6 +1784,9 @@ def generate_sample(
                 print(
                     f"{trainer.log_prefix} SenseNova sample prefix cleanup failed: {clear_error}"
                 )
+        # Idempotent with clear_prefix_caches's own defence-in-depth teardown
+        # (mirrors pipeline_backends.sensenova's own generation finally).
+        _teardown_sample_kv_streaming(transformer, kv_streamer)
         # Restore TRAINING mode before the next forward: nothing re-stamps the
         # attention modules after load, so an INFERENCE stamp left here would
         # persist for the rest of the run.

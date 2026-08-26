@@ -19056,7 +19056,78 @@ components:
             running at all (without it the both-branch step did not fit the
             probe's 34.551 GiB cap). See `SENSENOVA_TRAINING_DESIGN.md` 8.3.3.
             Under `multi_noise_timesteps` > 1 the split runs once per iteration,
-            and says so on the training_log channel.
+            and says so on the training_log channel;
+            `sensenova_four_phase_shared_prefix` shares one cut across the
+            window instead.
+        sensenova_four_phase_shared_prefix:
+          type: 'boolean'
+          default: false
+          description: >-
+            Requires `sensenova_four_phase_eviction`; refused before the
+            checkpoint loads without it. Only has an effect at
+            `multi_noise_timesteps` > 1.
+
+            Cuts the prefix ONCE per multi-noise-timestep window instead of once
+            per iteration. All N generation graphs read the same boundary
+            leaves, so autograd accumulates into one gradient buffer regardless
+            of N, and phase 3 (the recomputed understanding forward and its
+            backward) runs once at the window's end. The understanding half
+            stays on CPU for the whole window, so the weight round trips drop
+            from 2N per batch to 2 — the loop shape a FROZEN understanding half
+            already has.
+
+            This CHANGES WHAT IS TRAINED, which is why it is opt-in and off by
+            default rather than an internal optimisation of the split. The
+            understanding half takes ONE update per window, computed from the
+            window's accumulated boundary gradient at the weights the window
+            STARTED with, while the generation half takes N: the update-count
+            asymmetry becomes N:1. Adafactor's per-parameter step counter
+            advances once per window instead of N times, so its beta2 schedule
+            moves N times more slowly for that half, and the single update uses
+            the learning-rate schedule's value after all N iterations. It is
+            exact rather than approximate: the understanding parameters receive
+            gradient from nothing but phase 3, so with phase 3 deferred their
+            weights are bit-identical for the whole window.
+
+            IT ALSO CHANGES A CHART. The understanding half is reported under
+            `grad_norm_text_encoder_1`, and its gradients now exist only on the
+            backward that closes each window, so that series becomes N-1 zeros
+            and one spike per window instead of a value every step. The
+            generation half's `grad_norm_unet` is unaffected. Nothing has been
+            smoothed or hidden — a flat run of zeros there is the setting
+            working, not the understanding half having stopped learning.
+
+            A batch skipped mid-window (a recovered CUDA OOM) discards the whole
+            window's accumulated understanding gradient while the generation
+            updates it already applied stand. That is announced on the
+            training_log channel with a `sensenova_four_phase_window_dropped`
+            code and charted as the `sn_und_grad_dropped` extra metric.
+
+            COST, at `multi_noise_timesteps` = 1, is nil and the arithmetic is
+            unchanged: a window of one is the shipped per-iteration behaviour.
+            Above 1 nothing is measured — the per-iteration figures on
+            `sensenova_four_phase_eviction` extrapolate to N x 3.4504 s per
+            window against N x 1.4288 + 2.0216 s shared (1024px p50 components,
+            SENSENOVA_TRAINING_DESIGN.md 8.3.2), but that is arithmetic on
+            single-iteration measurements, not a measurement of a window.
+        sensenova_four_phase_grad_reduction:
+          type: 'string'
+          enum: ['sum', 'mean']
+          default: 'sum'
+          description: >-
+            How `sensenova_four_phase_shared_prefix` reduces the boundary
+            gradient it accumulated over the window. Ignored when that setting
+            is off.
+
+            `sum` (default): the accumulated gradient is used as it stands,
+            which is the exact gradient of the window's SUMMED loss —
+            `.grad` accumulates, so this is what the mechanism naturally
+            produces. `mean` divides it by the number of generation backwards
+            the window ran, giving the gradient of the window's averaged loss
+            and an understanding-side update N times smaller.
+
+            Neither reproduces the generation half, which takes N separate
+            updates from N separate per-iteration gradients.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

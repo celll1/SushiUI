@@ -2328,6 +2328,17 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # per step, measured (n=25, p50) at 0.190 s against a 1.758 s generation
     # forward+backward at 1024px / 467 prefix tokens, i.e. a 1.09-1.10x step.
     "sensenova_four_phase_eviction": False,
+    # SenseNova four-phase only, and only meaningful at multi_noise_timesteps > 1:
+    # cut the prefix ONCE per MNT window and let all N generation backwards
+    # accumulate into the same boundary leaves, so phase 3 runs once per window
+    # instead of once per iteration. Changes what is trained -- the understanding
+    # half takes one update per window instead of N -- so it is opt-in rather
+    # than folded into the split (SENSENOVA_TRAINING_DESIGN.md 8.3.5).
+    "sensenova_four_phase_shared_prefix": False,
+    # How the shared window reduces the boundary gradient it accumulated.
+    # "sum" is the exact gradient of the window's summed loss, which is what
+    # .grad already holds; "mean" divides by the number of backwards.
+    "sensenova_four_phase_grad_reduction": "sum",
     # SenseNova full fine-tune only: on-disk format of the saved model.
     # SENSENOVA_FULL_FINETUNE_SAVE_FORMATS below carries the measured sizes.
     "sensenova_full_finetune_save_format": "mixed",

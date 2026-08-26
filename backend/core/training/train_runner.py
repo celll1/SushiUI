@@ -229,6 +229,30 @@ def _apply_sensenova_training_contract(
         "sensenova_four_phase_eviction",
         TRAINING_DEFAULTS["sensenova_four_phase_eviction"],
     )
+    shared_prefix = _normalize_sensenova_bool(
+        train_config,
+        "sensenova_four_phase_shared_prefix",
+        TRAINING_DEFAULTS["sensenova_four_phase_shared_prefix"],
+    )
+    reduction = str(
+        train_config.get(
+            "sensenova_four_phase_grad_reduction",
+            TRAINING_DEFAULTS["sensenova_four_phase_grad_reduction"],
+        )
+        or TRAINING_DEFAULTS["sensenova_four_phase_grad_reduction"]
+    ).strip().lower()
+    if reduction not in ("sum", "mean"):
+        raise ValueError(
+            f"SenseNova sensenova_four_phase_grad_reduction must be 'sum' or "
+            f"'mean', got {reduction!r}."
+        )
+    train_config["sensenova_four_phase_grad_reduction"] = reduction
+    if shared_prefix and not four_phase:
+        raise ValueError(
+            "SenseNova sensenova_four_phase_shared_prefix requires "
+            "sensenova_four_phase_eviction: it shares ONE boundary cut across an "
+            "MNT window, and without the split there is no boundary cut to share."
+        )
     if four_phase:
         # The lift of the refusal below, and its preconditions. Every clause is
         # restated by ops.sensenova_ops.assert_four_phase_contract inside the

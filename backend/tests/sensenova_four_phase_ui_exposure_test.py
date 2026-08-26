@@ -204,8 +204,12 @@ def test_the_designed_combination_is_accepted():
 # ---------------------------------------------------------------------------
 
 def test_the_two_flags_are_declared_as_one_feature():
+    # Four keys now: the shared-window pair rides the same feature because it is
+    # legal only on top of the split, which is legal only on top of eviction.
     assert TRAINING_FEATURE_PARAMS["sensenova_mot_eviction"] == [
-        "sensenova_mot_phase_eviction", "sensenova_four_phase_eviction"]
+        "sensenova_mot_phase_eviction", "sensenova_four_phase_eviction",
+        "sensenova_four_phase_shared_prefix",
+        "sensenova_four_phase_grad_reduction"]
 
 
 def test_the_mechanism_is_declared_absent_everywhere_else():
@@ -268,7 +272,8 @@ def test_the_flag_is_submitted_saved_and_restored():
     assert "sensenova_four_phase_eviction: params.sensenova_four_phase_eviction," in tsx
     # YAML round trip and preset round trip -- a control that submits but does
     # not persist is a setting the user loses on the next run.
-    assert '"sensenova_four_phase_eviction", "sensenova_full_finetune_save_format",' in tsx
+    assert '"sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",' in tsx
+    assert '"sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",' in tsx
     assert "sensenovaFourPhaseEviction: params.sensenova_four_phase_eviction," in tsx
     assert 'updateParam("sensenova_four_phase_eviction", config.sensenovaFourPhaseEviction)' in tsx
 

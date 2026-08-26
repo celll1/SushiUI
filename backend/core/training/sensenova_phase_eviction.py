@@ -89,6 +89,16 @@ class SenseNovaTrainingPhaseEvictor:
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
 
+    @property
+    def understanding_modules(self) -> tuple:
+        """The half staged to CPU for the denoise phase.
+
+        Public because the shared-window census derives its deferred parameter
+        set from it: "deferred" and "absent during the generation backward" must
+        be one set, not two.
+        """
+        return tuple(self._und_modules)
+
     def _best_effort_cpu(self) -> Exception | None:
         first_error = None
         for module in (*self._gen_modules, *self._und_modules):

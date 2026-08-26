@@ -7164,6 +7164,11 @@ export interface TrainingRunCreateRequest {
   // model loads unless train_text_encoder and sensenova_mot_phase_eviction are
   // both set; and those two TOGETHER are refused without it.
   sensenova_four_phase_eviction?: boolean;
+  // On top of the split, at multi_noise_timesteps > 1: one boundary cut per
+  // window instead of per iteration. Changes what the understanding half trains
+  // on (one update per window, not N) -- see openapi.yaml.
+  sensenova_four_phase_shared_prefix?: boolean;
+  sensenova_four_phase_grad_reduction?: "sum" | "mean";
   // SenseNova full fine-tune only: on-disk format of the saved model.
   // "mixed" (default) | "bf16" | "int8". See openapi.yaml for the measured
   // sizes and the int8 requantization loss census.

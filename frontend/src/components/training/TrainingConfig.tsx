@@ -255,6 +255,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   use_pinned_memory: false,
   sensenova_mot_phase_eviction: false,
   sensenova_four_phase_eviction: false,
+  sensenova_four_phase_shared_prefix: false,
+  sensenova_four_phase_grad_reduction: "sum",
   sensenova_full_finetune_save_format: "mixed",
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
@@ -1042,6 +1044,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       use_pinned_memory: params.use_pinned_memory,
       sensenova_mot_phase_eviction: params.sensenova_mot_phase_eviction,
       sensenova_four_phase_eviction: params.sensenova_four_phase_eviction,
+      sensenova_four_phase_shared_prefix: params.sensenova_four_phase_shared_prefix,
+      sensenova_four_phase_grad_reduction: params.sensenova_four_phase_grad_reduction,
       sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
@@ -1308,7 +1312,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
       "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction",
-      "sensenova_four_phase_eviction", "sensenova_full_finetune_save_format",
+      "sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",
+      "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -1617,6 +1622,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (fourPhaseBlockedReason && params.sensenova_four_phase_eviction) {
       updateParam("sensenova_four_phase_eviction", false);
     }
+    // The shared window is refused without the split it shares, same reason.
+    if (params.sensenova_four_phase_shared_prefix
+        && (motEvictionUnsupported || fourPhaseBlockedReason
+            || !params.sensenova_four_phase_eviction)) {
+      updateParam("sensenova_four_phase_shared_prefix", false);
+    }
     // The two eviction params and the two branch flags are dependencies as
     // well as reads: a preset or a
     // copy-from-run writes them without touching arch or method, and
@@ -1629,6 +1640,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       textEncoderTrainingUnsupported, trainingSamplesUnsupported,
       motEvictionUnsupported, fourPhaseBlockedReason,
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
+      params.sensenova_four_phase_shared_prefix,
       params.train_unet, params.train_text_encoder]);
 
   // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
@@ -2106,6 +2118,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       usePinnedMemory,
       sensenovaMotPhaseEviction: params.sensenova_mot_phase_eviction,
       sensenovaFourPhaseEviction: params.sensenova_four_phase_eviction,
+      sensenovaFourPhaseSharedPrefix: params.sensenova_four_phase_shared_prefix,
+      sensenovaFourPhaseGradReduction: params.sensenova_four_phase_grad_reduction,
       sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
       numOptimizerGroups,
       multiNoiseTimesteps,
@@ -2301,6 +2315,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.usePinnedMemory !== undefined) updateParam("use_pinned_memory", config.usePinnedMemory);
     if (config.sensenovaMotPhaseEviction !== undefined) updateParam("sensenova_mot_phase_eviction", config.sensenovaMotPhaseEviction);
     if (config.sensenovaFourPhaseEviction !== undefined) updateParam("sensenova_four_phase_eviction", config.sensenovaFourPhaseEviction);
+    if (config.sensenovaFourPhaseSharedPrefix !== undefined) updateParam("sensenova_four_phase_shared_prefix", config.sensenovaFourPhaseSharedPrefix);
+    if (config.sensenovaFourPhaseGradReduction !== undefined) updateParam("sensenova_four_phase_grad_reduction", config.sensenovaFourPhaseGradReduction);
     if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
@@ -4802,6 +4818,49 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
                 {fourPhaseBlockedReason && (
                   <p className="text-xs text-gray-500">{fourPhaseBlockedReason}</p>
+                )}
+
+                {/* Only rendered on top of the split, which is what the backend
+                    requires; the effect above clears it when the split goes. */}
+                {params.sensenova_four_phase_eviction && !fourPhaseBlockedReason && (
+                  <div className="pl-6 space-y-2 border-l border-gray-700">
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="sensenova-four-phase-shared-prefix"
+                        checked={params.sensenova_four_phase_shared_prefix ?? false}
+                        onChange={(e) => updateParam("sensenova_four_phase_shared_prefix", e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="sensenova-four-phase-shared-prefix" className="text-xs text-gray-300 cursor-pointer">
+                        Share One Prefix Across the Multi-Noise Window
+                      </label>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Cuts the prefix once per multi-noise-timestep window instead of once per iteration, so the understanding half stays on CPU for the whole window and its backward runs once. Only has an effect at Multi-Noise Timesteps above 1.
+                    </p>
+                    {params.sensenova_four_phase_shared_prefix && (
+                      <>
+                        <p className="text-xs text-amber-400">
+                          This changes what is trained. With N multi-noise timesteps the understanding half takes ONE update per window, computed at the weights the window started with, while the generation half takes N. Adafactor&apos;s step counter for that half advances once per window, so its beta2 schedule moves N times more slowly, and the single update uses the learning rate reached after all N iterations. The TE1 gradient-norm series becomes N-1 zeros and one spike per window, because the understanding half only receives a gradient on the step that closes the window. A batch skipped mid-window ends that batch and discards the window&apos;s accumulated understanding gradient while the generation updates it already applied stand; the count is reported on the training log and charted.
+                        </p>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Window Gradient Reduction</label>
+                          <select
+                            value={params.sensenova_four_phase_grad_reduction ?? "sum"}
+                            onChange={(e) => updateParam("sensenova_four_phase_grad_reduction", e.target.value)}
+                            className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200"
+                          >
+                            <option value="sum">Sum (gradient of the window&apos;s summed loss)</option>
+                            <option value="mean">Mean (gradient of the window&apos;s averaged loss)</option>
+                          </select>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Sum is what the accumulation itself produces. Mean divides by the number of iterations in the window, giving an understanding-side update N times smaller. Neither matches the generation half, which takes N separate updates from N separate gradients.
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </>
             )}

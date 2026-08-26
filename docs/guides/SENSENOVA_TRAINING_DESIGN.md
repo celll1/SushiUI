@@ -1758,24 +1758,36 @@ und branch を学習対象にする場合（§13）の eviction 契約をここ�
   backward 間で自然に加算され、und は iteration 間で不変なので数学的に正確である。
   **副作用として「gen は MNT 回 / und は batch あたり 1 回」という更新頻度の非対称**が
   生まれる。これは欠陥ではなく設計事実として記録する。
-  > **【U-2-4 訂正】「境界勾配を累積する」が成立しない理由は、形ではなく
-  > und の不変性である。**
-  > **形は揃う** — SenseNova は契約上 B1 で（`_collate_sensenova_b1_prefix` は
-  > prefix を 1 本しか許さない）、MNT ループは**その 1 item の timestep を回し、
-  > 毎 iteration `captions[0]` を再 encode する**（`_sensenova_mnt_conditioning`）。
-  > したがって窓内の境界 K/V は同形で、素直に加算できる。
-  > **成立しないのは設計の厳密性の前提の方である**: MNT ループは
-  > **iteration ごとに optimizer を step する**（そもそも graph を retain せず
-  > prefix を再計算しているのはそのためである）ので、窓末で流す累積勾配は
-  > **既に動いた und weight に対して**逆伝播することになる。
-  > 勾配 accumulation なら窓が閉じるまで step しないのでこの前提は成り立つが、
-  > その経路は別理由で拒否されている（§6.2 条件 2）。
-  > 実装は相 3 を **iteration ごとに** 回す。これは厳密である — 相 3 の再計算は
-  > 自分の相 1 と同じ und weight を読み（間に走る gen hook は und weight に
-  > 触れない）、gen half の更新は und forward に影響しない。
-  > **コストは weight 往復が step あたり 2 回ではなく MNT iteration あたり 2 回**に
-  > なることで、これは拒否ではなく `training_log` チャネルで告知する
-  > （`sensenova_four_phase_mnt_cost`）。更新頻度の非対称という結論は変わらない。
+  **【実装状況】`sensenova_four_phase_shared_prefix`（既定 OFF）で実装済み。
+  §8.3.5。**
+  > **【U-2-4 訂正 — さらに訂正（2026-08-26）。累積規則は撤回ではなく延期であり、
+  > 現在は flag 下で実装済みである（§8.3.5）。**
+  >
+  > 旧訂正は「累積が成立しない理由は und の不変性である」と書いていたが、
+  > **その根拠は循環していた**。und が窓内で動くのは *相 3 を iteration ごとに
+  > 回すから*であって、モデルの性質ではない。und parameter に勾配を与える経路は
+  > **相 3 しか無い**（gen forward は境界 K/V を detach された葉として読む。
+  > `sensenova_phase_eviction._assert_grad_free` が逆側から主張し、
+  > `test_negative_control_skipping_phase_three_leaves_the_und_half_unupdated`
+  > が固定している）。したがって**相 3 を回さなければ und weight は窓全体で
+  > bit 単位に不変**である — 累積の前提は、選択の結果でしかなかった前提に
+  > 依存していたのである。
+  >
+  > 実際に per-iteration を選ばせていたのは **2 つの変更可能な事情**である:
+  > (1) `_update_census.assert_complete()` が MNT ループ内、step seam より
+  > **上流**で呼ばれること（§8.3.5 で窓認識にした）、
+  > (2) MNT ループの step cadence が iteration ごとであること
+  > （fused backward では「step 地点」は存在せず、各 parameter は自分の
+  > post-accumulate-grad hook が発火した時に動く。cadence は und にとって
+  > **相 3 をいつ回すか**でしか決まらない）。
+  >
+  > **形は揃う**（旧記述のこの部分は正しい） — SenseNova は契約上 B1 で
+  > （`_collate_sensenova_b1_prefix` は prefix を 1 本しか許さない）、MNT ループは
+  > その 1 item の timestep を回すので、窓内の境界 K/V は同形である。
+  > **既定は依然 per-iteration である**（`sensenova_four_phase_shared_prefix`
+  > の既定は false）。per-iteration も厳密であり、コストは weight 往復が
+  > MNT iteration あたり 2 回になることで、`training_log` チャネルで告知する
+  > （`sensenova_four_phase_mnt_cost`）。
   > **なお MNT>1 は到達可能である** — `assert_full_finetune_contract` が拒否するのは
   > `gradient_accumulation_steps` であって `multi_noise_timesteps` ではなく、
   > `BaseTrainer` は MNT >= 1 しか要求しない。**両者を同一視していた旧記述は誤り**。
@@ -2097,6 +2109,173 @@ und half: float=0, int8=294, other=0. ...
 §8.3.3 の測定で 67-89 GiB に振れる）、`und` branch の resume、64px 超での
 resume、metadata を書き換えた実ファイルでの拒否（合成ツリーのテストのみ）、
 そして**品質は一切**。
+
+### 8.3.5 MNT 窓での prefix 共有（`sensenova_four_phase_shared_prefix`、既定 OFF）
+
+§8.3.2 の「境界勾配を累積してから相 3 を 1 回だけ回す」を、opt-in の flag として
+実装したもの。**既定は OFF であり、MNT>1 × 学習対象の und half は今も
+per-iteration で正しく回る**。この flag は 4 相 eviction の内部最適化ではなく
+**何を学習するかを変える設定**なので、`sensenova_four_phase_eviction` に
+畳み込んでいない。
+
+#### 機構
+
+窓（= 1 batch の MNT ループ）につき **相 1 を 1 回、`cut()` を 1 回、
+境界葉を 1 組**。N 本の gen グラフが**同じ葉テンソル**を読むので、autograd が
+`leaf.grad` に自然に加算する。**境界勾配のメモリは N に依らず 1 バッファ**である
+（`capture()` を iteration ごとに呼んで `_pending` に積む実装は、258 token での
+実測 50.5 MiB を 544 token に外挿した ~106 MiB を N 倍抱えるので、採らない）。
+und half は窓の間ずっと CPU に留まり、**weight 往復は 2N/batch から 2/batch へ**。
+これは**凍結 und half が既に持っているループ形**である（prefix は batch あたり
+1 本、`_sensenova_mnt_conditioning` が再 encode しない）。
+
+相 3 は**窓の最後の gen backward の直後**（`_execute_forward_backward` 内）で
+走る。step seam ではない — census が MNT ループ内で seam より上流にあり、
+fused grad norm もそこで読まれるので、seam まで遅らせると**正しい run で
+最終 iteration の census が und half を「未更新」と報告し、かつ und の grad norm
+が落ちる**。
+
+> **【2026-08-26 追記】seam の `flush()` が no-op であることと、seam が
+> no-op であることは別である。** step seam は `flush()` の 4 行あとで
+> `assert_understanding_resident()` を呼んでおり、これは state が
+> `prefix` / `und_backward` であることを要求する。共有窓の非最終 iteration では
+> 相 3 が走らないので evictor は `denoise` のままであり、seam は **囲む try が
+> 無い場所で** raise する（最も近い try は手前で閉じている）。初版はここを
+> 見落として出荷しており、**OFF は動く / ON × MNT=1 は動くが何もしない /
+> ON × MNT>1 は初回 iteration で死ぬ**状態だった。
+> 現在は `BaseTrainer._assert_sensenova_step_seam_residency` に切り出し、
+> **直前の backward で相 3 が走ったか**（`phase_three_ran`）で常駐を出し分ける。
+> これは `is_final_iteration()` とは**別の述語である** — 後者は「次の backward が
+> 窓を閉じるか」を答えるので、seam から見ると iteration N−2 で既に True になり、
+> 同じ crash を 1 iteration 遅らせるだけになる。
+> 4 相 OFF・per-iteration の両ルートでは `phase_three_ran` は常に True なので
+> 挙動は不変である。
+
+#### 厳密性
+
+und parameter に勾配を与える経路は相 3 しか無く（gen forward は境界 K/V を
+detach された葉として読む）、この経路は fused backward 専用で
+`optimizer.step()` を持たない（各 parameter は自分の hook が発火した時だけ動く）。
+したがって**相 3 を回さない限り und weight は窓全体で bit 単位に不変**であり、
+窓末の単一 backward は自分の相 1 forward が読んだのと同じ weight を読む。
+per-iteration 版と同じ意味で厳密である。
+
+#### 学習に対して何が変わるか（欠陥ではなく設計事実として記録する）
+
+| 量 | 既定（per-iteration） | 共有窓 |
+|---|---|---|
+| und の更新回数 | 窓あたり N | 窓あたり **1** |
+| und が使う勾配 | iteration k の損失の勾配 | 窓の**総和**（`grad_reduction: sum`、既定）または**平均**（`mean`）の勾配 |
+| und が更新される時の weight | iteration k 時点 | **窓の開始時点** |
+| Adafactor の `state['step']`（und） | 窓あたり N 進む | 窓あたり **1** 進む → β2_t スケジュールが N 倍遅い |
+| und の更新が使う LR | 各 iteration の LR | **N−1 iteration 後**の scheduler LR |
+| gen : und の更新頻度 | N : N | **N : 1** |
+| `grad_norm_text_encoder_1`（= und half。`sensenova_adapter.grad_norm_components` が und を `LORA_COMPONENT_TEXT_ENCODER_1` に置く） | 毎 step 実値 | **窓あたり 0 が N−1 個 + spike 1 個**。fused grad norm は backward ごとに集計され、und の hook は相 3 でしか発火しないため。**チャートが変わるので、値が落ちたのではないことをここに記録する** |
+
+`sum` が既定なのは `.grad` が加算されるからで、それが**窓の総和損失の厳密な勾配**
+だからである。`mean` は窓の backward 本数で割る。**どちらも gen half を再現しない** —
+gen は N 本の per-iteration 勾配から N 回別々に更新される。
+
+#### 窓の途中で batch が飛んだ場合
+
+回復可能な CUDA OOM で batch が skip されると、`discard()` はその窓が既に走らせた
+k 本分の und 勾配を捨てる。**その k 本の gen 更新は既に適用済みである**ので、
+非対称は 1 iteration 分ではなく k iteration 分に広がる。相 3 をここで回すことは
+できない（discard の呼び元は CUDA エラーと teardown である）ので、**捨てた本数を
+数えて出す**: `training_log` に `sensenova_four_phase_window_dropped`、および
+extra metric `sn_und_grad_dropped`（run 累計）としてチャートに出る。
+
+**そのうえで、その batch の MNT ループを打ち切る。** `cuda_error_skip` は
+iteration ごとに False に戻るのでループ自体は続こうとするが、共有ルートでは
+続く iteration に `cut()` も `begin_window()` も無い（prefix を再 encode しない、
+`mnt_idx != 0`）。打ち切らないと (a) `discard()` が `_window_size` を消すため
+`is_final_iteration()` が True を返し、census が**出せるはずのない und 更新を
+要求して run を殺す** — 生かすための経路で殺すことになる —、(b) census を
+切っていれば代わりに **und 勾配ゼロのまま gen だけを回す** iteration が残り、
+その増分は次の OOM まで記録にも出ない。`window_aborted` は共有ルートでのみ
+立ち、次の batch の `cut()` で下りるので、打ち切りは batch 単位である。
+per-iteration ルートの skip は従来どおり自分の iteration しか失わない。
+
+> **打ち切りの副作用（既知、未修正）。** batch が MNT 回未満で終わるので、
+> **1 batch = MNT step を前提にしている範囲ヒューリスティクス**が、回復した OOM の
+> 直後に 1 回だけずれることがある: debug latent dump の窓
+> （`base_trainer.py:12174-12175` が `global_step` から `global_step + MNT - 1` を
+> その batch の範囲として先読みする）と、同じ形の sample スケジュール判定
+> （`:12928-12932`）である。**LR と `global_step` は相互に整合したままである**
+> （どちらも実際に走った iteration だけ進む）ので、ずれるのは「いつ dump/sample
+> するか」だけであり、学習そのものには波及しない。skip 自体が稀事象なので、
+> 追加の状態を持たせるより記録するほうを選ぶ。
+
+#### census（G-RB3）との順序
+
+`_update_census.assert_complete()` は MNT ループ内で毎 backward 呼ばれ、
+optimizer が所有する全 parameter の更新を要求する。**遅延下では正しい run の
+iteration 0..N−2 でこれが raise する**ので、census を窓認識にした:
+`begin_step(expect_deferred=...)` が窓を閉じない backward でだけ **und 群を
+その step の要求から外す**。**exempt ではない** — 群は expectation set に残り、
+**窓を閉じる backward では全数が要求される**ので、「片方の half が一度も更新
+されないまま loss が下がる」は依然として捕まる（backward ごとではなく窓ごとに）。
+遅延群は evictor が denoise 相で CPU に退避する module（`understanding_modules`）
+から取るので、「遅延される」と「gen backward の間そこに居ない」は同一の集合である。
+`set_deferred` は空集合と expectation set 全体を拒否する（どちらも非最終 step の
+検査を空にする）。
+
+#### 何が実際に守っているか（新しい拒否の大半は到達不能である）
+
+共有窓に足した拒否は 4 つあるが、**トレーナーからはどれも到達しない**:
+`begin_window` の size < 1（MNT >= 1 が常に成り立つ）、未完了の窓への
+`begin_window`（`cut()` が必ず先行し `_window_backwards` を 0 にするので構造的に
+死んでいる）、`begin_window` 前の `after_generation_backward`、そして `capture()`
+の 2 つ（`capture()` は本数が一致するその瞬間にしか呼ばれない）。
+**実際に生きているのは既存の `cut()` の「never captured」チェックだけである。**
+したがって「新しい不変条件は旧規則より鋭い」という言い方は**しない** —
+中身は同じ番人＋足場である。足場は残す（意図を実行可能な形で書いたもので、
+テストがそれを踏む）が、強度の主張はしない。
+
+同じ整理として、**読み手のいない診断用アクセサは置かない**方針にした:
+`window_backwards` プロパティと `UpdateCensus.deferred_steps` は書かれるだけで
+どこからも（テストからも）読まれていなかったので削除した。上の 4 つの拒否は
+「意図を実行可能な形で書いた足場」として残す価値があるが、誰も読まないカウンタに
+その価値は無い。
+
+**そもそもこの機構は census 抜きで 3 重に自己検査している**（監査所見。census は
+既定 OFF なので、これが正直な言い方である）:
+`capture()` は境界葉の `.grad` が全て None なら raise し、`cut()` は放棄された窓の
+次の batch で raise し、`_assert_grad_free` は `.grad` を持ったままの half の退避を
+拒否する。census はその 4 本目である。**本変更はこの 3 本のどれにも穴を開けない。**
+
+#### コスト — **N=1 以外はすべて外挿である**
+
+§8.3.2 の 1024px 実測成分（p50）からの**算術**であって、窓の測定ではない:
+
+| | 窓あたり |
+|---|---:|
+| 既定（per-iteration） | N × 3.4504 s |
+| 共有窓 | N × 1.4288 + 2.0216 s |
+
+- 内訳: 既定は (prefix 0.1708 + denoise 1.4288 + 再計算 0.1897 + und bwd 0.3291
+  + eviction 往復 1.332) × N。共有窓は denoise 1.4288 × N に、窓あたり 1 回の
+  (0.1708 + 0.1897 + 0.3291 + 1.332) を足したもの。
+- **分割しない単一 backward との損益分岐は N = 4.02 である**（初版の「N≈5」は
+  この交点を整数に丸めた数字を根拠なしに書いていた。**訂正する**）。
+  比較対象は 1.7584 + 0.1728 = **1.9312 s/iteration**、すなわち 1.9312N。
+  **この対象は eviction 往復を 1 度も払わない** — 分割しなければ学習中の und half は
+  そもそも退避できないからである。
+  1.4288N + 2.0216 = 1.9312N → 0.5024N = 2.0216 → **N = 4.0239**。
+  整数では N=4 で共有窓 7.7368 s 対 単一 7.7248 s（単一がまだ僅かに安い）、
+  **N=5 で 9.1656 s 対 9.6560 s と逆転する**。
+- **per-iteration 比の上限は 2.41 倍**（N→∞ で 3.4504 / 1.4288）。
+- **exit gate は `probes/text_encode_vs_step.py --arm sensenova-four-phase` を
+  N>1 で回し直すことである**（新しい bespoke probe ではない）。カードが空くまで
+  回さない。
+  > **【2026-08-26】この gate は現状そのままでは実行できない。** 当該 arm は
+  > `multi_noise_timesteps: 1` を `:594` と `:641` の 2 箇所に**ハードコードして
+  > おり**、MNT を渡す引数が無く、共有窓の arm も無い。したがって gate を回す前に
+  > **probe 側へ `--multi-noise-timesteps` と shared-prefix arm を足す作業が要る**。
+  > 本節の数値が外挿にとどまっているのはそのためである。
+  > **knob は今は足さない** — GPU が塞がっており、gate はカードが空くまで
+  > 期限が来ないからである。「gate は指定済み」と「gate は実行可能」を
+  > 混同しないこと。
 
 ### 8.4 half-eviction 再利用時の注意
 

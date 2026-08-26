@@ -129,10 +129,16 @@ class FullParameterTrainer(BaseTrainer):
         has just replaced the trained half's ``Int8Linear``s with materialized
         ``nn.Linear``s.
         """
-        if not (self.is_sensenova and self.sensenova_mot_phase_eviction):
+        if not self.is_sensenova:
             return
         from core.training.ops import sensenova_ops
 
+        # BEFORE the eviction gate below: the shared window is legal only on top
+        # of the split, and the configuration this refuses would otherwise fall
+        # straight through that gate and leave the flag doing nothing at all.
+        sensenova_ops.assert_shared_prefix_contract(self)
+        if not self.sensenova_mot_phase_eviction:
+            return
         from .sensenova_phase_eviction import install_training_phase_eviction
 
         install_training_phase_eviction(self)
@@ -140,8 +146,10 @@ class FullParameterTrainer(BaseTrainer):
             from .sensenova_four_phase import install_four_phase_backward
 
             sensenova_ops.assert_four_phase_contract(self)
-            install_four_phase_backward(self)
-            print(f"{self.log_prefix} SenseNova four-phase eviction ENABLED")
+            context = install_four_phase_backward(self)
+            print(f"{self.log_prefix} SenseNova four-phase eviction ENABLED"
+                  + (f" (shared MNT prefix, {context.reduction} boundary gradient)"
+                     if context.shared_window else ""))
 
     def train(self, *args, **kwargs):
         try:

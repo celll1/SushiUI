@@ -39,6 +39,21 @@ the last layer's post-attention half feeds nothing
 and owned by the optimizer, so a census that demanded them would raise on every
 step of a correct run. ``expect(..., exempt=...)`` takes their names.
 
+DEFERRED PARAMETERS (not exempt ones)
+------------------------------------
+A route may legitimately apply one group's update once per WINDOW of backwards
+rather than once per backward -- SenseNova's shared-prefix four-phase split
+defers the understanding half's single update to the end of an MNT window. On
+the window's non-final backwards those parameters are correctly not updated, so
+``begin_step(expect_deferred=False)`` drops them from that step's requirement.
+
+This is deliberately NOT ``exempt``. Exempt parameters leave the expectation set
+for the whole run; a deferred group stays in it and is required in full on every
+FINAL backward, so "one half never updates while the loss falls" is still caught
+-- once per window instead of once per backward. ``set_deferred`` refuses an
+empty group and refuses one that covers the whole expectation set, either of
+which would make the reduced step check vacuous.
+
 Keys are ``id(param)``, following ``fused_grad_norm``: names come from the
 expectation set, which is built once.
 
@@ -71,6 +86,8 @@ class UpdateCensus:
     def __init__(self) -> None:
         self._updated: Set[int] = set()
         self._expected: Dict[int, str] = {}
+        self._deferred: Set[int] = set()
+        self._expect_deferred = True
         self.exempt: Set[str] = set()
         self.enabled = False
         self.steps_checked = 0
@@ -104,7 +121,35 @@ class UpdateCensus:
                 continue
             expected[id(p)] = name
         self._expected = expected
+        self._deferred = set()
         return len(self._expected)
+
+    def set_deferred(self, params: Iterable[nn.Parameter]) -> int:
+        """Declare the group whose update lands once per window, not per step.
+
+        See the module docstring. Must be called after ``expect``; the group is
+        intersected with the expectation set, and both degenerate results are
+        refused rather than accepted quietly.
+        """
+        keys = {id(p) for p in params} & set(self._expected)
+        if not keys:
+            raise ValueError(
+                "Updated-parameter census: the deferred group does not intersect "
+                "the expectation set, so deferring it would change nothing and "
+                "the group it was meant to cover would still fail every step"
+            )
+        if keys == set(self._expected):
+            raise ValueError(
+                "Updated-parameter census: the deferred group is the whole "
+                "expectation set, which would leave non-final steps checking "
+                "nothing at all"
+            )
+        self._deferred = keys
+        return len(keys)
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self._deferred)
 
     def _is_exempt(self, name: str) -> bool:
         if name in self.exempt:
@@ -121,17 +166,25 @@ class UpdateCensus:
 
     # -- per-step ----------------------------------------------------------
 
-    def begin_step(self, enabled: bool = True) -> None:
+    def begin_step(self, enabled: bool = True, expect_deferred: bool = True) -> None:
         self._updated.clear()
         self.enabled = bool(enabled)
+        self._expect_deferred = bool(expect_deferred)
 
     def record(self, param: nn.Parameter) -> None:
         self._updated.add(id(param))
 
     def missing(self) -> List[str]:
-        """Expected parameters that no update reached this step."""
+        """Expected parameters that no update reached this step.
+
+        On a step that does not close a deferral window the deferred group is
+        not yet due; it is required in full on the step that does.
+        """
+        skip = frozenset() if self._expect_deferred else self._deferred
         return sorted(
-            name for key, name in self._expected.items() if key not in self._updated
+            name
+            for key, name in self._expected.items()
+            if key not in self._updated and key not in skip
         )
 
     def unexpected_count(self) -> int:
@@ -147,6 +200,11 @@ class UpdateCensus:
         if not missing:
             return
         where = f" ({context})" if context else ""
+        if self._deferred:
+            where += (
+                f" [deferral window: {len(self._deferred)} parameter(s) deferred, "
+                f"due {'THIS step' if self._expect_deferred else 'at the window end'}]"
+            )
         raise RuntimeError(
             f"Updated-parameter census failed{where}: {len(missing)} of "
             f"{self.expected_count} trainable parameter(s) received no optimizer "

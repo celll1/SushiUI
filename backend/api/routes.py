@@ -16237,6 +16237,20 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
     if run.status == "running":
         raise HTTPException(status_code=400, detail="Training run is already running")
 
+    # The DB status is not liveness: a row left at "starting"/"failed" can coexist
+    # with a live child (crash before the status write, a stale row after a
+    # backend restart). Spawning anyway would overwrite the registry entry and
+    # orphan the first process — unstoppable, and sharing the GPU.
+    if training_process_manager.is_live(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} already has a live training process; "
+                   f"stop it before starting the run again.",
+        )
+    if training_process_manager.get_process(run_id) is not None:
+        # Finished/never-spawned entry: reap it so create_process starts clean.
+        await training_process_manager.remove_process(run_id)
+
     previous_training_state = {
         "status": run.status,
         "error_message": run.error_message,
@@ -16623,6 +16637,41 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
         def event_callback(event: dict):
             executor.submit(event_callback_sync, event)
+
+        # ----- Release the BACKEND's own VRAM before the trainer allocates -----
+        # The generation model is held by THIS process; train_runner runs in a
+        # child that cannot free it (importing pipeline_manager there just builds
+        # an empty manager). Anything still resident here — including a
+        # keep-models-hot set, which has no timeout — competes with the trainer
+        # and, on Windows/WDDM, is paged to shared memory instead of failing.
+        try:
+            from core.pipeline import pipeline_manager
+            _release = pipeline_manager.release_gpu_memory(
+                reason=f"training run {run_id} start")
+            print(f"[API] Pre-training VRAM release: {_release['components']} "
+                  f"({_release['freed_bytes'] / 1024 ** 3:.2f} GB), "
+                  f"keep-hot cleared: {_release['keep_hot_cleared'] or 'none'}")
+        except Exception as _rel_err:
+            print(f"[API] WARNING: pre-training VRAM release failed: {_rel_err}")
+            try:
+                from core.training.training_events import merge_run_warnings
+                _event = {
+                    "level": "warning",
+                    "code": "pre_training_vram_release_failed",
+                    "message": (
+                        f"Could not release the backend's generation VRAM before starting "
+                        f"this run ({_rel_err}); training may run slower or hit OOM. "
+                        f"Restarting the backend releases it."
+                    ),
+                }
+                manager.send_training_log(run_id=run_id, level="warning",
+                                          message=_event["message"], code=_event["code"])
+                _merged = merge_run_warnings(run.warnings, _event)
+                if _merged is not None:
+                    run.warnings = _merged
+                    db.commit()
+            except Exception:
+                pass
 
         # Start training process (non-blocking)
         print(f"[API] Starting training process...")

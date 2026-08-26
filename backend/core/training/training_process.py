@@ -449,7 +449,18 @@ class TrainingProcessManager:
 
         Returns:
             TrainingProcess instance
+
+        Raises:
+            RuntimeError: a live child already exists for ``run_id``. Overwriting
+                the registry entry would orphan that process — nothing could stop
+                it, and two trainers would share the GPU.
         """
+        if self.is_live(run_id):
+            raise RuntimeError(
+                f"Training run {run_id} already has a live training process "
+                f"(pid {getattr(self.processes[run_id].process, 'pid', '?')}); "
+                f"stop it before starting the run again."
+            )
         process = TrainingProcess(run_id, config_path, output_dir, venv_python)
         self.processes[run_id] = process
         return process
@@ -457,6 +468,17 @@ class TrainingProcessManager:
     def get_process(self, run_id: int) -> Optional[TrainingProcess]:
         """Get training process by run ID."""
         return self.processes.get(run_id)
+
+    def is_live(self, run_id: int) -> bool:
+        """Whether a spawned child for ``run_id`` is still alive.
+
+        ``is_running`` is a flag the monitor task clears only once it observes
+        the exit; the child's returncode is the ground truth.
+        """
+        process = self.processes.get(run_id)
+        if process is None or process.process is None:
+            return False
+        return process.process.returncode is None
 
     async def remove_process(self, run_id: int) -> None:
         """Remove training process from registry."""

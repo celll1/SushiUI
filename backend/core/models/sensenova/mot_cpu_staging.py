@@ -13,7 +13,10 @@ OS can reclaim -- unlike a pinned block, which this module's caching allocator
 never returns once allocated. Distinct from the failure-path fallback below
 (``tensor.to("cpu")`` after a caught pin exception): that is an unplanned,
 warned-once degradation; ``pageable=True`` is a deliberate, silent, every-call
-choice with no pin attempt to fail in the first place.
+choice with no pin attempt to fail in the first place. It is refused together
+with ``non_blocking=True`` (the training evictor's overlap path): an async copy
+out of pageable host memory goes through a driver bounce buffer and is
+effectively host-synchronous, so the two do not compose.
 """
 
 from __future__ import annotations
@@ -35,11 +38,14 @@ def _stage_tensor(
     warn_message: str,
     *,
     pageable: bool = False,
+    non_blocking: bool = False,
 ) -> torch.Tensor:
     """Return ``tensor``'s contents on CPU memory using ONE host copy: the
     pinned destination is allocated first and written directly, instead of
     ``.to("cpu")`` (copy 1, pageable) followed by ``.pin_memory()`` (copy 2).
-    ``copy_`` is blocking, which the denoise-phase ordering relies on.
+    ``copy_`` is blocking unless ``non_blocking=True``, which only the training
+    evictor's overlap path passes and which requires the caller to keep the
+    CUDA source alive (or ``record_stream`` it) until the copy has landed.
 
     ``pageable=True`` skips the pinned allocation outright (see this module's
     PAGEABLE ESCAPE HATCH note) rather than attempting one and falling back:
@@ -49,6 +55,12 @@ def _stage_tensor(
     call does not retroactively un-pin it -- every tensor this evictor stages
     is freshly materialized from the checkpoint loader, never pre-pinned, so
     that case does not arise on the route that sets this flag)."""
+    if non_blocking and pageable:
+        raise ValueError(
+            "MoT staging cannot combine pageable=True with non_blocking=True: a "
+            "cudaMemcpyAsync out of pageable host memory is staged through a "
+            "driver bounce buffer and is effectively host-synchronous"
+        )
     tensor = tensor.detach()
     if pageable:
         if tensor.device.type == "cpu":
@@ -65,7 +77,7 @@ def _stage_tensor(
             warn_once["pin_failed"] = True
             print(warn_message.format(exc=exc))
         return tensor.to("cpu")
-    pinned.copy_(tensor)
+    pinned.copy_(tensor, non_blocking=non_blocking)
     return pinned
 
 
@@ -75,6 +87,8 @@ def stage_modules_to_pinned_cpu(
     warn_once: Dict[str, bool],
     warn_message: str = DEFAULT_PIN_FAILURE_MESSAGE,
     pageable: bool = False,
+    non_blocking: bool = False,
+    sources: list | None = None,
 ) -> None:
     """Move every parameter/PERSISTENT buffer OWNED (recurse=False) by each of
     ``modules`` to a CPU tensor, pinned unless ``pageable=True`` (see this
@@ -88,17 +102,27 @@ def stage_modules_to_pinned_cpu(
 
     ``warn_once`` is shared by the caller across all of its modules so a pinned
     allocation failure prints exactly once per evictor. Unused when
-    ``pageable=True``, which has no pin attempt to fail."""
+    ``pageable=True``, which has no pin attempt to fail.
+
+    ``non_blocking=True`` leaves the copies in flight on the current stream; the
+    device sources are appended to ``sources`` so the caller can ``record_stream``
+    them before the model's reassignment drops the last reference to a block the
+    allocator would otherwise hand to a concurrent copy."""
+    def _stage(tensor):
+        staged = _stage_tensor(
+            tensor, warn_once, warn_message, pageable=pageable,
+            non_blocking=non_blocking,
+        )
+        if sources is not None and tensor.device.type != "cpu":
+            sources.append(tensor)
+        return staged
+
     for module in modules:
         for key, parameter in list(module._parameters.items()):
             if parameter is None:
                 continue
-            parameter.data = _stage_tensor(
-                parameter.data, warn_once, warn_message, pageable=pageable
-            )
+            parameter.data = _stage(parameter.data)
         for key, buffer in list(module._buffers.items()):
             if buffer is None or key in module._non_persistent_buffers_set:
                 continue
-            module._buffers[key] = _stage_tensor(
-                buffer, warn_once, warn_message, pageable=pageable
-            )
+            module._buffers[key] = _stage(buffer)

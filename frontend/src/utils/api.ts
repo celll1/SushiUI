@@ -7189,6 +7189,10 @@ export interface TrainingRunCreateRequest {
   // RAM the OS can reclaim, at an unmeasured transfer-time cost. Refused
   // without sensenova_mot_phase_eviction.
   sensenova_mot_pageable_staging?: boolean;
+  // SenseNova MoT phase eviction only: run a swap's outgoing and incoming legs
+  // concurrently on two CUDA streams instead of back to back. Requires
+  // sensenova_mot_phase_eviction; refused together with pageable staging.
+  sensenova_mot_overlap_transfer?: boolean;
   base_model_path: string;
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion

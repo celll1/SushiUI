@@ -250,6 +250,10 @@ def _build_train_section(
             "sensenova_mot_pageable_staging",
             _TD["sensenova_mot_pageable_staging"],
         )
+        train["sensenova_mot_overlap_transfer"] = p.get(
+            "sensenova_mot_overlap_transfer",
+            _TD["sensenova_mot_overlap_transfer"],
+        )
         train["block_swap_h2d_only"] = p.get("block_swap_h2d_only", False)
         train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)

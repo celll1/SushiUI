@@ -61,24 +61,45 @@ What IS new for four-phase is that the evicted half now carries gradients, so
 a surviving ``.grad`` at a phase boundary means the optimizer did not run over
 that parameter, and moving it would silently detach the gradient from its weight.
 
-ASYNC H2D -- not attempted. Transfers are synchronous today: neither
-``_move_modules_to_device`` nor ``mot_cpu_staging._stage_tensor`` passes
-``non_blocking``. The real obstacle is a cost trade-off, not a correctness
-barrier: ``non_blocking`` h2d only pays off from PINNED host memory, which
-puts it in direct conflict with ``sensenova_mot_pageable_staging`` below --
-the two would compete for the same host memory, not compose. Separately, an
-overlap window would hold a transient extra module on-device; the synthetic
-tree's own ledger already prices that at one module against one half (~1.6%,
-a ratio from that tree, not a device measurement -- see
-``sensenova_mot_staging_highwater_test.py``), and a failed transition's
-recovery would need the in-flight copy tracked and synchronized before
-touching it. Neither is disqualifying; both are unresolved.
+OVERLAPPED TRANSFER -- opt-in, off by default
+(``sensenova_mot_overlap_transfer``). By default both legs of a swap are
+host-blocking, so the transfer term is ``d2h + h2d``. PCIe is full duplex and
+the two directions have independent copy engines, so a pair's outgoing and
+incoming legs can run concurrently on two side streams; the arithmetic ceiling
+is ``max(d2h, h2d)``. What the flag actually buys is UNMEASURED -- it ships off
+for that reason.
+
+Four things make it safe rather than merely faster:
+
+  * ``record_stream`` on every d2h source. ``stage_modules_to_pinned_cpu``
+    reassigns ``parameter.data``, dropping the last reference to the CUDA source
+    immediately; with the copy still in flight the caching allocator would
+    otherwise be free to hand that block to the concurrent h2d destination.
+  * the pinned h2d source is held in the in-flight record until its event has
+    been waited on. Torch may event-guard a pinned ``non_blocking`` h2d, but that
+    is not verified here, and the caching HOST allocator would otherwise be free
+    to re-hand the block to the next ``_stage_tensor``.
+  * every stream is joined before ``_transition`` returns.
+    ``assert_generation_resident`` and its twin check DEVICE PLACEMENT only and
+    would pass on a queued-but-unfinished copy.
+  * the window is ``_OVERLAP_WINDOW_PAIRS`` deep, so the transient extra device
+    residency is bounded by that many modules rather than by a whole half.
+
+Refused together with ``sensenova_mot_pageable_staging`` (see
+``install_training_phase_eviction``) rather than silently degraded, and dropped
+to the serial path for the rest of the run if a pinned allocation ever fails --
+an async copy out of pageable host memory is bounce-buffered and effectively
+host-synchronous, so it would pay every correctness cost above for nothing.
 
 TRANSFER ACCOUNTING. Every transition tallies seconds and bytes per direction
 into plain attributes, drained once per step by the train loop (see
 ``drain_transfer_stats``). Section 8.6 of SENSENOVA_TRAINING_DESIGN.md states
 this loop's per-iteration transfer volume as ARITHMETIC; these counters are the
-measurement it never had.
+measurement it never had. The seconds change UNIT of measurement between the two
+modes -- host wall time around a blocking copy when serial, CUDA event time on
+the side stream when overlapped, where the two directions run concurrently and
+their sum therefore exceeds the transition's wall. ``overlap_active`` says which
+mode produced them and is charted as ``sn_swap_overlap``.
 
 PAGEABLE STAGING -- opt-in, off by default
 (``sensenova_mot_pageable_staging``). Trades the pinned pool's sticky
@@ -92,7 +113,8 @@ attribute, so this flag needed no change to ``BaseTrainer``.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Iterable
+from collections import deque
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 
 import torch
 from torch import nn
@@ -105,13 +127,40 @@ _PIN_FAILURE_MESSAGE = (
     "memory ({exc}); continuing with blocking pageable copies."
 )
 
+_OVERLAP_PAGEABLE_REFUSAL = (
+    "sensenova_mot_overlap_transfer and sensenova_mot_pageable_staging cannot "
+    "be combined: pageable staging hands the copies ordinary host memory, and "
+    "cudaMemcpyAsync out of pageable memory is staged through a driver bounce "
+    "buffer and is effectively host-synchronous, so the overlap would pay its "
+    "correctness cost (record_stream on every freed device block, pinned-source "
+    "lifetime, a transient extra module on device) for no concurrency at all. "
+    "Enable one of the two."
+)
+
+_OVERLAP_DOWNGRADE_MESSAGE = (
+    "[SenseNova] MoT overlapped transfer disabled for the rest of this run: a "
+    "pinned staging allocation failed, and an async copy against pageable host "
+    "memory is bounce-buffered and effectively host-synchronous. Continuing on "
+    "the serial transfer path."
+)
+
+# Pairs of (outgoing, incoming) modules allowed in flight at once. Each pair
+# admitted ahead of its twin's completion is one module of transient extra
+# device residency: at bf16 the largest single MoT weight is 0.09375 GiB, so
+# four pairs bound it at 0.375 GiB, ~2.5% of a half. Small enough to budget as
+# real (the allocator GROWS by it -- the incoming block is requested before the
+# outgoing one is released, so there is nothing to reuse), deep enough to keep
+# both copy engines fed while the host retires the oldest pair.
+_OVERLAP_WINDOW_PAIRS = 4
+
 
 def _move_modules_to_cpu(
-    modules: Iterable[nn.Module], *, warn_once: Dict[str, bool], pageable: bool = False
+    modules: Iterable[nn.Module], *, warn_once: Dict[str, bool], pageable: bool = False,
+    non_blocking: bool = False, sources: Optional[List[torch.Tensor]] = None,
 ) -> None:
     stage_modules_to_pinned_cpu(
         modules, warn_once=warn_once, warn_message=_PIN_FAILURE_MESSAGE,
-        pageable=pageable,
+        pageable=pageable, non_blocking=non_blocking, sources=sources,
     )
 
 
@@ -139,14 +188,76 @@ def _module_already_staged_cpu(module: nn.Module, *, pageable: bool = False) -> 
     return True
 
 
-def _move_modules_to_device(modules: Iterable[nn.Module], device: Any) -> None:
+def _move_modules_to_device(
+    modules: Iterable[nn.Module], device: Any, *, non_blocking: bool = False,
+    sources: Optional[List[torch.Tensor]] = None,
+) -> None:
+    """``sources`` collects the host tensors each copy reads FROM. Under
+    ``non_blocking`` the reassignment below drops the model's only reference to
+    a pinned block whose copy is still in flight; the caller holds these until
+    the copy's event has been waited on."""
+    def _collect(tensor):
+        if sources is not None and tensor.device.type == "cpu":
+            sources.append(tensor)
+
     for module in modules:
         for parameter in module._parameters.values():
             if parameter is not None:
-                parameter.data = parameter.data.to(device)
+                _collect(parameter.data)
+                parameter.data = parameter.data.to(device, non_blocking=non_blocking)
         for name, buffer in list(module._buffers.items()):
             if buffer is not None and name not in module._non_persistent_buffers_set:
-                module._buffers[name] = buffer.to(device)
+                _collect(buffer)
+                module._buffers[name] = buffer.to(device, non_blocking=non_blocking)
+
+
+class _InFlight(NamedTuple):
+    """One issued-but-unretired copy. ``keepalive`` is the h2d leg's pinned
+    source (see this module's OVERLAP note); the d2h leg keeps nothing, having
+    ``record_stream``-ed its device source instead."""
+
+    operation: str
+    start: Any
+    end: Any
+    keepalive: tuple
+
+
+class _TransferStreams:
+    """The two side streams and their events, isolated behind one object so the
+    overlap path is reachable from the CPU-only synthetic tree by injection."""
+
+    def __init__(self, device: Any):
+        self.device = device
+        self.d2h = torch.cuda.Stream(device=device)
+        self.h2d = torch.cuda.Stream(device=device)
+
+    def stream_for(self, operation: str):
+        return self.d2h if operation == "d2h" else self.h2d
+
+    def stream_context(self, stream):
+        return torch.cuda.stream(stream)
+
+    def record_event(self, stream):
+        event = torch.cuda.Event(enable_timing=True)
+        event.record(stream)
+        return event
+
+    def join(self) -> None:
+        current = torch.cuda.current_stream(self.device)
+        current.wait_stream(self.d2h)
+        current.wait_stream(self.h2d)
+
+
+def _make_transfer_streams(device: Any) -> Optional[_TransferStreams]:
+    """None on any device that is not a live CUDA one, which is what makes the
+    flag a clean no-op rather than a crash on a CPU/meta evictor."""
+    try:
+        resolved = torch.device(device)
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    if resolved.type != "cuda" or not torch.cuda.is_available():
+        return None
+    return _TransferStreams(resolved)
 
 
 class SenseNovaTrainingPhaseEvictor:
@@ -154,7 +265,8 @@ class SenseNovaTrainingPhaseEvictor:
 
     def __init__(
         self, transformer: nn.Module, device: Any, *, four_phase: bool = False,
-        pageable_staging: bool = False,
+        pageable_staging: bool = False, overlap_transfer: bool = False,
+        streams_factory=_make_transfer_streams,
     ):
         selection = select_mot_weight_modules(
             transformer,
@@ -173,6 +285,16 @@ class SenseNovaTrainingPhaseEvictor:
         # note. Off by default, which reproduces today's pinned-only behavior
         # exactly (every _move_modules_to_cpu call below defaults pageable=False).
         self._pageable = bool(pageable_staging)
+        # sensenova_mot_overlap_transfer: see this module's OVERLAPPED TRANSFER
+        # note. The installer refuses this pair with a user-facing message; this
+        # backstop is for a hand-built evictor that never went through it.
+        if pageable_staging and overlap_transfer:
+            raise ValueError(_OVERLAP_PAGEABLE_REFUSAL)
+        self._overlap = bool(overlap_transfer)
+        self._streams_factory = streams_factory
+        self._streams = None
+        self._overlap_downgraded = False
+        self.overlap_active = False
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
         self.d2h_seconds = 0.0
@@ -227,6 +349,12 @@ class SenseNovaTrainingPhaseEvictor:
         return tuple(self._und_modules)
 
     def _best_effort_cpu(self) -> Exception | None:
+        # Before the FIRST predicate call, not just before the first copy:
+        # _module_already_staged_cpu checks device and pin flag, never content,
+        # so a pinned buffer whose d2h has not landed reads as already staged and
+        # is skipped -- a corrupt CPU half. self.transformer.to("cpu") below would
+        # race in-flight copies for the same reason. A no-op on the serial path.
+        self._sync_transfers()
         first_error = None
         for module in (*self._gen_modules, *self._und_modules):
             if _module_already_staged_cpu(module, pageable=self._pageable):
@@ -296,6 +424,29 @@ class SenseNovaTrainingPhaseEvictor:
         if self._sync_device is not None:
             torch.cuda.synchronize(self._sync_device)
 
+    def _sync_transfers(self) -> None:
+        """Join the overlap side streams, then the device. Ordered that way so a
+        stream that is still queueing work is drained by the device sync too."""
+        if self._streams is not None:
+            self._streams.join()
+        self._sync()
+
+    def _overlap_streams(self):
+        """The side streams, or None to run serially: the flag is off, a pin
+        failure has downgraded the run, or the device is not a live CUDA one."""
+        if not self._overlap or self._overlap_downgraded:
+            return None
+        if self._streams is None:
+            self._streams = self._streams_factory(self.device)
+            if self._streams is None:
+                self._overlap_downgraded = True   # non-CUDA: never retry
+        return self._streams
+
+    def _downgrade_overlap(self) -> None:
+        if not self._overlap_downgraded:
+            self._overlap_downgraded = True
+            print(_OVERLAP_DOWNGRADE_MESSAGE)
+
     def _will_copy(self, tensor, operation: str) -> bool:
         """Whether this operation actually copies ``tensor``, mirroring the
         short-circuits in ``_stage_tensor`` (d2h) and ``Tensor.to`` (h2d) so an
@@ -344,6 +495,72 @@ class SenseNovaTrainingPhaseEvictor:
         self.h2d_bytes = 0
         return stats
 
+    def _charge(self, operation: str, seconds: float, moved: int) -> None:
+        if operation == "d2h":
+            self.d2h_seconds += seconds
+            self.d2h_bytes += moved
+        else:
+            self.h2d_seconds += seconds
+            self.h2d_bytes += moved
+
+    def _run_serial(self, operations) -> None:
+        for operation, modules, _half in operations:
+            moved = self._pending_bytes(modules, operation)
+            started = time.perf_counter()
+            if operation == "d2h":
+                _move_modules_to_cpu(
+                    modules, warn_once=self._warn_once, pageable=self._pageable
+                )
+            else:
+                _move_modules_to_device(modules, self.device)
+            self._sync()
+            self._charge(operation, time.perf_counter() - started, moved)
+
+    def _retire(self, entry: _InFlight) -> None:
+        """Wait for one issued copy and charge its CUDA-event time. Waiting on
+        the HOST (not just ordering a stream) is what bounds the window: the
+        outgoing block is not reusable, and the pinned source below not
+        re-handable, until the copy has actually landed."""
+        entry.end.synchronize()
+        self._charge(entry.operation, entry.start.elapsed_time(entry.end) / 1000.0, 0)
+
+    def _run_overlapped(self, operations, streams) -> None:
+        inflight: deque = deque()
+        for index, (operation, modules, _half) in enumerate(operations):
+            if self._overlap_downgraded:
+                while inflight:
+                    self._retire(inflight.popleft())
+                streams.join()
+                self._run_serial(tuple(operations)[index:])
+                return
+            while len(inflight) >= 2 * _OVERLAP_WINDOW_PAIRS:
+                self._retire(inflight.popleft())
+            self._charge(operation, 0.0, self._pending_bytes(modules, operation))
+            stream = streams.stream_for(operation)
+            sources: List[torch.Tensor] = []
+            with streams.stream_context(stream):
+                start = streams.record_event(stream)
+                if operation == "d2h":
+                    _move_modules_to_cpu(
+                        modules, warn_once=self._warn_once, pageable=False,
+                        non_blocking=True, sources=sources,
+                    )
+                    for source in sources:
+                        if source.is_cuda:
+                            source.record_stream(stream)
+                    sources = []   # record_stream replaces the keepalive here
+                else:
+                    _move_modules_to_device(
+                        modules, self.device, non_blocking=True, sources=sources
+                    )
+                end = streams.record_event(stream)
+            inflight.append(_InFlight(operation, start, end, tuple(sources)))
+            if self._warn_once.get("pin_failed"):
+                self._downgrade_overlap()
+        while inflight:
+            self._retire(inflight.popleft())
+        streams.join()
+
     def _transition(self, operations, next_state: str) -> None:
         if self.state == "failed":
             raise RuntimeError("SenseNova eviction cannot reuse a failed transfer state")
@@ -362,23 +579,12 @@ class SenseNovaTrainingPhaseEvictor:
             # SENSENOVA_TRAINING_DESIGN.md 8.3.2). It adds no net wait -- the copy
             # blocks on that same work one statement later.
             self._sync()
-            for operation, modules, _half in operations:
-                moved = self._pending_bytes(modules, operation)
-                started = time.perf_counter()
-                if operation == "d2h":
-                    _move_modules_to_cpu(
-                        modules, warn_once=self._warn_once, pageable=self._pageable
-                    )
-                else:
-                    _move_modules_to_device(modules, self.device)
-                self._sync()
-                elapsed = time.perf_counter() - started
-                if operation == "d2h":
-                    self.d2h_seconds += elapsed
-                    self.d2h_bytes += moved
-                else:
-                    self.h2d_seconds += elapsed
-                    self.h2d_bytes += moved
+            streams = self._overlap_streams()
+            self.overlap_active = streams is not None
+            if streams is None:
+                self._run_serial(operations)
+            else:
+                self._run_overlapped(operations, streams)
         except Exception:
             self.state = "failed"
             self._best_effort_cpu()
@@ -494,19 +700,28 @@ def install_training_phase_eviction(trainer: Any) -> SenseNovaTrainingPhaseEvict
         getattr(trainer, "sensenova_four_phase_eviction", False)
     ) and is_full_finetune(trainer)
     # Read off trainer.config (the raw dict BaseTrainer.__init__ copies from
-    # train_config) rather than a promoted trainer attribute: unlike the two
-    # flags above, nothing else on the trainer needs to branch on this one, so
-    # there is no reason to widen BaseTrainer's __init__ for a staging-mode
-    # sub-option of eviction.
+    # train_config) rather than promoted trainer attributes: unlike the two
+    # flags above, nothing else on the trainer branches on these two, so there
+    # is no reason to widen BaseTrainer's __init__ for transfer-mode
+    # sub-options of eviction.
+    config = getattr(trainer, "config", {})
     pageable_staging = bool(
-        getattr(trainer, "config", {}).get(
+        config.get(
             "sensenova_mot_pageable_staging",
             TRAINING_DEFAULTS["sensenova_mot_pageable_staging"],
         )
     )
+    overlap_transfer = bool(
+        config.get(
+            "sensenova_mot_overlap_transfer",
+            TRAINING_DEFAULTS["sensenova_mot_overlap_transfer"],
+        )
+    )
+    if pageable_staging and overlap_transfer:
+        raise ValueError(_OVERLAP_PAGEABLE_REFUSAL)
     evictor = SenseNovaTrainingPhaseEvictor(
         trainer.transformer, trainer.device, four_phase=four_phase,
-        pageable_staging=pageable_staging,
+        pageable_staging=pageable_staging, overlap_transfer=overlap_transfer,
     )
     trainer.sensenova_phase_evictor = evictor
     return evictor

@@ -2350,6 +2350,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # caching host allocator never returns a pinned block) for reclaimable
     # host RAM at an unmeasured transfer-time cost.
     "sensenova_mot_pageable_staging": False,
+    # SenseNova full fine-tune / LoRA, MoT phase eviction only (requires
+    # sensenova_mot_phase_eviction, refused with sensenova_mot_pageable_staging):
+    # run a swap's outgoing and incoming legs concurrently on two CUDA streams
+    # instead of back to back. The transfer term's arithmetic ceiling drops from
+    # d2h + h2d to max(d2h, h2d); the realized figure is unmeasured. Costs a
+    # bounded transient extra device residency (a few modules).
+    "sensenova_mot_overlap_transfer": False,
     # SenseNova only: for a training-time sample (not train_step), stream each
     # layer's prefix KV cache from a pinned CPU master instead of holding the
     # full per-layer, per-branch KV cache resident on GPU for the sample's

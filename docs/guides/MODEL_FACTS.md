@@ -2258,6 +2258,16 @@ Paths below are relative to `backend/core/training/`.
       returns a pinned block to the OS, `SENSENOVA_TRAINING_DESIGN.md` §8.5);
       this trades that stickiness for host RAM the OS can reclaim, at an
       unmeasured transfer-time cost.
+    - **`sensenova_mot_overlap_transfer`** (API boolean, default **off**,
+      requires `sensenova_mot_phase_eviction`, refused together with
+      `sensenova_mot_pageable_staging`): issues a swap's outgoing and
+      incoming legs on two CUDA streams instead of back to back, so the
+      independent H2D and D2H copy engines can run concurrently. The
+      transfer term's arithmetic ceiling drops from `d2h + h2d` to
+      `max(d2h, h2d)`; what a run actually reaches is unmeasured. Costs at
+      most four modules of transient extra device residency, falls back to
+      the serial path on a pinned-allocation failure, and is inert without
+      CUDA. `SENSENOVA_TRAINING_DESIGN.md` §8.6.
   - **`sensenova_kv_cache_streaming`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): collapses the persistent per-layer
     flash-KV prefix cache into a **2-slot GPU ring shared across every layer

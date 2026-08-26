@@ -515,7 +515,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const debugLatents = params.debug_latents ?? false;
   const debugLatentsEvery = params.debug_latents_every ?? 50;
 
-  // Reference image conditioning (FLUX.2 only) — Phase 3k: migrated to params
+  // Reference image conditioning — Phase 3k: migrated to params
   const useReferenceImages = params.use_reference_images ?? false;
 
   // SigLIP2 Vision Encoder — Phase 3k: migrated to params
@@ -717,6 +717,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const blockSwapUnsupported = unsupportedTrainingFeature("block_swap");
   const fusedGroupsUnsupported = unsupportedTrainingFeature("fused_optimizer_groups");
   const referenceImagesUnsupported = unsupportedTrainingFeature("reference_images");
+  const referenceConditioningEnabled = (
+    (isSDOrSDXLModel(baseModelPath) && !!visionEncoderPath) ||
+    ((isFlux2Model(baseModelPath) || isSenseNovaModel(baseModelPath)) && useReferenceImages)
+  );
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
@@ -1008,11 +1012,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       text_encoding_mode: params.text_encoding_mode,
       text_encoding_swap_interval: params.text_encoding_swap_interval,
       text_encoding_prefetch_depth: params.text_encoding_prefetch_depth,
-      use_reference_images: params.use_reference_images,
-      vision_encoder_path: params.vision_encoder_path || null,
-      train_vision_encoder: params.train_vision_encoder,
+      use_reference_images: isSDOrSDXLModel(baseModelPath)
+        ? !!params.vision_encoder_path
+        : params.use_reference_images,
+      vision_encoder_path: isSDOrSDXLModel(baseModelPath)
+        ? params.vision_encoder_path || null
+        : null,
+      train_vision_encoder: isSDOrSDXLModel(baseModelPath)
+        ? params.train_vision_encoder
+        : false,
       vision_encoder_lr: localVisionEncoderLrText ? parseFloat(localVisionEncoderLrText) : null,
-      gradient_routing_ve: params.gradient_routing_ve,
+      gradient_routing_ve: isSDOrSDXLModel(baseModelPath)
+        ? params.gradient_routing_ve
+        : false,
       param_tracking: params.param_tracking,
       param_tracking_interval: params.param_tracking_interval,
       latent_encoding_mode: params.latent_encoding_mode,
@@ -1491,9 +1503,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (arch === "zimage") {
         updateParam("train_text_encoder", false);
       }
-      // Z-Image/FLUX.2: VE not supported — clear selection
-      updateParam("vision_encoder_path", "");
-      updateParam("train_vision_encoder", false);
     } else if (
       arch === "anima" || arch === "lens" || arch === "ideogram4" ||
       arch === "minit2i" || arch === "krea2" || arch === "ltx2" || arch === "acestep" ||
@@ -1621,6 +1630,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       motEvictionUnsupported, fourPhaseBlockedReason,
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
       params.train_unet, params.train_text_encoder]);
+
+  // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
+  // when moving to an architecture whose reference path is unrelated.
+  useEffect(() => {
+    if (restoringFromYAMLRef.current || !baseModelPath) return;
+    if (isSDOrSDXLModel(baseModelPath)) {
+      if (!!visionEncoderPath !== useReferenceImages) {
+        updateParam("use_reference_images", !!visionEncoderPath);
+      }
+      return;
+    }
+    if (visionEncoderPath) {
+      updateParam("vision_encoder_path", "");
+      updateParam("train_vision_encoder", false);
+      updateParam("gradient_routing_ve", false);
+      updateParam("use_reference_images", false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseModelPath, visionEncoderPath, useReferenceImages]);
 
   // Keep the pinned parameters at their required values, and record what was
   // replaced. Recorded rather than applied silently: the backend refuses (or
@@ -1807,8 +1835,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Auto-populate reference/condition image if the item has reference images
       if (response.reference_images && response.reference_images.length > 0) {
         const refPath = response.reference_images[0];
-        const showRefUI = trainingMethod !== "controlnet" &&
-          ((isSDOrSDXLModel(baseModelPath) && !!visionEncoderPath) || isFlux2Model(baseModelPath));
+        const showRefUI = trainingMethod !== "controlnet" && referenceConditioningEnabled;
         if (trainingMethod === "controlnet") {
           updated[promptIndex].condition_image_path = refPath;
           setConditionImagePreviews(prev => ({
@@ -2918,9 +2945,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </label>
             <VisionEncoderSelector
               value={visionEncoderPath || null}
-              onChange={(path) => updateParam("vision_encoder_path", path || "")}
+              onChange={(path) => {
+                updateParam("vision_encoder_path", path || "");
+                updateParam("use_reference_images", !!path);
+                if (!path) {
+                  updateParam("train_vision_encoder", false);
+                  updateParam("gradient_routing_ve", false);
+                }
+              }}
               label=""
             />
+            <p className="text-xs text-gray-500">
+              Selecting a VE enables reference conditioning. SigLIP2 tokens are appended to the text context for referenced items; items without a reference remain text-conditioned normally.
+            </p>
           </div>
         )}
 
@@ -4470,7 +4507,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   </div>
                 )}
-                {trainVisionEncoder && (
+                {trainTextEncoder && (
                   <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
@@ -4480,7 +4517,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
                     />
                     <label htmlFor="gradient-routing-ve" className="text-xs text-gray-300 cursor-pointer">
-                      Gradient Routing
+                      Block text-encoder gradients on reference batches
                     </label>
                   </div>
                 )}
@@ -5627,7 +5664,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
 
         {/* Reference Image Conditioning (hidden where the trainer has no such path) */}
-        {!referenceImagesUnsupported && (
+        {!referenceImagesUnsupported &&
+          (isFlux2Model(baseModelPath) || isSenseNovaModel(baseModelPath)) && (
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Reference Image Conditioning</h3>
           <div className="flex items-center space-x-3">
@@ -5639,11 +5677,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
             />
             <label htmlFor="use-reference-images" className="text-sm text-gray-400">
-              Enable reference image conditioning (FLUX.2 only)
+              Enable reference image conditioning ({isSenseNovaModel(baseModelPath) ? "SenseNova" : "FLUX.2"})
             </label>
           </div>
           <div className="text-xs text-gray-500 space-y-1">
-            <p>Uses reference images from dataset to condition the model during training via latent concatenation.</p>
+            <p>
+              {isSenseNovaModel(baseModelPath)
+                ? "Reference images are encoded by the understanding vision tower and inserted as a prompt prefix."
+                : "Reference images are encoded to latents and concatenated to the FLUX.2 image sequence."}
+            </p>
+            <p>Items without a reference image remain normally conditioned.</p>
             <p>Dataset items must have reference images configured (e.g., <code className="bg-gray-800 px-1 rounded">image_ref.png</code> suffix).</p>
           </div>
         </div>
@@ -6312,12 +6355,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   )}
                   {trainingMethod !== "controlnet" &&
-                    ((isSDOrSDXLModel(baseModelPath) && !!visionEncoderPath) || isFlux2Model(baseModelPath)) && (
+                    referenceConditioningEnabled && (
                     <div>
                       <label className="block text-xs text-gray-500 mb-1">
                         Reference Image
                         <span className="text-gray-600 ml-1">
-                          ({isFlux2Model(baseModelPath) ? "Latent concat" : "Vision Encoder"})
+                          ({isFlux2Model(baseModelPath)
+                            ? "Latent concat"
+                            : isSenseNovaModel(baseModelPath)
+                              ? "Understanding prompt prefix"
+                              : "Vision Encoder"})
                         </span>
                       </label>
                       <div

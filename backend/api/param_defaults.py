@@ -2440,7 +2440,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "sdxl_te_max_len": 256,          # fixed token length the new TE is padded/truncated to
     "sdxl_te_train_encoder": False,  # False = freeze TE, train adapters only; True = train both
     # Vision encoder
-    "use_reference_images": False,
+    "use_reference_images": False,  # SD/SDXL also arm this when a SigLIP2 VE is selected
     "vision_encoder_path": None,
     "train_vision_encoder": False,
     "vision_encoder_lr": None,

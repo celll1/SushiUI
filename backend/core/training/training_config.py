@@ -385,7 +385,12 @@ def _build_train_section(
 
     # Reference images / Vision encoder
     if include_reference_images:
-        train["use_reference_images"] = p.get("use_reference_images", False)
+        # FLUX.2/SenseNova use the explicit switch. For SD1.5/SDXL, selecting a
+        # SigLIP2 VE is itself the opt-in; mirror that into the common flag so
+        # persisted configs describe the conditioning they actually perform.
+        train["use_reference_images"] = bool(
+            p.get("use_reference_images", False) or p.get("vision_encoder_path")
+        )
     if include_vision_encoder:
         if p.get("vision_encoder_path"):
             train["vision_encoder_path"] = p["vision_encoder_path"]

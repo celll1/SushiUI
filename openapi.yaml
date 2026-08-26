@@ -18348,7 +18348,11 @@ components:
         use_reference_images:
           type: boolean
           default: false
-          description: Enable reference image latent conditioning during training (FLUX.2 only)
+          description: >-
+            Enable per-item reference-image conditioning. FLUX.2 concatenates
+            reference latents; SenseNova inserts understanding-tower image tokens
+            into the prompt prefix; SD1.5/SDXL append SigLIP2 VE tokens and require
+            vision_encoder_path (selecting one automatically arms this flag).
         # SigLIP2 Vision Encoder
         vision_encoder_path:
           type: string

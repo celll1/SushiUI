@@ -8979,7 +8979,8 @@ class BaseTrainer(ABC):
                 - "pre_encoded_cache": Use pre-encoded disk cache (NOT recommended for large datasets)
                 - "onthefly_gpu": Encode on-the-fly on GPU without cache (NOT recommended for Z-Image)
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
-            use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
+            use_reference_images: Arm per-item reference conditioning. SD/SDXL
+                also arm it implicitly when vision_encoder_path is selected.
         """
         # 0 means "never" for every optional periodic action; see
         # periodic_intervals. gradient_accumulation_steps is not optional, so 0
@@ -9036,10 +9037,35 @@ class BaseTrainer(ABC):
         self._dataset_fingerprint = self._compute_dataset_fingerprint(datasets)
         print(f"{self.log_prefix} Dataset fingerprint: {self._dataset_fingerprint['total_item_count']} items, hash={self._dataset_fingerprint['image_paths_hash'][:8]}...")
 
+        _arch_name = getattr(getattr(self, "arch", None), "name", "")
+        _sd_ve_arch = _arch_name in ("sd15", "sdxl")
+        if vision_encoder_path and not _sd_ve_arch:
+            raise ValueError(
+                "vision_encoder_path is supported only for SD1.5/SDXL training; "
+                f"selected architecture is {_arch_name or 'unknown'}"
+            )
+        if train_vision_encoder and not vision_encoder_path:
+            raise ValueError("train_vision_encoder=True requires vision_encoder_path")
+        if _sd_ve_arch and vision_encoder_path and not use_reference_images:
+            print(
+                f"{self.log_prefix} Reference images: enabling use_reference_images "
+                "because a SigLIP2 vision encoder is selected"
+            )
+            use_reference_images = True
+
         if use_reference_images:
             print(f"{self.log_prefix} Reference images: ENABLED (conditioning will be applied)")
-            if not (self.is_flux2 or self.is_sensenova):
-                print(f"{self.log_prefix} WARNING: use_reference_images is only supported for FLUX.2 and SenseNova, will be ignored")
+            if _sd_ve_arch and not vision_encoder_path:
+                raise ValueError(
+                    "SD1.5/SDXL use_reference_images=True requires "
+                    "vision_encoder_path"
+                )
+            elif not (self.is_flux2 or self.is_sensenova or _sd_ve_arch):
+                print(
+                    f"{self.log_prefix} WARNING: use_reference_images is supported "
+                    "only for FLUX.2, SenseNova, and SD1.5/SDXL with a SigLIP2 "
+                    "vision encoder; it will be ignored"
+                )
 
         # Load Vision Encoder if specified (SigLIP2 for SDXL/SD1.5)
         if vision_encoder_path:

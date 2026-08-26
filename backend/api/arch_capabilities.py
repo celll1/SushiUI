@@ -944,15 +944,13 @@ for _a in ["sd15", "sdxl", "sensenova"]:
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
 
 # --- Reference-image conditioning -------------------------------------------
-# Two unrelated mechanisms, one flag. FLUX.2 VAE-encodes each reference at the
-# target's bucket size and concatenates it to the noisy sequence; SenseNova
-# splices understanding-tower ViT tokens into the prompt prefix
-# (ops/sensenova_ops.encode_prompt) and never routes a reference through the
-# trainer's image pipeline. Every other architecture logs "will be ignored".
-for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova"}):
+# Three unrelated mechanisms, one run-global arm. FLUX.2 concatenates reference
+# latents; SenseNova splices understanding-tower tokens into its prompt prefix;
+# SD1.5/SDXL append SigLIP2 VE tokens when a vision_encoder_path is selected.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2", "sensenova", "sd15", "sdxl"}):
     _add_training_feature_unsupported(
         _a, "reference_images",
-        "reference-image conditioning during training is implemented for FLUX.2 and SenseNova only; base_trainer gates the other reference codepaths on those two and warns that the flag is ignored elsewhere")
+        "reference-image conditioning during training is implemented for FLUX.2, SenseNova, and SD1.5/SDXL with a selected SigLIP2 vision encoder")
 
 # --- Text-encoder training --------------------------------------------------
 # Declared where the text encoder is frozen by the adapter regardless of the

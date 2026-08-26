@@ -850,10 +850,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // shown only for it rather than as a knob that silently does nothing.
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
 
-  const isSDOrSDXLModel = (modelPath: string): boolean => {
+  function isSDOrSDXLModel(modelPath: string): boolean {
     const arch = getModelArchitecture(modelPath);
     return arch === "sd15" || arch === "sdxl";
-  };
+  }
   const isSDXLModel = (modelPath: string): boolean =>
     getModelArchitecture(modelPath) === "sdxl";
 

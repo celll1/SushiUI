@@ -2268,8 +2268,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Component-specific
     "train_unet": True,
     "train_text_encoder": False,            # Fix: frontend had True
-    "unet_lr": 1e-5,
-    "text_encoder_lr": 1e-6,
+    "unet_lr": None,        # None = falls back to learning_rate (see BaseTrainer.__init__)
+    "text_encoder_lr": None,  # None = falls back to learning_rate (see BaseTrainer.__init__)
     "text_encoder_1_lr": None,
     "text_encoder_2_lr": None,
     # Frontend-only fields now accepted by backend

@@ -186,8 +186,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   train_unet: true,
   train_text_encoder: false,
   train_image_encoder: false,
-  unet_lr: 1e-5,
-  text_encoder_lr: 1e-6,
+  unet_lr: null,
+  text_encoder_lr: null,
   text_encoder_1_lr: null,
   text_encoder_2_lr: null,
   image_encoder_lr: null,
@@ -562,8 +562,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const trainTextEncoder = params.train_text_encoder ?? true;
   const trainImageEncoder = params.train_image_encoder ?? false;
   // Local text states preserve in-progress numeric input (scientific notation)
-  const [localUnetLrText, setLocalUnetLrText] = useState<string>("1e-5");
-  const [localTextEncoderLrText, setLocalTextEncoderLrText] = useState<string>("1e-6");
+  const [localUnetLrText, setLocalUnetLrText] = useState<string>("");
+  const [localTextEncoderLrText, setLocalTextEncoderLrText] = useState<string>("");
   const [localTextEncoder1LrText, setLocalTextEncoder1LrText] = useState<string>("");
   const [localTextEncoder2LrText, setLocalTextEncoder2LrText] = useState<string>("");
   const [localImageEncoderLrText, setLocalImageEncoderLrText] = useState<string>("");

@@ -599,6 +599,14 @@ _RESUME_ENTRY_SUFFIXES = (".safetensors.index.json", ".safetensors")
 _RESUME_STEP_RE = re.compile(r"_step_(\d+)\Z")
 
 
+def _resume_entry_stem(name: str) -> Optional[str]:
+    """``name`` with a resume-entry suffix removed, or ``None`` if it has none."""
+    for suffix in _RESUME_ENTRY_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return None
+
+
 def _half_linear_layout(transformer: nn.Module) -> "Dict[str, Dict[str, Any]]":
     """Per MoT half, how its decoder Linears are currently shaped.
 
@@ -671,11 +679,8 @@ def _resume_selected_checkpoint(trainer: Any) -> Optional[Path]:
             return None
     except OSError:
         return None
-    for suffix in _RESUME_ENTRY_SUFFIXES:
-        if path.name.endswith(suffix):
-            stem = path.name[: -len(suffix)]
-            break
-    else:
+    stem = _resume_entry_stem(path.name)
+    if stem is None:
         return None
     if not stem.startswith(f"{run_name}_step_") or not _RESUME_STEP_RE.search(stem):
         return None
@@ -739,11 +744,12 @@ def accept_resume_shaped_base(
            if layout[half]["first_other"] else "")
         for half in ("gen", "und")
     )
-    # Named WITHOUT its suffix: BaseTrainer.__init__ classifies any resume failure
-    # whose text contains "safetensor" as corruption and then reloads every older
-    # checkpoint as a fallback -- 17-25 GiB apiece, all refused for the same
-    # structural reason.
-    entry = checkpoint.name.split(".safetensors")[0]
+    # Named WITHOUT its suffix: sensenova_full_finetune_resume_base_test.py
+    # asserts the accepted-branch info message below stays free of
+    # ".safetensors" (test_the_acceptance_is_announced_on_the_channel_not_only_stdout),
+    # so the refusal messages below match that convention rather than
+    # switching case by case.
+    entry = _resume_entry_stem(checkpoint.name) or checkpoint.stem
     step = int(_RESUME_STEP_RE.search(entry).group(1))
     trained_halves = ("gen", "und") if branch == "both" else (branch,)
     expected_format = _SENSENOVA_RESUME_FORMAT_FOR_BRANCH[branch]

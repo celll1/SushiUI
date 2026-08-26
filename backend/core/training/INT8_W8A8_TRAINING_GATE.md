@@ -595,3 +595,237 @@ gradient exists and nothing is saved, so it neither helps nor threatens this.
   tokens — free, never negative. **`Fp8Linear` deliberately did not take it:**
   `float8_e4m3fn` has no promoting multiply at all (RuntimeError on CPU and CUDA,
   all three compute dtypes), so folding its cast would raise, not accelerate.
+
+---
+
+# Fused ConvRot W8A8 forward for a frozen base in training — measurement gate G5 (pre-registered)
+
+**Status: pre-registered, 2026-08-26. Written before the measurement it decides.**
+No config key and no artifact-metadata field for this path exists. **Nothing
+under this gate has shipped and no default has changed**; a candidate autograd
+path may sit in the working tree behind the opt-in
+`SUSHI_CONVROT_TRAIN_FUSED` environment flag, default off, whose existence
+decides nothing here — this gate is decided by the measurement below and not by
+the candidate's own numbers.
+
+It lives in this file for the same reason G4 does: same subject. G3 asked
+whether an unrotated INT8 W8A8 forward could be made faster in training (closed,
+FAILED). G4 asked whether the dequant path could retain less memory in training
+(closed, FAILED). G3 put **rotation explicitly out of scope**, so neither gate
+decides the rotated case; G5 is that case, and it is a different intervention
+because it changes the forward and the retention at the same time. **G3's and
+G4's rule texts are unchanged by G5.** The design being decided is
+`docs/guides/INT8_CONVROT_TRAINING_DESIGN.md`.
+
+## What decides G5, and what does not
+
+G5 is decided by a **real training step on a real ConvRot checkpoint**:
+
+* **SenseNova is mandatory.** The subject is `ConvRotInt8Linear`
+  (`backend/core/models/common/convrot_int8_linear.py`) as loaded by
+  `training/ops/sensenova_ops.py` over the released
+  `sensenova_int8_convrot.safetensors` base, under the LoRA route that already
+  runs today.
+* **MiniMax-H3 is mandatory.** Reachable means a ConvRot (or W4A8) base whose
+  Linears sit on the **differentiable** path of a real MiniMax-H3 training step.
+  **The determination is written here before any deciding number is taken, and
+  it is: reachable.** `models/minimax_h3/loader.py::_load_transformer` swaps both
+  `ConvRotInt8Linear` and `W4A8Linear` into the **DiT** from the `int8_convrot`
+  and `w4a8_mixed` DiT files, both of which exist locally for both variants
+  (`M:/model/minimax_h3/diffusion_models/minimax_h3_{fl2va,ref2va}_pruned_{int8_convrot,w4a8_mixed}.safetensors`);
+  `training/ops/minimax_h3_ops.load_components` freezes that DiT and trains LoRA
+  over it, so those Linears are frozen and differentiable — exactly this gate's
+  subject. An earlier reading that H3's only ConvRot file was the
+  `qwen3vl_32b_minimax_h3_int8_convrot` text encoder was wrong; it holds only for
+  the `fp8_scaled` DiT, which is a different file and is not a G5 workload. The
+  text encoder itself is **not** a G5 workload for the opposite reason: its
+  forward runs under `@torch.no_grad()`, so its Linears already take the fused
+  inference kernel and never reach the path this gate decides.
+
+**Nobody has measured a real ConvRot training step.** That is what makes G5
+pre-registrable today.
+
+### The 2026-08-26 numbers are inputs and priors, not the verdict
+
+`tmp/CONVROT_MEASURED_EVIDENCE.md`; probes `tmp/convrot_probe{1,2,3}.py`. Every
+step-level number there is **synthetic**: no model was loaded, weight shapes come
+from the checkpoint header and four real weight tensors were read for the
+accuracy arm only. The synthetic step has **no prefix pass, no MoT mask, no RoPE
+and no data pipeline**, and its step time sits on a **CPU-dispatch-bound floor**
+(arm B's step time is flat 231.69 -> 227.32 ms from 64 to 256 tokens while doing
+29% less GPU work at 64 tokens). **That floor is exactly the quantity a real step
+changes**, in either direction: a real step adds host work of its own and adds
+GPU work of its own. G3's history is the reason this is written down — a derived
+step-share was wrong by 4.3 points (43.9% derived vs 23.7% measured), and the
+error was in the same class of extrapolation.
+
+Carried forward as priors, labelled:
+
+* **synthetic, per layer:** fused forward 1.06x-6.54x over the dequant forward at
+  the real ConvRot shapes; backward 0.28x-0.93x (the added dequantization).
+* **synthetic, whole step, checkpointing ON:** -15.4% at 64 image tokens,
+  +18.9% at 256, +25.7% at 1024.
+* **synthetic, whole step, checkpointing OFF:** -26.0% at 64 tokens, +17.1% at
+  256; peak 23.22 -> 8.18 GiB at 64 tokens (bf16-equivalent for the same 294
+  weights: 15.83 GiB).
+* **measured on real weights (not a step):** `grad_x` bitwise equal to the
+  current path at bf16, m in {64, 1024}; forward relative difference
+  0.98e-2-1.07e-2 between the fused and dequant arms.
+
+### The known crossover, recorded before the gate is evaluated
+
+The synthetic **regresses at 64 image tokens (SenseNova 256 px)** and wins from
+**256 tokens (512 px)** upward. The 64-token bucket is therefore a **required
+tested workload** under criterion 2, and G5 as written can fail on it. A gate
+that cannot fail at 256 px is not a gate.
+
+## The rule
+
+### Build proceeds only if ALL of:
+
+1. **Measured end-to-end step-time reduction >= 10%** versus the current
+   dequant-path training, on the mandatory architecture set defined above, at
+   the shipping-default resolution of each. The number is taken from a **real
+   training step**, not projected from per-layer timings; if any input to it is
+   derived rather than measured, the projection is labelled **derived** and the
+   label travels with the number. The measurement must include gradient-
+   checkpoint recompute (the forward runs twice per step) and must be replicated
+   on at least two configurations that both contain a frozen ConvRot half.
+2. **No tested workload regresses by more than 3%** in end-to-end step time.
+   The tested set must include the SenseNova **64-image-token (256 px)** bucket
+   and the 256-token (512 px) bucket, gradient checkpointing **on and off** where
+   the architecture permits, and cold as well as warm process state.
+3. The measurement **must not rely on a warm state a real run would not have**,
+   and must not be taken with a foreign compute process on the GPU.
+
+### Alternative sufficient condition (OOM removal)
+
+The fused path **enables a real configuration that cannot run today at all** —
+demonstrated by a real training run of that configuration OOM-ing on the current
+path and completing steps on the new path, same machine, same config, same seed,
+same data. This is sufficient on its own, independent of the 10% bar.
+
+**A synthetic peak does not satisfy this condition.** The 23.22 -> 8.18 GiB
+figure above is a prior that says where to look — SenseNova with
+`gradient_checkpointing: false`, where the dequantized weights of 294 live
+Linears are retained simultaneously and the quantized base costs more than its
+15.83 GiB bf16 equivalent — and nothing more. The condition is decided by
+whether a configuration that cannot run does run.
+
+### No admission rule is registered
+
+G5 registers **no token-count, resolution or `(m, k, n)` admission condition**.
+Criterion 2 applies to every tested workload uniformly. G3's ruling refused
+rescuing a failing gate by scoping it to the configuration where it passes, and
+the crossover here is known **before** the deciding numbers exist, so carving
+the 64-token bucket out of G5 would be the same move made earlier.
+
+If a later proposal wants an admission rule, it is a **new gate**, and it may be
+written only under these conditions, registered here now:
+
+* the selector is **derived from real training-time shapes measured against the
+  real training dequant path**, not a nominal-resolution floor and not a retune
+  of the shipped inference constants;
+* its **calibration and holdout shapes are separated and named before any
+  holdout number is observed**;
+* it models the cost that actually binds. At 64 tokens that is **host dispatch**,
+  not the `m*k*n` compute volume the existing inference gates model; a selector
+  fitted to `m*k*n` would be curve-fitting the wrong model, the same error G3's
+  ruling identified;
+* without hand adjustment after the fact, it refuses the 64-token SenseNova
+  shapes and admits the 1024-token shapes. If its natural crossover does not
+  separate those two cases, there is no crossover to exploit.
+
+### Rationale for the numbers, recorded now
+
+The 10% bar and the 3% floor are **inherited unchanged from G3**, deliberately,
+so that they are not numbers chosen to fit the 2026-08-26 synthetic. Their
+justification is G3's and is unchanged: 10% is the minimum that justifies a new
+autograd path, a new artifact-compatibility invariant, and the permanent
+maintenance of both; 3% is the regression a supported workload may absorb
+without the change being a trade rather than an improvement. The synthetic's own
+numbers (-15.4% at 64 tokens, +25.7% at 1024) sit on both sides of both
+thresholds, which is the intended property: the thresholds do not select an
+outcome.
+
+**A "stop" verdict is a successful outcome of this gate, not a failure of it.**
+
+## If the build proceeds, shipping additionally requires
+
+Recorded now so they cannot be negotiated later. These are **not** evaluated by
+the pre-build measurement; they are release conditions for code that does not
+yet exist. **They outrank speed:** a passing step-time number does not ship a
+path that fails any of them.
+
+1. **Gradient correctness in the production dtype — bf16 AND fp16, not fp32
+   only.** `grad_x` matches the dequant-path autograd within the production
+   dtype's tolerance in **bf16 and fp16**, with fp32 as an oracle. Repo
+   precedent: fp32-verified code has already shipped a crash onto the fp16
+   production path after a probe, a self-check and an audit all passed. The
+   2026-08-26 bitwise `grad_x` result is **bf16 only, on a synthetic stack**, and
+   does not discharge this condition. No weight, scale or bias gradient may
+   appear; a configuration that would need one must refuse rather than silently
+   drop it.
+2. **Quality, measured through the deployment path.** Held-out denoising loss
+   through the **required W8A8 ConvRot deployment path** within **1% relative**
+   of the matched baseline, across **3 fixed seeds**, **plus** a blinded
+   fixed-prompt visual check. Loss curves alone are insufficient (G2's local
+   precedent: an FP8 arm passed on aggregate numbers and failed on flat-region
+   mottle). The measured 0.98e-2-1.07e-2 forward difference between the arms is
+   the size of the function change this condition is testing, not evidence about
+   its effect.
+3. **The base-function / artifact invariant of design doc §5, enforced
+   automatically and in both directions.** An artifact trained under the fused
+   mode records the mode, ConvRot group size, backward dtype and a canonical
+   hash of the ordered ConvRot layer manifest; the inference loader refuses that
+   artifact on a plain-INT8, FP8, bf16, dequant-forced, different-manifest or
+   incompatible-ConvRot base, and refuses a dequant-trained artifact on a
+   fused base. **This invariant is NOT implemented today** — no
+   `convrot_w8a8_ste_v1` marker, no base-forward-mode field and no such loader
+   check exists anywhere in the repository (verified 2026-08-26 by
+   repository-wide search). If the coupling cannot be enforced automatically,
+   the feature does not ship regardless of speed.
+4. **No silent base-function switch mid-run.** A kernel exception must fail the
+   run with the layer path and reason. Training one artifact against two
+   different base functions is a correctness failure, not a fallback.
+
+## Out of scope under this gate
+
+* **Trainable ConvRot weights / QAT.** Refused by design doc §4.2 and
+  corroborated by the earlier int8-resident full-FT investigation. Not reopened
+  here.
+* **G3 and G4.** Both are closed. Nothing in G5 reopens either, and nothing
+  measured for ConvRot transfers to plain `Int8Linear`/`Fp8Linear`: their
+  dequant path is a single promoted multiply, while ConvRot's includes an
+  inverse Hadamard, which is a large part of why the ConvRot dequant arm is as
+  expensive as it is.
+* **Changing the `gradient_checkpointing` default.**
+* **Activation fusion (`input_act`), `torch.compile` coverage, and optimizer
+  changes.** None is required or permitted under this gate.
+
+## Measurement protocol this gate is to be evaluated with
+
+Fixed here so the protocol cannot be chosen after seeing a number.
+
+* Time a **real training step** on the real checkpoint, both arms, with the same
+  data order, batch size, optimizer and seed. Report **measured**, not derived,
+  step time; if the forward share of the step is needed at all, measure it.
+* Buckets: the SenseNova resolutions that map to 64, 256 and 1024 image tokens
+  at minimum, from the resolution path a real run uses.
+* Gradient checkpointing **on and off**, where the configuration can run at all
+  in both states. If an arm cannot run in a state, that is an OOM observation
+  under the alternative sufficient condition, not a missing cell.
+* Report **peak allocated and reserved VRAM** per arm per bucket, and the bf16
+  equivalent of the same weights.
+* **Interleaved A/B repeats, verdict on the minimum sample per arm per round** —
+  the estimator G4 adopted after non-exclusive runs produced a -1.9% and a
+  +19.6% for the same configuration.
+* **GPU exclusivity is a precondition**, checked with the logic
+  `examples/api/bench_fp8_scaled_mm.py` uses (`C` vs `C+G` process types on WDDM,
+  backend PID from `backend/.port_info`). A foreign compute process means **stop
+  and report**, not "measure anyway".
+* **Power/clock state recorded.** This card sits at a 240 W cap and idles at
+  210 MHz; warmup is on wall time and batch sizes are calibrated.
+* **Host RAM peak is budgeted and announced before the run**, since this gate
+  loads a 17.58 GiB checkpoint — unlike every measurement recorded above it,
+  which loaded no model.

@@ -64,7 +64,6 @@ os.environ["SUSHI_FP8_SCALED_MM"] = "0"
 os.environ["SUSHI_INT8_MM"] = "0"
 
 import torch
-import gc
 from pathlib import Path
 from typing import Dict, Any, List
 from datetime import datetime
@@ -1951,69 +1950,11 @@ def main():
         # Initialize logger without file
         logger = TrainingLogger(log_file=None)
 
-    # ============================================================
-    # Unload Generate Pipeline to Free Memory
-    # ============================================================
-    # The main application loads models for inference (txt2img/img2img/inpaint).
-    # Training uses a separate model instance, so we unload the generate pipeline
-    # to free CPU/GPU memory (Z-Image 6B model = ~15 GB on CPU).
-    print(f"[TrainRunner] Unloading generate pipeline to free memory...")
-    try:
-        from core.pipeline import pipeline_manager
-
-        # Unload all generate pipelines
-        if pipeline_manager.txt2img_pipeline is not None:
-            print(f"[TrainRunner] Unloading txt2img pipeline...")
-            del pipeline_manager.txt2img_pipeline
-            pipeline_manager.txt2img_pipeline = None
-
-        if pipeline_manager.img2img_pipeline is not None:
-            print(f"[TrainRunner] Unloading img2img pipeline...")
-            del pipeline_manager.img2img_pipeline
-            pipeline_manager.img2img_pipeline = None
-
-        if pipeline_manager.inpaint_pipeline is not None:
-            print(f"[TrainRunner] Unloading inpaint pipeline...")
-            del pipeline_manager.inpaint_pipeline
-            pipeline_manager.inpaint_pipeline = None
-
-        # Unload Z-Image components if present
-        if pipeline_manager.zimage_components is not None:
-            print(f"[TrainRunner] Unloading Z-Image components...")
-            del pipeline_manager.zimage_components
-            pipeline_manager.zimage_components = None
-
-        # Unload Anima components if present
-        if getattr(pipeline_manager, "anima_components", None) is not None:
-            print(f"[TrainRunner] Unloading Anima components...")
-            del pipeline_manager.anima_components
-            pipeline_manager.anima_components = None
-
-        # Reset current model tracking. Clear EVERY arch flag, not just a couple:
-        # leaving a stale is_<arch>_model True (e.g. is_acestep_model) made generation
-        # endpoints mis-detect the arch, and combined with load_model's model-id
-        # early-return a later same-source load could fail to restore the right flag.
-        pipeline_manager.current_model = None
-        pipeline_manager.current_model_info = None
-        for _flag in (
-            "is_zimage_model", "is_flux2_model", "is_anima_model", "is_lens_model",
-            "is_ideogram4_model", "is_minit2i_model", "is_krea2_model", "is_ltx2_model",
-            "is_acestep_model",
-        ):
-            if hasattr(pipeline_manager, _flag):
-                setattr(pipeline_manager, _flag, False)
-
-        # Force garbage collection
-        gc.collect()
-
-        # Clear CUDA cache if available
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        print(f"[TrainRunner] Generate pipeline unloaded successfully")
-    except Exception as e:
-        print(f"[TrainRunner] Warning: Failed to unload generate pipeline: {e}")
-        # Continue training even if unload fails
+    # The generation model's VRAM belongs to the BACKEND process. Releasing it
+    # from here is impossible: importing core.pipeline in this child builds a
+    # fresh, empty DiffusionPipelineManager, so the unload block that used to sit
+    # here freed nothing and printed success while doing it. The real release now
+    # runs in the backend, in start_training_run, before this process is spawned.
 
     # Get database sessions (separate DBs for training and datasets)
     training_db_gen = get_training_db()

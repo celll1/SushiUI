@@ -2384,7 +2384,31 @@ extra metricsへ出す。byte数は実際にcopyが起きるtensorのみを数�
 直前phaseのqueue済み計算を吸ってd2h側が過大になる（§8.3.2で撤回した数値と同じ欠陥）。
 先頭syncは待ち時間を増やさない——次の文のcopyがどのみち同じ計算を待つためである。
 
-#### なぜ単純な非同期copyを採らないか
+**重なり合わせ（overlap、PHASE 2）**: `sensenova_mot_overlap_transfer`
+（デフォルト `False`、`sensenova_mot_phase_eviction` 必須、
+`sensenova_mot_pageable_staging` とは**併用不可**でload前に拒否）。`_swap_plan`は既に
+pair単位でd2h→h2dを交互に並べているため、同一swapの2方向はPCIeの全二重性と
+H2D/D2H独立copy engineの上で同時に走らせられる。転送項の算術上の上限は
+`d2h + h2d`から`max(d2h, h2d)`へ下がる。**実際にどこまで届くかは未計測であり、
+そのためdefault offで出荷している**。実装は`sensenova_phase_eviction.py`の
+OVERLAPPED TRANSFER注記を参照。下の4不変条件はこのmodeでは次のように満たされる。
+
+- residentは1 half + 最大`_OVERLAP_WINDOW_PAIRS`（=4）module。bf16の最大単一weight
+  0.09375 GiBに対し0.375 GiB（1 halfの約2.5%）。incomingのallocationはoutgoingの
+  解放より先に要求されるため、allocatorは再利用ではなく**実際に増える**。
+- d2h元は`parameter.data`の再代入で即座に最後の参照を失うため`record_stream()`する。
+  h2d元のpinned tensorはeventをwaitするまで明示的に保持する。
+- 例外時は`_best_effort_cpu`の**先頭**でstreamをjoinしてからdeviceを同期する。
+  `_module_already_staged_cpu`はdeviceとpin flagしか見ずcontent妥当性を見ないため、
+  landしていないpinned bufferが「staged済み」として黙ってskipされる欠陥を塞ぐ。
+- pinned確保が一度でも失敗したら、以降のrun全体をserial経路へ落として1回だけ告知する。
+  pageable memory相手の非同期copyはdriverのbounce buffer経由で実質host同期になる。
+
+`sn_d2h_s` / `sn_h2d_s`はこのmodeでは**単位が変わる**（blocking copy周りのhost wallでは
+なく、各方向のstream上のCUDA event時間になり、両方向が並走するため合計はtransitionの
+wallを超える）。どちらのmodeで採られた値かは`sn_swap_overlap`で判別する。
+
+#### なぜ単純な非同期copyを採らないか（PHASE 2以前の記述）
 
 `non_blocking=True`だけでは、待ち時間を隠す相手が存在しない。whole-half方式では次phaseの
 forward/backwardがincoming half全体を必要とするため、H2Dをqueueしても計算開始前には
@@ -2399,7 +2423,10 @@ forward/backwardがincoming half全体を必要とするため、H2Dをqueueし�
 - fused backward hookが更新を適用する時点で、そのParameterとgradientを同じdeviceに置く。
 
 現在の同期実装はこれらを転送の逐次完了によって保証している。非同期化は速度flagではなく、
-転送state machineと失敗回復の再設計である。
+転送state machineと失敗回復の再設計である。**上の4条件のうち先頭3つは
+`sensenova_mot_overlap_transfer`（PHASE 2）が明示的に扱う**（4つ目のfused hookの
+device一致は`_assert_grad_free`のpre-flightが従来どおり担保する）。ここで否定されている
+「whole-half H2Dだけ非同期化」——隠す相手のいない片方向のqueue——は依然採らない。
 
 #### 選択肢と意味
 
@@ -2410,6 +2437,7 @@ forward/backwardがincoming half全体を必要とするため、H2Dをqueueし�
 | shared MNT prefix | MNT=Nでswapを2N回から2回へ減らす | MNT=1では効果なし。und更新をN回から1回へ変えるため、単なる性能最適化ではない（§8.3.5） |
 | pageable staging | stickyなpinned host高水位を避ける | host memory用。転送高速化を主張しない。通常はpinnedより遅くなり得る |
 | whole-half H2Dだけ非同期化 | CPU threadのblock時間を短く見せる | GPU計算前に待つためstep wall改善は限定的。単独では採用しない |
+| overlap transfer（PHASE 2） | 同一swapの2方向を並走させ、転送項の上限を`d2h + h2d`から`max(d2h, h2d)`へ | 算術上の上限であり実測値ではない。resident +最大4 module、pageable stagingとは併用不可 |
 | layer単位prefetch/evict | PCIe転送と隣接layerの計算を重ねられる可能性 | 本命だが、layer residency、checkpoint再計算、fused hook、失敗回復を統合する新しいoffloaderが必要 |
 
 48 GB環境で最初に行うべき判断は、非同期化ではなく**同一run条件でeviction OFFが本当に

@@ -261,6 +261,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_full_finetune_save_format: "mixed",
   sensenova_sample_kv_cache_streaming: false,
   sensenova_mot_pageable_staging: false,
+  sensenova_mot_overlap_transfer: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -1061,6 +1062,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
       sensenova_sample_kv_cache_streaming: params.sensenova_sample_kv_cache_streaming,
       sensenova_mot_pageable_staging: params.sensenova_mot_pageable_staging,
+      sensenova_mot_overlap_transfer: params.sensenova_mot_overlap_transfer,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1329,6 +1331,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",
       "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
       "sensenova_sample_kv_cache_streaming", "sensenova_mot_pageable_staging",
+      "sensenova_mot_overlap_transfer",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -1631,11 +1634,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.sensenova_mot_phase_eviction) updateParam("sensenova_mot_phase_eviction", false);
       if (params.sensenova_four_phase_eviction) updateParam("sensenova_four_phase_eviction", false);
       if (params.sensenova_mot_pageable_staging) updateParam("sensenova_mot_pageable_staging", false);
+      if (params.sensenova_mot_overlap_transfer) updateParam("sensenova_mot_overlap_transfer", false);
     }
     // Refused before the model loads without MoT Phase Eviction, same reason
     // as the shared window below.
     if (params.sensenova_mot_pageable_staging && !params.sensenova_mot_phase_eviction) {
       updateParam("sensenova_mot_pageable_staging", false);
+    }
+    if (params.sensenova_mot_overlap_transfer && !params.sensenova_mot_phase_eviction) {
+      updateParam("sensenova_mot_overlap_transfer", false);
+    }
+    // Also refused as a PAIR: an async copy against pageable host memory is
+    // bounce-buffered and effectively host-synchronous. Pageable wins here
+    // because it is the one that answers a hard host-RAM limit.
+    if (params.sensenova_mot_overlap_transfer && params.sensenova_mot_pageable_staging) {
+      updateParam("sensenova_mot_overlap_transfer", false);
     }
     // Not a preference: the split is refused before the model loads once any of
     // its three preconditions stops holding, so leaving it set submits a run the
@@ -1662,6 +1675,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       motEvictionUnsupported, fourPhaseBlockedReason,
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
       params.sensenova_four_phase_shared_prefix, params.sensenova_mot_pageable_staging,
+      params.sensenova_mot_overlap_transfer,
       params.train_unet, params.train_text_encoder]);
 
   // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
@@ -2144,6 +2158,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
       sensenovaSampleKvCacheStreaming: params.sensenova_sample_kv_cache_streaming,
       sensenovaMotPageableStaging: params.sensenova_mot_pageable_staging,
+      sensenovaMotOverlapTransfer: params.sensenova_mot_overlap_transfer,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -2343,6 +2358,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
     if (config.sensenovaSampleKvCacheStreaming !== undefined) updateParam("sensenova_sample_kv_cache_streaming", config.sensenovaSampleKvCacheStreaming);
     if (config.sensenovaMotPageableStaging !== undefined) updateParam("sensenova_mot_pageable_staging", config.sensenovaMotPageableStaging);
+    if (config.sensenovaMotOverlapTransfer !== undefined) updateParam("sensenova_mot_overlap_transfer", config.sensenovaMotOverlapTransfer);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4872,7 +4888,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="checkbox"
                   id="sensenova-mot-pageable-staging"
                   checked={params.sensenova_mot_pageable_staging ?? false}
-                  onChange={(e) => updateParam("sensenova_mot_pageable_staging", e.target.checked)}
+                  onChange={(e) => {
+                    updateParam("sensenova_mot_pageable_staging", e.target.checked);
+                    // Refused as a pair before the model loads, so this is not a
+                    // preference: async copies need pinned host memory.
+                    if (e.target.checked) updateParam("sensenova_mot_overlap_transfer", false);
+                  }}
                   className="w-4 h-4"
                 />
                 <label htmlFor="sensenova-mot-pageable-staging" className="text-xs text-gray-300 cursor-pointer">
@@ -4883,6 +4904,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {params.sensenova_mot_phase_eviction && (
               <p className="text-xs text-gray-500">
                 Stages the evicted half to ordinary host memory instead of pinned. Trades the pinned pool&apos;s high-water, which stays allocated for the rest of the run, for host RAM the OS can reclaim, at an unmeasured transfer-time cost.
+              </p>
+            )}
+
+            {params.sensenova_mot_phase_eviction && (
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="sensenova-mot-overlap-transfer"
+                  checked={params.sensenova_mot_overlap_transfer ?? false}
+                  onChange={(e) => {
+                    updateParam("sensenova_mot_overlap_transfer", e.target.checked);
+                    if (e.target.checked) updateParam("sensenova_mot_pageable_staging", false);
+                  }}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="sensenova-mot-overlap-transfer" className="text-xs text-gray-300 cursor-pointer">
+                  Overlapped Half Swap
+                </label>
+              </div>
+            )}
+            {params.sensenova_mot_phase_eviction && (
+              <p className="text-xs text-gray-500">
+                Issues a swap&apos;s outgoing and incoming halves on separate CUDA streams instead of back to back, so the two directions can use their own copy engines. The transfer term&apos;s arithmetic ceiling drops from the sum of the two directions to the larger of them; what a real run reaches is unmeasured. Holds a few extra modules on GPU while a swap is in flight, and cannot be combined with Pageable Host Staging.
               </p>
             )}
 

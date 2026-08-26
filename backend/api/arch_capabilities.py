@@ -282,6 +282,10 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # the four-phase pair, "eviction, pinned" and "eviction, pageable" are both
     # legal independently.
     "sensenova_mot_pageable_staging": ["sensenova_mot_pageable_staging"],
+    # A transfer-mode sub-option of sensenova_mot_eviction, declared separately
+    # for the same reason as the staging-mode one above. Mutually exclusive with
+    # it, but that is a per-run refusal, not a capability fact.
+    "sensenova_mot_overlap_transfer": ["sensenova_mot_overlap_transfer"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -294,6 +298,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_eviction": "SenseNova MoT phase eviction (with the four-phase backward split)",
     "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
     "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
+    "sensenova_mot_overlap_transfer": "SenseNova MoT phase eviction overlapped half swap",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1026,6 +1031,13 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
     _add_training_feature_unsupported(
         _a, "sensenova_mot_pageable_staging",
         "pageable-vs-pinned host staging is a sub-option of SenseNova's per-phase MoT weight-half CPU eviction, which this architecture has no equivalent of")
+
+# --- SenseNova MoT phase eviction overlapped half swap ----------------------
+# A transfer-mode sub-option of sensenova_mot_eviction (same reason as above).
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_mot_overlap_transfer",
+        "overlapping a swap's two directions on separate CUDA streams is a sub-option of SenseNova's per-phase MoT weight-half CPU eviction, which this architecture has no equivalent of")
 
 # --- Sample generation during training --------------------------------------
 # NOT declared for SenseNova: its sampling integration is in flight, and a

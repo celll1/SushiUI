@@ -15396,6 +15396,12 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_mot_pageable_staging: bool = TRAINING_DEFAULTS[
         "sensenova_mot_pageable_staging"
     ]
+    # MoT phase eviction only: overlap a swap's two directions on separate CUDA
+    # streams. Refused without sensenova_mot_phase_eviction and refused together
+    # with pageable staging (train_runner._apply_sensenova_training_contract).
+    sensenova_mot_overlap_transfer: bool = TRAINING_DEFAULTS[
+        "sensenova_mot_overlap_transfer"
+    ]
     # SenseNova full fine-tune save format. Measured sizes and the int8 loss
     # census are in openapi.yaml's description. Literal, not str: the adapter's
     # own refusal fires at the first save_every, which is the "train for hours,

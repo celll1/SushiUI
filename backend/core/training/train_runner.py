@@ -336,6 +336,27 @@ def _apply_sensenova_training_contract(
             "sensenova_mot_phase_eviction: it selects how the evictor stages "
             "a half to CPU, and with the evictor off nothing is ever staged."
         )
+    overlap_transfer = _normalize_sensenova_bool(
+        train_config,
+        "sensenova_mot_overlap_transfer",
+        TRAINING_DEFAULTS["sensenova_mot_overlap_transfer"],
+    )
+    if overlap_transfer and not phase_eviction:
+        raise ValueError(
+            "SenseNova sensenova_mot_overlap_transfer requires "
+            "sensenova_mot_phase_eviction: it selects how the evictor moves a "
+            "half, and with the evictor off nothing is ever moved."
+        )
+    if overlap_transfer and pageable_staging:
+        # Refused rather than silently degraded: see sensenova_phase_eviction's
+        # OVERLAPPED TRANSFER note.
+        raise ValueError(
+            "SenseNova sensenova_mot_overlap_transfer cannot be combined with "
+            "sensenova_mot_pageable_staging: an async copy against pageable "
+            "host memory is staged through a driver bounce buffer and is "
+            "effectively host-synchronous, so the overlap would pay its "
+            "correctness cost for no concurrency. Enable one of the two."
+        )
     _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"

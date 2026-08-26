@@ -19114,6 +19114,34 @@ components:
             `sensenova_four_phase_eviction` (that flag changes how many
             backwards a step runs, not how a half is staged). Accepted and
             warned by every other architecture.
+        sensenova_mot_overlap_transfer:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova LoRA and full fine-tuning, MoT phase eviction only.
+            Requires `sensenova_mot_phase_eviction: true` and is refused
+            together with `sensenova_mot_pageable_staging`, both before the
+            checkpoint loads.
+
+            A two-sided phase swap moves one half out and the other in. By
+            default both legs are host-blocking and run back to back, so the
+            transfer term is `d2h + h2d`. With this set, a pair's two legs are
+            issued on separate CUDA streams; PCIe is full duplex and the host-to
+            -device and device-to-host copy engines are independent, so the
+            arithmetic ceiling for the transfer term becomes `max(d2h, h2d)`.
+            What fraction of that ceiling a real run reaches is UNMEASURED --
+            no probe has been run, and none is claimed here, which is why this
+            ships off.
+
+            Costs a bounded transient extra device residency: at most four
+            incoming modules are admitted ahead of their outgoing twins'
+            completion. Falls back to the serial path, with a log line, if a
+            pinned host allocation ever fails during the run, and is inert on a
+            non-CUDA device. Refused with `sensenova_mot_pageable_staging`
+            because an async copy against pageable host memory is staged
+            through a driver bounce buffer and is effectively host-synchronous,
+            so the pair would pay the overlap's costs for no concurrency.
+            Accepted and warned by every other architecture.
         sensenova_four_phase_eviction:
           type: 'boolean'
           default: false

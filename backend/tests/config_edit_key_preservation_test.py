@@ -277,6 +277,7 @@ class SenseNovaBlockSwapFlagRoundTripTest(unittest.TestCase):
         "sensenova_four_phase_shared_prefix",
         "sensenova_sample_kv_cache_streaming",
         "sensenova_mot_pageable_staging",
+        "sensenova_mot_overlap_transfer",
     )
 
     def test_flags_round_trip_through_both_generators(self):

@@ -59,10 +59,16 @@ EXTRA_METRIC_DEFS = {
     # not a loss, hence the secondary axis. Emitted only on a skip.
     "sn_und_grad_dropped": {"label": "SenseNova und grad dropped", "color": "#f87171",
                             "dashed": True, "axis": "right"},
-    # SenseNova MoT phase eviction: per-step wall time and volume of the half
-    # swaps, split by direction (see sensenova_phase_eviction's TRANSFER
-    # ACCOUNTING). Seconds and GiB are both orders away from the loss scale, so
-    # they share the secondary axis for the same reason "lr" does.
+    # SenseNova MoT phase eviction: per-step time and volume of the half swaps,
+    # split by direction (see sensenova_phase_eviction's TRANSFER ACCOUNTING).
+    # Seconds and GiB are both orders away from the loss scale, so they share
+    # the secondary axis for the same reason "lr" does.
+    #
+    # The SECONDS change unit with sn_swap_overlap below: 0 means host wall time
+    # around a blocking copy, and the two buckets sum to the step's transfer
+    # term; 1 means CUDA event time on that direction's own stream, where the
+    # two directions run concurrently and their sum EXCEEDS the transition's
+    # wall. Read the two series against that flag, never across it.
     "sn_d2h_s": {"label": "SenseNova D2H (s)", "color": "#38bdf8", "dashed": False,
                  "axis": "right"},
     "sn_h2d_s": {"label": "SenseNova H2D (s)", "color": "#a78bfa", "dashed": False,
@@ -71,6 +77,11 @@ EXTRA_METRIC_DEFS = {
                    "axis": "right"},
     "sn_h2d_gib": {"label": "SenseNova H2D (GiB)", "color": "#c084fc", "dashed": True,
                    "axis": "right"},
+    # 1 while sensenova_mot_overlap_transfer is running the two-stream path.
+    # Not decorative: it is what tells a reader which unit the two seconds
+    # series above are in, including mid-run if a pin failure downgrades it.
+    "sn_swap_overlap": {"label": "SenseNova swap overlapped", "color": "#facc15",
+                        "dashed": True, "axis": "right"},
     # RUN-CUMULATIVE CUDA high-water (never reset), so these are monotone step
     # curves, not per-step usage: they say when the peak last moved, not what a
     # step cost. Emitted only alongside the swap counters above.

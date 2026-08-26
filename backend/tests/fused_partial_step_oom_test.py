@@ -35,6 +35,7 @@ Run with:
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -342,6 +343,17 @@ def _recovery_stub(rig=None, fused=True, batch=1, on_forward_backward=None):
         _activation_dispatch_begin=lambda latents: (None, None),
         _activation_dispatch_end=lambda cm, info: None,
         _classify_cuda_error=BaseTrainer._classify_cuda_error,
+        # CPU-only file: never probe real CUDA. _cuda_is_available is pinned
+        # True so _refuse_save_after_partial_step always consults
+        # _cuda_context_alive below instead of the real torch.cuda.is_available()
+        # -- which would make these tests invert on a machine with no GPU
+        # (torch.cuda.is_available() False -> ctx_alive forced True regardless
+        # of the stub). Default "dead" (no salvage attempted) so a test that
+        # doesn't care about the quarantine branch gets the simpler,
+        # allocation-free path; tests that DO care override these explicitly.
+        _cuda_is_available=lambda: True,
+        _cuda_context_alive=lambda: False,
+        _save_quarantined_partial_step_checkpoint=lambda step, epoch: False,
         calls=calls,
         batch=batch,
     )
@@ -378,7 +390,10 @@ def test_a_partial_step_stops_the_run_instead_of_skipping_the_batch():
     msg = str(exc.value)
     assert "after 1 parameter update(s) had already been applied" in msg
     assert "mixture of two steps" in msg
-    assert "no checkpoint is written from memory" in msg
+    # No ORDINARY checkpoint/state/optimizer/EMA is asserted -- not "no
+    # checkpoint at all", since the weights may still be salvaged separately
+    # to a quarantined artefact (see _refuse_save_after_partial_step).
+    assert "no ordinary checkpoint, training state, optimizer, or EMA file" in msg
     assert rig.moved() == ["l3.weight"]
 
 
@@ -575,10 +590,12 @@ def test_the_error_is_distinct_from_the_two_added_with_it():
     assert not issubclass(BucketsExhaustedError, PartialOptimizerStepError)
 
 
-def test_it_writes_no_emergency_checkpoint():
+def test_it_writes_no_ordinary_emergency_checkpoint():
+    """The ordinary emergency save is skipped; whether a QUARANTINED one runs
+    is decided inside _refuse_save_after_partial_step (tested separately)."""
     idx = BASE_TRAINER_SRC.index("if isinstance(e, PartialOptimizerStepError):")
     block = BASE_TRAINER_SRC[idx:idx + 600]
-    assert "No checkpoint written: the " in block
+    assert "_refuse_save_after_partial_step" in block
     assert "save_checkpoint" not in block
     assert "save_optimizer_state" not in block
     assert idx < BASE_TRAINER_SRC.index(
@@ -669,17 +686,44 @@ def test_an_unfused_backward_leaves_no_taint():
     assert rig.trainer._partial_step_taint is None
 
 
-def test_a_tainted_step_writes_nothing_at_all():
+def test_a_tainted_step_writes_no_ordinary_checkpoint_when_ctx_is_dead():
+    """CUDA context dead -> nothing GPU-side can be read back, so not even the
+    quarantine salvage is attempted (stub default: _cuda_context_alive=False)."""
     stub = _recovery_stub(fused=True)
     stub.log_prefix = "[T]"
     stub._partial_step_taint = {"applied": 42, "kind": "KeyboardInterrupt", "detail": ""}
     stub._periodic_save_every = 500
     stub._last_periodic_checkpoint_step = 2000
     stub._resume_point_sentence = lambda: BaseTrainer._resume_point_sentence(stub)
-    assert BaseTrainer._refuse_save_after_partial_step(stub, "The interrupt landed", 2137) is True
+    quarantine_calls = []
+    stub._save_quarantined_partial_step_checkpoint = (
+        lambda step, epoch: quarantine_calls.append((step, epoch)) or True
+    )
+    assert BaseTrainer._refuse_save_after_partial_step(stub, "The interrupt landed", 2137, 3) is True
+    assert quarantine_calls == []
     # No taint -> the ordinary emergency/interrupt save is untouched.
     stub._partial_step_taint = None
-    assert BaseTrainer._refuse_save_after_partial_step(stub, "x", 2137) is False
+    assert BaseTrainer._refuse_save_after_partial_step(stub, "x", 2137, 3) is False
+
+
+def test_a_tainted_step_salvages_a_quarantined_checkpoint_when_ctx_is_alive():
+    """CUDA context alive -> the tainted weights ARE worth salvaging, under the
+    marker resume scanning excludes (see QUARANTINE_ENTRY_MARKER)."""
+    stub = _recovery_stub(fused=True)
+    stub.log_prefix = "[T]"
+    stub._partial_step_taint = {"applied": 7, "kind": "KeyError", "detail": "boom"}
+    stub._periodic_save_every = 500
+    stub._last_periodic_checkpoint_step = 2000
+    stub._resume_point_sentence = lambda: BaseTrainer._resume_point_sentence(stub)
+    stub._cuda_context_alive = lambda: True
+    quarantine_calls = []
+    stub._save_quarantined_partial_step_checkpoint = (
+        lambda step, epoch: quarantine_calls.append((step, epoch)) or True
+    )
+    assert BaseTrainer._refuse_save_after_partial_step(stub, "The interrupt landed", 2137, 3) is True
+    # The ordinary save is still refused (return True); the quarantine helper
+    # was invoked with this call's own step/epoch, not the interval markers.
+    assert quarantine_calls == [(2137, 3)]
 
 
 def test_both_save_handlers_consult_the_taint_before_writing():
@@ -716,13 +760,47 @@ def test_the_taint_brackets_exactly_the_backward():
     assert handler.rstrip().endswith("raise")
 
 
-def test_no_quarantined_artefact_is_written_anywhere():
-    """The decision recorded: nothing is saved, rather than a weights-only
-    artefact whose optimizer state is half-applied too."""
+def test_partial_step_salvages_weights_only_not_optimizer_or_state():
+    """The decision recorded: a weights-only quarantined artefact is
+    attempted (via the dedicated quarantine save, not the ordinary
+    checkpoint path), while optimizer state, training state and EMA --
+    all half-applied too -- are never saved for this step."""
     fn = ast.unparse(_function("_refuse_save_after_partial_step"))
-    assert "save_checkpoint" not in fn
+    assert "_save_quarantined_partial_step_checkpoint" in fn
     assert "save_optimizer_state" not in fn
     assert "save_training_state" not in fn
+    assert "_save_ema_checkpoint" not in fn
+
+    # The quarantine save itself is weights-only: it reuses the ordinary
+    # save_checkpoint() (arch-specific formats) but never the optimizer/
+    # training-state/EMA saves alongside it.
+    quarantine_fn = ast.unparse(_function("_save_quarantined_partial_step_checkpoint"))
+    assert "save_checkpoint" in quarantine_fn
+    assert "save_optimizer_state" not in quarantine_fn
+    assert "save_training_state" not in quarantine_fn
+
+
+def test_vision_encoder_sibling_is_excluded_from_every_resume_scan():
+    """A quarantined (or EMA) save's Vision Encoder sibling file is named
+    "{run_name}{suffix}_vision_encoder_step_N.safetensors" -- it carries
+    neither QUARANTINE_ENTRY_MARKER nor EMA_ENTRY_MARKER, because both markers
+    require "_step_" to immediately follow the suffix, and the VE filename
+    inserts "vision_encoder_" first. Every _list_checkpoint_entries() call
+    site that decides what resume can pick up must therefore also exclude
+    "vision_encoder", not just the rotation-cleanup call site -- otherwise a
+    VE sibling with a higher step number than its own excluded main
+    checkpoint is handed to resume as if it were a live checkpoint."""
+    exclude_tuples = [
+        m.group(1) for m in re.finditer(r"exclude_substr=\(([^)]*)\)", BASE_TRAINER_SRC)
+    ]
+    assert len(exclude_tuples) == 4, (
+        f"expected exactly 4 _list_checkpoint_entries(exclude_substr=(...)) call "
+        f"sites, found {len(exclude_tuples)}"
+    )
+    for tup in exclude_tuples:
+        assert "vision_encoder" in tup, f"exclude_substr={tup} is missing 'vision_encoder'"
+        assert "QUARANTINE_ENTRY_MARKER" in tup
+        assert "EMA_ENTRY_MARKER" in tup
 
 
 # --------------------------------------------------------------------------

@@ -355,7 +355,9 @@ class PartialOptimizerStepError(RuntimeError):
     cannot be retried without applying those updates twice, so the run stops.
     Deliberately neither a ``NothingTrainedError`` (whose weights are the base
     model's) nor a ``BucketsExhaustedError`` (whose weights are worth an
-    emergency checkpoint); this one writes none.
+    ordinary emergency checkpoint); this one writes no ORDINARY checkpoint --
+    see ``base_trainer._refuse_save_after_partial_step`` for the quarantined,
+    weights-only salvage that runs instead when the CUDA context is alive.
     """
     pass
 
@@ -448,6 +450,15 @@ def _checkpoint_aux_base(entry_path: Path) -> str:
 # detection or counted against the live-checkpoint rotation limit.
 EMA_RUN_NAME_SUFFIX = "_ema"
 EMA_ENTRY_MARKER = "_ema_step_"
+
+# Same trick, for weights salvaged from a half-applied fused optimizer step
+# (see _save_quarantined_partial_step_checkpoint). Every quarantined entry
+# contains "_quarantined_partial_step_step_", which every _list_checkpoint_entries()
+# caller excludes -- resume can never silently pick a quarantined save up as
+# the live checkpoint. Loading one requires naming its exact filename via
+# resume_from_checkpoint, which IS the explicit override: nothing scans for it.
+QUARANTINE_RUN_NAME_SUFFIX = "_quarantined_partial_step"
+QUARANTINE_ENTRY_MARKER = "_quarantined_partial_step_step_"
 
 
 def _list_checkpoint_entries(
@@ -1572,8 +1583,18 @@ class BaseTrainer(ABC):
                 # EMA snapshot checkpoints (a full, separately loadable
                 # save under a "_ema"-suffixed run_name) are excluded so
                 # resume can never silently pick up EMA-averaged weights
-                # in place of the live training weights.
-                checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
+                # in place of the live training weights. Quarantined
+                # partial-step saves are excluded for the same reason.
+                # Vision Encoder sibling files (saved alongside EMA/quarantine
+                # checkpoints as "..._vision_encoder_step_N.safetensors") do not
+                # contain EMA_ENTRY_MARKER or QUARANTINE_ENTRY_MARKER -- those
+                # markers require "_step_" to immediately follow the suffix,
+                # but the VE filename inserts "vision_encoder_" first -- so they
+                # are excluded by name here too.
+                checkpoint_files = _list_checkpoint_entries(
+                    self.output_dir,
+                    exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
+                )
                 if checkpoint_files:
                     # Get latest checkpoint by step number
                     def get_step(path):
@@ -1594,6 +1615,23 @@ class BaseTrainer(ABC):
                     if checkpoint_path_obj.exists():
                         checkpoint_to_load = str(checkpoint_path_obj)
                         print(f"{self.log_prefix} Using specified checkpoint (absolute path): {checkpoint_to_load}")
+
+        if checkpoint_to_load and QUARANTINE_ENTRY_MARKER in Path(checkpoint_to_load).name:
+            # Resume scanning ("latest") never selects this name (see
+            # QUARANTINE_ENTRY_MARKER); reaching here means resume_from_checkpoint
+            # named it explicitly. That is the only sanctioned way to load a
+            # quarantined save, but it is otherwise silent -- warn so the choice
+            # is visible in the run's warnings, not just inferred from the taint
+            # never having a paired training-state/optimizer file.
+            emit_training_warning(
+                f"resume_from_checkpoint names a QUARANTINED checkpoint "
+                f"({Path(checkpoint_to_load).name}): its weights are half-applied "
+                f"from an interrupted fused optimizer step and it has no paired "
+                f"optimizer/EMA state, so the optimizer restarts fresh. Verify its "
+                f"loss/output before relying on this resume.",
+                code="partial_step_quarantined_checkpoint_loaded",
+                prefix=self.log_prefix,
+            )
 
         if checkpoint_to_load:
             # Load checkpoint directly as base model (resume training)
@@ -3543,8 +3581,14 @@ class BaseTrainer(ABC):
         """
         # Search for checkpoint entries (single-file or sharded index; shard
         # members excluded) with pattern: {run_name}_step_{step}.safetensors[.index.json]
-        # EMA snapshot checkpoints are excluded (see EMA_ENTRY_MARKER).
-        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
+        # EMA snapshot checkpoints and quarantined partial-step saves are
+        # excluded (see EMA_ENTRY_MARKER / QUARANTINE_ENTRY_MARKER). Their
+        # Vision Encoder siblings carry neither marker (see the "latest"
+        # resume probe above for why) so "vision_encoder" is excluded too.
+        checkpoint_files = _list_checkpoint_entries(
+            self.output_dir,
+            exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
+        )
 
         # Search for training state files with pattern: {run_name}_step_{step}_state.json
         state_files = list(self.output_dir.glob("*_step_*_state.json"))
@@ -3606,9 +3650,17 @@ class BaseTrainer(ABC):
             List of (checkpoint_path, step_number) tuples, sorted newest first.
             Empty list if no checkpoints exist.
         """
-        # EMA snapshot checkpoints are excluded (see EMA_ENTRY_MARKER) so they
-        # are never offered as fallback/resume candidates.
-        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
+        # EMA snapshot checkpoints and quarantined partial-step saves are
+        # excluded (see EMA_ENTRY_MARKER / QUARANTINE_ENTRY_MARKER) so they are
+        # never offered as fallback/resume candidates -- a quarantined entry
+        # being unreadable-by-scan must never be misread as corruption and
+        # walked past (see is_checkpoint_corruption_error). Their Vision
+        # Encoder siblings carry neither marker, so "vision_encoder" is
+        # excluded as well (see the "latest" resume probe for why).
+        checkpoint_files = _list_checkpoint_entries(
+            self.output_dir,
+            exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
+        )
 
         if not checkpoint_files:
             return []
@@ -3715,8 +3767,11 @@ class BaseTrainer(ABC):
         # members are grouped under their index, VE checkpoints excluded to avoid
         # double-counting; EMA snapshot checkpoints excluded -- they are rotated
         # separately below, paired 1:1 with their live-weight counterpart).
+        # Quarantined partial-step saves are excluded from rotation entirely: a
+        # failure artefact that a human has not yet looked at must not be
+        # deleted by the same policy that prunes ordinary successful saves.
         checkpoint_files = _list_checkpoint_entries(
-            self.output_dir, exclude_substr=("vision_encoder", EMA_ENTRY_MARKER)
+            self.output_dir, exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER)
         )
         if len(checkpoint_files) <= max_step_saves_to_keep:
             return
@@ -5994,6 +6049,17 @@ class BaseTrainer(ABC):
         "invalid device context", "driver shutting down",
     )
 
+    def _cuda_is_available(self) -> bool:
+        """Instance-method seam around ``torch.cuda.is_available()``.
+
+        Callers that need "is there a CUDA context to be alive/dead at all"
+        (as opposed to the CUDA-context-alive canary itself) go through this
+        instead of the bare module call, so a test can override it on a stub
+        independently of whether the machine running the test actually has a
+        GPU (see fused_partial_step_oom_test.py).
+        """
+        return torch.cuda.is_available()
+
     @staticmethod
     def _cuda_context_alive() -> bool:
         """Cheap canary probe: can we still issue CUDA ops on this process?
@@ -6783,6 +6849,17 @@ class BaseTrainer(ABC):
         applied = applied_updates()
         if applied <= 0:
             return
+        # Same taint record _note_partial_step_taint keeps for the non-OOM
+        # escapes, so the emergency/interrupt handler's quarantine-or-refuse
+        # decision (_refuse_save_after_partial_step) covers this route too --
+        # an OOM mid-fused-backward is not less half-applied than a KeyError
+        # mid-fused-backward, and the CUDA context is alive by definition here
+        # (this exception classified as recoverable OOM, not fatal).
+        self._partial_step_taint = {
+            "applied": applied,
+            "kind": type(exc).__name__,
+            "detail": str(exc)[:200],
+        }
         raise PartialOptimizerStepError(
             self._partial_fused_step_message(applied, exc)
         ) from exc
@@ -6817,8 +6894,11 @@ class BaseTrainer(ABC):
             f"step's update and the rest do not: the in-memory weights are a "
             f"mixture of two steps. They cannot be repaired -- there is no "
             f"snapshot to roll back to, and re-running the batch would apply "
-            f"those updates twice -- so the batch is NOT skipped and no "
-            f"checkpoint is written from memory. {resume} "
+            f"those updates twice -- so the batch is NOT skipped, and no ordinary "
+            f"checkpoint, training state, optimizer, or EMA file is written for "
+            f"this step (the tainted weights may instead be salvaged to a "
+            f"separate, manually-loaded quarantined checkpoint -- see the "
+            f"training log for whether that happened). {resume} "
             + _MEMORY_BUDGET_ADVICE
             + f" The out-of-memory error was: {str(exc)[:200]}"
         )
@@ -7179,13 +7259,52 @@ class BaseTrainer(ABC):
             "detail": str(exc)[:200],
         }
 
-    def _refuse_save_after_partial_step(self, when: str, global_step: int) -> bool:
-        """True (having said why) if a half-applied step must not be written out.
+    def _save_quarantined_partial_step_checkpoint(self, step: int, epoch: int) -> bool:
+        """Salvage the tainted weights under a name resume scanning never selects.
 
-        Deliberately writes nothing at all, not even a quarantined weights-only
-        artefact: the optimizer state is half-applied too, and under a fatal CUDA
-        error neither can be asserted to be merely one step off. The last
-        periodic checkpoint is intact and is the resume point.
+        Reuses save_checkpoint() through the same run_name-swap
+        ``_save_ema_checkpoint`` uses: every trainer builds its output path from
+        ``self.run_name``, so swapping it in produces a fully separate,
+        normally-formatted checkpoint that QUARANTINE_ENTRY_MARKER then hides
+        from every scanner (find_latest_checkpoint, _get_sorted_checkpoints,
+        the "latest" resume probe in __init__, and rotation cleanup). Loading
+        it back requires naming its exact filename via resume_from_checkpoint
+        -- that IS the explicit override; nothing scans for it.
+
+        Weights only. No training-state.json (it would pair a batch position
+        with weights that are not that batch's consistent result, and a
+        state.json existing next to a live-looking checkpoint is exactly the
+        auto-resumable shape this exists to avoid). No optimizer/EMA save
+        either: that state is equally half-applied, and shipping it would
+        invite treating this as a normal resume point instead of the manual,
+        human-verified decision it is meant to force.
+
+        Best-effort: called from an interrupt/emergency handler that must
+        finish its own cleanup regardless, so a failure here is reported, not
+        raised.
+        """
+        original_run_name = self.run_name
+        try:
+            self.run_name = f"{original_run_name}{QUARANTINE_RUN_NAME_SUFFIX}"
+            self.save_checkpoint(step=step, epoch=epoch)
+            return True
+        except Exception as e:
+            print(f"{self.log_prefix} [FAILED] Could not write a quarantined checkpoint either: {e}")
+            return False
+        finally:
+            self.run_name = original_run_name
+
+    def _refuse_save_after_partial_step(self, when: str, global_step: int, epoch: int) -> bool:
+        """True (having said why) if the ORDINARY save path must not run.
+
+        A half-applied fused step's weights are still salvaged into a
+        quarantined artefact when the CUDA context is provably alive (the
+        same in-process canary the OOM/fatal classifier uses) -- writing
+        nothing throws away real training progress on top of the
+        interruption. Under a dead context nothing GPU-side can be read back
+        at all, so this still writes nothing there, exactly as before. Either
+        way, no ordinary checkpoint/state/optimizer/EMA file is written for
+        this step: the last periodic checkpoint remains the resume point.
         """
         taint = getattr(self, "_partial_step_taint", None)
         if not taint:
@@ -7193,10 +7312,57 @@ class BaseTrainer(ABC):
         print(f"\n{self.log_prefix} [FAILED] {when} inside a fused backward pass that had "
               f"already applied {taint['applied']} parameter update(s) "
               f"({taint['kind']}: {taint['detail']}).")
-        print(f"{self.log_prefix} [FAILED] No checkpoint, training state, optimizer state "
-              f"or EMA file is written for step {global_step}: the in-memory weights carry "
-              f"part of that step and the optimizer state carries part of its own, and "
-              f"nothing on disk should be resumable from them.")
+        print(f"{self.log_prefix} [FAILED] No ordinary checkpoint, training state, optimizer "
+              f"state or EMA file is written for step {global_step}: the in-memory weights "
+              f"carry part of that step and the optimizer state carries part of its own, "
+              f"and nothing on disk should be resumable from them.")
+        # Same aliveness probe order as the ordinary emergency path (13584-13588):
+        # probe BEFORE touching CUDA further. _cuda_context_alive()'s own
+        # allocation is 8 floats and wrapped in try/except, so it cannot itself
+        # raise, but under genuine VRAM exhaustion it can still (rarely) return
+        # False when a slightly larger, real salvage-copy would have succeeded.
+        # That is the same risk the ordinary path accepts at the same point;
+        # this mirrors it rather than inventing a different order.
+        ctx_alive = self._cuda_context_alive() if self._cuda_is_available() else True
+        if ctx_alive:
+            # Mirror the ordinary emergency path's CPU-move + cache-clear
+            # (13620-13636) before attempting the salvage save: the dominant
+            # trigger for this taint is an OOM, i.e. peak VRAM pressure, so
+            # freeing what we can BEFORE the salvage copy (rather than after)
+            # is what gives it room to succeed.
+            try:
+                print(f"{self.log_prefix} [FAILED] Moving model to CPU to free GPU memory "
+                      f"before the salvage attempt...")
+                self.move_main_model_to_cpu()
+                self.move_text_encoder_to_cpu()
+                self.move_vae_to_cpu()
+            except Exception as move_error:
+                print(f"{self.log_prefix} [FAILED] Failed to move model to CPU: {move_error}")
+            try:
+                import gc
+                gc.collect()
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        if ctx_alive and self._save_quarantined_partial_step_checkpoint(global_step, epoch):
+            salvage_msg = (
+                f"The tainted WEIGHTS ONLY were salvaged to a QUARANTINED checkpoint "
+                f"(run_name suffix '{QUARANTINE_RUN_NAME_SUFFIX}', step {global_step}). "
+                f"The weights are half-applied (part of one step's update, part of "
+                f"another's) and no optimizer state accompanies them. Resume scanning "
+                f"ignores it and it has no paired training-state or optimizer file, so "
+                f"it cannot be auto-resumed: using it requires passing its exact "
+                f"filename as resume_from_checkpoint, and its loss/output should be "
+                f"checked before doing so."
+            )
+            emit_training_warning(
+                salvage_msg, code="partial_step_quarantined_checkpoint", prefix=self.log_prefix,
+            )
+            print(f"{self.log_prefix} [FAILED] {salvage_msg}")
+        elif not ctx_alive:
+            print(f"{self.log_prefix} [FAILED] The CUDA context is dead, so even the tainted "
+                  f"weights cannot be read back -- no quarantined checkpoint was attempted.")
         print(f"{self.log_prefix} [FAILED] {self._resume_point_sentence()}")
         return True
 
@@ -13394,7 +13560,7 @@ class BaseTrainer(ABC):
             except Exception:
                 pass
             print(f"\n{self.log_prefix} Training interrupted by user")
-            if self._refuse_save_after_partial_step("The interrupt landed", global_step):
+            if self._refuse_save_after_partial_step("The interrupt landed", global_step, epoch):
                 self.writer.close()
                 raise
             print(f"{self.log_prefix} Saving checkpoint at step {global_step}, epoch {epoch}...")
@@ -13467,16 +13633,18 @@ class BaseTrainer(ABC):
             except Exception:
                 pass
             if isinstance(e, PartialOptimizerStepError):
-                # The emergency checkpoint would be the half-applied weights this
-                # refusal exists to keep off disk.
+                # The ordinary emergency checkpoint would be the half-applied
+                # weights this refusal exists to keep off disk; the quarantine
+                # decision (salvage vs. write nothing) is made below, keyed off
+                # the same _partial_step_taint this exception's raise site set.
                 print(f"\n{self.log_prefix} [FAILED] {e}")
-                print(f"{self.log_prefix} [FAILED] No checkpoint written: the "
-                      f"in-memory weights are inconsistent")
+                self._refuse_save_after_partial_step(
+                    f"{type(e).__name__} was raised", global_step, epoch)
                 self.writer.close()
                 raise
 
             if self._refuse_save_after_partial_step(
-                    f"{type(e).__name__} was raised", global_step):
+                    f"{type(e).__name__} was raised", global_step, epoch):
                 self.writer.close()
                 raise
 
@@ -13497,7 +13665,7 @@ class BaseTrainer(ABC):
             # presumed dead, but even a plain Exception could be a fatal CUDA error
             # that unwound through non-RuntimeError frames, so always probe rather
             # than trusting the exception type alone.
-            _ctx_alive = self._cuda_context_alive() if torch.cuda.is_available() else True
+            _ctx_alive = self._cuda_context_alive() if self._cuda_is_available() else True
 
             if not _ctx_alive:
                 print(f"{self.log_prefix} [EMERGENCY] CUDA context corrupted; weights at step "

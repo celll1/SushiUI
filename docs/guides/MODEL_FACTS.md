@@ -2251,6 +2251,13 @@ Paths below are relative to `backend/core/training/`.
       OFF/ON numbers, and what that measurement does and does not settle,
       are in `SENSENOVA_TRAINING_DESIGN.md` §8.3 rather than duplicated
       here.
+    - **`sensenova_mot_pageable_staging`** (API boolean, default **off**,
+      requires `sensenova_mot_phase_eviction`): stages the evicted half to
+      ordinary pageable host memory instead of pinned. The pinned pool's
+      high-water is sticky for the run (the caching host allocator never
+      returns a pinned block to the OS, `SENSENOVA_TRAINING_DESIGN.md` §8.5);
+      this trades that stickiness for host RAM the OS can reclaim, at an
+      unmeasured transfer-time cost.
   - **`sensenova_kv_cache_streaming`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): collapses the persistent per-layer
     flash-KV prefix cache into a **2-slot GPU ring shared across every layer

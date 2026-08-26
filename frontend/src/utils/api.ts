@@ -7184,6 +7184,11 @@ export interface TrainingRunCreateRequest {
   // 2-slot GPU ring instead of holding the full KV cache resident during the
   // sample's denoise loop. Independent of the phase-eviction flags above.
   sensenova_sample_kv_cache_streaming?: boolean;
+  // SenseNova MoT phase eviction only: stage the evicted half to pageable host
+  // memory instead of pinned, trading the sticky pinned high-water for host
+  // RAM the OS can reclaim, at an unmeasured transfer-time cost. Refused
+  // without sensenova_mot_phase_eviction.
+  sensenova_mot_pageable_staging?: boolean;
   base_model_path: string;
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion

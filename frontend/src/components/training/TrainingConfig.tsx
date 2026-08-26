@@ -260,6 +260,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_four_phase_grad_reduction: "sum",
   sensenova_full_finetune_save_format: "mixed",
   sensenova_sample_kv_cache_streaming: false,
+  sensenova_mot_pageable_staging: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -1059,6 +1060,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenova_four_phase_grad_reduction: params.sensenova_four_phase_grad_reduction,
       sensenova_full_finetune_save_format: params.sensenova_full_finetune_save_format,
       sensenova_sample_kv_cache_streaming: params.sensenova_sample_kv_cache_streaming,
+      sensenova_mot_pageable_staging: params.sensenova_mot_pageable_staging,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1326,7 +1328,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction",
       "sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",
       "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
-      "sensenova_sample_kv_cache_streaming",
+      "sensenova_sample_kv_cache_streaming", "sensenova_mot_pageable_staging",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -1628,6 +1630,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (motEvictionUnsupported) {
       if (params.sensenova_mot_phase_eviction) updateParam("sensenova_mot_phase_eviction", false);
       if (params.sensenova_four_phase_eviction) updateParam("sensenova_four_phase_eviction", false);
+      if (params.sensenova_mot_pageable_staging) updateParam("sensenova_mot_pageable_staging", false);
+    }
+    // Refused before the model loads without MoT Phase Eviction, same reason
+    // as the shared window below.
+    if (params.sensenova_mot_pageable_staging && !params.sensenova_mot_phase_eviction) {
+      updateParam("sensenova_mot_pageable_staging", false);
     }
     // Not a preference: the split is refused before the model loads once any of
     // its three preconditions stops holding, so leaving it set submits a run the
@@ -1653,7 +1661,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       textEncoderTrainingUnsupported, trainingSamplesUnsupported,
       motEvictionUnsupported, fourPhaseBlockedReason,
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
-      params.sensenova_four_phase_shared_prefix,
+      params.sensenova_four_phase_shared_prefix, params.sensenova_mot_pageable_staging,
       params.train_unet, params.train_text_encoder]);
 
   // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
@@ -2135,6 +2143,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenovaFourPhaseGradReduction: params.sensenova_four_phase_grad_reduction,
       sensenovaFullFinetuneSaveFormat: params.sensenova_full_finetune_save_format,
       sensenovaSampleKvCacheStreaming: params.sensenova_sample_kv_cache_streaming,
+      sensenovaMotPageableStaging: params.sensenova_mot_pageable_staging,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -2333,6 +2342,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sensenovaFourPhaseGradReduction !== undefined) updateParam("sensenova_four_phase_grad_reduction", config.sensenovaFourPhaseGradReduction);
     if (config.sensenovaFullFinetuneSaveFormat !== undefined) updateParam("sensenova_full_finetune_save_format", config.sensenovaFullFinetuneSaveFormat);
     if (config.sensenovaSampleKvCacheStreaming !== undefined) updateParam("sensenova_sample_kv_cache_streaming", config.sensenovaSampleKvCacheStreaming);
+    if (config.sensenovaMotPageableStaging !== undefined) updateParam("sensenova_mot_pageable_staging", config.sensenovaMotPageableStaging);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4844,6 +4854,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => {
                   updateParam("sensenova_mot_phase_eviction", e.target.checked);
                   if (!e.target.checked) updateParam("sensenova_four_phase_eviction", false);
+                  if (!e.target.checked) updateParam("sensenova_mot_pageable_staging", false);
                 }}
                 className="w-4 h-4"
               />
@@ -4854,6 +4865,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-500">
               Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1. This architecture has no block swap, so the Block Swap controls are not offered for it.
             </p>
+
+            {params.sensenova_mot_phase_eviction && (
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="sensenova-mot-pageable-staging"
+                  checked={params.sensenova_mot_pageable_staging ?? false}
+                  onChange={(e) => updateParam("sensenova_mot_pageable_staging", e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="sensenova-mot-pageable-staging" className="text-xs text-gray-300 cursor-pointer">
+                  Pageable Host Staging
+                </label>
+              </div>
+            )}
+            {params.sensenova_mot_phase_eviction && (
+              <p className="text-xs text-gray-500">
+                Stages the evicted half to ordinary host memory instead of pinned. Trades the pinned pool&apos;s high-water, which stays allocated for the rest of the run, for host RAM the OS can reclaim, at an unmeasured transfer-time cost.
+              </p>
+            )}
 
             {trainingMethod === "full_finetune" && (
               <>

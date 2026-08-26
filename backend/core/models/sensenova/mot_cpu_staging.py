@@ -6,6 +6,14 @@ never explicitly un-pinned -- torch's caching host allocator pools freed pinned
 blocks rather than returning them to the OS, so a later
 ``stage_modules_to_pinned_cpu`` call reuses the same pool for free, and a
 tensor that is already pinned is returned untouched (zero copies).
+
+PAGEABLE ESCAPE HATCH. ``pageable=True`` (``sensenova_mot_pageable_staging``)
+never attempts a pinned allocation, trading transfer speed for host memory the
+OS can reclaim -- unlike a pinned block, which this module's caching allocator
+never returns once allocated. Distinct from the failure-path fallback below
+(``tensor.to("cpu")`` after a caught pin exception): that is an unplanned,
+warned-once degradation; ``pageable=True`` is a deliberate, silent, every-call
+choice with no pin attempt to fail in the first place.
 """
 
 from __future__ import annotations
@@ -22,13 +30,30 @@ DEFAULT_PIN_FAILURE_MESSAGE = (
 
 
 def _stage_tensor(
-    tensor: torch.Tensor, warn_once: Dict[str, bool], warn_message: str
+    tensor: torch.Tensor,
+    warn_once: Dict[str, bool],
+    warn_message: str,
+    *,
+    pageable: bool = False,
 ) -> torch.Tensor:
-    """Return ``tensor``'s contents on pinned CPU memory using ONE host copy:
-    the pinned destination is allocated first and written directly, instead of
+    """Return ``tensor``'s contents on CPU memory using ONE host copy: the
+    pinned destination is allocated first and written directly, instead of
     ``.to("cpu")`` (copy 1, pageable) followed by ``.pin_memory()`` (copy 2).
-    ``copy_`` is blocking, which the denoise-phase ordering relies on."""
+    ``copy_`` is blocking, which the denoise-phase ordering relies on.
+
+    ``pageable=True`` skips the pinned allocation outright (see this module's
+    PAGEABLE ESCAPE HATCH note) rather than attempting one and falling back:
+    an already-CPU tensor short-circuits regardless of its pin state, so a
+    pageable-staged tensor is never re-pinned on a later call, and a tensor
+    that arrived already pinned from outside this module is left pinned (this
+    call does not retroactively un-pin it -- every tensor this evictor stages
+    is freshly materialized from the checkpoint loader, never pre-pinned, so
+    that case does not arise on the route that sets this flag)."""
     tensor = tensor.detach()
+    if pageable:
+        if tensor.device.type == "cpu":
+            return tensor
+        return tensor.to("cpu")
     if tensor.device.type == "cpu" and tensor.is_pinned():
         return tensor
     try:
@@ -49,9 +74,11 @@ def stage_modules_to_pinned_cpu(
     *,
     warn_once: Dict[str, bool],
     warn_message: str = DEFAULT_PIN_FAILURE_MESSAGE,
+    pageable: bool = False,
 ) -> None:
     """Move every parameter/PERSISTENT buffer OWNED (recurse=False) by each of
-    ``modules`` to a pinned CPU tensor. Touches ``_parameters``/``_buffers``
+    ``modules`` to a CPU tensor, pinned unless ``pageable=True`` (see this
+    module's PAGEABLE ESCAPE HATCH note). Touches ``_parameters``/``_buffers``
     directly (not ``.to()``) because pinning requires an explicit pinned
     allocation, which ``nn.Module.to()`` has no option for. Non-persistent
     buffers (e.g. a rotary embedding's cached ``inv_freq``) are skipped even if
@@ -60,13 +87,18 @@ def stage_modules_to_pinned_cpu(
     updated in place (``.data``), never replaced.
 
     ``warn_once`` is shared by the caller across all of its modules so a pinned
-    allocation failure prints exactly once per evictor."""
+    allocation failure prints exactly once per evictor. Unused when
+    ``pageable=True``, which has no pin attempt to fail."""
     for module in modules:
         for key, parameter in list(module._parameters.items()):
             if parameter is None:
                 continue
-            parameter.data = _stage_tensor(parameter.data, warn_once, warn_message)
+            parameter.data = _stage_tensor(
+                parameter.data, warn_once, warn_message, pageable=pageable
+            )
         for key, buffer in list(module._buffers.items()):
             if buffer is None or key in module._non_persistent_buffers_set:
                 continue
-            module._buffers[key] = _stage_tensor(buffer, warn_once, warn_message)
+            module._buffers[key] = _stage_tensor(
+                buffer, warn_once, warn_message, pageable=pageable
+            )

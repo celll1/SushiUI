@@ -15390,6 +15390,12 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_four_phase_grad_reduction: Literal["sum", "mean"] = TRAINING_DEFAULTS[
         "sensenova_four_phase_grad_reduction"
     ]
+    # MoT phase eviction only: stage the evicted half to pageable instead of
+    # pinned host memory. Refused without sensenova_mot_phase_eviction
+    # (train_runner._apply_sensenova_training_contract) -- see openapi.yaml.
+    sensenova_mot_pageable_staging: bool = TRAINING_DEFAULTS[
+        "sensenova_mot_pageable_staging"
+    ]
     # SenseNova full fine-tune save format. Measured sizes and the int8 loss
     # census are in openapi.yaml's description. Literal, not str: the adapter's
     # own refusal fires at the first save_every, which is the "train for hours,

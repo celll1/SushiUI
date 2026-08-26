@@ -2334,6 +2334,14 @@ ledger 比率を実モデルの既知サイズに掛けただけの算術であ�
 数値ではない**。teardown / 失敗時は上表のとおり新実装でも 2 half（30.1875 GiB
 相当）に戻ることに注意。
 
+**追記（pageable staging）**: 上記の pinned pool 高水位は torch のキャッシュ host
+allocator が pinned block を OS に返却しないため、run の間ずっと sticky である。
+`sensenova_mot_pageable_staging`（デフォルト `False`、`sensenova_mot_phase_eviction`
+必須）は evict した half を pinned ではなく通常の pageable host メモリへ退避する
+opt-in の代替モードで、この sticky な高水位を OS が回収可能な host RAM と交換する。
+転送速度への影響は未計測。実装は `sensenova_phase_eviction.py`（PAGEABLE STAGING）
+と `mot_cpu_staging.py`（PAGEABLE ESCAPE HATCH）を参照。
+
 ---
 
 ## 9. 既存コードベースへの統合ポイント

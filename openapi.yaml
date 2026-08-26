@@ -19095,6 +19095,25 @@ components:
             trains and leaves the other INT8. Refused before the load. LoRA is
             exempt: it wraps rather than materializing, so both halves stay
             INT8 and either branch alone can be evicted.
+        sensenova_mot_pageable_staging:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova LoRA and full fine-tuning, MoT phase eviction only.
+            Requires `sensenova_mot_phase_eviction: true`; refused before the
+            checkpoint loads without it, because with the evictor off there is
+            nothing to stage.
+
+            Stages the evicted half to ordinary pageable host memory instead
+            of pinned memory. Torch's caching host allocator never returns a
+            pinned block to the OS once allocated, so the pinned pool's
+            high-water mark is sticky for the rest of the run; pageable memory
+            trades that stickiness for host RAM the OS can reclaim between
+            allocations. The transfer-time cost of this trade is unmeasured --
+            no probe has been run -- so none is claimed here. Independent of
+            `sensenova_four_phase_eviction` (that flag changes how many
+            backwards a step runs, not how a half is staged). Accepted and
+            warned by every other architecture.
         sensenova_four_phase_eviction:
           type: 'boolean'
           default: false

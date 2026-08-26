@@ -262,6 +262,40 @@ class VocabularyTest(unittest.TestCase):
             self.assertNotIn(key, vocabulary)
 
 
+class SenseNovaBlockSwapFlagRoundTripTest(unittest.TestCase):
+    """A name appearing in the vocabulary is not proof the value reaches the
+    YAML: ``_build_train_section`` is an explicit whitelist, and a flag with a
+    Pydantic field, an openapi entry and a capability row can still be absent
+    from that whitelist while both the name-based census and the vocabulary
+    derivation pass. ``sensenova_mot_pageable_staging`` shipped exactly that
+    way; this asserts the actual value round-trips, for it and its siblings.
+    """
+
+    SENSENOVA_BLOCK_SWAP_FLAGS = (
+        "sensenova_mot_phase_eviction",
+        "sensenova_four_phase_eviction",
+        "sensenova_four_phase_shared_prefix",
+        "sensenova_sample_kv_cache_streaming",
+        "sensenova_mot_pageable_staging",
+    )
+
+    def test_flags_round_trip_through_both_generators(self):
+        for method in ("lora", "full_finetune"):
+            for flag in self.SENSENOVA_BLOCK_SWAP_FLAGS:
+                with self.subTest(method=method, flag=flag):
+                    train = _train_section(_generate(method, **{flag: True}))
+                    self.assertIn(flag, train)
+                    self.assertIs(train[flag], True)
+
+    def test_grad_reduction_string_value_round_trips(self):
+        for method in ("lora", "full_finetune"):
+            with self.subTest(method=method):
+                train = _train_section(
+                    _generate(method, sensenova_four_phase_grad_reduction="mean")
+                )
+                self.assertEqual(train["sensenova_four_phase_grad_reduction"], "mean")
+
+
 class ConfigChannelCensusTest(unittest.TestCase):
     """Which trainer-read keys no request field can set -- pinned exactly."""
 

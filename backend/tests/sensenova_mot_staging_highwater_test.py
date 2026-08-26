@@ -129,8 +129,8 @@ class Ledger:
         self.host_peak = max(self.host_peak, self.host)
         self.device_peak = max(self.device_peak, self.device)
 
-    def d2h(self, modules, *, warn_once=None, warn_message=None):
-        del warn_once, warn_message
+    def d2h(self, modules, *, warn_once=None, warn_message=None, pageable=False):
+        del warn_once, warn_message, pageable
         for module in modules:
             for key, nbytes in _owned(module):
                 where, _ = self.location[key]

@@ -60,6 +60,27 @@ What IS new for four-phase is that the evicted half now carries gradients, so
 ``.grad``: under fused backward the hook nulls each gradient as it applies it, so
 a surviving ``.grad`` at a phase boundary means the optimizer did not run over
 that parameter, and moving it would silently detach the gradient from its weight.
+
+ASYNC H2D -- not attempted. Transfers are synchronous today: neither
+``_move_modules_to_device`` nor ``mot_cpu_staging._stage_tensor`` passes
+``non_blocking``. The real obstacle is a cost trade-off, not a correctness
+barrier: ``non_blocking`` h2d only pays off from PINNED host memory, which
+puts it in direct conflict with ``sensenova_mot_pageable_staging`` below --
+the two would compete for the same host memory, not compose. Separately, an
+overlap window would hold a transient extra module on-device; the synthetic
+tree's own ledger already prices that at one module against one half (~1.6%,
+a ratio from that tree, not a device measurement -- see
+``sensenova_mot_staging_highwater_test.py``), and a failed transition's
+recovery would need the in-flight copy tracked and synchronized before
+touching it. Neither is disqualifying; both are unresolved.
+
+PAGEABLE STAGING -- opt-in, off by default
+(``sensenova_mot_pageable_staging``). Trades the pinned pool's sticky
+high-water (torch's caching host allocator never returns a pinned block to
+the OS) for host RAM the OS can reclaim, at an unmeasured transfer-time cost.
+Refused without ``sensenova_mot_phase_eviction``, since with the evictor off
+nothing here ever runs. Read from ``trainer.config`` rather than a promoted
+attribute, so this flag needed no change to ``BaseTrainer``.
 """
 
 from __future__ import annotations
@@ -79,27 +100,34 @@ _PIN_FAILURE_MESSAGE = (
 
 
 def _move_modules_to_cpu(
-    modules: Iterable[nn.Module], *, warn_once: Dict[str, bool]
+    modules: Iterable[nn.Module], *, warn_once: Dict[str, bool], pageable: bool = False
 ) -> None:
     stage_modules_to_pinned_cpu(
-        modules, warn_once=warn_once, warn_message=_PIN_FAILURE_MESSAGE
+        modules, warn_once=warn_once, warn_message=_PIN_FAILURE_MESSAGE,
+        pageable=pageable,
     )
 
 
-def _module_already_pinned_cpu(module: nn.Module) -> bool:
-    """True iff every owned tensor is already pinned CPU -- the same condition
-    ``_stage_tensor`` short-circuits on, checked once per module instead of
-    once per tensor so ``_best_effort_cpu`` skips a module outright rather than
-    entering it and no-op'ing tensor by tensor."""
+def _module_already_staged_cpu(module: nn.Module, *, pageable: bool = False) -> bool:
+    """True iff every owned tensor is already staged CPU for the CURRENT
+    staging mode -- the same condition ``_stage_tensor`` short-circuits on,
+    checked once per module instead of once per tensor so ``_best_effort_cpu``
+    skips a module outright rather than entering it and no-op'ing tensor by
+    tensor. Under ``pageable=True`` "staged" means CPU regardless of pin state
+    (pageable staging never re-pins a tensor it finds already on CPU); under
+    the default it additionally requires ``is_pinned()``."""
+    def _staged(tensor) -> bool:
+        if tensor.device.type != "cpu":
+            return False
+        return True if pageable else tensor.is_pinned()
+
     for parameter in module._parameters.values():
-        if parameter is not None:
-            data = parameter.data
-            if not (data.device.type == "cpu" and data.is_pinned()):
-                return False
+        if parameter is not None and not _staged(parameter.data):
+            return False
     for name, buffer in module._buffers.items():
         if buffer is None or name in module._non_persistent_buffers_set:
             continue
-        if not (buffer.device.type == "cpu" and buffer.is_pinned()):
+        if not _staged(buffer):
             return False
     return True
 
@@ -118,7 +146,8 @@ class SenseNovaTrainingPhaseEvictor:
     """Keep only the phase-active MoT half resident while training."""
 
     def __init__(
-        self, transformer: nn.Module, device: Any, *, four_phase: bool = False
+        self, transformer: nn.Module, device: Any, *, four_phase: bool = False,
+        pageable_staging: bool = False,
     ):
         selection = select_mot_weight_modules(
             transformer,
@@ -133,6 +162,10 @@ class SenseNovaTrainingPhaseEvictor:
         self.transformer = transformer
         self.device = device
         self.four_phase = bool(four_phase)
+        # sensenova_mot_pageable_staging: see this module's PAGEABLE STAGING
+        # note. Off by default, which reproduces today's pinned-only behavior
+        # exactly (every _move_modules_to_cpu call below defaults pageable=False).
+        self._pageable = bool(pageable_staging)
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
         self._assert_pairing_covers_both_halves()
@@ -158,7 +191,7 @@ class SenseNovaTrainingPhaseEvictor:
                     f"SenseNova eviction cannot interleave the {half} half: "
                     f"{len(modules)} selected module(s) against {len(paired)} paired "
                     f"+ {len(extras)} unpaired. Refusing the batched order, which "
-                    f"holds both halves in pinned host memory at once"
+                    f"holds both halves in host memory at once"
                 )
 
     @property
@@ -174,10 +207,12 @@ class SenseNovaTrainingPhaseEvictor:
     def _best_effort_cpu(self) -> Exception | None:
         first_error = None
         for module in (*self._gen_modules, *self._und_modules):
-            if _module_already_pinned_cpu(module):
+            if _module_already_staged_cpu(module, pageable=self._pageable):
                 continue
             try:
-                _move_modules_to_cpu((module,), warn_once=self._warn_once)
+                _move_modules_to_cpu(
+                    (module,), warn_once=self._warn_once, pageable=self._pageable
+                )
             except Exception as exc:
                 first_error = first_error or exc
         try:
@@ -249,7 +284,9 @@ class SenseNovaTrainingPhaseEvictor:
                     self._assert_grad_free(self._half(half), half)
             for operation, modules, _half in operations:
                 if operation == "d2h":
-                    _move_modules_to_cpu(modules, warn_once=self._warn_once)
+                    _move_modules_to_cpu(
+                        modules, warn_once=self._warn_once, pageable=self._pageable
+                    )
                 else:
                     _move_modules_to_device(modules, self.device)
         except Exception:
@@ -360,13 +397,26 @@ def install_training_phase_eviction(trainer: Any) -> SenseNovaTrainingPhaseEvict
     # method here as well as in train_runner: the four-phase selector relaxes the
     # symmetry backstop, and that backstop exists for exactly the case where the
     # front-line check did not run (a hand-built config, a probe, direct YAML).
+    from api.param_defaults import TRAINING_DEFAULTS
     from core.training.ops.training_method import is_full_finetune
 
     four_phase = bool(
         getattr(trainer, "sensenova_four_phase_eviction", False)
     ) and is_full_finetune(trainer)
+    # Read off trainer.config (the raw dict BaseTrainer.__init__ copies from
+    # train_config) rather than a promoted trainer attribute: unlike the two
+    # flags above, nothing else on the trainer needs to branch on this one, so
+    # there is no reason to widen BaseTrainer's __init__ for a staging-mode
+    # sub-option of eviction.
+    pageable_staging = bool(
+        getattr(trainer, "config", {}).get(
+            "sensenova_mot_pageable_staging",
+            TRAINING_DEFAULTS["sensenova_mot_pageable_staging"],
+        )
+    )
     evictor = SenseNovaTrainingPhaseEvictor(
-        trainer.transformer, trainer.device, four_phase=four_phase
+        trainer.transformer, trainer.device, four_phase=four_phase,
+        pageable_staging=pageable_staging,
     )
     trainer.sensenova_phase_evictor = evictor
     return evictor

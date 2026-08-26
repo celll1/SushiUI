@@ -325,6 +325,17 @@ def _apply_sensenova_training_contract(
                 "SenseNova MoT phase eviction is independent of block swap; "
                 "set block_swap_h2d_only=false"
             )
+    pageable_staging = _normalize_sensenova_bool(
+        train_config,
+        "sensenova_mot_pageable_staging",
+        TRAINING_DEFAULTS["sensenova_mot_pageable_staging"],
+    )
+    if pageable_staging and not phase_eviction:
+        raise ValueError(
+            "SenseNova sensenova_mot_pageable_staging requires "
+            "sensenova_mot_phase_eviction: it selects how the evictor stages "
+            "a half to CPU, and with the evictor off nothing is ever staged."
+        )
     _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"

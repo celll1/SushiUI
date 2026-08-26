@@ -78,8 +78,8 @@ def test_state_machine_orders_two_cycles_and_is_idempotent():
     gen_ids = {id(module) for module in evictor._gen_modules}
     events.clear()
 
-    def d2h_identity(modules, *, warn_once):
-        del warn_once
+    def d2h_identity(modules, *, warn_once, pageable=False):
+        del warn_once, pageable
         items = tuple(modules)
         events.append(("d2h", "gen" if id(items[0]) in gen_ids else "und"))
 
@@ -207,9 +207,9 @@ def test_partial_transfer_failure_is_fatal_and_normalized_to_cpu():
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "cpu")
     calls = 0
 
-    def fail_once(modules, *, warn_once):
+    def fail_once(modules, *, warn_once, pageable=False):
         nonlocal calls
-        del modules, warn_once
+        del modules, warn_once, pageable
         calls += 1
         if calls == 1:
             raise RuntimeError("copy failed")

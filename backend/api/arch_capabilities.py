@@ -276,6 +276,12 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # per-layer resident KV cache during a training-time SAMPLE only, never
     # during train_step, and does not touch MoT weight-half placement.
     "sensenova_sample_kv_streaming": ["sensenova_sample_kv_cache_streaming"],
+    # A staging-mode sub-option of sensenova_mot_eviction, declared separately
+    # so it does not disturb sensenova_four_phase_ui_exposure_test's exact-list
+    # pin. Refused without the eviction flag, but not required by it -- unlike
+    # the four-phase pair, "eviction, pinned" and "eviction, pageable" are both
+    # legal independently.
+    "sensenova_mot_pageable_staging": ["sensenova_mot_pageable_staging"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -287,6 +293,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "vae": "VAE settings",
     "sensenova_mot_eviction": "SenseNova MoT phase eviction (with the four-phase backward split)",
     "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
+    "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1011,6 +1018,14 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
     _add_training_feature_unsupported(
         _a, "sensenova_sample_kv_streaming",
         "2-slot flash-KV prefix streaming for a training-time sample is specific to SenseNova's sample generation path (ops/sensenova_ops.py::_maybe_install_sample_kv_streaming); this architecture's training-time sampling has no equivalent mechanism")
+
+# --- SenseNova MoT phase eviction pageable host staging ---------------------
+# A staging-mode sub-option of sensenova_mot_eviction (see the FEATURE_PARAMS
+# comment above for why it is its own key rather than folded into that list).
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_mot_pageable_staging",
+        "pageable-vs-pinned host staging is a sub-option of SenseNova's per-phase MoT weight-half CPU eviction, which this architecture has no equivalent of")
 
 # --- Sample generation during training --------------------------------------
 # NOT declared for SenseNova: its sampling integration is in flight, and a

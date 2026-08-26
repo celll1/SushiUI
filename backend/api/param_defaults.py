@@ -2344,6 +2344,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # SenseNova full fine-tune only: on-disk format of the saved model.
     # SENSENOVA_FULL_FINETUNE_SAVE_FORMATS below carries the measured sizes.
     "sensenova_full_finetune_save_format": "mixed",
+    # SenseNova full fine-tune / LoRA, MoT phase eviction only (requires
+    # sensenova_mot_phase_eviction): stage the evicted half to pageable host
+    # memory instead of pinned, trading the sticky pinned high-water (torch's
+    # caching host allocator never returns a pinned block) for reclaimable
+    # host RAM at an unmeasured transfer-time cost.
+    "sensenova_mot_pageable_staging": False,
     # SenseNova only: for a training-time sample (not train_step), stream each
     # layer's prefix KV cache from a pinned CPU master instead of holding the
     # full per-layer, per-branch KV cache resident on GPU for the sample's

@@ -414,7 +414,11 @@ class AdamW8bit_RingBuffer(Optimizer):
         from itertools import chain
         from collections import abc as container_abcs, defaultdict
 
-        from .host_state_allocator import copy_containers_only, place_loaded_state_tensor
+        from .host_state_allocator import (
+            copy_containers_only,
+            is_absmax_key,
+            place_loaded_state_tensor,
+        )
 
         host_resident = self.get_state_buffer is not None
 
@@ -461,8 +465,10 @@ class AdamW8bit_RingBuffer(Optimizer):
             elif isinstance(value, dict):
                 # For dict values (optimizer state), protect non_castable_tensor_keys
                 for k, v in value.items():
-                    if k in self.non_castable_tensor_keys:
-                        # Only move device, preserve dtype (UINT8 for exp_avg/exp_avg_sq)
+                    if k in self.non_castable_tensor_keys or is_absmax_key(k):
+                        # Only move device, preserve dtype (UINT8 for exp_avg/exp_avg_sq,
+                        # FP32 for every absmax*; the prefix is the rule, the set is
+                        # the legacy spelling of it).
                         if isinstance(v, torch.Tensor):
                             value[k] = place_loaded_state_tensor(self, param, k, v)
                     elif host_resident and isinstance(v, torch.Tensor) and v.dtype == torch.uint8:

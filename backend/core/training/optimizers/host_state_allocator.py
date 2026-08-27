@@ -34,6 +34,31 @@ from typing import Dict
 
 import torch
 
+ABSMAX_PREFIX = "absmax"
+
+
+class HostStateResidencyError(AssertionError):
+    """Host-resident optimizer state is not, or cannot be put, where it belongs.
+
+    Fatal by design and never a fallback: continuing would either discard the
+    moments this route exists to preserve, or put tens of GiB back on the card.
+    Subclasses ``AssertionError`` so the load path can re-raise it specifically
+    instead of catching every assertion a third-party ``load_state_dict`` makes.
+    """
+
+
+class HostStateLoadMismatch(HostStateResidencyError):
+    """A loaded state tensor does not match the host buffer it must go into."""
+
+
+def is_absmax_key(key) -> bool:
+    """``absmax``/``absmax1``/``absmax_z``/... -- the GPU-only quantization scale.
+
+    A prefix rule, not a per-optimizer key set: the set was hand-maintained and
+    was wrong twice (Lion's ``absmax_z``, then the census's ``state_z``).
+    """
+    return str(key).startswith(ABSMAX_PREFIX)
+
 
 class HostOptimizerStateAllocator:
     """Persistent, pinned, per-parameter host buffers for optimizer state.
@@ -93,23 +118,49 @@ def place_loaded_state_tensor(optimizer, param, key: str, tensor: torch.Tensor) 
     else, under host residency, goes INTO the pinned buffer this parameter
     already has: sending it to ``param.device`` puts the whole host budget on the
     GPU, and allocating a fresh host tensor doubles the pinned budget instead.
+
+    A tensor that does not fit that buffer is refused, not rerouted to the
+    device: at run-121 scale ``.to(param.device)`` is a 64.8 GiB OOM, so the
+    disagreement is worth a message naming the key.
     """
-    if key.startswith("absmax"):
+    if is_absmax_key(key):
         device = param.device if param.device.type == "cuda" else torch.device("cuda:0")
         return tensor.to(device)
 
     get_buffer = getattr(optimizer, "get_state_buffer", None)
-    if get_buffer is None or tensor.dtype != torch.uint8:
+    if get_buffer is None:
         return tensor.to(param.device)
 
     existing = optimizer.state.get(param)
     buffer = existing.get(key) if isinstance(existing, dict) else None
-    if not (isinstance(buffer, torch.Tensor)
-            and buffer.dtype == tensor.dtype
-            and buffer.numel() == tensor.numel()):
+
+    if isinstance(buffer, torch.Tensor):
+        if buffer.dtype != tensor.dtype or buffer.numel() != tensor.numel():
+            raise HostStateLoadMismatch(
+                f"optimizer state '{key}' does not fit the host buffer it must be "
+                f"loaded into: the checkpoint holds {tensor.dtype} x{tensor.numel()}, "
+                f"this optimizer holds {buffer.dtype} x{buffer.numel()} for a "
+                f"parameter of {param.numel()} elements. Refusing to place it on "
+                f"{param.device} instead: under optimizer_state_host_resident that "
+                f"is the whole bulk state back on the GPU."
+            )
+    elif tensor.dtype == torch.uint8:
+        # Validated BEFORE allocating: a reshape failure after get_buffer leaks
+        # one pinned buffer per mismatched key.
+        if tensor.numel() != param.numel():
+            raise HostStateLoadMismatch(
+                f"optimizer state '{key}' holds {tensor.numel()} elements for a "
+                f"parameter of {param.numel()}; no host buffer can be allocated "
+                f"for it."
+            )
         buffer = get_buffer(param, dtype=tensor.dtype)
         if buffer.is_cpu and not buffer.is_pinned():
             buffer = buffer.pin_memory()
+    else:
+        # Unquantized ring-buffer state (use_8bit=False): device-resident by
+        # construction, and no host buffer exists to contradict it.
+        return tensor.to(param.device)
+
     buffer.copy_(tensor.reshape(buffer.shape))
     return buffer
 
@@ -140,18 +191,20 @@ def state_device_census(optimizer) -> Dict[str, Dict[str, int]]:
     return out
 
 
-def assert_state_host_resident(optimizer, keys=("exp_avg", "exp_avg_sq", "z")) -> Dict[str, Dict[str, int]]:
-    """Raise unless the bulk state keys present are host-resident and pinned.
+def assert_state_host_resident(optimizer) -> Dict[str, Dict[str, int]]:
+    """Raise unless EVERY state key but ``absmax*`` is host-resident and pinned.
 
-    ``absmax*`` are excluded by omission: the optimizers keep them on the GPU on
-    purpose (adamw8bit_ringbuffer.py's "ALWAYS keep on GPU even if param moves to
-    CPU"), and they are the 0.031250 B/param remainder in 6.5's table.
+    ``absmax*`` is the one deliberate exception -- the optimizers keep it on the
+    GPU (adamw8bit_ringbuffer.py's "ALWAYS keep on GPU even if param moves to
+    CPU"), and it is the 0.031250 B/param remainder in 6.5's table. Everything
+    else is censused whether or not this function has heard of it: a whitelist of
+    bulk keys is exactly how Lion's Schedule-Free ``state_z`` stayed invisible to
+    both censuses, so a new bulk key must fail closed.
     """
     census = state_device_census(optimizer)
     problems = []
-    for key in keys:
-        bucket = census.get(key)
-        if bucket is None:
+    for key, bucket in sorted(census.items()):
+        if is_absmax_key(key):
             continue
         if bucket["cuda"]:
             problems.append(f"{key}: {bucket['cuda']} bytes on CUDA")
@@ -161,7 +214,7 @@ def assert_state_host_resident(optimizer, keys=("exp_avg", "exp_avg_sq", "z")) -
                 f"host bytes are not pinned"
             )
     if problems:
-        raise AssertionError(
+        raise HostStateResidencyError(
             "Ring-buffer optimizer state is not host-resident as configured: "
             + "; ".join(problems)
             + f". Full census: {census}"

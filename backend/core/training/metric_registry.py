@@ -52,6 +52,12 @@ EXTRA_METRIC_DEFS = {
     # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
     # its own axis rather than the shared pooled Y-range.
     "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right"},
+    # Run-cumulative batches abandoned before their backward pass (OOM, unusable
+    # item, no valid latents, missing condition image). Monotone staircase: a
+    # skip writes no metrics row of its own, so this rides the next completed
+    # step and is the only in-chart trace that data is being dropped.
+    "batches_skipped": {"label": "Batches skipped", "color": "#f97316",
+                        "dashed": True, "axis": "right"},
     # SenseNova shared-prefix four-phase: cumulative count of generation
     # backwards whose understanding gradient a skipped batch threw away. A
     # skip mid-window drops every backward the window had run, whose generation

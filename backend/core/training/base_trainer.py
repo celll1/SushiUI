@@ -113,6 +113,47 @@ class OptimizerStateLoadOOM(RuntimeError):
     """
 
 
+class OptimizerStateLoadHostAllocFailure(OptimizerStateLoadOOM):
+    """Pinned HOST memory ran out, not VRAM. Equally fatal, different remedy."""
+
+
+class OptimizerStateFileUnreadable(RuntimeError):
+    """The saved optimizer state exists but could not be read.
+
+    Fatal for a host-resident run: silently starting fresh throws away thousands
+    of steps of moments while the run reports healthy, which is the failure mode
+    this path was rewritten to remove. A file that is genuinely ABSENT is still a
+    clean fresh start.
+    """
+
+
+_HOST_PINNED_ALLOC_MARKERS = (
+    "cudahostalloc",
+    "cudahostregister",
+    "pin_memory",
+    "pinned memory",
+    "cannot allocate pinned",
+)
+
+
+def is_pinned_host_alloc_failure(exc: BaseException) -> bool:
+    """A pinned-HOST allocation failure wearing an "out of memory" message.
+
+    ``cudaHostAlloc`` failing surfaces as ``RuntimeError: ... out of memory``,
+    which ``is_cuda_oom_error`` matches and which reads as a VRAM shortage. It is
+    host RAM: aborting is right, "free VRAM" is not.
+    """
+    seen = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).lower()
+        if any(marker in text for marker in _HOST_PINNED_ALLOC_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def is_cuda_oom_error(exc: BaseException) -> bool:
     """Tell a CUDA OOM from a genuine state/parameter mismatch.
 
@@ -184,6 +225,13 @@ def assert_loaded_state_host_resident(trainer, optimizers) -> None:
 
 def raise_optimizer_state_load_oom(trainer, exc: BaseException, label: str):
     host_resident = getattr(trainer, "optimizer_state_host_resident", False)
+    if is_pinned_host_alloc_failure(exc):
+        raise OptimizerStateLoadHostAllocFailure(
+            f"Pinned HOST memory ran out restoring optimizer state from {label}. "
+            f"This is host RAM, not VRAM -- freeing GPU memory will not help. "
+            f"Close other processes, raise the pagefile, or reduce the trainable "
+            f"parameter set; the run must not continue on fresh state after it."
+        ) from exc
     remedy = (
         "This run is configured for host-resident optimizer state, so the load "
         "must not put the bulk 8-bit state on the GPU at all; the optimizer was "
@@ -3674,8 +3722,25 @@ class BaseTrainer(ABC):
             else:
                 payload = torch.load(optimizer_file, map_location='cpu')
         except Exception as e:
-            print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
-            print(f"{self.log_prefix} Continuing with fresh optimizer state")
+            if is_cuda_oom_error(e):
+                raise_optimizer_state_load_oom(self, e, optimizer_file.name)
+            if getattr(self, "optimizer_state_host_resident", False):
+                # The file EXISTS and could not be read. Starting fresh here
+                # discards every moment of the resumed run behind one stdout
+                # line; an absent file (handled above) is still a clean start.
+                raise OptimizerStateFileUnreadable(
+                    f"{optimizer_file.name} exists but could not be read ({e}). "
+                    f"Refusing to continue with fresh optimizer state: this run "
+                    f"is host-resident 8-bit, so that would silently discard the "
+                    f"moments it is resuming for. Restore or delete the file "
+                    f"(deleting it makes the fresh start explicit)."
+                ) from e
+            emit_training_warning(
+                f"{optimizer_file.name} exists but could not be read ({e}); every "
+                f"moment starts fresh.",
+                code="optimizer_state_file_unreadable",
+                prefix=self.log_prefix,
+            )
             return False
 
         saved_states, fused_save = self._split_saved_optimizer_states(payload)
@@ -3804,6 +3869,7 @@ class BaseTrainer(ABC):
 
     def _load_one_optimizer_state(self, optimizer, optimizer_state, label: str) -> bool:
         """Load one saved state dict into one optimizer."""
+        from .optimizers.host_state_allocator import HostStateResidencyError
 
         def move_tensors_to_device(obj, device):
             """Recursively move all tensors in nested dict/list to target device."""
@@ -3871,9 +3937,11 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Successfully loaded optimizer state from {label}")
                 assert_loaded_state_host_resident(self, [optimizer])
                 return True
-            except AssertionError:
-                # The post-load residency census failed: not a state mismatch,
-                # and not something a partial reload can fix.
+            except HostStateResidencyError:
+                # The post-load residency census (or a refused placement) failed:
+                # not a state mismatch, and not something a partial reload can
+                # fix. Narrower than AssertionError so an unrelated assertion
+                # inside a third-party load_state_dict keeps the partial load.
                 raise
             except Exception as e:
                 # The usual cause here is a param-GROUP count change between runs —
@@ -3914,7 +3982,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Partial optimizer state load OK ({kept})")
                     assert_loaded_state_host_resident(self, [optimizer])
                     return True
-                except AssertionError:
+                except HostStateResidencyError:
                     raise
                 except Exception as e2:
                     if is_cuda_oom_error(e2):
@@ -3924,7 +3992,7 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} parameters changed. Continuing with fresh optimizer state")
                     print(f"{self.log_prefix} (momentum/variance will be reset)")
                     return False
-        except (OptimizerStateLoadOOM, AssertionError):
+        except (OptimizerStateLoadOOM, HostStateResidencyError):
             raise
         except Exception as e:
             if is_cuda_oom_error(e):

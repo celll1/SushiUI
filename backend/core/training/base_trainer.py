@@ -336,6 +336,19 @@ class NothingTrainedError(RuntimeError):
     pass
 
 
+class ItemDimensionError(RuntimeError):
+    """Raised when a canvas reaching the encoder violates the arch's ``pixel_align``.
+
+    Not a data problem: both dimension sources (the bucket grid and the
+    no-bucketing base-area fit) are aligned by construction, so a violation
+    means one of them did not run for this item. Run 121 is why this is fatal
+    rather than a warning -- the arch's own divisibility check raised deep in
+    ``vae_encode``, the batch loop absorbed it as a corrupt image, and 54% of an
+    epoch was dropped with nothing on the run record.
+    """
+    pass
+
+
 class BucketsExhaustedError(RuntimeError):
     """Raised when a run that HAS trained loses its last fittable bucket.
 
@@ -2110,36 +2123,148 @@ class BaseTrainer(ABC):
             counts[key] = counts.get(key, 0) + 1
         return sum((n + batch_size - 1) // batch_size for n in counts.values())
 
-    def _rc_refit_items(self, all_items, active_base_resolutions):
-        """No-bucketing phase apply: fit each item into the active base-resolution AREA from
-        its ORIGINAL size (mirrors the one-time no-bucketing fit, but re-runnable per phase
-        and non-destructive since it reads the orig-size map). Within-area items keep their
-        aspect, snapped to the arch pixel alignment (parity with the one-time fit)."""
-        import math as _math
-        # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
-        # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
-        # assert on non-conforming dims (see ArchHandler.pixel_align). SD/SDXL = 8.
+    def _fit_items_to_base_area(self, items, active_base_resolutions) -> int:
+        """No-bucketing dimension policy: fit each still item into the base-resolution
+        AREA and snap it to the arch's pixel alignment. Returns the number scaled down.
+
+        THE ONE implementation, called from every place that materializes items for an
+        epoch -- not just train()'s setup. ``reload_for_epoch`` rebuilds each item dict
+        from the dataset cache with the ORIGINAL width/height
+        (train_runner._process_cached_items), so a setup-only fit silently expires at
+        the first natural epoch rollover: run 121 (SenseNova, pixel_align 32) then lost
+        54% of epoch 3 to the arch's divisibility check.
+
+        Idempotent and re-runnable: dims are derived from the persistent ORIGINAL-size
+        map, never from the possibly-already-fitted item, so N calls == 1 call.
+
+        Align to the ARCH's requirement, not just the VAE /8: patchified DiTs
+        (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16, SenseNova 32,
+        SD/SDXL 8 (see ArchHandler.pixel_align).
+        """
         align = self._arch_pixel_align()
-        nb_base = max(int(r) for r in active_base_resolutions)
+        nb_base = max(int(r) for r in (active_base_resolutions or [1024]))
         nb_max_area = nb_base * nb_base
-        for item, dataset in all_items:
+        clamped = 0
+        for item in items:
+            # Video items keep their VideoBucketManager ÷32 dims; ACE-Step audio
+            # items have no width/height concept at all.
+            if (self._temporal_spec() is not None and item.get("item_type") == "video") or \
+               (self.is_acestep and item.get("item_type") == "audio"):
+                continue
+            self._seed_orig_size_from_db(item)
             try:
                 ow, oh = self._get_original_size_for_item(item)
             except Exception:
-                ow, oh = int(item.get("width") or 0), int(item.get("height") or 0)
+                ow, oh = item.get("width"), item.get("height")
+            ow, oh = int(ow or 0), int(oh or 0)
             if ow <= 0 or oh <= 0:
                 item["width"], item["height"] = nb_base, nb_base
                 continue
             if ow * oh > nb_max_area:
-                sc = _math.sqrt(nb_max_area / float(ow * oh))
+                sc = math.sqrt(nb_max_area / float(ow * oh))
                 item["width"] = max(align, int(ow * sc) // align * align)
                 item["height"] = max(align, int(oh * sc) // align * align)
+                clamped += 1
             else:
-                # Within-area items keep their aspect but still snap to the arch
-                # alignment (no-op for already-aligned / pre-resized datasets;
-                # prevents a non-/16 original from tripping the DiT patchify assert).
-                item["width"] = max(align, int(ow) // align * align)
-                item["height"] = max(align, int(oh) // align * align)
+                item["width"] = max(align, ow // align * align)
+                item["height"] = max(align, oh // align * align)
+
+        # Per-epoch now, so only say it when it says something new.
+        state = (clamped, nb_base, align)
+        if clamped and state != getattr(self, "_nb_fit_logged", None):
+            print(f"{self.log_prefix} Bucketing disabled: fitted {clamped} item(s) "
+                  f"exceeding the base-resolution area into {nb_base}x{nb_base} "
+                  f"(aspect-preserving, /{align}-aligned) to bound VAE-encode/training memory")
+        self._nb_fit_logged = state
+        return clamped
+
+    def _rc_refit_items(self, all_items, active_base_resolutions):
+        """No-bucketing resolution-curriculum phase apply, over (item, dataset) pairs."""
+        return self._fit_items_to_base_area((item for item, _ in all_items),
+                                            active_base_resolutions)
+
+    def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
+        """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
+        the items carry.
+
+        ``reload_for_epoch`` returns freshly built dicts holding the DB's ORIGINAL
+        width/height, so anything ``train()`` applied to the items at setup is gone from
+        the first natural rollover on. The no-bucketing base-area fit is one of those
+        things; re-run it here rather than relying on setup.
+        """
+        for dataset in datasets:
+            if not hasattr(dataset, 'reload_for_epoch'):
+                continue
+            new_items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
+            if new_items is not None:
+                dataset.items = new_items
+                print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch "
+                      f"{epoch + 1} ({len(dataset.items)} items)")
+            else:
+                print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for "
+                      f"epoch {epoch + 1} ({len(dataset.items)} items)")
+
+        # Bucketed batches are built from the BucketManager's own image_info dicts, which
+        # a reload does not touch. The resolution curriculum re-fits with the phase's
+        # resolution a few lines further into train(); don't fit twice.
+        if bucket_manager is None and not (self._rc_active and self.crop_planner is None):
+            self._fit_items_to_base_area(
+                (item for dataset in datasets for item in dataset.items),
+                base_resolutions or [1024],
+            )
+
+        return [(item, dataset) for dataset in datasets for item in dataset.items]
+
+    def _assert_item_pixel_align(self, item, width, height) -> None:
+        """Refuse a canvas the arch's patchify/VAE cannot represent, at the batch that
+        carries it. See ``ItemDimensionError``."""
+        if item.get("item_type") in ("video", "audio"):
+            return
+        align = self._arch_pixel_align()
+        if align <= 1 or not width or not height:
+            return
+        if int(width) % align or int(height) % align:
+            raise ItemDimensionError(
+                f"{item.get('image_path')}: training canvas {width}x{height} is not a "
+                f"multiple of {align}, which this architecture requires. The dimension "
+                f"policy (bucket grid, or the no-bucketing base-area fit) did not run "
+                f"for this item -- this is a trainer bug, not a bad image."
+            )
+
+    @staticmethod
+    def _item_failure_kind(exc: BaseException) -> str:
+        """``'corrupt'`` for a decode/IO failure, ``'invalid'`` for everything else.
+
+        Calling every per-item failure "[CORRUPTED IMAGE]" is what made run 121's
+        dimension defect undiagnosable: 1,871 perfectly readable files were reported as
+        corruption. PIL raises OSError (incl. UnidentifiedImageError, FileNotFoundError,
+        truncated-file) for the genuinely-unreadable case; a ValueError/RuntimeError out
+        of the encode chain is a validation or pipeline failure and must say so.
+        """
+        if isinstance(exc, (OSError, Image.DecompressionBombError)):
+            return "corrupt"
+        return "invalid"
+
+    def _report_item_failure(self, exc: BaseException, image_path, what: str) -> str:
+        """Print (and, for a non-corruption failure, raise once onto the run's warnings
+        channel) a per-item encode failure. Returns the log tag used."""
+        kind = self._item_failure_kind(exc)
+        tag = "CORRUPTED IMAGE" if kind == "corrupt" else "ITEM ENCODE FAILED"
+        print(f"{self.log_prefix} [{tag}] {what}: {image_path}")
+        print(f"{self.log_prefix} [{tag}] Error: {str(exc)[:200]}")
+        # Say-once: run 121 would have emitted this 1,871 times in one epoch.
+        if kind == "invalid" and not getattr(self, "_item_encode_failed_warned", False):
+            self._item_encode_failed_warned = True
+            emit_training_warning(
+                "At least one item failed to encode for a reason that is NOT file "
+                "corruption (a validation or pipeline error). Those batches are being "
+                "skipped and leave holes in the metrics; see the [ITEM ENCODE FAILED] "
+                "lines on the backend console for the paths and errors.",
+                code="item_encode_failed",
+                prefix=self.log_prefix,
+                console=False,
+            )
+        return tag
 
     def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
         """Deterministically recompute SDXL time_ids for an item from its real original
@@ -10239,56 +10364,18 @@ class BaseTrainer(ABC):
                 print(f"  With reference: {ref_stats['with_reference']} images")
                 print(f"  Without reference: {ref_stats['without_reference']} images")
         else:
-            # No-bucketing path: item width/height come straight from the dataset DB,
-            # i.e. the ORIGINAL image dimensions — base_resolutions previously fed only
-            # the BucketManager, so without bucketing it was silently ignored and every
-            # VAE encode (swap prefill / disk cache / on-the-fly) plus every training
-            # step ran at the original resolution. Live-measured on a dataset with
-            # 3.76MP-avg / 37MP-max images: a single original-resolution VAE encode
-            # transiently allocated >20GB (torch peak) and pinned ~46.6GB at step 0,
-            # independent of architecture, batch size, and the requested
-            # base_resolutions. Fit oversized items into the base-resolution AREA
-            # (aspect-preserving, /8-aligned) so base_resolutions bounds memory here
-            # exactly as it does in the bucketed path. Items already within the area
-            # are left untouched, so pre-resized datasets keep identical behavior.
-            # Resolution curriculum: phase-0 (warmup) fits into the scaled base area.
-            _nb_res = self._rc_warmup_res if (self._rc_active and self._rc_current_phase == "warmup") \
-                else (base_resolutions or [1024])
-            # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
-            # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
-            # assert on non-/16 dims (see ArchHandler.pixel_align). SD/SDXL = 8.
-            _nb_align = self._arch_pixel_align()
-            _nb_base = max(int(r) for r in _nb_res)
-            _nb_max_area = _nb_base * _nb_base
-            _nb_clamped = 0
-            for dataset in datasets:
-                for item in dataset.items:
-                    # Video items keep their VideoBucketManager ÷32 dims
-                    # (do not re-fit into the still base-area path). ACE-Step
-                    # audio items have no width/height concept — also skipped.
-                    if (self._temporal_spec() is not None and item.get("item_type") == "video") or \
-                       (self.is_acestep and item.get("item_type") == "audio"):
-                        continue
-                    w = int(item.get("width") or 0)
-                    h = int(item.get("height") or 0)
-                    if w <= 0 or h <= 0:
-                        item["width"], item["height"] = _nb_base, _nb_base
-                        continue
-                    if w * h > _nb_max_area:
-                        _scale = math.sqrt(_nb_max_area / float(w * h))
-                        item["width"] = max(_nb_align, int(w * _scale) // _nb_align * _nb_align)
-                        item["height"] = max(_nb_align, int(h * _scale) // _nb_align * _nb_align)
-                        _nb_clamped += 1
-                    else:
-                        # Within-area items snap to the arch alignment (no-op for
-                        # already-aligned / pre-resized datasets; prevents a non-/16
-                        # original from tripping the DiT patchify assert).
-                        item["width"] = max(_nb_align, w // _nb_align * _nb_align)
-                        item["height"] = max(_nb_align, h // _nb_align * _nb_align)
-            if _nb_clamped:
-                print(f"{self.log_prefix} Bucketing disabled: fitted {_nb_clamped} item(s) "
-                      f"exceeding the base-resolution area into {_nb_base}x{_nb_base} "
-                      f"(aspect-preserving, /{_nb_align}-aligned) to bound VAE-encode/training memory")
+            # No-bucketing path: item dims come straight from the DB, so without this
+            # fit base_resolutions bounds nothing here. Measured on a 3.76MP-avg /
+            # 37MP-max dataset: one original-resolution VAE encode transiently
+            # allocated >20GB and pinned ~46.6GB at step 0, arch-independent.
+            # Phase-0 of the resolution curriculum fits into the scaled base area.
+            # Re-applied per epoch by _prepare_epoch_items -- this call alone expires
+            # at the first dataset reload.
+            self._fit_items_to_base_area(
+                (item for dataset in datasets for item in dataset.items),
+                self._rc_warmup_res if (self._rc_active and self._rc_current_phase == "warmup")
+                else (base_resolutions or [1024]),
+            )
 
         # MiniT2I is pixel-space (no VAE): the "latent" is just the resized [-1,1]
         # RGB image, so a disk latent cache would store full-resolution RGB tensors
@@ -10923,28 +11010,16 @@ class BaseTrainer(ABC):
                 self._epoch_batch_offset = 0  # only the resumed epoch is truncated
                 print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
 
-                # Reload datasets for per-epoch shuffle/dropout
-                # (This regenerates captions with different shuffle/dropout based on epoch_num)
-                for dataset in datasets:
-                    if hasattr(dataset, 'reload_for_epoch'):
-                        new_items = dataset.reload_for_epoch(epoch_num=epoch, run_id=run_id)
-                        if new_items is not None:
-                            # Dataset was reloaded with new items
-                            dataset.items = new_items
-                            print(f"{self.log_prefix} Reloaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
-                        else:
-                            # Dataset reload skipped (same epoch as initial load, items already loaded)
-                            print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for epoch {epoch + 1} ({len(dataset.items)} items)")
+                _epoch_skips_before = self._batches_skipped
+
+                all_items = self._prepare_epoch_items(
+                    datasets, epoch, run_id, bucket_manager, base_resolutions
+                )
 
                 # Validate and generate text encoder cache for new captions (all architectures)
                 # Only for pre_encoded_cache mode
                 if text_encoding_mode == "pre_encoded_cache":
                     self._validate_and_generate_text_encoder_caches(datasets, text_encoder_caches, progress_callback, epoch_num=epoch)
-
-                # Create all_items list (needed for swap buffer and batching)
-                all_items = []
-                for dataset in datasets:
-                    all_items.extend([(item, dataset) for item in dataset.items])
 
                 # Resolution curriculum: apply this epoch's phase resolution.
                 #   warmup while epoch < switch_epoch, else target.
@@ -11936,10 +12011,8 @@ class BaseTrainer(ABC):
                                     # cleanup — keeps CPU RAM bounded).
                                     item["_danbooru_image_bytes"] = None
                             except Exception as img_error:
-                                # Log corrupted image and skip it
                                 corrupted_images.append(image_path)
-                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Skipping: {image_path}")
-                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
+                                self._report_item_failure(img_error, image_path, "Skipping")
                                 continue
 
                             # Send progress update
@@ -11952,9 +12025,9 @@ class BaseTrainer(ABC):
 
                         # Log summary of corrupted images
                         if corrupted_images:
-                            print(f"{self.log_prefix} [CORRUPTED IMAGES] Total skipped: {len(corrupted_images)}")
+                            print(f"{self.log_prefix} [ITEM ENCODE] Total skipped in this refill: {len(corrupted_images)}")
                             for path in corrupted_images:
-                                print(f"{self.log_prefix} [CORRUPTED IMAGES]   - {path}")
+                                print(f"{self.log_prefix} [ITEM ENCODE]   - {path}")
 
                         # Move VAE back to CPU
                         self.move_vae_to_cpu()
@@ -11997,6 +12070,9 @@ class BaseTrainer(ABC):
                         width = item.get("width") or item.get("bucket_width")
                         height = item.get("height") or item.get("bucket_height")
                         image_path = item["image_path"]
+                        # Outside the per-mode try/except below on purpose: this must not
+                        # be absorbed as a corrupt image (run 121).
+                        self._assert_item_pixel_align(item, width, height)
 
                         # Load latent (mode-specific)
                         if latent_encoding_mode == "swap_onthefly":
@@ -12043,10 +12119,7 @@ class BaseTrainer(ABC):
                                         if _danb_b is not None:
                                             item["_danbooru_image_bytes"] = None
                                 except Exception as img_error:
-                                    # Corrupted image - log and skip entire batch
-                                    print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {image_path}")
-                                    print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
-                                    # Set flag to skip this batch
+                                    self._report_item_failure(img_error, image_path, "Batch skipped due to")
                                     batch_has_corrupted_image = True
                                     corrupted_image_path = image_path
                                     break
@@ -12190,9 +12263,7 @@ class BaseTrainer(ABC):
                                     if _danb_b is not None:
                                         item["_danbooru_image_bytes"] = None
                             except Exception as img_error:
-                                # Corrupted image - log and skip entire batch
-                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {item['image_path']}")
-                                print(f"{self.log_prefix} [CORRUPTED IMAGE] Error: {str(img_error)[:200]}")
+                                self._report_item_failure(img_error, item["image_path"], "Batch skipped due to")
                                 batch_has_corrupted_image = True
                                 corrupted_image_path = item["image_path"]
                                 break
@@ -12471,7 +12542,7 @@ class BaseTrainer(ABC):
 
                     # Skip batch if corrupted image was detected
                     if batch_has_corrupted_image:
-                        print(f"{self.log_prefix} [CORRUPTED IMAGE] Skipping batch due to corrupted image: {corrupted_image_path}")
+                        print(f"{self.log_prefix} [ITEM ENCODE] Skipping batch, unusable item: {corrupted_image_path}")
                         # Cleanup partial lists
                         del latents_list, text_embeddings_list, auxiliary_data_list
                         if reference_latents_list:
@@ -13190,6 +13261,11 @@ class BaseTrainer(ABC):
                         except Exception:
                             pass
 
+                        # Run-cumulative skipped batches. A skip writes no row of its
+                        # own, so the count has to ride the next completed step.
+                        if self._batches_skipped:
+                            self.log_extra_metric("batches_skipped", float(self._batches_skipped))
+
                         # SenseNova MoT phase eviction: this step's half swaps.
                         # Drained ONCE here because log_extra_metric overwrites,
                         # and a four-phase step performs two swaps -- per-swap
@@ -13644,6 +13720,14 @@ class BaseTrainer(ABC):
                 if te_prefetcher is not None:
                     te_prefetcher.stop()
                     te_prefetcher = None
+
+                # A skipped batch writes no metrics row, so the hole it leaves is the
+                # only trace it has ever had. Say it per epoch.
+                _epoch_skipped = self._batches_skipped - _epoch_skips_before
+                if _epoch_skipped:
+                    print(f"{self.log_prefix} Epoch {epoch + 1}: {_epoch_skipped} of "
+                          f"{len(batches)} batch(es) were skipped before their backward "
+                          f"pass ({self._batches_skipped} so far this run)")
 
             # All epochs complete — stop the Danbooru collector thread.
             try:

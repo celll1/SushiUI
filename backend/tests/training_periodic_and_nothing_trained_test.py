@@ -164,7 +164,6 @@ def test_no_unguarded_periodic_division_remains_in_base_trainer():
     # set so a new interval added with EITHER fails this test.
     assert divisors == [
         "_danbooru_inj_interval",      # guarded by `self._danbooru_inj_interval > 0`
-        "_nb_align",                   # bucket alignment, not a periodic interval
         "align",                       # bucket alignment, not a periodic interval
         "batch_size",                  # structural divisor
         "debug_latents_every",         # guarded by `debug_latents_every > 0`

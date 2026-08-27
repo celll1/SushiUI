@@ -414,8 +414,13 @@ class AdamW8bit_RingBuffer(Optimizer):
         from itertools import chain
         from collections import abc as container_abcs, defaultdict
 
-        # Deepcopy to match PyTorch standard behavior
-        state_dict = deepcopy(state_dict)
+        from .host_state_allocator import copy_containers_only, place_loaded_state_tensor
+
+        host_resident = self.get_state_buffer is not None
+
+        # Deepcopy to match PyTorch standard behavior -- except under host
+        # residency, where it would duplicate tens of GiB of pinned-bound state.
+        state_dict = copy_containers_only(state_dict) if host_resident else deepcopy(state_dict)
 
         # Validate state_dict structure
         groups = self.param_groups
@@ -459,13 +464,9 @@ class AdamW8bit_RingBuffer(Optimizer):
                     if k in self.non_castable_tensor_keys:
                         # Only move device, preserve dtype (UINT8 for exp_avg/exp_avg_sq)
                         if isinstance(v, torch.Tensor):
-                            # absmax1/absmax2 must ALWAYS be on GPU (required by CUDA kernel)
-                            if k in ('absmax1', 'absmax2'):
-                                target_device = param.device if param.device.type == 'cuda' else torch.device('cuda:0')
-                                value[k] = v.to(target_device)
-                            else:
-                                # exp_avg/exp_avg_sq can be on CPU (Ring Buffer)
-                                value[k] = v.to(param.device)
+                            value[k] = place_loaded_state_tensor(self, param, k, v)
+                    elif host_resident and isinstance(v, torch.Tensor) and v.dtype == torch.uint8:
+                        value[k] = place_loaded_state_tensor(self, param, k, v)
                     else:
                         # Other keys: standard cast
                         value[k] = cast(param, v)

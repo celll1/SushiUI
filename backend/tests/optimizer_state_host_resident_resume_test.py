@@ -28,6 +28,12 @@ No CUDA is required: "on the device" is exercised with ``device=cpu`` (where the
 pre-fix ``.to(device)`` is a no-op that still REPLACES the allocator's buffer
 with the tensor read off disk, which is exactly what this asserts against) plus
 a tensor that reports ``is_cuda`` for the census.
+
+The audit follow-ups live here too: Lion's Schedule-Free keys (``absmax_z`` cast
+to the parameter dtype, ``state_z`` uncensused), the placement guard that read as
+a refusal without being one, the census whitelist that let a new bulk key pass,
+the unreadable-file fresh start, and the ring-buffer (not ``torch.optim.AdamW``)
+negative control for the non-host-resident branch.
 """
 
 from __future__ import annotations
@@ -47,8 +53,14 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from core.training.base_trainer import BaseTrainer  # noqa: E402
 from core.training.optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer  # noqa: E402
+from core.training.optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer  # noqa: E402
 from core.training.optimizers.host_state_allocator import (  # noqa: E402
     HostOptimizerStateAllocator,
+    HostStateLoadMismatch,
+    HostStateResidencyError,
+    assert_state_host_resident,
+    copy_containers_only,
+    place_loaded_state_tensor,
     state_device_census,
 )
 
@@ -450,6 +462,490 @@ class FromAFileTest(unittest.TestCase):
             self.assertTrue(bool((loaded == 11).all()))
         self.assertEqual(allocator.tensors, 2)
         self.assertNotIn("not mappable", printed)
+
+
+class _PretendMoved(torch.Tensor):
+    """Records ``.to(device)`` and stays put, so a test never allocates on CUDA."""
+
+    moves = []
+
+    def to(self, *args, **kwargs):  # noqa: A003
+        if args and isinstance(args[0], (torch.device, str)):
+            device = torch.device(args[0])
+            self.moved_to = device
+            _PretendMoved.moves.append((self.numel(), device))
+            return self
+        return super().to(*args, **kwargs)
+
+    def __deepcopy__(self, memo):
+        # Identity, so what the load path records is recorded on the test's own
+        # reference (the non-host-resident branch deepcopies the state dict).
+        return self
+
+
+class _FakeLionRingBuffer(torch.optim.Optimizer):
+    """Lion's Schedule-Free state SHAPE with Lion's real load path."""
+
+    _load_state_dict_uint8 = Lion8bit_RingBuffer._load_state_dict_uint8
+    load_state_dict = Lion8bit_RingBuffer.load_state_dict
+
+    def __init__(self, params, get_state_buffer=None):
+        super().__init__(params, {"lr": 1e-4})
+        self.get_state_buffer = get_state_buffer
+        # Verbatim from Lion8bit_RingBuffer.__init__ -- absmax_z is NOT in it.
+        self.non_castable_tensor_keys = {"exp_avg", "absmax"}
+        self.schedule_free = True
+        self.use_radam = False
+        self.k = 0
+
+    def init_state(self, fill: int = 0):
+        for group in self.param_groups:
+            for p in group["params"]:
+                buffer = self.get_state_buffer(p, dtype=torch.uint8)
+                if CUDA and buffer.is_cpu and not buffer.is_pinned():
+                    buffer = buffer.pin_memory()
+                buffer.fill_(fill)
+                blocks = (p.numel() + 255) // 256
+                self.state[p]["state_z"] = buffer
+                self.state[p]["absmax_z"] = (
+                    torch.ones(blocks, dtype=torch.float32).as_subclass(_PretendMoved))
+                self.state[p]["is_8bit"] = True
+
+
+class LionScheduleFreeResumeTest(unittest.TestCase):
+    """Lion's Schedule-Free keys are in neither of the hand-maintained sets.
+
+    ``absmax_z`` (FP32, kernel argument) missed ``non_castable_tensor_keys`` and
+    was cast to the PARAMETER dtype; ``state_z`` (the whole bulk budget) missed
+    the census's key list.
+    """
+
+    def _resume(self):
+        params = [nn.Parameter(torch.zeros(512, dtype=torch.bfloat16))]
+        allocator = HostOptimizerStateAllocator(pin=CUDA)
+        optimizer = _FakeLionRingBuffer(params, get_state_buffer=allocator)
+        optimizer.init_state(fill=0)
+        buffer_ptr = optimizer.state[params[0]]["state_z"].data_ptr()
+
+        previous = _FakeLionRingBuffer(
+            [nn.Parameter(torch.zeros(512, dtype=torch.bfloat16))],
+            get_state_buffer=HostOptimizerStateAllocator(pin=False))
+        previous.init_state(fill=7)
+        previous.k = 4211
+        saved = previous.state_dict()
+
+        _quiet(optimizer.load_state_dict, saved)
+        return optimizer, params[0], buffer_ptr, allocator
+
+    def test_absmax_z_is_not_cast_to_the_parameter_dtype(self):
+        optimizer, param, _, _ = self._resume()
+        absmax_z = optimizer.state[param]["absmax_z"]
+        self.assertEqual(absmax_z.dtype, torch.float32)
+        self.assertEqual(getattr(absmax_z, "moved_to", None), torch.device("cuda:0"))
+
+    def test_state_z_stays_in_the_pinned_host_buffer(self):
+        optimizer, param, buffer_ptr, allocator = self._resume()
+        state_z = optimizer.state[param]["state_z"]
+        self.assertEqual(state_z.dtype, torch.uint8)
+        self.assertEqual(state_z.data_ptr(), buffer_ptr)
+        self.assertTrue(bool((state_z == 7).all()))
+        self.assertEqual(allocator.tensors, 1)  # no second host copy
+
+    def test_the_census_sees_the_bulk_key(self):
+        optimizer, param, _, _ = self._resume()
+        census = state_device_census(optimizer)
+        self.assertEqual(census["state_z"]["cuda"], 0)
+        self.assertEqual(census["state_z"]["cpu"], 512)
+        optimizer.state[param]["state_z"] = (
+            torch.zeros(512, dtype=torch.uint8).as_subclass(_PretendCuda))
+        with self.assertRaises(HostStateResidencyError) as raised:
+            assert_state_host_resident(optimizer)
+        self.assertIn("state_z", str(raised.exception))
+
+
+class CensusFailsClosedTest(unittest.TestCase):
+    """A bulk key the census has never heard of must fail, not be skipped."""
+
+    def test_an_unknown_bulk_key_on_cuda_is_a_failure(self):
+        param = nn.Parameter(torch.zeros(64))
+        optimizer = _FakeRingBuffer(
+            [param], get_state_buffer=HostOptimizerStateAllocator(pin=False))
+        optimizer.state[param]["fourth_moment"] = (
+            torch.zeros(64, dtype=torch.uint8).as_subclass(_PretendCuda))
+        with self.assertRaises(HostStateResidencyError) as raised:
+            assert_state_host_resident(optimizer)
+        self.assertIn("fourth_moment", str(raised.exception))
+
+    def test_absmax_is_still_the_one_allowed_exception(self):
+        param = nn.Parameter(torch.zeros(64))
+        allocator = HostOptimizerStateAllocator(pin=CUDA)
+        optimizer = _FakeRingBuffer([param], get_state_buffer=allocator)
+        optimizer.init_state()
+        optimizer.state[param]["absmax1"] = (
+            torch.zeros(1, dtype=torch.float32).as_subclass(_PretendCuda))
+        assert_state_host_resident(optimizer)
+
+
+class PlacementRefusesAMismatchTest(unittest.TestCase):
+    """The guard read as a refusal and was a reroute to ``param.device``."""
+
+    def _optimizer(self, param, allocator):
+        optimizer = _FakeRingBuffer([param], get_state_buffer=allocator)
+        optimizer.init_state()
+        return optimizer
+
+    def test_a_dtype_disagreement_is_refused(self):
+        param = nn.Parameter(torch.zeros(64))
+        optimizer = self._optimizer(param, HostOptimizerStateAllocator(pin=False))
+        fp32_moment = torch.zeros(64, dtype=torch.float32)
+        with self.assertRaises(HostStateLoadMismatch) as raised:
+            place_loaded_state_tensor(optimizer, param, "exp_avg", fp32_moment)
+        message = str(raised.exception)
+        self.assertIn("exp_avg", message)
+        self.assertIn("torch.float32", message)
+        self.assertIn("torch.uint8", message)
+
+    def test_the_resume_aborts_rather_than_starting_fresh(self):
+        """Pre-c8307e40 this reached the GPU and OOMed; it must not now reach
+        "Continuing with fresh optimizer state" either."""
+        params = _params(1)
+        optimizer = _FakeRingBuffer(
+            params, get_state_buffer=HostOptimizerStateAllocator(pin=CUDA))
+        optimizer.init_state()
+        saved = _saved_state(_params(1), fill=7)
+        for entry in saved["state"].values():
+            entry["exp_avg"] = entry["exp_avg"].to(torch.float32)
+
+        trainer = _Trainer()
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            with self.assertRaises(HostStateLoadMismatch):
+                trainer._load_one_optimizer_state(
+                    optimizer, saved, "run121_optimizer.pt")
+        self.assertNotIn("fresh optimizer state", printed.getvalue())
+
+    def test_a_numel_mismatch_leaks_no_pinned_buffer(self):
+        param = nn.Parameter(torch.zeros(64))
+        allocator = HostOptimizerStateAllocator(pin=False)
+        optimizer = _FakeRingBuffer([param], get_state_buffer=allocator)  # no state yet
+        before = allocator.tensors
+        with self.assertRaises(HostStateLoadMismatch):
+            place_loaded_state_tensor(
+                optimizer, param, "exp_avg", torch.zeros(32, dtype=torch.uint8))
+        self.assertEqual(allocator.tensors, before)
+
+
+class CallersStateDictIsNotMutatedTest(unittest.TestCase):
+    """``copy_containers_only`` copies the CONTAINERS; only tensors are shared.
+
+    Returning ``obj`` for a dict would make ``cast`` rewrite the caller's own
+    ``state_dict`` in place -- its moments replaced by this optimizer's buffers.
+    """
+
+    def test_containers_are_copied_and_tensors_are_not(self):
+        tensor = torch.zeros(4)
+        source = {"state": {0: {"exp_avg": tensor}}, "param_groups": [{"params": [0]}]}
+        copied = copy_containers_only(source)
+        self.assertIsNot(copied, source)
+        self.assertIsNot(copied["state"][0], source["state"][0])
+        self.assertIs(copied["state"][0]["exp_avg"], tensor)
+
+    def test_a_resume_leaves_the_saved_payload_alone(self):
+        params = _params(1)
+        allocator = HostOptimizerStateAllocator(pin=CUDA)
+        optimizer = _FakeRingBuffer(params, get_state_buffer=allocator)
+        optimizer.init_state()
+        saved = _saved_state(_params(1), fill=5)
+        originals = {index: dict(entry) for index, entry in saved["state"].items()}
+
+        trainer = _Trainer()
+        _quiet(trainer._load_one_optimizer_state, optimizer, saved, "run121_optimizer.pt")
+
+        for index, entry in saved["state"].items():
+            for key, value in originals[index].items():
+                self.assertIs(entry[key], value, f"saved['state'][{index}]['{key}']")
+
+
+class NonHostResidentRingBufferTest(unittest.TestCase):
+    """The ``else`` arm: without host residency the state still goes to the device.
+
+    The other negative controls use ``torch.optim.AdamW``, which never reaches
+    ``_load_state_dict_uint8`` and so cannot notice the bulk move disappearing.
+    """
+
+    def test_the_saved_state_is_offered_to_the_device_then_absmax_to_cuda(self):
+        param = nn.Parameter(torch.zeros(64))  # CPU parameter, CUDA trainer
+        optimizer = _FakeRingBuffer([param], get_state_buffer=None)
+        saved = {
+            "state": {0: {
+                "exp_avg": torch.full((64,), 9, dtype=torch.uint8).as_subclass(_PretendMoved),
+                "absmax1": torch.ones(1).as_subclass(_PretendMoved),
+                "is_8bit": True,
+            }},
+            "param_groups": [{"params": [0], "lr": 1e-4}],
+        }
+        absmax1 = saved["state"][0]["absmax1"]
+        trainer = _Trainer(host_resident=False)
+        trainer.device = torch.device("cuda:0")
+        _PretendMoved.moves = []
+        ok, _ = _quiet(trainer._load_one_optimizer_state, optimizer, saved, "opt.pt")
+
+        self.assertTrue(ok)
+        # The FIRST thing that happens to the bulk state is the move to the
+        # trainer's device -- not the optimizer's own per-key placement, which
+        # would send it to the (CPU) parameter instead.
+        self.assertEqual(_PretendMoved.moves[0], (64, trainer.device))
+        # absmax still ends up on CUDA, where the kernel indexes it.
+        self.assertEqual(getattr(absmax1, "moved_to", None), torch.device("cuda:0"))
+
+
+class UnreadableOptimizerFileTest(unittest.TestCase):
+    """A file that EXISTS and cannot be read is not a fresh start."""
+
+    class _Probe(FromAFileTest._Probe):
+        pass
+
+    def _probe(self, tmp, host_resident=True):
+        params = _params(1)
+        optimizer = _FakeRingBuffer(
+            params, get_state_buffer=HostOptimizerStateAllocator(pin=CUDA))
+        optimizer.init_state()
+        probe = self._Probe(tmp, optimizer)
+        probe.optimizer_state_host_resident = host_resident
+        return probe
+
+    def _write_garbage(self, tmp):
+        path = Path(tmp) / "20260101_000000_abcdef_step_029332_optimizer.pt"
+        path.write_bytes(b"not a torch checkpoint")
+        return path
+
+    def test_a_host_resident_run_refuses_to_start_fresh(self):
+        import tempfile
+
+        from core.training.base_trainer import OptimizerStateFileUnreadable
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_garbage(tmp)
+            probe = self._probe(tmp)
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(OptimizerStateFileUnreadable) as raised:
+                    probe.load_optimizer_state(29332)
+        self.assertIn("could not be read", str(raised.exception))
+
+    def test_an_absent_file_is_still_a_clean_fresh_start(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = self._probe(tmp)
+            ok, printed = _quiet(probe.load_optimizer_state, 29332)
+        self.assertFalse(ok)
+        self.assertIn("fresh optimizer state", printed)
+
+    def test_a_non_host_resident_run_warns_instead_of_only_printing(self):
+        import tempfile
+
+        seen = []
+        import core.training.base_trainer as bt
+
+        original = bt.emit_training_warning
+        bt.emit_training_warning = lambda message, **kwargs: seen.append(
+            (message, kwargs.get("code")))
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                self._write_garbage(tmp)
+                probe = self._probe(tmp, host_resident=False)
+                ok, _ = _quiet(probe.load_optimizer_state, 29332)
+        finally:
+            bt.emit_training_warning = original
+        self.assertFalse(ok)
+        self.assertEqual([code for _, code in seen], ["optimizer_state_file_unreadable"])
+
+
+class PinnedHostAllocIsNotAVramProblemTest(unittest.TestCase):
+    """``cudaHostAlloc`` failing is host RAM; the remedy must not say VRAM."""
+
+    def test_the_diagnosis_names_host_memory(self):
+        from core.training.base_trainer import OptimizerStateLoadHostAllocFailure
+
+        params = _params(1)
+        optimizer = CudaOomIsFatalTest._OomOnLoad(
+            params,
+            RuntimeError("CUDA error: out of memory (cudaHostAlloc at ..\\..\\aten\\src)"),
+        )
+        trainer = _Trainer(host_resident=True)
+        saved = {"state": {}, "param_groups": [{"params": [0], "lr": 1e-4}]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(OptimizerStateLoadHostAllocFailure) as raised:
+                trainer._load_one_optimizer_state(optimizer, saved, "run121_optimizer.pt")
+        message = str(raised.exception)
+        self.assertIn("host RAM, not VRAM", message)
+        self.assertNotIn("Free VRAM", message)
+
+    def test_a_device_oom_still_reads_as_one(self):
+        params = _params(1)
+        optimizer = CudaOomIsFatalTest._OomOnLoad(
+            params, RuntimeError("CUDA out of memory. Tried to allocate 30.19 GiB"))
+        trainer = _Trainer(host_resident=False)
+        saved = {"state": {}, "param_groups": [{"params": [0], "lr": 1e-4}]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(_oom_error_class()) as raised:
+                trainer._load_one_optimizer_state(optimizer, saved, "run121_optimizer.pt")
+        self.assertIn("Free VRAM", str(raised.exception))
+
+
+class UnrelatedAssertionKeepsThePartialLoadTest(unittest.TestCase):
+    """Only the residency assertion is fatal, not every ``AssertionError``."""
+
+    class _AssertsOnce(torch.optim.Optimizer):
+        def __init__(self, params):
+            super().__init__(params, {"lr": 1e-4})
+            self.get_state_buffer = None
+            self.calls = 0
+
+        def load_state_dict(self, state_dict):
+            self.calls += 1
+            if self.calls == 1:
+                raise AssertionError("some third-party invariant")
+            torch.optim.Optimizer.load_state_dict(self, state_dict)
+
+    def test_a_third_party_assertion_falls_through_to_the_partial_load(self):
+        model = _params(2, numel=8)
+        previous = torch.optim.AdamW(
+            [{"params": [model[0]], "lr": 1e-4}, {"params": [model[1]], "lr": 1e-4}])
+        for p in model:
+            p.grad = torch.ones_like(p)
+        previous.step()
+        saved = previous.state_dict()
+
+        live = self._AssertsOnce(
+            [{"params": [model[0]], "lr": 1e-4}, {"params": [model[1]], "lr": 1e-4}])
+        trainer = _Trainer(host_resident=False)
+        ok, printed = _quiet(trainer._load_one_optimizer_state, live, saved, "opt.pt")
+        self.assertTrue(ok)
+        self.assertIn("Partial optimizer state load OK", printed)
+        self.assertEqual(live.calls, 2)
+
+
+class AdamWNonScheduleFreeIsUnchangedTest(unittest.TestCase):
+    """The live configuration: adamw8bit_ringbuffer, 8-bit, NOT Schedule-Free,
+    host-resident, fused backward.
+
+    Every helper the audit fixes touch is shared with it, so each fix is checked
+    here against the rule it replaced -- differentially, on the keys that
+    configuration actually writes.
+    """
+
+    LIVE_KEYS = ("exp_avg", "exp_avg_sq", "absmax1", "absmax2")
+
+    @staticmethod
+    def _legacy_placement(optimizer, param, key, tensor):
+        """``place_loaded_state_tensor`` as of 297f0a69."""
+        if key.startswith("absmax"):
+            device = (param.device if param.device.type == "cuda"
+                      else torch.device("cuda:0"))
+            return tensor.to(device)
+        get_buffer = getattr(optimizer, "get_state_buffer", None)
+        if get_buffer is None or tensor.dtype != torch.uint8:
+            return tensor.to(param.device)
+        existing = optimizer.state.get(param)
+        buffer = existing.get(key) if isinstance(existing, dict) else None
+        if not (isinstance(buffer, torch.Tensor)
+                and buffer.dtype == tensor.dtype
+                and buffer.numel() == tensor.numel()):
+            buffer = get_buffer(param, dtype=tensor.dtype)
+            if buffer.is_cpu and not buffer.is_pinned():
+                buffer = buffer.pin_memory()
+        buffer.copy_(tensor.reshape(buffer.shape))
+        return buffer
+
+    @staticmethod
+    def _legacy_census_problems(optimizer):
+        """``assert_state_host_resident``'s whitelist as of c8307e40."""
+        census = state_device_census(optimizer)
+        problems = []
+        for key in ("exp_avg", "exp_avg_sq", "z"):
+            bucket = census.get(key)
+            if bucket is None:
+                continue
+            if bucket["cuda"]:
+                problems.append(key)
+            if bucket["cpu"] and bucket["cpu_pinned"] != bucket["cpu"]:
+                problems.append(key)
+        return problems
+
+    def _live_optimizer(self):
+        param = nn.Parameter(torch.zeros(512))
+        allocator = HostOptimizerStateAllocator(pin=CUDA)
+        optimizer = _FakeRingBuffer([param], get_state_buffer=allocator)
+        optimizer.init_state()
+        optimizer.state[param]["absmax1"] = (
+            torch.ones(2, dtype=torch.float32).as_subclass(_PretendCuda))
+        optimizer.state[param]["absmax2"] = (
+            torch.ones(2, dtype=torch.float32).as_subclass(_PretendCuda))
+        return optimizer, param, allocator
+
+    def test_placement_decides_identically_for_every_live_key(self):
+        for key in self.LIVE_KEYS:
+            with self.subTest(key=key):
+                loaded = (torch.full((512,), 5, dtype=torch.uint8)
+                          if key.startswith("exp_avg")
+                          else torch.full((2,), 0.5).as_subclass(_PretendMoved))
+                new_opt, new_param, _ = self._live_optimizer()
+                old_opt, old_param, _ = self._live_optimizer()
+                new = place_loaded_state_tensor(new_opt, new_param, key, loaded)
+                old = self._legacy_placement(old_opt, old_param, key, loaded)
+                self.assertEqual(new.dtype, old.dtype)
+                self.assertEqual(new.numel(), old.numel())
+                self.assertTrue(bool((new.float() == old.float()).all()))
+                # ... and the buffer it landed in is the optimizer's own, both ways.
+                if key.startswith("exp_avg"):
+                    self.assertEqual(new.data_ptr(),
+                                     new_opt.state[new_param][key].data_ptr())
+                    self.assertEqual(old.data_ptr(),
+                                     old_opt.state[old_param][key].data_ptr())
+
+    def test_the_census_verdict_is_identical_healthy_and_broken(self):
+        optimizer, param, _ = self._live_optimizer()
+        self.assertEqual(self._legacy_census_problems(optimizer), [])
+        assert_state_host_resident(optimizer)  # new rule agrees: no problem
+
+        optimizer.state[param]["exp_avg"] = (
+            torch.zeros(512, dtype=torch.uint8).as_subclass(_PretendCuda))
+        self.assertEqual(self._legacy_census_problems(optimizer), ["exp_avg"])
+        with self.assertRaises(HostStateResidencyError):
+            assert_state_host_resident(optimizer)
+
+    def test_the_routing_predicate_gains_nothing_for_these_keys(self):
+        import inspect
+
+        from core.training.optimizers.host_state_allocator import is_absmax_key
+
+        source = inspect.getsource(AdamW8bit_RingBuffer.__init__)
+        for key in self.LIVE_KEYS:
+            with self.subTest(key=key):
+                # Still spelled out in non_castable_tensor_keys, so the added
+                # ``or is_absmax_key(k)`` never decides anything for this run.
+                self.assertIn(f'"{key}"', source)
+                self.assertTrue(is_absmax_key(key) or key.startswith("exp_avg"))
+
+    def test_a_full_resume_still_lands_in_the_allocator_buffers(self):
+        params = _params(1)
+        allocator = HostOptimizerStateAllocator(pin=CUDA)
+        optimizer = _FakeRingBuffer(params, get_state_buffer=allocator)
+        optimizer.init_state()
+        pointers = {key: optimizer.state[params[0]][key].data_ptr()
+                    for key in ("exp_avg", "exp_avg_sq")}
+        trainer = _Trainer()
+        ok, _ = _quiet(trainer._load_one_optimizer_state,
+                       optimizer, _saved_state(_params(1), fill=7),
+                       "run121_optimizer.pt")
+        self.assertTrue(ok)
+        self.assertEqual(allocator.tensors, 2)
+        for key, pointer in pointers.items():
+            loaded = optimizer.state[params[0]][key]
+            self.assertEqual(loaded.data_ptr(), pointer)
+            self.assertEqual(loaded.dtype, torch.uint8)
+            self.assertTrue(bool((loaded == 7).all()))
 
 
 if __name__ == "__main__":

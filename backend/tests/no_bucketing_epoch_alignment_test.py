@@ -67,6 +67,7 @@ class _Trainer:
     _fit_items_to_base_area = BaseTrainer._fit_items_to_base_area
     _rc_refit_items = BaseTrainer._rc_refit_items
     _prepare_epoch_items = BaseTrainer._prepare_epoch_items
+    _restore_bucket_dims = BaseTrainer._restore_bucket_dims
     _assert_item_pixel_align = BaseTrainer._assert_item_pixel_align
     _item_failure_kind = staticmethod(BaseTrainer._item_failure_kind)
     _report_item_failure = BaseTrainer._report_item_failure
@@ -142,16 +143,27 @@ def test_alignment_survives_two_natural_epoch_rollovers():
 
 
 def test_bucketed_runs_are_untouched_by_the_per_epoch_fit():
-    """M1's blast radius. Bucketed batches are built from the BucketManager's own
-    image_info dicts, which a reload never touches -- so `_prepare_epoch_items`
-    must not re-fit when a bucket manager is live, or it would fight the grid."""
+    """M1's blast radius. The base-area fit must not run when a bucket manager is
+    live, or it would fight the grid: under bucketing the manager is the dimension
+    owner, and `_prepare_epoch_items` re-stamps ITS assignment onto the reloaded item
+    dicts (which is what the priority path reads -- see
+    batch_loop_alignment_paths_test)."""
+    from core.training.bucketing import BucketManager
     t = _Trainer(pixel_align=32)
     datasets = [_Dataset()]
+    bm = BucketManager(base_resolutions=[2048], divisibility=32,
+                       strategy="resize", multi_resolution_mode="max")
+    for item in datasets[0].items:
+        _k, info = bm.assign_image_to_bucket(image_path=item["image_path"],
+                                             width=item["width"], height=item["height"])
+        item["width"], item["height"] = info["bucket_width"], info["bucket_height"]
+    from_grid = [(i["width"], i["height"]) for i in datasets[0].items]
+    assert from_grid != [(w, h) for _, w, h in ORIGINALS]
+
     datasets[0].reload_for_epoch(0)           # burn the pre-loaded epoch
     t._prepare_epoch_items(datasets, 1, run_id=1,
-                           bucket_manager=object(), base_resolutions=[2048])
-    assert [(i["width"], i["height"]) for i in datasets[0].items] == \
-           [(w, h) for _, w, h in ORIGINALS]
+                           bucket_manager=bm, base_resolutions=[2048])
+    assert [(i["width"], i["height"]) for i in datasets[0].items] == from_grid
 
 
 # ===========================================================================

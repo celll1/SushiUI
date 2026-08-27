@@ -2163,7 +2163,10 @@ class BaseTrainer(ABC):
                 ow, oh = item.get("width"), item.get("height")
             ow, oh = int(ow or 0), int(oh or 0)
             if ow <= 0 or oh <= 0:
-                item["width"], item["height"] = nb_base, nb_base
+                # base_resolutions is free-form user input and is never snapped, so the
+                # square fallback needs the same align treatment as every other branch.
+                _sq = max(align, nb_base // align * align)
+                item["width"], item["height"] = _sq, _sq
                 continue
             if ow * oh > nb_max_area:
                 sc = math.sqrt(nb_max_area / float(ow * oh))
@@ -2188,6 +2191,73 @@ class BaseTrainer(ABC):
         return self._fit_items_to_base_area((item for item, _ in all_items),
                                             active_base_resolutions)
 
+    def _danbooru_injection_buckets(self, base_resolutions):
+        """Coarse aspect-ratio bucket set for Danbooru-injected samples, centred on the
+        base-resolution area and snapped to the ARCH's pixel alignment.
+
+        Injected items are spliced straight into ``batches`` and never see the bucket
+        grid or the no-bucketing fit, so this is the ONLY place their canvas is chosen:
+        a /8 snap hands a /16 or /32 arch a canvas its patchify cannot represent (at
+        base 2048, 6 of these 7 shapes are not /32) and ``_assert_item_pixel_align``
+        then aborts the run on the first injected batch.
+
+        Deliberately small (not the ~41 training buckets) so a full same-resolution
+        injection batch can be drained from a bounded buffer.
+        """
+        align = max(1, self._arch_pixel_align())
+        r = int(base_resolutions[0]) if base_resolutions else 1024
+        area = float(r * r)
+        out = []
+        for aw, ah in ((1, 1), (4, 3), (3, 4), (3, 2), (2, 3), (16, 9), (9, 16)):
+            w = int((area * aw / ah) ** 0.5) // align * align
+            h = int((area * ah / aw) ** 0.5) // align * align
+            out.append((max(align, w), max(align, h)))
+        return out
+
+    def _restore_bucket_dims(self, datasets, bucket_manager) -> int:
+        """Re-stamp every still item's width/height from its BucketManager assignment.
+
+        Setup writes the bucket dims onto the item dicts, but ``reload_for_epoch``
+        replaces those dicts with the DB's ORIGINAL dims. Batches built FROM the manager
+        carry its own image_info dicts and are unaffected; PRIORITY-training batches are
+        built from the item dicts (``classify_items`` is fed ``all_items``), so without
+        this they train at raw DB sizes from the first natural rollover -- the bucketed
+        twin of the defect the no-bucketing fit closes.
+        """
+        dims = {}
+        for infos in bucket_manager.buckets.values():
+            for info in infos:
+                dims[info["image_path"]] = (info["bucket_width"], info["bucket_height"])
+        restored = 0
+        for dataset in datasets:
+            for item in dataset.items:
+                if (self._temporal_spec() is not None and item.get("item_type") == "video") or \
+                   (self.is_acestep and item.get("item_type") == "audio"):
+                    continue
+                wh = dims.get(item.get("image_path"))
+                if wh is None:
+                    # A reload can surface an item setup never bucketed. select_bucket is
+                    # pure; the RNG is path-seeded so "random" multi-resolution mode stays
+                    # reproducible and never touches the global shuffle stream.
+                    # Seed only here: on the first epoch the items still carry the BUCKET
+                    # dims setup wrote, which must never enter the original-size map.
+                    import random as _random
+                    import zlib as _zlib
+                    self._seed_orig_size_from_db(item)
+                    try:
+                        ow, oh = self._get_original_size_for_item(item)
+                    except Exception:
+                        ow, oh = item.get("width") or 1024, item.get("height") or 1024
+                    b = bucket_manager.select_bucket(
+                        int(ow), int(oh),
+                        rng=_random.Random(_zlib.crc32(str(item.get("image_path", "")).encode())),
+                    )
+                    wh = (b.width, b.height)
+                if (item.get("width"), item.get("height")) != wh:
+                    item["width"], item["height"] = wh
+                    restored += 1
+        return restored
+
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
         the items carry.
@@ -2209,10 +2279,19 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for "
                       f"epoch {epoch + 1} ({len(dataset.items)} items)")
 
-        # Bucketed batches are built from the BucketManager's own image_info dicts, which
-        # a reload does not touch. The resolution curriculum re-fits with the phase's
-        # resolution a few lines further into train(); don't fit twice.
-        if bucket_manager is None and not (self._rc_active and self.crop_planner is None):
+        # Video items carry their VideoBucketManager annotation (bucket dims,
+        # clip_length, stride, target_fps) on the item dict, and a reload keeps only
+        # video_path/fps/num_frames/duration -- so re-annotate, or the (spatial,
+        # clip_length) batch grouping key collapses to (None, None, None) and every
+        # clip lands in one non-uniform group at raw DB dims.
+        if self._temporal_spec() is not None:
+            self._annotate_video_items(datasets, base_resolutions or [1024])
+
+        if bucket_manager is not None:
+            self._restore_bucket_dims(datasets, bucket_manager)
+        elif not (self._rc_active and self.crop_planner is None):
+            # The resolution curriculum re-fits with the phase's resolution a few lines
+            # further into train(); don't fit twice.
             self._fit_items_to_base_area(
                 (item for dataset in datasets for item in dataset.items),
                 base_resolutions or [1024],
@@ -8837,15 +8916,26 @@ class BaseTrainer(ABC):
             temporal_spec=spec,
         )
 
+        # Re-run per epoch (a reload drops the annotation), so the SOURCE dims have to
+        # come from a persistent map: reading them off the item would re-bucket an
+        # already-bucketed clip and let its size drift epoch by epoch.
+        srcs = getattr(self, "_video_src_size_map", None)
+        if srcs is None:
+            srcs = self._video_src_size_map = {}
+
         count = 0
         for dataset in datasets:
             for item in dataset.items:
                 if item.get("item_type") != "video":
                     continue
                 v_path = item.get("video_path") or item.get("image_path")
-                width = int(item.get("width") or 0) or 1024
-                height = int(item.get("height") or 0) or 1024
-                num_frames = int(item.get("num_frames") or 0)
+                if v_path in srcs:
+                    width, height, num_frames = srcs[v_path]
+                else:
+                    width = int(item.get("width") or 0) or 1024
+                    height = int(item.get("height") or 0) or 1024
+                    num_frames = int(item.get("num_frames") or 0)
+                    srcs[v_path] = (width, height, num_frames)
                 _, video_info = vbm.assign_video_to_bucket(
                     video_path=v_path,
                     width=width,
@@ -8877,10 +8967,13 @@ class BaseTrainer(ABC):
                 item["height"] = video_info["bucket_height"]
                 count += 1
 
-        if count:
+        # Per-epoch now, so only say it when the assignment says something new.
+        state = (count, tuple(sorted(vbm.get_bucket_counts().items())))
+        if count and state != getattr(self, "_video_annot_logged", None):
             print(f"{self.log_prefix} [{self.arch.name} video] Assigned {count} video "
                   f"item(s) to (spatial÷{vbm.divisibility}, clip_length) buckets: "
                   f"{vbm.get_bucket_counts()}")
+        self._video_annot_logged = state
         return count
 
     def _encode_video_clip(self, item: Dict[str, Any]) -> torch.Tensor:
@@ -10865,20 +10958,7 @@ class BaseTrainer(ABC):
                     from core.training.danbooru_image_augment import (
                         DanbooruImageCollector, DatasetTagFrequencyAnalyzer,
                     )
-                    # Coarse aspect-ratio bucket set centred on the base-resolution
-                    # area.  Using a small set (not the ~41 full training buckets)
-                    # so a full SAME-resolution injection batch can actually be
-                    # drained from a bounded buffer; also avoids the extreme
-                    # 8192x128-style buckets.
-                    _R = (base_resolutions[0] if base_resolutions else 1024)
-                    _area = float(_R * _R)
-                    _bucket_res = []
-                    for _aw, _ah in ((1, 1), (4, 3), (3, 4), (3, 2), (2, 3), (16, 9), (9, 16)):
-                        _w = int((_area * _aw / _ah) ** 0.5)
-                        _h = int((_area * _ah / _aw) ** 0.5)
-                        _w -= _w % 8
-                        _h -= _h % 8
-                        _bucket_res.append((max(64, _w), max(64, _h)))
+                    _bucket_res = self._danbooru_injection_buckets(base_resolutions)
 
                     # Auto deficiency: rarest tags in the training dataset captions.
                     # Cap the scan so startup stays bounded on multi-million-item
@@ -11263,7 +11343,9 @@ class BaseTrainer(ABC):
                         from core.training.bucketing import BucketManager
                         normal_bucket_manager = BucketManager(
                             base_resolutions=bucket_manager.base_resolutions,
-                            divisibility=8,
+                            # Mirror the live manager: a hardcoded 8 puts the priority
+                            # path's NORMAL items on a grid a /16 or /32 arch refuses.
+                            divisibility=bucket_manager.divisibility,
                             strategy=bucket_manager.strategy,
                             multi_resolution_mode=bucket_manager.multi_resolution_mode,
                         )

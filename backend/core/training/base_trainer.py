@@ -104,6 +104,103 @@ def is_checkpoint_corruption_error(exc: BaseException) -> bool:
     return False
 
 
+class OptimizerStateLoadOOM(RuntimeError):
+    """CUDA OOM while restoring optimizer state. Fatal, never a fallback.
+
+    An OOM inside a bulk ``.to(device)`` leaves the CUDA context unusable, so a
+    run that "continues with fresh optimizer state" dies later at a trivial
+    allocation with its weights unsaveable (run 121, step 29332).
+    """
+
+
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    """Tell a CUDA OOM from a genuine state/parameter mismatch.
+
+    Matches the message too: the OOM surfaces as ``AcceleratorError``/
+    ``RuntimeError`` with "CUDA error: out of memory" as often as it does as
+    ``torch.cuda.OutOfMemoryError``.
+    """
+    oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
+    seen = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if oom_type is not None and isinstance(current, oom_type):
+            return True
+        if "out of memory" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def optimizer_state_is_host_resident(optimizer) -> bool:
+    """True when this optimizer allocates its bulk 8-bit state on the host."""
+    return getattr(optimizer, "get_state_buffer", None) is not None
+
+
+def finalize_loaded_state_devices(optimizer, device, host_resident: bool) -> int:
+    """Place loaded optimizer state; return how many tensors were moved.
+
+    Under host residency only ``absmax*`` may go to the device -- the bulk 8-bit
+    state is pinned on the host on purpose and is tens of GiB, so moving it both
+    defeats the mode and OOMs.
+    """
+    moved = 0
+    for param_state in optimizer.state.values():
+        if not isinstance(param_state, dict):
+            continue
+        for key, value in param_state.items():
+            if not isinstance(value, torch.Tensor) or value.is_cuda:
+                continue
+            if host_resident and not str(key).startswith("absmax"):
+                continue
+            param_state[key] = value.to(device)
+            moved += 1
+    return moved
+
+
+def assert_loaded_state_host_resident(trainer, optimizers) -> None:
+    """Re-census residency AFTER a resume replaced the optimizer state.
+
+    ``_assert_ringbuffer_state_host_resident`` runs at setup, before
+    ``load_state_dict``; without this a resume that put the bulk state back on
+    the GPU is only discovered by an OOM mid-epoch.
+    """
+    if not getattr(trainer, "optimizer_state_host_resident", False):
+        return
+    from .optimizers.host_state_allocator import assert_state_host_resident
+
+    prefix = getattr(trainer, "log_prefix", "")
+    for optimizer in optimizers:
+        if not optimizer_state_is_host_resident(optimizer):
+            continue
+        census = assert_state_host_resident(optimizer)
+        host = sum(bucket["cpu"] for bucket in census.values())
+        cuda = sum(bucket["cuda"] for bucket in census.values())
+        print(f"{prefix} Post-resume optimizer state census: "
+              f"{host / 1024 ** 3:.2f} GiB host (all pinned), "
+              f"{cuda / 1024 ** 3:.2f} GiB on the GPU (absmax)")
+
+
+def raise_optimizer_state_load_oom(trainer, exc: BaseException, label: str):
+    host_resident = getattr(trainer, "optimizer_state_host_resident", False)
+    remedy = (
+        "This run is configured for host-resident optimizer state, so the load "
+        "must not put the bulk 8-bit state on the GPU at all; the optimizer was "
+        "built without its host allocator, or the saved state was forced to CUDA."
+        if host_resident else
+        "Free VRAM, reduce the trainable parameter set, or resume with "
+        "optimizer_state_host_resident and a ring-buffer optimizer."
+    )
+    raise OptimizerStateLoadOOM(
+        f"CUDA ran out of memory restoring optimizer state from {label}. This is "
+        f"NOT an optimizer-type or trainable-parameter change and must not fall "
+        f"back to fresh state: after a CUDA OOM the context is unusable, so the "
+        f"run would die later at a trivial allocation and could not even write an "
+        f"emergency checkpoint. " + remedy
+    ) from exc
+
+
 def all_optimizers(trainer) -> List[Any]:
     """Every optimizer that owns trainable parameters, in parameter order.
 
@@ -3563,7 +3660,19 @@ class BaseTrainer(ABC):
             return False
 
         try:
-            payload = torch.load(optimizer_file, map_location='cpu')
+            if getattr(self, "optimizer_state_host_resident", False):
+                # The bulk state is read once and copied straight into the pinned
+                # buffers, so mapping the file keeps a 30 GiB resume from also
+                # materialising 30 GiB of anonymous host RAM. Older/legacy save
+                # formats cannot be mapped; fall back rather than refuse.
+                try:
+                    payload = torch.load(optimizer_file, map_location='cpu', mmap=True)
+                except Exception as mmap_err:
+                    print(f"{self.log_prefix} Optimizer state file is not mappable "
+                          f"({mmap_err}); reading it into host memory")
+                    payload = torch.load(optimizer_file, map_location='cpu')
+            else:
+                payload = torch.load(optimizer_file, map_location='cpu')
         except Exception as e:
             print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
             print(f"{self.log_prefix} Continuing with fresh optimizer state")
@@ -3727,24 +3836,28 @@ class BaseTrainer(ABC):
             except Exception as _conv_err:
                 print(f"{self.log_prefix} [OptConvert] conversion skipped: {_conv_err}")
 
-            # Recursively move all optimizer state tensors to GPU
-            # This is necessary for 8-bit optimizers that have CUDA-only buffers
-            # (absmax_z, absmax1, absmax2, etc.) which must be on CUDA device
-            print(f"{self.log_prefix} Moving optimizer state tensors to {self.device}...")
-            optimizer_state = move_tensors_to_device(optimizer_state, self.device)
+            host_resident = optimizer_state_is_host_resident(optimizer)
+
+            if host_resident:
+                # Only absmax* is GPU-only; the bulk 8-bit state stays in the
+                # pinned host buffers the allocator already owns. Moving it all
+                # to CUDA is what OOMed run 121 at resume.
+                print(f"{self.log_prefix} Optimizer state is host-resident: leaving "
+                      f"the bulk 8-bit state on the host, only absmax* on {self.device}")
+            else:
+                # 8-bit optimizers keep CUDA-only buffers (absmax_z, absmax1,
+                # absmax2) that must be on the CUDA device.
+                print(f"{self.log_prefix} Moving optimizer state tensors to {self.device}...")
+                optimizer_state = move_tensors_to_device(optimizer_state, self.device)
 
             # Attempt to load state dict with error handling
             try:
                 optimizer.load_state_dict(optimizer_state)
 
-                # IMPORTANT: After load_state_dict(), move all tensors in optimizer.state to GPU
-                # load_state_dict() may create new tensor references, so we need to move again
-                moved_count = 0
-                for param_state in optimizer.state.values():
-                    for key, value in param_state.items():
-                        if isinstance(value, torch.Tensor) and not value.is_cuda:
-                            param_state[key] = value.to(self.device)
-                            moved_count += 1
+                # load_state_dict() may create new tensor references, so place
+                # them again (host-resident state is left where it is).
+                moved_count = finalize_loaded_state_devices(
+                    optimizer, self.device, host_resident)
                 if moved_count > 0:
                     print(f"{self.log_prefix} Moved {moved_count} optimizer state tensors to {self.device}")
 
@@ -3756,7 +3869,12 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OptConvert] carried step_count={_carry_step}")
 
                 print(f"{self.log_prefix} Successfully loaded optimizer state from {label}")
+                assert_loaded_state_host_resident(self, [optimizer])
                 return True
+            except AssertionError:
+                # The post-load residency census failed: not a state mismatch,
+                # and not something a partial reload can fix.
+                raise
             except Exception as e:
                 # The usual cause here is a param-GROUP count change between runs —
                 # specifically adding/removing the REPA projector group (which is
@@ -3765,6 +3883,8 @@ class BaseTrainer(ABC):
                 # partial load: keep the overlapping leading groups' state and only
                 # drop/skip the projector group's state. This makes turning REPA
                 # off (or on) mid-training non-destructive for the model's optimizer.
+                if is_cuda_oom_error(e):
+                    raise_optimizer_state_load_oom(self, e, label)
                 print(f"{self.log_prefix} WARNING: Failed to load optimizer state directly: {e}")
                 try:
                     cur_sd = optimizer.state_dict()
@@ -3788,21 +3908,27 @@ class BaseTrainer(ABC):
                     filtered_state = {k: v for k, v in saved_state.items() if int(k) < overlap_params}
                     partial = {"state": filtered_state, "param_groups": cur_groups}
                     optimizer.load_state_dict(partial)
-                    for param_state in optimizer.state.values():
-                        for key, value in param_state.items():
-                            if isinstance(value, torch.Tensor) and not value.is_cuda:
-                                param_state[key] = value.to(self.device)
+                    finalize_loaded_state_devices(optimizer, self.device, host_resident)
                     kept = "model groups preserved; REPA projector group reset" if len(cur_groups) < len(saved_groups) \
                         else "model groups preserved; new (REPA projector) group starts fresh"
                     print(f"{self.log_prefix} Partial optimizer state load OK ({kept})")
+                    assert_loaded_state_host_resident(self, [optimizer])
                     return True
+                except AssertionError:
+                    raise
                 except Exception as e2:
+                    if is_cuda_oom_error(e2):
+                        raise_optimizer_state_load_oom(self, e2, label)
                     print(f"{self.log_prefix} Partial optimizer load not applicable: {e2}")
                     print(f"{self.log_prefix} This can also happen if the optimizer type or trainable")
                     print(f"{self.log_prefix} parameters changed. Continuing with fresh optimizer state")
                     print(f"{self.log_prefix} (momentum/variance will be reset)")
                     return False
+        except (OptimizerStateLoadOOM, AssertionError):
+            raise
         except Exception as e:
+            if is_cuda_oom_error(e):
+                raise_optimizer_state_load_oom(self, e, label)
             print(f"{self.log_prefix} ERROR: Failed to restore optimizer state from {label}: {e}")
             print(f"{self.log_prefix} Continuing with fresh optimizer state")
             return False

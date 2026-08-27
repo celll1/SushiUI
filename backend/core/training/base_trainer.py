@@ -349,6 +349,11 @@ class ItemDimensionError(RuntimeError):
     pass
 
 
+# Counts at which a non-corruption item-encode failure is re-announced on the
+# warnings channel (see _report_item_failure).
+_ITEM_FAILURE_WARN_THRESHOLDS = frozenset((1, 10, 100, 1000, 10000, 100000))
+
+
 class BucketsExhaustedError(RuntimeError):
     """Raised when a run that HAS trained loses its last fittable bucket.
 
@@ -2231,6 +2236,24 @@ class BaseTrainer(ABC):
                 f"for this item -- this is a trainer bug, not a bad image."
             )
 
+    def _report_epoch_skips(self, epoch: int, skips_before: int, n_batches: int) -> int:
+        """Say how many of this epoch's batches were skipped before their backward pass.
+
+        Called from the end of the epoch AND from both early exits (target steps
+        reached, KeyboardInterrupt): a skipped batch writes no metrics row, so this line
+        and the run-cumulative ``batches_skipped`` are its only trace, and a stopped run
+        used to print neither. Idempotent per epoch (the early exit and the epoch end
+        cannot both run, but the interrupt handler can follow either).
+        """
+        epoch_skipped = self._batches_skipped - skips_before
+        if not epoch_skipped or getattr(self, "_epoch_skips_reported", None) == (epoch, self._batches_skipped):
+            return 0
+        self._epoch_skips_reported = (epoch, self._batches_skipped)
+        print(f"{self.log_prefix} Epoch {epoch + 1}: {epoch_skipped} of "
+              f"{n_batches} batch(es) were skipped before their backward "
+              f"pass ({self._batches_skipped} so far this run)")
+        return epoch_skipped
+
     @staticmethod
     def _item_failure_kind(exc: BaseException) -> str:
         """``'corrupt'`` for a decode/IO failure, ``'invalid'`` for everything else.
@@ -2252,18 +2275,24 @@ class BaseTrainer(ABC):
         tag = "CORRUPTED IMAGE" if kind == "corrupt" else "ITEM ENCODE FAILED"
         print(f"{self.log_prefix} [{tag}] {what}: {image_path}")
         print(f"{self.log_prefix} [{tag}] Error: {str(exc)[:200]}")
-        # Say-once: run 121 would have emitted this 1,871 times in one epoch.
-        if kind == "invalid" and not getattr(self, "_item_encode_failed_warned", False):
-            self._item_encode_failed_warned = True
-            emit_training_warning(
-                "At least one item failed to encode for a reason that is NOT file "
-                "corruption (a validation or pipeline error). Those batches are being "
-                "skipped and leave holes in the metrics; see the [ITEM ENCODE FAILED] "
-                "lines on the backend console for the paths and errors.",
-                code="item_encode_failed",
-                prefix=self.log_prefix,
-                console=False,
-            )
+        # Not say-once: run 121's 1,871 failures as a single countless notice reads
+        # like one bad file. Re-emit at decade thresholds so the warnings channel --
+        # the surface users actually watch -- carries the magnitude. Identical notices
+        # are deduped downstream, so the count in the text is what makes each distinct.
+        if kind == "invalid":
+            n = getattr(self, "_item_encode_failed_count", 0) + 1
+            self._item_encode_failed_count = n
+            if n in _ITEM_FAILURE_WARN_THRESHOLDS:
+                emit_training_warning(
+                    f"{n} item(s) so far have failed to encode for a reason that is NOT "
+                    f"file corruption (a validation or pipeline error). Those batches "
+                    f"are being skipped and leave holes in the metrics; see the "
+                    f"[ITEM ENCODE FAILED] lines on the backend console for the paths "
+                    f"and errors.",
+                    code="item_encode_failed",
+                    prefix=self.log_prefix,
+                    console=False,
+                )
         return tag
 
     def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
@@ -13703,6 +13732,9 @@ class BaseTrainer(ABC):
                     # Use actual_total_steps (which may be recalculated on MNT change during resume)
                     if global_step >= actual_total_steps:
                         print(f"\n{self.log_prefix} Reached target steps ({actual_total_steps}), stopping training")
+                        # Early exit: the epoch summary below is never reached, and a
+                        # run that stops here would otherwise report no skips at all.
+                        self._report_epoch_skips(epoch, _epoch_skips_before, len(batches))
                         # Skipped batches advance global_step, so a run whose every
                         # batch was skipped reaches the target having trained nothing
                         # and would exit here rather than through the epoch-exhaustion
@@ -13721,13 +13753,7 @@ class BaseTrainer(ABC):
                     te_prefetcher.stop()
                     te_prefetcher = None
 
-                # A skipped batch writes no metrics row, so the hole it leaves is the
-                # only trace it has ever had. Say it per epoch.
-                _epoch_skipped = self._batches_skipped - _epoch_skips_before
-                if _epoch_skipped:
-                    print(f"{self.log_prefix} Epoch {epoch + 1}: {_epoch_skipped} of "
-                          f"{len(batches)} batch(es) were skipped before their backward "
-                          f"pass ({self._batches_skipped} so far this run)")
+                self._report_epoch_skips(epoch, _epoch_skips_before, len(batches))
 
             # All epochs complete — stop the Danbooru collector thread.
             try:
@@ -13751,6 +13777,9 @@ class BaseTrainer(ABC):
             except Exception:
                 pass
             print(f"\n{self.log_prefix} Training interrupted by user")
+            if '_epoch_skips_before' in locals():
+                self._report_epoch_skips(epoch, _epoch_skips_before,
+                                         len(batches) if 'batches' in locals() else 0)
             if self._refuse_save_after_partial_step("The interrupt landed", global_step, epoch):
                 self.writer.close()
                 raise

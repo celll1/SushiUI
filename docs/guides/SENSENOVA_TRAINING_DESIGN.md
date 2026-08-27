@@ -1351,7 +1351,10 @@ G-RB3 が最も重要である。upgrade 項目 4 のサイレントスキップ
 さらに optimizer 構築後に **flag ではなく state テンソルの device census** で
 検証する（`base_trainer._assert_ringbuffer_state_host_resident` →
 `host_state_allocator.assert_state_host_resident`。state は lazy 確保なので
-census 前に強制初期化する）。**Lion も同時に admit した** — state は AdamW の半分で、
+census 前に強制初期化する）。census の対象は **`absmax*` 以外の全 state key** で、
+既知の key の whitelist ではない（whitelist だった間、Lion Schedule-Free の
+`state_z` は両 census から漏れていた）。resume 後にも同じ census を再実行する
+（`assert_loaded_state_host_resident`）。**Lion も同時に admit した** — state は AdamW の半分で、
 実効閾値も 2 倍の余裕で超える（上の訂正）ので、AdamW を入れて Lion を外すのは逆である。
 
 **scope を合わせた算術**（U-2-1 が実 checkpoint ヘッダから取った half あたり

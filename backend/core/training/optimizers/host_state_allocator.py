@@ -69,6 +69,51 @@ class HostOptimizerStateAllocator:
         }
 
 
+def copy_containers_only(obj):
+    """``deepcopy``'s container semantics without duplicating tensors.
+
+    ``_load_state_dict_uint8`` deepcopies the incoming state dict so the caller's
+    tensors are never aliased. Under host residency the loaded tensors are only
+    ever ``copy_``d into buffers this optimizer owns, and the state is tens of
+    GiB, so the deepcopy is a pure host-RAM doubling.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj
+    if isinstance(obj, dict):
+        return {k: copy_containers_only(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return type(obj)(copy_containers_only(v) for v in obj)
+    return obj
+
+
+def place_loaded_state_tensor(optimizer, param, key: str, tensor: torch.Tensor) -> torch.Tensor:
+    """Where a loaded optimizer-state tensor must land.
+
+    ``absmax*`` are GPU-only (the update kernels index them there). Everything
+    else, under host residency, goes INTO the pinned buffer this parameter
+    already has: sending it to ``param.device`` puts the whole host budget on the
+    GPU, and allocating a fresh host tensor doubles the pinned budget instead.
+    """
+    if key.startswith("absmax"):
+        device = param.device if param.device.type == "cuda" else torch.device("cuda:0")
+        return tensor.to(device)
+
+    get_buffer = getattr(optimizer, "get_state_buffer", None)
+    if get_buffer is None or tensor.dtype != torch.uint8:
+        return tensor.to(param.device)
+
+    existing = optimizer.state.get(param)
+    buffer = existing.get(key) if isinstance(existing, dict) else None
+    if not (isinstance(buffer, torch.Tensor)
+            and buffer.dtype == tensor.dtype
+            and buffer.numel() == tensor.numel()):
+        buffer = get_buffer(param, dtype=tensor.dtype)
+        if buffer.is_cpu and not buffer.is_pinned():
+            buffer = buffer.pin_memory()
+    buffer.copy_(tensor.reshape(buffer.shape))
+    return buffer
+
+
 def state_device_census(optimizer) -> Dict[str, Dict[str, int]]:
     """Where the optimizer's state tensors actually live, by key.
 

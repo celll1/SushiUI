@@ -55,25 +55,47 @@ _DEFAULT_OPTIMIZER_STATE_BYTES_PER_PARAM = 8
 #                    unexpected pos X vs Y") -- the zip writer's short-write path
 #   * plain open()/write -> OSError(errno 28 / winerror 112)
 # The localized text is not matchable, so the numeric tail and the zip writer's
-# signature are.
+# signature are. Each entry is an ALL-of group: "enforce fail at inline_container"
+# on its own matches every inline_container assertion, and a false positive here
+# prunes to a single checkpoint entry.
 _DISK_FULL_MARKERS = (
-    "os error 112",
-    "os error 28",
-    "no space left on device",
-    "not enough space on the disk",
-    "enforce fail at inline_container",
+    ("os error 112",),
+    ("os error 28",),
+    ("no space left on device",),
+    ("not enough space on the disk",),
+    ("inline_container", "unexpected pos"),
 )
 
+_CAUSE_CHAIN_DEPTH = 8
 
-def is_disk_full_error(exc: BaseException) -> bool:
-    """Whether ``exc`` is a volume-out-of-space failure from any save writer."""
+
+def _is_disk_full_directly(exc: BaseException) -> bool:
     if isinstance(exc, OSError):
         if exc.errno in (errno.ENOSPC, errno.EFBIG):
             return True
         if getattr(exc, "winerror", None) == 112:
             return True
     text = f"{type(exc).__name__}: {exc}".lower()
-    return any(marker in text for marker in _DISK_FULL_MARKERS)
+    return any(all(part in text for part in group) for group in _DISK_FULL_MARKERS)
+
+
+def is_disk_full_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a volume-out-of-space failure from any save writer.
+
+    Walks ``__cause__``/``__context__``: a save path that re-wraps the writer's
+    error (torch's loader/saver helpers do) would otherwise read as unrelated
+    and skip the prune-and-retry entirely.
+    """
+    seen = set()
+    current: Optional[BaseException] = exc
+    for _ in range(_CAUSE_CHAIN_DEPTH):
+        if current is None or id(current) in seen:
+            return False
+        seen.add(id(current))
+        if _is_disk_full_directly(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def free_bytes(path: Any) -> Optional[int]:
@@ -105,6 +127,17 @@ def estimate_set_bytes(
         (optimizer_type or "").lower(), _DEFAULT_OPTIMIZER_STATE_BYTES_PER_PARAM
     )
     return int(num_params) * (int(weight_bytes_per_param) + per_param)
+
+
+def survivors_after_prune(keep: int, total: Optional[int] = None) -> int:
+    """Old sets a prune for ``keep`` (which counts the set being written) leaves.
+
+    The floor is the same one the trainer applies when it executes the plan; a
+    plan that budgets for reclaiming the last set would report a fit on bytes
+    the prune is never going to return.
+    """
+    survivors = max(int(keep) - 1, KEEP_FLOOR_AFTER_WRITE)
+    return survivors if total is None else min(survivors, int(total))
 
 
 @dataclass(frozen=True)
@@ -167,7 +200,7 @@ def plan_retention(
     low = max(1, min(int(floor), ceiling))
 
     for keep in range(ceiling, low - 1, -1):
-        survivors = min(max(keep - 1, 0), total)
+        survivors = survivors_after_prune(keep, total)
         reclaim = int(sum(set_sizes_newest_first[survivors:]))
         if free + reclaim >= need:
             effective = requested_repr if (keep_all and keep == ceiling) else keep
@@ -176,14 +209,20 @@ def plan_retention(
                 0 if fits_as_is else reclaim, True, fits_as_is,
             )
 
-    survivors = min(max(low - 1, 0), total)
+    survivors = survivors_after_prune(low, total)
     reclaim = int(sum(set_sizes_newest_first[survivors:]))
     return RetentionPlan(low, requested_repr, required, free, reclaim, False, fits_as_is)
 
 
-class CheckpointSaveSpaceError(RuntimeError):
+class CheckpointSaveSpaceError(OSError):
     """A save that could not be made to fit, naming the numbers the raw OS
-    error does not (it surfaces as a localized string inside SafetensorError)."""
+    error does not (it surfaces as a localized string inside SafetensorError).
+
+    An ``OSError`` on purpose: the periodic-save call site catches
+    ``(PermissionError, OSError)`` and continues to the next interval, which is
+    the behaviour a recoverable disk-full needs. A ``RuntimeError`` here would
+    escape to the emergency handler and end the run.
+    """
 
     def __init__(self, step: int, volume: str, free: Optional[int], required: int, detail: str = ""):
         self.step = step

@@ -561,12 +561,21 @@ def test_message_says_so_when_save_every_zero_left_no_checkpoint():
 
 
 def test_the_run_records_what_the_resume_sentence_needs():
-    """All three inputs are set once per invocation, next to the counters."""
+    """All three inputs are set once per invocation, next to the counters.
+
+    The completed-save marker is NOT among them: it moved into
+    `_save_checkpoint_bundle`, next to the write that makes it true, because a
+    post-write prune failure between the two would leave a complete checkpoint
+    reading as a partial one for the emergency handler to delete."""
     fn = ast.unparse(_function("train"))
     assert "self._periodic_save_every = save_every_n_steps" in fn
     assert "self._resume_checkpoint_label" in fn
     assert "self._partial_step_taint = None" in fn
-    assert "self._last_periodic_checkpoint_step = global_step" in fn
+    assert "self._last_periodic_checkpoint_step = None" in fn
+    bundle = ast.unparse(_function("_save_checkpoint_bundle"))
+    assert "self._last_periodic_checkpoint_step = step" in bundle
+    assert bundle.index("self.save_checkpoint(") < bundle.index(
+        "self._last_periodic_checkpoint_step = step")
 
 
 def test_the_groups_class_refuses_a_clip_it_cannot_perform():

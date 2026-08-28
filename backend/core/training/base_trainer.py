@@ -51,6 +51,7 @@ from core.training.checkpoint_space import (
     free_bytes as _volume_free_bytes,
     is_disk_full_error,
     plan_retention,
+    survivors_after_prune,
 )
 # SSoT: api/param_defaults.TRAINING_DEFAULTS.
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
@@ -637,6 +638,21 @@ QUARANTINE_RUN_NAME_SUFFIX = "_quarantined_partial_step"
 QUARANTINE_ENTRY_MARKER = "_quarantined_partial_step_step_"
 
 
+# Stages of one periodic save, in write order (see _save_checkpoint_bundle).
+CHECKPOINT_BUNDLE_STAGES = ("weights", "state", "optimizer", "ema")
+
+
+def _checkpoint_bundle_stage_of(name: str) -> str:
+    """Which bundle stage wrote the file called ``name``."""
+    if EMA_ENTRY_MARKER in name or name.endswith("_ema_state.pt"):
+        return "ema"
+    if name.endswith("_optimizer.pt") or name.endswith("_optimizer.pt.tmp"):
+        return "optimizer"
+    if name.endswith("_state.json"):
+        return "state"
+    return "weights"
+
+
 def _list_checkpoint_entries(
     output_dir: Path,
     exclude_substr: Optional[Union[str, Sequence[str]]] = None,
@@ -716,15 +732,32 @@ def _checkpoint_set_files(entry_path: Path) -> List[Path]:
     return files
 
 
+def _file_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _checkpoint_set_byte_parts(entry_path: Path) -> Tuple[int, int]:
+    """``(weight bytes, sidecar bytes)`` of one checkpoint set.
+
+    Split because a set whose ``_optimizer.pt`` is missing (pruned, or never
+    written) would otherwise halve the estimate of what the next save needs.
+    """
+    weights = sum(_file_bytes(f) for f in _checkpoint_member_files(entry_path))
+    aux_base = _checkpoint_aux_base(entry_path)
+    sidecars = sum(
+        _file_bytes(entry_path.parent / f"{aux_base}{suffix}")
+        for suffix in ("_optimizer.pt", "_state.json")
+    )
+    return weights, sidecars
+
+
 def _checkpoint_set_bytes(entry_path: Path) -> int:
     """On-disk bytes of one complete checkpoint set (missing files count 0)."""
-    total = 0
-    for f in _checkpoint_set_files(entry_path):
-        try:
-            total += f.stat().st_size
-        except OSError:
-            pass
-    return total
+    weights, sidecars = _checkpoint_set_byte_parts(entry_path)
+    return weights + sidecars
 
 
 # ============================================================
@@ -3699,16 +3732,20 @@ class BaseTrainer(ABC):
                 FUSED_GROUP_STATES_KEY: states,
                 "_sushi_opt_class": states[0].get("_sushi_opt_class"),
             }
+        # Written to a sidecar and renamed into place: torch.save truncates its
+        # target before it writes, so an in-place failure destroys the previous
+        # bytes AND leaves a stump -- and a half-written .pt is fatal on resume
+        # for a host-resident run (OptimizerStateFileUnreadable), which is where
+        # run 121 was left. os.replace is atomic on both platforms.
+        tmp_file = optimizer_file.with_name(optimizer_file.name + ".tmp")
         try:
-            torch.save(payload, optimizer_file)
+            torch.save(payload, tmp_file)
+            os.replace(tmp_file, optimizer_file)
         except BaseException:
-            # A half-written .pt is fatal on resume for a host-resident run
-            # (OptimizerStateFileUnreadable) and blocks it until a human deletes
-            # the file -- exactly where run 121 was left. Never leave one.
-            if optimizer_file.exists():
+            if tmp_file.exists():
                 print(f"{self.log_prefix} Removing partially written optimizer state: "
-                      f"{optimizer_file.name}")
-                self._safe_unlink(optimizer_file)
+                      f"{tmp_file.name}")
+                self._safe_unlink(tmp_file)
             raise
         suffix = "" if len(states) == 1 else f" ({len(states)} fused optimizer groups)"
         print(f"{self.log_prefix} Saved optimizer state to {optimizer_file.name}{suffix}")
@@ -4304,7 +4341,8 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Deleting old EMA checkpoint: {ema_file.name}")
                     self._safe_unlink(ema_file)
 
-    def _cleanup_old_optimizer_states(self, max_optimizer_saves_to_keep: int):
+    def _cleanup_old_optimizer_states(self, max_optimizer_saves_to_keep: int,
+                                      current_step: Optional[int] = None):
         """Prune optimizer ``.pt`` sidecars independently of their checkpoints.
 
         The optimizer state is as large as the weights (30.66 GiB against 30.19
@@ -4314,9 +4352,12 @@ class BaseTrainer(ABC):
         then resumes with fresh optimizer state; raise the setting if that
         matters more than the space.
 
-        The sidecar of the newest checkpoint entry is protected even when it is
-        not among the newest ``keep`` optimizer files, so the run's own resume
-        target never loses its state.
+        ``current_step`` is the step this run just wrote (or is about to), and
+        its sidecar is protected unconditionally. Everything else is ranked
+        among the entries at or below it: a HIGHER-step leftover -- run 121's
+        truncated stump, or the tail of a run resumed from an earlier
+        checkpoint -- is neither "the newest" nor allowed to consume the keep
+        budget, or the prune would delete the good state and retain the stump.
         """
         if not max_optimizer_saves_to_keep or max_optimizer_saves_to_keep <= 0:
             return
@@ -4332,15 +4373,26 @@ class BaseTrainer(ABC):
             m = re.search(r"_step_(\d+)_optimizer\.pt$", path.name)
             return int(m.group(1)) if m else 0
 
+        cutoff = None if current_step is None else int(current_step)
+
+        def at_or_below(step: int) -> bool:
+            return cutoff is None or step <= cutoff
+
         candidates.sort(key=get_step, reverse=True)
-        protected = {get_step(p) for p in candidates[:max_optimizer_saves_to_keep]}
+        ranked = [p for p in candidates if at_or_below(get_step(p))]
+        protected = {get_step(p) for p in ranked[:max_optimizer_saves_to_keep]}
+        if cutoff is not None:
+            protected.add(cutoff)
         entries = _list_checkpoint_entries(
             self.output_dir,
             exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
         )
-        if entries:
-            newest = max(entries, key=lambda p: _checkpoint_step_from_name(p.name) or 0)
-            protected.add(_checkpoint_step_from_name(newest.name) or 0)
+        entry_steps = [
+            step for step in (_checkpoint_step_from_name(p.name) or 0 for p in entries)
+            if at_or_below(step)
+        ]
+        if entry_steps:
+            protected.add(max(entry_steps))
 
         for path in candidates:
             if get_step(path) in protected:
@@ -4365,24 +4417,32 @@ class BaseTrainer(ABC):
     # Checkpoint free-space policy (see core/training/checkpoint_space.py)
     # ============================================================
 
-    def _existing_checkpoint_set_sizes(self) -> List[int]:
-        """Bytes of each complete checkpoint set on disk, newest step first."""
+    def _existing_checkpoint_set_parts(self) -> List[Tuple[int, int]]:
+        """``(weight bytes, sidecar bytes)`` per checkpoint set, newest step first."""
         entries = _list_checkpoint_entries(
             self.output_dir,
             exclude_substr=("vision_encoder", EMA_ENTRY_MARKER, QUARANTINE_ENTRY_MARKER),
         )
         entries.sort(key=lambda p: _checkpoint_step_from_name(p.name) or 0, reverse=True)
-        return [_checkpoint_set_bytes(p) for p in entries]
+        return [_checkpoint_set_byte_parts(p) for p in entries]
 
-    def _estimate_checkpoint_set_bytes(self, sizes: Sequence[int]) -> int:
+    def _existing_checkpoint_set_sizes(self) -> List[int]:
+        """Bytes of each complete checkpoint set on disk, newest step first."""
+        return [w + s for w, s in self._existing_checkpoint_set_parts()]
+
+    def _estimate_checkpoint_set_bytes(self, parts: Sequence[Tuple[int, int]]) -> int:
         """Bytes the next save will need.
 
-        The LARGEST measured set on disk, which is this run's own previous
-        successful save; ``max`` rather than the newest so a truncated leftover
-        or an already-pruned sidecar cannot deflate the estimate. With nothing
-        measured (first save) it falls back to the parameter count.
+        Componentwise: the largest weight half seen plus the largest sidecar
+        half seen, not the largest whole set. A set is not an atom -- a failure,
+        an emergency save, or an already-pruned sidecar leaves weights with no
+        ``_optimizer.pt`` beside them, and ``max(whole set)`` over two such sets
+        under-books the next save by ~2x. ``max`` rather than the newest for the
+        same reason. With nothing measured (first save) it falls back to the
+        parameter count.
         """
-        measured = max(sizes) if sizes else 0
+        measured = (max((w for w, _ in parts), default=0)
+                    + max((s for _, s in parts), default=0))
         if measured > 0:
             return measured
         num_params = 0
@@ -4402,8 +4462,9 @@ class BaseTrainer(ABC):
         return estimate_set_bytes(num_params, weight_bytes, optimizer_type)
 
     def _plan_checkpoint_space(self, requested_keep: int, floor: int = KEEP_FLOOR_BEFORE_WRITE):
-        sizes = self._existing_checkpoint_set_sizes()
-        required = self._estimate_checkpoint_set_bytes(sizes)
+        parts = self._existing_checkpoint_set_parts()
+        sizes = [w + s for w, s in parts]
+        required = self._estimate_checkpoint_set_bytes(parts)
         return plan_retention(
             _volume_free_bytes(self.output_dir), required, sizes, requested_keep, floor=floor
         )
@@ -4432,6 +4493,30 @@ class BaseTrainer(ABC):
             prefix=self.log_prefix,
         )
 
+    def _begin_checkpoint_bundle(self, step: int) -> None:
+        """Start (or restart) stage tracking for ``step``.
+
+        A retry rewrites the weights, so an earlier attempt's completed stages
+        say nothing about what is on disk now.
+        """
+        self._checkpoint_bundle_progress = (int(step), set())
+
+    def _note_checkpoint_bundle_stage(self, step: int, stage: str) -> None:
+        progress = getattr(self, "_checkpoint_bundle_progress", None)
+        if isinstance(progress, tuple) and progress[0] == int(step):
+            progress[1].add(stage)
+
+    def _completed_checkpoint_bundle_stages(self, step: int) -> set:
+        """Bundle stages whose output for ``step`` is COMPLETE on disk."""
+        progress = getattr(self, "_checkpoint_bundle_progress", None)
+        if isinstance(progress, tuple) and progress[0] == int(step):
+            return set(progress[1])
+        if getattr(self, "_last_periodic_checkpoint_step", None) == step:
+            # A periodic save completed this step in an earlier iteration and
+            # left no tracker behind; nothing for it is partial.
+            return set(CHECKPOINT_BUNDLE_STAGES)
+        return set()
+
     def _delete_partial_step_artifacts(self, step: int) -> None:
         """Remove this run's half-written files for ``step``.
 
@@ -4440,30 +4525,50 @@ class BaseTrainer(ABC):
         Quarantine (QUARANTINE_ENTRY_MARKER) is deliberately not used: it exists
         for weights that are VALID but unsafe to resume from, and keeping a
         truncated file costs the space the failure was about.
+
+        Only stages that did NOT complete are cleared. Run 121's actual failure
+        was a COMPLETE 32.66 GiB weight set followed by an ENOSPC in the
+        optimizer stage; deleting the whole step there would throw away 10,340
+        steps of compute to reclaim a stump.
         """
-        if getattr(self, "_last_periodic_checkpoint_step", None) == step:
-            # A periodic save already completed this step (the emergency handler
-            # can run later in the same iteration); those files are not partial.
+        completed = self._completed_checkpoint_bundle_stages(step)
+        if completed.issuperset(CHECKPOINT_BUNDLE_STAGES):
             return
         for path in sorted(self.output_dir.glob(f"*_step_{step:06d}*")):
             if QUARANTINE_ENTRY_MARKER in path.name or not path.is_file():
+                continue
+            if _checkpoint_bundle_stage_of(path.name) in completed:
                 continue
             print(f"{self.log_prefix} Removing partial save artefact: {path.name}")
             self._safe_unlink(path)
 
     def _save_checkpoint_bundle(self, step: int, epoch: int, batch_idx: int,
                                 multi_noise_timesteps: int) -> None:
-        """One periodic save: weights, training state, optimizer, EMA."""
+        """One periodic save: weights, training state, optimizer, EMA.
+
+        Each stage is recorded as it completes so a later failure -- in this
+        bundle or in an emergency handler within the same iteration -- deletes
+        only what it actually left half-written.
+        """
         if self.run_id is not None:
             self._log_metrics_to_db(step=step, force_flush=True)
+        self._begin_checkpoint_bundle(step)
         self.save_checkpoint(step=step, epoch=epoch)
+        self._note_checkpoint_bundle_stage(step, "weights")
+        # Set here, not after the guard returns: the post-write prune can raise,
+        # and the emergency handler that follows uses this to decide whether
+        # this step's files are partial.
+        self._last_periodic_checkpoint_step = step
         self.save_training_state(
             step=step, epoch=epoch, batch_idx=batch_idx,
             multi_noise_timesteps=multi_noise_timesteps,
         )
+        self._note_checkpoint_bundle_stage(step, "state")
         self.save_optimizer_state(step=step)
+        self._note_checkpoint_bundle_stage(step, "optimizer")
         self.save_ema_state(step=step)
         self._save_ema_checkpoint(step=step, epoch=epoch)
+        self._note_checkpoint_bundle_stage(step, "ema")
 
     def _periodic_save_with_space_guard(
         self,
@@ -4488,9 +4593,10 @@ class BaseTrainer(ABC):
         volume = str(getattr(self.output_dir, "anchor", "") or self.output_dir)
 
         if plan.prune_first:
-            survivors = max(plan.effective_keep - 1, KEEP_FLOOR_AFTER_WRITE)
+            survivors = survivors_after_prune(plan.effective_keep)
             self._run_checkpoint_cleanup(survivors, step, save_every_n_steps)
-            self._cleanup_old_optimizer_states(max(max_optimizer_saves_to_keep, 1))
+            self._cleanup_old_optimizer_states(
+                max(max_optimizer_saves_to_keep, 1), current_step=step)
 
         try:
             self._save_checkpoint_bundle(step, epoch, batch_idx, multi_noise_timesteps)
@@ -4503,7 +4609,7 @@ class BaseTrainer(ABC):
             before = sum(self._existing_checkpoint_set_sizes())
             self._run_checkpoint_cleanup(
                 KEEP_FLOOR_BEFORE_WRITE - 1, step, save_every_n_steps)
-            self._cleanup_old_optimizer_states(1)
+            self._cleanup_old_optimizer_states(1, current_step=step)
             # Retry only if the prune actually returned bytes; free space is not
             # the measure (another process shares the volume).
             if sum(self._existing_checkpoint_set_sizes()) >= before:
@@ -4523,7 +4629,7 @@ class BaseTrainer(ABC):
                 ) from retry_error
 
         self._run_checkpoint_cleanup(plan.effective_keep, step, save_every_n_steps)
-        self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep)
+        self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep, current_step=step)
 
     # ============================================================
     # Optimizer Setup
@@ -14157,8 +14263,9 @@ class BaseTrainer(ABC):
                                 max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                                 save_every_n_steps=save_every_n_steps,
                             )
-                            self._last_periodic_checkpoint_step = global_step
                         except (PermissionError, OSError) as _save_err:
+                            # CheckpointSaveSpaceError is an OSError so a
+                            # recoverable disk-full lands here too.
                             print(f"{self.log_prefix} WARNING: checkpoint save at step {global_step} "
                                   f"failed ({type(_save_err).__name__}: {_save_err}); continuing, "
                                   f"will retry at next interval")
@@ -14363,7 +14470,8 @@ class BaseTrainer(ABC):
             # Try to cleanup old checkpoints (even if above failed)
             try:
                 self._cleanup_old_checkpoints(max_step_saves_to_keep)
-                self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep)
+                self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep,
+                                                   current_step=global_step)
             except Exception as e:
                 print(f"{self.log_prefix} ERROR: Failed to cleanup old checkpoints: {e}")
                 import traceback
@@ -14517,7 +14625,8 @@ class BaseTrainer(ABC):
                 if checkpoint_saved:
                     try:
                         self._cleanup_old_checkpoints(max_step_saves_to_keep)
-                        self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep)
+                        self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep,
+                                                           current_step=global_step)
                     except Exception as cleanup_error:
                         print(f"{self.log_prefix} [EMERGENCY] Failed to cleanup old checkpoints: {cleanup_error}")
                         import traceback

@@ -36,6 +36,7 @@ from core.training.checkpoint_space import (  # noqa: E402
     estimate_set_bytes,
     is_disk_full_error,
     plan_retention,
+    survivors_after_prune,
 )
 
 # Run 121's real numbers.
@@ -62,21 +63,39 @@ class FakeSafetensorError(Exception):
 # Fake trainer: the real retention methods over a temp directory
 # ---------------------------------------------------------------------------
 
+# Bytes each bundle stage writes, complete and half-written. The bundle is NOT
+# atomic on disk: run 121's weights were complete and valid when the optimizer
+# stage hit ENOSPC, which is the case the whole-set delete used to destroy.
+_STAGE_FILE_SUFFIX = {
+    "weights": ".safetensors",
+    "state": "_state.json",
+    "optimizer": "_optimizer.pt",
+}
+_STAGE_FULL_BYTES = {"weights": 16, "state": 2, "optimizer": 32}
+_STAGE_PARTIAL_BYTES = {"weights": 8, "state": 1, "optimizer": 3}
+
+
 class FakeTrainer:
-    """The shipped methods, with only the save itself faked."""
+    """The shipped methods, with only the individual writers faked."""
 
     _safe_unlink = bt.BaseTrainer._safe_unlink
     _cleanup_old_checkpoints = bt.BaseTrainer._cleanup_old_checkpoints
     _cleanup_old_optimizer_states = bt.BaseTrainer._cleanup_old_optimizer_states
     _run_checkpoint_cleanup = bt.BaseTrainer._run_checkpoint_cleanup
+    _existing_checkpoint_set_parts = bt.BaseTrainer._existing_checkpoint_set_parts
     _existing_checkpoint_set_sizes = bt.BaseTrainer._existing_checkpoint_set_sizes
     _estimate_checkpoint_set_bytes = bt.BaseTrainer._estimate_checkpoint_set_bytes
     _plan_checkpoint_space = bt.BaseTrainer._plan_checkpoint_space
     _announce_checkpoint_space_plan = bt.BaseTrainer._announce_checkpoint_space_plan
+    _begin_checkpoint_bundle = bt.BaseTrainer._begin_checkpoint_bundle
+    _note_checkpoint_bundle_stage = bt.BaseTrainer._note_checkpoint_bundle_stage
+    _completed_checkpoint_bundle_stages = bt.BaseTrainer._completed_checkpoint_bundle_stages
     _delete_partial_step_artifacts = bt.BaseTrainer._delete_partial_step_artifacts
+    _save_checkpoint_bundle = bt.BaseTrainer._save_checkpoint_bundle
     _periodic_save_with_space_guard = bt.BaseTrainer._periodic_save_with_space_guard
 
-    def __init__(self, output_dir: Path, fail_saves: int = 0):
+    def __init__(self, output_dir: Path, fail_saves: int = 0,
+                 fail_stage: str = "optimizer"):
         self.output_dir = Path(output_dir)
         self.run_name = "run121"
         self.log_prefix = "[Test]"
@@ -84,26 +103,46 @@ class FakeTrainer:
         self.config = {"optimizer": "adamw8bit_ringbuffer"}
         self.events = []
         self.fail_saves = fail_saves
+        self.fail_stage = fail_stage
         self.saved_steps = []
+        self._attempt_fails = False
 
-    # -- fakes ---------------------------------------------------------
-    def _save_checkpoint_bundle(self, step, epoch, batch_idx, multi_noise_timesteps):
-        self.events.append(("save", step))
-        if self.fail_saves > 0:
-            self.fail_saves -= 1
-            # A real failure leaves the artefact it got partway through.
-            write_set(self.output_dir, self.run_name, step, weight_bytes=8, optimizer_bytes=3)
+    # -- the bundle's individual writers, faked at byte level ----------
+    def _write_stage(self, step, stage):
+        path = self.output_dir / (
+            f"{self.run_name}_step_{step:06d}{_STAGE_FILE_SUFFIX[stage]}")
+        failing = self._attempt_fails and stage == self.fail_stage
+        sizes = _STAGE_PARTIAL_BYTES if failing else _STAGE_FULL_BYTES
+        path.write_bytes(b"x" * sizes[stage])
+        if failing:
             raise FakeSafetensorError(SAFETENSORS_ENOSPC)
-        write_set(self.output_dir, self.run_name, step)
+
+    def save_checkpoint(self, step, epoch):
+        self.events.append(("save", step))
+        self._attempt_fails = self.fail_saves > 0
+        if self._attempt_fails:
+            self.fail_saves -= 1
+        self._write_stage(step, "weights")
+
+    def save_training_state(self, step, epoch, batch_idx, multi_noise_timesteps):
+        self._write_stage(step, "state")
+
+    def save_optimizer_state(self, step):
+        self._write_stage(step, "optimizer")
+
+    def save_ema_state(self, step):
+        pass
+
+    def _save_ema_checkpoint(self, step, epoch):
         self.saved_steps.append(step)
 
     def _cleanup_old_checkpoints(self, keep):  # noqa: F811 - records, then real
         self.events.append(("prune", keep))
         bt.BaseTrainer._cleanup_old_checkpoints(self, keep)
 
-    def _cleanup_old_optimizer_states(self, keep):  # noqa: F811
+    def _cleanup_old_optimizer_states(self, keep, current_step=None):  # noqa: F811
         self.events.append(("prune_opt", keep))
-        bt.BaseTrainer._cleanup_old_optimizer_states(self, keep)
+        bt.BaseTrainer._cleanup_old_optimizer_states(self, keep, current_step=current_step)
 
 
 def write_set(directory: Path, run_name: str, step: int,
@@ -203,6 +242,17 @@ class RetentionPlanTest(unittest.TestCase):
         self.assertEqual(plan.effective_keep, 3)
         self.assertFalse(plan.prune_first)
 
+    def test_keep_one_plans_the_prune_the_trainer_will_actually_run(self):
+        """MUTANT: survivors = keep - 1 without the floor. At keep=1 the plan
+        budgets for reclaiming EVERY set including the newest, while the trainer
+        floors survivors at 1 -- so it reports fits=True on bytes it will never
+        take, and the save it green-lights runs out of space."""
+        plan = plan_retention(free=5, required=20, set_sizes_newest_first=[10, 10],
+                              requested_keep=1, floor=1)
+        self.assertEqual(survivors_after_prune(plan.effective_keep, 2), 1)
+        self.assertLessEqual(plan.reclaim_bytes, 10)
+        self.assertFalse(plan.fits)
+
     def test_headroom_means_an_exact_fit_is_not_a_fit(self):
         plan = plan_retention(free=100, required=100,
                               set_sizes_newest_first=[50, 50], requested_keep=3)
@@ -220,6 +270,32 @@ class DiskFullClassifierTest(unittest.TestCase):
     def test_unrelated_failures_are_not_disk_full(self):
         self.assertFalse(is_disk_full_error(RuntimeError("CUDA out of memory")))
         self.assertFalse(is_disk_full_error(PermissionError(13, "Access is denied")))
+
+    def test_another_inline_container_assertion_is_not_a_full_disk(self):
+        """MUTANT: matching "enforce fail at inline_container" alone. Every
+        inline_container check reports that way; reading a corrupt zip as ENOSPC
+        prunes the directory to a single checkpoint entry."""
+        self.assertFalse(is_disk_full_error(RuntimeError(
+            "[enforce fail at inline_container.cc:250] . file not found: archive/data.pkl"
+        )))
+
+    def test_a_rewrapped_writer_error_is_still_recognized(self):
+        """MUTANT: looking only at the outermost exception. A save helper that
+        re-raises through its own error type would restore the original bug."""
+        try:
+            raise FakeSafetensorError(SAFETENSORS_ENOSPC)
+        except FakeSafetensorError as inner:
+            wrapped = RuntimeError("Failed to save checkpoint shard 3/9")
+            wrapped.__cause__ = inner
+            self.assertTrue(is_disk_full_error(wrapped))
+
+        try:
+            raise OSError(28, "No space left on device")
+        except OSError:
+            try:
+                raise RuntimeError("checkpoint write failed")   # implicit context
+            except RuntimeError as chained:
+                self.assertTrue(is_disk_full_error(chained))
 
 
 class EstimateTest(unittest.TestCase):
@@ -247,9 +323,32 @@ class MeasuredEstimateTest(TempDirCase):
         trainer = FakeTrainer(self.dir)
         write_set(self.dir, trainer.run_name, 100, weight_bytes=64, optimizer_bytes=64)
         write_set(self.dir, trainer.run_name, 200, weight_bytes=64, optimizer_bytes=1)
-        sizes = trainer._existing_checkpoint_set_sizes()
-        self.assertEqual(len(sizes), 2)
-        self.assertEqual(trainer._estimate_checkpoint_set_bytes(sizes), max(sizes))
+        parts = trainer._existing_checkpoint_set_parts()
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(trainer._estimate_checkpoint_set_bytes(parts),
+                         max(w + s for w, s in parts))
+
+    def test_a_set_with_no_sidecar_does_not_halve_the_estimate(self):
+        """MUTANT: max(whole set). Two sets whose _optimizer.pt is gone -- an
+        already-pruned sidecar, an emergency save that wrote weights only, or
+        save_optimizer_state deleting its own failed output -- make every whole
+        set weights-sized, and the next save books half of what it needs."""
+        trainer = FakeTrainer(self.dir)
+        for step in (100, 200):
+            write_set(self.dir, trainer.run_name, step,
+                      weight_bytes=64, optimizer_bytes=64)
+            (self.dir / f"{trainer.run_name}_step_{step:06d}_optimizer.pt").unlink()
+
+        parts = trainer._existing_checkpoint_set_parts()
+        # Nothing on disk is bigger than the weights half...
+        self.assertEqual(max(w + s for w, s in parts), 64 + 2)
+        # ...but a full save writes weights AND a sidecar. The first save's
+        # optimizer state is measured from the run's own history, not from the
+        # deflated set: the fall-back to the parameter count only applies with
+        # nothing measured at all.
+        write_set(self.dir, trainer.run_name, 300, weight_bytes=1, optimizer_bytes=64)
+        parts = trainer._existing_checkpoint_set_parts()
+        self.assertEqual(trainer._estimate_checkpoint_set_bytes(parts), 64 + 64 + 2)
 
 
 class OptimizerRetentionTest(TempDirCase):
@@ -280,6 +379,40 @@ class OptimizerRetentionTest(TempDirCase):
         bt.BaseTrainer._cleanup_old_optimizer_states(trainer, 1)
 
         self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [200, 300])
+
+    def test_a_stale_higher_step_stump_does_not_protect_itself(self):
+        """MUTANT: protecting max(step) over the DIRECTORY. Run 121's leftovers
+        exactly: an INTACT 029332 state and a truncated 039672 stump. Protecting
+        "the newest entry" keeps the stump -- the file a host-resident resume
+        treats as fatal -- and deletes the state the run would actually use."""
+        trainer = FakeTrainer(self.dir)
+        write_set(self.dir, trainer.run_name, 29332, weight_bytes=64, optimizer_bytes=64)
+        # Run 121's leftovers: complete weights at 39672, truncated .pt beside them.
+        (self.dir / f"{trainer.run_name}_step_039672.safetensors").write_bytes(b"w" * 64)
+        (self.dir / f"{trainer.run_name}_step_039672_optimizer.pt").write_bytes(b"o")
+
+        bt.BaseTrainer._cleanup_old_optimizer_states(trainer, 1, current_step=29332)
+
+        self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [29332])
+
+    def test_a_periodic_save_never_prunes_its_own_optimizer_state(self):
+        """MUTANT: ranking every .pt in the directory. A run resumed from 029332
+        with a higher-step 039672 leftover would, at every interval, delete the
+        state it JUST wrote and 029332's, leaving only the stump."""
+        trainer = FakeTrainer(self.dir)
+        patch_free(self, 10 * GIB)
+        write_set(self.dir, trainer.run_name, 29332, weight_bytes=64, optimizer_bytes=64)
+        (self.dir / f"{trainer.run_name}_step_039672.safetensors").write_bytes(b"w" * 64)
+        (self.dir / f"{trainer.run_name}_step_039672_optimizer.pt").write_bytes(b"o")
+
+        trainer._periodic_save_with_space_guard(
+            step=29500, epoch=0, batch_idx=1, multi_noise_timesteps=1,
+            max_step_saves_to_keep=2, max_optimizer_saves_to_keep=1,
+            save_every_n_steps=100,
+        )
+
+        self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [29500])
+        self.assertIn(29500, steps_on_disk(self.dir))
 
     def test_keep_all_and_quarantined_states_are_untouched(self):
         trainer = FakeTrainer(self.dir)
@@ -411,7 +544,11 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
 
     def test_a_hopeless_enospc_fails_with_the_numbers(self):
         """MUTANT: re-raising the raw SafetensorError. The shipped failure is a
-        localized OS string with no free/required/volume in it."""
+        localized OS string with no free/required/volume in it.
+
+        Run 121's incident shape: the weights are COMPLETE and the optimizer
+        stage is what ran out of room. The complete weights must survive -- they
+        are 10,340 steps of compute -- and only the stump goes."""
         trainer = self._trainer(free=40, fail_saves=5)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -426,9 +563,101 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertIn("required", message)
         self.assertIn("step 400", message)
         self.assertIsNotNone(caught.exception.free_bytes)
-        # And nothing of step 400 is left behind.
+        self.assertIn(400, steps_on_disk(self.dir))
+        self.assertEqual(
+            (self.dir / f"{trainer.run_name}_step_000400.safetensors").stat().st_size,
+            _STAGE_FULL_BYTES["weights"])
+        self.assertTrue((self.dir / f"{trainer.run_name}_step_000400_state.json").exists())
+        # The stump, and only the stump, is gone.
+        self.assertNotIn(400, steps_on_disk(self.dir, "_optimizer.pt"))
+
+    def test_a_truncated_weights_write_is_still_cleared(self):
+        """The other side of the stage rule: when the WEIGHTS stage is what
+        failed, what it left is half a checkpoint and must not be kept."""
+        trainer = self._trainer(free=40, fail_saves=5)
+        trainer.fail_stage = "weights"
+        for step in (100, 200, 300):
+            write_set(self.dir, trainer.run_name, step)
+        with self.assertRaises(CheckpointSaveSpaceError):
+            trainer._periodic_save_with_space_guard(
+                step=400, epoch=0, batch_idx=1, multi_noise_timesteps=1,
+                max_step_saves_to_keep=3, max_optimizer_saves_to_keep=1,
+                save_every_n_steps=100,
+            )
         self.assertNotIn(400, steps_on_disk(self.dir))
         self.assertNotIn(400, steps_on_disk(self.dir, "_optimizer.pt"))
+
+    def test_a_retry_that_truncates_the_weights_does_not_keep_the_first_attempt(self):
+        """MUTANT: recording stage completion once per STEP instead of per
+        attempt. The retry rewrites the weights; if it truncates them, the fact
+        that attempt 1 got them complete says nothing about the bytes on disk."""
+        trainer = self._trainer(free=40, fail_saves=2)
+        for step in (100, 200, 300):
+            write_set(self.dir, trainer.run_name, step)
+
+        original_write = trainer._write_stage
+
+        def write_stage(step, stage):
+            if trainer.fail_saves == 0:      # the retry attempt
+                trainer.fail_stage = "weights"
+            return original_write(step, stage)
+
+        trainer._write_stage = write_stage
+        with self.assertRaises(CheckpointSaveSpaceError):
+            trainer._periodic_save_with_space_guard(
+                step=400, epoch=0, batch_idx=1, multi_noise_timesteps=1,
+                max_step_saves_to_keep=3, max_optimizer_saves_to_keep=1,
+                save_every_n_steps=100,
+            )
+        self.assertNotIn(400, steps_on_disk(self.dir))
+
+    def test_a_disk_full_is_catchable_where_the_periodic_save_is_called(self):
+        """MUTANT: CheckpointSaveSpaceError(RuntimeError). The call site catches
+        (PermissionError, OSError) and continues to the next interval; a
+        RuntimeError escapes to the emergency handler and ENDS the run -- the
+        opposite of what the space guard exists to do."""
+        self.assertTrue(issubclass(CheckpointSaveSpaceError, OSError))
+        trainer = self._trainer(free=40, fail_saves=5)
+        for step in (100, 200, 300):
+            write_set(self.dir, trainer.run_name, step)
+        try:
+            trainer._periodic_save_with_space_guard(
+                step=400, epoch=0, batch_idx=1, multi_noise_timesteps=1,
+                max_step_saves_to_keep=3, max_optimizer_saves_to_keep=1,
+                save_every_n_steps=100,
+            )
+        except (PermissionError, OSError) as caught:   # the real except clause
+            self.assertIsInstance(caught, CheckpointSaveSpaceError)
+        else:
+            self.fail("expected the guard to raise")
+
+    def test_a_prune_failure_after_a_good_save_does_not_arm_the_emergency_delete(self):
+        """MUTANT: setting _last_periodic_checkpoint_step only after the guard
+        RETURNS. The post-write prune runs after the bundle succeeded; if it
+        raises, the outer handler swallows it with the marker still on the
+        previous step, and the emergency handler that follows in the same
+        iteration deletes the complete set that was just written."""
+        trainer = self._trainer(free=10 * GIB)
+        write_set(self.dir, trainer.run_name, 100)
+
+        def exploding_cleanup(keep, global_step=0, save_every_n_steps=0):
+            if trainer.saved_steps:
+                raise OSError(13, "Access is denied")
+            bt.BaseTrainer._run_checkpoint_cleanup(trainer, keep, global_step,
+                                                   save_every_n_steps)
+
+        trainer._run_checkpoint_cleanup = exploding_cleanup
+        with self.assertRaises(OSError):
+            trainer._periodic_save_with_space_guard(
+                step=400, epoch=0, batch_idx=1, multi_noise_timesteps=1,
+                max_step_saves_to_keep=2, max_optimizer_saves_to_keep=1,
+                save_every_n_steps=100,
+            )
+        # train() swallows that OSError; the emergency handler then runs with
+        # _delete_partial_step_artifacts(global_step) as its only guard.
+        trainer._delete_partial_step_artifacts(400)
+        self.assertIn(400, steps_on_disk(self.dir))
+        self.assertIn(400, steps_on_disk(self.dir, "_optimizer.pt"))
 
     def test_a_non_space_failure_is_not_swallowed(self):
         """MUTANT: treating every save failure as ENOSPC and retrying it."""
@@ -446,6 +675,28 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
                 save_every_n_steps=100,
             )
         self.assertEqual(len([e for e in trainer.events if e[0] == "save"]), 1)
+
+
+class MarkerPlacementTest(unittest.TestCase):
+    def test_the_completed_save_marker_is_set_inside_the_bundle(self):
+        """MUTANT: setting it in train() after the guard returns. Everything
+        between the weights write and that assignment -- the rest of the bundle,
+        both prunes -- is a window in which a complete set reads as partial."""
+        import ast
+
+        source = (BACKEND / "core" / "training" / "base_trainer.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        bundle = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                      and n.name == "_save_checkpoint_bundle")
+        body = ast.unparse(bundle)
+        self.assertIn("self._last_periodic_checkpoint_step = step", body)
+        self.assertLess(body.index("self.save_checkpoint("),
+                        body.index("self._last_periodic_checkpoint_step = step"))
+        self.assertLess(body.index("self._last_periodic_checkpoint_step = step"),
+                        body.index("self.save_optimizer_state("))
+        self.assertEqual(source.count("self._last_periodic_checkpoint_step = step"), 1)
+        self.assertNotIn("self._last_periodic_checkpoint_step = global_step", source)
 
 
 class PartialArtefactCleanupTest(TempDirCase):
@@ -493,6 +744,71 @@ class SaveOptimizerStatePartialTest(TempDirCase):
         with self.assertRaises(RuntimeError):
             trainer.save_optimizer_state(step=400)
         self.assertFalse(target.exists())
+        self.assertEqual(list(self.dir.glob("*.tmp")), [])
+
+    def test_a_failed_rewrite_does_not_destroy_the_previous_bytes(self):
+        """MUTANT: torch.save straight onto the final path. It truncates its
+        target before writing, so "delete my own output on failure" cannot put
+        the old state back -- it is only ever safe by accident, because the
+        periodic filename happens to be new each step."""
+        import torch
+
+        trainer = FakeTrainer(self.dir)
+        trainer.save_optimizer_state = bt.BaseTrainer.save_optimizer_state.__get__(trainer)
+        target = self.dir / f"{trainer.run_name}_step_000400_optimizer.pt"
+        target.write_bytes(b"previous state")
+
+        class _Optimizer:
+            def state_dict(self):
+                return {"state": {}}
+
+        original_save, original_all = torch.save, bt.all_optimizers
+
+        def truncating_save(payload, path, *args, **kwargs):
+            Path(path).write_bytes(b"partial")
+            raise RuntimeError(TORCH_SHORT_WRITE)
+
+        torch.save = truncating_save
+        bt.all_optimizers = lambda trainer_: [_Optimizer()]
+        self.addCleanup(lambda: setattr(torch, "save", original_save))
+        self.addCleanup(lambda: setattr(bt, "all_optimizers", original_all))
+
+        with self.assertRaises(RuntimeError):
+            trainer.save_optimizer_state(step=400)
+        self.assertEqual(target.read_bytes(), b"previous state")
+        self.assertEqual(list(self.dir.glob("*.tmp")), [])
+
+
+class UndeletableStumpTest(TempDirCase):
+    """Real files, real unlink semantics: _safe_unlink logs and swallows, so a
+    locked or read-only leftover SURVIVES a cleanup that assumed it went."""
+
+    def test_a_stump_that_cannot_be_deleted_still_does_not_shadow_the_good_state(self):
+        import stat as _stat
+        import time as _time
+
+        original_sleep = _time.sleep
+        _time.sleep = lambda *_a, **_kw: None    # _safe_unlink retries with backoff
+        self.addCleanup(lambda: setattr(_time, "sleep", original_sleep))
+
+        trainer = FakeTrainer(self.dir)
+        # Resumed from 029332, wrote 029500; 039672's leftovers are still there.
+        write_set(self.dir, trainer.run_name, 29332, weight_bytes=64, optimizer_bytes=64)
+        write_set(self.dir, trainer.run_name, 29500, weight_bytes=64, optimizer_bytes=64)
+        (self.dir / f"{trainer.run_name}_step_039672.safetensors").write_bytes(b"w" * 64)
+        stump = self.dir / f"{trainer.run_name}_step_039672_optimizer.pt"
+        stump.write_bytes(b"o")
+        stump.chmod(_stat.S_IREAD)
+        self.addCleanup(lambda: stump.chmod(_stat.S_IWRITE | _stat.S_IREAD)
+                        if stump.exists() else None)
+
+        bt.BaseTrainer._cleanup_old_optimizer_states(trainer, 1, current_step=29500)
+
+        # An undeletable stump keeps its higher step number on disk for the NEXT
+        # cleanup to rank -- so it must not be able to protect itself then either.
+        self.assertIn(29500, steps_on_disk(self.dir, "_optimizer.pt"))
+        self.assertEqual(
+            (self.dir / f"{trainer.run_name}_step_029500_optimizer.pt").stat().st_size, 64)
 
 
 # ---------------------------------------------------------------------------

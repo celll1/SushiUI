@@ -7225,6 +7225,9 @@ export interface TrainingRunCreateRequest {
   save_every?: number;
   save_every_unit?: string;
   max_step_saves_to_keep?: number | null;
+  // Optimizer .pt sidecars to keep (0 = keep all). Pruned independently of the
+  // weights; only the newest is ever resumed from.
+  max_optimizer_saves_to_keep?: number;
   sample_every?: number;
   sample_prompts?: SamplePrompt[];
   resume_from_checkpoint?: string | null;

@@ -45,6 +45,15 @@ def _detect_arch(base_model_path: str) -> str:
         return "unknown"
 
 
+def _max_optimizer_saves_to_keep(p: Dict[str, Any]) -> int:
+    """Optimizer-sidecar retention. Uniform across training methods (unlike
+    max_step_saves_to_keep). SSoT: api/param_defaults.TRAINING_DEFAULTS."""
+    from api.param_defaults import TRAINING_DEFAULTS as _TD
+
+    value = p.get("max_optimizer_saves_to_keep")
+    return _TD["max_optimizer_saves_to_keep"] if value is None else int(value)
+
+
 def _build_train_section(
     p: Dict[str, Any],
     *,
@@ -698,6 +707,7 @@ class TrainingConfigGenerator:
                             "save_every": p.get("save_every", 100),
                             "save_every_unit": p.get("save_every_unit", "steps"),
                             "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 10,
+                            "max_optimizer_saves_to_keep": _max_optimizer_saves_to_keep(p),
                         },
                         "datasets": datasets_array,
                         "train": _build_train_section(
@@ -882,6 +892,7 @@ class TrainingConfigGenerator:
                             "save_every": p.get("save_every", 100),
                             "save_every_unit": p.get("save_every_unit", "steps"),
                             "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 3,
+                            "max_optimizer_saves_to_keep": _max_optimizer_saves_to_keep(p),
                         },
                         "datasets": datasets_array,
                         "train": _build_train_section(
@@ -1035,6 +1046,7 @@ class TrainingConfigGenerator:
                             "save_every": p.get("save_every", 500),
                             "save_every_unit": p.get("save_every_unit", "steps"),
                             "max_step_saves_to_keep": p.get("max_step_saves_to_keep") if p.get("max_step_saves_to_keep") is not None else 5,
+                            "max_optimizer_saves_to_keep": _max_optimizer_saves_to_keep(p),
                         },
                         "datasets": datasets_array,
                         "train": _build_train_section(

@@ -76,6 +76,7 @@ from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 from core.training.caption_processor import process_caption, get_default_caption_processing_config
+from core.training.base_trainer import DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP
 
 # Second half of the FP8 hard-off above. The env write only works while nothing
 # has imported fp8_linear yet, which holds for the shipped launch path
@@ -2558,13 +2559,16 @@ def main():
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+            max_optimizer_saves_to_keep = process_config['save'].get(
+                'max_optimizer_saves_to_keep', DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP)
 
             save_every_n_steps = _resolve_save_every_n_steps(
                 save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
 
-            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
+                  f"(optimizer states: {max_optimizer_saves_to_keep})")
 
             # Ensure sample_prompts is a list of dicts with at least one entry
             if not sample_prompts or len(sample_prompts) == 0:
@@ -2648,6 +2652,7 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 text_encoding_prefetch_depth=text_encoding_prefetch_depth,
@@ -2973,13 +2978,16 @@ def main():
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+            max_optimizer_saves_to_keep = process_config['save'].get(
+                'max_optimizer_saves_to_keep', DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP)
 
             save_every_n_steps = _resolve_save_every_n_steps(
                 save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
 
-            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
+                  f"(optimizer states: {max_optimizer_saves_to_keep})")
 
             if not sample_prompts or len(sample_prompts) == 0:
                 sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
@@ -3049,6 +3057,7 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 text_encoding_prefetch_depth=text_encoding_prefetch_depth,
@@ -3426,13 +3435,16 @@ def main():
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+            max_optimizer_saves_to_keep = process_config['save'].get(
+                'max_optimizer_saves_to_keep', DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP)
 
             save_every_n_steps = _resolve_save_every_n_steps(
                 save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
 
-            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
+                  f"(optimizer states: {max_optimizer_saves_to_keep})")
 
             # Ensure sample_prompts is a list of dicts with at least one entry
             if not sample_prompts or len(sample_prompts) == 0:
@@ -3516,6 +3528,7 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 text_encoding_prefetch_depth=text_encoding_prefetch_depth,
@@ -3779,13 +3792,16 @@ def main():
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
             save_every = process_config['save'].get('save_every', 100)
             max_step_saves_to_keep = process_config['save'].get('max_step_saves_to_keep', 3)
+            max_optimizer_saves_to_keep = process_config['save'].get(
+                'max_optimizer_saves_to_keep', DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP)
 
             save_every_n_steps = _resolve_save_every_n_steps(
                 save_every_unit, save_every, len(dataset_items), train_config.get('batch_size', 1))
             if save_every_unit == 'epochs':
                 print(f"[TrainRunner] Converted save_every={save_every} epochs to save_every_n_steps={save_every_n_steps}")
 
-            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep}")
+            print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
+                  f"(optimizer states: {max_optimizer_saves_to_keep})")
 
             # Get resume from checkpoint setting
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
@@ -3841,6 +3857,7 @@ def main():
                 resume_from_checkpoint=resume_from_checkpoint,
                 force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
+                max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
                 text_encoding_prefetch_depth=text_encoding_prefetch_depth,

@@ -2230,6 +2230,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "save_every": 100,
     "save_every_unit": "steps",
     "max_step_saves_to_keep": None,
+    # Optimizer .pt sidecars are as large as the weights (30.66 GiB vs 30.19 GiB
+    # on run 121) and only the newest is ever resumed from, so they are pruned
+    # independently of the weights and, by default, harder. 0 = keep all.
+    "max_optimizer_saves_to_keep": 1,
     "sample_every": 100,
     "sample_prompts": [{"positive": "", "negative": ""}],
     "resume_from_checkpoint": "latest",

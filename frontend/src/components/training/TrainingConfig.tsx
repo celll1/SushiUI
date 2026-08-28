@@ -150,6 +150,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   save_every: 100,
   save_every_unit: "steps",
   max_step_saves_to_keep: null,
+  max_optimizer_saves_to_keep: 1,
   sample_every: 100,
   sample_prompts: [{ positive: "", negative: "" }],
   resume_from_checkpoint: "latest",
@@ -497,6 +498,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const saveEvery = params.save_every ?? 100;
   const saveEveryUnit = (params.save_every_unit ?? "steps") as "steps" | "epochs";
   const maxStepSavesToKeep = params.max_step_saves_to_keep ?? null;
+  const maxOptimizerSavesToKeep = params.max_optimizer_saves_to_keep ?? 1;
   const sampleEvery = params.sample_every ?? 100;
   const resumeFromCheckpoint = params.resume_from_checkpoint ?? null;
 
@@ -969,6 +971,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       save_every: params.save_every,
       save_every_unit: params.save_every_unit,
       max_step_saves_to_keep: params.max_step_saves_to_keep,
+      max_optimizer_saves_to_keep: params.max_optimizer_saves_to_keep,
       sample_every: params.sample_every,
       sample_prompts: params.sample_prompts,
       sample_width: params.sample_width,
@@ -1291,7 +1294,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
       "optimizer_use_radam", "optimizer_stochastic_rounding",
       "optimizer_state_host_resident",
-      "save_every", "save_every_unit", "max_step_saves_to_keep", "resume_from_checkpoint",
+      "save_every", "save_every_unit", "max_step_saves_to_keep",
+      "max_optimizer_saves_to_keep", "resume_from_checkpoint",
       "train_unet", "train_text_encoder", "train_image_encoder",
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
       "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
@@ -2111,6 +2115,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       saveEvery,
       saveEveryUnit,
       maxStepSavesToKeep,
+      maxOptimizerSavesToKeep,
       sampleEvery,
       resumeFromCheckpoint,
       samplePrompts,
@@ -2279,6 +2284,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.saveEvery !== undefined) updateParam("save_every", config.saveEvery);
     if (config.saveEveryUnit !== undefined) updateParam("save_every_unit", config.saveEveryUnit);
     if (config.maxStepSavesToKeep !== undefined) updateParam("max_step_saves_to_keep", config.maxStepSavesToKeep);
+    if (config.maxOptimizerSavesToKeep !== undefined) updateParam("max_optimizer_saves_to_keep", config.maxOptimizerSavesToKeep);
     if (config.sampleEvery !== undefined) updateParam("sample_every", config.sampleEvery);
     if (config.resumeFromCheckpoint !== undefined) updateParam("resume_from_checkpoint", config.resumeFromCheckpoint);
     if (config.samplePrompts !== undefined) updateParam("sample_prompts", config.samplePrompts);
@@ -6465,6 +6471,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             />
             <p className="text-xs text-gray-500 mt-1">
               Number of most recent checkpoints to keep on disk (older ones are pruned). Leave empty to use the training method default.
+              If the output volume cannot hold the next save, this is temporarily reduced (never below one complete checkpoint) and you are warned.
+            </p>
+          </div>
+
+          {/* Max Optimizer States to Keep */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">Max Optimizer States to Keep</label>
+            <input
+              type="number"
+              min="0"
+              value={maxOptimizerSavesToKeep}
+              onChange={(e) => updateParam("max_optimizer_saves_to_keep", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+              onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("max_optimizer_saves_to_keep", 1); }}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              placeholder="1"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Optimizer state files ({".pt"}) to keep, pruned independently of the checkpoints above. 0 = keep all.
+              An optimizer state is about the size of the weights and only the newest one is used when resuming;
+              with 1, falling back to an older checkpoint resumes without optimizer state.
             </p>
           </div>
 

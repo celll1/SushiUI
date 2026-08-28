@@ -15189,6 +15189,9 @@ class TrainingRunCreateRequest(BaseModel):
     save_every: int = Field(default=TRAINING_DEFAULTS["save_every"], ge=0)
     save_every_unit: str = "steps"  # "steps" or "epochs"
     max_step_saves_to_keep: Optional[int] = None  # None = use training method default (LoRA:10, FullFT:3, ControlNet:5)
+    max_optimizer_saves_to_keep: int = Field(
+        default=TRAINING_DEFAULTS["max_optimizer_saves_to_keep"], ge=0
+    )
     sample_every: int = Field(default=TRAINING_DEFAULTS["sample_every"], ge=0)
     sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
@@ -15843,6 +15846,7 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "save_every": ("save",),
     "save_every_unit": ("save",),
     "max_step_saves_to_keep": ("save",),
+    "max_optimizer_saves_to_keep": ("save",),
     # sample section (some keys are renamed in YAML)
     "sample_every": ("sample",),
     "sample_prompts": ("sample", "prompts"),

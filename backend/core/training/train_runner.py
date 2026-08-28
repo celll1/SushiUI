@@ -75,7 +75,11 @@ sys.path.insert(0, str(backend_dir))
 from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
-from core.training.caption_processor import process_caption, get_default_caption_processing_config
+from core.training.caption_processor import (
+    apply_caption_dropout,
+    get_default_caption_processing_config,
+    process_caption,
+)
 from core.training.base_trainer import DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP
 
 # Second half of the FP8 hard-off above. The env write only works while nothing
@@ -1575,8 +1579,10 @@ def _process_cached_items(
                     tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
                 )
         else:
-            # Natural language: Use caption as-is
-            processed_caption = raw_caption
+            # Whole-caption dropout is format-agnostic; token operations stay tag-only.
+            processed_caption = apply_caption_dropout(
+                raw_caption, caption_config.get("caption_dropout_rate", 0.0)
+            )
 
         # Build processed item dict
         processed_item = {
@@ -1778,8 +1784,10 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
                     tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
                 )
         else:
-            # Natural language: Use caption as-is (no tag processing)
-            processed_caption = raw_caption
+            # Whole-caption dropout is format-agnostic; token operations stay tag-only.
+            processed_caption = apply_caption_dropout(
+                raw_caption, caption_config.get("caption_dropout_rate", 0.0)
+            )
             print(f"[TrainRunner] Natural language caption (skipping tag processing): {raw_caption[:50]}...")
 
         # Build dataset item dict

@@ -537,6 +537,7 @@ def generate_sample(
     num_inference_steps: int = 28,
     guidance_scale: float = 3.5,
     seed: int = -1,
+    negative_prompt: str = "",
 ) -> Image.Image:
     """
     Generate sample image during training (Z-Image).
@@ -602,7 +603,7 @@ def generate_sample(
 
         # Encode unconditional prompt only if CFG is enabled
         if guidance_scale > 1.0:
-            uncond_embeds, uncond_mask = trainer.encode_prompt_zimage("")
+            uncond_embeds, uncond_mask = trainer.encode_prompt_zimage(negative_prompt)
         else:
             uncond_embeds, uncond_mask = None, None
 

@@ -649,6 +649,7 @@ class ControlNetTrainer(BaseTrainer):
         schedule_type: str = "uniform",
         condition_image_path: "Optional[str]" = None,
         reference_image_path: "Optional[str]" = None,
+        negative_prompt: str = "",
     ) -> "Image.Image":
         """
         Generate sample image during ControlNet training.
@@ -678,6 +679,7 @@ class ControlNetTrainer(BaseTrainer):
                 prompt=prompt, height=height, width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
+                negative_prompt=negative_prompt,
                 current_step=current_step, schedule_type=schedule_type,
                 reference_image_path=reference_image_path,
             )
@@ -688,6 +690,7 @@ class ControlNetTrainer(BaseTrainer):
                 prompt=prompt, height=height, width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
+                negative_prompt=negative_prompt,
                 current_step=current_step, schedule_type=schedule_type,
                 condition_image=loaded_condition,
             )
@@ -696,6 +699,7 @@ class ControlNetTrainer(BaseTrainer):
                 prompt=prompt, height=height, width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
+                negative_prompt=negative_prompt,
                 current_step=current_step, schedule_type=schedule_type,
                 condition_image=loaded_condition,
             )
@@ -705,6 +709,7 @@ class ControlNetTrainer(BaseTrainer):
                 prompt=prompt, height=height, width=width,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
+                negative_prompt=negative_prompt,
                 current_step=current_step, schedule_type=schedule_type,
                 reference_image_path=reference_image_path,
             )
@@ -720,6 +725,7 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         schedule_type: str = "uniform",
         condition_image: "Optional[Image.Image]" = None,
+        negative_prompt: str = "",
     ) -> "Image.Image":
         """
         Generate sample with Standard ControlNet (ControlNetModel).
@@ -800,10 +806,10 @@ class ControlNetTrainer(BaseTrainer):
 
             if self.is_sdxl:
                 prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
-                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt(negative_prompt, requires_grad=False)
             else:
                 prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
-                negative_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                negative_prompt_embeds = self.encode_prompt(negative_prompt, requires_grad=False)
                 pooled_prompt_embeds = None
                 negative_pooled_prompt_embeds = None
 
@@ -918,6 +924,7 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         schedule_type: str = "uniform",
         condition_image: "Optional[Image.Image]" = None,
+        negative_prompt: str = "",
     ) -> "Image.Image":
         """
         Generate sample with LLLite ControlNet.
@@ -1018,10 +1025,10 @@ class ControlNetTrainer(BaseTrainer):
 
             if self.is_sdxl:
                 prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
-                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompt(negative_prompt, requires_grad=False)
             else:
                 prompt_embeds = self.encode_prompt(prompt, requires_grad=False)
-                negative_prompt_embeds = self.encode_prompt("", requires_grad=False)
+                negative_prompt_embeds = self.encode_prompt(negative_prompt, requires_grad=False)
                 pooled_prompt_embeds = None
                 negative_pooled_prompt_embeds = None
 

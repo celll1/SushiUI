@@ -76,6 +76,40 @@ def test_first_launch_generates_and_saves_the_step0_sample(tmp_path):
     assert saved.exists()
 
 
+def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
+    from PIL import Image
+
+    prompts = [{
+        "positive": "a cat",
+        "negative": "blurry",
+        "condition_image_path": "condition.png",
+        "reference_image_path": "reference.png",
+    }]
+    trainer = _trainer(tmp_path, prompts=prompts)
+    image = Image.new("RGB", (8, 8))
+    with patch.object(trainer, "_dispatch_sample", return_value=image) as dispatch:
+        trainer._run_step0_sample_if_due(**_kwargs())
+
+    assert dispatch.call_args.kwargs["negative_prompt"] == "blurry"
+    assert dispatch.call_args.kwargs["condition_image_path"] == "condition.png"
+    assert dispatch.call_args.kwargs["reference_image_path"] == "reference.png"
+
+    saved = tmp_path / "samples" / "step_000000_sample_0.png"
+    with Image.open(saved) as sample:
+        assert sample.text == {
+            "prompt": "a cat",
+            "negative_prompt": "blurry",
+            "steps": "4",
+            "cfg_scale": "4.0",
+            "seed": "1",
+            "width": "64",
+            "height": "64",
+            "schedule_type": "uniform",
+            "condition_image_path": "condition.png",
+            "reference_image_path": "reference.png",
+        }
+
+
 def test_relaunch_with_no_checkpoint_skips_the_already_saved_sample(tmp_path):
     """Two calls with global_step=0 on the same output_dir -- exactly what a
     crash-before-first-checkpoint relaunch replays -- must dispatch once."""

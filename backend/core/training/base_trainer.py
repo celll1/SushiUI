@@ -8853,6 +8853,7 @@ class BaseTrainer(ABC):
         schedule_type: str = "uniform",
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
+        negative_prompt: str = "",
     ) -> "Image.Image":
         """
         Generate sample image during training (SD/SDXL).
@@ -8880,6 +8881,7 @@ class BaseTrainer(ABC):
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             seed=seed,
+            negative_prompt=negative_prompt,
             current_step=current_step,
             schedule_type=schedule_type,
             condition_image_path=condition_image_path,
@@ -8962,6 +8964,41 @@ class BaseTrainer(ABC):
         except OSError:
             pass
 
+    @staticmethod
+    def _save_sample_with_metadata(
+        sample: Image.Image,
+        sample_path: Path,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        steps: int,
+        cfg_scale: float,
+        seed: int,
+        width: int,
+        height: int,
+        schedule_type: str,
+        condition_image_path: Optional[str] = None,
+        reference_image_path: Optional[str] = None,
+    ) -> None:
+        metadata = PngImagePlugin.PngInfo()
+        for key, value in {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "seed": seed,
+            "width": width,
+            "height": height,
+            "schedule_type": schedule_type,
+        }.items():
+            metadata.add_text(key, str(value))
+        if condition_image_path:
+            metadata.add_text("condition_image_path", condition_image_path)
+        if reference_image_path:
+            metadata.add_text("reference_image_path", reference_image_path)
+        sample_path.parent.mkdir(parents=True, exist_ok=True)
+        sample.save(sample_path, pnginfo=metadata)
+
     def _run_step0_sample_if_due(
         self,
         *,
@@ -8992,7 +9029,11 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [Step 0] {step0_sample_path.name} exists but its marker "
                   f"does not name this run (run_id={self.run_id}); regenerating so the base-model "
                   f"check reflects this run, not whatever produced the existing file.")
-        step0_prompt = self._sample_prompts[0].get('positive', 'a beautiful landscape') if self._sample_prompts else 'a beautiful landscape'
+        prompt_config = self._sample_prompts[0] if self._sample_prompts else {}
+        step0_prompt = prompt_config.get('positive', 'a beautiful landscape')
+        negative_prompt = prompt_config.get('negative', '')
+        condition_image_path = prompt_config.get('condition_image_path') or None
+        reference_image_path = prompt_config.get('reference_image_path') or None
         print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
         print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
         sample = self._dispatch_sample(
@@ -9002,13 +9043,28 @@ class BaseTrainer(ABC):
             num_inference_steps=sample_steps,
             guidance_scale=sample_guidance_scale,
             seed=sample_seed,
+            negative_prompt=negative_prompt,
+            condition_image_path=condition_image_path,
+            reference_image_path=reference_image_path,
             current_step=0,
             schedule_type=sample_schedule_type,
         )
         # None => architecture can't sample yet; skip saving.
         if sample is not None:
-            step0_sample_path.parent.mkdir(parents=True, exist_ok=True)
-            sample.save(step0_sample_path)
+            self._save_sample_with_metadata(
+                sample,
+                step0_sample_path,
+                prompt=step0_prompt,
+                negative_prompt=negative_prompt,
+                steps=sample_steps,
+                cfg_scale=sample_guidance_scale,
+                seed=sample_seed,
+                width=sample_width,
+                height=sample_height,
+                schedule_type=sample_schedule_type,
+                condition_image_path=condition_image_path,
+                reference_image_path=reference_image_path,
+            )
             self._mark_step0_sample_done()
             print(f"{self.log_prefix} [Step 0] Saved sample to {step0_sample_path.relative_to(self.output_dir)}")
 
@@ -14335,23 +14391,20 @@ class BaseTrainer(ABC):
                             # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
                             # Use sample_step (which accounts for MNT batch range) for consistent naming
                             sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_{sample_idx}.png"
-                            sample_path.parent.mkdir(parents=True, exist_ok=True)
-
-                            # Embed generation metadata in PNG for display in Training Monitor
-                            png_metadata = PngImagePlugin.PngInfo()
-                            png_metadata.add_text("prompt", positive)
-                            png_metadata.add_text("negative_prompt", prompt_config.get('negative', ''))
-                            png_metadata.add_text("steps", str(sample_steps))
-                            png_metadata.add_text("cfg_scale", str(sample_guidance_scale))
-                            png_metadata.add_text("seed", str(sample_seed))
-                            png_metadata.add_text("width", str(sample_width))
-                            png_metadata.add_text("height", str(sample_height))
-                            png_metadata.add_text("schedule_type", sample_schedule_type)
-                            if condition_image_path:
-                                png_metadata.add_text("condition_image_path", condition_image_path)
-                            if reference_image_path:
-                                png_metadata.add_text("reference_image_path", reference_image_path)
-                            sample.save(sample_path, pnginfo=png_metadata)
+                            self._save_sample_with_metadata(
+                                sample,
+                                sample_path,
+                                prompt=positive,
+                                negative_prompt=prompt_config.get('negative', ''),
+                                steps=sample_steps,
+                                cfg_scale=sample_guidance_scale,
+                                seed=sample_seed,
+                                width=sample_width,
+                                height=sample_height,
+                                schedule_type=sample_schedule_type,
+                                condition_image_path=condition_image_path,
+                                reference_image_path=reference_image_path,
+                            )
                             if sample_step == 0 and sample_idx == 0:
                                 self._mark_step0_sample_done()
                             print(f"{self.log_prefix} Saved sample to {sample_path}")

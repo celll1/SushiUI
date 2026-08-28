@@ -1041,6 +1041,7 @@ def generate_sample(
     schedule_type: str = "uniform",
     condition_image_path: Optional[str] = None,
     reference_image_path: Optional[str] = None,
+    negative_prompt: str = "",
 ):
     """
     Generate sample image during training (SD/SDXL).
@@ -1182,10 +1183,10 @@ def generate_sample(
         # Encode prompt
         if trainer.is_sdxl:
             prompt_embeds, pooled_prompt_embeds = trainer.encode_prompt(prompt, requires_grad=False)
-            negative_prompt_embeds, negative_pooled_prompt_embeds = trainer.encode_prompt("", requires_grad=False)
+            negative_prompt_embeds, negative_pooled_prompt_embeds = trainer.encode_prompt(negative_prompt, requires_grad=False)
         else:
             prompt_embeds = trainer.encode_prompt(prompt, requires_grad=False)
-            negative_prompt_embeds = trainer.encode_prompt("", requires_grad=False)
+            negative_prompt_embeds = trainer.encode_prompt(negative_prompt, requires_grad=False)
             pooled_prompt_embeds = None
             negative_pooled_prompt_embeds = None
 

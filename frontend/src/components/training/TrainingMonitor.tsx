@@ -884,6 +884,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               {p.prompt.length > 120 ? `${p.prompt.substring(0, 120)}…` : p.prompt}
                             </div>
                           )}
+                          {p.negative_prompt && (
+                            <div className="text-gray-400 leading-relaxed border-b border-gray-700 pb-1.5 mb-1">
+                              <span className="text-gray-500">Negative Prompt:</span>{" "}
+                              <span className="italic">
+                                {p.negative_prompt.length > 120
+                                  ? `${p.negative_prompt.substring(0, 120)}…`
+                                  : p.negative_prompt}
+                              </span>
+                            </div>
+                          )}
                           <div className="text-gray-400">
                             {p.steps} steps / CFG {p.cfg_scale} / seed {p.seed}
                           </div>

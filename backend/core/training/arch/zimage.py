@@ -82,4 +82,5 @@ class ZImageArchHandler(ArchHandler):
             num_inference_steps=sample_ctx.num_inference_steps,
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
+            negative_prompt=sample_ctx.negative_prompt,
         )

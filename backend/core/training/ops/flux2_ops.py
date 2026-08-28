@@ -751,6 +751,7 @@ def generate_sample(
     guidance_scale: float = 5.0,
     seed: int = -1,
     reference_image_path: Optional[str] = None,
+    negative_prompt: str = "",
 ):
     """
     Generate sample image during training (FLUX.2 Klein).
@@ -815,7 +816,7 @@ def generate_sample(
 
         # Encode unconditional prompt only if CFG is enabled
         if guidance_scale > 1.0:
-            negative_prompt_embeds, negative_text_ids = _flux2_encode_prompt_for_sample(trainer, "")
+            negative_prompt_embeds, negative_text_ids = _flux2_encode_prompt_for_sample(trainer, negative_prompt)
         else:
             negative_prompt_embeds, negative_text_ids = None, None
 

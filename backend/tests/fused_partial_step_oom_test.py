@@ -793,8 +793,10 @@ def test_vision_encoder_sibling_is_excluded_from_every_resume_scan():
     exclude_tuples = [
         m.group(1) for m in re.finditer(r"exclude_substr=\(([^)]*)\)", BASE_TRAINER_SRC)
     ]
-    assert len(exclude_tuples) == 4, (
-        f"expected exactly 4 _list_checkpoint_entries(exclude_substr=(...)) call "
+    # 4 resume/rotation scans, plus the two free-space ones added with
+    # disk-space-aware retention (checkpoint_space).
+    assert len(exclude_tuples) == 6, (
+        f"expected exactly 6 _list_checkpoint_entries(exclude_substr=(...)) call "
         f"sites, found {len(exclude_tuples)}"
     )
     for tup in exclude_tuples:

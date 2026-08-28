@@ -68,6 +68,7 @@ class _Trainer:
     _rc_refit_items = BaseTrainer._rc_refit_items
     _prepare_epoch_items = BaseTrainer._prepare_epoch_items
     _restore_bucket_dims = BaseTrainer._restore_bucket_dims
+    _sync_bucket_captions = BaseTrainer._sync_bucket_captions
     _assert_item_pixel_align = BaseTrainer._assert_item_pixel_align
     _item_failure_kind = staticmethod(BaseTrainer._item_failure_kind)
     _report_item_failure = BaseTrainer._report_item_failure

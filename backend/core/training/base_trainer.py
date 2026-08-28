@@ -2471,6 +2471,45 @@ class BaseTrainer(ABC):
                     restored += 1
         return restored
 
+    def _sync_bucket_captions(self, datasets, bucket_manager) -> int:
+        """Push this epoch's freshly reprocessed captions into the existing bucket
+        entries, in place -- bucket assignment (which bucket, width/height) is never
+        touched here, only ``image_info["caption"]``.
+
+        ``reload_for_epoch`` replaces ``dataset.items`` with new dicts (dropout/shuffle
+        re-rolled), but ``bucket_manager.buckets`` holds its OWN ``image_info`` dicts
+        copied at setup time; batches are built from those, not from ``dataset.items``.
+        Without this, every epoch after the first trains on epoch-0 captions.
+
+        Keyed by (dataset_unique_id, image_path), not path alone: the same path can
+        legitimately appear in more than one dataset. Bucket entries or dataset items
+        with no match on the other side are left alone (no KeyError, no assignment
+        change) -- covers items reload dropped, and items never bucketed.
+        """
+        caption_map = {}
+        for dataset in datasets:
+            ds_id = getattr(dataset, "unique_id", None)
+            for item in dataset.items:
+                path = item.get("image_path")
+                if not path:
+                    continue
+                caption_map[(ds_id, path)] = item.get("caption", "")
+
+        updated = 0
+        for infos in bucket_manager.buckets.values():
+            for info in infos:
+                path = info.get("image_path")
+                if not path:
+                    continue
+                key = (info.get("dataset_unique_id"), path)
+                if key not in caption_map:
+                    continue
+                new_caption = caption_map[key]
+                if info.get("caption") != new_caption:
+                    info["caption"] = new_caption
+                    updated += 1
+        return updated
+
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
         the items carry.
@@ -2502,6 +2541,10 @@ class BaseTrainer(ABC):
 
         if bucket_manager is not None:
             self._restore_bucket_dims(datasets, bucket_manager)
+            # Bucket assignment itself is untouched; only the caption text on each
+            # already-bucketed entry is refreshed. Harmless (rewritten again) when the
+            # crop-augmentation path rebuilds bucket_manager.buckets from all_items later.
+            self._sync_bucket_captions(datasets, bucket_manager)
         elif not (self._rc_active and self.crop_planner is None):
             # The resolution curriculum re-fits with the phase's resolution a few lines
             # further into train(); don't fit twice.

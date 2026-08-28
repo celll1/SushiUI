@@ -64,6 +64,7 @@ class _Trainer:
     _rc_refit_items = BaseTrainer._rc_refit_items
     _prepare_epoch_items = BaseTrainer._prepare_epoch_items
     _restore_bucket_dims = BaseTrainer._restore_bucket_dims
+    _sync_bucket_captions = BaseTrainer._sync_bucket_captions
     _danbooru_injection_buckets = BaseTrainer._danbooru_injection_buckets
     _annotate_video_items = BaseTrainer._annotate_video_items
     _assert_item_pixel_align = BaseTrainer._assert_item_pixel_align

@@ -17,6 +17,20 @@ from pathlib import Path
 _logged_reordered_tokens = False
 
 
+def _caption_rng(item_path: str, epoch_num: int, operation: str):
+    """Return an isolated, stable RNG for one item/epoch operation."""
+    seed_str = f"{item_path}_{operation}_epoch{epoch_num}"
+    seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
+    return random.Random(seed)
+
+
+def apply_caption_dropout(caption: str, caption_dropout_rate: float = 0.0) -> str:
+    """Apply whole-caption dropout without interpreting the caption format."""
+    if caption_dropout_rate > 0 and random.random() < caption_dropout_rate:
+        return ""
+    return caption
+
+
 def process_caption(
     caption: str,
     epoch_num: int = 0,
@@ -133,9 +147,8 @@ def process_caption(
         token_list = reordered_tokens
 
     # Step 2: Caption dropout (全キャプションをドロップ)
-    if caption_dropout_rate > 0:
-        if random.random() < caption_dropout_rate:
-            return ""
+    if not apply_caption_dropout(caption, caption_dropout_rate):
+        return ""
 
     # Token dropout (個別トークンをドロップ)
     if token_dropout_rate > 0:
@@ -190,8 +203,7 @@ def process_caption(
 
             # エポックごとに一貫したドロップアウト
             if tag_dropout_per_epoch:
-                seed_value = hash(f"{item_path}_{token}_{epoch_num}") % (2**32)
-                random_gen = random.Random(seed_value)
+                random_gen = _caption_rng(item_path, epoch_num, f"tag_dropout_{token}")
                 rand = random_gen.random()
             else:
                 rand = random.random()
@@ -213,9 +225,7 @@ def process_caption(
 
             if shuffle_per_epoch:
                 # エポックごとに一貫したシャッフル（再現性あり）
-                seed_str = f"{item_path}_{epoch_num}"
-                seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
-                rng = random.Random(seed)
+                rng = _caption_rng(item_path, epoch_num, "shuffle")
             else:
                 # 完全ランダムシャッフル
                 rng = random.Random()
@@ -237,9 +247,7 @@ def process_caption(
             if shuffleable_tokens:
                 if shuffle_per_epoch:
                     # エポックごとに一貫したシャッフル（再現性あり）
-                    seed_str = f"{item_path}_{epoch_num}"
-                    seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
-                    rng = random.Random(seed)
+                    rng = _caption_rng(item_path, epoch_num, "shuffle")
                     rng.shuffle(shuffleable_tokens)
                 else:
                     # 完全ランダムシャッフル
@@ -371,11 +379,10 @@ def process_caption_with_tag_data(
     tag_dropout_exclude_person_count = caption_config.get("tag_dropout_exclude_person_count", False)
 
     if tag_dropout_rate > 0:
-        # Determine random seed
-        if tag_dropout_per_epoch:
-            seed_str = f"{item_path}_tag_dropout_epoch{epoch_num}"
-            seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
-            random.seed(seed)
+        tag_dropout_rng = (
+            _caption_rng(item_path, epoch_num, "tag_dropout")
+            if tag_dropout_per_epoch else random
+        )
 
         filtered_tags = []
         for idx, (tag, category) in enumerate(tags_with_categories):
@@ -392,7 +399,7 @@ def process_caption_with_tag_data(
             # Category-specific dropout rate
             category_rate = tag_dropout_category_rates.get(category, tag_dropout_rate)
 
-            if random.random() >= category_rate:
+            if tag_dropout_rng.random() >= category_rate:
                 filtered_tags.append((tag, category))
 
         tags_with_categories = filtered_tags
@@ -406,11 +413,10 @@ def process_caption_with_tag_data(
     exclude_person_count_from_shuffle = caption_config.get("exclude_person_count_from_shuffle", False)
 
     if shuffle_tokens:
-        # Determine random seed
-        if shuffle_per_epoch:
-            seed_str = f"{item_path}_shuffle_epoch{epoch_num}"
-            seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
-            random.seed(seed)
+        shuffle_rng = (
+            _caption_rng(item_path, epoch_num, "shuffle")
+            if shuffle_per_epoch else random
+        )
 
         # Split into kept and shuffled parts
         kept_tags = tags_with_categories[:shuffle_keep_first_n]
@@ -435,7 +441,7 @@ def process_caption_with_tag_data(
 
             # Shuffle within each group
             for group in groups_dict:
-                random.shuffle(groups_dict[group])
+                shuffle_rng.shuffle(groups_dict[group])
 
             # Rebuild tags in category_order (if available) or original order
             shuffled_tags = []
@@ -444,7 +450,7 @@ def process_caption_with_tag_data(
                 all_group_tags = []
                 for group_tags in groups_dict.values():
                     all_group_tags.extend(group_tags)
-                random.shuffle(all_group_tags)
+                shuffle_rng.shuffle(all_group_tags)
                 shuffled_tags.extend(all_group_tags)
                 # Append non-shuffled tags at the end
                 shuffled_tags.extend(non_shuffled_tags)
@@ -458,7 +464,7 @@ def process_caption_with_tag_data(
                     for category in category_order:
                         # Insert person count tags before General group tags
                         if category == "General" and person_count_tags:
-                            random.shuffle(person_count_tags)
+                            shuffle_rng.shuffle(person_count_tags)
                             shuffled_tags.extend(person_count_tags)
                             person_count_tags = []  # Clear to avoid duplicates
 
@@ -472,7 +478,7 @@ def process_caption_with_tag_data(
 
                     # If General was not in category_order, append person count tags at the end
                     if person_count_tags:
-                        random.shuffle(person_count_tags)
+                        shuffle_rng.shuffle(person_count_tags)
                         shuffled_tags.extend(person_count_tags)
 
                     # Add any remaining non-shuffled tags (categories not in category_order)
@@ -485,7 +491,7 @@ def process_caption_with_tag_data(
                     person_count_inserted = False
                     for group in shuffle_tag_groups:
                         if group == "General" and person_count_tags and not person_count_inserted:
-                            random.shuffle(person_count_tags)
+                            shuffle_rng.shuffle(person_count_tags)
                             shuffled_tags.extend(person_count_tags)
                             person_count_inserted = True
 
@@ -493,7 +499,7 @@ def process_caption_with_tag_data(
 
                     # Append person count tags at the end if not inserted
                     if person_count_tags:
-                        random.shuffle(person_count_tags)
+                        shuffle_rng.shuffle(person_count_tags)
                         shuffled_tags.extend(person_count_tags)
 
                     # Append non-shuffled tags
@@ -502,7 +508,7 @@ def process_caption_with_tag_data(
             tags_with_categories = kept_tags + shuffled_tags
         else:
             # Simple shuffle
-            random.shuffle(tags_to_shuffle)
+            shuffle_rng.shuffle(tags_to_shuffle)
             tags_with_categories = kept_tags + tags_to_shuffle
 
     # Extract tags only (discard categories)
@@ -517,7 +523,4 @@ def process_caption_with_tag_data(
 
     # Apply caption dropout
     caption_dropout_rate = caption_config.get("caption_dropout_rate", 0.0)
-    if caption_dropout_rate > 0 and random.random() < caption_dropout_rate:
-        return ""
-
-    return ", ".join(tags)
+    return apply_caption_dropout(", ".join(tags), caption_dropout_rate)

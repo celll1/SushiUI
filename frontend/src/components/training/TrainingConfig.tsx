@@ -498,7 +498,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const saveEvery = params.save_every ?? 100;
   const saveEveryUnit = (params.save_every_unit ?? "steps") as "steps" | "epochs";
   const maxStepSavesToKeep = params.max_step_saves_to_keep ?? null;
-  const maxOptimizerSavesToKeep = params.max_optimizer_saves_to_keep ?? 1;
+  const maxOptimizerSavesToKeep = params.max_optimizer_saves_to_keep ?? DEFAULT_PARAMS.max_optimizer_saves_to_keep;
   const sampleEvery = params.sample_every ?? 100;
   const resumeFromCheckpoint = params.resume_from_checkpoint ?? null;
 
@@ -6483,9 +6483,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               min="0"
               value={maxOptimizerSavesToKeep}
               onChange={(e) => updateParam("max_optimizer_saves_to_keep", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
-              onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("max_optimizer_saves_to_keep", 1); }}
+              onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("max_optimizer_saves_to_keep", DEFAULT_PARAMS.max_optimizer_saves_to_keep); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
-              placeholder="1"
+              placeholder={String(DEFAULT_PARAMS.max_optimizer_saves_to_keep)}
             />
             <p className="text-xs text-gray-500 mt-1">
               Optimizer state files ({".pt"}) to keep, pruned independently of the checkpoints above. 0 = keep all.

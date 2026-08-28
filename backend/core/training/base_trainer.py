@@ -12064,9 +12064,19 @@ class BaseTrainer(ABC):
                     # are batched separately (grouped by (spatial, clip_length) /
                     # clip duration) and appended, so video/audio-only datasets still
                     # get non-empty, uniform batches here.
+                    # Shuffle item order every epoch (mirrors the bucketed path's
+                    # per-epoch batch-order randomization). Uses the global `random`
+                    # module -- the same stream saved/restored via random.getstate()/
+                    # setstate() for mid-epoch resume (see restore above) -- so resume
+                    # reproduces the exact same order. Priority items are NEVER
+                    # shuffled (entry-index order is the documented priority-training
+                    # contract, matched by the bucketed path's build_priority_batches).
+                    import random
                     if priority_config and priority_config.entries:
                         priority_items, normal_items = classify_items(_image_all_items, priority_config)
                         p_items = [(item, dataset) for item, dataset, _ in priority_items]
+                        normal_items = list(normal_items)
+                        random.shuffle(normal_items)
                         priority_batches = [p_items[i:i+batch_size] for i in range(0, len(p_items), batch_size)]
                         normal_batches = [normal_items[i:i+batch_size] for i in range(0, len(normal_items), batch_size)]
                         batches = (priority_batches * priority_config.multiplier + normal_batches
@@ -12077,7 +12087,9 @@ class BaseTrainer(ABC):
                               f"+ {len(ltx2_video_batches)} video "
                               f"+ {len(acestep_audio_batches)} audio = {len(batches)} total")
                     else:
-                        batches = [_image_all_items[i:i+batch_size] for i in range(0, len(_image_all_items), batch_size)]
+                        _shuffled_image_items = list(_image_all_items)
+                        random.shuffle(_shuffled_image_items)
+                        batches = [_shuffled_image_items[i:i+batch_size] for i in range(0, len(_shuffled_image_items), batch_size)]
                         batches = batches + ltx2_video_batches + acestep_audio_batches
 
                 batches = self._drop_unfittable_batches(batches)

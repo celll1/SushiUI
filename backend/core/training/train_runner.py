@@ -1262,8 +1262,11 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
     # which cannot be interrupted mid-flight once started.
     _check_init_stop(output_dir)
 
-    # Single query with JOIN to get all items with their captions
-    _query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    # Single query with JOIN to get all items with their captions.
+    # ORDER BY id gives a deterministic base order across DB backends/versions
+    # so the per-epoch shuffle (base_trainer.py) has a stable, reproducible
+    # starting point instead of whatever order the DB happens to return.
+    _query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).order_by(DatasetItem.id)
     if not skip_captions:
         _query = _query.options(joinedload(DatasetItem.captions))
     items = _query.all()

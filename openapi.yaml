@@ -18596,6 +18596,29 @@ components:
         max_step_saves_to_keep:
           type: 'integer'
           nullable: true
+          description: |
+            Checkpoint sets to keep on disk (`null` = the training-method
+            default: LoRA 10, full fine-tune 3, ControlNet 5; `0` = keep all).
+
+            Retention is reduced TEMPORARILY, and the pruning pass moves to
+            before the write, when a free-space preflight says the next save
+            would not fit on the output volume. One complete set is never
+            pruned, and the run emits a `checkpoint_retention_reduced` warning
+            when this happens.
+          example: 3
+        max_optimizer_saves_to_keep:
+          type: 'integer'
+          minimum: 0
+          default: 1
+          description: |
+            Optimizer-state `.pt` sidecars to keep (`0` = keep all), pruned
+            independently of the weights. The optimizer state is roughly the
+            size of the weights and only the newest one is ever resumed from,
+            so the default keeps one. Raising it costs one weights-sized file
+            per extra copy; keeping only one means that falling back to an
+            OLDER checkpoint (after a corrupt newest one) resumes with fresh
+            optimizer state.
+          example: 1
         sample_every:
           type: 'integer'
           minimum: 0

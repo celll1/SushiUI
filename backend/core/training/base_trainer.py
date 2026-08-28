@@ -3620,7 +3620,10 @@ class BaseTrainer(ABC):
             "epoch": epoch,
             "batch_idx": batch_idx,
             "multi_noise_timesteps": multi_noise_timesteps,  # Save MNT for resume calculation
-            "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
+            # The state right BEFORE the current epoch's batch-order shuffle, not the
+            # live state (which has advanced past it) -- see the snapshot taken in
+            # train()'s epoch loop, just before batches are built.
+            "random_state": getattr(self, '_epoch_batch_rng_state', None) or random.getstate(),
             # Dataset fingerprint for change detection on resume
             "dataset_fingerprint": getattr(self, '_dataset_fingerprint', None),
             # Batches-per-epoch: captures a batch_size-only change (not covered by the
@@ -11989,6 +11992,13 @@ class BaseTrainer(ABC):
                      if x[0].get("item_type") not in ("video", "audio")]
                     if (_has_ltx2_video or _has_acestep_audio) else all_items
                 )
+
+                # Snapshot the RNG state right here, BEFORE the shuffle(s) below consume
+                # it -- this is the state that reproduces this epoch's batch order, unlike
+                # random.getstate() at checkpoint time (already advanced by every shuffle
+                # and per-step draw since). save_training_state() reads this attribute.
+                import random as _random_snapshot
+                self._epoch_batch_rng_state = _random_snapshot.getstate()
 
                 # Create batches
                 if bucket_manager:

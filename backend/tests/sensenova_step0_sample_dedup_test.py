@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.training.base_trainer import BaseTrainer
+from api.param_defaults import TRAINING_DEFAULTS
 
 
 class _ConcreteTrainer(BaseTrainer):
@@ -58,6 +59,19 @@ def _kwargs(**overrides):
         sample_seed=1,
         sample_sampler="euler",
         sample_schedule_type="uniform",
+        sample_cfg_schedule_type=TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+        sample_cfg_schedule_min=TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+        sample_cfg_schedule_max=TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+        sample_cfg_schedule_power=TRAINING_DEFAULTS["sample_cfg_schedule_power"],
+        sample_cfg_rescale_snr_alpha=TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"],
+        sample_dynamic_threshold_percentile=TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"],
+        sample_dynamic_threshold_mimic_scale=TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"],
+        sample_nag_enable=TRAINING_DEFAULTS["sample_nag_enable"],
+        sample_nag_scale=TRAINING_DEFAULTS["sample_nag_scale"],
+        sample_nag_tau=TRAINING_DEFAULTS["sample_nag_tau"],
+        sample_nag_alpha=TRAINING_DEFAULTS["sample_nag_alpha"],
+        sample_nag_sigma_end=TRAINING_DEFAULTS["sample_nag_sigma_end"],
+        sample_nag_negative_prompt=TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         sensenova_sample_timestep_shift=3.0,
         sensenova_sample_img_cfg_scale=1.0,
         sensenova_sample_cfg_norm="global",
@@ -110,6 +124,19 @@ def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
             "height": "64",
             "sampler": "euler",
             "schedule_type": "uniform",
+            "cfg_schedule_type": "constant",
+            "cfg_schedule_min": "1.0",
+            "cfg_schedule_max": "None",
+            "cfg_schedule_power": "2.0",
+            "cfg_rescale_snr_alpha": "0.0",
+            "dynamic_threshold_percentile": "0.0",
+            "dynamic_threshold_mimic_scale": "7.0",
+            "nag_enable": "False",
+            "nag_scale": "5.0",
+            "nag_tau": "3.5",
+            "nag_alpha": "0.25",
+            "nag_sigma_end": "3.0",
+            "nag_negative_prompt": "",
             "sensenova_timestep_shift": "3.0",
             "sensenova_img_cfg_scale": "1.0",
             "sensenova_cfg_norm": "global",

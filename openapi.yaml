@@ -9481,8 +9481,8 @@ components:
             items:
               type: string
           example:
-            sd15: [sample_sampler, sample_schedule_type]
-            sdxl: [sample_sampler, sample_schedule_type]
+            sd15: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
+            sdxl: [sample_sampler, sample_schedule_type, sample_cfg_schedule_type, sample_cfg_schedule_min, sample_cfg_schedule_max, sample_cfg_schedule_power, sample_cfg_rescale_snr_alpha, sample_dynamic_threshold_percentile, sample_dynamic_threshold_mimic_scale, sample_nag_enable, sample_nag_scale, sample_nag_tau, sample_nag_alpha, sample_nag_sigma_end, sample_nag_negative_prompt]
             sensenova: [sensenova_sample_timestep_shift, sensenova_sample_img_cfg_scale, sensenova_sample_cfg_norm]
             ltx2: []
         training_sample_notes:
@@ -19601,6 +19601,55 @@ components:
           type: 'string'
           default: 'sgm_uniform'
           description: Timestep schedule requested for training previews; support is architecture-specific.
+        sample_cfg_schedule_type:
+          type: string
+          default: constant
+          description: SD1.5/SDXL training-preview CFG schedule (constant, linear, cosine, exponential, or quadratic).
+        sample_cfg_schedule_min:
+          type: number
+          default: 1.0
+          description: Minimum CFG scale used by the training-preview schedule.
+        sample_cfg_schedule_max:
+          type: number
+          nullable: true
+          default: null
+          description: Optional maximum CFG scale; null uses sample_cfg_scale.
+        sample_cfg_schedule_power:
+          type: number
+          default: 2.0
+          description: Power used by the quadratic CFG schedule.
+        sample_cfg_rescale_snr_alpha:
+          type: number
+          default: 0.0
+          description: SNR-adaptive CFG rescale strength; zero disables it.
+        sample_dynamic_threshold_percentile:
+          type: number
+          default: 0.0
+          description: Dynamic-threshold percentile; zero disables it.
+        sample_dynamic_threshold_mimic_scale:
+          type: number
+          default: 7.0
+          description: Dynamic-threshold mimic CFG scale.
+        sample_nag_enable:
+          type: boolean
+          default: false
+          description: Enables Normalized Attention Guidance for SD1.5/SDXL previews.
+        sample_nag_scale:
+          type: number
+          default: 5.0
+        sample_nag_tau:
+          type: number
+          default: 3.5
+        sample_nag_alpha:
+          type: number
+          default: 0.25
+        sample_nag_sigma_end:
+          type: number
+          default: 3.0
+        sample_nag_negative_prompt:
+          type: string
+          default: ''
+          description: NAG negative prompt; empty falls back to each sample's negative prompt.
         sample_seed:
           type: 'integer'
           default: -1

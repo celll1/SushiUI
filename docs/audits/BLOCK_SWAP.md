@@ -1,4 +1,4 @@
-# Block Swap 実装 監査・設計ドキュメント
+# Block Swap implementation audit
 
 本ドキュメントは SushiUI の block swap（ブロック単位の重み CPU オフロード）機構について、
 推論・学習の両面から実装の正しさ・効率・堅牢性・他機能との衝突を監査し、改善ロードマップ

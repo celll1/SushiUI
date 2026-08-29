@@ -1756,6 +1756,6 @@ state_z_gpu = state['z'].cuda(non_blocking=False)
 ## 貢献者
 
 - **Claude Code** (Anthropic) - 実装・ドキュメント作成
-- **User** (celll1) - 設計・レビュー・テスト
+- **Repository owner** - 設計・レビュー・テスト
 
 Co-Authored-By: Claude <noreply@anthropic.com>

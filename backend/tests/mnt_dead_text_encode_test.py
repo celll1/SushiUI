@@ -126,8 +126,8 @@ class TheCollationIsBypassedToo(unittest.TestCase):
     def test_no_unguarded_dereference_of_the_lists_remains(self):
         """Every `.shape`/`cat`/`stack` over the assembly lists is downstream of a bypass."""
         for probe in (
-            "seq_lengths = [emb.shape[1] for emb in text_embeddings_list]",
-            "torch.cat(text_embeddings_list, dim=0)",
+            "self._collate_text_embeddings(\n                            text_embeddings_list",
+            "self._collate_text_masks(\n                            auxiliary_data_list",
         ):
             at = self.src.index(probe)
             before = self.src[:at]

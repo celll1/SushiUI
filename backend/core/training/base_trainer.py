@@ -7286,6 +7286,58 @@ class BaseTrainer(ABC):
             prefix, _ = self.encode_caption(captions[0], requires_grad=True)
         return None, None, None, prefix
 
+    def cfg_null_drop_rate(self) -> Optional[float]:
+        """The run's aligned-CFG-null Bernoulli rate, resolved once.
+
+        Goes through ``api.cfg_null_resolver`` so this process and the route
+        answer from the same rules -- an explicit 0.0 disables the mechanism
+        (MiniT2I's inherited 0.1 included), an omitted key resolves the
+        per-architecture default, both keys at once is refused. Running it here
+        rather than trusting the route is what catches a hand-authored YAML,
+        which reaches the trainer without ever passing a request model.
+
+        ``None`` means the mechanism is not in play for this run.
+        """
+        if hasattr(self, "_cfg_null_drop_rate_resolved"):
+            return self._cfg_null_drop_rate_resolved
+
+        from api.cfg_null_resolver import resolve_cfg_uncond_drop_rate
+        arch = getattr(self, "arch", None)
+        arch_name = getattr(arch, "name", None)
+        resolution = resolve_cfg_uncond_drop_rate(self.config, arch=arch_name)
+        for warning in resolution.warnings:
+            from core.training.training_events import emit_training_warning
+            emit_training_warning(warning, code="cfg_uncond_drop_rate",
+                                  prefix=self.log_prefix)
+        rate = resolution.rate
+        if rate and getattr(arch, "cfg_null_stage", None) is None:
+            # The resolver only refuses an EXPLICIT rate on a stageless
+            # architecture. A per-arch default could still resolve nonzero here
+            # if the two maps ever disagreed, and silently not applying it is
+            # the failure this feature exists to remove.
+            raise ValueError(
+                f"arch '{arch_name}' resolved cfg_uncond_drop_rate={rate} but "
+                f"declares no cfg_null_stage, so no aligned null condition can "
+                f"be built for it"
+            )
+        self._cfg_null_drop_rate_resolved = rate
+        return rate
+
+    def sample_cfg_drop_mask(self, batch_size: int) -> Optional[torch.Tensor]:
+        """One CPU boolean ``[B]`` label per assembled optimization batch.
+
+        Drawn BEFORE the MNT loop and reused by every MNT transform of the
+        batch, so an item does not change meaning between passes over the same
+        images (strategy §5). CPU because it is a label, not a tensor the
+        forward consumes: the collated rewrite moves it to the conditioning's
+        device itself, and keeping the draw off the CUDA RNG keeps it identical
+        under micro-batch retries.
+        """
+        rate = self.cfg_null_drop_rate()
+        if not rate:
+            return None
+        return torch.rand(batch_size) < float(rate)
+
     def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
         """Run a batch (the _execute_forward_backward args in dict ``b``) as
         micro-chunks of size ``micro_bs`` with gradient accumulation, returning
@@ -7336,6 +7388,10 @@ class BaseTrainer(ABC):
                 mnt_time_ids=b["mnt_time_ids"][lo:hi] if b["mnt_time_ids"] is not None else None,
                 loss_weight_maps_batch=b["loss_weight_maps_batch"][lo:hi] if b.get("loss_weight_maps_batch") is not None else None,
                 sensenova_prefix=b.get("sensenova_prefix"),
+                # Sliced, never redrawn: a retry that resampled here would give
+                # the chunked batch a different drop pattern than the attempt it
+                # is retrying.
+                cfg_drop_mask=b["cfg_drop_mask"][lo:hi] if b.get("cfg_drop_mask") is not None else None,
                 loss_scale=w / eff_bs,
             )
             for n, leaf in leaves.items():
@@ -7374,6 +7430,7 @@ class BaseTrainer(ABC):
         effective_batch_size: Optional[int] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
         sensenova_prefix: Optional[Any] = None,
+        cfg_drop_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -7421,7 +7478,7 @@ class BaseTrainer(ABC):
             condition_images_batch=condition_images_batch, reference_latents_nested=reference_latents_nested,
             lens_latent_shape=lens_latent_shape, mnt_repa_pixels=mnt_repa_pixels,
             mnt_time_ids=mnt_time_ids, loss_weight_maps_batch=loss_weight_maps_batch,
-            sensenova_prefix=sensenova_prefix,
+            sensenova_prefix=sensenova_prefix, cfg_drop_mask=cfg_drop_mask,
         )
 
         # The applied-update window is this WHOLE call, not each backward inside
@@ -7899,6 +7956,7 @@ class BaseTrainer(ABC):
         mnt_time_ids: Optional[torch.Tensor] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
         sensenova_prefix: Optional[Any] = None,
+        cfg_drop_mask: Optional[torch.Tensor] = None,
         loss_scale: float = 1.0,
     ) -> Tuple[float, float, float]:
         """
@@ -8029,6 +8087,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_ideogram4:
@@ -8076,6 +8135,7 @@ class BaseTrainer(ABC):
                 debug_captions=batch_captions if debug_save_path else None,
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 repa_pixels=mnt_repa_pixels,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_flux2:
@@ -10952,6 +11012,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
+        # Resolve (and refuse) the aligned CFG null rate before the first batch,
+        # not at the first draw inside the loop.
+        _cfg_null_rate = self.cfg_null_drop_rate()
+        if _cfg_null_rate:
+            print(f"{self.log_prefix} CFG unconditional drop rate: {_cfg_null_rate} "
+                  f"(stage: {self.arch.cfg_null_stage})")
+
         # Cache alphas_cumprod on GPU to avoid repeated .to(device) calls in compute_snr()
         # This is called thousands of times during training, so caching saves significant overhead
         # Note: Flow Matching schedulers (FLUX.2) don't have alphas_cumprod
@@ -13662,6 +13729,13 @@ class BaseTrainer(ABC):
 
                     batch_size = latents.shape[0]
 
+                    # Aligned CFG null label, one draw for the whole assembled
+                    # batch (strategy §5). Drawn HERE, outside the MNT loop, so
+                    # every MNT transform of an item trains the same condition;
+                    # a per-train_step draw would give one image two different
+                    # meanings within one pass over it.
+                    cfg_drop_mask = self.sample_cfg_drop_mask(batch_size)
+
                     # ============================================================
                     # MNT loop: Process same batch with different noise-timesteps
                     # ============================================================
@@ -13967,6 +14041,7 @@ class BaseTrainer(ABC):
                                 mnt_time_ids=mnt_time_ids,
                                 loss_weight_maps_batch=loss_weight_maps_batch,
                                 sensenova_prefix=mnt_sensenova_prefix,
+                                cfg_drop_mask=cfg_drop_mask,
                             )
                         except PartialOptimizerStepError:
                             # Half-applied step: the safety net below would swallow

@@ -239,6 +239,35 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         return latent.to(device="cpu", dtype=trainer.training_dtype)
 
 
+def apply_cfg_null_collated(
+    conditioning: torch.Tensor,
+    auxiliary: torch.Tensor,
+    drop_mask: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Rewrite the ``drop_mask`` rows of a collated MiniT2I batch into the
+    condition its inference CFG uncond branch builds.
+
+    ``_predict_x0_cfg`` builds that branch as ``u_text=text``,
+    ``u_mask=zeros_like(mask)``: the text tensor is REUSED, and
+    ``MMJiT.forward`` then replaces every masked row with the learned
+    ``mask_token`` before anything reads it -- including the ``context.mean``
+    that feeds the pooled embedder. So zeroing the mask alone is exact, and
+    zeroing the text as well would only change a tensor the forward discards.
+
+    Out of place: ``conditioning``/``auxiliary`` belong to the assembled batch
+    and are handed to every MNT iteration, so an in-place write would leak one
+    iteration's null into the next.
+    """
+    if drop_mask is None:
+        return conditioning, auxiliary
+    selected = drop_mask.to(device=auxiliary.device, dtype=torch.bool)
+    if not bool(selected.any()):
+        return conditioning, auxiliary
+    rewritten = auxiliary.clone()
+    rewritten[selected] = 0
+    return conditioning, rewritten
+
+
 def train_step(
     trainer,
     images: torch.Tensor,
@@ -291,20 +320,12 @@ def train_step(
     denom = torch.clamp(1.0 - t_img, min=0.05)
     target = (images - x_t) / denom  # ground-truth velocity
 
-    # CFG label drop: zero the mask -> mask_token uncond for dropped samples.
-    # A YAML written before the key existed, or one that carries an explicit
-    # null, falls back to the SSoT per-arch default rather than a literal here.
-    from api.param_defaults import CFG_UNCOND_DROP_DEFAULTS_BY_ARCH
-    _configured = trainer.config.get("minit2i_label_drop_rate")
-    label_drop_rate = float(
-        CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["minit2i"] if _configured is None
-        else _configured)
+    # CFG label drop already applied: the arch handler rewrote the dropped rows'
+    # mask through apply_cfg_null_collated before this call, from the one
+    # per-batch Bernoulli the trainer draws outside the MNT loop. No draw here --
+    # a second one would give the same item two meanings in one pass and would
+    # survive an explicit cfg_uncond_drop_rate=0.0.
     mask_eff = attention_mask
-    if label_drop_rate > 0.0:
-        drop = torch.rand(B, device=trainer.device) < label_drop_rate
-        if drop.any():
-            mask_eff = attention_mask.clone()
-            mask_eff[drop] = 0
 
     t_dtype = trainer.transformer.dtype
 

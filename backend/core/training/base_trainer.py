@@ -6479,6 +6479,64 @@ class BaseTrainer(ABC):
                     for k, v in auxiliary_data.items()}
         return auxiliary_data.to(self.device, non_blocking=non_blocking)
 
+    @staticmethod
+    def _collate_text_embeddings(embeddings_list, seq_axis: int = 1):
+        """Batch per-item text embeddings, zero-padding a ragged sequence axis.
+
+        ``seq_axis`` is the arch's ``ArchHandler.text_seq_axis``: the sequence
+        dimension of ONE item's ``[1, ...]`` tensor. It is 1 for ``[1, L, D]``
+        and for Krea 2's ``[1, L, num_layers, D]``, but 2 for the Lens /
+        Ideogram 4 ``[1, num_layers, L, D]`` layout, whose axis 1 is the layer
+        stack. Reading the wrong axis makes every item report the same length,
+        so the padding branch is skipped and ``torch.cat`` raises on any batch
+        with two different caption lengths.
+
+        Returns ``(batched [B, ...], sequence length)``. The caller must pad the
+        text mask to the same length (``_collate_text_masks``).
+        """
+        lengths = [emb.shape[seq_axis] for emb in embeddings_list]
+        max_seq_len = max(lengths)
+        if len(set(lengths)) > 1:
+            padded_embeddings = []
+            for emb in embeddings_list:
+                pad_length = max_seq_len - emb.shape[seq_axis]
+                if pad_length > 0:
+                    pad_shape = list(emb.shape)
+                    pad_shape[seq_axis] = pad_length
+                    padding = torch.zeros(
+                        pad_shape, dtype=emb.dtype, device=emb.device
+                    )
+                    emb = torch.cat([emb, padding], dim=seq_axis)
+                padded_embeddings.append(emb)
+            embeddings_list = padded_embeddings
+        return torch.cat(embeddings_list, dim=0), max_seq_len
+
+    @staticmethod
+    def _collate_text_masks(auxiliary_data_list, target_len=None):
+        """Stack per-item ``[L]`` text masks into ``[B, L]``.
+
+        Short items are padded with the mask's inactive value (0/False) so the
+        rows that ``_collate_text_embeddings`` zero-padded are also masked out.
+        ``target_len`` is that collation's length, which can exceed the longest
+        mask only if features and masks disagree; taking the max of the two
+        keeps the two tensors the same length instead of failing downstream.
+        """
+        masks = [aux for aux in auxiliary_data_list if aux is not None]
+        if masks:
+            max_len = max(m.shape[0] for m in masks)
+            if target_len is not None:
+                max_len = max(max_len, target_len)
+            if any(m.shape[0] != max_len for m in masks):
+                masks = [
+                    m if m.shape[0] == max_len else torch.cat(
+                        [m, torch.zeros(max_len - m.shape[0],
+                                        dtype=m.dtype, device=m.device)],
+                        dim=0,
+                    )
+                    for m in masks
+                ]
+        return torch.stack(masks, dim=0)
+
     # ``_collate_anima_aux`` moved to ``ops/anima_ops.collate_aux`` (plan P4).
     # Call sites in the train loop now dispatch via ``self.arch.collate_aux``;
     # only the anima handler overrides the base_arch no-op default.
@@ -13465,6 +13523,7 @@ class BaseTrainer(ABC):
 
                     # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                     # IMPORTANT: Pad embeddings to same sequence length if chunking is used
+                    text_seq_len = None
                     if _te_recompute_per_mnt:
                         # Assembly encode was skipped; the list holds placeholders. The
                         # MNT loop builds mnt_text_embeddings from scratch every
@@ -13472,38 +13531,19 @@ class BaseTrainer(ABC):
                         text_embeddings = None
                     elif text_embeddings_list:
                         # Per-item encoders (Anima/Z-Image) drop the batch dim and
-                        # return 2D [L, D]; the collation below assumes 3D [1, L, D]
-                        # (it reads shape[1] as seq and cats on dim 0). Without this
-                        # normalization, cat(dim=0) at batch_size>=2 collapses the
-                        # batch into the sequence axis, yielding a 2D context that the
-                        # Anima LLM-Adapter mis-reshapes (head_dim ends up 16 vs rope
+                        # return 2D [L, D]; the collation below cats on dim 0 and so
+                        # needs the leading [1, ...]. Without this normalization,
+                        # cat(dim=0) at batch_size>=2 collapses the batch into the
+                        # sequence axis, yielding a 2D context that the Anima
+                        # LLM-Adapter mis-reshapes (head_dim ends up 16 vs rope
                         # 64 -> RuntimeError at _adapter_apply_rotary_pos_emb).
                         text_embeddings_list = [
                             emb.unsqueeze(0) if emb.dim() == 2 else emb
                             for emb in text_embeddings_list
                         ]
-                        # Check if all embeddings have same sequence length
-                        seq_lengths = [emb.shape[1] for emb in text_embeddings_list]
-                        max_seq_len = max(seq_lengths)
-
-                        if len(set(seq_lengths)) > 1:
-                            # Different sequence lengths - need padding
-                            padded_embeddings = []
-                            for emb in text_embeddings_list:
-                                if emb.shape[1] < max_seq_len:
-                                    # Pad to max_seq_len with zeros
-                                    pad_length = max_seq_len - emb.shape[1]
-                                    padding = torch.zeros(
-                                        (emb.shape[0], pad_length, emb.shape[2]),
-                                        dtype=emb.dtype,
-                                        device=emb.device
-                                    )
-                                    emb = torch.cat([emb, padding], dim=1)
-                                padded_embeddings.append(emb)
-                            text_embeddings = torch.cat(padded_embeddings, dim=0)  # [batch, seq_len, dim]
-                        else:
-                            # All same length - direct concatenation
-                            text_embeddings = torch.cat(text_embeddings_list, dim=0)  # [batch, seq_len, dim]
+                        text_embeddings, text_seq_len = self._collate_text_embeddings(
+                            text_embeddings_list, self.arch.text_seq_axis
+                        )
                     else:
                         text_embeddings = None
 
@@ -13515,7 +13555,9 @@ class BaseTrainer(ABC):
                         # Placeholders only -- the MNT loop rebuilds aux per iteration.
                         pass
                     elif self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
-                        attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
+                        attention_mask = self._collate_text_masks(
+                            auxiliary_data_list, text_seq_len
+                        )
                     elif self.is_anima:
                         # Anima aux is a per-item dict {source_mask, t5_input_ids,
                         # t5_attn_mask}; collate into one dict of batched [B, L]
@@ -13731,30 +13773,21 @@ class BaseTrainer(ABC):
                                 emb.unsqueeze(0) if emb.dim() == 2 else emb
                                 for emb in mnt_text_embeddings_list
                             ]
-                            seq_lengths = [emb.shape[1] for emb in mnt_text_embeddings_list]
-                            max_seq_len = max(seq_lengths)
-                            if len(set(seq_lengths)) > 1:
-                                padded_embeddings = []
-                                for emb in mnt_text_embeddings_list:
-                                    if emb.shape[1] < max_seq_len:
-                                        pad_length = max_seq_len - emb.shape[1]
-                                        padding = torch.zeros(
-                                            (emb.shape[0], pad_length, emb.shape[2]),
-                                            dtype=emb.dtype, device=emb.device
-                                        )
-                                        emb = torch.cat([emb, padding], dim=1)
-                                    padded_embeddings.append(emb)
-                                mnt_text_embeddings = torch.cat(padded_embeddings, dim=0)
-                            else:
-                                mnt_text_embeddings = torch.cat(mnt_text_embeddings_list, dim=0)
+                            mnt_text_embeddings, mnt_text_seq_len = self._collate_text_embeddings(
+                                mnt_text_embeddings_list, self.arch.text_seq_axis
+                            )
 
                             # Prepare auxiliary data
                             if self.is_zimage:
-                                mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
+                                mnt_attention_mask = self._collate_text_masks(
+                                    mnt_auxiliary_data_list, mnt_text_seq_len
+                                )
                                 mnt_pooled_embeddings = None
                             elif self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                                 # encoder_mask per sample: [L] → stacked to [B, L]
-                                mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
+                                mnt_attention_mask = self._collate_text_masks(
+                                    mnt_auxiliary_data_list, mnt_text_seq_len
+                                )
                                 mnt_pooled_embeddings = None
                             elif self.is_anima:
                                 # Anima: per-item dict → one dict of batched [B, L] tensors.

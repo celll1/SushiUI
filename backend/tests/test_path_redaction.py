@@ -90,6 +90,16 @@ class TestPathsAreRedacted(unittest.TestCase):
             redact_paths("\\\\nas\\share\\vaes\\x.safetensors"), "x.safetensors"
         )
 
+    def test_an_api_route_in_prose_is_not_a_path(self):
+        # Real value of effective_warnings on four images in this repo's
+        # gallery: the route was reduced to "video", which turned an
+        # explanation into a sentence the backend never wrote.
+        message = ("MiniMax's model card documents this workflow for first- "
+                   "and last-frame conditioning with up to two images; the "
+                   "same pinning mechanism as /generate/inpaint/video is used "
+                   "here at the head of the span.")
+        self.assertEqual(redact_paths(message), message)
+
     def test_path_quoted_inside_prose(self):
         self.assertEqual(
             redact_paths("VAE override failed to load from Z:\\a\\b\\my_vae; using the model VAE."),

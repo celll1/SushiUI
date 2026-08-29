@@ -15499,6 +15499,19 @@ class TrainingRunCreateRequest(BaseModel):
     sample_cfg_scale: float = TRAINING_DEFAULTS["sample_cfg_scale"]
     sample_sampler: str = TRAINING_DEFAULTS["sample_sampler"]
     sample_schedule_type: str = TRAINING_DEFAULTS["sample_schedule_type"]
+    sample_cfg_schedule_type: str = TRAINING_DEFAULTS["sample_cfg_schedule_type"]
+    sample_cfg_schedule_min: float = TRAINING_DEFAULTS["sample_cfg_schedule_min"]
+    sample_cfg_schedule_max: Optional[float] = TRAINING_DEFAULTS["sample_cfg_schedule_max"]
+    sample_cfg_schedule_power: float = TRAINING_DEFAULTS["sample_cfg_schedule_power"]
+    sample_cfg_rescale_snr_alpha: float = TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"]
+    sample_dynamic_threshold_percentile: float = TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"]
+    sample_dynamic_threshold_mimic_scale: float = TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"]
+    sample_nag_enable: bool = TRAINING_DEFAULTS["sample_nag_enable"]
+    sample_nag_scale: float = TRAINING_DEFAULTS["sample_nag_scale"]
+    sample_nag_tau: float = TRAINING_DEFAULTS["sample_nag_tau"]
+    sample_nag_alpha: float = TRAINING_DEFAULTS["sample_nag_alpha"]
+    sample_nag_sigma_end: float = TRAINING_DEFAULTS["sample_nag_sigma_end"]
+    sample_nag_negative_prompt: str = TRAINING_DEFAULTS["sample_nag_negative_prompt"]
     sample_seed: int = TRAINING_DEFAULTS["sample_seed"]  # -1 for random
     sensenova_sample_timestep_shift: float = TRAINING_DEFAULTS[
         "sensenova_sample_timestep_shift"
@@ -15943,6 +15956,19 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "sample_cfg_scale": ("sample", "guidance_scale"),
     "sample_sampler": ("sample", "sampler"),
     "sample_schedule_type": ("sample", "schedule_type"),
+    "sample_cfg_schedule_type": ("sample", "cfg_schedule_type"),
+    "sample_cfg_schedule_min": ("sample", "cfg_schedule_min"),
+    "sample_cfg_schedule_max": ("sample", "cfg_schedule_max"),
+    "sample_cfg_schedule_power": ("sample", "cfg_schedule_power"),
+    "sample_cfg_rescale_snr_alpha": ("sample", "cfg_rescale_snr_alpha"),
+    "sample_dynamic_threshold_percentile": ("sample", "dynamic_threshold_percentile"),
+    "sample_dynamic_threshold_mimic_scale": ("sample", "dynamic_threshold_mimic_scale"),
+    "sample_nag_enable": ("sample", "nag_enable"),
+    "sample_nag_scale": ("sample", "nag_scale"),
+    "sample_nag_tau": ("sample", "nag_tau"),
+    "sample_nag_alpha": ("sample", "nag_alpha"),
+    "sample_nag_sigma_end": ("sample", "nag_sigma_end"),
+    "sample_nag_negative_prompt": ("sample", "nag_negative_prompt"),
     "sample_seed": ("sample", "seed"),
     "sensenova_sample_timestep_shift": ("sample", "sensenova_timestep_shift"),
     "sensenova_sample_img_cfg_scale": ("sample", "sensenova_img_cfg_scale"),

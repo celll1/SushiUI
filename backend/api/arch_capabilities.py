@@ -328,6 +328,11 @@ TRAINING_SAMPLE_SUPPORTED_PARAMS: Dict[str, List[str]] = {
 for _arch in ("sd15", "sdxl"):
     TRAINING_SAMPLE_SUPPORTED_PARAMS[_arch] = [
         "sample_sampler", "sample_schedule_type",
+        "sample_cfg_schedule_type", "sample_cfg_schedule_min", "sample_cfg_schedule_max",
+        "sample_cfg_schedule_power", "sample_cfg_rescale_snr_alpha",
+        "sample_dynamic_threshold_percentile", "sample_dynamic_threshold_mimic_scale",
+        "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha",
+        "sample_nag_sigma_end", "sample_nag_negative_prompt",
     ]
 TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
     "sensenova_sample_timestep_shift",

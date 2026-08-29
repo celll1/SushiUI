@@ -632,7 +632,7 @@ G5 is decided by a **real training step on a real ConvRot checkpoint**:
   it is: reachable.** `models/minimax_h3/loader.py::_load_transformer` swaps both
   `ConvRotInt8Linear` and `W4A8Linear` into the **DiT** from the `int8_convrot`
   and `w4a8_mixed` DiT files, both of which exist locally for both variants
-  (`M:/model/minimax_h3/diffusion_models/minimax_h3_{fl2va,ref2va}_pruned_{int8_convrot,w4a8_mixed}.safetensors`);
+  (`<MODEL_ROOT>/minimax_h3/diffusion_models/minimax_h3_{fl2va,ref2va}_pruned_{int8_convrot,w4a8_mixed}.safetensors`);
   `training/ops/minimax_h3_ops.load_components` freezes that DiT and trains LoRA
   over it, so those Linears are frozen and differentiable — exactly this gate's
   subject. An earlier reading that H3's only ConvRot file was the

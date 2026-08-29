@@ -7402,6 +7402,117 @@ class BaseTrainer(ABC):
             return None
         return torch.rand(batch_size) < float(rate)
 
+    # ------------------------------------------------------------------
+    # Aligned-CFG-null split metrics (monitoring only, no gradients)
+    # ------------------------------------------------------------------
+    # An item trained against the null is optimizing a different thing from
+    # its conditional neighbours -- it predicts the caption-free marginal --
+    # so its loss lives in its own band, and the run's charted loss is a
+    # blend of the two populations mixed at the drop rate. At rate 0.1 that
+    # blend moved run 121's mean by ~20% while its median barely shifted:
+    # the aggregate cannot answer "is the conditional branch still
+    # improving", because a change in either population moves it. These
+    # series split it back apart. All of it rides the generic extra-metrics
+    # channel, so there is no DB migration and a run picks the series up on
+    # its next start.
+
+    def stash_cfg_null_per_sample_loss(self, pred, target):
+        """Park this forward's PER-ITEM MSE so a mixed batch can be split.
+
+        Called by the architectures whose batch can hold null and
+        conditional items at once (Lens, MiniT2I). At batch size 1 the step's
+        scalar loss is already the item's own, so nothing is stashed and the
+        split below reads the scalar -- this recomputes the squared error, and
+        paying for that on every step of a run that cannot use it is not free.
+        SenseNova never calls it for exactly that reason: its route runs at
+        physical batch 1 (arch_capabilities TRAINING_REQUIRED_VALUES), so its
+        batch cannot be mixed and its own train_step stays free of any
+        null-handling, which its tests assert.
+
+        Both arguments must be batch-first. Best-effort by construction: a
+        failure here loses a monitoring series, and must never take down a
+        training step.
+        """
+        try:
+            if not self.cfg_null_drop_rate():
+                return
+            if pred.dim() < 2 or pred.shape[0] < 2:
+                return
+            with torch.no_grad():
+                sq = (pred.detach().float() - target.detach().float()) ** 2
+                self._last_loss_per_sample = sq.flatten(1).mean(1).cpu()
+        except Exception:
+            self._last_loss_per_sample = None
+
+    def _log_cfg_null_loss_split(self, cfg_drop_mask, loss_value):
+        """Emit this step's null / conditional loss, and the draw that made it.
+
+        ``cfg_null_frac`` is emitted whenever the mechanism is on, including
+        when it is 0 for the step: it is what tells a reader whether the two
+        loss series are a full split of the step or one side of a batch that
+        happened to be homogeneous, which is not otherwise recoverable from
+        the chart.
+        """
+        try:
+            n = int(cfg_drop_mask.numel())
+            if not n:
+                return
+            n_null = int(cfg_drop_mask.sum().item())
+            self.log_extra_metric("cfg_null_frac", n_null / n)
+            # Window for the grad-norm split: gradients accumulate across
+            # batches, so a norm belongs to a side only if EVERY batch that
+            # contributed to it was on that side.
+            window = getattr(self, "_cfg_null_window", None)
+            if window is None:
+                window = self._cfg_null_window = []
+            window.append((n_null, n))
+
+            per_sample = getattr(self, "_last_loss_per_sample", None)
+            self._last_loss_per_sample = None
+            if per_sample is not None and per_sample.numel() == n:
+                mask = cfg_drop_mask.to(torch.bool)
+                if n_null:
+                    self.log_extra_metric("loss_null", float(per_sample[mask].mean()))
+                if n_null < n:
+                    self.log_extra_metric("loss_cond", float(per_sample[~mask].mean()))
+            elif loss_value is not None:
+                # No per-item loss available: only a HOMOGENEOUS batch can be
+                # attributed. A mixed batch's mean is a blend and belongs to
+                # neither side, so it is left out rather than assigned to the
+                # larger one.
+                if n_null == n:
+                    self.log_extra_metric("loss_null", float(loss_value))
+                elif n_null == 0:
+                    self.log_extra_metric("loss_cond", float(loss_value))
+        except Exception:
+            pass
+
+    def _log_cfg_null_grad_split(self, grad_norm_total):
+        """Attribute the optimizer step's grad norm, when it belongs to one side.
+
+        A gradient norm is a property of the whole accumulated batch, not of
+        an item, so unlike the loss it cannot be split -- it can only be
+        LABELLED, and only when every item behind it was drawn the same way.
+        Under gradient accumulation that means every batch in the window.
+        """
+        try:
+            window = getattr(self, "_cfg_null_window", None)
+            if not window:
+                return
+            self._cfg_null_window = []
+            if grad_norm_total is None:
+                return
+            total = sum(n for _, n in window)
+            nulls = sum(n_null for n_null, _ in window)
+            if not total:
+                return
+            if nulls == total:
+                self.log_extra_metric("gnorm_null", float(grad_norm_total))
+            elif nulls == 0:
+                self.log_extra_metric("gnorm_cond", float(grad_norm_total))
+        except Exception:
+            pass
+
     def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
         """Run a batch (the _execute_forward_backward args in dict ``b``) as
         micro-chunks of size ``micro_bs`` with gradient accumulation, returning
@@ -13261,6 +13372,12 @@ class BaseTrainer(ABC):
                     # Collated architectures are unaffected: still one draw per
                     # batch, still reused by every MNT transform.
                     cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))
+                    # Drop any per-item loss the previous batch parked but never
+                    # spent (a skip between its forward and its logging). Batch
+                    # size is constant, so a stale tensor would pass the length
+                    # check in _log_cfg_null_loss_split and be attributed to the
+                    # wrong items' labels.
+                    self._last_loss_per_sample = None
 
                     for item_index, (item, dataset) in enumerate(batch):
                         # BucketManager stores bucket_width/bucket_height, not width/height
@@ -14503,6 +14620,13 @@ class BaseTrainer(ABC):
                         if self._batches_skipped:
                             self.log_extra_metric("batches_skipped", float(self._batches_skipped))
 
+                        # Aligned-CFG-null split. Emitted per MNT iteration, the
+                        # same granularity as the loss it splits: every MNT
+                        # transform of a batch reuses that batch's one label, so
+                        # the attribution is the same on each pass.
+                        if cfg_drop_mask is not None:
+                            self._log_cfg_null_loss_split(cfg_drop_mask, mnt_pred_loss_value)
+
                         # SenseNova MoT phase eviction: this step's half swaps.
                         # Drained ONCE here because log_extra_metric overwrites,
                         # and a four-phase step performs two swaps -- per-swap
@@ -14722,6 +14846,12 @@ class BaseTrainer(ABC):
                                 self.writer.add_scalar("train/grad_norm_text_encoder_2", grad_norm_te2, global_step)
                             if grad_norm_ve > 0.0:
                                 self.writer.add_scalar("train/grad_norm_vision_encoder", grad_norm_ve, global_step)
+
+                            # Label this norm null or conditional when every
+                            # batch behind it was drawn the same way. Before the
+                            # _log_metrics_to_db call so it merges into this
+                            # step's row rather than riding the next one.
+                            self._log_cfg_null_grad_split(grad_norm_total)
 
                             # Update grad_norm in database
                             if self.run_id is not None:

@@ -45,6 +45,25 @@ EXTRA_METRIC_DEFS = {
     # loss_vs_t.jsonl sidecar; see scratchpad "Outpaint ControlNet:
     # loss-vs-timestep instrumentation" design doc).
     "known_loss": {"label": "Known region", "color": "#34d399", "dashed": True},
+    # Aligned-CFG-null split of the step's loss (BaseTrainer._log_cfg_null_loss_
+    # split), emitted only by a run with a nonzero cfg_uncond_drop_rate. The
+    # null items predict the caption-free marginal, so they sit in their own
+    # band and the charted mean is a blend of two populations: at rate 0.1 on
+    # run 121 the mean rose ~20% while the median barely moved. Same scale as
+    # the main loss, so they pool into the primary Y-range with it.
+    "loss_null": {"label": "Loss (null)", "color": "#fb7185", "dashed": False},
+    "loss_cond": {"label": "Loss (cond)", "color": "#4ade80", "dashed": False},
+    # Fraction of the step's batch drawn null. Also the reader's only way to
+    # tell a full split from one side of a homogeneous batch, which is all a
+    # mixed batch yields when the architecture stashes no per-item loss.
+    "cfg_null_frac": {"label": "CFG null fraction", "color": "#fbbf24",
+                      "dashed": True, "axis": "right"},
+    # The optimizer step's total grad norm, labelled by side. A norm is a
+    # property of the whole accumulated batch, so this is emitted ONLY when
+    # every batch behind it was drawn the same way -- at batch 1 with no
+    # accumulation that is every step, and with a mixed window it is none.
+    "gnorm_null": {"label": "Grad norm (null)", "color": "#fb7185", "dashed": False},
+    "gnorm_cond": {"label": "Grad norm (cond)", "color": "#4ade80", "dashed": False},
     # Actually-applied per-step learning rate (optimizer.param_groups[0]['lr']),
     # logged for every trainer (LoRA/full-FT/ControlNet share the same
     # BaseTrainer.train() loop). Schedules can now be non-constant

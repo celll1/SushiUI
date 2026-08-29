@@ -21,6 +21,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.training.arch.lens import LensArchHandler  # noqa: E402
+from core.training.base_trainer import BaseTrainer  # noqa: E402
 from core.training.ops import lens_ops  # noqa: E402
 from core.training.ops.lens_ops import apply_cfg_null_collated  # noqa: E402
 
@@ -338,10 +339,17 @@ class _StubTrainer:
     training_dtype = torch.float32
     mixed_precision = False
     timestep_sampler = None
+    # The real method, not a no-op: Lens batches can be mixed, so train_step
+    # parks the per-item MSE for the chart's null/conditional split and this
+    # exercises that call rather than stubbing past it.
+    stash_cfg_null_per_sample_loss = BaseTrainer.stash_cfg_null_per_sample_loss
 
     def __init__(self):
         self.transformer = _RecordingTransformer()
         self.arch = LensArchHandler.__new__(LensArchHandler)
+
+    def cfg_null_drop_rate(self):
+        return 0.1
 
 
 def _train_step(cfg_drop_mask):

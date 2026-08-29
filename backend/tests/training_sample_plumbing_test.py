@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -273,3 +274,50 @@ def test_frontend_sample_fallbacks_do_not_diverge_from_default_object():
         assert f'updateParam("{key}", DEFAULT_PARAMS.{key})' in source
     assert 'updateParam("sample_steps", sampleStepsDefault)' in source
     assert 'updateParam("sample_cfg_scale", sampleCfgScaleDefault)' in source
+
+
+def test_random_sample_seed_is_concrete_and_matches_saved_metadata(tmp_path, monkeypatch):
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    trainer.output_dir = tmp_path
+    trainer.run_id = 7
+    trainer.log_prefix = "[test]"
+    trainer._sample_prompts = [{"positive": "one", "negative": "none"}]
+    trainer._dispatch_sample = Mock(return_value=Image.new("RGB", (8, 8)))
+    trainer._mark_step0_sample_done = Mock()
+
+    draw = Mock(return_value=123456789)
+    monkeypatch.setattr("core.training.base_trainer.secrets.randbelow", draw)
+    trainer._run_step0_sample_if_due(
+        sample_every_n_steps=10,
+        sample_width=64,
+        sample_height=64,
+        sample_guidance_scale=4.0,
+        sample_steps=2,
+        sample_seed=-1,
+        sample_sampler="euler",
+        sample_schedule_type="uniform",
+        sensenova_sample_timestep_shift=3.0,
+        sensenova_sample_img_cfg_scale=1.0,
+        sensenova_sample_cfg_norm="global",
+        global_step=0,
+    )
+
+    assert draw.call_args.args == (2**32,)
+    assert trainer._dispatch_sample.call_args.kwargs["seed"] == 123456789
+    with Image.open(tmp_path / "samples" / "step_000000_sample_0.png") as saved:
+        assert saved.info["seed"] == "123456789"
+
+
+def test_random_sample_seed_draws_separately_for_prompts(monkeypatch):
+    draws = Mock(side_effect=[101, 202])
+    monkeypatch.setattr("core.training.base_trainer.secrets.randbelow", draws)
+    seeds = [_ConcreteTrainer._resolve_sample_seed(-1) for _prompt in ("one", "two")]
+    assert seeds == [101, 202]
+    assert draws.call_count == 2
+
+
+def test_fixed_sample_seed_does_not_draw(monkeypatch):
+    draw = Mock()
+    monkeypatch.setattr("core.training.base_trainer.secrets.randbelow", draw)
+    assert _ConcreteTrainer._resolve_sample_seed(42) == 42
+    draw.assert_not_called()

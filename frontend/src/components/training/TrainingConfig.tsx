@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -755,6 +755,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   );
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
+  const trainingSampleArch = getModelArchitecture(baseModelPath);
+  const sampleSamplerSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sample_sampler");
+  const sampleScheduleSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sample_schedule_type");
+  const sensenovaTimestepShiftSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sensenova_sample_timestep_shift");
+  const sensenovaImgCfgSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sensenova_sample_img_cfg_scale");
+  const sensenovaCfgNormSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sensenova_sample_cfg_norm");
+  const selectedTrainingSampleNote = trainingSampleNote(archCapabilities, trainingSampleArch);
   const vaeUnsupported = unsupportedTrainingFeature("vae");
   // Aligned CFG null-condition training. A string here means the backend cannot
   // build this architecture's inference uncond condition, and answers 400 for
@@ -5179,11 +5191,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
-        {isSenseNovaModel(baseModelPath) && (
+        {!trainingSamplesUnsupported && (
+          sensenovaTimestepShiftSupported || sensenovaImgCfgSupported || sensenovaCfgNormSupported
+        ) && (
           <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
             <h3 className="text-sm font-medium text-gray-300">SenseNova Sample Generation</h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <div>
+              {sensenovaTimestepShiftSupported && <div>
                 <label className="block text-xs text-gray-400 mb-1">Timestep Shift</label>
                 <input
                   type="number"
@@ -5193,8 +5207,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => updateParam("sensenova_sample_timestep_shift", e.target.value === "" ? undefined : parseFloat(e.target.value))}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
-              </div>
-              <div>
+              </div>}
+              {sensenovaImgCfgSupported && <div>
                 <label className="block text-xs text-gray-400 mb-1">Image CFG Scale</label>
                 <input
                   type="number"
@@ -5204,8 +5218,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => updateParam("sensenova_sample_img_cfg_scale", e.target.value === "" ? undefined : parseFloat(e.target.value))}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
-              </div>
-              <div>
+              </div>}
+              {sensenovaCfgNormSupported && <div>
                 <label className="block text-xs text-gray-400 mb-1">CFG Norm</label>
                 <select
                   value={params.sensenova_sample_cfg_norm ?? ""}
@@ -5215,7 +5229,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <option value="global">Global</option>
                   <option value="none">None</option>
                 </select>
-              </div>
+              </div>}
             </div>
             <p className="text-xs text-gray-500">
               These settings affect only SenseNova training previews. Image CFG is used when the sample prompt includes a reference image.
@@ -6681,6 +6695,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {!trainingSamplesUnsupported && (
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Sample Generation (Optional)</h3>
+          {selectedTrainingSampleNote && (
+            <p className="text-xs text-amber-400">{selectedTrainingSampleNote}</p>
+          )}
 
           {/* Sample Every */}
           <div>
@@ -6966,7 +6983,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
-            <div>
+            {sampleSamplerSupported && <div>
               <label className="block text-xs text-gray-400 mb-1">Sampler</label>
               <select
                 value={sampleSampler}
@@ -6979,8 +6996,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </option>
                 ))}
               </select>
-            </div>
-            <div>
+            </div>}
+            {sampleScheduleSupported && <div>
               <label className="block text-xs text-gray-400 mb-1">Schedule Type</label>
               <select
                 value={sampleScheduleType}
@@ -6993,7 +7010,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
           </div>
 
           {/* Sample Seed */}

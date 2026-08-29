@@ -317,6 +317,33 @@ def _add_training_feature_unsupported(arch: str, feature: str, reason: str,
         entry["methods"] = list(methods)
     TRAINING_FEATURE_UNSUPPORTED.setdefault(arch, {})[feature] = entry
 
+
+# Optional controls within the training-sample section are allowlisted here.
+# Common prompt/size/steps/CFG/seed fields are not capability-gated. Config
+# values remain accepted and serialized for compatibility when their controls
+# are not offered for the selected architecture.
+TRAINING_SAMPLE_SUPPORTED_PARAMS: Dict[str, List[str]] = {
+    arch: [] for arch in TRAINING_DECLARED_ARCHS
+}
+for _arch in ("sd15", "sdxl"):
+    TRAINING_SAMPLE_SUPPORTED_PARAMS[_arch] = [
+        "sample_sampler", "sample_schedule_type",
+    ]
+TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
+    "sensenova_sample_timestep_shift",
+    "sensenova_sample_img_cfg_scale",
+    "sensenova_sample_cfg_norm",
+]
+
+# Supported sample paths whose output contract is narrower than the image
+# preview section suggests.
+TRAINING_SAMPLE_NOTES: Dict[str, str] = {
+    "ltx2": (
+        "LTX-2.3 generates a fixed 9-frame validation clip, saves only its "
+        "first frame as PNG, and discards the jointly generated audio."
+    ),
+}
+
 # ---------------------------------------------------------------------------
 # TRAINING_REQUIRED_VALUES[arch][param] = {"value": ..., "reason": ...,
 #                                          "methods"?: [...]}
@@ -1054,12 +1081,15 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
         "overlapping a swap's two directions on separate CUDA streams is a sub-option of SenseNova's per-phase MoT weight-half CPU eviction, which this architecture has no equivalent of")
 
 # --- Sample generation during training --------------------------------------
-# NOT declared for SenseNova: its sampling integration is in flight, and a
-# hardcoded "unsupported" here would contradict it the moment it lands. Absent
-# means supported, so the controls stay visible either way.
 _add_training_feature_unsupported(
     "ideogram4", "training_samples",
     "step-0 and periodic sampling are not implemented for Ideogram 4 (dual transformer + FP8); arch/ideogram4.py's sample() warns and returns None")
+_add_training_feature_unsupported(
+    "minimax_h3", "training_samples",
+    "step-0 and periodic sampling are not implemented for MiniMax-H3; its training sample handler warns and returns None")
+_add_training_feature_unsupported(
+    "acestep", "training_samples",
+    "step-0 and periodic audio previews are not wired for ACE-Step; its training sample handler warns and returns None")
 
 # --- VAE --------------------------------------------------------------------
 # --- Required config values -------------------------------------------------
@@ -1176,6 +1206,10 @@ for _arch, _features in TRAINING_FEATURE_UNSUPPORTED.items():
         assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
             f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}] scopes unknown "
             f"training methods")
+assert set(TRAINING_SAMPLE_SUPPORTED_PARAMS) == set(TRAINING_DECLARED_ARCHS), (
+    "TRAINING_SAMPLE_SUPPORTED_PARAMS must declare every training architecture")
+assert set(TRAINING_SAMPLE_NOTES) <= TRAINING_DECLARED_ARCHS, (
+    "TRAINING_SAMPLE_NOTES names an undeclared training architecture")
 assert set(TRAINING_REQUIRED_VALUES) <= TRAINING_DECLARED_ARCHS, (
     f"TRAINING_REQUIRED_VALUES names undeclared archs: "
     f"{set(TRAINING_REQUIRED_VALUES) - TRAINING_DECLARED_ARCHS}")

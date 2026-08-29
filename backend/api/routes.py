@@ -1015,6 +1015,12 @@ async def get_arch_capabilities():
     and `training_feature_labels` are its sibling maps, same role as
     `feature_params`/`feature_labels` on the generation axis.
 
+    `training_sample_supported_params` allowlists architecture-specific
+    controls within the otherwise common sample section. A client offers a
+    sampler or schedule only where the trainer consumes it, while still being
+    able to load and save older configs carrying those keys. `training_sample_
+    notes` documents supported paths with a narrower preview contract.
+
     `training_required_values` is a FOURTH axis, and the only one that says what
     a parameter must BE rather than what is missing: architecture -> training
     config parameter -> `{value, reason, methods?}`. SenseNova implements full
@@ -1079,7 +1085,8 @@ async def get_arch_capabilities():
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
         TRAINING_FEATURE_UNSUPPORTED, TRAINING_FEATURE_PARAMS,
         TRAINING_FEATURE_LABELS, TRAINING_REQUIRED_VALUES,
-        TRAINING_FEATURE_ADVISORY,
+        TRAINING_FEATURE_ADVISORY, TRAINING_SAMPLE_NOTES,
+        TRAINING_SAMPLE_SUPPORTED_PARAMS,
         AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
         chain_context_payload, video_constraints_payload,
     )
@@ -1094,6 +1101,8 @@ async def get_arch_capabilities():
         "training_feature_labels": TRAINING_FEATURE_LABELS,
         "training_required_values": TRAINING_REQUIRED_VALUES,
         "training_feature_advisory": TRAINING_FEATURE_ADVISORY,
+        "training_sample_supported_params": TRAINING_SAMPLE_SUPPORTED_PARAMS,
+        "training_sample_notes": TRAINING_SAMPLE_NOTES,
         "arch_display_names": ARCH_DISPLAY_NAMES,
         "cfg_null_stage": CFG_NULL_STAGE_BY_ARCH,
         "cfg_uncond_drop_defaults": CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,

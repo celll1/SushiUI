@@ -38,6 +38,8 @@ from api.arch_capabilities import (  # noqa: E402
     TRAINING_FEATURE_PARAMS,
     TRAINING_FEATURE_UNSUPPORTED,
     TRAINING_METHODS,
+    TRAINING_SAMPLE_NOTES,
+    TRAINING_SAMPLE_SUPPORTED_PARAMS,
     TRAINING_UNSUPPORTED,
     training_feature_unsupported_reason,
 )
@@ -53,6 +55,12 @@ def _arch_source(arch: str) -> str:
 def _method_body(source: str, name: str) -> str:
     """The body of `def <name>(` up to the next top-level-in-class `def`."""
     match = re.search(rf"\n    def {name}\(.*?(?=\n    def |\Z)", source, re.S)
+    assert match, f"{name} not found"
+    return match.group(0)
+
+
+def _top_level_function_body(source: str, name: str) -> str:
+    match = re.search(rf"\ndef {name}\(.*?(?=\ndef |\Z)", source, re.S)
     assert match, f"{name} not found"
     return match.group(0)
 
@@ -81,6 +89,8 @@ def test_tables_only_name_known_archs_features_and_methods():
             assert feature in TRAINING_FEATURE_PARAMS, (arch, feature)
             assert entry["reason"].strip()
             assert set(entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS)
+    assert set(TRAINING_SAMPLE_SUPPORTED_PARAMS) == set(TRAINING_DECLARED_ARCHS)
+    assert set(TRAINING_SAMPLE_NOTES) <= set(TRAINING_DECLARED_ARCHS)
 
 
 def test_block_swap_refusals_are_declared():
@@ -98,8 +108,23 @@ def test_block_swap_refusals_are_declared():
 def test_sampling_refusals_are_declared():
     for arch in sorted(TRAINING_DECLARED_ARCHS):
         body = _method_body(_arch_source(arch), "sample")
-        refuses = ("raise NotImplementedError" in body
-                   or re.search(r"not yet\s+.*supported", body, re.S) is not None)
+        ops_path = ARCH_DIR.parent / "ops" / f"{arch}_ops.py"
+        delegated_body = ""
+        if "generate_sample(" in body and ops_path.exists():
+            delegated_body = _top_level_function_body(
+                ops_path.read_text(encoding="utf-8"), "generate_sample")
+        implementation = body + delegated_body
+        delegated_doc = ""
+        if delegated_body:
+            doc = re.search(r'\)\s*(?:->.*?)?:\s*"""(.*?)"""', delegated_body, re.S)
+            delegated_doc = doc.group(1) if doc else ""
+        declines_in_text = (
+            re.search(r"not\s+(?:yet\s+)?(?:implemented|wired|supported)",
+                      delegated_doc, re.I | re.S) is not None
+            or re.search(r"not\s+yet\s+ported", body, re.I) is not None
+        )
+        refuses = ("raise NotImplementedError" in implementation
+                   or ("return None" in implementation and declines_in_text))
         if not refuses:
             continue
         assert training_feature_unsupported_reason(arch, "training_samples"), (
@@ -121,14 +146,16 @@ def test_method_scope_narrows_rather_than_hides():
 def test_route_serves_the_new_capability_keys():
     source = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
     for key in ("training_feature_unsupported", "training_feature_params",
-                "training_feature_labels", "arch_display_names"):
+                "training_feature_labels", "training_sample_supported_params",
+                "training_sample_notes", "arch_display_names"):
         assert f'"{key}"' in source, f"GET /schema/arch-capabilities does not serve {key}"
 
 
 def test_openapi_declares_the_new_capability_keys():
     spec = (REPO / "openapi.yaml").read_text(encoding="utf-8")
     for key in ("training_feature_unsupported", "training_feature_params",
-                "training_feature_labels", "arch_display_names"):
+                "training_feature_labels", "training_sample_supported_params",
+                "training_sample_notes", "arch_display_names"):
         assert re.search(rf"^        {key}:$", spec, re.M), f"ArchCapabilities lacks {key}"
 
 
@@ -139,6 +166,8 @@ def test_training_form_is_data_driven():
     for stale in ("showSD15", "showSDXL", "showZImage", "showFlux2", "showAnima"):
         assert stale not in tsx, f"{stale} is a per-arch filter flag; derive the list instead"
     assert "trainingFeatureUnsupportedReason(" in tsx
+    assert "trainingSampleParameterSupported(" in tsx
+    assert "trainingSampleNote(" in tsx
     assert "archDisplayName(" in tsx
     for gate in ("blockSwapUnsupported", "fusedGroupsUnsupported",
                  "referenceImagesUnsupported", "textEncoderTrainingUnsupported",

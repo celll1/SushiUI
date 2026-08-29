@@ -638,6 +638,35 @@ class ControlNetTrainer(BaseTrainer):
         self._condition_image_cache[fallback_key] = None
         return None
 
+    def _prepare_sample_guidance_embeddings(
+        self, prompt_embeds, negative_prompt_embeds, negative_prompt,
+        nag_enable, nag_negative_prompt,
+    ):
+        nag_embeds = nag_pooled = None
+        if nag_enable:
+            effective_nag_negative = nag_negative_prompt or negative_prompt
+            if self.is_sdxl:
+                nag_embeds, nag_pooled = self.encode_prompt(effective_nag_negative, requires_grad=False)
+            else:
+                nag_embeds = self.encode_prompt(effective_nag_negative, requires_grad=False)
+        branches = [prompt_embeds, negative_prompt_embeds]
+        if nag_embeds is not None:
+            branches.append(nag_embeds)
+        max_seq_len = max(embeds.shape[1] for embeds in branches)
+
+        def _pad(embeds):
+            if embeds.shape[1] == max_seq_len:
+                return embeds
+            padding = torch.zeros(
+                (embeds.shape[0], max_seq_len - embeds.shape[1], embeds.shape[2]),
+                dtype=embeds.dtype, device=embeds.device,
+            )
+            return torch.cat([embeds, padding], dim=1)
+
+        return _pad(prompt_embeds), _pad(negative_prompt_embeds), (
+            _pad(nag_embeds) if nag_embeds is not None else None
+        ), nag_pooled
+
     def generate_sample(
         self,
         prompt: str,
@@ -649,6 +678,19 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
         schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
+        cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+        cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+        cfg_schedule_max: "Optional[float]" = _TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+        cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
+        cfg_rescale_snr_alpha: float = _TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"],
+        dynamic_threshold_percentile: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"],
+        dynamic_threshold_mimic_scale: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"],
+        nag_enable: bool = _TRAINING_DEFAULTS["sample_nag_enable"],
+        nag_scale: float = _TRAINING_DEFAULTS["sample_nag_scale"],
+        nag_tau: float = _TRAINING_DEFAULTS["sample_nag_tau"],
+        nag_alpha: float = _TRAINING_DEFAULTS["sample_nag_alpha"],
+        nag_sigma_end: float = _TRAINING_DEFAULTS["sample_nag_sigma_end"],
+        nag_negative_prompt: str = _TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         condition_image_path: "Optional[str]" = None,
         reference_image_path: "Optional[str]" = None,
         negative_prompt: str = "",
@@ -683,6 +725,14 @@ class ControlNetTrainer(BaseTrainer):
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
                 current_step=current_step, sampler=sampler, schedule_type=schedule_type,
+                cfg_schedule_type=cfg_schedule_type, cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max, cfg_schedule_power=cfg_schedule_power,
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                dynamic_threshold_percentile=dynamic_threshold_percentile,
+                dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                nag_enable=nag_enable, nag_scale=nag_scale, nag_tau=nag_tau,
+                nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
+                nag_negative_prompt=nag_negative_prompt,
                 reference_image_path=reference_image_path,
             )
 
@@ -694,6 +744,14 @@ class ControlNetTrainer(BaseTrainer):
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
                 current_step=current_step, sampler=sampler, schedule_type=schedule_type,
+                cfg_schedule_type=cfg_schedule_type, cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max, cfg_schedule_power=cfg_schedule_power,
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                dynamic_threshold_percentile=dynamic_threshold_percentile,
+                dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                nag_enable=nag_enable, nag_scale=nag_scale, nag_tau=nag_tau,
+                nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
+                nag_negative_prompt=nag_negative_prompt,
                 condition_image=loaded_condition,
             )
         elif self.controlnet_type == "lllite":
@@ -703,6 +761,14 @@ class ControlNetTrainer(BaseTrainer):
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
                 current_step=current_step, sampler=sampler, schedule_type=schedule_type,
+                cfg_schedule_type=cfg_schedule_type, cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max, cfg_schedule_power=cfg_schedule_power,
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                dynamic_threshold_percentile=dynamic_threshold_percentile,
+                dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                nag_enable=nag_enable, nag_scale=nag_scale, nag_tau=nag_tau,
+                nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
+                nag_negative_prompt=nag_negative_prompt,
                 condition_image=loaded_condition,
             )
         else:
@@ -713,6 +779,14 @@ class ControlNetTrainer(BaseTrainer):
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
                 current_step=current_step, sampler=sampler, schedule_type=schedule_type,
+                cfg_schedule_type=cfg_schedule_type, cfg_schedule_min=cfg_schedule_min,
+                cfg_schedule_max=cfg_schedule_max, cfg_schedule_power=cfg_schedule_power,
+                cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                dynamic_threshold_percentile=dynamic_threshold_percentile,
+                dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                nag_enable=nag_enable, nag_scale=nag_scale, nag_tau=nag_tau,
+                nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
+                nag_negative_prompt=nag_negative_prompt,
                 reference_image_path=reference_image_path,
             )
 
@@ -727,6 +801,19 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
         schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
+        cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+        cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+        cfg_schedule_max: "Optional[float]" = _TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+        cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
+        cfg_rescale_snr_alpha: float = _TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"],
+        dynamic_threshold_percentile: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"],
+        dynamic_threshold_mimic_scale: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"],
+        nag_enable: bool = _TRAINING_DEFAULTS["sample_nag_enable"],
+        nag_scale: float = _TRAINING_DEFAULTS["sample_nag_scale"],
+        nag_tau: float = _TRAINING_DEFAULTS["sample_nag_tau"],
+        nag_alpha: float = _TRAINING_DEFAULTS["sample_nag_alpha"],
+        nag_sigma_end: float = _TRAINING_DEFAULTS["sample_nag_sigma_end"],
+        nag_negative_prompt: str = _TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
     ) -> "Image.Image":
@@ -816,15 +903,12 @@ class ControlNetTrainer(BaseTrainer):
                 pooled_prompt_embeds = None
                 negative_pooled_prompt_embeds = None
 
-            # Pad negative embeddings to match positive (prompt chunking)
-            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
-                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
-                padding = torch.zeros(
-                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
-                    dtype=negative_prompt_embeds.dtype,
-                    device=negative_prompt_embeds.device
+            prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds, nag_negative_pooled_prompt_embeds = (
+                self._prepare_sample_guidance_embeddings(
+                    prompt_embeds, negative_prompt_embeds, negative_prompt,
+                    nag_enable, nag_negative_prompt,
                 )
-                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+            )
 
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
@@ -869,20 +953,20 @@ class ControlNetTrainer(BaseTrainer):
                     progress_callback=None,
                     step_callback=None,
                     developer_mode=False,
-                    cfg_schedule_type="constant",
-                    cfg_schedule_min=1.0,
-                    cfg_schedule_max=None,
-                    cfg_schedule_power=2.0,
-                    cfg_rescale_snr_alpha=0.0,
-                    dynamic_threshold_percentile=0.0,
-                    dynamic_threshold_mimic_scale=1.0,
-                    nag_enable=False,
-                    nag_scale=5.0,
-                    nag_tau=3.5,
-                    nag_alpha=0.25,
-                    nag_sigma_end=0.0,
-                    nag_negative_prompt_embeds=None,
-                    nag_negative_pooled_prompt_embeds=None,
+                    cfg_schedule_type=cfg_schedule_type,
+                    cfg_schedule_min=cfg_schedule_min,
+                    cfg_schedule_max=cfg_schedule_max,
+                    cfg_schedule_power=cfg_schedule_power,
+                    cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                    dynamic_threshold_percentile=dynamic_threshold_percentile,
+                    dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                    nag_enable=nag_enable,
+                    nag_scale=nag_scale,
+                    nag_tau=nag_tau,
+                    nag_alpha=nag_alpha,
+                    nag_sigma_end=nag_sigma_end,
+                    nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                    nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                     attention_type="normal",
                     # ControlNet parameters
                     controlnet_images=[condition_image],
@@ -927,6 +1011,19 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
         schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
+        cfg_schedule_type: str = _TRAINING_DEFAULTS["sample_cfg_schedule_type"],
+        cfg_schedule_min: float = _TRAINING_DEFAULTS["sample_cfg_schedule_min"],
+        cfg_schedule_max: "Optional[float]" = _TRAINING_DEFAULTS["sample_cfg_schedule_max"],
+        cfg_schedule_power: float = _TRAINING_DEFAULTS["sample_cfg_schedule_power"],
+        cfg_rescale_snr_alpha: float = _TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"],
+        dynamic_threshold_percentile: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"],
+        dynamic_threshold_mimic_scale: float = _TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"],
+        nag_enable: bool = _TRAINING_DEFAULTS["sample_nag_enable"],
+        nag_scale: float = _TRAINING_DEFAULTS["sample_nag_scale"],
+        nag_tau: float = _TRAINING_DEFAULTS["sample_nag_tau"],
+        nag_alpha: float = _TRAINING_DEFAULTS["sample_nag_alpha"],
+        nag_sigma_end: float = _TRAINING_DEFAULTS["sample_nag_sigma_end"],
+        nag_negative_prompt: str = _TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
     ) -> "Image.Image":
@@ -1036,15 +1133,12 @@ class ControlNetTrainer(BaseTrainer):
                 pooled_prompt_embeds = None
                 negative_pooled_prompt_embeds = None
 
-            # Pad negative embeddings to match positive (prompt chunking)
-            if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
-                seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
-                padding = torch.zeros(
-                    (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
-                    dtype=negative_prompt_embeds.dtype,
-                    device=negative_prompt_embeds.device
+            prompt_embeds, negative_prompt_embeds, nag_negative_prompt_embeds, nag_negative_pooled_prompt_embeds = (
+                self._prepare_sample_guidance_embeddings(
+                    prompt_embeds, negative_prompt_embeds, negative_prompt,
+                    nag_enable, nag_negative_prompt,
                 )
-                negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+            )
 
             self.move_text_encoder_to_cpu()
             torch.cuda.empty_cache()
@@ -1097,20 +1191,20 @@ class ControlNetTrainer(BaseTrainer):
                     progress_callback=None,
                     step_callback=None,
                     developer_mode=False,
-                    cfg_schedule_type="constant",
-                    cfg_schedule_min=1.0,
-                    cfg_schedule_max=None,
-                    cfg_schedule_power=2.0,
-                    cfg_rescale_snr_alpha=0.0,
-                    dynamic_threshold_percentile=0.0,
-                    dynamic_threshold_mimic_scale=1.0,
-                    nag_enable=False,
-                    nag_scale=5.0,
-                    nag_tau=3.5,
-                    nag_alpha=0.25,
-                    nag_sigma_end=0.0,
-                    nag_negative_prompt_embeds=None,
-                    nag_negative_pooled_prompt_embeds=None,
+                    cfg_schedule_type=cfg_schedule_type,
+                    cfg_schedule_min=cfg_schedule_min,
+                    cfg_schedule_max=cfg_schedule_max,
+                    cfg_schedule_power=cfg_schedule_power,
+                    cfg_rescale_snr_alpha=cfg_rescale_snr_alpha,
+                    dynamic_threshold_percentile=dynamic_threshold_percentile,
+                    dynamic_threshold_mimic_scale=dynamic_threshold_mimic_scale,
+                    nag_enable=nag_enable,
+                    nag_scale=nag_scale,
+                    nag_tau=nag_tau,
+                    nag_alpha=nag_alpha,
+                    nag_sigma_end=nag_sigma_end,
+                    nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+                    nag_negative_pooled_prompt_embeds=nag_negative_pooled_prompt_embeds,
                     attention_type="normal",
                     # No controlnet params for LLLite (patches already applied)
                 )

@@ -532,6 +532,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const sampleCfgScale = params.sample_cfg_scale ?? sampleCfgScaleDefault;
   const sampleSampler = params.sample_sampler ?? DEFAULT_PARAMS.sample_sampler!;
   const sampleScheduleType = params.sample_schedule_type ?? DEFAULT_PARAMS.sample_schedule_type!;
+  const sampleCfgScheduleType = params.sample_cfg_schedule_type ?? "";
   const sampleSeed = params.sample_seed ?? DEFAULT_PARAMS.sample_seed!;
   const [conditionImagePreviews, setConditionImagePreviews] = useState<Record<number, string>>({});
   const conditionImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
@@ -760,6 +761,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     archCapabilities, trainingSampleArch, "sample_sampler");
   const sampleScheduleSupported = trainingSampleParameterSupported(
     archCapabilities, trainingSampleArch, "sample_schedule_type");
+  const sampleAdvancedCfgSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sample_cfg_schedule_type");
   const sensenovaTimestepShiftSupported = trainingSampleParameterSupported(
     archCapabilities, trainingSampleArch, "sensenova_sample_timestep_shift");
   const sensenovaImgCfgSupported = trainingSampleParameterSupported(
@@ -1024,6 +1027,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sample_cfg_scale: params.sample_cfg_scale,
       sample_sampler: params.sample_sampler,
       sample_schedule_type: params.sample_schedule_type,
+      sample_cfg_schedule_type: params.sample_cfg_schedule_type,
+      sample_cfg_schedule_min: params.sample_cfg_schedule_min,
+      sample_cfg_schedule_max: params.sample_cfg_schedule_max,
+      sample_cfg_schedule_power: params.sample_cfg_schedule_power,
+      sample_cfg_rescale_snr_alpha: params.sample_cfg_rescale_snr_alpha,
+      sample_dynamic_threshold_percentile: params.sample_dynamic_threshold_percentile,
+      sample_dynamic_threshold_mimic_scale: params.sample_dynamic_threshold_mimic_scale,
+      sample_nag_enable: params.sample_nag_enable,
+      sample_nag_scale: params.sample_nag_scale,
+      sample_nag_tau: params.sample_nag_tau,
+      sample_nag_alpha: params.sample_nag_alpha,
+      sample_nag_sigma_end: params.sample_nag_sigma_end,
+      sample_nag_negative_prompt: params.sample_nag_negative_prompt,
       sample_seed: params.sample_seed,
       sensenova_sample_timestep_shift: params.sensenova_sample_timestep_shift,
       sensenova_sample_img_cfg_scale: params.sensenova_sample_img_cfg_scale,
@@ -1410,6 +1426,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
       "sample_every", "sample_prompts", "sample_width", "sample_height",
       "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
+      "sample_cfg_schedule_type", "sample_cfg_schedule_min", "sample_cfg_schedule_max", "sample_cfg_schedule_power",
+      "sample_cfg_rescale_snr_alpha", "sample_dynamic_threshold_percentile", "sample_dynamic_threshold_mimic_scale",
+      "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha", "sample_nag_sigma_end", "sample_nag_negative_prompt",
       "sensenova_sample_timestep_shift", "sensenova_sample_img_cfg_scale", "sensenova_sample_cfg_norm",
       "debug_latents", "debug_latents_every",
       "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
@@ -2164,7 +2183,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         }
         if (params.sampler) updateParam("sample_sampler", params.sampler);
         if (params.schedule_type) updateParam("sample_schedule_type", params.schedule_type);
-        if (params.seed) updateParam("sample_seed", params.seed);
+        if (params.cfg_schedule_type !== undefined) updateParam("sample_cfg_schedule_type", params.cfg_schedule_type);
+        if (params.cfg_schedule_min !== undefined) updateParam("sample_cfg_schedule_min", params.cfg_schedule_min);
+        if (params.cfg_schedule_max !== undefined) updateParam("sample_cfg_schedule_max", params.cfg_schedule_max);
+        if (params.cfg_schedule_power !== undefined) updateParam("sample_cfg_schedule_power", params.cfg_schedule_power);
+        if (params.cfg_rescale_snr_alpha !== undefined) updateParam("sample_cfg_rescale_snr_alpha", params.cfg_rescale_snr_alpha);
+        if (params.dynamic_threshold_percentile !== undefined) updateParam("sample_dynamic_threshold_percentile", params.dynamic_threshold_percentile);
+        if (params.dynamic_threshold_mimic_scale !== undefined) updateParam("sample_dynamic_threshold_mimic_scale", params.dynamic_threshold_mimic_scale);
+        if (params.nag_enable !== undefined) updateParam("sample_nag_enable", params.nag_enable);
+        if (params.nag_scale !== undefined) updateParam("sample_nag_scale", params.nag_scale);
+        if (params.nag_tau !== undefined) updateParam("sample_nag_tau", params.nag_tau);
+        if (params.nag_alpha !== undefined) updateParam("sample_nag_alpha", params.nag_alpha);
+        if (params.nag_sigma_end !== undefined) updateParam("sample_nag_sigma_end", params.nag_sigma_end);
+        if (params.nag_negative_prompt !== undefined) updateParam("sample_nag_negative_prompt", params.nag_negative_prompt);
+        if (params.seed !== undefined) updateParam("sample_seed", params.seed);
       }
     } catch (err) {
       console.error("Failed to import from generation panel:", err);
@@ -2207,6 +2239,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sampleCfgScale,
       sampleSampler,
       sampleScheduleType,
+      sampleCfgScheduleType,
+      sampleCfgScheduleMin: params.sample_cfg_schedule_min,
+      sampleCfgScheduleMax: params.sample_cfg_schedule_max,
+      sampleCfgSchedulePower: params.sample_cfg_schedule_power,
+      sampleCfgRescaleSnrAlpha: params.sample_cfg_rescale_snr_alpha,
+      sampleDynamicThresholdPercentile: params.sample_dynamic_threshold_percentile,
+      sampleDynamicThresholdMimicScale: params.sample_dynamic_threshold_mimic_scale,
+      sampleNagEnable: params.sample_nag_enable,
+      sampleNagScale: params.sample_nag_scale,
+      sampleNagTau: params.sample_nag_tau,
+      sampleNagAlpha: params.sample_nag_alpha,
+      sampleNagSigmaEnd: params.sample_nag_sigma_end,
+      sampleNagNegativePrompt: params.sample_nag_negative_prompt,
       sampleSeed,
       sensenovaSampleTimestepShift: params.sensenova_sample_timestep_shift,
       sensenovaSampleImgCfgScale: params.sensenova_sample_img_cfg_scale,
@@ -2385,6 +2430,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     if (config.sampleSampler !== undefined) updateParam("sample_sampler", config.sampleSampler);
     if (config.sampleScheduleType !== undefined) updateParam("sample_schedule_type", config.sampleScheduleType);
+    if (config.sampleCfgScheduleType !== undefined) updateParam("sample_cfg_schedule_type", config.sampleCfgScheduleType);
+    if (config.sampleCfgScheduleMin !== undefined) updateParam("sample_cfg_schedule_min", config.sampleCfgScheduleMin);
+    if (config.sampleCfgScheduleMax !== undefined) updateParam("sample_cfg_schedule_max", config.sampleCfgScheduleMax);
+    if (config.sampleCfgSchedulePower !== undefined) updateParam("sample_cfg_schedule_power", config.sampleCfgSchedulePower);
+    if (config.sampleCfgRescaleSnrAlpha !== undefined) updateParam("sample_cfg_rescale_snr_alpha", config.sampleCfgRescaleSnrAlpha);
+    if (config.sampleDynamicThresholdPercentile !== undefined) updateParam("sample_dynamic_threshold_percentile", config.sampleDynamicThresholdPercentile);
+    if (config.sampleDynamicThresholdMimicScale !== undefined) updateParam("sample_dynamic_threshold_mimic_scale", config.sampleDynamicThresholdMimicScale);
+    if (config.sampleNagEnable !== undefined) updateParam("sample_nag_enable", config.sampleNagEnable);
+    if (config.sampleNagScale !== undefined) updateParam("sample_nag_scale", config.sampleNagScale);
+    if (config.sampleNagTau !== undefined) updateParam("sample_nag_tau", config.sampleNagTau);
+    if (config.sampleNagAlpha !== undefined) updateParam("sample_nag_alpha", config.sampleNagAlpha);
+    if (config.sampleNagSigmaEnd !== undefined) updateParam("sample_nag_sigma_end", config.sampleNagSigmaEnd);
+    if (config.sampleNagNegativePrompt !== undefined) updateParam("sample_nag_negative_prompt", config.sampleNagNegativePrompt);
     if (config.sampleSeed !== undefined) updateParam("sample_seed", config.sampleSeed);
     if (config.sensenovaSampleTimestepShift !== undefined) updateParam("sensenova_sample_timestep_shift", config.sensenovaSampleTimestepShift);
     if (config.sensenovaSampleImgCfgScale !== undefined) updateParam("sensenova_sample_img_cfg_scale", config.sensenovaSampleImgCfgScale);
@@ -7012,6 +7070,52 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </select>
             </div>}
           </div>
+
+          {sampleAdvancedCfgSupported && (
+            <details className="border border-gray-700 rounded p-3">
+              <summary className="text-sm text-gray-300 cursor-pointer">Advanced CFG, Dynamic Threshold &amp; NAG</summary>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                <label className="text-xs text-gray-400">CFG schedule
+                  <select value={sampleCfgScheduleType} onChange={(e) => updateParam("sample_cfg_schedule_type", e.target.value)} className="mt-1 w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm">
+                    {['constant', 'linear', 'cosine', 'exponential', 'quadratic'].map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </label>
+                {([
+                  ['sample_cfg_schedule_min', 'CFG min'],
+                  ['sample_cfg_schedule_max', 'CFG max (blank = scale)'],
+                  ['sample_cfg_schedule_power', 'CFG power'],
+                  ['sample_cfg_rescale_snr_alpha', 'SNR rescale alpha'],
+                  ['sample_dynamic_threshold_percentile', 'Dynamic threshold %'],
+                  ['sample_dynamic_threshold_mimic_scale', 'Mimic scale'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="text-xs text-gray-400">{label}
+                    <input type="number" step="any" value={params[key] ?? ''}
+                      onChange={(e) => updateParam(key, e.target.value === '' ? (key === 'sample_cfg_schedule_max' ? null : undefined as any) : parseFloat(e.target.value))}
+                      className="mt-1 w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm" />
+                  </label>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 mt-4 text-sm text-gray-300">
+                <input type="checkbox" checked={Boolean(params.sample_nag_enable)} onChange={(e) => updateParam("sample_nag_enable", e.target.checked)} />
+                Enable NAG
+              </label>
+              {params.sample_nag_enable && <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
+                {([
+                  ['sample_nag_scale', 'NAG scale'], ['sample_nag_tau', 'NAG tau'],
+                  ['sample_nag_alpha', 'NAG alpha'], ['sample_nag_sigma_end', 'NAG sigma end'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="text-xs text-gray-400">{label}
+                    <input type="number" step="any" value={params[key] ?? ''} onChange={(e) => updateParam(key, e.target.value === '' ? undefined as any : parseFloat(e.target.value))}
+                      className="mt-1 w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm" />
+                  </label>
+                ))}
+                <label className="text-xs text-gray-400 md:col-span-5">NAG negative prompt (blank uses sample negative prompt)
+                  <textarea value={params.sample_nag_negative_prompt ?? ''} onChange={(e) => updateParam("sample_nag_negative_prompt", e.target.value)} rows={2}
+                    className="mt-1 w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm" />
+                </label>
+              </div>}
+            </details>
+          )}
 
           {/* Sample Seed */}
           <div>

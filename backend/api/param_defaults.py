@@ -2242,7 +2242,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "sample_steps": 28,
     "sample_cfg_scale": 7.0,
     "sample_sampler": "euler",
-    "sample_schedule_type": "sgm_uniform",  # Fix: frontend had "uniform"
+    "sample_schedule_type": "sgm_uniform",
     "sample_seed": -1,
     # Debug
     "debug_latents": False,

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 
 # ---------------------------------------------------------------------------
@@ -128,11 +129,12 @@ class SampleContext:
     num_inference_steps: int
     guidance_scale: float
     seed: int
+    sampler: str = _TRAINING_DEFAULTS["sample_sampler"]
     negative_prompt: str = ""
     reference_image_path: Optional[str] = None
     condition_image_path: Optional[str] = None
     current_step: int = 0
-    schedule_type: str = "uniform"
+    schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"]
 
 
 # ---------------------------------------------------------------------------

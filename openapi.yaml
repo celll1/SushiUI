@@ -18666,6 +18666,10 @@ components:
           description: Sample-generation interval in steps. 0 = never sample.
         sample_prompts:
           type: 'array'
+          default:
+            - positive: ''
+              negative: ''
+          description: Positive and negative prompt pairs used for in-training previews.
           items:
             type: 'object'
             additionalProperties: true
@@ -19543,24 +19547,31 @@ components:
         sample_width:
           type: 'integer'
           default: 1024
+          description: Requested training-preview width in pixels; architectures may align it to their latent or token grid.
         sample_height:
           type: 'integer'
           default: 1024
+          description: Requested training-preview height in pixels; architectures may align it to their latent or token grid.
         sample_steps:
           type: 'integer'
           default: 28
+          description: Number of denoising steps for each training preview.
         sample_cfg_scale:
           type: 'number'
           default: 7.0
+          description: Classifier-free guidance scale for training previews where the architecture supports CFG.
         sample_sampler:
           type: 'string'
           default: 'euler'
+          description: Sampler used by SD1.5 and SDXL training previews. Other architectures use their architecture-specific sampler.
         sample_schedule_type:
           type: 'string'
           default: 'sgm_uniform'
+          description: Timestep schedule requested for training previews; support is architecture-specific.
         sample_seed:
           type: 'integer'
           default: -1
+          description: Training-preview seed. -1 selects a random seed for each preview.
         noise_process:
           type: 'string'
           default: 'auto'

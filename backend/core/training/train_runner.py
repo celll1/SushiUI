@@ -81,6 +81,7 @@ from core.training.caption_processor import (
     process_caption,
 )
 from core.training.base_trainer import DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP
+from api.param_defaults import TRAINING_DEFAULTS
 
 # Second half of the FP8 hard-off above. The env write only works while nothing
 # has imported fp8_linear yet, which holds for the shipped launch path
@@ -1938,6 +1939,25 @@ def _resolve_save_every_n_steps(save_every_unit: str, save_every: int,
     return save_every
 
 
+def _resolve_training_sample_config(process_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve the generated YAML sample section against the API defaults."""
+    section = process_config.get("sample", {})
+    prompts = section.get("prompts", section.get("sample_prompts"))
+    if not prompts:
+        prompts = [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]]
+    return {
+        "sample_every": section.get("sample_every", TRAINING_DEFAULTS["sample_every"]),
+        "prompts": prompts,
+        "width": section.get("width", TRAINING_DEFAULTS["sample_width"]),
+        "height": section.get("height", TRAINING_DEFAULTS["sample_height"]),
+        "sample_steps": section.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
+        "guidance_scale": section.get("guidance_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
+        "sampler": section.get("sampler", TRAINING_DEFAULTS["sample_sampler"]),
+        "schedule_type": section.get("schedule_type", TRAINING_DEFAULTS["sample_schedule_type"]),
+        "seed": section.get("seed", TRAINING_DEFAULTS["sample_seed"]),
+    }
+
+
 def main():
     """Main training entry point."""
     # Fix Windows cp932 encoding issue: force UTF-8 for stdout/stderr
@@ -2578,22 +2598,12 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            # Prepare sample configuration
-            # Note: YAML uses 'prompts', 'width', etc. (not 'sample_prompts', 'sample_width')
-            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
-            sample_config = {
-                'width': process_config['sample'].get('width', 1024),
-                'height': process_config['sample'].get('height', 1024),
-                'steps': process_config['sample'].get('sample_steps', 20),
-                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
-                'sampler': process_config['sample'].get('sampler', 'euler'),
-                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
-                'seed': process_config['sample'].get('seed', -1),
-            }
+            sample_config = _resolve_training_sample_config(process_config)
+            sample_prompts = sample_config["prompts"]
 
             # Debug: Log sample generation settings
             print(f"[TrainRunner] Sample generation settings:")
-            print(f"  sample_every: {process_config['sample'].get('sample_every', 100)}")
+            print(f"  sample_every: {sample_config['sample_every']}")
             print(f"  sample_prompts: {len(sample_prompts) if sample_prompts else 0} prompts")
             if sample_prompts:
                 for i, prompt in enumerate(sample_prompts):
@@ -2633,17 +2643,15 @@ def main():
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
                   f"(optimizer states: {max_optimizer_saves_to_keep})")
 
-            # Ensure sample_prompts is a list of dicts with at least one entry
-            if not sample_prompts or len(sample_prompts) == 0:
-                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
-
             # Get sample generation settings
-            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
-            sample_steps = process_config['sample'].get('sample_steps', 28)
-            sample_width = process_config['sample'].get('width', 1024)
-            sample_height = process_config['sample'].get('height', 1024)
-            sample_seed = process_config['sample'].get('seed', -1)
-            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
+            sample_guidance_scale = sample_config["guidance_scale"]
+            sample_steps = sample_config["sample_steps"]
+            sample_width = sample_config["width"]
+            sample_height = sample_config["height"]
+            sample_seed = sample_config["seed"]
+            sample_sampler = sample_config["sampler"]
+            sample_schedule_type = sample_config["schedule_type"]
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get resume from checkpoint setting
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
@@ -2692,13 +2700,15 @@ def main():
                 total_steps=total_steps_config,  # Pass total_steps from YAML
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
-                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_every_n_steps=sample_config["sample_every"],
                 sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
                 sample_height=sample_height,
                 sample_seed=sample_seed,
+                sample_sampler=sample_sampler,
+                sample_schedule_type=sample_schedule_type,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3010,17 +3020,8 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            # Prepare sample configuration
-            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
-            sample_config = {
-                'width': process_config['sample'].get('width', 1024),
-                'height': process_config['sample'].get('height', 1024),
-                'steps': process_config['sample'].get('sample_steps', 20),
-                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
-                'sampler': process_config['sample'].get('sampler', 'euler'),
-                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
-                'seed': process_config['sample'].get('seed', -1),
-            }
+            sample_config = _resolve_training_sample_config(process_config)
+            sample_prompts = sample_config["prompts"]
 
             # Get debug parameters
             debug_latents = train_config.get('debug_latents', False)
@@ -3052,14 +3053,13 @@ def main():
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
                   f"(optimizer states: {max_optimizer_saves_to_keep})")
 
-            if not sample_prompts or len(sample_prompts) == 0:
-                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
-
-            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
-            sample_steps = process_config['sample'].get('sample_steps', 28)
-            sample_width = process_config['sample'].get('width', 1024)
-            sample_height = process_config['sample'].get('height', 1024)
-            sample_seed = process_config['sample'].get('seed', -1)
+            sample_guidance_scale = sample_config["guidance_scale"]
+            sample_steps = sample_config["sample_steps"]
+            sample_width = sample_config["width"]
+            sample_height = sample_config["height"]
+            sample_seed = sample_config["seed"]
+            sample_sampler = sample_config["sampler"]
+            sample_schedule_type = sample_config["schedule_type"]
 
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
@@ -3097,13 +3097,15 @@ def main():
                 total_steps=total_steps_config,
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
-                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_every_n_steps=sample_config["sample_every"],
                 sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
                 sample_height=sample_height,
                 sample_seed=sample_seed,
+                sample_sampler=sample_sampler,
+                sample_schedule_type=sample_schedule_type,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3456,21 +3458,12 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            # Prepare sample configuration
-            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
-            sample_config = {
-                'width': process_config['sample'].get('width', 1024),
-                'height': process_config['sample'].get('height', 1024),
-                'steps': process_config['sample'].get('sample_steps', 20),
-                'cfg_scale': process_config['sample'].get('guidance_scale', 7.0),
-                'sampler': process_config['sample'].get('sampler', 'euler'),
-                'schedule_type': process_config['sample'].get('schedule_type', 'sgm_uniform'),
-                'seed': process_config['sample'].get('seed', -1),
-            }
+            sample_config = _resolve_training_sample_config(process_config)
+            sample_prompts = sample_config["prompts"]
 
             # Debug: Log sample generation settings
             print(f"[TrainRunner] Sample generation settings:")
-            print(f"  sample_every: {process_config['sample'].get('sample_every', 100)}")
+            print(f"  sample_every: {sample_config['sample_every']}")
             print(f"  sample_prompts: {len(sample_prompts) if sample_prompts else 0} prompts")
             if sample_prompts:
                 for i, prompt in enumerate(sample_prompts):
@@ -3509,17 +3502,15 @@ def main():
             print(f"[TrainRunner] Max step saves to keep: {max_step_saves_to_keep} "
                   f"(optimizer states: {max_optimizer_saves_to_keep})")
 
-            # Ensure sample_prompts is a list of dicts with at least one entry
-            if not sample_prompts or len(sample_prompts) == 0:
-                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
-
             # Get sample generation settings
-            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
-            sample_steps = process_config['sample'].get('sample_steps', 28)
-            sample_width = process_config['sample'].get('width', 1024)
-            sample_height = process_config['sample'].get('height', 1024)
-            sample_seed = process_config['sample'].get('seed', -1)
-            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
+            sample_guidance_scale = sample_config["guidance_scale"]
+            sample_steps = sample_config["sample_steps"]
+            sample_width = sample_config["width"]
+            sample_height = sample_config["height"]
+            sample_seed = sample_config["seed"]
+            sample_sampler = sample_config["sampler"]
+            sample_schedule_type = sample_config["schedule_type"]
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get resume from checkpoint setting
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
@@ -3568,13 +3559,15 @@ def main():
                 total_steps=total_steps_config,  # Pass total_steps from YAML
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
-                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_every_n_steps=sample_config["sample_every"],
                 sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
                 sample_height=sample_height,
                 sample_seed=sample_seed,
+                sample_sampler=sample_sampler,
+                sample_schedule_type=sample_schedule_type,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3812,12 +3805,8 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            # Prepare sample configuration
-            sample_prompts = process_config['sample'].get('prompts', process_config['sample'].get('sample_prompts', []))
-
-            # Ensure sample_prompts is a list of dicts with at least one entry
-            if not sample_prompts or len(sample_prompts) == 0:
-                sample_prompts = [{"positive": "a beautiful landscape", "negative": ""}]
+            sample_config = _resolve_training_sample_config(process_config)
+            sample_prompts = sample_config["prompts"]
 
             # Legacy migration: if old-style sample_condition_image_path exists at sample level,
             # apply it to all prompts that don't have their own condition_image_path
@@ -3829,12 +3818,14 @@ def main():
                         prompt['condition_image_path'] = legacy_condition_path
 
             # Get sample generation settings
-            sample_guidance_scale = process_config['sample'].get('guidance_scale', 3.5)
-            sample_steps = process_config['sample'].get('sample_steps', 28)
-            sample_width = process_config['sample'].get('width', 1024)
-            sample_height = process_config['sample'].get('height', 1024)
-            sample_seed = process_config['sample'].get('seed', -1)
-            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, seed={sample_seed}")
+            sample_guidance_scale = sample_config["guidance_scale"]
+            sample_steps = sample_config["sample_steps"]
+            sample_width = sample_config["width"]
+            sample_height = sample_config["height"]
+            sample_seed = sample_config["seed"]
+            sample_sampler = sample_config["sampler"]
+            sample_schedule_type = sample_config["schedule_type"]
+            print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
@@ -3897,13 +3888,15 @@ def main():
                 total_steps=total_steps_config,
                 batch_size=train_config.get('batch_size', 1),
                 save_every_n_steps=save_every_n_steps,
-                sample_every_n_steps=process_config['sample'].get('sample_every', 100),
+                sample_every_n_steps=sample_config["sample_every"],
                 sample_prompts=sample_prompts,
                 sample_guidance_scale=sample_guidance_scale,
                 sample_steps=sample_steps,
                 sample_width=sample_width,
                 sample_height=sample_height,
                 sample_seed=sample_seed,
+                sample_sampler=sample_sampler,
+                sample_schedule_type=sample_schedule_type,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,

@@ -85,6 +85,7 @@ class SDXLArchHandler(ArchHandler):
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
             current_step=sample_ctx.current_step,
+            sampler=sample_ctx.sampler,
             schedule_type=sample_ctx.schedule_type,
             condition_image_path=sample_ctx.condition_image_path,
             reference_image_path=sample_ctx.reference_image_path,

@@ -33,6 +33,7 @@ from diffusers import (
     UNet2DConditionModel,
 )
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 from core.attention import AttentionMode, to_diffusers_backend
 
@@ -1032,13 +1033,14 @@ def train_step(
 def generate_sample(
     trainer,
     prompt: str,
-    height: int = 512,
-    width: int = 512,
-    num_inference_steps: int = 28,
-    guidance_scale: float = 3.5,
-    seed: int = -1,
+    height: int = _TRAINING_DEFAULTS["sample_height"],
+    width: int = _TRAINING_DEFAULTS["sample_width"],
+    num_inference_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+    guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+    seed: int = _TRAINING_DEFAULTS["sample_seed"],
     current_step: int = 0,
-    schedule_type: str = "uniform",
+    sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+    schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
     condition_image_path: Optional[str] = None,
     reference_image_path: Optional[str] = None,
     negative_prompt: str = "",
@@ -1055,6 +1057,7 @@ def generate_sample(
         guidance_scale: CFG scale
         seed: Random seed (-1 for random)
         current_step: Current training step (for logging)
+        sampler: Scheduler sampler name
         schedule_type: Timestep schedule type (uniform, karras, exponential)
 
     Returns:
@@ -1121,7 +1124,7 @@ def generate_sample(
             scheduler_container = SchedulerContainer(trainer.original_scheduler)
             scheduler = get_scheduler(
                 pipeline=scheduler_container,
-                sampler="euler",
+                sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 
@@ -1162,7 +1165,7 @@ def generate_sample(
             scheduler_container = SchedulerContainer(trainer.original_scheduler)
             scheduler = get_scheduler(
                 pipeline=scheduler_container,
-                sampler="euler",
+                sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 

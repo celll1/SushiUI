@@ -65,6 +65,11 @@ next-env.d.ts
 *.db-wal
 *.sqlite
 *.sqlite3
+# 手動バックアップ（例: training.db.bak-preeviction, datasets.db.predupe.bak）。
+# *.db は末尾が .db のものしか隠さないため、サフィックス付きは別途指定する。
+*.db.bak*
+*.db.*.bak
+*.db.backup*
 
 # 一時スクリプト・出力（実験・検証用）
 infer_test.py

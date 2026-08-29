@@ -202,8 +202,8 @@ _SEG = r"[^\\/\s,;()\[\]\"'\r\n]"
 #:   gallery contains ``color pencil \(medium\\)``), and matching it alone
 #:   replaced the escape with the no-name fallback text.
 #: * POSIX absolute (``/home/bob/vae``) — REQUIRES at least two
-#:   slash-separated, whitespace-free segments. Without that requirement the
-#:   branch matched ordinary prose: measured on this repo's own warning
+#:   slash-separated, whitespace-free segments AND a root out of ``_POSIX_ROOTS``.
+#:   Shape alone matched ordinary prose: measured on this repo's own warning
 #:   strings, ``NAG / NegPip / DEUS / style transfer / Spectrum / FBCache``
 #:   lost four feature names and ``row(s)/column(s)`` lost its slash, i.e. the
 #:   redactor rewrote a degradation notice into a false statement. Prose slashes
@@ -211,10 +211,27 @@ _SEG = r"[^\\/\s,;()\[\]\"'\r\n]"
 #:   The cost is that a POSIX path containing spaces is only partly matched —
 #:   an acceptable trade against corrupting text, and the Windows branch (the
 #:   one this repo actually produces) is unaffected.
+#:
+#: The root requirement exists for the same reason. An API ROUTE named in prose
+#: has exactly the shape of a POSIX path, and the MiniMax-H3 continuation
+#: warning ("the same pinning mechanism as /generate/inpaint/video is used
+#: here") reached the gallery with the route reduced to ``video`` -- a sentence
+#: the backend never wrote, in the metadata of four real images. Redaction
+#: protects LOCATIONS, so anchoring on the roots that hold user and machine
+#: data is both narrower and more accurate than anchoring on shape. A POSIX
+#: path under some other root is not redacted; this repo's own paths are all
+#: drive-qualified, so nothing it produces relies on that branch.
+_POSIX_ROOTS = (
+    "home", "Users", "users", "root", "mnt", "media", "Volumes", "volumes",
+    "srv", "opt", "var", "tmp", "usr", "etc", "run", "net",
+    "data", "datasets", "models", "checkpoints", "storage", "workspace",
+    "content", "export", "exports", "scratch",
+)
+
 _ABSOLUTE_PATH = re.compile(
     r"(?:(?<![A-Za-z0-9])[A-Za-z]:[\\/]" + _DELIM + r"*"
     r"|\\\\" + _SEG + r"+" + _DELIM + r"*"
-    r"|(?<![\w.:/])/" + _SEG + r"+(?:/" + _SEG + r"+)+)"
+    r"|(?<![\w.:/])/(?:" + "|".join(_POSIX_ROOTS) + r")(?:/" + _SEG + r"+)+)"
 )
 
 #: Second pass: the TAIL of a Windows path whose middle contained one of the

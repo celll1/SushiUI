@@ -194,8 +194,8 @@ _SEG = r"[^\\/\s,;()\[\]\"'\r\n]"
 
 #: Matches an absolute path in three unambiguous forms:
 #:
-#: * drive-qualified (``M:\...``) — the drive letter is its own anchor, so the
-#:   run may contain spaces (``M:\my models\vae``). Not the ``s:/`` inside
+#: * drive-qualified (``Z:\...``) — the drive letter is its own anchor, so the
+#:   run may contain spaces (``Z:\my models\vae``). Not the ``s:/`` inside
 #:   ``https://`` (the letter must stand alone).
 #: * UNC (``\\host\share\...``) — the host segment is REQUIRED: a bare ``\\``
 #:   also occurs as a doubled A1111 escape (a real prompt in this repo's

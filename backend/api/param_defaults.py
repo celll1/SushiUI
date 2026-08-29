@@ -2257,7 +2257,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # size (largest-fitting vs smaller). Re-bucketed each epoch; forces onthefly_gpu
     # latent encoding (disk/swap caches cannot represent per-epoch crops). Defaults
     # reproduce the previous behavior (disabled). See
-    # docs/EPOCH_DYNAMIC_CROP_BUCKETING_DESIGN.md.
+    # docs/guides/DYNAMIC_CROP_BUCKETING.md.
     "crop_augment_enable": False,            # master switch
     # Mix proportions (2x2 axes):
     "crop_full_image_prob": 0.7,            # P(full image, minimal crop only)

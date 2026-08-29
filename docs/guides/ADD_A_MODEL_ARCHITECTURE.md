@@ -141,7 +141,7 @@ audio architectures, and they differ the same way: ACE-Step was built by
 mirroring LTX-2.3 (stock-pipeline-shaped), while MiniMax Music 3 vendors its
 model classes and owns its own multi-stage loop for the same reason MiniMax-H3
 does — upstream ships no usable `DiffusionPipeline` (see
-`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Dependency gate" section). Diffing
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md` and the loader's explicit dependency refusals). Diffing
 LTX-2.3 against MiniMax-H3, or ACE-Step against MiniMax Music 3, shows exactly
 what the per-arch surface is; do not assume every architecture in a modality
 looks like the first one you read.

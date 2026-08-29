@@ -458,7 +458,7 @@ non-empty caption を要求する必要がある。token/tag dropout も最終�
 通常の conditional fine-tuning は、既に guidance が蒸留された単一 field を直接更新する。
 CFG の二枝整合性を保存する問題は発生しない代わりに、fine-tuning 後に CFG scale で条件強度を
 調節することもできない。無条件 anchor を新設して CFG/CGL loss を導入する案は
-`MINIMAX_H3_CONTINUAL_TRAINING_DESIGN.md` に研究案として存在するが、蒸留時の未知の teacher
+継続学習はローカル研究案として検討されているが、蒸留時の未知の teacher
 unconditional branch を復元する保証はなく、現行 training / generation の説明に使ってはいけない。
 
 ### 7.5 Ideogram 4

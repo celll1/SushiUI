@@ -29,7 +29,7 @@ SDXL micro-conditioning (time_ids) uses the kohya convention:
 For the full-image case at the max bucket this matches standard aspect-ratio
 bucketing (cover + minimal crop), so it is backward compatible in spirit.
 
-See docs/EPOCH_DYNAMIC_CROP_BUCKETING_DESIGN.md.
+See docs/guides/DYNAMIC_CROP_BUCKETING.md.
 """
 
 from __future__ import annotations

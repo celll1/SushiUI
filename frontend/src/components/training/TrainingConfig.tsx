@@ -4902,6 +4902,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   ({cfgUncondDropDefaultRate ?? "none"}); 0 disables it.
                   Different from the dataset&apos;s caption dropout, which
                   encodes an empty caption; a run that sets both is refused.
+                  A nonzero rate is also refused together with reference
+                  images: the null trained here is the text-only one, while a
+                  reference-conditioned generation blends against the
+                  reference-conditioned branch at the default img_cfg_scale 1.
                 </p>
               </div>
             )}

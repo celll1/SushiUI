@@ -10,6 +10,12 @@ class SenseNovaArchHandler(ArchHandler):
     name = "sensenova"
     wiring = SENSENOVA_WIRING
     pixel_align = 32
+    # The inference uncond branch is a different PROMPT, not a rewrite of an
+    # encoded one, and its token count also lands in every image token's t
+    # coordinate (`_build_t2i_image_indexes`), so the null can only be built
+    # while encoding the item. Mirrored for the API process by
+    # api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
+    cfg_null_stage = "encode"
 
     def load_components(self, trainer) -> None:
         from core.training.ops import sensenova_ops
@@ -34,6 +40,31 @@ class SenseNovaArchHandler(ArchHandler):
             prompt,
             requires_grad=requires_grad,
             reference_image_paths=reference_image_paths,
+        )
+
+    def encode_prompt_cfg_null(
+        self, trainer, prompt, *, requires_grad: bool = False,
+        reference_image_paths=None, **kwargs
+    ):
+        """The same encode, with inference's uncond query in place of ``prompt``.
+
+        ``prompt`` is accepted and ignored on purpose: the null must not depend
+        on the caption, and the per-item Bernoulli that selects this path is
+        drawn before the caption is read.
+        """
+        from core.training.ops import sensenova_ops
+
+        if kwargs:
+            raise TypeError(
+                f"SenseNova's aligned null encode does not accept "
+                f"{sorted(kwargs)}"
+            )
+        return sensenova_ops.encode_prompt(
+            trainer,
+            prompt,
+            requires_grad=requires_grad,
+            reference_image_paths=reference_image_paths,
+            cfg_null=True,
         )
 
     def vae_encode(

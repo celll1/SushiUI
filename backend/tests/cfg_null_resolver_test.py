@@ -283,11 +283,12 @@ def test_the_stage_mirror_matches_the_arch_handlers():
 
 
 def test_only_the_delivered_architectures_declare_a_stage():
-    """Items 3 and 4 route MiniT2I and Lens through the resolver; SenseNova
-    (item 5) is still undelivered and must not read as enabled."""
+    """Items 3, 4 and 5 route MiniT2I, Lens and SenseNova through the resolver;
+    no other architecture may read as enabled."""
     declared = {arch: stage for arch, stage in CFG_NULL_STAGE_BY_ARCH.items()
                 if stage is not None}
-    assert declared == {"minit2i": "collated", "lens": "collated"}
+    assert declared == {"minit2i": "collated", "lens": "collated",
+                        "sensenova": "encode"}
 
 
 def test_every_stageless_arch_declares_the_feature_unsupported():
@@ -334,6 +335,36 @@ def test_a_declared_stage_is_backed_by_an_override():
         hook = hooks[stage]
         assert getattr(handler_cls, hook) is not getattr(ArchHandler, hook), (
             f"{arch} declares cfg_null_stage={stage!r} without overriding {hook}")
+
+
+def test_every_collated_handler_applies_the_hook_at_the_same_level():
+    """One call site, pinned. MiniT2I applied the hook in its handler and Lens
+    inside its ops body: behaviourally identical with two architectures, and a
+    pattern nobody can rely on with three. Every collated handler now rewrites
+    in its own train_step, through the shared `apply_cfg_null_step`, and no ops
+    body reaches back for the hook."""
+    import ast
+    import inspect
+
+    from core.training.arch import ARCH_REGISTRY
+
+    for arch, handler_cls in ARCH_REGISTRY.items():
+        if handler_cls.cfg_null_stage != "collated":
+            continue
+        source = inspect.getsource(handler_cls.train_step)
+        assert "apply_cfg_null_step(" in source, (
+            f"{arch}.train_step does not apply the collated hook")
+
+    ops_dir = BACKEND / "core" / "training" / "ops"
+    for path in ops_dir.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.FunctionDef) and node.name == "train_step"):
+                continue
+            assert "apply_cfg_null" not in ast.dump(node), (
+                f"{path.name}.train_step applies the CFG null hook; the handler's "
+                f"train_step is the one call site")
 
 
 def test_defaults_are_the_single_source_of_truth():

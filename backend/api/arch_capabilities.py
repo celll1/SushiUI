@@ -1127,6 +1127,15 @@ _CFG_NULL_STAGES: Dict[str, str] = {
     # own sequence length (core/models/lens/lens_pipeline_ops.py::encode_prompt),
     # so the aligned null is a rewrite of the collated features and mask.
     "lens": "collated",
+    # SenseNova's inference uncond branch is a DIFFERENT PROMPT, not a rewrite
+    # of an encoded one: `_build_t2i_query(negative_prompt, append_text="<img>")`
+    # with no system_message (the neo1_0 template's own message is empty and its
+    # MPT formatter emits no system block), against training's
+    # SYSTEM_MESSAGE_FOR_GEN plus a think suffix. Its length also lands in every
+    # image token's t coordinate via `_build_t2i_image_indexes`, so the null has
+    # to be built while encoding the item
+    # (core/models/sensenova/sensenova_pipeline_ops.py::encode_prompt).
+    "sensenova": "encode",
 }
 CFG_NULL_STAGE_BY_ARCH: Dict[str, Optional[str]] = {
     arch: _CFG_NULL_STAGES.get(arch) for arch in sorted(TRAINING_DECLARED_ARCHS)

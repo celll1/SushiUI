@@ -25,10 +25,11 @@ frequency-scale constants and the value-mode path) are exercised by the v1
 Krea2 wiring; ``late_release``, ``rope_offset`` and multi-reference support are
 carried as no-op-by-default knobs for later exposure.
 
-Reference: StyleAligned (Hertz et al.) / VSP-style attention sharing; the exact
-node this port matches is the community ComfyUI-Krea2-StyleTransfer custom node
+Reference: StyleAligned (Hertz et al.) / VSP-style attention sharing; this
+adaptation follows the community ComfyUI-Krea2-StyleTransfer custom node
 (``nodes.py``: ``_build_frequency_scale_vector``, ``_adain``,
-``_cross_batch_adain_qk``, ``_make_controlled_ref_value``).
+``_cross_batch_adain_qk``, ``_make_controlled_ref_value``). Its MIT notice is
+retained in ``docs/legal/licenses/MIT-Krea2-StyleTransfer.txt``.
 """
 
 from __future__ import annotations

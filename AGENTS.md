@@ -96,7 +96,7 @@ changes.
 | Model architecture internals (SD1.5/SDXL/etc.) | `backend/core/training/MODEL_ARCHITECTURES.md` |
 | Attention backend selection | `backend/core/docs/ATTENTION_PROCESSORS.md`, `backend/core/attention/registry.py` |
 | Block swap / CPU offload during training | `backend/core/memory_management/BLOCK_SWAP.md` |
-| Find any other doc in the repo | `docs/guides/DOC_MAP.md` |
+| Find any other doc in the repo | `docs/README.md`, `docs/guides/DOC_MAP.md` |
 | Assess a paper/technique before integrating it | `.claude/agents/research-integrator.md` |
 
 ## Reusable subagents

@@ -153,11 +153,12 @@ webui_cl/
 │   │   └── routes.py            # APIエンドポイント（txt2img, img2img, inpaint）
 │   ├── core/
 │   │   ├── pipeline.py          # Diffusersパイプライン管理
-│   │   ├── custom_sampling.py   # カスタムサンプリングループ
-│   │   ├── lora_manager.py      # LoRA管理（動的ロード）
-│   │   ├── controlnet_manager.py      # ControlNet管理
-│   │   ├── controlnet_preprocessor.py # ControlNetプリプロセッサー
-│   │   └── cfg_utils.py         # Advanced CFG ユーティリティ
+│   │   ├── inference/
+│   │   │   └── custom_sampling.py # カスタムサンプリングループ、Advanced CFG
+│   │   ├── extensions/
+│   │   │   ├── lora_manager.py            # LoRA管理（動的ロード）
+│   │   │   ├── controlnet_manager.py      # ControlNet管理
+│   │   │   └── controlnet_preprocessor.py # ControlNetプリプロセッサー
 │   ├── database/
 │   │   ├── models.py            # SQLAlchemyモデル（GeneratedImage, UserSettings）
 │   │   └── db.py                # データベース接続・マイグレーション
@@ -365,7 +366,7 @@ Diffusersパイプラインをベースにしたカスタム実装により、�
 - Advanced CFG Features（Scheduling, SNR-based, Dynamic Thresholding）
 - Ancestral Seed（確率的サンプラーの再現性）
 
-実装ファイル: [backend/core/custom_sampling.py](backend/core/custom_sampling.py)
+実装ファイル: [backend/core/inference/custom_sampling.py](backend/core/inference/custom_sampling.py)
 
 ### Advanced CFG実装
 
@@ -394,7 +395,7 @@ clamp_value = max(percentile_value, dynamic_threshold_mimic_scale)
 noise_pred = noise_pred.clamp(-clamp_value, clamp_value)
 ```
 
-実装ファイル: [backend/core/cfg_utils.py](backend/core/cfg_utils.py)
+実装ファイル: [backend/core/inference/custom_sampling.py](backend/core/inference/custom_sampling.py)
 
 ### v-prediction対応
 - `prediction_type="v_prediction"` の自動検出

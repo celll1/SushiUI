@@ -28,6 +28,7 @@ from safetensors.torch import save_file
 from torch.utils.tensorboard import SummaryWriter
 import json
 import re
+import secrets
 from datetime import datetime
 import numpy as np
 import gc
@@ -9125,8 +9126,8 @@ class BaseTrainer(ABC):
         (the class of bug where an arch was wired into one block but not the
         other and crashed via the SD/SDXL ``generate_sample`` fallback).
 
-        Returns a PIL image, or ``None`` when the architecture cannot sample yet
-        (ideogram4) — callers must skip saving in that case rather than crash.
+        Returns a PIL image, or ``None`` when the architecture cannot sample yet;
+        callers must skip saving in that case rather than crash.
         """
         # P7: SampleContext (frozen in P0 from this signature) is unpacked by
         # each arch handler's sample(). Single dispatch point keeps step-0 and
@@ -9150,6 +9151,11 @@ class BaseTrainer(ABC):
             sensenova_cfg_norm=sensenova_cfg_norm,
         )
         return self.arch.sample(self, sample_ctx)
+
+    @staticmethod
+    def _resolve_sample_seed(configured_seed: int) -> int:
+        """Resolve the random sentinel without perturbing training RNG state."""
+        return secrets.randbelow(2**32) if configured_seed < 0 else configured_seed
 
     def _step0_marker_path(self) -> Path:
         return self.output_dir / "samples" / ".step0_done"
@@ -9261,15 +9267,16 @@ class BaseTrainer(ABC):
         negative_prompt = prompt_config.get('negative', '')
         condition_image_path = prompt_config.get('condition_image_path') or None
         reference_image_path = prompt_config.get('reference_image_path') or None
+        actual_seed = self._resolve_sample_seed(sample_seed)
         print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
-        print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+        print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
         sample = self._dispatch_sample(
             step0_prompt,
             width=sample_width,
             height=sample_height,
             num_inference_steps=sample_steps,
             guidance_scale=sample_guidance_scale,
-            seed=sample_seed,
+            seed=actual_seed,
             negative_prompt=negative_prompt,
             condition_image_path=condition_image_path,
             reference_image_path=reference_image_path,
@@ -9289,7 +9296,7 @@ class BaseTrainer(ABC):
                 negative_prompt=negative_prompt,
                 steps=sample_steps,
                 cfg_scale=sample_guidance_scale,
-                seed=sample_seed,
+                seed=actual_seed,
                 width=sample_width,
                 height=sample_height,
                 sampler=sample_sampler,
@@ -14700,15 +14707,16 @@ class BaseTrainer(ABC):
                             positive = prompt_config.get('positive', 'a beautiful landscape')
                             condition_image_path = prompt_config.get('condition_image_path') or None
                             reference_image_path = prompt_config.get('reference_image_path') or None
+                            actual_seed = self._resolve_sample_seed(sample_seed)
 
-                            print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
+                            print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
                             sample = self._dispatch_sample(
                                 positive,
                                 width=sample_width,
                                 height=sample_height,
                                 num_inference_steps=sample_steps,
                                 guidance_scale=sample_guidance_scale,
-                                seed=sample_seed,
+                                seed=actual_seed,
                                 negative_prompt=prompt_config.get('negative', ''),
                                 reference_image_path=reference_image_path,
                                 condition_image_path=condition_image_path,
@@ -14733,7 +14741,7 @@ class BaseTrainer(ABC):
                                 negative_prompt=prompt_config.get('negative', ''),
                                 steps=sample_steps,
                                 cfg_scale=sample_guidance_scale,
-                                seed=sample_seed,
+                                seed=actual_seed,
                                 width=sample_width,
                                 height=sample_height,
                                 sampler=sample_sampler,

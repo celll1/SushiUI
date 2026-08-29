@@ -2235,6 +2235,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # independently of the weights and, by default, harder. 0 = keep all.
     "max_optimizer_saves_to_keep": 1,
     "sample_every": 100,
+    # The fallback when a run enables previews but supplies no prompts. It
+    # replaced a hardcoded "a beautiful landscape" that four call sites in
+    # train_runner/training_config each carried their own copy of: such a run
+    # now previews the EMPTY prompt, which is what an unspecified prompt is,
+    # rather than a subject the config never named.
     "sample_prompts": [{"positive": "", "negative": ""}],
     "resume_from_checkpoint": "latest",
     "sample_width": 1024,

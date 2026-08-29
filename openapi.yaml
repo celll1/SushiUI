@@ -168,6 +168,13 @@ paths:
           a newly added architecture keeps every control rather than losing one
           silently. `training_feature_params` / `training_feature_labels` are its
           sibling maps (arming config keys, human-readable label).
+        * `training_sample_supported_params` — architecture name -> optional
+          training-preview parameter names the architecture actually honors.
+          Common prompt/size/steps/CFG/seed fields are outside this allowlist;
+          it drives architecture-specific controls such as SD sampler/schedule
+          selection and SenseNova's three preview controls.
+          `training_sample_notes` carries short UI notes for narrower supported
+          output contracts, such as LTX-2.3's first-frame-only PNG preview.
         * `training_required_values` — architecture name -> TRAINING CONFIG
           PARAMETER -> `{value, reason, methods?, values?}`: the value that
           architecture REQUIRES, optionally narrowed to the listed training
@@ -9462,6 +9469,29 @@ components:
             type: string
           example:
             block_swap: "Block Swap (per-block CPU offload during training)"
+        training_sample_supported_params:
+          type: object
+          description: |
+            Architecture name -> architecture-specific training-preview config
+            parameters that the sampler actually consumes. Values remain
+            accepted for config compatibility when absent here, but clients
+            should not offer a control that would have no effect.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            sd15: [sample_sampler, sample_schedule_type]
+            sdxl: [sample_sampler, sample_schedule_type]
+            sensenova: [sensenova_sample_timestep_shift, sensenova_sample_img_cfg_scale, sensenova_sample_cfg_norm]
+            ltx2: []
+        training_sample_notes:
+          type: object
+          description: Architecture name -> user-facing note about a supported training-preview output contract.
+          additionalProperties:
+            type: string
+          example:
+            ltx2: "LTX-2.3 generates a fixed 9-frame validation clip, saves only its first frame as PNG, and discards the jointly generated audio."
         training_required_values:
           type: object
           description: |
@@ -19574,7 +19604,7 @@ components:
         sample_seed:
           type: 'integer'
           default: -1
-          description: Training-preview seed. -1 selects a random seed for each preview.
+          description: Training-preview seed. -1 resolves separately for every generated prompt; the concrete seed used is saved in the PNG metadata.
         sensenova_sample_timestep_shift:
           type: 'number'
           default: 3.0

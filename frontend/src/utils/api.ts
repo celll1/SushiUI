@@ -1720,6 +1720,11 @@ export interface ArchCapabilities {
   // that refuses nothing (see `trainingFeatureAdvisory` below). Optional so an
   // older backend without the key still type-checks.
   training_feature_advisory?: Record<string, Record<string, TrainingFeatureAdvisory>>;
+  // Architecture-specific controls inside the training-sample section. Common
+  // prompt/size/steps/CFG/seed fields are always handled separately. An empty
+  // list means the architecture uses fixed sampling internals.
+  training_sample_supported_params?: Record<string, string[]>;
+  training_sample_notes?: Record<string, string>;
   // Architecture id -> its user-facing spelling ("sensenova" -> "SenseNova
   // U1.5"), from the backend's ARCH_DISPLAY_NAMES. An id with no entry falls
   // back to the id, so a new architecture shows up (unprettified) rather than
@@ -1873,6 +1878,20 @@ export const trainingFeatureUnsupportedReason = (
   if (entry.methods && method && !entry.methods.includes(method)) return undefined;
   return entry.reason;
 };
+
+export const trainingSampleParameterSupported = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  parameter: string
+): boolean => {
+  if (!arch) return false;
+  return caps?.training_sample_supported_params?.[arch]?.includes(parameter) === true;
+};
+
+export const trainingSampleNote = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string | undefined => arch ? caps?.training_sample_notes?.[arch] : undefined;
 
 // What an OMITTED cfg_uncond_drop_rate resolves to on `arch`, or undefined when
 // the architecture has no default (the mechanism is not in play there, or the

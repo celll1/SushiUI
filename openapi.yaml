@@ -9631,6 +9631,7 @@ components:
           example:
             minit2i: 'collated'
             lens: 'collated'
+            sensenova: 'encode'
             sdxl: null
         cfg_uncond_drop_defaults:
           type: object
@@ -18862,6 +18863,11 @@ components:
             cfg_null_stage is null, and refused when any selected dataset has a
             nonzero caption_dropout_rate, or when danbooru_aug_enable is true
             with a nonzero danbooru_aug_caption_dropout_rate.
+            A nonzero rate is also refused with 400 when use_reference_images
+            is true: the null built here is the text-only uncond condition,
+            while a reference-conditioned generation at the default
+            img_cfg_scale=1 blends against the reference-conditioned branch, so
+            one per-sample label cannot supervise both.
         minit2i_lr_factor:
           type: 'number'
           minimum: 0

@@ -443,8 +443,7 @@ def test_the_handler_applies_the_hook_before_the_forward():
     longer has a rate or a draw of its own."""
     source = (BACKEND / "core" / "training" / "arch"
               / "minit2i.py").read_text(encoding="utf-8")
-    assert "ctx.cfg_drop_mask" in source
-    assert "apply_cfg_null_collated" in source
+    assert "apply_cfg_null_step" in source
 
     ops = (BACKEND / "core" / "training" / "ops"
            / "minit2i_ops.py").read_text(encoding="utf-8")

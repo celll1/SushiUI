@@ -238,6 +238,15 @@ def apply_cfg_null_collated(
     Out of place: both tensors belong to the assembled batch and are handed to
     every MNT iteration, so an in-place write would leak one iteration's null
     into the next.
+
+    Called from the handler's ``train_step``, i.e. BEFORE ``ops.train_step``'s
+    device/dtype moves, so the clone is a host-side copy of
+    ``[B, num_layers, L, D]`` rather than a device one held for the whole
+    forward. The values are unaffected: zeroing then casting and casting then
+    zeroing are bitwise identical (0.0 is exact in every float dtype), and the
+    mask is only moved, never recast. Under an fp8 ``training_dtype`` the old
+    order additionally raised -- ``masked_fill`` is not implemented for
+    ``Float8_e4m3fn``/``Float8_e5m2``.
     """
     if drop_mask is None:
         return encoder_features, encoder_mask
@@ -260,7 +269,6 @@ def train_step(
     profile_vram: bool = False,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
-    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Lens DiT training step (flow-matching, velocity prediction).
 
@@ -286,14 +294,6 @@ def train_step(
     latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
     encoder_features = encoder_features.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
     encoder_mask = encoder_mask.to(device=trainer.device, non_blocking=True)
-
-    if cfg_drop_mask is not None:
-        # Aligned CFG null, applied AFTER the device/dtype moves (which may be
-        # identity no-ops that would have handed back the batch's own tensors)
-        # and BEFORE the per-layer conditioning list below. Routed through the
-        # declared handler hook so a stage mismatch raises.
-        encoder_features, encoder_mask = trainer.arch.apply_cfg_null_collated(
-            trainer, encoder_features, encoder_mask, cfg_drop_mask)
 
     batch_size = latents.shape[0]
 

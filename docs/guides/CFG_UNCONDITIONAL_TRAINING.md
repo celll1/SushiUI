@@ -15,7 +15,7 @@
 - SDXL は共有 U-Net + caption dropout の標準形だが、無条件なのは text についてだけで、size/crop micro-conditioning は残る。
 - SD1.5、Z-Image、Anima、および non-distilled の FLUX.2 / Krea2 も、学習と推論の empty-text 表現が一致する共有-model 型である。
 - MiniT2I は一般 caption dropout ではなく、推論と一致する mask-zero の専用 label drop を使う。
-- SenseNova は共有 flow denoiser 型だが、training の empty-caption prefix と inference の uncond prefix が一致せず、既定の CFG norm も線形 blend を変更する。
+- SenseNova は共有 flow denoiser 型だが、training の empty-caption prefix と inference の uncond prefix は一致しない（既定の CFG norm も線形 blend を変更する）。整合させるには encode 時点で推論 uncond の query を組む専用 `cfg_uncond_drop_rate` を使う。
 - Lens も training の empty chat template と inference の zero-feature null が一致しない。
 - LTX-2.3 は text-null 表現が一致するが、現行 fine-tuning loss は video だけを直接監督する。
 - MiniMax-H3 は guidance-distilled で CFG 枝を持たず、empty prompt 自体を拒否するため、この命題の適用外である。
@@ -283,7 +283,7 @@ $$
 | Lens | 共有 flow transformer の2枝 | 専用 `cfg_uncond_drop_rate` が選択 row を zero feature / all-false mask へ書き換える（既定 0.0） | 専用 rewrite が推論の空 negative 経路と一致。caption dropout は空 user message を chat template で encode するため別物 |
 | Krea2 | base は2枝、distilled/turbo は1枝 | caption dropout の空 caption | base には適用。distilled/turbo には非適用 |
 | MiniT2I | 共有 x0 predictor の2枝 | 専用 `cfg_uncond_drop_rate`（旧 `minit2i_label_drop_rate`）が text mask をゼロ化 | 専用 label drop が推論 pure-uncond と一致。一般 caption dropout とは区別する |
-| SenseNova U1.5 | 同じ generation decoder を cond / uncond prefix KV cache で評価 | caption dropout は training cond prefix に空文字を入れる。専用 uncond loss はない | flow の線形 blendには適用できるが、学習 null prefix と推論 uncond prefix の不一致、既定 `cfg_norm="global"`、reference 3枝を別途考慮する必要がある |
+| SenseNova U1.5 | 同じ generation decoder を cond / uncond prefix KV cache で評価 | 専用 `cfg_uncond_drop_rate` が item を encode する時点で推論 uncond query の prefix を作る（既定 0.0）。caption dropout は training cond prefix に空文字を入れるだけで別物 | 専用 encode-stage null が推論 uncond の query 文字列と prefix 長（image token の t 座標）に一致。既定 `cfg_norm="global"` は別途考慮。reference-conditioned run では非ゼロ rate を拒否 |
 | LTX-2.3 | 共有 joint video/audio transformer の2枝 | caption dropout の空 caption | text null は整合するが、現行 loss は video のみ。audio の null field は直接学習しない |
 | MiniMax-H3 | なし。guidance-distilled の1 forward | なし。空 prompt は拒否 | 現行モデルには非適用。caption dropout を有効にしても CFG 枝は学習されず、空 caption になった項目は encode 時に失敗する |
 | ACE-Step 1.5 | なし。turbo / guidance-distilled の1枝 | 現行 trainer は vendor の training-only CFG dropout を迂回 | 非適用。空 caption は missing-caption 条件の学習であり、learned null 条件でも CFG 枝でもない |
@@ -391,11 +391,48 @@ $$
 改善し得るが、§5 の exact implicit-classifier identity を fine-tuned model に対して保証する装置
 にはならない。
 
-この点を厳密に揃えるには、将来の実装変更として、drop された項目だけを推論 uncond と同じ
-query/template で prefix encode し、その prefix 長から image indexes も作る必要がある。ただし、これは学習関数を変える変更であり、
-base checkpoint の学習契約が公開されていない以上、A/B quality gate なしに既定化してはいけない。
+#### 7.3.3 `cfg_uncond_drop_rate`（encode stage）
 
-#### 7.3.3 flow CFG と `cfg_norm`
+上記の不一致を揃える経路が `cfg_uncond_drop_rate` である。SenseNova は
+`cfg_null_stage = "encode"` を宣言する唯一の architecture で、collated 書き換えではなく
+**item を encode する時点で null prefix 自体を作る**。選ばれた item の prefix は
+`transformer._build_t2i_query("", append_text="<img>")`（`system_message` kwarg なし
+＝ template 自身の空 system message が効き、system block は出力されない）で作られ、
+これは `sensenova_pipeline_ops.encode_prompt` の text-only uncond 枝
+（`_build_t2i_query(negative_prompt, append_text="<img>")`、`negative_prompt` は既定で空文字）
+と同じ文字列である。
+
+位置整合はこの構造から自動的に付く。`SenseNovaTrainingPrefix.text_length` は
+`_build_prefix_inputs` が返した indexes から導かれ、`sensenova_ops.train_step` はその値を
+`_build_t2i_image_indexes(token_h, token_w, prefix.text_length, ...)` に渡す。null prefix の
+長さが最初から入るので、K/V cache だけ揃えて image token の t 座標が conditional 長のまま
+残る「半分だけの修正」にはならない。
+
+Bernoulli は他 2 architecture と同じ `BaseTrainer.sample_cfg_drop_mask` の1回の抽選だが、
+抽選位置は batch 組み立て**前**（`len(batch)` 個）である。SenseNova の prefix は組み立ての
+最中に作られるため、組み立て後に引いたのでは prefix が既に conditional になっている。
+label は caption を読む前に item 数だけ引かれ、latent サイズ filter では他の per-item list と
+同様に `valid_indices` で並べ替えられる（再抽選はしない）。encode 側の呼び出し口は 2 箇所
+あり、batch 組み立ての `if self.is_sensenova:` 枝と、trainable 理解側 + MNT>1 の
+`_sensenova_mnt_conditioning` の再 encode で、両方が同じ label を受け取る。片方を落とすと
+同じ画像が MNT 0 では null、以降は conditional になる。
+
+null prefix は memoize しない。理解側が trainable な run では cache が無効になり、frozen な
+場合も cache object が forward / checkpointing / phase eviction / cleanup を通して read-only に
+留まる保証がまだ無い。
+
+reference-conditioned な run（`use_reference_images=true`）は非ゼロ rate を**拒否**する。
+出荷時の `img_cfg_scale=1` では推論の CFG baseline は `img_cond`（reference を残し text だけ
+落とす枝）であって full uncond ではなく、1本の Bernoulli label で両方の周辺分布は監督できない
+（`needs_uncond = needs_cfg and img_cfg_scale != 1`）。reference item を text-only null に
+黙って写像することはしない。拒否は route・`train_runner` の pre-flight・trainer の 3 箇所が
+共有する `api.cfg_null_resolver.resolve_and_check` で行われ、model load より前に出る。
+
+既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["sensenova"] = 0.0`。key を省略した run の挙動は
+変わらない。これは学習関数を変える変更であり、base checkpoint の学習契約が公開されていない
+以上、A/B quality gate なしに既定を非ゼロにしてはいけない。
+
+#### 7.3.4 flow CFG と `cfg_norm`
 
 SenseNova は
 
@@ -423,7 +460,7 @@ field 全体を rescale するので、一般には §5 の power-tilted density
 `cfg_zero_star`、channel norm、CFG interval、style injection も同様に、標準 CFG の数学へ追加された
 実用的ヒューリスティックとして分離して扱う必要がある。
 
-#### 7.3.4 reference-conditioned 生成
+#### 7.3.5 reference-conditioned 生成
 
 reference image を $r$ とすると、caption dropout 後も reference は保持される。この場合に理想的に
 学ぶ baseline は完全な $p_t(x_t)$ ではなく $p_t(x_t\mid r)$ であり、caption 効果は
@@ -569,8 +606,9 @@ exact implicit-classifier identity は保証されない。整合させるには
 `neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)`）と同じ表現であり、sequence 長は
 positive のものをそのまま使う（推論側も `_align_text_features` で positive 長へ揃える）。
 Bernoulli は MiniT2I と同じく `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で batch ごとに
-1回引き、`lens_ops.train_step` 内の device/dtype 移動後、per-layer conditioning list 構築前に
-適用される。既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0` であり、key を省略した
+1回引き、`LensArchHandler.train_step` が `ArchHandler.apply_cfg_null_step` 経由で適用する
+（MiniT2I と同一の呼び出し階層。`lens_ops.train_step` の device/dtype 移動より前なので clone は
+host 側に置かれ、値は移動後の書き換えと bitwise 一致する）。既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0` であり、key を省略した
 run の挙動は変わらない。
 
 ### 7.11 Krea2
@@ -596,12 +634,20 @@ branch も conditional text tensor と zero mask の組を使うため、この�
 
 Bernoulli は `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で assembled batch ごとに1回だけ
 引き、CPU boolean `[B]` として `TrainStepContext.cfg_drop_mask` に載る。OOM micro-batching では
-再抽選せず slice される。書き換えは `MiniT2IArchHandler.apply_cfg_null_collated`
-（`cfg_null_stage = "collated"`）が out-of-place で行い、`minit2i_ops.train_step` 側に抽選は無い。
+再抽選せず slice される。書き換えは `MiniT2IArchHandler.train_step` が
+`ArchHandler.apply_cfg_null_step` 経由で `apply_cfg_null_collated`
+（`cfg_null_stage = "collated"`）を呼んで out-of-place で行い、`minit2i_ops.train_step` 側に
+抽選も書き換えも無い。collated stage を宣言する architecture は全てこの階層で適用する。
 
 通常の `caption_dropout_rate` は empty T5 prompt を encode する。実 checkpoint tokenizer の
 ローカル probe では EOS id 1 の1 row が active mask に残ったため、専用
-label drop の代替ではない。MiniT2I は $x_0$ prediction を blend するが、Gaussian affine path の
+label drop の代替ではない。両者は別 mechanism なので、`cfg_uncond_drop_rate` を明示した run で
+dataset の `caption_dropout_rate` か有効な `danbooru_aug_caption_dropout_rate` が非ゼロなら拒否する
+（`cfg_null_stage` を宣言する全 architecture が対象）。拒否は `POST/PUT /training/runs` だけでなく
+training 開始側にもある: `train_runner._preflight_cfg_null_caption_conflict` が dataset scan と
+model load の前に datasets DB の caption 設定を読んで判定し、同じ入力を train section へ置いて
+`BaseTrainer.cfg_null_drop_rate()` が再確認する。key を省略した legacy run は拒否せず warning。
+MiniT2I は $x_0$ prediction を blend するが、Gaussian affine path の
 内部時刻では $x_0$ predictor と score が枝に依存しない affine 関係にあるため、2枝差分の議論は
 適用できる。CFG interval 外で scale を1へ戻す場合は時刻依存 $w(t)$ として扱う。
 
@@ -664,7 +710,7 @@ states を選ぶ condition dropout が必要になる。
 
 - LoRA と有限 step で母集団最適解へ到達すること。
 - $w>1$ の終端分布がデータ時刻の単純な power tilt になること。
-- SenseNova の異なる training/inference null templates が同じ field を与えること。
+- SenseNova の異なる training/inference null templates が同じ field を与えること（`cfg_uncond_drop_rate` を使う場合は同じ query と同じ prefix 長を組むので、この問いは発生しない）。
 - Lens の empty-chat condition が推論の zero-feature baseline と同じ field を与えること。
 - LTX-2.3 の video-only loss が joint audio null field も正しく更新すること。
 - `cfg_norm` など線形 blend 後の補正が power-tilted score を保つこと。
@@ -683,7 +729,7 @@ states を選ぶ condition dropout が必要になる。
 - `backend/core/training/ops/krea2_ops.py`: base の2枝と distilled/turbo の単一枝 sampling を分岐する。
 - `backend/core/training/ops/minit2i_ops.py`: `apply_cfg_null_collated` で選択 row の text mask をゼロ化する。
 - `backend/core/models/minit2i/minit2i_pipeline_ops.py`: pure-uncond で同じ zero mask を使い、x0 prediction を blend する。
-- `backend/core/training/ops/sensenova_ops.py`: training conditional prefix だけに loss を与え、empty caption も conditional template で encode する。
+- `backend/core/training/ops/sensenova_ops.py`: training conditional prefix だけに loss を与え、empty caption も conditional template で encode する。`_build_prefix_inputs(..., cfg_null=True)` は推論 uncond と同じ query を組み、その prefix 長が `train_step` の image indexes に入る。
 - `backend/core/models/sensenova/sensenova_pipeline_ops.py`: 推論 uncond/img_cond prefix と、linear CFG 後の `cfg_norm` を実装する。
 - `backend/core/training/ops/ltx2_ops.py`: 共通 Gemma prompt encoder を使う一方、dummy audio を loss から除外する。
 - `backend/core/training/ops/minimax_h3_ops.py`: conditional-only の joint video/audio velocity loss を計算する。

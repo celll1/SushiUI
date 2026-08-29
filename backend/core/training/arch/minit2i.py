@@ -69,12 +69,10 @@ class MiniT2IArchHandler(ArchHandler):
         # the previous train_step_minit2i kwargs bundle (mnt_latents is the
         # pixel-space image tensor; text_embeds/attention_mask carry FLAN-T5).
         from core.training.ops import minit2i_ops
-        text_embeds, attention_mask = ctx.text_embeddings, ctx.attention_mask
-        if ctx.cfg_drop_mask is not None:
-            # Collated-stage rewrite, out of place: these conditioning tensors
-            # are the batch's, reused by every MNT iteration.
-            text_embeds, attention_mask = self.apply_cfg_null_collated(
-                trainer, text_embeds, attention_mask, ctx.cfg_drop_mask)
+        # Collated-stage rewrite, out of place: these conditioning tensors are
+        # the batch's, reused by every MNT iteration.
+        text_embeds, attention_mask = self.apply_cfg_null_step(
+            trainer, ctx, ctx.text_embeddings, ctx.attention_mask)
         return minit2i_ops.train_step(
             trainer,
             images=ctx.latents,

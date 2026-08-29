@@ -1,18 +1,20 @@
 """MiniMax-H3 hybrid DiT: the spec, the header-only preflight and the selector.
 
-C2 of ``docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`` (rev2), sections 4.1,
-4.2, 4.4. Reads headers only; builds no model and reads no tensor bytes. The
+See ``docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md``. Reads headers only;
+builds no model and reads no tensor bytes. The
 reader (C3) and the component lifecycle (C4) are separate commits; nothing here
 is wired into the base-only load path.
 
-Attribution (doc section 1.1): the recipe -- overlay a ``ref2va`` checkpoint's
+Attribution: the recipe -- overlay a ``ref2va`` checkpoint's
 per-block AdaLN projection onto an ``fl2va`` base over a block range, default
 25..49 -- comes from ``ComfyUI_MinimaxH3HybridLoader`` by scottmudge, MIT
-licence, https://github.com/scottmudge/ComfyUI_MinimaxH3HybridLoader . The
+licence, https://github.com/scottmudge/ComfyUI_MinimaxH3HybridLoader . Its
+notice is retained in ``docs/legal/licenses/MIT-MiniMaxH3-HybridLoader.txt``.
+The
 validation, digest, sidecar-atomicity rule and refusal set are this repo's own;
 upstream merges on a key-set equality check alone.
 
-THE HEADER-SOURCE CONTRACT (doc section 4.2, closing paragraph)
+THE HEADER-SOURCE CONTRACT
 --------------------------------------------------------------
 Checks 4/5/7/8 prove the two files agree on key set, shape, dtype and
 quantization contract, so every downstream consumer of "the header" or "the

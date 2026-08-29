@@ -1,7 +1,7 @@
 """Which open checkpoint a raw MiniMax-H3 DiT key is read from.
 
-C3 of ``docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`` (rev2) section 4.3. The
-reader is a PASSIVE DISPATCHER: it never enumerates keys and never holds a state
+See ``docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md``. The reader is a
+PASSIVE DISPATCHER: it never enumerates keys and never holds a state
 dict. Key traversal stays where it already is -- ``_map_dit_state_dict`` walks
 the BASE header (insertion order, not sorted) and asks for one key at a time --
 so a reader is substitutable for a bare ``safe_open`` handle at every call site
@@ -13,7 +13,7 @@ for the ``.comfy_quant`` markers. A marker read straight from the base handle
 would pin a ConvRot layer's provenance to the base while its weight came from
 the overlay -- a load that succeeds and infers garbage.
 
-MMAP LIFETIME (doc section 4.6, and why nothing here tries to fix it)
+MMAP LIFETIME
 --------------------------------------------------------------------
 ``safe_open`` hands back memory-mapped tensors and ``_build_transformer``
 installs them with ``load_state_dict(assign=True)``, so the live model's CPU

@@ -790,6 +790,53 @@ def _prepare_training_process_config(
     return process_config, train_config, network_config, network_type
 
 
+def _preflight_cfg_null_caption_conflict(
+    train_config: Dict[str, Any], base_model_path: str,
+    dataset_configs: List[Dict[str, Any]], datasets_db,
+) -> None:
+    """Refuse an unusable aligned-CFG-null combination, here.
+
+    The route runs the same check on POST/PUT /training/runs, which a
+    hand-authored YAML never touches. A run that pairs an explicit
+    ``cfg_uncond_drop_rate`` with a dataset ``caption_dropout_rate`` (or an
+    enabled Danbooru caption dropout) trains two different empty-condition
+    representations at an uncontrolled combined rate -- the outcome the feature
+    exists to prevent -- so it has to be refused where training actually starts.
+    ``resolve_and_check`` also refuses a nonzero rate on a reference-conditioned
+    run, whose inference CFG baseline is a different branch; that half reads
+    ``use_reference_images``, already normalised by
+    ``_apply_reference_training_contract`` when this runs.
+
+    Run before dataset scanning and model loading. The dataset half of the
+    check comes from the datasets DB, which is why it lives here and not in the
+    trainer: caption processing is never written to the YAML. The resolved
+    pairs are parked on ``train_config`` under the resolver's own key, so
+    ``BaseTrainer.cfg_null_drop_rate()`` re-checks against the same inputs.
+
+    Warnings are left to the trainer, which emits them on the training-events
+    channel from this same data.
+    """
+    from api.cfg_null_resolver import DATASET_CAPTION_CONFIGS_KEY, resolve_and_check
+    from api.error_handlers import ValidationError
+    from core.training.training_config import _detect_arch
+
+    caption_configs = []
+    for ds_config in dataset_configs:
+        dataset = datasets_db.query(Dataset).filter(
+            Dataset.id == ds_config.get("dataset_id")).first()
+        if dataset is None:
+            continue
+        caption_configs.append(
+            (dataset.name or dataset.path, dataset.caption_processing))
+    train_config[DATASET_CAPTION_CONFIGS_KEY] = caption_configs
+    try:
+        resolve_and_check(train_config, arch=_detect_arch(base_model_path),
+                          dataset_caption_configs=caption_configs)
+    except ValidationError as exc:
+        raise ValueError(f"{exc.message}: {exc.detail}" if exc.detail
+                         else exc.message)
+
+
 def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
     """
     Update training run phase progress in database.
@@ -2041,6 +2088,11 @@ def main():
         if not dataset_configs:
             print("[TrainRunner] ERROR: No datasets configured")
             sys.exit(1)
+
+        # Before the scan and before any model load: the aligned CFG null
+        # cannot share a run with whole-caption dropout.
+        _preflight_cfg_null_caption_conflict(
+            train_config, run.base_model_path, dataset_configs, datasets_db)
 
         # ============================================================
         # Detect Start Epoch for Resume Training (before dataset loading)

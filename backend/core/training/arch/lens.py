@@ -69,17 +69,19 @@ class LensArchHandler(ArchHandler):
         # ctx.encoder_features, encoder mask in ctx.encoder_mask, latent geometry in
         # ctx.latent_h/latent_w (from lens_latent_shape).
         from core.training.ops import lens_ops
+        # Collated-stage rewrite, out of place: these conditioning tensors are
+        # the batch's, reused by every MNT iteration.
+        encoder_features, encoder_mask = self.apply_cfg_null_step(
+            trainer, ctx, ctx.encoder_features, ctx.encoder_mask)
         return lens_ops.train_step(
             trainer,
             latents=ctx.latents,
-            encoder_features=ctx.encoder_features,
-            encoder_mask=ctx.encoder_mask,
+            encoder_features=encoder_features,
+            encoder_mask=encoder_mask,
             timesteps=ctx.timesteps,
             profile_vram=ctx.profile_vram,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
-            # Applied inside ops.train_step, after the device/dtype moves.
-            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

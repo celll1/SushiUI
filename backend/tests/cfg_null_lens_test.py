@@ -345,15 +345,17 @@ class _StubTrainer:
 
 
 def _train_step(cfg_drop_mask):
+    from core.training.arch.base_arch import TrainStepContext
+
     trainer = _StubTrainer()
     torch.manual_seed(5)
     latents = torch.randn(2, 4, 128)
     features = torch.randn(2, 2, 5, 6)
     mask = torch.ones(2, 5, dtype=torch.bool)
-    lens_ops.train_step(
-        trainer, latents=latents, encoder_features=features,
-        encoder_mask=mask, timesteps=torch.tensor([0.3, 0.7]),
-        latent_h=2, latent_w=2, cfg_drop_mask=cfg_drop_mask)
+    trainer.arch.train_step(trainer, TrainStepContext(
+        latents=latents, encoder_features=features, encoder_mask=mask,
+        timesteps=torch.tensor([0.3, 0.7]), latent_h=2, latent_w=2,
+        cfg_drop_mask=cfg_drop_mask))
     return trainer, features, mask
 
 
@@ -376,20 +378,58 @@ def test_train_step_without_a_label_passes_the_conditioning_through():
     assert torch.equal(seen["encoder_hidden_states"][0], features[:, 0])
 
 
-def test_the_rewrite_runs_after_the_moves_and_before_the_layer_list():
-    """Strategy §6.2 places it after the device/dtype moves (which can be
-    identity no-ops handing back the batch's own tensors) and before the
-    per-layer conditioning list is built."""
-    lines = _LENS_OPS_SOURCE.splitlines()
-    body = lines[next(i for i, line in enumerate(lines)
-                      if line.startswith("def train_step(")):]
-    move = next(i for i, line in enumerate(body)
-                if "encoder_mask = encoder_mask.to(device=trainer.device" in line)
-    apply_ = next(i for i, line in enumerate(body)
-                  if "apply_cfg_null_collated(" in line)
-    build = next(i for i, line in enumerate(body)
-                 if "encoder_hidden_states_list = [" in line)
-    assert move < apply_ < build
+def test_the_rewrite_runs_before_the_device_and_dtype_moves():
+    """The ops body only ever sees conditioning the handler already rewrote, so
+    the clone is a host copy rather than a device one held for the whole
+    forward. The ops signature carries no label at all."""
+    import ast
+
+    handler = (BACKEND / "core" / "training" / "arch"
+               / "lens.py").read_text(encoding="utf-8").splitlines()
+    body = handler[next(i for i, line in enumerate(handler)
+                        if "def train_step(" in line):]
+    rewrite = next(i for i, line in enumerate(body)
+                   if "apply_cfg_null_step(" in line)
+    call = next(i for i, line in enumerate(body) if "lens_ops.train_step(" in line)
+    assert rewrite < call
+
+    tree = ast.parse(_LENS_OPS_SOURCE)
+    step = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "train_step")
+    names = [a.arg for a in step.args.args + step.args.kwonlyargs]
+    assert "cfg_drop_mask" not in names
+    assert "apply_cfg_null" not in ast.dump(step)
+
+
+def test_zeroing_before_the_cast_equals_zeroing_after_it():
+    """The move is value-preserving: 0.0 is exact in every float dtype, so the
+    rewritten row is bitwise the same whichever side of the cast it happens on."""
+    torch.manual_seed(7)
+    source = torch.randn(3, 2, 4, 6) * 1e4
+    mask = torch.ones(3, 4, dtype=torch.bool)
+    drop = torch.tensor([True, False, True])
+    for dtype in (torch.float32, torch.bfloat16, torch.float16):
+        before, mask_before = apply_cfg_null_collated(source, mask, drop)
+        before = before.to(dtype)
+        after, mask_after = apply_cfg_null_collated(source.to(dtype), mask, drop)
+        assert torch.equal(before.view(torch.int16 if dtype != torch.float32
+                                       else torch.int32),
+                           after.view(torch.int16 if dtype != torch.float32
+                                      else torch.int32))
+        assert torch.equal(mask_before, mask_after)
+
+
+def test_the_old_order_was_not_even_available_in_fp8():
+    """Not merely wasteful: with an fp8 training_dtype, rewriting AFTER the cast
+    raises, because masked_fill has no fp8 kernel. The pre-move order zeroes in
+    the collated dtype and casts a tensor that is already zero there."""
+    features = torch.randn(2, 1, 3, 4)
+    mask = torch.ones(2, 3, dtype=torch.bool)
+    drop = torch.tensor([True, False])
+    with pytest.raises(NotImplementedError):
+        apply_cfg_null_collated(features.to(torch.float8_e4m3fn), mask, drop)
+    out, _ = apply_cfg_null_collated(features, mask, drop)
+    assert not out.to(torch.float8_e4m3fn)[0].any()
 
 
 def test_the_lens_forward_is_handed_the_batch_label():

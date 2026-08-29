@@ -273,7 +273,7 @@ class ArchHandler(ABC):
         raise NotImplementedError
 
     def encode_prompt_cfg_null(self, trainer, prompt, *,
-                               requires_grad: bool = False):
+                               requires_grad: bool = False, **kwargs):
         """The ``cfg_null=True`` branch of ``encode_prompt``: build the prompt
         encoding the architecture's INFERENCE uncond branch would build, rather
         than encoding ``prompt``.
@@ -282,6 +282,12 @@ class ArchHandler(ABC):
         flag so a handler that has not implemented the encode stage REFUSES
         rather than swallowing an unrecognised keyword. Only a handler with
         ``cfg_null_stage == "encode"`` may override it.
+
+        ``kwargs`` carries whatever the arch's own ``encode_prompt`` accepts
+        beyond the prompt (SenseNova: ``reference_image_paths``). They are
+        forwarded rather than dropped so the override can REFUSE a conditioning
+        its null does not represent, instead of quietly building a different
+        one.
         """
         self._reject_cfg_null("encode_prompt_cfg_null", "encode")
 
@@ -297,6 +303,20 @@ class ArchHandler(ABC):
         ``cfg_null_stage == "collated"`` may override it.
         """
         self._reject_cfg_null("apply_cfg_null_collated", "collated")
+
+    def apply_cfg_null_step(self, trainer, ctx, conditioning, auxiliary):
+        """THE call site of the collated hook: a handler's own ``train_step``.
+
+        Every ``cfg_null_stage == "collated"`` handler calls this first and
+        passes the result on to its ops body, so the rewrite happens at one
+        level for all of them -- before the ops body's device/dtype moves, so
+        the clone is a host-side copy rather than a device one, and before any
+        arch-specific reshaping of the conditioning.
+        """
+        if getattr(ctx, "cfg_drop_mask", None) is None:
+            return conditioning, auxiliary
+        return self.apply_cfg_null_collated(trainer, conditioning, auxiliary,
+                                            ctx.cfg_drop_mask)
 
     def _reject_cfg_null(self, hook: str, stage: str):
         raise NotImplementedError(

@@ -206,6 +206,27 @@ def resolve_cfg_uncond_drop_rate(params: Dict[str, Any], *,
 DANBOORU_CAPTION_DROPOUT_KEY = "danbooru_aug_caption_dropout_rate"
 DANBOORU_ENABLE_KEY = "danbooru_aug_enable"
 DATASET_CAPTION_DROPOUT_KEY = "caption_dropout_rate"
+REFERENCE_IMAGES_KEY = "use_reference_images"
+
+#: Architectures whose aligned null is text-only, so that a reference-conditioned
+#: item has an inference baseline the null does not represent. Declared as a set
+#: rather than derived from the stage: whether references interact with the null
+#: is a property of the architecture's CFG shape, not of where it builds the
+#: condition. An architecture absent from here either has no reference
+#: conditioning in training at all, or its references are already outside the
+#: text condition; either way there is nothing for this refusal to say, and
+#: saying it would misattribute a refusal that train_runner's own reference
+#: contract owns.
+CFG_NULL_REFERENCE_UNSUPPORTED = frozenset({"sensenova"})
+
+#: Private train-section key carrying ``[(dataset label, caption_processing), ...]``.
+#:
+#: A dataset's caption processing lives in the datasets DB, never in the YAML
+#: ("caption_processing settings are NOT saved to YAML", training_config.py), so
+#: a trainer holding only the train section cannot see it. train_runner reads it
+#: from the DB before any scan or model load and parks it here, on the same dict
+#: it hands the trainer, so both refuse on the same inputs.
+DATASET_CAPTION_CONFIGS_KEY = "_dataset_caption_configs"
 
 
 def _nonzero(value: Any) -> bool:
@@ -295,16 +316,64 @@ def check_caption_dropout_conflict(
     ]
 
 
+def check_reference_conditioning_conflict(
+    resolution: CfgUncondDropResolution, params: Dict[str, Any],
+) -> None:
+    """Refuse an aligned null on a run that conditions items on reference images.
+
+    The null this release builds is the TEXT-ONLY uncond prefix: an empty prompt
+    with no reference tokens. That is the branch inference blends against only
+    when no references are in play. With references, the branch generation uses
+    as its CFG baseline at the shipped ``img_cfg_scale=1`` is ``img_cond``,
+    which KEEPS the reference tokens and drops only the text
+    (``core/models/sensenova/sensenova_pipeline_ops.py``: ``needs_uncond =
+    needs_cfg and img_cfg_scale != 1``). One Bernoulli label cannot supervise
+    both marginals, and mapping a reference item onto the text-only null would
+    train it against a condition inference never uses at the served scale.
+
+    Refused rather than warned regardless of where the rate came from: no
+    architecture has ever trained an aligned null beside reference conditioning,
+    so there is no prior behaviour to preserve here.
+    """
+    if not _nonzero(resolution.rate):
+        return
+    if resolution.arch not in CFG_NULL_REFERENCE_UNSUPPORTED:
+        return
+    if not params.get(REFERENCE_IMAGES_KEY):
+        return
+    raise ValidationError(
+        f"{CFG_KEY}={resolution.rate} cannot be combined with "
+        f"reference-conditioned items",
+        detail=(
+            f"{REFERENCE_IMAGES_KEY}={params[REFERENCE_IMAGES_KEY]!r}. The null "
+            f"this trains against is the text-only uncond prefix -- an empty "
+            f"prompt with no reference tokens. At the default img_cfg_scale=1 a "
+            f"reference-conditioned generation blends against img_cond, which "
+            f"keeps the references, so the two are different conditions and one "
+            f"per-sample label cannot supervise both. Set "
+            f"{REFERENCE_IMAGES_KEY} to false, or remove {CFG_KEY}."
+        ),
+    )
+
+
 def resolve_and_check(
     params: Dict[str, Any], *, arch: Optional[str],
     dataset_caption_configs: Optional[Sequence[Tuple[str, Any]]] = None,
 ) -> CfgUncondDropResolution:
-    """``resolve_cfg_uncond_drop_rate`` plus the §4 conflict check, one call.
+    """``resolve_cfg_uncond_drop_rate`` plus the §4/§6.3 refusals, one call.
 
-    This is what the routes invoke: both halves must run before the model
-    loads, and both raise the same ``ValidationError``.
+    This is what the route, train_runner and the trainer all invoke: every part
+    must run before the model loads, and all of them raise the same
+    ``ValidationError``.
+
+    ``dataset_caption_configs=None`` falls back to
+    ``params[DATASET_CAPTION_CONFIGS_KEY]``, which is how a caller that has only
+    the train section (the trainer) still sees the dataset half of the check.
     """
+    if dataset_caption_configs is None:
+        dataset_caption_configs = params.get(DATASET_CAPTION_CONFIGS_KEY)
     resolution = resolve_cfg_uncond_drop_rate(params, arch=arch)
+    check_reference_conditioning_conflict(resolution, params)
     resolution.warnings.extend(
         check_caption_dropout_conflict(resolution, params,
                                        dataset_caption_configs)

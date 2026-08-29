@@ -1289,7 +1289,8 @@ def assert_reference_tower_frozen(transformer: Any) -> None:
 
 
 def _build_prefix_inputs(
-    trainer: Any, transformer: Any, prompt: str, ref_images: list
+    trainer: Any, transformer: Any, prompt: str, ref_images: list,
+    cfg_null: bool = False,
 ) -> _PrefixInputs:
     """Build the vendor prefix inputs for one item, reference-conditioned or not.
 
@@ -1298,10 +1299,33 @@ def _build_prefix_inputs(
     part of the understanding branch starts at the decoder stack that consumes
     this. One function for all three callers, so the reference and text-only
     prefixes cannot drift apart.
+
+    ``cfg_null`` builds the ALIGNED NULL instead of encoding ``prompt``: the
+    query inference's text-only uncond branch builds, character for character
+    (``sensenova_pipeline_ops.encode_prompt``: ``_build_t2i_query(
+    negative_prompt, append_text="<img>")`` with ``negative_prompt`` stripped to
+    ""). No ``system_message`` -- the neo1_0 template's own message is empty and
+    its MPT formatter then emits no system block at all -- and no think suffix.
+    Its token count is shorter than the conditional's, which is why it must be
+    built here: ``text_length`` derives from these ``indexes`` and lands in every
+    image token's t coordinate in ``train_step``.
     """
     from core.models.sensenova.vendor.utils import SYSTEM_MESSAGE_FOR_GEN
 
     with torch.no_grad():
+        if cfg_null:
+            if ref_images:
+                raise ValueError(
+                    "SenseNova's aligned CFG null is the text-only uncond "
+                    "prefix; a reference-conditioned item has no representation "
+                    "in it (see api/cfg_null_resolver.py, which refuses this "
+                    "combination before the model loads)"
+                )
+            query = transformer._build_t2i_query("", append_text="<img>")
+            return _PrefixInputs(
+                *transformer._build_t2i_text_inputs(trainer.tokenizer, query),
+                embeds=False,
+            )
         if not ref_images:
             query = transformer._build_t2i_query(
                 prompt,
@@ -1371,6 +1395,7 @@ def encode_prompt(
     *,
     requires_grad: bool = False,
     reference_image_paths: Optional[List[str]] = None,
+    cfg_null: bool = False,
 ) -> SenseNovaTrainingPrefix:
     """Build a prefix without inference streamers or flash buffers.
 
@@ -1384,11 +1409,28 @@ def encode_prompt(
     uncond are CFG-only and carry no loss. Reference conditioning composes with
     a trainable prefix: the spliced rows traverse the same decoder layers in the
     same pass (SENSENOVA_TRAINING_DESIGN.md 13.7).
+
+    ``cfg_null`` REPLACES the item's prompt with inference's own text-only
+    uncond query. It changes nothing else: the same route, the same phase
+    transitions, the same K/V forward and the same ``text_length`` derivation,
+    so the shorter null prefix reaches ``train_step`` and its image indexes
+    through the one channel that already carries the length. Nothing is cached
+    between items -- the understanding half may be trainable, and a cache handed
+    across items would then be stale (strategy §6.3).
     """
     if not isinstance(prompt, str):
         raise TypeError("SenseNova training encodes one prompt at a time")
 
     transformer = trainer.transformer
+    if cfg_null and reference_image_paths:
+        # Refused on the PATHS, before they are read: the null has no
+        # reference-conditioned form, so loading them would be work done for a
+        # condition that cannot be built.
+        raise ValueError(
+            "SenseNova's aligned CFG null is the text-only uncond prefix and "
+            "has no reference-conditioned form; the run should have been "
+            "refused before the model loaded (api/cfg_null_resolver.py)"
+        )
     ref_images = _load_reference_images(reference_image_paths)
     phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
     four_phase = getattr(trainer, "sensenova_four_phase", None)
@@ -1402,7 +1444,8 @@ def encode_prompt(
         if phase_evictor is not None:
             phase_evictor.enter_prefix()
             phase_evictor.assert_understanding_resident()
-        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
+        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images,
+                                      cfg_null)
         with torch.no_grad():
             cache = _build_trainable_prefix(trainer, transformer, inputs)
         leaf_cache = four_phase.cut(cache, inputs)
@@ -1422,7 +1465,8 @@ def encode_prompt(
                 "eviction: the understanding half must stay resident until backward, "
                 "but the evictor moves it to CPU for the denoise phase"
             )
-        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
+        inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images,
+                                      cfg_null)
         cache = _build_trainable_prefix(trainer, transformer, inputs)
         _assert_immutable_prefix_cache(
             cache,
@@ -1435,7 +1479,8 @@ def encode_prompt(
 
     if phase_evictor is not None:
         phase_evictor.enter_prefix()
-    inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images)
+    inputs = _build_prefix_inputs(trainer, transformer, prompt, ref_images,
+                                  cfg_null)
     with torch.no_grad():
         forward = (
             transformer._it2i_prefix_forward

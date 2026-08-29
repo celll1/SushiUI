@@ -6362,13 +6362,19 @@ class BaseTrainer(ABC):
         return minit2i_ops.encode_prompt(self, prompt, requires_grad=requires_grad)
 
     def encode_caption(self, caption: str, requires_grad: bool = False, lyrics: str = "",
-                       reference_image_paths=None):
+                       reference_image_paths=None, cfg_null: bool = False):
         """
         Unified caption encoding for all architectures.
 
         Args:
             caption: The item's caption text.
             requires_grad: Whether to keep a gradient-carrying graph (trainable TE).
+            cfg_null: Encode the architecture's INFERENCE CFG uncond condition
+                instead of ``caption``. Only an ``cfg_null_stage == "encode"``
+                architecture can honour it -- a collated one builds its null by
+                rewriting the batch afterwards -- and every other handler's
+                ``encode_prompt_cfg_null`` refuses, so a mis-routed True is an
+                error rather than a silently conditional item.
             reference_image_paths: SenseNova ONLY -- the item's reference image
                 paths, spliced into the prompt prefix as understanding-tower
                 tokens (``ops/sensenova_ops.encode_prompt``). Every other arch
@@ -6390,6 +6396,18 @@ class BaseTrainer(ABC):
             - ACE-Step: (text_hidden_states, aux_dict) where aux dict has
               {text_attention_mask, lyric_hidden_states, lyric_attention_mask}
         """
+        if cfg_null:
+            # THE call site of the encode-stage hook, the counterpart of
+            # ArchHandler.apply_cfg_null_step for the collated stage. The
+            # (payload, None) shape is the encode stage's contract: the handler
+            # returns the whole conditioning, with no separate auxiliary.
+            return self.arch.encode_prompt_cfg_null(
+                self,
+                caption,
+                requires_grad=requires_grad,
+                reference_image_paths=reference_image_paths,
+            ), None
+
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
         elif self.is_sensenova:
@@ -7257,6 +7275,7 @@ class BaseTrainer(ABC):
         *,
         captions: Optional[List[str]] = None,
         mnt_index: int = 0,
+        cfg_null: bool = False,
     ):
         """Build the opaque conditioning payload for one MNT iteration.
 
@@ -7274,6 +7293,12 @@ class BaseTrainer(ABC):
         because the understanding half is bit-identically invariant until phase 3
         runs at the window's end; every iteration's backward accumulates into
         those same leaves rather than building a second set.
+
+        ``cfg_null`` is the item's ONE aligned-null label, drawn before the
+        batch's prefix encode and passed here unchanged. This re-encode is the
+        second construction site of the same prefix, so leaving it conditional
+        would make MNT iteration 0 null and every later one conditional for the
+        same image.
         """
         four_phase = getattr(self, "sensenova_four_phase", None)
         if four_phase is not None and four_phase.shared_window:
@@ -7283,7 +7308,8 @@ class BaseTrainer(ABC):
             and bool(getattr(self, "train_text_encoder", False))
             and captions
         ):
-            prefix, _ = self.encode_caption(captions[0], requires_grad=True)
+            prefix, _ = self.encode_caption(captions[0], requires_grad=True,
+                                            cfg_null=cfg_null)
         return None, None, None, prefix
 
     def cfg_null_drop_rate(self) -> Optional[float]:
@@ -7296,15 +7322,24 @@ class BaseTrainer(ABC):
         rather than trusting the route is what catches a hand-authored YAML,
         which reaches the trainer without ever passing a request model.
 
+        ``resolve_and_check``, not the resolver alone: pairing an explicit rate
+        with whole-caption dropout has to be refused wherever the run starts,
+        not only on the route. The danbooru half is in this config; the dataset
+        half is not (caption processing is a datasets-DB property that the YAML
+        deliberately does not carry) and arrives via
+        ``DATASET_CAPTION_CONFIGS_KEY``, which train_runner fills from the DB
+        before anything loads. Absent that, the dataset half is unchecked here
+        and train_runner's own earlier call is what covers it.
+
         ``None`` means the mechanism is not in play for this run.
         """
         if hasattr(self, "_cfg_null_drop_rate_resolved"):
             return self._cfg_null_drop_rate_resolved
 
-        from api.cfg_null_resolver import resolve_cfg_uncond_drop_rate
+        from api.cfg_null_resolver import resolve_and_check
         arch = getattr(self, "arch", None)
         arch_name = getattr(arch, "name", None)
-        resolution = resolve_cfg_uncond_drop_rate(self.config, arch=arch_name)
+        resolution = resolve_and_check(self.config, arch=arch_name)
         for warning in resolution.warnings:
             from core.training.training_events import emit_training_warning
             emit_training_warning(warning, code="cfg_uncond_drop_rate",
@@ -7326,12 +7361,18 @@ class BaseTrainer(ABC):
     def sample_cfg_drop_mask(self, batch_size: int) -> Optional[torch.Tensor]:
         """One CPU boolean ``[B]`` label per assembled optimization batch.
 
-        Drawn BEFORE the MNT loop and reused by every MNT transform of the
-        batch, so an item does not change meaning between passes over the same
-        images (strategy §5). CPU because it is a label, not a tensor the
-        forward consumes: the collated rewrite moves it to the conditioning's
-        device itself, and keeping the draw off the CUDA RNG keeps it identical
-        under micro-batch retries.
+        Drawn BEFORE the batch's per-item encode loop, and so before the MNT
+        loop, then reused by every MNT transform of the batch: an item does not
+        change meaning between passes over the same images (strategy §5), and an
+        encode-stage architecture -- which builds its null while encoding the
+        item, not afterwards -- still has its label in hand when it needs it.
+        ``batch_size`` is therefore the item COUNT of the batch, taken before
+        any caption is read, so the label cannot depend on caption content.
+
+        CPU because it is a label, not a tensor the forward consumes: the
+        collated rewrite moves it to the conditioning's device itself, and
+        keeping the draw off the CUDA RNG keeps it identical under micro-batch
+        retries.
         """
         rate = self.cfg_null_drop_rate()
         if not rate:
@@ -13010,7 +13051,20 @@ class BaseTrainer(ABC):
                     batch_has_corrupted_image = False
                     corrupted_image_path = None
 
-                    for item, dataset in batch:
+                    # Aligned CFG null label, ONE draw for the whole assembled
+                    # batch (strategy §5), taken here rather than after assembly
+                    # because the encode-stage architectures build their null
+                    # while encoding the item, inside the loop below -- by the
+                    # time the batch is assembled their prefix is already
+                    # conditional. Drawn from the item COUNT, before any caption
+                    # is read, so the label cannot depend on caption content,
+                    # and re-indexed alongside the other per-item lists by the
+                    # latent-size filter so it stays attached to its item.
+                    # Collated architectures are unaffected: still one draw per
+                    # batch, still reused by every MNT transform.
+                    cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))
+
+                    for item_index, (item, dataset) in enumerate(batch):
                         # BucketManager stores bucket_width/bucket_height, not width/height
                         width = item.get("width") or item.get("bucket_width")
                         height = item.get("height") or item.get("bucket_height")
@@ -13243,12 +13297,17 @@ class BaseTrainer(ABC):
                             # prompt encoder IS the understanding branch of the same
                             # LLM that denoises, so a trainable "text encoder" means
                             # a differentiable prefix pass.
+                            # The aligned null replaces the prompt HERE, inside
+                            # the encode, so the null prefix's own token count
+                            # is what reaches train_step's image indexes.
                             prefix, _ = self.encode_caption(
                                 caption,
                                 requires_grad=bool(getattr(self, "train_text_encoder", False)),
                                 reference_image_paths=(
                                     item.get("reference_images") or []
                                 ) if use_reference_images else None,
+                                cfg_null=(cfg_drop_mask is not None
+                                          and bool(cfg_drop_mask[item_index])),
                             )
                             sensenova_prefixes.append(prefix)
                         elif text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
@@ -13548,6 +13607,10 @@ class BaseTrainer(ABC):
                                 repa_pixels_list = [repa_pixels_list[i] for i in valid_indices]
                             if micro_cond_list:
                                 micro_cond_list = [micro_cond_list[i] for i in valid_indices]
+                            if cfg_drop_mask is not None:
+                                # Re-indexed, never redrawn: the label was
+                                # already spent on the surviving items' encodes.
+                                cfg_drop_mask = cfg_drop_mask[valid_indices]
 
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
@@ -13729,12 +13792,18 @@ class BaseTrainer(ABC):
 
                     batch_size = latents.shape[0]
 
-                    # Aligned CFG null label, one draw for the whole assembled
-                    # batch (strategy §5). Drawn HERE, outside the MNT loop, so
-                    # every MNT transform of an item trains the same condition;
-                    # a per-train_step draw would give one image two different
-                    # meanings within one pass over it.
-                    cfg_drop_mask = self.sample_cfg_drop_mask(batch_size)
+                    # The one aligned-null label, drawn before the assembly loop
+                    # and re-indexed by the latent-size filter, is what every MNT
+                    # transform of this batch reuses. It is checked rather than
+                    # redrawn: a second draw here would give the encode-stage
+                    # architectures' already-built prefixes a different label
+                    # than the one they were built from.
+                    if cfg_drop_mask is not None and cfg_drop_mask.numel() != batch_size:
+                        raise RuntimeError(
+                            f"cfg_drop_mask carries {cfg_drop_mask.numel()} labels "
+                            f"for a batch of {batch_size}; the per-item label lost "
+                            f"its alignment during batch assembly"
+                        )
 
                     # ============================================================
                     # MNT loop: Process same batch with different noise-timesteps
@@ -13819,6 +13888,9 @@ class BaseTrainer(ABC):
                                 sensenova_prefix,
                                 captions=batch_captions,
                                 mnt_index=mnt_idx,
+                                # B1: the batch's one item is the one label.
+                                cfg_null=(cfg_drop_mask is not None
+                                          and bool(cfg_drop_mask[0])),
                             )
                             # Declare the window the shared boundary cut serves.
                             # No-op unless the shared route is armed.

@@ -9049,13 +9049,14 @@ class BaseTrainer(ABC):
     def generate_sample(
         self,
         prompt: str,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 28,
-        guidance_scale: float = 3.5,
-        seed: int = -1,
+        height: int = _TRAINING_DEFAULTS["sample_height"],
+        width: int = _TRAINING_DEFAULTS["sample_width"],
+        num_inference_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+        guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+        seed: int = _TRAINING_DEFAULTS["sample_seed"],
         current_step: int = 0,
-        schedule_type: str = "uniform",
+        sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
         negative_prompt: str = "",
@@ -9088,6 +9089,7 @@ class BaseTrainer(ABC):
             seed=seed,
             negative_prompt=negative_prompt,
             current_step=current_step,
+            sampler=sampler,
             schedule_type=schedule_type,
             condition_image_path=condition_image_path,
             reference_image_path=reference_image_path,
@@ -9110,7 +9112,8 @@ class BaseTrainer(ABC):
         reference_image_path: Optional[str] = None,
         condition_image_path: Optional[str] = None,
         current_step: int = 0,
-        schedule_type: str = "uniform",
+        sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
     ) -> Optional[Image.Image]:
         """Route a sample request to the correct per-architecture helper.
 
@@ -9137,6 +9140,7 @@ class BaseTrainer(ABC):
             reference_image_path=reference_image_path,
             condition_image_path=condition_image_path,
             current_step=current_step,
+            sampler=sampler,
             schedule_type=schedule_type,
         )
         return self.arch.sample(self, sample_ctx)
@@ -9181,6 +9185,7 @@ class BaseTrainer(ABC):
         seed: int,
         width: int,
         height: int,
+        sampler: str,
         schedule_type: str,
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
@@ -9194,6 +9199,7 @@ class BaseTrainer(ABC):
             "seed": seed,
             "width": width,
             "height": height,
+            "sampler": sampler,
             "schedule_type": schedule_type,
         }.items():
             metadata.add_text(key, str(value))
@@ -9213,6 +9219,7 @@ class BaseTrainer(ABC):
         sample_guidance_scale: float,
         sample_steps: int,
         sample_seed: int,
+        sample_sampler: str,
         sample_schedule_type: str,
         global_step: int,
     ) -> None:
@@ -9252,6 +9259,7 @@ class BaseTrainer(ABC):
             condition_image_path=condition_image_path,
             reference_image_path=reference_image_path,
             current_step=0,
+            sampler=sample_sampler,
             schedule_type=sample_schedule_type,
         )
         # None => architecture can't sample yet; skip saving.
@@ -9266,6 +9274,7 @@ class BaseTrainer(ABC):
                 seed=sample_seed,
                 width=sample_width,
                 height=sample_height,
+                sampler=sample_sampler,
                 schedule_type=sample_schedule_type,
                 condition_image_path=condition_image_path,
                 reference_image_path=reference_image_path,
@@ -10632,14 +10641,15 @@ class BaseTrainer(ABC):
         total_steps: Optional[int] = None,  # If specified, overrides num_epochs
         batch_size: int = 1,
         save_every_n_steps: int = 500,
-        sample_every_n_steps: int = 500,
+        sample_every_n_steps: int = _TRAINING_DEFAULTS["sample_every"],
         sample_prompts: Optional[List[Dict[str, str]]] = None,
-        sample_guidance_scale: float = 3.5,
-        sample_steps: int = 28,
-        sample_width: int = 1024,
-        sample_height: int = 1024,
-        sample_seed: int = -1,
-        sample_schedule_type: str = "uniform",
+        sample_guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+        sample_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+        sample_width: int = _TRAINING_DEFAULTS["sample_width"],
+        sample_height: int = _TRAINING_DEFAULTS["sample_height"],
+        sample_seed: int = _TRAINING_DEFAULTS["sample_seed"],
+        sample_sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        sample_schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
@@ -10747,7 +10757,9 @@ class BaseTrainer(ABC):
 
         # Store references for subclass access
         self._training_datasets = datasets
-        self._sample_prompts = sample_prompts or [{"positive": "a beautiful landscape", "negative": ""}]
+        self._sample_prompts = sample_prompts or [
+            dict(prompt) for prompt in _TRAINING_DEFAULTS["sample_prompts"]
+        ]
 
         print(f"{self.log_prefix} Starting training...")
         print(f"{self.log_prefix} Datasets: {len(datasets)}")
@@ -11762,6 +11774,7 @@ class BaseTrainer(ABC):
             sample_guidance_scale=sample_guidance_scale,
             sample_steps=sample_steps,
             sample_seed=sample_seed,
+            sample_sampler=sample_sampler,
             sample_schedule_type=sample_schedule_type,
             global_step=global_step,
         )
@@ -14673,6 +14686,7 @@ class BaseTrainer(ABC):
                                 reference_image_path=reference_image_path,
                                 condition_image_path=condition_image_path,
                                 current_step=global_step,
+                                sampler=sample_sampler,
                                 schedule_type=sample_schedule_type,
                             )
                             # None => architecture can't sample yet; skip this prompt.
@@ -14692,6 +14706,7 @@ class BaseTrainer(ABC):
                                 seed=sample_seed,
                                 width=sample_width,
                                 height=sample_height,
+                                sampler=sample_sampler,
                                 schedule_type=sample_schedule_type,
                                 condition_image_path=condition_image_path,
                                 reference_image_path=reference_image_path,

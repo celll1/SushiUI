@@ -15207,7 +15207,9 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["max_optimizer_saves_to_keep"], ge=0
     )
     sample_every: int = Field(default=TRAINING_DEFAULTS["sample_every"], ge=0)
-    sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str, condition_image_path?: str}
+    sample_prompts: List[Dict[str, str]] = Field(
+        default_factory=lambda: [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]]
+    )  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
 
     # Debug
@@ -15478,13 +15480,13 @@ class TrainingRunCreateRequest(BaseModel):
     energy_normalize_by_pixels: bool = True
 
     # Sample generation parameters
-    sample_width: int = 1024
-    sample_height: int = 1024
-    sample_steps: int = 28
-    sample_cfg_scale: float = 7.0
-    sample_sampler: str = "euler"
-    sample_schedule_type: str = "sgm_uniform"
-    sample_seed: int = -1  # -1 for random
+    sample_width: int = TRAINING_DEFAULTS["sample_width"]
+    sample_height: int = TRAINING_DEFAULTS["sample_height"]
+    sample_steps: int = TRAINING_DEFAULTS["sample_steps"]
+    sample_cfg_scale: float = TRAINING_DEFAULTS["sample_cfg_scale"]
+    sample_sampler: str = TRAINING_DEFAULTS["sample_sampler"]
+    sample_schedule_type: str = TRAINING_DEFAULTS["sample_schedule_type"]
+    sample_seed: int = TRAINING_DEFAULTS["sample_seed"]  # -1 for random
 
     # Unified Training Framework (Phase 2)
     noise_process: str = "auto"  # "auto", "ddpm", "flow"

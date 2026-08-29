@@ -25,6 +25,7 @@ from .base_trainer import BaseTrainer, log_verbose
 from .adapters import ControlNetSD15Adapter, ControlNetSDXLAdapter
 from .crop_planner import OutpaintControlPlanner
 from .image_preprocessing import flatten_to_rgb
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 
 class ControlNetTrainer(BaseTrainer):
@@ -640,13 +641,14 @@ class ControlNetTrainer(BaseTrainer):
     def generate_sample(
         self,
         prompt: str,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 28,
-        guidance_scale: float = 3.5,
-        seed: int = -1,
+        height: int = _TRAINING_DEFAULTS["sample_height"],
+        width: int = _TRAINING_DEFAULTS["sample_width"],
+        num_inference_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+        guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+        seed: int = _TRAINING_DEFAULTS["sample_seed"],
         current_step: int = 0,
-        schedule_type: str = "uniform",
+        sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
         condition_image_path: "Optional[str]" = None,
         reference_image_path: "Optional[str]" = None,
         negative_prompt: str = "",
@@ -680,7 +682,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
-                current_step=current_step, schedule_type=schedule_type,
+                current_step=current_step, sampler=sampler, schedule_type=schedule_type,
                 reference_image_path=reference_image_path,
             )
 
@@ -691,7 +693,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
-                current_step=current_step, schedule_type=schedule_type,
+                current_step=current_step, sampler=sampler, schedule_type=schedule_type,
                 condition_image=loaded_condition,
             )
         elif self.controlnet_type == "lllite":
@@ -700,7 +702,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
-                current_step=current_step, schedule_type=schedule_type,
+                current_step=current_step, sampler=sampler, schedule_type=schedule_type,
                 condition_image=loaded_condition,
             )
         else:
@@ -710,20 +712,21 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 negative_prompt=negative_prompt,
-                current_step=current_step, schedule_type=schedule_type,
+                current_step=current_step, sampler=sampler, schedule_type=schedule_type,
                 reference_image_path=reference_image_path,
             )
 
     def _generate_sample_standard(
         self,
         prompt: str,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 28,
-        guidance_scale: float = 3.5,
-        seed: int = -1,
+        height: int = _TRAINING_DEFAULTS["sample_height"],
+        width: int = _TRAINING_DEFAULTS["sample_width"],
+        num_inference_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+        guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+        seed: int = _TRAINING_DEFAULTS["sample_seed"],
         current_step: int = 0,
-        schedule_type: str = "uniform",
+        sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
     ) -> "Image.Image":
@@ -784,7 +787,7 @@ class ControlNetTrainer(BaseTrainer):
             scheduler_container = SchedulerContainer(self.original_scheduler)
             scheduler = get_scheduler(
                 pipeline=scheduler_container,
-                sampler="euler",
+                sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 
@@ -916,13 +919,14 @@ class ControlNetTrainer(BaseTrainer):
     def _generate_sample_lllite(
         self,
         prompt: str,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 28,
-        guidance_scale: float = 3.5,
-        seed: int = -1,
+        height: int = _TRAINING_DEFAULTS["sample_height"],
+        width: int = _TRAINING_DEFAULTS["sample_width"],
+        num_inference_steps: int = _TRAINING_DEFAULTS["sample_steps"],
+        guidance_scale: float = _TRAINING_DEFAULTS["sample_cfg_scale"],
+        seed: int = _TRAINING_DEFAULTS["sample_seed"],
         current_step: int = 0,
-        schedule_type: str = "uniform",
+        sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
+        schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
     ) -> "Image.Image":
@@ -995,7 +999,7 @@ class ControlNetTrainer(BaseTrainer):
             scheduler_container = SchedulerContainer(self.original_scheduler)
             scheduler = get_scheduler(
                 pipeline=scheduler_container,
-                sampler="euler",
+                sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 

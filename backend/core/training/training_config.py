@@ -72,17 +72,23 @@ def _build_train_section(
     include_priority_training: bool = True,
     include_image_encoder_lr: bool = True,
     include_te_split_lrs: bool = True,
+    arch: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the 'train' section dict shared across all generate_*_config functions.
 
     p: dict of training parameters (TrainingRunCreateRequest model_dump or kwargs).
     learning_rate: explicit learning rate (defaults to p["learning_rate"]).
+    arch: the detected architecture, for the keys whose default is per-arch
+        (cfg_uncond_drop_rate). None resolves as "no architecture-specific
+        default", which is what a direct caller with no base model gets.
     component_lr_always_emit: if True, emit unet_lr/text_encoder_lr always with fallback to lr.
     bucketing_always_emit: if True, emit base_resolutions/bucket_strategy/multi_resolution_mode always.
 
     The flags `include_*` allow each training method to opt in/out of optional sections.
     """
     from api.param_defaults import TRAINING_DEFAULTS as _TD
+    from api.param_defaults import (
+        CFG_UNCOND_DROP_DEFAULTS_BY_ARCH as _CFG_DROP_BY_ARCH)
 
     lr = learning_rate if learning_rate is not None else p.get("learning_rate", 1e-4)
     train: Dict[str, Any] = {
@@ -360,10 +366,36 @@ def _build_train_section(
     train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", 1.0)
     train["ideogram4_lr_factor"] = p.get("ideogram4_lr_factor", 1.0)
 
+    # ---- Aligned CFG unconditional training — arch-agnostic key. ----
+    # Run the resolver for its VALIDATION and its refusals (a hand-authored YAML
+    # or a direct caller never passes through the route), then write the SUPPLIED
+    # value, null included -- not the resolved rate.
+    #
+    # Materialising the resolved default here would destroy the distinction the
+    # parameter exists for at the first save: 0.1 written into a MiniT2I config
+    # comes back through GET /params as a value the edit form then re-sends as
+    # an explicit 0.1, and an explicit rate is refused on an architecture with no
+    # cfg_null_stage. The resolved rate is a pure function of this value and the
+    # architecture, both of which the config already carries.
+    #
+    # Nothing reads the key yet: no arch handler declares a cfg_null_stage.
+    # The literal subscript is load-bearing: train_section_key_vocabulary()
+    # reads these keys off this function's AST.
+    from api.cfg_null_resolver import resolve_cfg_uncond_drop_rate
+    resolve_cfg_uncond_drop_rate(p, arch=arch)
+    train["cfg_uncond_drop_rate"] = p.get("cfg_uncond_drop_rate")
+
     # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
     train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")
     train["minit2i_te_lora_scope"] = p.get("minit2i_te_lora_scope", "attn,ff")
-    train["minit2i_label_drop_rate"] = p.get("minit2i_label_drop_rate", 0.1)
+    # Legacy spelling, written through unchanged so MiniT2I keeps training
+    # exactly as it does today. None (nothing supplied) resolves to the arch
+    # default from the SSoT map rather than a literal here -- see
+    # api/param_defaults.CFG_UNCOND_DROP_DEFAULTS_BY_ARCH.
+    _legacy_drop = p.get("minit2i_label_drop_rate")
+    train["minit2i_label_drop_rate"] = (
+        _CFG_DROP_BY_ARCH["minit2i"] if _legacy_drop is None
+        else float(_legacy_drop))
     train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
@@ -719,6 +751,7 @@ class TrainingConfigGenerator:
                             train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=True,
                             bucketing_always_emit=True,
+                            arch=_detect_arch(base_model_path),
                         ),
                         "model": {
                             "name_or_path": base_model_path,
@@ -904,6 +937,7 @@ class TrainingConfigGenerator:
                             train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=False,
                             bucketing_always_emit=False,
+                            arch=_detect_arch(base_model_path),
                         ),
                         "model": {
                             "name_or_path": base_model_path,
@@ -1065,6 +1099,7 @@ class TrainingConfigGenerator:
                             include_priority_training=False,
                             include_image_encoder_lr=False,
                             include_te_split_lrs=False,
+                            arch=_detect_arch(base_model_path),
                         ),
                         "model": {
                             "name_or_path": base_model_path,

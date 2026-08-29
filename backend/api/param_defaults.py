@@ -2547,6 +2547,22 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # See core/training/dataset_drift.py.
     "rescan_before_training": "off",
 
+    # ---- CFG unconditional (null-condition) training ----
+    # Per-sample Bernoulli probability of training the item against the SAME
+    # null condition the architecture's inference CFG uncond branch builds.
+    #
+    # None = not supplied. It is not a synonym for 0.0: an explicit 0.0 DISABLES
+    # the mechanism (including MiniT2I's legacy 0.1), while None resolves
+    # CFG_UNCOND_DROP_DEFAULTS_BY_ARCH. Only an architecture whose handler
+    # declares a `cfg_null_stage` accepts an explicit value; every other one
+    # refuses it before the model loads rather than accepting and ignoring it
+    # (api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH).
+    #
+    # Distinct from dataset `caption_dropout_rate` and
+    # `danbooru_aug_caption_dropout_rate`: those drop the CAPTION TEXT, whose
+    # encoding is a real conditional forward on an empty string, not the null.
+    "cfg_uncond_drop_rate": None,
+
     # ---- Anima (Cosmos-Predict2 DiT) training ----
     # LoRA targets enumerated by core/models/anima/anima_lora.py.
     # Comma-separated subset of {attention, mlp, mod, llm_adapter}; the
@@ -2580,7 +2596,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "minit2i_te_lora_scope": "attn,ff",
     # CFG label-drop rate: per-sample probability of zeroing the text mask so the
     # model sees the mask_token (unconditional) — matches the reference label_drop_rate.
-    "minit2i_label_drop_rate": 0.1,
+    #
+    # DEPRECATED compatibility key, superseded by the architecture-independent
+    # `cfg_uncond_drop_rate` below. None here is NOT "0.1 by another name": it is
+    # "the caller said nothing", which is what lets the resolver tell an explicit
+    # `cfg_uncond_drop_rate=0.0` (disable) apart from a legacy run that omitted
+    # both keys and must keep its 0.1. The numeric fallback lives once, in
+    # CFG_UNCOND_DROP_DEFAULTS_BY_ARCH.
+    "minit2i_label_drop_rate": None,
     # LoRA learning-rate multiplier (applied to unet_lr).
     "minit2i_lr_factor": 1.0,
     # Optional override path to FLAN-T5-Large; empty -> resolve next to the model.
@@ -2810,6 +2833,28 @@ BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
     "sd15": True,
     "sdxl": True,
     "deus": True,
+}
+
+
+# ---------------------------------------------------------------------------
+# Per-architecture default cfg_uncond_drop_rate
+# ---------------------------------------------------------------------------
+# Consulted ONLY when the caller supplied neither `cfg_uncond_drop_rate` nor the
+# deprecated `minit2i_label_drop_rate`. This is the one place the number 0.1
+# exists: it is MiniT2I's shipped behaviour, and reintroducing it as a
+# `p.get(..., 0.1)` fallback anywhere downstream would resurrect the bug this
+# map replaces — an explicit 0.0 that the fallback silently turns back into 0.1.
+#
+# An architecture ABSENT from this map has no null-alignment stage, so there is
+# no rate to resolve and the resolver returns None. Lens and SenseNova are
+# present at 0.0: they are the architectures the mechanism is being built for,
+# and the entry records that their default is OFF until the quality gate runs.
+# Adding an architecture here is not what enables the feature for it — the
+# handler's `cfg_null_stage` is (core/training/arch/base_arch.py).
+CFG_UNCOND_DROP_DEFAULTS_BY_ARCH: Dict[str, float] = {
+    "minit2i": 0.1,
+    "lens": 0.0,
+    "sensenova": 0.0,
 }
 
 

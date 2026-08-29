@@ -18,6 +18,7 @@ machine-local working material.
 | Document | Purpose |
 |---|---|
 | `docs/guides/ARCHITECTURE_MAP.md` | Backend/frontend ownership map. |
+| `docs/reference/architectures/` | Per-architecture structure reference: components, load path, denoiser diagram, tensor contract, hook points. One file per architecture; `README.md` there is the index. |
 | `docs/guides/REQUEST_LIFECYCLE.md` | Generation request flow from frontend to persistence. |
 | `docs/guides/ADD_A_PARAMETER.md` | End-to-end parameter checklist. |
 | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Architecture integration checklist. |

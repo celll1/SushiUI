@@ -13400,6 +13400,17 @@ class BaseTrainer(ABC):
                         if len(valid_indices) < len(latents_list):
                             # Filter lists to keep only valid items
                             latents_list = [latents_list[i] for i in valid_indices]
+                            # `batch` is not just the source of these lists: several
+                            # per-item values are derived from it AFTER this point --
+                            # batch_captions, the LTX-2.3 per-clip fps tensor, the
+                            # MiniMax-H3 per-clip audio latent, reference paths and
+                            # the VE reconstruction mask. Left unfiltered it keeps the
+                            # pre-filter length, so item k's caption would be paired
+                            # with item k+1's latent, or the fps/audio tensors would
+                            # arrive one row too long. Rebinding the loop variable is
+                            # safe: the enumerate() over `batches` yields a fresh
+                            # value each iteration.
+                            batch = [batch[i] for i in valid_indices]
                             text_embeddings_list = [text_embeddings_list[i] for i in valid_indices]
                             auxiliary_data_list = [auxiliary_data_list[i] for i in valid_indices]
                             if reference_latents_list:

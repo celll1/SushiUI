@@ -12,7 +12,7 @@ Source-level assertions plus a positional simulation: BaseTrainer.train()
 cannot be driven without a model, and the property under test is alignment.
 
 Run:
-    "d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe" -m pytest \\
+    venv\\Scripts\\python.exe -m pytest \\
         backend/tests/batch_filter_alignment_test.py -q
 """
 

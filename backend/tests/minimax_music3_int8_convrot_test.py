@@ -12,7 +12,7 @@ phase:
   splitter, and the two `apply_*_with_convrot` functions) -- no checkpoint
   needed, run everywhere.
 * REAL-FILE tests against the two staged artifacts
-  (`M:/model/minimax-music3/diffusion_models/minimax_music3_dit_int8_convrot.
+  (`<MODEL_ROOT>/minimax-music3/diffusion_models/minimax_music3_dit_int8_convrot.
   safetensors` and `.../text_encoders/minimax_music3_text_encoder_pruned_
   int8_convrot.safetensors`), skipped cleanly when the snapshot is not
   present on this machine. These are the POSITIVE cases the design doc's
@@ -31,6 +31,8 @@ import pytest
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from model_root import model_path  # noqa: E402
 
 from core.models.common.convrot_int8_linear import ConvRotInt8Linear  # noqa: E402
 from core.models.minimax_music3 import convrot_remap, loader  # noqa: E402
@@ -255,7 +257,7 @@ def test_apply_flat_dit_state_dict_with_convrot_is_a_no_op_pass_through_when_not
 # int8_convrot_by_default`'s own convention.
 # ---------------------------------------------------------------------------
 
-_REAL_ROOT = "M:/model/minimax-music3"
+_REAL_ROOT = model_path("minimax-music3")
 _REAL_DIT_CONVROT = os.path.join(_REAL_ROOT, "diffusion_models", "minimax_music3_dit_int8_convrot.safetensors")
 _REAL_DIT_FP16 = os.path.join(_REAL_ROOT, "diffusion_models", "minimax_music3_dit_fp16.safetensors")
 _REAL_TE_CONVROT = os.path.join(

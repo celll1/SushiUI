@@ -4,8 +4,8 @@ Pure-function / small-tensor coverage, mirroring ``minimax_music3_flat_remap_tes
 shape: no multi-GB weight file needed. The REAL-checkpoint numeric proof (that the split
 q/k/v/gate/up land bit-identically to ``official/``'s own separate Linears, that
 ``lm_head_pruned`` row 0 is end-of-audio, etc.) was run manually against
-``M:/model/minimax-music3`` while writing this module and is recorded in its module
-docstring and in ``docs/guides/MINIMAX_MUSIC3_DESIGN.md``'s phase-10 verification section --
+``<MODEL_ROOT>/minimax-music3`` while writing this module and is recorded in its module
+docstring and in the MiniMax Music 3 loader/remap contract --
 this file proves the remap's LOGIC is correct and TOTAL for any input shaped like the real
 files; ``minimax_music3_loader_test.py``'s pruned round-trip test proves an actual tiny
 round-trip through a real (patched) ``Qwen3ForCausalLM``.

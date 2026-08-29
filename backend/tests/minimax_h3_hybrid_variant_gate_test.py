@@ -5,8 +5,8 @@ Run with:
 
 WHY THIS FILE EXISTS
 --------------------
-`docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` §3.1 measured the polarity of
-the existing H3 variant gates and found it is not uniform: two of them refused
+The hybrid contract is conservative because the existing H3 variant gates are
+not uniform: two of them refused
 `ref2va` BY NAME (a denylist) and one endpoint had no variant gate at all, so a
 transformer loaded as a third variant walked through them. C1 closed all four
 before anything could write `variant="hybrid"`; C7 then opened exactly one of

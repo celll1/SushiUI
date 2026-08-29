@@ -4,9 +4,9 @@ block-range selector picks exactly the blocks it was asked for.
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minimax_h3_hybrid_preflight_test.py -v
 
-Design doc: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` (rev2) sections 4.1,
-4.2, 4.4 and the first half of 9.1. Everything here is HEADER-ONLY: the fixtures
-write safetensors files with a real struct-packed JSON header and a zero-length
+Contract: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`. Everything here is
+HEADER-ONLY: the fixtures write safetensors files with a real struct-packed JSON
+header and a zero-length
 data section, which is exactly what the preflight reads and all it is allowed to
 read.
 

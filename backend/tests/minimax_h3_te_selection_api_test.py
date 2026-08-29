@@ -272,7 +272,7 @@ def test_a_non_h3_architecture_refuses_both_fields(tmp_path, monkeypatch, field)
     monkeypatch.setattr(ModelLoader, "detect_model_type", staticmethod(lambda _p: "sdxl"))
 
     with pytest.raises(ValueError) as excinfo:
-        ModelLoader.load_from_safetensors(str(path), **{field: "M:/whatever.safetensors"})
+        ModelLoader.load_from_safetensors(str(path), **{field: "Z:/whatever.safetensors"})
     message = str(excinfo.value)
     assert field in message and "minimax_h3" in message and "'sdxl'" in message
 
@@ -280,7 +280,7 @@ def test_a_non_h3_architecture_refuses_both_fields(tmp_path, monkeypatch, field)
 def test_a_huggingface_source_refuses_both_fields():
     with pytest.raises(ValueError, match=r"cannot be used with a huggingface source"):
         ModelLoader.load_model("huggingface", "some/repo",
-                               text_encoder_file="M:/whatever.safetensors")
+                               text_encoder_file="Z:/whatever.safetensors")
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +465,9 @@ from minimax_h3_hybrid_api_test import _StubPipelineManager, _post  # noqa: E402
 def test_post_models_load_forwards_both_fields(monkeypatch):
     manager = _StubPipelineManager()
     status, _payload = _post(
-        monkeypatch, manager, source_type="diffusers", source="M:/model/minimax_h3",
-        text_encoder_file="M:/model/minimax_h3/text_encoders/" + CONVERTED_NAME,
-        clip_projection_file="M:/model/minimax_h3/clip_projections/" + PROJECTION_NAME)
+        monkeypatch, manager, source_type="diffusers", source="Z:/model/minimax_h3",
+        text_encoder_file="Z:/model/minimax_h3/text_encoders/" + CONVERTED_NAME,
+        clip_projection_file="Z:/model/minimax_h3/clip_projections/" + PROJECTION_NAME)
 
     assert status == 200
     seen = manager.seen
@@ -487,7 +487,7 @@ def test_post_models_load_sends_none_when_the_fields_are_absent(monkeypatch):
     manager = _StubPipelineManager()
     status, _payload = _post(
         monkeypatch, manager, source_type="safetensors",
-        source="M:/model/sdxl/x.safetensors", text_encoder_file="")
+        source="Z:/model/sdxl/x.safetensors", text_encoder_file="")
 
     assert status == 200
     seen = manager.seen

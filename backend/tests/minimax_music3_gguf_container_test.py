@@ -6,7 +6,7 @@ Run with:
 Every test here uses a tiny, hand-built, real GGUF file
 (``tests.minimax_music3_gguf_fixture``) -- no multi-GB checkpoint is opened.
 A real load against the staged snapshot
-(``M:/model/minimax-music3/diffusion_models/minimax_music3_dit_BF16.gguf`` /
+(``<MODEL_ROOT>/minimax-music3/diffusion_models/minimax_music3_dit_BF16.gguf`` /
 ``text_encoders/minimax_music3_text_encoder_pruned_Q8_0.gguf``) was verified
 manually while writing this reader (header census matching the design doc's
 own numbers, a dim-order proof against the installed ``gguf`` package, and a

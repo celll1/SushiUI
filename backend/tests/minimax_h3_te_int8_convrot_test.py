@@ -26,6 +26,8 @@ BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+from model_root import model_path  # noqa: E402
+
 from core.models.common.quantized_checkpoint_guard import (  # noqa: E402
     UnsupportedQuantSemanticsError,
     quantized_state_dict_report,
@@ -312,10 +314,10 @@ def test_gpu_module_params_functional_call_matches_a_plain_convrot_forward():
 # ---------------------------------------------------------------------------
 
 def test_real_distribution_selects_int8_convrot_by_default():
-    """Header-only against the real tree (M:/model/minimax_h3, as the rest of
-    the MiniMax-H3 test suite already assumes -- see minimax_h3_training_test.py
+    """Header-only against the real tree (`<MODEL_ROOT>/minimax_h3`, as the rest
+    of the MiniMax-H3 test suite already assumes -- see minimax_h3_training_test.py
     and minimax_h3_lora_conversion_test.py). Zero tensor bytes read."""
-    root = "M:/model/minimax_h3"
+    root = model_path("minimax_h3")
     if not os.path.isdir(root):
         pytest.skip(f"{root} not present on this machine")
     from core.models.minimax_h3.loader import detect_minimax_h3_layout

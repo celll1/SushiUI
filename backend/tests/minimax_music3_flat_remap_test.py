@@ -4,7 +4,7 @@ Pure-function coverage: every test here works on plain tensors and key
 lists, no model snapshot needed. The REAL-checkpoint numeric proof (that the
 QKV split lands in the same rows the official fp32 transformer's separate
 q/k/v Linears hold, etc.) was run manually against
-``M:/model/minimax-music3`` while writing this module and is not repeated
+``<MODEL_ROOT>/minimax-music3`` while writing this module and is not repeated
 here -- this file proves the remap's LOGIC is correct and TOTAL for any
 input shaped like the real files; ``minimax_music3_loader_test.py``'s
 ``test_flat_dit_with_official_present_is_now_loadable`` proves an actual

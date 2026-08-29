@@ -4,7 +4,7 @@ Tests for the OUTPAINT B2 RePaint-style time-travel resample schedule builder
 see scratchpad/outpaint_continuity_design.md section "B2".
 
 Run with:
-    d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe -m pytest backend/tests/test_outpaint_resample_schedule.py -v
+    venv\\Scripts\\python.exe -m pytest backend/tests/test_outpaint_resample_schedule.py -v
 
 Test coverage:
   1. Degenerate cases (r<=1, u<=0, T<=0) return the plain

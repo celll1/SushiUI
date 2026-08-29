@@ -381,7 +381,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.component_health = "ready"
 
         # Auto-discover a per-model `loras/` sibling directory (e.g.
-        # M:/model/minimax_h3/loras next to diffusion_models/text_encoders/vae)
+            # <MODEL_ROOT>/minimax_h3/loras next to diffusion_models/text_encoders/vae)
         # and register it as a seeded LoRA search dir. Only runs after a
         # confirmed-successful load of THIS source (current_model_info can be
         # left stale/None on failure, or reflect a different model when the

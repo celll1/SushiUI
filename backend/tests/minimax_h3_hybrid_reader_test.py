@@ -5,9 +5,8 @@ that map real 12-21 GB checkpoints):
 
     venv/Scripts/python.exe -m pytest backend/tests/minimax_h3_hybrid_reader_test.py -v
 
-Design doc: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` (rev2) sections 4.3,
-4.4, 4.5 and the reader half of 9.1. No test here opens a distributed
-checkpoint: the "real file" fixtures are a few hundred KB of tiny tensors written
+Contract: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`. No test here opens
+a distributed checkpoint: the "real file" fixtures are a few hundred KB of tiny tensors written
 with `safetensors.torch.save_file`, which is enough for a genuine `safe_open`
 mmap and therefore enough to prove parity against one.
 """

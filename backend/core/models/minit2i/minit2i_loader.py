@@ -16,6 +16,7 @@ import os
 
 import torch
 
+from ..common.model_root import external_model_path
 from .vendor import MiniT2IMMJiTModel, MiniT2IFlowMatchScheduler
 from .vendor.single_file import load_single_file, detect_variant_from_state_dict
 from .minit2i_vae import is_latent_vae, load_minit2i_vae, VAE_SCALE_FACTOR
@@ -176,8 +177,9 @@ def load_minit2i_components(
         # No path info in the sentinel: probe the local minit2i model tree for FLAN-T5
         # (sibling of the VAE local dir), then fall back to the hub.
         flan_loc = _resolve_flan_t5(model_path, flan_t5_path)
-        if flan_loc == "google/flan-t5-large":
-            vae_root = os.environ.get("MINIT2I_VAE_DIR") or r"M:\model\minit2i\vae"
+        vae_root = (os.environ.get("MINIT2I_VAE_DIR")
+                    or external_model_path("minit2i", "vae"))
+        if flan_loc == "google/flan-t5-large" and vae_root:
             flan_loc = _resolve_flan_t5(os.path.dirname(vae_root.rstrip("/\\")), flan_t5_path)
         tokenizer, text_encoder = _load_flan_t5(flan_loc, text_encoder_dtype)
 

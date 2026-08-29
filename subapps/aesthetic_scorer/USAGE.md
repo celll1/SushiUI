@@ -16,9 +16,9 @@ curl http://localhost:8001/api/settings
 curl -X PUT http://localhost:8001/api/settings \
   -H "Content-Type: application/json" \
   -d '{
-    "latents_dir": "<PRIVATE_PATH>",
-    "images_dir": "<PRIVATE_PATH>",
-    "models_dir": "<PRIVATE_PATH>"
+    "latents_dir": "<DATA_ROOT>/aesthetic_scorer/latents",
+    "images_dir": "<DATA_ROOT>/aesthetic_scorer/images",
+    "models_dir": "<DATA_ROOT>/aesthetic_scorer/models"
   }'
 ```
 
@@ -39,11 +39,11 @@ curl -X POST http://localhost:8001/api/generate_latents \
   -H "Content-Type: application/json" \
   -d '{
     "dataset_id": 1,
-    "model_path": "<PRIVATE_PATH>",
+    "model_path": "<MODEL_ROOT>/zimage_v1.safetensors",
     "num_samples": 1000,
     "timestep_range": [0.0, 1.0],
     "shuffle": true,
-    "output_dir": "<PRIVATE_PATH>"
+    "output_dir": "<DATA_ROOT>/aesthetic_scorer/latents"
   }'
 
 # Or use default path from settings (omit output_dir)
@@ -71,7 +71,7 @@ curl -X POST http://localhost:8001/api/decode_latents \
   -H "Content-Type: application/json" \
   -d '{
     "record_ids": [1, 2, 3, 4, 5],
-    "vae_path": "<PRIVATE_PATH>"
+    "vae_path": "<MODEL_ROOT>/zimage_v1.safetensors"
   }'
 ```
 
@@ -148,7 +148,7 @@ Or via Python API:
 from backend.core.training.full_parameter_trainer import FullParameterTrainer
 
 trainer = FullParameterTrainer(
-    model_path="<PRIVATE_PATH>",
+    model_path="<MODEL_ROOT>/zimage_v1.safetensors",
     output_dir="training/my_run",
     # ... other parameters ...
     aesthetic_loss_weight=0.1,
@@ -171,9 +171,9 @@ Get current application settings.
 
 ```json
 {
-  "latents_dir": "<PRIVATE_PATH>",
-  "images_dir": "<PRIVATE_PATH>",
-  "models_dir": "<PRIVATE_PATH>",
+  "latents_dir": "<DATA_ROOT>/aesthetic_scorer/latents",
+  "images_dir": "<DATA_ROOT>/aesthetic_scorer/images",
+  "models_dir": "<DATA_ROOT>/aesthetic_scorer/models",
   "default_timestep_range_min": 0.0,
   "default_timestep_range_max": 1.0
 }
@@ -272,7 +272,7 @@ session = Session()
 
 # Initialize generator
 generator = LatentGenerator(
-    model_path="<PRIVATE_PATH>",
+    model_path="<MODEL_ROOT>/zimage_v1.safetensors",
     device="cuda",
     weight_dtype="fp16",
 )
@@ -394,7 +394,7 @@ Full example of training with aesthetic loss:
 from backend.core.training.full_parameter_trainer import FullParameterTrainer
 
 trainer = FullParameterTrainer(
-    model_path="<PRIVATE_PATH>",
+    model_path="<MODEL_ROOT>/zimage_v1.safetensors",
     output_dir="training/my_aesthetic_run",
     run_name="aesthetic_test",
     learning_rate=1e-5,

@@ -2,7 +2,7 @@
 Tests for Danbooru online learning and live vocabulary expansion.
 
 Run with:
-    d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe -m pytest backend/tests/test_danbooru_online_learning.py -v
+    venv\\Scripts\\python.exe -m pytest backend/tests/test_danbooru_online_learning.py -v
 
 Test coverage:
   1.  API rate-limit interval (1.4 s) is enforced across all DanbooruClient instances

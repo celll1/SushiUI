@@ -4,7 +4,7 @@ the code that decides what a PNG produced by SushiUI may say about this
 machine's filesystem.
 
 Run with:
-    d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe -m pytest backend/tests/test_path_redaction.py -v
+    venv\\Scripts\\python.exe -m pytest backend/tests/test_path_redaction.py -v
 
 Two failure modes matter equally and both have occurred:
 
@@ -62,7 +62,7 @@ class TestPathsAreRedacted(unittest.TestCase):
     def test_windows_absolute_in_a_label(self):
         self.assertEqual(
             redact_paths(
-                "override: M:\\sushiUI\\training\\vae_dec_IL02_v1\\vae_dec_IL02_v1_vae "
+                "override: Z:\\sushiUI\\training\\vae_dec_IL02_v1\\vae_dec_IL02_v1_vae "
                 "(run vae_dec_IL02_v1, step 141286, EMA weights, decoder only)"
             ),
             "override: vae_dec_IL02_v1_vae "
@@ -73,7 +73,7 @@ class TestPathsAreRedacted(unittest.TestCase):
         # Real value of outpaint_controlnet_model (80 rows).
         self.assertEqual(
             redact_paths(
-                "M:/sushiUI/training/outpaint_cn_tia_arb/"
+                "Z:/sushiUI/training/outpaint_cn_tia_arb/"
                 "outpaint_cn_tia_arb_controlnet_step_087475"
             ),
             "outpaint_cn_tia_arb_controlnet_step_087475",
@@ -92,7 +92,7 @@ class TestPathsAreRedacted(unittest.TestCase):
 
     def test_path_quoted_inside_prose(self):
         self.assertEqual(
-            redact_paths("VAE override failed to load from M:\\a\\b\\my_vae; using the model VAE."),
+            redact_paths("VAE override failed to load from Z:\\a\\b\\my_vae; using the model VAE."),
             "VAE override failed to load from my_vae; using the model VAE.",
         )
 
@@ -111,7 +111,7 @@ class TestPathsAreRedacted(unittest.TestCase):
 
     def test_no_separator_survives_any_of_them(self):
         for value in (
-            "M:\\model\\sdxl\\VAE\\sdxl_vae_pid.safetensors",
+            "Z:\\model\\sdxl\\VAE\\sdxl_vae_pid.safetensors",
             "/mnt/data/models/vae/config",
             "\\\\host\\share\\a\\b\\c.safetensors",
             "D:/x/y/z.pth",
@@ -125,18 +125,18 @@ class TestGenericNamesAreDisambiguated(unittest.TestCase):
     """A name the layout generated must resolve to one file locally."""
 
     def test_generic_component_dir_gets_its_model_folder(self):
-        self.assertEqual(display_name_for_path("M:\\model\\krea2\\vae"), "krea2/vae")
+        self.assertEqual(display_name_for_path("Z:\\model\\krea2\\vae"), "krea2/vae")
 
     def test_generic_weight_file_walks_up_twice(self):
         self.assertEqual(
-            display_name_for_path("M:\\model\\krea2\\vae\\diffusion_pytorch_model.safetensors"),
+            display_name_for_path("Z:\\model\\krea2\\vae\\diffusion_pytorch_model.safetensors"),
             "krea2/vae/diffusion_pytorch_model.safetensors",
         )
 
     def test_sharded_weight_file_is_generic_too(self):
         self.assertEqual(
             display_name_for_path(
-                "M:\\model\\lens\\microsoft-lens\\transformer\\"
+                "Z:\\model\\lens\\microsoft-lens\\transformer\\"
                 "diffusion_pytorch_model-00001-of-00002.safetensors"
             ),
             "microsoft-lens/transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
@@ -145,17 +145,17 @@ class TestGenericNamesAreDisambiguated(unittest.TestCase):
     def test_human_chosen_name_stays_bare(self):
         self.assertEqual(
             display_name_for_path(
-                "M:\\sushiUI\\training\\vae_dec_IL02_v1\\vae_dec_IL02_v1_vae"
+                "Z:\\sushiUI\\training\\vae_dec_IL02_v1\\vae_dec_IL02_v1_vae"
             ),
             "vae_dec_IL02_v1_vae",
         )
 
     def test_segment_cap(self):
-        deep = "M:\\a\\b\\c\\vae\\vae\\vae\\model.safetensors"
+        deep = "Z:\\a\\b\\c\\vae\\vae\\vae\\model.safetensors"
         self.assertLessEqual(len(display_name_for_path(deep).split("/")), 3)
 
     def test_never_empty(self):
-        for value in ("", "   ", "M:\\", "/", None):
+        for value in ("", "   ", "Z:\\", "/", None):
             self.assertTrue(display_name_for_path(value))
 
 
@@ -258,15 +258,15 @@ class TestUserTextIsNotRewritten(unittest.TestCase):
     def test_identifier_keys_pass_through_but_messages_do_not(self):
         self.assertIn("code", IDENTIFIER_KEYS)
         warning = {"code": "vae_override_error",
-                   "message": "failed from M:\\a\\b\\my_vae"}
+                   "message": "failed from Z:\\a\\b\\my_vae"}
         self.assertEqual(
             redact_params_for_sharing(warning),
             {"code": "vae_override_error", "message": "failed from my_vae"},
         )
 
     def test_caller_object_is_not_mutated(self):
-        params = {"vae_override_path": "M:\\a\\b\\v",
-                  "loras": [{"path": "M:\\lora\\x.safetensors"}]}
+        params = {"vae_override_path": "Z:\\a\\b\\v",
+                  "loras": [{"path": "Z:\\lora\\x.safetensors"}]}
         snapshot = json.dumps(params, sort_keys=True)
         redact_params_for_sharing(params)
         self.assertEqual(json.dumps(params, sort_keys=True), snapshot)

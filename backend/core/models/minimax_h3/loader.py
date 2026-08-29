@@ -1102,13 +1102,13 @@ def read_safetensors_header(path: str) -> Dict[str, Any]:
 
 
 # Key prefixes carried by NO other architecture in this repo. MEASURED over every
-# ``.safetensors`` under ``M:/model/**`` (77 files, 11 archs): each of these
+# ``.safetensors`` under one local model root (77 files, 11 archs): each of these
 # appears in the MiniMax-H3 files and in nothing else.
 #
 # The diffusers spellings are deliberately ABSENT from this tuple. LTX-2.3's
 # transformer shards carry ``proj_in.``, ``audio_proj_in.`` AND ``audio_proj_out.``
 # (measured on
-# ``M:/model/LTX2.3/distilled/transformer/diffusion_pytorch_model-00001-of-00008.safetensors``),
+# ``<MODEL_ROOT>/LTX2.3/distilled/transformer/diffusion_pytorch_model-00001-of-00008.safetensors``),
 # so "a second, audio-specific projection on the DiT" is NOT unique to MiniMax-H3
 # -- an earlier version of this probe claimed it was, and was wrong.
 _MINIMAX_H3_ONLY_KEYS = (

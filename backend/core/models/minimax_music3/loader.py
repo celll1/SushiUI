@@ -191,7 +191,7 @@ def _safetensors_tensor_keys(path: str) -> List[str]:
 # `latent_conditioners.0.{weight,bias}`, `cond_layer_logits`,
 # `cond_layer_scale` (374 total) -- the condition encoder folded into the
 # same file. Verified against
-# `M:/model/minimax-music3/diffusion_models/minimax_music3_dit_fp16.safetensors`.
+# `<MODEL_ROOT>/minimax-music3/diffusion_models/minimax_music3_dit_fp16.safetensors`.
 def keys_look_like_flat_minimax_music3_dit(keys) -> bool:
     keys = list(keys)
     if not any(k.startswith("diffusion_transformer.") for k in keys):

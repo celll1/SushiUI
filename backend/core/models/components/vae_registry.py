@@ -61,8 +61,12 @@ def _local_candidates(vae_type: str, local_dir: Optional[str]) -> list:
     cands = []
     if local_dir:
         cands.append(local_dir)
-    # Common local layouts under the model tree (offline-friendly).
-    for root in (os.environ.get("MINIT2I_VAE_DIR"), r"M:\model\minit2i\vae"):
+    # Common local layouts under the model tree (offline-friendly): an explicit
+    # override, else the conventional place in a configured external tree.
+    from ..common.model_root import external_model_path
+
+    for root in (os.environ.get("MINIT2I_VAE_DIR"),
+                 external_model_path("minit2i", "vae")):
         if root:
             cands.append(os.path.join(root, vae_type))
     return [c for c in cands if c and os.path.isdir(c)]

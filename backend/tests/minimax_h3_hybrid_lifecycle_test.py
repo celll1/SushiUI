@@ -3,9 +3,8 @@
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minimax_h3_hybrid_lifecycle_test.py -v
 
-Design doc: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` (rev2) sections 5.1,
-5.4, 7 and 9.2. Four properties, each of which has a plausible implementation
-that gets it wrong:
+Contract: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`. Four properties,
+each of which has a plausible implementation that gets it wrong:
 
 * `variant` is set to `"hybrid"` EXPLICITLY. `loader._layout_from_root` derives
   it by SUBSTRING MATCH on the filename, so a hybrid whose base is
@@ -23,7 +22,7 @@ that gets it wrong:
 EVERYTHING HERE IS HEADER-ONLY. The fixtures are the fake trees from
 `minimax_h3_hybrid_preflight_test` (struct-packed JSON header, zero-length data
 section) and `_build_transformer` is always stubbed; no checkpoint under
-`M:/model/minimax_h3` is opened.
+`<MODEL_ROOT>/minimax_h3` is opened.
 """
 
 import json

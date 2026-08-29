@@ -29,10 +29,17 @@ Every full-parameter run must satisfy all of the following:
 - optimizer `adafactor`, or a supported ring-buffer optimizer with
   `optimizer_state_host_resident` enabled.
 
-Stochastic rounding is forced and announced for the accepted path. Full
-fine-tune checkpoints intended for resume must use
-`sensenova_full_finetune_save_format: int8`; other export formats are not
-resume contracts.
+Stochastic rounding is forced and announced for the accepted path.
+
+`sensenova_full_finetune_save_format: int8` is the only export a NEW run may be
+pointed at as its base. A run resuming its OWN checkpoint is a narrower
+question and is answered separately by `sensenova_ops.accept_resume_shaped_base`,
+which also accepts `mixed` (one trained half plus one `Int8Linear` half) and
+`bf16` (both halves trained), losslessly. It decides on a class census of the
+constructed tree; the checkpoint's metadata is required and required to agree,
+but can only narrow acceptance. A resume has actually been run for the
+`gen`/`mixed` pair; `both`/`bf16` reaching the same acceptance is an inference
+from the same write/read path, not a measured run.
 
 ## Model-specific training path
 

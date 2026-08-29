@@ -32,12 +32,18 @@ them. No subjective performance claims.
   marginalized out.
 - **Dedicated null representation:** MiniT2I's correct CFG control is
   `minit2i_label_drop_rate`, which reproduces inference's zero text mask.
-  Dataset-level empty-caption dropout is not equivalent.
+  `MMJiT.forward` then replaces every text row with the same learned mask token,
+  so this is exact rather than approximate. Dataset-level empty-caption dropout
+  is not equivalent: FLAN-T5 retains an active EOS row. The current dedicated
+  label-drop default is 0.1.
 - **Mismatched null representation:** SenseNova's training empty-caption prefix
-  differs from its inference uncond prefix; Lens trains an empty chat-template
-  condition while inference uses zero features and an all-false mask. Neither
-  path supports an exact implicit-classifier claim after fine-tuning. SenseNova's
-  served `cfg_norm="global"` also makes the final field nonlinear.
+  differs from its inference uncond prefix **and** the prefix-length-dependent
+  image-token t indexes differ. The inference null has no system block. Lens
+  trains an empty chat-template condition while inference uses zero features and
+  an all-false text mask, which structurally removes text keys from image
+  attention. Neither path supports an exact implicit-classifier claim after
+  fine-tuning. SenseNova's served `cfg_norm="global"` also makes the final field
+  nonlinear.
 - **Distilled / no twin CFG:** MiniMax-H3 and ACE-Step 1.5 use single-forward
   guidance-distilled inference. H3 additionally rejects empty prompts. Distilled
   FLUX.2 and Krea2 also must not be analysed as their base two-branch routes.

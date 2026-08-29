@@ -513,7 +513,10 @@ paths:
         Single source of truth for LoRA/Full-FT training defaults
         (`backend/api/param_defaults.py` `TRAINING_DEFAULTS`). The frontend
         fetches this at startup and applies it when no localStorage override
-        is present, so the UI and backend never diverge on default values.
+        is present, so the UI and backend never diverge on default values. The
+        `_sample_defaults_by_arch` member overlays architecture-specific
+        training-preview defaults; currently SenseNova uses its normal-generation
+        50 steps and CFG 4.0 when those request fields are omitted.
       tags: [Schema]
       responses:
         '200':
@@ -19572,6 +19575,19 @@ components:
           type: 'integer'
           default: -1
           description: Training-preview seed. -1 selects a random seed for each preview.
+        sensenova_sample_timestep_shift:
+          type: 'number'
+          default: 3.0
+          description: SenseNova-only flow-matching timestep shift for training previews.
+        sensenova_sample_img_cfg_scale:
+          type: 'number'
+          default: 1.0
+          description: SenseNova-only reference-image CFG scale for training previews; inert without a reference image.
+        sensenova_sample_cfg_norm:
+          type: 'string'
+          enum: ['none', 'global']
+          default: 'global'
+          description: SenseNova-only CFG overshoot normalization for training previews.
         noise_process:
           type: 'string'
           default: 'auto'

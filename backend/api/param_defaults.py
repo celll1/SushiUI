@@ -2244,6 +2244,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "sample_sampler": "euler",
     "sample_schedule_type": "sgm_uniform",
     "sample_seed": -1,
+    # SenseNova-only training-preview controls. These mirror normal generation
+    # but remain separate so training samples never inherit unrelated features.
+    "sensenova_sample_timestep_shift": SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
+    "sensenova_sample_img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],
+    "sensenova_sample_cfg_norm": SENSENOVA_GENERATION_DEFAULTS["cfg_norm"],
     # Debug
     "debug_latents": False,
     "debug_latents_every": 50,
@@ -2818,6 +2823,35 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     "sensenova": {"distribution": "logit_normal", "mean": -0.8, "std": 0.8,
                   "min_timestep": 0.0, "max_timestep": 1.0},
 }
+
+# Training-preview defaults that differ by architecture. The request model keeps
+# the common 28/7 values for compatibility; config generation consults this map
+# only when those fields were omitted by the caller.
+TRAINING_SAMPLE_DEFAULTS_BY_ARCH: Dict[str, Dict[str, Any]] = {
+    "_default": {
+        "sample_steps": TRAINING_DEFAULTS["sample_steps"],
+        "sample_cfg_scale": TRAINING_DEFAULTS["sample_cfg_scale"],
+    },
+    "sensenova": {
+        "sample_steps": SENSENOVA_GENERATION_DEFAULTS["steps"],
+        "sample_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["cfg_scale"],
+    },
+}
+
+
+def resolve_training_sample_defaults(
+    params: Dict[str, Any], explicit_fields, arch: str
+) -> Dict[str, Any]:
+    """Resolve per-architecture preview defaults without replacing explicit values."""
+    resolved = dict(params)
+    explicit = set(explicit_fields) if explicit_fields is not None else set(params)
+    defaults = TRAINING_SAMPLE_DEFAULTS_BY_ARCH.get(
+        arch, TRAINING_SAMPLE_DEFAULTS_BY_ARCH["_default"]
+    )
+    for key, value in defaults.items():
+        if key not in explicit:
+            resolved[key] = value
+    return resolved
 
 # ---------------------------------------------------------------------------
 # Per-architecture default bundle_vae (full-parameter save VAE embedding)

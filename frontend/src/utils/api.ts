@@ -7261,6 +7261,9 @@ export interface TrainingRunCreateRequest {
   sample_sampler?: string;
   sample_schedule_type?: string;
   sample_seed?: number;
+  sensenova_sample_timestep_shift?: number;
+  sensenova_sample_img_cfg_scale?: number;
+  sensenova_sample_cfg_norm?: "none" | "global";
   debug_latents?: boolean;
   debug_latents_every?: number;
   enable_bucketing?: boolean;

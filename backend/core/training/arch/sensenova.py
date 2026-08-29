@@ -113,4 +113,7 @@ class SenseNovaArchHandler(ArchHandler):
             negative_prompt=sample_ctx.negative_prompt,
             reference_image_path=sample_ctx.reference_image_path,
             condition_image_path=sample_ctx.condition_image_path,
+            timestep_shift=sample_ctx.sensenova_timestep_shift,
+            img_cfg_scale=sample_ctx.sensenova_img_cfg_scale,
+            cfg_norm=sample_ctx.sensenova_cfg_norm,
         )

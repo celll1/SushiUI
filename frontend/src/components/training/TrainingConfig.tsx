@@ -351,7 +351,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
   //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
-  const { trainingDefaults, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
+  const { trainingDefaults, trainingSampleDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -395,6 +395,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const lastTimestepModelRef = useRef<string | null>(null);
   // Same pattern for the per-arch default bundle_vae (sd15/sdxl/deus -> true).
   const lastBundleVaeModelRef = useRef<string | null>(null);
+  const lastSampleDefaultsModelRef = useRef<string | null>(null);
+  const sampleDefaultsExplicitlySetRef = useRef(false);
 
   // Tracks which editRunId has already been restored from YAML.
   // Prevents React StrictMode's double-invoked mount effect from calling
@@ -518,8 +520,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
   const sampleWidth = params.sample_width ?? DEFAULT_PARAMS.sample_width!;
   const sampleHeight = params.sample_height ?? DEFAULT_PARAMS.sample_height!;
-  const sampleSteps = params.sample_steps ?? DEFAULT_PARAMS.sample_steps!;
-  const sampleCfgScale = params.sample_cfg_scale ?? DEFAULT_PARAMS.sample_cfg_scale!;
+  const selectedSampleDefaults = trainingSampleDefaultsByArch
+    ? (trainingSampleDefaultsByArch[getModelArchitecture(baseModelPath)]
+      || trainingSampleDefaultsByArch["_default"])
+    : undefined;
+  const sampleStepsDefault = (selectedSampleDefaults?.sample_steps as number | undefined)
+    ?? DEFAULT_PARAMS.sample_steps!;
+  const sampleCfgScaleDefault = (selectedSampleDefaults?.sample_cfg_scale as number | undefined)
+    ?? DEFAULT_PARAMS.sample_cfg_scale!;
+  const sampleSteps = params.sample_steps ?? sampleStepsDefault;
+  const sampleCfgScale = params.sample_cfg_scale ?? sampleCfgScaleDefault;
   const sampleSampler = params.sample_sampler ?? DEFAULT_PARAMS.sample_sampler!;
   const sampleScheduleType = params.sample_schedule_type ?? DEFAULT_PARAMS.sample_schedule_type!;
   const sampleSeed = params.sample_seed ?? DEFAULT_PARAMS.sample_seed!;
@@ -1003,6 +1013,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sample_sampler: params.sample_sampler,
       sample_schedule_type: params.sample_schedule_type,
       sample_seed: params.sample_seed,
+      sensenova_sample_timestep_shift: params.sensenova_sample_timestep_shift,
+      sensenova_sample_img_cfg_scale: params.sensenova_sample_img_cfg_scale,
+      sensenova_sample_cfg_norm: params.sensenova_sample_cfg_norm,
       resume_from_checkpoint: params.resume_from_checkpoint || undefined,
       debug_latents: params.debug_latents,
       debug_latents_every: params.debug_latents_every,
@@ -1216,6 +1229,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
    *      priority_training breakdown).
    */
   const applyParamsToState = useCallback((incoming: any) => {
+    if (incoming.sample_steps !== undefined || incoming.sample_cfg_scale !== undefined) {
+      sampleDefaultsExplicitlySetRef.current = true;
+    }
     // --- UI-only / non-params states ---
     if (incoming.run_name) setRunName(incoming.run_name);
     if (incoming.base_model_path !== undefined) {
@@ -1382,6 +1398,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
       "sample_every", "sample_prompts", "sample_width", "sample_height",
       "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
+      "sensenova_sample_timestep_shift", "sensenova_sample_img_cfg_scale", "sensenova_sample_cfg_norm",
       "debug_latents", "debug_latents_every",
       "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
       "crop_augment_enable", "crop_full_image_prob", "crop_max_bucket_prob",
@@ -1625,6 +1642,30 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     updateParam("bundle_vae", !!def);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, bundleVaeDefaultsByArch]);
+
+  // Apply architecture-specific training-preview defaults once for a newly
+  // selected model. Values restored/imported or edited by the user remain
+  // explicit and are never replaced by a later architecture change.
+  useEffect(() => {
+    if (!baseModelPath) return;
+    if (restoringFromYAMLRef.current) {
+      lastSampleDefaultsModelRef.current = baseModelPath;
+      return;
+    }
+    if (!trainingSampleDefaultsByArch) return;
+    if (lastSampleDefaultsModelRef.current === baseModelPath) return;
+    lastSampleDefaultsModelRef.current = baseModelPath;
+    if (sampleDefaultsExplicitlySetRef.current) return;
+    const arch = getModelArchitecture(baseModelPath);
+    const overlay = (arch && trainingSampleDefaultsByArch[arch])
+      || trainingSampleDefaultsByArch["_default"];
+    if (!overlay) return;
+    setParams(prev => ({
+      ...prev,
+      sample_steps: overlay.sample_steps as number,
+      sample_cfg_scale: overlay.sample_cfg_scale as number,
+    }));
+  }, [baseModelPath, trainingSampleDefaultsByArch]);
 
   // Fall back to LoRA when the backend's TRAINING_UNSUPPORTED table says the
   // selected method is not offered for the selected base model (the run would
@@ -2101,8 +2142,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         }
         if (params.width) updateParam("sample_width", params.width);
         if (params.height) updateParam("sample_height", params.height);
-        if (params.steps) updateParam("sample_steps", params.steps);
-        if (params.cfg_scale) updateParam("sample_cfg_scale", params.cfg_scale);
+        if (params.steps) {
+          sampleDefaultsExplicitlySetRef.current = true;
+          updateParam("sample_steps", params.steps);
+        }
+        if (params.cfg_scale) {
+          sampleDefaultsExplicitlySetRef.current = true;
+          updateParam("sample_cfg_scale", params.cfg_scale);
+        }
         if (params.sampler) updateParam("sample_sampler", params.sampler);
         if (params.schedule_type) updateParam("sample_schedule_type", params.schedule_type);
         if (params.seed) updateParam("sample_seed", params.seed);
@@ -2149,6 +2196,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sampleSampler,
       sampleScheduleType,
       sampleSeed,
+      sensenovaSampleTimestepShift: params.sensenova_sample_timestep_shift,
+      sensenovaSampleImgCfgScale: params.sensenova_sample_img_cfg_scale,
+      sensenovaSampleCfgNorm: params.sensenova_sample_cfg_norm,
       debugLatents,
       debugLatentsEvery,
       enableBucketing,
@@ -2313,11 +2363,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.samplePrompts !== undefined) updateParam("sample_prompts", config.samplePrompts);
     if (config.sampleWidth !== undefined) updateParam("sample_width", config.sampleWidth);
     if (config.sampleHeight !== undefined) updateParam("sample_height", config.sampleHeight);
-    if (config.sampleSteps !== undefined) updateParam("sample_steps", config.sampleSteps);
-    if (config.sampleCfgScale !== undefined) updateParam("sample_cfg_scale", config.sampleCfgScale);
+    if (config.sampleSteps !== undefined) {
+      sampleDefaultsExplicitlySetRef.current = true;
+      updateParam("sample_steps", config.sampleSteps);
+    }
+    if (config.sampleCfgScale !== undefined) {
+      sampleDefaultsExplicitlySetRef.current = true;
+      updateParam("sample_cfg_scale", config.sampleCfgScale);
+    }
     if (config.sampleSampler !== undefined) updateParam("sample_sampler", config.sampleSampler);
     if (config.sampleScheduleType !== undefined) updateParam("sample_schedule_type", config.sampleScheduleType);
     if (config.sampleSeed !== undefined) updateParam("sample_seed", config.sampleSeed);
+    if (config.sensenovaSampleTimestepShift !== undefined) updateParam("sensenova_sample_timestep_shift", config.sensenovaSampleTimestepShift);
+    if (config.sensenovaSampleImgCfgScale !== undefined) updateParam("sensenova_sample_img_cfg_scale", config.sensenovaSampleImgCfgScale);
+    if (config.sensenovaSampleCfgNorm !== undefined) updateParam("sensenova_sample_cfg_norm", config.sensenovaSampleCfgNorm);
     if (config.debugLatents !== undefined) updateParam("debug_latents", config.debugLatents);
     if (config.debugLatentsEvery !== undefined) updateParam("debug_latents_every", config.debugLatentsEvery);
     if (config.useReferenceImages !== undefined) updateParam("use_reference_images", config.useReferenceImages);
@@ -5123,6 +5182,44 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {isSenseNovaModel(baseModelPath) && (
           <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
             <h3 className="text-sm font-medium text-gray-300">SenseNova Sample Generation</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Timestep Shift</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={params.sensenova_sample_timestep_shift ?? ""}
+                  onChange={(e) => updateParam("sensenova_sample_timestep_shift", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Image CFG Scale</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={params.sensenova_sample_img_cfg_scale ?? ""}
+                  onChange={(e) => updateParam("sensenova_sample_img_cfg_scale", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">CFG Norm</label>
+                <select
+                  value={params.sensenova_sample_cfg_norm ?? ""}
+                  onChange={(e) => updateParam("sensenova_sample_cfg_norm", e.target.value as "none" | "global")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  <option value="global">Global</option>
+                  <option value="none">None</option>
+                </select>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">
+              These settings affect only SenseNova training previews. Image CFG is used when the sample prompt includes a reference image.
+            </p>
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
@@ -6853,7 +6950,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => updateParam("sample_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_steps", DEFAULT_PARAMS.sample_steps); }}
+                onChange={(e) => { sampleDefaultsExplicitlySetRef.current = true; updateParam("sample_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value)); }} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_steps", sampleStepsDefault); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -6865,7 +6962,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="30"
                 step="any"
                 value={sampleCfgScale}
-                onChange={(e) => updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", DEFAULT_PARAMS.sample_cfg_scale); }}
+                onChange={(e) => { sampleDefaultsExplicitlySetRef.current = true; updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value)); }} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", sampleCfgScaleDefault); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>

@@ -292,7 +292,13 @@ def train_step(
     target = (images - x_t) / denom  # ground-truth velocity
 
     # CFG label drop: zero the mask -> mask_token uncond for dropped samples.
-    label_drop_rate = float(trainer.config.get("minit2i_label_drop_rate", 0.1))
+    # A YAML written before the key existed, or one that carries an explicit
+    # null, falls back to the SSoT per-arch default rather than a literal here.
+    from api.param_defaults import CFG_UNCOND_DROP_DEFAULTS_BY_ARCH
+    _configured = trainer.config.get("minit2i_label_drop_rate")
+    label_drop_rate = float(
+        CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["minit2i"] if _configured is None
+        else _configured)
     mask_eff = attention_mask
     if label_drop_rate > 0.0:
         drop = torch.rand(B, device=trainer.device) < label_drop_rate

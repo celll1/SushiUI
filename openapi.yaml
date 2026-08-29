@@ -9608,6 +9608,44 @@ components:
           example:
             sensenova: "SenseNova U1.5"
             zimage: "Z-Image"
+        cfg_null_stage:
+          type: object
+          description: |
+            Architecture id -> at which stage the TRAINER can construct that
+            architecture's inference CFG uncond condition, mirroring
+            `ArchHandler.cfg_null_stage`
+            (`backend/core/training/arch/base_arch.py`).
+
+            * `null` — it cannot. An explicitly supplied
+              `cfg_uncond_drop_rate`, INCLUDING `0.0`, is answered 400 rather
+              than accepted and ignored, and
+              `training_feature_unsupported[arch].cfg_uncond_drop` carries the
+              reason to display.
+            * `"collated"` — the null is a rewrite of already-encoded, batched
+              conditioning.
+            * `"encode"` — the null has to be built while encoding the item.
+          additionalProperties:
+            type: string
+            nullable: true
+            enum: [null, 'collated', 'encode']
+          example:
+            minit2i: null
+            sdxl: null
+        cfg_uncond_drop_defaults:
+          type: object
+          description: |
+            Architecture id -> what an OMITTED `cfg_uncond_drop_rate` resolves
+            to there, mirroring `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH` in
+            `backend/api/param_defaults.py`. An architecture absent from the map
+            has no default, i.e. the mechanism is not in play for it. A client
+            displays the resolved default from here rather than keeping its own
+            copy of the number.
+          additionalProperties:
+            type: number
+          example:
+            minit2i: 0.1
+            lens: 0.0
+            sensenova: 0.0
         video_constraints:
           type: object
           description: |
@@ -18795,7 +18833,34 @@ components:
           default: 'attn,ff'
         minit2i_label_drop_rate:
           type: 'number'
-          default: 0.1
+          nullable: true
+          minimum: 0
+          maximum: 1
+          default: null
+          description: >-
+            DEPRECATED MiniT2I-only spelling of cfg_uncond_drop_rate. null (the
+            default) means "not supplied", which resolves to MiniT2I's 0.1;
+            it is not a synonym for 0. Supplying both this and
+            cfg_uncond_drop_rate is a 400.
+        cfg_uncond_drop_rate:
+          type: 'number'
+          nullable: true
+          minimum: 0
+          maximum: 1
+          default: null
+          description: >-
+            Per-sample probability of training an item against the SAME null
+            condition the architecture's inference CFG uncond branch builds.
+            Distinct from dataset caption_dropout_rate and
+            danbooru_aug_caption_dropout_rate, which drop the caption text: an
+            empty caption is still encoded as a conditional forward.
+            Tri-state — null = not supplied (resolve the per-architecture
+            default from GET /schema/arch-capabilities ->
+            cfg_uncond_drop_defaults), 0 = explicitly disabled. An explicit
+            value, 0 included, is refused with 400 on an architecture whose
+            cfg_null_stage is null, and refused when any selected dataset has a
+            nonzero caption_dropout_rate, or when danbooru_aug_enable is true
+            with a nonzero danbooru_aug_caption_dropout_rate.
         minit2i_lr_factor:
           type: 'number'
           minimum: 0

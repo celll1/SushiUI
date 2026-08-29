@@ -1725,6 +1725,17 @@ export interface ArchCapabilities {
   // back to the id, so a new architecture shows up (unprettified) rather than
   // disappearing.
   arch_display_names?: Record<string, string>;
+  // arch -> at which stage the TRAINER can build that architecture's inference
+  // CFG uncond condition: null (it cannot), "collated" or "encode". Mirrors
+  // ArchHandler.cfg_null_stage. null is why an explicit cfg_uncond_drop_rate --
+  // 0.0 included -- is a 400 there; the reason to show lives in
+  // training_feature_unsupported[arch].cfg_uncond_drop. Optional so an older
+  // backend without the key still type-checks.
+  cfg_null_stage?: Record<string, "collated" | "encode" | null>;
+  // arch -> what an OMITTED cfg_uncond_drop_rate resolves to there. Absent
+  // arch = the mechanism is not in play for it. Read this instead of keeping a
+  // copy of the number in the form.
+  cfg_uncond_drop_defaults?: Record<string, number>;
   // arch -> what a long-form video CHAIN's continuation segments receive from
   // their predecessor there (design §7.1). The backend's loaded variant plus
   // this table is the authority on which continuation modes exist — a client
@@ -1861,6 +1872,18 @@ export const trainingFeatureUnsupportedReason = (
   if (!entry) return undefined;
   if (entry.methods && method && !entry.methods.includes(method)) return undefined;
   return entry.reason;
+};
+
+// What an OMITTED cfg_uncond_drop_rate resolves to on `arch`, or undefined when
+// the architecture has no default (the mechanism is not in play there, or the
+// matrix has not loaded). Never a literal in a component: the number is the
+// backend's, and a second copy of it is what turns an explicit 0 back into 0.1.
+export const cfgUncondDropDefault = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): number | undefined => {
+  if (!arch) return undefined;
+  return caps?.cfg_uncond_drop_defaults?.[arch];
 };
 
 // What the backend says ABOUT a training feature it does implement.
@@ -7286,8 +7309,16 @@ export interface TrainingRunCreateRequest {
   text_encoding_prefetch_depth?: number;
   latent_encoding_mode?: string;
   latent_encoding_swap_interval?: number;
+  // Aligned CFG unconditional training (arch-agnostic). TRI-STATE: omit the key
+  // for "not supplied" (the backend resolves the per-architecture default), 0
+  // for "explicitly disabled". Sending `null` is the same as omitting it.
+  // An explicit value -- 0 included -- is a 400 on an architecture whose
+  // archCapabilities.cfg_null_stage entry is null, so gate the control on
+  // trainingFeatureUnsupportedReason(caps, arch, "cfg_uncond_drop").
+  cfg_uncond_drop_rate?: number | null;
   // MiniT2I
-  minit2i_label_drop_rate?: number;
+  // DEPRECATED spelling of cfg_uncond_drop_rate; sending both is a 400.
+  minit2i_label_drop_rate?: number | null;
   minit2i_lr_factor?: number;
   minit2i_flan_t5_path?: string;
   minit2i_lora_scope?: string;

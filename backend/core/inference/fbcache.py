@@ -13,9 +13,9 @@ DYNAMICALLY, per step, from a cheap indicator:
   3. Otherwise run the remaining blocks and refresh the cached full residual
      ``cached_full_residual = hidden_out - hidden_before_block0``.
 
-Reference (MIT): chengzeyi/Comfy-WaveSpeed and chengzeyi/ParaAttention (first-block
-cache). This is a clean-room reimplementation of the published algorithm; only the
-first-block-residual indicator + relative-L1 threshold + residual reuse are used.
+Adapted from the MIT-licensed first-block-cache behavior documented by
+chengzeyi/Comfy-WaveSpeed and chengzeyi/ParaAttention. Required notices are in
+``docs/legal/licenses/MIT-FBCache.txt``.
 
 Model-agnostic: the per-architecture forward decides WHICH tensor is the indicator
 (the visual-stream first-block residual) and WHAT object to cache (the final residual,

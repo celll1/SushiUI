@@ -148,6 +148,8 @@ LoRA key naming: sd-scripts native, `lora_unet_<flattened>.{lora_down.weight,lor
 
 Training prompt encoding is a slice of the inference path: `lens_ops.encode_prompt` calls `lens_pipeline_ops.encode_prompt` with an empty negative and keeps row 0 of the `[cond, uncond]` batch, returning a stacked `[1, num_layers, L, D]` tensor plus a `[L]` mask so the loop can `torch.cat(dim=0)` into `[B, num_layers, L, D]`; `train_step` splits that back into a per-layer list.
 
+Aligned CFG null: `LensArchHandler.cfg_null_stage = "collated"`, hook `apply_cfg_null_collated` → `lens_ops.apply_cfg_null_collated`. `BaseTrainer.sample_cfg_drop_mask` draws one CPU boolean `[B]` per assembled batch outside the MNT loop (rate from `cfg_uncond_drop_rate`; `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0`, so an omitted key is a no-op), it rides on `TrainStepContext.cfg_drop_mask`, and `lens_ops.train_step` applies it after the device/dtype moves and before the per-layer list is built. The rewrite is out of place and sets `encoder_features[drop] = 0`, `encoder_mask[drop] = False` at the batch's own `L` — the same representation `lens_pipeline_ops.encode_prompt` produces on its uncond row when every negative is blank (`f.new_zeros(f.shape)` / `torch.zeros_like(pos_mask, dtype=torch.bool)`, aligned to the positive length by `_align_text_features`).
+
 Refused combinations:
 
 * Full fine-tuning on a weight-only quantized base — `base_adapter.reject_quantized_base(..., model_label="Lens")` raises `NotImplementedError`, called from both `prepare_models_for_training` and `setup_trainable_parameters`.

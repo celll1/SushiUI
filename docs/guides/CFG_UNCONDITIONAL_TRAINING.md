@@ -280,9 +280,9 @@ $$
 | Z-Image | 共有 flow transformer の2枝 | caption dropout の空 caption | 学習・推論の空文字 encode が一致する標準的な flow CFG |
 | FLUX.2 | base は2枝、distilled は guidance vector の1枝 | caption dropout。ただし reference と guidance 条件は保持 | base には適用。distilled には「CFG 枝の学習」としては非適用 |
 | Anima | 共有 flow transformer の2枝 | caption dropout の空 caption | Qwen/T5 条件を同時に落とす標準的な flow CFG |
-| Lens | 共有 flow transformer の2枝 | caption dropout は空 user message を chat template で encode | 推論の空 negative は zero feature / zero mask なので不一致。CFG baseline の直接学習にはならない |
+| Lens | 共有 flow transformer の2枝 | 専用 `cfg_uncond_drop_rate` が選択 row を zero feature / all-false mask へ書き換える（既定 0.0） | 専用 rewrite が推論の空 negative 経路と一致。caption dropout は空 user message を chat template で encode するため別物 |
 | Krea2 | base は2枝、distilled/turbo は1枝 | caption dropout の空 caption | base には適用。distilled/turbo には非適用 |
-| MiniT2I | 共有 x0 predictor の2枝 | 専用 `minit2i_label_drop_rate` が text mask をゼロ化 | 専用 label drop が推論 pure-uncond と一致。一般 caption dropout とは区別する |
+| MiniT2I | 共有 x0 predictor の2枝 | 専用 `cfg_uncond_drop_rate`（旧 `minit2i_label_drop_rate`）が text mask をゼロ化 | 専用 label drop が推論 pure-uncond と一致。一般 caption dropout とは区別する |
 | SenseNova U1.5 | 同じ generation decoder を cond / uncond prefix KV cache で評価 | caption dropout は training cond prefix に空文字を入れる。専用 uncond loss はない | flow の線形 blendには適用できるが、学習 null prefix と推論 uncond prefix の不一致、既定 `cfg_norm="global"`、reference 3枝を別途考慮する必要がある |
 | LTX-2.3 | 共有 joint video/audio transformer の2枝 | caption dropout の空 caption | text null は整合するが、現行 loss は video のみ。audio の null field は直接学習しない |
 | MiniMax-H3 | なし。guidance-distilled の1 forward | なし。空 prompt は拒否 | 現行モデルには非適用。caption dropout を有効にしても CFG 枝は学習されず、空 caption になった項目は encode 時に失敗する |
@@ -561,6 +561,18 @@ exact implicit-classifier identity は保証されない。整合させるには
 の token 数と固定 offset 97 の関係は未実測であり、offset 後に text row が0件になる可能性は残る。
 ただし明示的な zero-feature / all-false-mask rewrite の必要性と正しさは、この未決事項に依存しない。
 
+この rewrite は実装済みである。`cfg_uncond_drop_rate` に明示値を与えると、
+`LensArchHandler.apply_cfg_null_collated`（`cfg_null_stage = "collated"`）が選択 row の
+`encoder_features` をゼロ、`encoder_mask` を all-false へ out-of-place で書き換える。これは
+`lens_pipeline_ops.encode_prompt` の空 negative 経路
+（`neg_features = [f.new_zeros(f.shape) for f in pos_features]`,
+`neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)`）と同じ表現であり、sequence 長は
+positive のものをそのまま使う（推論側も `_align_text_features` で positive 長へ揃える）。
+Bernoulli は MiniT2I と同じく `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で batch ごとに
+1回引き、`lens_ops.train_step` 内の device/dtype 移動後、per-layer conditioning list 構築前に
+適用される。既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0` であり、key を省略した
+run の挙動は変わらない。
+
 ### 7.11 Krea2
 
 Krea2 base は共有 flow transformer の標準2枝 CFG で、training と sampling の prompt encoding が
@@ -573,12 +585,19 @@ baseline の学習とは呼べない。advanced CFG の非線形補正につい�
 
 ### 7.12 MiniT2I
 
-MiniT2I には一般 caption dropout とは別に、`minit2i_label_drop_rate` という正規の CFG 学習機構が
-ある。選ばれた sample は text embedding 自体を空文字へ作り直すのではなく、attention mask を
-ゼロにして model の mask-token unconditional 表現を選ぶ。推論の pure-uncond branch も conditional
-text tensor と zero mask の組を使うため、この表現は近似でなく一致する。`MMJiT.forward` で mask
-が使われる箇所は、無効 row の context を同じ learned `mask_token` へ置換する部分であり、zero mask
-なら元の text embedding の値は出力へ残らない。現行既定値は 0.1 である。
+MiniT2I には一般 caption dropout とは別に、正規の CFG 学習機構がある。arch 非依存の
+`cfg_uncond_drop_rate`（旧称 `minit2i_label_drop_rate` は deprecated spelling）で、key を省略した
+場合は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["minit2i"] = 0.1` に解決され、明示的な `0.0` はこの
+継承値を無効化する。選ばれた sample は text embedding 自体を空文字へ作り直すのではなく、
+attention mask をゼロにして model の mask-token unconditional 表現を選ぶ。推論の pure-uncond
+branch も conditional text tensor と zero mask の組を使うため、この表現は近似でなく一致する。
+`MMJiT.forward` で mask が使われる箇所は、無効 row の context を同じ learned `mask_token` へ
+置換する部分であり、zero mask なら元の text embedding の値は出力へ残らない。
+
+Bernoulli は `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で assembled batch ごとに1回だけ
+引き、CPU boolean `[B]` として `TrainStepContext.cfg_drop_mask` に載る。OOM micro-batching では
+再抽選せず slice される。書き換えは `MiniT2IArchHandler.apply_cfg_null_collated`
+（`cfg_null_stage = "collated"`）が out-of-place で行い、`minit2i_ops.train_step` 側に抽選は無い。
 
 通常の `caption_dropout_rate` は empty T5 prompt を encode する。実 checkpoint tokenizer の
 ローカル probe では EOS id 1 の1 row が active mask に残ったため、専用
@@ -662,7 +681,7 @@ states を選ぶ condition dropout が必要になる。
 - `backend/core/training/ops/lens_ops.py`: empty caption も conditional chat-template 経路で encode する。
 - `backend/core/models/lens/vendor/pipeline.py`: 空 negative prompt の zero-feature / zero-mask 特別経路を実装する。
 - `backend/core/training/ops/krea2_ops.py`: base の2枝と distilled/turbo の単一枝 sampling を分岐する。
-- `backend/core/training/ops/minit2i_ops.py`: `minit2i_label_drop_rate` で text mask をゼロ化する。
+- `backend/core/training/ops/minit2i_ops.py`: `apply_cfg_null_collated` で選択 row の text mask をゼロ化する。
 - `backend/core/models/minit2i/minit2i_pipeline_ops.py`: pure-uncond で同じ zero mask を使い、x0 prediction を blend する。
 - `backend/core/training/ops/sensenova_ops.py`: training conditional prefix だけに loss を与え、empty caption も conditional template で encode する。
 - `backend/core/models/sensenova/sensenova_pipeline_ops.py`: 推論 uncond/img_cond prefix と、linear CFG 後の `cfg_norm` を実装する。

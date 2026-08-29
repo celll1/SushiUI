@@ -9629,7 +9629,8 @@ components:
             nullable: true
             enum: [null, 'collated', 'encode']
           example:
-            minit2i: null
+            minit2i: 'collated'
+            lens: 'collated'
             sdxl: null
         cfg_uncond_drop_defaults:
           type: object

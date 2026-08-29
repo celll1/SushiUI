@@ -282,9 +282,12 @@ def test_the_stage_mirror_matches_the_arch_handlers():
     assert actual == CFG_NULL_STAGE_BY_ARCH
 
 
-def test_no_architecture_declares_a_stage_yet():
-    """Delivery item 2 changes NO architecture's behaviour."""
-    assert set(CFG_NULL_STAGE_BY_ARCH.values()) == {None}
+def test_only_the_delivered_architectures_declare_a_stage():
+    """Items 3 and 4 route MiniT2I and Lens through the resolver; SenseNova
+    (item 5) is still undelivered and must not read as enabled."""
+    declared = {arch: stage for arch, stage in CFG_NULL_STAGE_BY_ARCH.items()
+                if stage is not None}
+    assert declared == {"minit2i": "collated", "lens": "collated"}
 
 
 def test_every_stageless_arch_declares_the_feature_unsupported():
@@ -300,14 +303,37 @@ def test_the_feature_is_armed_by_the_new_key_only():
 
 
 def test_the_base_handler_hooks_reject():
+    """A handler only implements the hook its declared stage names; every other
+    combination refuses instead of silently doing nothing."""
     from core.training.arch import ARCH_REGISTRY
 
     for arch, handler_cls in ARCH_REGISTRY.items():
         handler = handler_cls.__new__(handler_cls)
-        with pytest.raises(NotImplementedError):
-            handler.apply_cfg_null_collated(None, None, None, None)
-        with pytest.raises(NotImplementedError):
-            handler.encode_prompt_cfg_null(None, "a prompt")
+        if handler_cls.cfg_null_stage != "collated":
+            with pytest.raises(NotImplementedError):
+                handler.apply_cfg_null_collated(None, None, None, None)
+        if handler_cls.cfg_null_stage != "encode":
+            with pytest.raises(NotImplementedError):
+                handler.encode_prompt_cfg_null(None, "a prompt")
+
+
+def test_a_declared_stage_is_backed_by_an_override():
+    """The other half of the test above: skipping the refusal check for a
+    stage-declaring handler must not let one declare a stage while inheriting
+    the base hook, which would refuse on the production path instead."""
+    from core.training.arch import ARCH_REGISTRY
+    from core.training.arch.base_arch import ArchHandler
+
+    hooks = {"collated": "apply_cfg_null_collated",
+             "encode": "encode_prompt_cfg_null"}
+    for arch, handler_cls in ARCH_REGISTRY.items():
+        stage = handler_cls.cfg_null_stage
+        if stage is None:
+            continue
+        assert stage in hooks, f"{arch} declares unknown stage {stage!r}"
+        hook = hooks[stage]
+        assert getattr(handler_cls, hook) is not getattr(ArchHandler, hook), (
+            f"{arch} declares cfg_null_stage={stage!r} without overriding {hook}")
 
 
 def test_defaults_are_the_single_source_of_truth():
@@ -360,14 +386,86 @@ def test_the_yaml_builder_refuses_what_the_route_refuses():
         _train_section("sdxl", **{CFG_KEY: 0.2, "_explicit_fields": [CFG_KEY]})
 
 
-def test_minit2i_label_drop_still_lands_in_the_yaml_unchanged():
-    """Delivery item 2 changes no architecture's behaviour: an omitted legacy
-    key still writes MiniT2I's 0.1, an explicit one still writes itself."""
-    assert _train_section("minit2i")["minit2i_label_drop_rate"] == 0.1
-    assert _train_section("sdxl")["minit2i_label_drop_rate"] == 0.1
+def test_the_yaml_carries_the_supplied_legacy_value_not_the_resolved_one():
+    """Item 3's landmine. The generator used to materialise MiniT2I's 0.1 into
+    every config. Once MiniT2I declares a stage, such a config carries BOTH keys
+    with real values and the "supply either, not both" rule fires on a key the
+    caller never sent -- at training time, and on any GET /params -> PUT client.
+    The supplied value, null included, is what round-trips."""
+    assert _train_section("minit2i")[LEGACY_KEY] is None
+    assert _train_section("sdxl")[LEGACY_KEY] is None
     section = _train_section("minit2i", minit2i_label_drop_rate=0.4,
-                             _explicit_fields=["minit2i_label_drop_rate"])
-    assert section["minit2i_label_drop_rate"] == 0.4
+                             _explicit_fields=[LEGACY_KEY])
+    assert section[LEGACY_KEY] == 0.4
+
+
+def test_a_generated_minit2i_config_never_carries_both_keys():
+    section = _train_section("minit2i", **{CFG_KEY: 0.2,
+                                           "_explicit_fields": [CFG_KEY]})
+    assert section[CFG_KEY] == 0.2
+    assert section[LEGACY_KEY] is None
+    # The generated train section IS what the trainer reads, with no field-set
+    # information behind it. Re-resolving it must not refuse.
+    assert resolve_cfg_uncond_drop_rate(section, arch="minit2i").rate == 0.2
+
+
+def _generated_minit2i_config(monkeypatch, **params):
+    import yaml
+
+    import core.training.training_config as tc
+
+    monkeypatch.setattr(tc, "_detect_arch", lambda _path: "minit2i")
+    params.setdefault("learning_rate", 1e-4)
+    params.setdefault("batch_size", 1)
+    params.setdefault("total_steps", 10)
+    config = tc.TrainingConfigGenerator.generate_lora_config(
+        params,
+        run_name="cfg_null_round_trip",
+        base_model_path="/models/minit2i.safetensors",
+        output_dir="/tmp/cfg_null_round_trip",
+        dataset_configs=[{"dataset_id": 1, "path": "/data/ds"}],
+        sample_prompts=[],
+    )
+    return yaml.safe_load(config)["config"]["process"][0]
+
+
+def test_the_config_edit_channel_round_trips_without_manufacturing_a_conflict(
+        monkeypatch):
+    """GET /params -> PUT. The extractor reads both keys off the train section,
+    so whatever the generator materialised comes back as a value the client then
+    re-sends as explicit."""
+    from api.routes import _extract_request_params_from_yaml
+
+    process = _generated_minit2i_config(
+        monkeypatch, **{CFG_KEY: 0.2, "_explicit_fields": [CFG_KEY]})
+    params = _extract_request_params_from_yaml(process, "lora")
+    assert params[CFG_KEY] == 0.2
+    assert params[LEGACY_KEY] is None
+
+    # A client that re-sends every field it was handed a value for.
+    params["_explicit_fields"] = sorted(
+        k for k, v in params.items() if v is not None)
+    assert resolve_cfg_uncond_drop_rate(params, arch="minit2i").rate == 0.2
+
+
+def test_the_old_materialised_legacy_value_is_what_would_have_refused():
+    """Negative control for the fix above: this is the exact dict the auditor
+    reproduced, and it is no longer reachable from the generator."""
+    params = _params(explicit=[CFG_KEY, LEGACY_KEY],
+                     **{CFG_KEY: 0.2, LEGACY_KEY: 0.1})
+    with pytest.raises(ValidationError):
+        resolve_cfg_uncond_drop_rate(params, arch="minit2i")
+
+
+def test_a_hand_authored_yaml_with_only_the_legacy_key_still_trains(monkeypatch):
+    process = _generated_minit2i_config(
+        monkeypatch, **{LEGACY_KEY: 0.3, "_explicit_fields": [LEGACY_KEY]})
+    train = process["train"]
+    assert train[LEGACY_KEY] == 0.3
+    assert train[CFG_KEY] is None
+    resolution = resolve_cfg_uncond_drop_rate(train, arch="minit2i")
+    assert resolution.rate == 0.3
+    assert resolution.warnings and "deprecated" in resolution.warnings[0]
 
 
 def test_the_route_serves_the_capability_keys():

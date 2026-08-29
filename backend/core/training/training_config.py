@@ -87,8 +87,6 @@ def _build_train_section(
     The flags `include_*` allow each training method to opt in/out of optional sections.
     """
     from api.param_defaults import TRAINING_DEFAULTS as _TD
-    from api.param_defaults import (
-        CFG_UNCOND_DROP_DEFAULTS_BY_ARCH as _CFG_DROP_BY_ARCH)
 
     lr = learning_rate if learning_rate is not None else p.get("learning_rate", 1e-4)
     train: Dict[str, Any] = {
@@ -378,7 +376,6 @@ def _build_train_section(
     # cfg_null_stage. The resolved rate is a pure function of this value and the
     # architecture, both of which the config already carries.
     #
-    # Nothing reads the key yet: no arch handler declares a cfg_null_stage.
     # The literal subscript is load-bearing: train_section_key_vocabulary()
     # reads these keys off this function's AST.
     from api.cfg_null_resolver import resolve_cfg_uncond_drop_rate
@@ -388,14 +385,22 @@ def _build_train_section(
     # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
     train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")
     train["minit2i_te_lora_scope"] = p.get("minit2i_te_lora_scope", "attn,ff")
-    # Legacy spelling, written through unchanged so MiniT2I keeps training
-    # exactly as it does today. None (nothing supplied) resolves to the arch
-    # default from the SSoT map rather than a literal here -- see
-    # api/param_defaults.CFG_UNCOND_DROP_DEFAULTS_BY_ARCH.
+    # Deprecated spelling, written through EXACTLY as supplied -- null included,
+    # for the same reason as cfg_uncond_drop_rate above and one more.
+    #
+    # Materialising the 0.1 default here wrote a value the caller never sent into
+    # every config. Once MiniT2I declares a cfg_null_stage, that config carries
+    # BOTH keys with real values, and the resolver's "supply either, not both"
+    # rule then fires -- at training time on the YAML, and on any GET /params ->
+    # PUT client -- naming a key absent from the request. The generator must not
+    # manufacture the conflict it is then refused for.
+    #
+    # Behaviour is unchanged: null means "nothing supplied", which resolves
+    # MiniT2I's 0.1 from CFG_UNCOND_DROP_DEFAULTS_BY_ARCH at the one place that
+    # numeric fallback lives.
     _legacy_drop = p.get("minit2i_label_drop_rate")
     train["minit2i_label_drop_rate"] = (
-        _CFG_DROP_BY_ARCH["minit2i"] if _legacy_drop is None
-        else float(_legacy_drop))
+        None if _legacy_drop is None else float(_legacy_drop))
     train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")

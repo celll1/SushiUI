@@ -368,7 +368,9 @@ separate transformer を全項目で学習する Ideogram 4 ではなく、共�
 現実装には重要な不一致がある。text-only の training prefix は、空 caption でも条件付き経路と
 同じ generation system message と
 `<think>\n\n</think>\n\n<img>` suffix を使う。一方、推論の classic uncond branch は
-negative prompt（既定は空文字）を通常 template と `<img>` suffix で encode する。
+negative prompt（既定は空文字）を `neo1_0` template と `<img>` suffix で encode する。
+`neo1_0` の system message は空で、MPT formatter も system block 自体を出力しないため、
+これは「別の system message」ではなく **system block なし**の prefix である。
 
 従って、caption dropout が直接拘束するのは
 
@@ -382,13 +384,15 @@ $$
 v(x_t,t\mid c=\text{empty},\ \text{uncond-template})
 $$
 
-そのものではない。共有 weight による一般化は期待できても、両者を同じ $v_u$ と置くことは
+そのものではない。さらに `_build_t2i_image_indexes` は prefix 長を全 image token の t 座標へ
+書き込む。従って差は prefix K/V だけでなく、denoise 側 image token の位置にも及ぶ。
+共有 weight による一般化は期待できても、両者を同じ $v_u$ と置くことは
 数学的には保証されない。この不一致を残す限り、SenseNova の caption dropout は無条件枝を
 改善し得るが、§5 の exact implicit-classifier identity を fine-tuned model に対して保証する装置
 にはならない。
 
 この点を厳密に揃えるには、将来の実装変更として、drop された項目だけを推論 uncond と同じ
-query/template で prefix encode する必要がある。ただし、これは学習関数を変える変更であり、
+query/template で prefix encode し、その prefix 長から image indexes も作る必要がある。ただし、これは学習関数を変える変更であり、
 base checkpoint の学習契約が公開されていない以上、A/B quality gate なしに既定化してはいけない。
 
 #### 7.3.3 flow CFG と `cfg_norm`
@@ -544,10 +548,18 @@ system / user / assistant chat template に通した**条件付き** text featur
 negative prompt がすべて空なら、unconditional branch は text features をゼロ、attention mask を
 all-false にする特別経路を使う。
 
+この all-false mask は単なる「近い埋め込み」ではない。joint attention mask は常に有効な image
+keys と text mask を連結し、出力 head は image stream だけを読む。従って text keys がすべて
+無効なら、image output は text feature の値から構造的に切断される。一方、training の empty chat
+に有効 text row が残れば通常の conditional attention graph である。image keys は常に有効で、
+mask は key 軸へ適用されるため、all-masked softmax row による NaN はこの経路では発生しない。
+
 従って現行 caption dropout が拘束する field と推論 baseline は別入力であり、SenseNova と同様に
 exact implicit-classifier identity は保証されない。整合させるには、drop された training sample に
 推論と同じ zero-feature / zero-mask 表現を明示的に与える architecture-specific label drop が必要で
-ある。単に dropout rate を上げるだけでは解決しない。
+ある。単に dropout rate を上げるだけでは解決しない。公式 checkpoint tokenizer による empty chat
+の token 数と固定 offset 97 の関係は未実測であり、offset 後に text row が0件になる可能性は残る。
+ただし明示的な zero-feature / all-false-mask rewrite の必要性と正しさは、この未決事項に依存しない。
 
 ### 7.11 Krea2
 
@@ -564,9 +576,12 @@ baseline の学習とは呼べない。advanced CFG の非線形補正につい�
 MiniT2I には一般 caption dropout とは別に、`minit2i_label_drop_rate` という正規の CFG 学習機構が
 ある。選ばれた sample は text embedding 自体を空文字へ作り直すのではなく、attention mask を
 ゼロにして model の mask-token unconditional 表現を選ぶ。推論の pure-uncond branch も conditional
-text tensor と zero mask の組を使うため、この表現は一致する。
+text tensor と zero mask の組を使うため、この表現は近似でなく一致する。`MMJiT.forward` で mask
+が使われる箇所は、無効 row の context を同じ learned `mask_token` へ置換する部分であり、zero mask
+なら元の text embedding の値は出力へ残らない。現行既定値は 0.1 である。
 
-通常の `caption_dropout_rate` は empty T5 prompt を encode し、token mask が残り得るので、専用
+通常の `caption_dropout_rate` は empty T5 prompt を encode する。実 checkpoint tokenizer の
+ローカル probe では EOS id 1 の1 row が active mask に残ったため、専用
 label drop の代替ではない。MiniT2I は $x_0$ prediction を blend するが、Gaussian affine path の
 内部時刻では $x_0$ predictor と score が枝に依存しない affine 関係にあるため、2枝差分の議論は
 適用できる。CFG interval 外で scale を1へ戻す場合は時刻依存 $w(t)$ として扱う。

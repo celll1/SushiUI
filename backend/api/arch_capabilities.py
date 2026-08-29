@@ -286,6 +286,11 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # for the same reason as the staging-mode one above. Mutually exclusive with
     # it, but that is a per-run refusal, not a capability fact.
     "sensenova_mot_overlap_transfer": ["sensenova_mot_overlap_transfer"],
+    # Aligned CFG null-condition training. The deprecated MiniT2I-only
+    # `minit2i_label_drop_rate` is deliberately NOT an arming key: an
+    # architecture without the mechanism has always accepted and ignored it,
+    # and listing it here would newly hide a control on runs that carry it.
+    "cfg_uncond_drop": ["cfg_uncond_drop_rate"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -299,6 +304,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
     "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
     "sensenova_mot_overlap_transfer": "SenseNova MoT phase eviction overlapped half swap",
+    "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1006,7 +1012,7 @@ _add_training_feature_unsupported(
 # (why: SENSENOVA_TRAINING_DESIGN.md 13.4 U-2-2 item 7).
 _add_training_feature_advisory(
     "sensenova", "text_encoder_training", "high_memory",
-    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises, so under full fine-tuning it is a second 294-Linear half rather than a separate encoder. It is implemented and accepted, not refused: the understanding-only and both-half branches were both run end to end on the real checkpoint (see SENSENOVA_TRAINING_DESIGN.md). Training BOTH halves measured a 32.66 GiB VRAM peak at 64px, 3 steps, adafactor, batch 1, bf16, gradient checkpointing on -- 94.5% of the probe's own 34.551 GiB cap (set_per_process_memory_fraction(0.72) of the ~47.99 GiB the 48 GB card reports), i.e. 68% of the card itself -- with a 51.97-61.67 GiB host RSS peak (two runs, see the design doc's non-reproduction box). The generation half alone peaked at 26.16 GiB under the same conditions. RESOLUTION, measured later under the same cap over 12 steps (see SENSENOVA_TRAINING_DESIGN.md; 64px is 4 image tokens, so the figures above carry almost no activation term): the generation half alone peaks at 26.24 GiB at 512px and 26.80 GiB at 1024px; both halves WITHOUT the four-phase split peak at 33.94 GiB at 512px, which is 98.2% of the cap and 0.61 GiB short of it, and do not fit at 1024px -- there the probe was refused 192 MiB at 34.04 GiB by its own cap with 9.95 GiB still free on the card, so all that is known is that the requirement exceeds 34.55 GiB. With the split, both halves settle at a 18.76 GiB step at 512px and 19.26 GiB at 1024px, while peak reserved stays at 33.9-34.4 GiB in every both-branch arm: the split lowers what a step needs, not what the process holds. Above 1024px, off-square, and the understanding half alone above 64px (it was measured at 64px, 26.26 GiB) are unmeasured, and the activation term is superlinear, so none of it extrapolates. HOST: a both-branch run's peak commit charge came out at 67.95 and 89.10 GiB on two identical runs whose working sets matched to three decimals, so the larger is the bound and neither should be quoted finer than tens of GiB; the host was 93.6 GiB. A saved both-halves checkpoint is 32.68 GiB in bf16; the 17.59 GiB int8 figure was measured on a GENERATION-branch save, and that it is the same for a both-halves save is an inference from an int8 file quantizing all 588 Linears either way, not a measurement. From those measurements, and as ADVICE rather than measurement, the review recommends a commit limit of at least 100 GiB and preferably 110-120 GiB, 96 GiB or more of physical RAM, 150-300 GiB free for checkpoints, and no competing GPU process at 1024px. No quality claim is attached to any of it",
+    "SenseNova's prompt encoder is the understanding branch of the same LLM that denoises, so under full fine-tuning it is a second 294-Linear half rather than a separate encoder. It is implemented and accepted, not refused: the understanding-only and both-half branches were both run end to end on the real checkpoint (SENSENOVA_TRAINING_DESIGN.md, the U-2-5 measured footprint). Training BOTH halves measured a 32.66 GiB VRAM peak at 64px, 3 steps, adafactor, batch 1, bf16, gradient checkpointing on -- 94.5% of the probe's own 34.551 GiB cap (set_per_process_memory_fraction(0.72) of the ~47.99 GiB the 48 GB card reports), i.e. 68% of the card itself -- with a 51.97-61.67 GiB host RSS peak (two runs, see the design doc's non-reproduction box). The generation half alone peaked at 26.16 GiB under the same conditions. RESOLUTION, measured later under the same cap over 12 steps (see SENSENOVA_TRAINING_DESIGN.md; 64px is 4 image tokens, so the figures above carry almost no activation term): the generation half alone peaks at 26.24 GiB at 512px and 26.80 GiB at 1024px; both halves WITHOUT the four-phase split peak at 33.94 GiB at 512px, which is 98.2% of the cap and 0.61 GiB short of it, and do not fit at 1024px -- there the probe was refused 192 MiB at 34.04 GiB by its own cap with 9.95 GiB still free on the card, so all that is known is that the requirement exceeds 34.55 GiB. With the split, both halves settle at a 18.76 GiB step at 512px and 19.26 GiB at 1024px, while peak reserved stays at 33.9-34.4 GiB in every both-branch arm: the split lowers what a step needs, not what the process holds. Above 1024px, off-square, and the understanding half alone above 64px (it was measured at 64px, 26.26 GiB) are unmeasured, and the activation term is superlinear, so none of it extrapolates. HOST: a both-branch run's peak commit charge came out at 67.95 and 89.10 GiB on two identical runs whose working sets matched to three decimals, so the larger is the bound and neither should be quoted finer than tens of GiB; the host was 93.6 GiB. A saved both-halves checkpoint is 32.68 GiB in bf16; the 17.59 GiB int8 figure was measured on a GENERATION-branch save, and that it is the same for a both-halves save is an inference from an int8 file quantizing all 588 Linears either way, not a measurement. From those measurements, and as ADVICE rather than measurement, the review recommends a commit limit of at least 100 GiB and preferably 110-120 GiB, 96 GiB or more of physical RAM, 150-300 GiB free for checkpoints, and no competing GPU process at 1024px. No quality claim is attached to any of it",
     methods=["full_finetune"])
 
 # --- SenseNova MoT phase eviction (with the four-phase split) ---------------
@@ -1094,6 +1100,37 @@ _add_training_feature_unsupported(
     "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
 
 
+# ---------------------------------------------------------------------------
+# CFG null-alignment stage, mirroring ArchHandler.cfg_null_stage
+# ---------------------------------------------------------------------------
+# Which stage an architecture's training path can construct its INFERENCE CFG
+# uncond condition at: None (it cannot), "collated" (rewrite already-encoded,
+# batched conditioning) or "encode" (build the inference-equivalent prefix while
+# encoding the item, because the token sequence itself differs).
+#
+# A restatement of `core.training.arch.base_arch.ArchHandler.cfg_null_stage`,
+# for the same reason TRAINING_DECLARED_ARCHS restates ARCH_REGISTRY: this
+# module cannot import the trainer package. `cfg_null_resolver_test.py` pins the
+# two against each other.
+#
+# Every value is None today: the parameter surface exists, the mechanism does
+# not. An architecture is enabled by its HANDLER declaring a stage, and this
+# mirror plus the unsupported entries below following it.
+CFG_NULL_STAGE_BY_ARCH: Dict[str, Optional[str]] = {
+    arch: None for arch in sorted(TRAINING_DECLARED_ARCHS)
+}
+
+_CFG_NULL_ABSENT_REASON = (
+    "the trainer cannot build this architecture's inference CFG uncond "
+    "condition, so a per-sample drop rate against it has no defined meaning "
+    "here; whole-caption dropout on the dataset is a different mechanism and "
+    "stays available")
+for _a, _stage in CFG_NULL_STAGE_BY_ARCH.items():
+    if _stage is None:
+        _add_training_feature_unsupported(_a, "cfg_uncond_drop",
+                                          _CFG_NULL_ABSENT_REASON)
+
+
 # Coverage invariants (same style as core.training.arch's _EXPECTED_ARCH_KEYS):
 # every declaration names a known architecture, a known feature/method, and a
 # known training method in its scope. That ARCH_REGISTRY itself is fully covered
@@ -1157,6 +1194,18 @@ for _arch, _features in TRAINING_FEATURE_ADVISORY.items():
         # was added to end.
         assert _feature not in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {}), (
             f"{_arch}/{_feature} is declared both unsupported and advisory")
+assert set(CFG_NULL_STAGE_BY_ARCH) == set(TRAINING_DECLARED_ARCHS), (
+    "CFG_NULL_STAGE_BY_ARCH must answer for every declared architecture: an "
+    "arch missing from it would silently read as 'no stage' with no entry in "
+    "TRAINING_FEATURE_UNSUPPORTED, i.e. a control the UI offers and the route "
+    "refuses")
+for _arch, _stage in CFG_NULL_STAGE_BY_ARCH.items():
+    assert _stage in (None, "collated", "encode"), (
+        f"CFG_NULL_STAGE_BY_ARCH[{_arch}] = {_stage!r} is not a stage")
+    assert (_stage is None) == (
+        "cfg_uncond_drop" in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {})), (
+        f"{_arch}: cfg_null_stage and the cfg_uncond_drop capability entry "
+        f"disagree")
 
 
 def training_feature_unsupported_reason(arch: Optional[str], feature: str,

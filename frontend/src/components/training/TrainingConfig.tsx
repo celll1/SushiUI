@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -213,6 +213,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   attention_impl: "conduit",
   min_snr_gamma: 5.0,
   reconstruction_loss_weight: 0.0,
+  // Deliberately unset, not 0: "not supplied" resolves the per-architecture
+  // default, while 0 explicitly disables the mechanism. getRequestData omits
+  // the key while it is null/undefined so the backend sees the difference.
+  cfg_uncond_drop_rate: undefined,
   // MiniMax-H3 only: weight of the audio half of its joint objective.
   // Overwritten by trainingDefaults on startup; literal here is the
   // no-backend fallback (and matches TRAINING_DEFAULTS).
@@ -742,6 +746,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
+  // Aligned CFG null-condition training. A string here means the backend cannot
+  // build this architecture's inference uncond condition, and answers 400 for
+  // any explicit rate -- 0 included -- so the control must not be offered.
+  const cfgUncondDropUnsupported = unsupportedTrainingFeature("cfg_uncond_drop");
+  const cfgUncondDropDefaultRate = cfgUncondDropDefault(
+    archCapabilities, getModelArchitecture(baseModelPath));
+  const minit2iLabelDropDefault = cfgUncondDropDefault(archCapabilities, "minit2i");
   const selectedModel = availableModels.find((model) => model.path === baseModelPath);
   const pixelSpaceMiniT2I = (
     (selectedModel?.architecture === "minit2i" && selectedModel.vae_type === "none")
@@ -899,7 +910,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       training_method: trainingMethod,
       base_model_path: baseModelPath.trim(),
       // MiniT2I config (sent so UI values reach the backend, not just defaults).
-      minit2i_label_drop_rate: params.minit2i_label_drop_rate,
+      // The two CFG null-drop keys are OMITTED when unset rather than sent as
+      // null: the backend distinguishes "not supplied" (resolve the
+      // per-architecture default) from an explicit value, and a key sent as
+      // null on every submit would make every run look explicit.
+      // Sending both is a 400 (they set the same rate), and an edit form loads
+      // the deprecated key back from an older run's config, so the new key wins
+      // here rather than colliding with it.
+      ...(params.cfg_uncond_drop_rate != null
+        ? { cfg_uncond_drop_rate: params.cfg_uncond_drop_rate }
+        : params.minit2i_label_drop_rate != null
+        ? { minit2i_label_drop_rate: params.minit2i_label_drop_rate }
+        : {}),
       minit2i_lr_factor: params.minit2i_lr_factor,
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
       minit2i_lora_scope: params.minit2i_lora_scope,
@@ -1307,6 +1329,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "gradient_checkpointing", "torch_compile", "torch_compile_dynamic",
       "cpu_offload_checkpointing", "async_cpu_offload_checkpointing", "fp8_base_dtype",
       "res_curriculum_enable", "res_curriculum_warmup_steps", "res_curriculum_warmup_scale",
+      "cfg_uncond_drop_rate",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
       "minit2i_inherit_final_layer", "minit2i_lora_scope", "minit2i_te_lora_scope",
       "anima_lora_scope", "train_llm_adapter", "anima_attn_mlp_lr_factor",
@@ -4853,6 +4876,36 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </p>
             </div>
 
+            {/* CFG unconditional drop rate. Hidden entirely on an architecture
+                the backend declares has no aligned null condition: there an
+                explicit value -- 0 included -- is answered 400. */}
+            {!cfgUncondDropUnsupported && (
+              <div className="space-y-1">
+                <label htmlFor="cfg-uncond-drop-rate" className="block text-xs text-gray-300">
+                  CFG unconditional drop rate
+                </label>
+                <input
+                  type="number"
+                  id="cfg-uncond-drop-rate"
+                  value={params.cfg_uncond_drop_rate ?? ""}
+                  onChange={(e) => updateParam("cfg_uncond_drop_rate", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                  step="any"
+                  min={0}
+                  max={1}
+                  placeholder={cfgUncondDropDefaultRate !== undefined ? String(cfgUncondDropDefaultRate) : ""}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <p className="text-xs text-gray-500">
+                  Per-sample probability of training the item against the same
+                  null condition this architecture&apos;s inference CFG uncond
+                  branch builds. Leave empty for the architecture default
+                  ({cfgUncondDropDefaultRate ?? "none"}); 0 disables it.
+                  Different from the dataset&apos;s caption dropout, which
+                  encodes an empty caption; a run that sets both is refused.
+                </p>
+              </div>
+            )}
+
             {/* Reconstruction Loss Weight */}
             <div>
               <label htmlFor="reconstruction-loss-weight" className="block text-xs font-medium text-gray-400 mb-1">
@@ -5783,14 +5836,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     id="minit2i-label-drop-rate"
-                    value={params.minit2i_label_drop_rate ?? 0.1}
+                    value={params.minit2i_label_drop_rate ?? minit2iLabelDropDefault ?? ""}
                     onChange={(e) => updateParam("minit2i_label_drop_rate", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
-                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("minit2i_label_drop_rate", 0.1); }}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("minit2i_label_drop_rate", undefined as any); }}
                     min={0}
                     max={1}
                     step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Deprecated spelling of cfg_uncond_drop_rate. Cleared = not
+                    supplied, which resolves to {minit2iLabelDropDefault ?? "the backend default"}.
+                  </p>
                 </div>
 
                 <div>

@@ -216,6 +216,26 @@ class ArchHandler(ABC):
     #: are different data and must not share an address.
     clip_audio_prep_version: Optional[str] = None
 
+    #: At which stage this architecture can build the SAME null condition its
+    #: inference CFG uncond branch uses, or ``None`` when it cannot build one at
+    #: all. Three admitted values:
+    #:
+    #:   ``None``        no aligned null exists here. An explicitly supplied
+    #:                   ``cfg_uncond_drop_rate`` -- INCLUDING ``0.0`` -- is
+    #:                   refused before the model loads, never accepted and
+    #:                   ignored. Mirrored for the API process by
+    #:                   ``api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH``, which
+    #:                   `cfg_null_resolver_test.py` pins against this value.
+    #:   ``"collated"``  the null is a rewrite of already-encoded, batched
+    #:                   conditioning (``apply_cfg_null_collated``).
+    #:   ``"encode"``    the null has to be built while encoding the item,
+    #:                   because the inference baseline differs in the token
+    #:                   sequence itself (``encode_prompt_cfg_null``).
+    #:
+    #: This is a capability declaration, not the implementation: a handler that
+    #: sets it must also override the hook its stage names.
+    cfg_null_stage: Optional[str] = None
+
     def __init__(self, trainer: Any = None):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical
         # methods still take ``trainer`` explicitly; this is a convenience only.
@@ -244,6 +264,40 @@ class ArchHandler(ABC):
         """Was the per-arch ``_encode_prompt_*`` body. Returns embeds, or
         ``(embeds, pooled)`` for pooled archs (SDXL)."""
         raise NotImplementedError
+
+    def encode_prompt_cfg_null(self, trainer, prompt, *,
+                               requires_grad: bool = False):
+        """The ``cfg_null=True`` branch of ``encode_prompt``: build the prompt
+        encoding the architecture's INFERENCE uncond branch would build, rather
+        than encoding ``prompt``.
+
+        Spelled as its own method instead of an ``encode_prompt(..., cfg_null)``
+        flag so a handler that has not implemented the encode stage REFUSES
+        rather than swallowing an unrecognised keyword. Only a handler with
+        ``cfg_null_stage == "encode"`` may override it.
+        """
+        self._reject_cfg_null("encode_prompt_cfg_null", "encode")
+
+    def apply_cfg_null_collated(self, trainer, conditioning, auxiliary,
+                                drop_mask):
+        """Rewrite the rows of an ALREADY-ENCODED, already-collated batch that
+        ``drop_mask`` selects into the architecture's inference null condition,
+        and return the rewritten ``(conditioning, auxiliary)``.
+
+        ``drop_mask`` is the one CPU boolean mask sampled per assembled
+        optimization batch, before any MNT repetition, so every MNT transform of
+        an item carries the same label. Only a handler with
+        ``cfg_null_stage == "collated"`` may override it.
+        """
+        self._reject_cfg_null("apply_cfg_null_collated", "collated")
+
+    def _reject_cfg_null(self, hook: str, stage: str):
+        raise NotImplementedError(
+            f"{type(self).__name__} (arch '{self.name}') declares "
+            f"cfg_null_stage={self.cfg_null_stage!r} and does not implement "
+            f"{hook}(), which belongs to the '{stage}' stage. An aligned CFG "
+            f"null condition is not available for this architecture."
+        )
 
     def collate_aux(self, trainer, batch) -> dict:
         """Was ``_collate_<arch>_aux`` (e.g. ``_collate_anima_aux``).

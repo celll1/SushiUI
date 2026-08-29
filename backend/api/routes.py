@@ -51,6 +51,7 @@ from api.param_defaults import (
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
+    CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
@@ -1033,6 +1034,16 @@ async def get_arch_capabilities():
     `ARCH_DISPLAY_NAMES` so a client's architecture filter labels come from one
     table. An id with no entry falls back to itself.
 
+    `cfg_null_stage` is architecture -> at which stage the TRAINER can build
+    that architecture's inference CFG uncond condition: `null` (it cannot),
+    `"collated"` or `"encode"`. `null` is what makes an explicitly supplied
+    `cfg_uncond_drop_rate` -- INCLUDING `0.0` -- a 400 rather than a value the
+    run ignores; the matching `training_feature_unsupported[arch]
+    ["cfg_uncond_drop"]` entry carries the reason to show. `cfg_uncond_drop_
+    defaults` is what an OMITTED `cfg_uncond_drop_rate` resolves to for that
+    architecture (absent = the mechanism is not in play there), so a client
+    displays the resolved default instead of keeping its own copy of it.
+
     `video_constraints` is the per-video-arch `TemporalSpec` (valid clip
     lengths, production bounds, fixed fps, canvas envelope) that the video
     routes validate against, so a client can build a valid clip-length list
@@ -1058,6 +1069,7 @@ async def get_arch_capabilities():
     no such sub-mode concept at all).
     """
     from api.arch_capabilities import (
+        CFG_NULL_STAGE_BY_ARCH,
         ARCH_DISPLAY_NAMES, ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED,
         FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
@@ -1079,6 +1091,8 @@ async def get_arch_capabilities():
         "training_required_values": TRAINING_REQUIRED_VALUES,
         "training_feature_advisory": TRAINING_FEATURE_ADVISORY,
         "arch_display_names": ARCH_DISPLAY_NAMES,
+        "cfg_null_stage": CFG_NULL_STAGE_BY_ARCH,
+        "cfg_uncond_drop_defaults": CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,
         "video_constraints": video_constraints_payload(),
         "chain_context": chain_context_payload(),
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
@@ -15253,7 +15267,10 @@ class TrainingRunCreateRequest(BaseModel):
     # MiniT2I (pixel-space MM-JiT) training.
     minit2i_lora_scope: str = TRAINING_DEFAULTS["minit2i_lora_scope"]
     minit2i_te_lora_scope: str = TRAINING_DEFAULTS["minit2i_te_lora_scope"]
-    minit2i_label_drop_rate: float = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
+    # Optional/None, not 0.1: see cfg_uncond_drop_rate below. The pair is
+    # resolved by api/cfg_null_resolver.py, which needs "omitted" and "0.0" to
+    # be different requests.
+    minit2i_label_drop_rate: Optional[float] = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
     minit2i_lr_factor: float = Field(default=TRAINING_DEFAULTS["minit2i_lr_factor"], ge=0)
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
@@ -15348,6 +15365,14 @@ class TrainingRunCreateRequest(BaseModel):
     danbooru_aug_tag_dropout_keep_first_n: int = TRAINING_DEFAULTS["danbooru_aug_tag_dropout_keep_first_n"]
     danbooru_aug_caption_dropout_rate: float = TRAINING_DEFAULTS["danbooru_aug_caption_dropout_rate"]
     danbooru_aug_keep_tokens: int = TRAINING_DEFAULTS["danbooru_aug_keep_tokens"]
+
+    # Aligned CFG unconditional training: the per-sample probability of training
+    # the item against the architecture's INFERENCE null condition (not against
+    # an empty caption, which is a conditional forward). Tri-state on purpose --
+    # None = not supplied (resolve the per-arch default), 0.0 = explicitly off.
+    # Refused before the model loads on an architecture with no null stage, and
+    # refused alongside whole-caption dropout; see api/cfg_null_resolver.py.
+    cfg_uncond_drop_rate: Optional[float] = TRAINING_DEFAULTS["cfg_uncond_drop_rate"]
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2
@@ -15531,6 +15556,38 @@ class TrainingRunCreateRequest(BaseModel):
     # Legacy bool also accepted: True→"path", False→"off".
     rescan_before_training: Any = TRAINING_DEFAULTS["rescan_before_training"]
 
+
+def _check_cfg_null_params(request: "TrainingRunCreateRequest",
+                           datasets: List[Any]) -> None:
+    """Resolve `cfg_uncond_drop_rate` / `minit2i_label_drop_rate` and refuse an
+    unusable combination BEFORE the run row is written and the model loads.
+
+    Raises HTTPException(400). Only the refusals and the warnings happen here;
+    the YAML value is resolved again by the config generator from the same
+    inputs, so the two cannot disagree.
+    """
+    from api.cfg_null_resolver import resolve_and_check
+    from api.error_handlers import ValidationError
+    from core.training.training_config import _detect_arch
+
+    params = request.model_dump()
+    params["_explicit_fields"] = sorted(request.model_fields_set)
+    caption_configs = [
+        (ds.name or ds.path, ds.caption_processing) for ds in datasets if ds
+    ]
+    try:
+        resolution = resolve_and_check(
+            params, arch=_detect_arch(request.base_model_path),
+            dataset_caption_configs=caption_configs,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"{exc.message}: {exc.detail}" if exc.detail
+                            else exc.message)
+    for warning in resolution.warnings:
+        print(f"[Training] WARNING: {warning}")
+
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -15572,6 +15629,12 @@ async def create_training_run(
                 raise HTTPException(status_code=404, detail="Dataset not found")
         else:
             raise HTTPException(status_code=400, detail="Either dataset_id or dataset_configs must be provided")
+
+        _check_cfg_null_params(request, [
+            datasets_db.query(Dataset).filter(
+                Dataset.id == c["dataset_id"]).first()
+            for c in dataset_configs
+        ])
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
         # NOTE: caption_processing is NOT saved to YAML - read from database at training time
@@ -16116,6 +16179,12 @@ async def update_training_run(
         # Get primary dataset
         primary_dataset_id = request.dataset_configs[0].dataset_id if request.dataset_configs else None
         primary_dataset = datasets_db.query(Dataset).filter(Dataset.id == primary_dataset_id).first() if primary_dataset_id else None
+
+        _check_cfg_null_params(request, [
+            datasets_db.query(Dataset).filter(
+                Dataset.id == c.dataset_id).first()
+            for c in (request.dataset_configs or [])
+        ])
 
         # Resolve temp_img:// references in sample_prompts condition_image_path
         resolved_sample_prompts = []

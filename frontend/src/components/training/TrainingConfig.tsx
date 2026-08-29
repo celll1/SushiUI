@@ -101,7 +101,7 @@ const RequiredValueNote = ({ entry }: { entry?: TrainingRequiredValue }) =>
 // Single-state migration (Phase 3a foundation)
 // ============================================================
 // All training parameters will be progressively migrated into this single
-// `params` object. See SINGLE_STATE_MIGRATION_PLAN.md for details.
+// `params` object so request construction and config restoration share one state.
 const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   training_method: "lora",
   base_model_path: "",

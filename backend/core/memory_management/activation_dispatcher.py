@@ -38,7 +38,8 @@ PASSIVE online calibration: the measured peak of each executed step is recorded
 under the mode it ran in. No extra calibration step is ever run (that would
 pollute gradients and waste compute), so the cache fills in as buckets recur.
 
-Validated by tmp/test_B2..B5; see docs/VRAM_OVERFLOW_PREVENTION_DESIGN.md sec 11.
+The shipped invariants and measured MiniMax-H3 fit are retained above; the
+machine-local PoC work log is not a runtime dependency.
 """
 
 import contextlib

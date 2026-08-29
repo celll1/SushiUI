@@ -11,7 +11,7 @@ import ast
 import yaml
 
 from core.training.dataset_params import extract_dataset_params
-from api.param_defaults import TRAINING_DEFAULTS
+from api.param_defaults import TRAINING_DEFAULTS, resolve_training_sample_defaults
 
 
 # Legacy kwarg names that are renamed in the new dict-based API.
@@ -681,6 +681,9 @@ class TrainingConfigGenerator:
             # Both provided: legacy_kwargs override p (caller-supplied wins)
             p = {**p, **legacy_kwargs}
         p = _normalize_params(p)
+        p = resolve_training_sample_defaults(
+            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+        )
 
         # Validate that either steps or epochs is provided
         total_steps = p.get("total_steps")
@@ -773,6 +776,9 @@ class TrainingConfigGenerator:
                             "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
                             "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
                             "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
+                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
+                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
+                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
                         },
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
@@ -863,6 +869,9 @@ class TrainingConfigGenerator:
         elif legacy_kwargs:
             p = {**p, **legacy_kwargs}
         p = _normalize_params(p)
+        p = resolve_training_sample_defaults(
+            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+        )
 
         total_steps = p.get("total_steps")
         epochs = p.get("epochs")
@@ -959,6 +968,9 @@ class TrainingConfigGenerator:
                             "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
                             "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
                             "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
+                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
+                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
+                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
                         },
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
@@ -1000,6 +1012,9 @@ class TrainingConfigGenerator:
         elif legacy_kwargs:
             p = {**p, **legacy_kwargs}
         p = _normalize_params(p)
+        p = resolve_training_sample_defaults(
+            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+        )
 
         total_steps = p.get("total_steps")
         epochs = p.get("epochs")
@@ -1121,6 +1136,9 @@ class TrainingConfigGenerator:
                             "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
                             "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
                             "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
+                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
+                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
+                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
                         },
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),

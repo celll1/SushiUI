@@ -301,6 +301,7 @@ class _SampleRecorder:
 
     def __init__(self, denoise_error=None):
         self.encode_calls = []
+        self.denoise_calls = []
         self.modes = []
         self.cleared = []
         self.denoise_error = denoise_error
@@ -311,6 +312,7 @@ class _SampleRecorder:
         return self.prefix
 
     def denoise_loop(self, *args, **kwargs):
+        self.denoise_calls.append((args, kwargs))
         if self.denoise_error is not None:
             raise self.denoise_error
         return torch.zeros(1, 3, 32, 32)
@@ -380,6 +382,27 @@ def test_sample_with_a_reference_drives_the_inference_reference_path(tmp_path):
     refs = kwargs["ref_images"]
     assert len(refs) == 1 and refs[0].size == (64, 64)
     assert kwargs["img_cfg_scale"] == SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]
+
+
+def test_sample_uses_explicit_sensenova_guidance_controls(tmp_path):
+    trainer, _, _ = _sample_trainer()
+    recorder = _SampleRecorder()
+    path = _write_images(tmp_path, 1)[0]
+
+    image = _run_sample(
+        recorder,
+        trainer,
+        reference_image_path=path,
+        timestep_shift=5.5,
+        img_cfg_scale=1.75,
+        cfg_norm="none",
+    )
+
+    assert image is not None
+    assert recorder.encode_calls[0][1]["img_cfg_scale"] == 1.75
+    denoise_kwargs = recorder.denoise_calls[0][1]
+    assert denoise_kwargs["timestep_shift"] == 5.5
+    assert denoise_kwargs["cfg_norm"] == "none"
 
 
 def test_sample_condition_image_is_ignored_and_never_becomes_a_reference(tmp_path):

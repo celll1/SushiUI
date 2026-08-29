@@ -20,6 +20,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
+from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 from ..training_events import emit_training_event, emit_training_warning
 from .training_method import (
     _FULL_FINETUNE_METHOD,
@@ -1754,6 +1755,9 @@ def generate_sample(
     num_inference_steps: int,
     guidance_scale: float,
     seed: int,
+    timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"],
+    img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
+    cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
     negative_prompt: str = "",
     reference_image_path: Optional[str] = None,
     condition_image_path: Optional[str] = None,
@@ -1775,7 +1779,6 @@ def generate_sample(
     loop's sample block has no exception guard of its own, so a failed sample
     must never take the run down.
     """
-    from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
     from core.attention import AttentionMode
     from core.models.sensenova import sensenova_pipeline_ops as ops
 
@@ -1806,7 +1809,6 @@ def generate_sample(
         ref_images = _load_reference_images(
             [reference_image_path] if reference_image_path else None
         )
-        img_cfg_scale = SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]
         if ref_images:
             print(
                 f"{trainer.log_prefix} SenseNova sample is reference-conditioned "
@@ -1848,10 +1850,10 @@ def generate_sample(
                 transformer,
                 prefix,
                 cfg_scale=guidance_scale,
-                timestep_shift=SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
+                timestep_shift=timestep_shift,
                 num_inference_steps=num_inference_steps,
                 seed=seed if seed is not None and seed >= 0 else None,
-                cfg_norm=SENSENOVA_GENERATION_DEFAULTS["cfg_norm"],
+                cfg_norm=cfg_norm,
             )
         image = ops.tensor_to_image(image_tensor.float())
         del image_tensor

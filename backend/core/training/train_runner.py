@@ -81,7 +81,7 @@ from core.training.caption_processor import (
     process_caption,
 )
 from core.training.base_trainer import DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP
-from api.param_defaults import TRAINING_DEFAULTS
+from api.param_defaults import TRAINING_DEFAULTS, TRAINING_SAMPLE_DEFAULTS_BY_ARCH
 
 # Second half of the FP8 hard-off above. The env write only works while nothing
 # has imported fp8_linear yet, which holds for the shipped launch path
@@ -1939,9 +1939,14 @@ def _resolve_save_every_n_steps(save_every_unit: str, save_every: int,
     return save_every
 
 
-def _resolve_training_sample_config(process_config: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_training_sample_config(
+    process_config: Dict[str, Any], arch: str = "_default"
+) -> Dict[str, Any]:
     """Resolve the generated YAML sample section against the API defaults."""
     section = process_config.get("sample", {})
+    arch_defaults = TRAINING_SAMPLE_DEFAULTS_BY_ARCH.get(
+        arch, TRAINING_SAMPLE_DEFAULTS_BY_ARCH["_default"]
+    )
     prompts = section.get("prompts", section.get("sample_prompts"))
     if not prompts:
         prompts = [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]]
@@ -1950,11 +1955,14 @@ def _resolve_training_sample_config(process_config: Dict[str, Any]) -> Dict[str,
         "prompts": prompts,
         "width": section.get("width", TRAINING_DEFAULTS["sample_width"]),
         "height": section.get("height", TRAINING_DEFAULTS["sample_height"]),
-        "sample_steps": section.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
-        "guidance_scale": section.get("guidance_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
+        "sample_steps": section.get("sample_steps", arch_defaults["sample_steps"]),
+        "guidance_scale": section.get("guidance_scale", arch_defaults["sample_cfg_scale"]),
         "sampler": section.get("sampler", TRAINING_DEFAULTS["sample_sampler"]),
         "schedule_type": section.get("schedule_type", TRAINING_DEFAULTS["sample_schedule_type"]),
         "seed": section.get("seed", TRAINING_DEFAULTS["sample_seed"]),
+        "sensenova_timestep_shift": section.get("sensenova_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
+        "sensenova_img_cfg_scale": section.get("sensenova_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
+        "sensenova_cfg_norm": section.get("sensenova_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
     }
 
 
@@ -2598,7 +2606,7 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            sample_config = _resolve_training_sample_config(process_config)
+            sample_config = _resolve_training_sample_config(process_config, model_type)
             sample_prompts = sample_config["prompts"]
 
             # Debug: Log sample generation settings
@@ -2651,6 +2659,9 @@ def main():
             sample_seed = sample_config["seed"]
             sample_sampler = sample_config["sampler"]
             sample_schedule_type = sample_config["schedule_type"]
+            sensenova_sample_timestep_shift = sample_config["sensenova_timestep_shift"]
+            sensenova_sample_img_cfg_scale = sample_config["sensenova_img_cfg_scale"]
+            sensenova_sample_cfg_norm = sample_config["sensenova_cfg_norm"]
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get resume from checkpoint setting
@@ -2709,6 +2720,9 @@ def main():
                 sample_seed=sample_seed,
                 sample_sampler=sample_sampler,
                 sample_schedule_type=sample_schedule_type,
+                sensenova_sample_timestep_shift=sensenova_sample_timestep_shift,
+                sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3020,7 +3034,7 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            sample_config = _resolve_training_sample_config(process_config)
+            sample_config = _resolve_training_sample_config(process_config, model_type)
             sample_prompts = sample_config["prompts"]
 
             # Get debug parameters
@@ -3060,6 +3074,9 @@ def main():
             sample_seed = sample_config["seed"]
             sample_sampler = sample_config["sampler"]
             sample_schedule_type = sample_config["schedule_type"]
+            sensenova_sample_timestep_shift = sample_config["sensenova_timestep_shift"]
+            sensenova_sample_img_cfg_scale = sample_config["sensenova_img_cfg_scale"]
+            sensenova_sample_cfg_norm = sample_config["sensenova_cfg_norm"]
 
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
@@ -3106,6 +3123,9 @@ def main():
                 sample_seed=sample_seed,
                 sample_sampler=sample_sampler,
                 sample_schedule_type=sample_schedule_type,
+                sensenova_sample_timestep_shift=sensenova_sample_timestep_shift,
+                sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3458,7 +3478,7 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            sample_config = _resolve_training_sample_config(process_config)
+            sample_config = _resolve_training_sample_config(process_config, model_type)
             sample_prompts = sample_config["prompts"]
 
             # Debug: Log sample generation settings
@@ -3510,6 +3530,9 @@ def main():
             sample_seed = sample_config["seed"]
             sample_sampler = sample_config["sampler"]
             sample_schedule_type = sample_config["schedule_type"]
+            sensenova_sample_timestep_shift = sample_config["sensenova_timestep_shift"]
+            sensenova_sample_img_cfg_scale = sample_config["sensenova_img_cfg_scale"]
+            sensenova_sample_cfg_norm = sample_config["sensenova_cfg_norm"]
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get resume from checkpoint setting
@@ -3568,6 +3591,9 @@ def main():
                 sample_seed=sample_seed,
                 sample_sampler=sample_sampler,
                 sample_schedule_type=sample_schedule_type,
+                sensenova_sample_timestep_shift=sensenova_sample_timestep_shift,
+                sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,
@@ -3805,7 +3831,7 @@ def main():
             training_db.commit()
             print("[TrainRunner] Status updated to 'running'")
 
-            sample_config = _resolve_training_sample_config(process_config)
+            sample_config = _resolve_training_sample_config(process_config, model_type)
             sample_prompts = sample_config["prompts"]
 
             # Legacy migration: if old-style sample_condition_image_path exists at sample level,
@@ -3825,6 +3851,9 @@ def main():
             sample_seed = sample_config["seed"]
             sample_sampler = sample_config["sampler"]
             sample_schedule_type = sample_config["schedule_type"]
+            sensenova_sample_timestep_shift = sample_config["sensenova_timestep_shift"]
+            sensenova_sample_img_cfg_scale = sample_config["sensenova_img_cfg_scale"]
+            sensenova_sample_cfg_norm = sample_config["sensenova_cfg_norm"]
             print(f"[TrainRunner] Sample generation config: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, sample_steps={sample_steps}, sampler={sample_sampler}, schedule_type={sample_schedule_type}, seed={sample_seed}")
 
             # Get debug parameters from config
@@ -3897,6 +3926,9 @@ def main():
                 sample_seed=sample_seed,
                 sample_sampler=sample_sampler,
                 sample_schedule_type=sample_schedule_type,
+                sensenova_sample_timestep_shift=sensenova_sample_timestep_shift,
+                sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
                 optimizer_type=optimizer_type,
                 lr_scheduler_type=lr_scheduler_type,
                 enable_bucketing=enable_bucketing,

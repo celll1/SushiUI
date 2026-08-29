@@ -135,6 +135,9 @@ class SampleContext:
     condition_image_path: Optional[str] = None
     current_step: int = 0
     schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"]
+    sensenova_timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]
+    sensenova_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]
+    sensenova_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]
 
 
 # ---------------------------------------------------------------------------

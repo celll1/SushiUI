@@ -49,6 +49,7 @@ from api.param_defaults import (
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     CFG_UNCOND_DROP_DEFAULTS_BY_ARCH,
@@ -921,7 +922,10 @@ async def get_prompt_assist_music_lyrics_defaults():
 @router.get("/schema/training-defaults")
 async def get_training_defaults():
     """Return default parameter values for LoRA/Full-FT training."""
-    return TRAINING_DEFAULTS
+    return {
+        **TRAINING_DEFAULTS,
+        "_sample_defaults_by_arch": TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
+    }
 
 @router.get("/schema/tagger-training-defaults")
 async def get_tagger_training_defaults():
@@ -15487,6 +15491,15 @@ class TrainingRunCreateRequest(BaseModel):
     sample_sampler: str = TRAINING_DEFAULTS["sample_sampler"]
     sample_schedule_type: str = TRAINING_DEFAULTS["sample_schedule_type"]
     sample_seed: int = TRAINING_DEFAULTS["sample_seed"]  # -1 for random
+    sensenova_sample_timestep_shift: float = TRAINING_DEFAULTS[
+        "sensenova_sample_timestep_shift"
+    ]
+    sensenova_sample_img_cfg_scale: float = TRAINING_DEFAULTS[
+        "sensenova_sample_img_cfg_scale"
+    ]
+    sensenova_sample_cfg_norm: Literal["none", "global"] = TRAINING_DEFAULTS[
+        "sensenova_sample_cfg_norm"
+    ]
 
     # Unified Training Framework (Phase 2)
     noise_process: str = "auto"  # "auto", "ddpm", "flow"
@@ -15922,6 +15935,9 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "sample_sampler": ("sample", "sampler"),
     "sample_schedule_type": ("sample", "schedule_type"),
     "sample_seed": ("sample", "seed"),
+    "sensenova_sample_timestep_shift": ("sample", "sensenova_timestep_shift"),
+    "sensenova_sample_img_cfg_scale": ("sample", "sensenova_img_cfg_scale"),
+    "sensenova_sample_cfg_norm": ("sample", "sensenova_cfg_norm"),
     # network section (LoRA-specific)
     "lora_rank": ("network", "linear"),
     "lora_alpha": ("network", "linear_alpha"),

@@ -58,6 +58,9 @@ def _kwargs(**overrides):
         sample_seed=1,
         sample_sampler="euler",
         sample_schedule_type="uniform",
+        sensenova_sample_timestep_shift=3.0,
+        sensenova_sample_img_cfg_scale=1.0,
+        sensenova_sample_cfg_norm="global",
         global_step=0,
     )
     base.update(overrides)
@@ -107,6 +110,9 @@ def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
             "height": "64",
             "sampler": "euler",
             "schedule_type": "uniform",
+            "sensenova_timestep_shift": "3.0",
+            "sensenova_img_cfg_scale": "1.0",
+            "sensenova_cfg_norm": "global",
             "condition_image_path": "condition.png",
             "reference_image_path": "reference.png",
         }

@@ -59,6 +59,7 @@ interface StartupContextType {
   modelInfoVersion: number;
   generationDefaults: GenerationDefaultsResponse | null;
   trainingDefaults: Record<string, unknown> | null;
+  trainingSampleDefaultsByArch: Record<string, Record<string, unknown>> | null;
   taggerTrainingDefaults: Record<string, unknown> | null;
   vaeTrainingDefaults: Record<string, unknown> | null;
   timestepDefaultsByArch: Record<string, Record<string, unknown>> | null;
@@ -103,6 +104,7 @@ const StartupContext = createContext<StartupContextType>({
   modelInfoVersion: 0,
   generationDefaults: null,
   trainingDefaults: null,
+  trainingSampleDefaultsByArch: null,
   taggerTrainingDefaults: null,
   vaeTrainingDefaults: null,
   timestepDefaultsByArch: null,
@@ -148,6 +150,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [hasShownAlert, setHasShownAlert] = useState(false);
   const [generationDefaults, setGenerationDefaults] = useState<GenerationDefaultsResponse | null>(null);
   const [trainingDefaults, setTrainingDefaults] = useState<Record<string, unknown> | null>(null);
+  const [trainingSampleDefaultsByArch, setTrainingSampleDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [timestepDefaultsByArch, setTimestepDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
@@ -188,7 +191,11 @@ export function StartupProvider({ children }: StartupProviderProps) {
           fetchGenerationSettings(),
         ]);
         setGenerationDefaults(genDef);
-        setTrainingDefaults(trainDef);
+        const { _sample_defaults_by_arch: sampleByArch, ...flatTrainDef } = trainDef;
+        setTrainingDefaults(flatTrainDef);
+        setTrainingSampleDefaultsByArch(
+          (sampleByArch as Record<string, Record<string, unknown>> | undefined) ?? null
+        );
         setTaggerTrainingDefaults(taggerDef);
         setVaeTrainingDefaults(vaeDef);
         setTimestepDefaultsByArch(tsByArch);
@@ -348,6 +355,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       modelInfoVersion,
       generationDefaults,
       trainingDefaults,
+      trainingSampleDefaultsByArch,
       taggerTrainingDefaults,
       vaeTrainingDefaults,
       timestepDefaultsByArch,

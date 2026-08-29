@@ -9114,6 +9114,9 @@ class BaseTrainer(ABC):
         current_step: int = 0,
         sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
         schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
+        sensenova_timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"],
+        sensenova_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
+        sensenova_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
     ) -> Optional[Image.Image]:
         """Route a sample request to the correct per-architecture helper.
 
@@ -9142,6 +9145,9 @@ class BaseTrainer(ABC):
             current_step=current_step,
             sampler=sampler,
             schedule_type=schedule_type,
+            sensenova_timestep_shift=sensenova_timestep_shift,
+            sensenova_img_cfg_scale=sensenova_img_cfg_scale,
+            sensenova_cfg_norm=sensenova_cfg_norm,
         )
         return self.arch.sample(self, sample_ctx)
 
@@ -9187,6 +9193,9 @@ class BaseTrainer(ABC):
         height: int,
         sampler: str,
         schedule_type: str,
+        sensenova_timestep_shift: float,
+        sensenova_img_cfg_scale: float,
+        sensenova_cfg_norm: str,
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
     ) -> None:
@@ -9201,6 +9210,9 @@ class BaseTrainer(ABC):
             "height": height,
             "sampler": sampler,
             "schedule_type": schedule_type,
+            "sensenova_timestep_shift": sensenova_timestep_shift,
+            "sensenova_img_cfg_scale": sensenova_img_cfg_scale,
+            "sensenova_cfg_norm": sensenova_cfg_norm,
         }.items():
             metadata.add_text(key, str(value))
         if condition_image_path:
@@ -9221,6 +9233,9 @@ class BaseTrainer(ABC):
         sample_seed: int,
         sample_sampler: str,
         sample_schedule_type: str,
+        sensenova_sample_timestep_shift: float,
+        sensenova_sample_img_cfg_scale: float,
+        sensenova_sample_cfg_norm: str,
         global_step: int,
     ) -> None:
         """Step-0 base-model verification sample.
@@ -9261,6 +9276,9 @@ class BaseTrainer(ABC):
             current_step=0,
             sampler=sample_sampler,
             schedule_type=sample_schedule_type,
+            sensenova_timestep_shift=sensenova_sample_timestep_shift,
+            sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+            sensenova_cfg_norm=sensenova_sample_cfg_norm,
         )
         # None => architecture can't sample yet; skip saving.
         if sample is not None:
@@ -9276,6 +9294,9 @@ class BaseTrainer(ABC):
                 height=sample_height,
                 sampler=sample_sampler,
                 schedule_type=sample_schedule_type,
+                sensenova_timestep_shift=sensenova_sample_timestep_shift,
+                sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                sensenova_cfg_norm=sensenova_sample_cfg_norm,
                 condition_image_path=condition_image_path,
                 reference_image_path=reference_image_path,
             )
@@ -10650,6 +10671,9 @@ class BaseTrainer(ABC):
         sample_seed: int = _TRAINING_DEFAULTS["sample_seed"],
         sample_sampler: str = _TRAINING_DEFAULTS["sample_sampler"],
         sample_schedule_type: str = _TRAINING_DEFAULTS["sample_schedule_type"],
+        sensenova_sample_timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"],
+        sensenova_sample_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
+        sensenova_sample_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
         optimizer_type: str = "adamw",
         lr_scheduler_type: str = "constant",
         enable_bucketing: bool = True,
@@ -11776,6 +11800,9 @@ class BaseTrainer(ABC):
             sample_seed=sample_seed,
             sample_sampler=sample_sampler,
             sample_schedule_type=sample_schedule_type,
+            sensenova_sample_timestep_shift=sensenova_sample_timestep_shift,
+            sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
+            sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
             global_step=global_step,
         )
 
@@ -14688,6 +14715,9 @@ class BaseTrainer(ABC):
                                 current_step=global_step,
                                 sampler=sample_sampler,
                                 schedule_type=sample_schedule_type,
+                                sensenova_timestep_shift=sensenova_sample_timestep_shift,
+                                sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                                sensenova_cfg_norm=sensenova_sample_cfg_norm,
                             )
                             # None => architecture can't sample yet; skip this prompt.
                             if sample is None:
@@ -14708,6 +14738,9 @@ class BaseTrainer(ABC):
                                 height=sample_height,
                                 sampler=sample_sampler,
                                 schedule_type=sample_schedule_type,
+                                sensenova_timestep_shift=sensenova_sample_timestep_shift,
+                                sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                                sensenova_cfg_norm=sensenova_sample_cfg_norm,
                                 condition_image_path=condition_image_path,
                                 reference_image_path=reference_image_path,
                             )

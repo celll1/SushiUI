@@ -16,6 +16,7 @@ class LensArchHandler(ArchHandler):
     name = "lens"
     wiring = LENS_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
+    text_seq_axis = 2  # encode_prompt returns [1, num_layers, L, D]
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/lens_ops (shared with the base_trainer

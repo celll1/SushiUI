@@ -168,6 +168,18 @@ class ArchHandler(ABC):
     #: not just to /8. Overridden to 16 by every patchified DiT handler below.
     pixel_align: int = 8
 
+    #: Sequence axis of ONE item's text embedding, i.e. of the ``[1, ...]``
+    #: tensor ``encode_caption`` returns, as consumed by the batch-assembly
+    #: collation in ``BaseTrainer._collate_text_embeddings``.
+    #:
+    #: 1 is right for ``[1, L, D]`` (SD/SDXL/Z-Image/MiniT2I/FLUX.2/...) AND for
+    #: Krea 2's ``[1, L, num_layers, D]``. Lens and Ideogram 4 stack layers
+    #: FIRST (``[1, num_layers, L, D]``), so for them axis 1 is num_layers --
+    #: reading it as the length makes every item in a batch report the same
+    #: value, skips the padding branch, and lets ``torch.cat`` raise on any
+    #: batch whose captions tokenise to different L. They override this to 2.
+    text_seq_axis: int = 1
+
     #: TEMPORAL analogue of ``pixel_align`` (Phase 6a): the arch's clip-length
     #: grid, latent-frame closed form, fixed frame rate (if any), default
     #: training clip lengths and canvas envelope, declared once in

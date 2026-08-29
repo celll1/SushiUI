@@ -741,7 +741,7 @@ function OodReferenceBuilder({ building, buildResult, buildError, onBuild }: Ood
           <div>
             <label className="text-gray-400 text-[10px]">学習内データディレクトリ</label>
             <input type="text" value={dir} onChange={(e) => setDir(e.target.value)}
-              placeholder="M:/dataset_07/..."
+              placeholder="C:/datasets/my_dataset"
               className="w-full mt-0.5 px-2 py-1 bg-gray-700 rounded text-gray-200 text-[10px]" />
           </div>
           <div className="flex items-center gap-2">

@@ -6,7 +6,7 @@ component-dict convention (mirrors Anima / Krea2 / LTX-2.3). No sampler /
 generation pipeline yet — that is Phase 2.
 
 Distribution format (ComfyUI-style flat tree, confirmed locally at
-``M:\\model\\ace-step\\``, no diffusers-style subfolder ``config.json`` files
+``<MODEL_ROOT>/ace-step/``, no diffusers-style subfolder ``config.json`` files
 anywhere):
 
     <root>/diffusion_models/acestep_v1.5_{turbo,sft,base}.safetensors  -> DiT (677 tensors)

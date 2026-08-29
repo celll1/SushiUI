@@ -14,7 +14,7 @@ repo's rules for this phase:
 This script does NOT run automatically: it is not named `*_test.py` (pytest will not collect it), and it is only
 invoked via `python -m core.models.minimax_music3.smoke --model-root <path>` or `python smoke.py --model-root <path>`.
 `--model-root` has no default -- per the repo rule against embedding machine-specific paths in tracked files, the
-caller must supply the checkpoint location explicitly (e.g. `M:/model/minimax-music3/official` on this machine).
+caller must supply the checkpoint location explicitly (for example, `<MODEL_ROOT>/minimax-music3/official`).
 
 Per the repo's GPU-probe host-RAM rule ("announce HOST RAM peak before it runs"), this prints available host RAM
 before touching any file, even though every step here is cheap (config JSON, safetensors headers, and small random

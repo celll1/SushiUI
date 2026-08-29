@@ -149,8 +149,8 @@ def _resolve_lens_base_dir(dit_path: str, base_dir_hint: str = None) -> str:
       2. ``settings.models_dir`` entries whose name contains "lens"
       3. sibling / ancestor directories of the DiT file (up to 4 levels)
       4. sibling SUBDIRECTORIES of the DiT file's parent (one level down): a
-         root-level single file at ``M:/model/lens/lens_transformer.safetensors``
-         thus finds the base dir ``M:/model/lens/microsoft-lens/``.
+      root-level single file at ``<MODEL_ROOT>/lens/lens_transformer.safetensors``
+      thus finds the base dir ``<MODEL_ROOT>/lens/microsoft-lens/``.
     A directory qualifies when it contains ``transformer/config.json``.
     """
     import os

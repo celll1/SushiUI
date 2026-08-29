@@ -1223,10 +1223,10 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
 
     # ── the defect: a changed base VAE must not resume silently ──────────
     def test_a_different_base_vae_refuses(self):
-        trainer = self._trainer(self._identity("M:/model/sdxl/VAE/new", "bbbb"))
+        trainer = self._trainer(self._identity("Z:/model/sdxl/VAE/new", "bbbb"))
         with self.assertRaises(VaeConfigError) as ctx:
             trainer._assert_component_set_matches(
-                self._checkpoint(self._identity("M:/model/sdxl/VAE/old", "aaaa")))
+                self._checkpoint(self._identity("Z:/model/sdxl/VAE/old", "aaaa")))
         msg = str(ctx.exception)
         self.assertIn("DIFFERENT base VAE", msg)
         self.assertIn("frozen base weights", msg)
@@ -1238,27 +1238,27 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         """Structure is recorded by every checkpoint ever written, so it is the
         fallback axis for checkpoints that predate the fingerprint."""
         trainer = self._trainer(
-            self._identity("M:/model/flux2/VAE", fingerprint=False,
+            self._identity("Z:/model/flux2/VAE", fingerprint=False,
                            latent_channels=16))
         with self.assertRaises(VaeConfigError) as ctx:
             trainer._assert_component_set_matches(self._checkpoint(
-                self._identity("M:/model/sdxl/VAE", fingerprint=False)))
+                self._identity("Z:/model/sdxl/VAE", fingerprint=False)))
         self.assertIn("latent_channels", str(ctx.exception))
 
     def test_a_different_vae_class_refuses(self):
         trainer = self._trainer(
-            self._identity("M:/model/x", fingerprint=False,
+            self._identity("Z:/model/x", fingerprint=False,
                            **{"class": "AutoencoderKLFlux2"}))
         with self.assertRaises(VaeConfigError) as ctx:
             trainer._assert_component_set_matches(self._checkpoint(
-                self._identity("M:/model/x", fingerprint=False)))
+                self._identity("Z:/model/x", fingerprint=False)))
         self.assertIn("VAE class", str(ctx.exception))
 
     # ── the same base must still resume, however it is spelled ───────────
     def test_the_same_base_vae_resumes_silently(self):
-        trainer = self._trainer(self._identity("M:/model/sdxl/VAE", "aaaa"))
+        trainer = self._trainer(self._identity("Z:/model/sdxl/VAE", "aaaa"))
         out = self._run(trainer,
-                        self._checkpoint(self._identity("M:/model/sdxl/VAE", "aaaa")))
+                        self._checkpoint(self._identity("Z:/model/sdxl/VAE", "aaaa")))
         self.assertNotIn("WARNING", out)
 
     def test_the_same_weights_under_a_different_path_or_format_resume_silently(self):
@@ -1271,7 +1271,7 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         trainer = self._trainer(self._identity("D:/models/vae/sdxl.safetensors",
                                                "aaaa", format="single_file"))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/sdxl/VAE", "aaaa")))
+            self._identity("Z:/model/sdxl/VAE", "aaaa")))
         self.assertNotIn("WARNING", out)
 
     def test_path_spelling_alone_does_not_warn(self):
@@ -1280,31 +1280,31 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         explicit folding in ``_normalized_path`` covers the case axis and the
         POSIX side of the separator axis."""
         trainer = self._trainer(
-            self._identity("M:\\model\\sdxl\\VAE\\", fingerprint=False))
+            self._identity("Z:\\model\\sdxl\\VAE\\", fingerprint=False))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/sdxl/VAE", fingerprint=False)))
+            self._identity("Z:/model/sdxl/VAE", fingerprint=False)))
         self.assertNotIn("WARNING", out)
 
         if os.name == "nt":
             trainer = self._trainer(
-                self._identity("m:/MODEL/sdxl/vae", fingerprint=False))
+                self._identity("z:/MODEL/sdxl/vae", fingerprint=False))
             out = self._run(trainer, self._checkpoint(
-                self._identity("M:/model/sdxl/VAE", fingerprint=False)))
+                self._identity("Z:/model/sdxl/VAE", fingerprint=False)))
             self.assertNotIn("WARNING", out)
 
     # ── weak evidence warns, it does not refuse ──────────────────────────
     def test_a_changed_path_without_a_fingerprint_warns_but_runs(self):
-        trainer = self._trainer(self._identity("M:/model/sdxl/VAE/new",
+        trainer = self._trainer(self._identity("Z:/model/sdxl/VAE/new",
                                                fingerprint=False))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/sdxl/VAE/old", fingerprint=False)))
+            self._identity("Z:/model/sdxl/VAE/old", fingerprint=False)))
         self.assertIn("WARNING", out)
         self.assertIn("path", out)
         self.assertIn("predates the frozen-weight fingerprint", out)
 
     def test_a_pre_identity_checkpoint_still_resumes(self):
         """Old format: train_state.json without a base_vae key at all."""
-        trainer = self._trainer(self._identity("M:/model/sdxl/VAE", "aaaa"))
+        trainer = self._trainer(self._identity("Z:/model/sdxl/VAE", "aaaa"))
         out = self._run(trainer, self._checkpoint(omit_base_vae=True))
         self.assertIn("records no base VAE", out)
         self.assertIn("Proceeding", out)
@@ -1314,12 +1314,12 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         never loaded a model; it must stay silent there."""
         trainer = self._trainer()
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/sdxl/VAE", "aaaa")))
+            self._identity("Z:/model/sdxl/VAE", "aaaa")))
         self.assertNotIn("WARNING", out)
 
     def test_an_incomparable_fingerprint_algorithm_warns_rather_than_refuses(self):
-        trainer = self._trainer(self._identity("M:/model/sdxl/VAE/new", "bbbb"))
-        old = self._identity("M:/model/sdxl/VAE/old", "aaaa")
+        trainer = self._trainer(self._identity("Z:/model/sdxl/VAE/new", "bbbb"))
+        old = self._identity("Z:/model/sdxl/VAE/old", "aaaa")
         old["frozen_fingerprint"]["algo"] = "some-older-algo"
         out = self._run(trainer, self._checkpoint(old))
         self.assertIn("WARNING", out)
@@ -1377,10 +1377,10 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         """A diffusers upgrade that renames ``_class_name`` must not strand a
         long run: the digest already proves the frozen half is bit-identical, so
         no hybrid is possible and the difference is in the description only."""
-        trainer = self._trainer(self._identity("M:/model/x", "aaaa",
+        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
                                                **{"class": "AutoencoderKLQwenImage"}))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/x", "aaaa")))
+            self._identity("Z:/model/x", "aaaa")))
         self.assertIn("VAE class", out)
         self.assertIn("bit-identical", out)
         self.assertIn("no hybrid is possible", out)
@@ -1388,19 +1388,19 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
     def test_a_newly_reported_latent_channels_does_not_refuse_when_digests_match(self):
         """Observed for real: a VAE class that reports no ``latent_channels`` is
         recorded as -1, and a later diffusers version may start reporting 16."""
-        trainer = self._trainer(self._identity("M:/model/x", "aaaa",
+        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
                                                latent_channels=16))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/x", "aaaa", latent_channels=-1)))
+            self._identity("Z:/model/x", "aaaa", latent_channels=-1)))
         self.assertIn("latent_channels", out)
         self.assertNotIn("DIFFERENT base VAE", out)
 
     def test_a_structural_mismatch_is_still_fatal_when_the_digests_differ(self):
-        trainer = self._trainer(self._identity("M:/model/x", "bbbb",
+        trainer = self._trainer(self._identity("Z:/model/x", "bbbb",
                                                latent_channels=16))
         with self.assertRaises(VaeConfigError) as ctx:
             trainer._assert_component_set_matches(self._checkpoint(
-                self._identity("M:/model/x", "aaaa")))
+                self._identity("Z:/model/x", "aaaa")))
         msg = str(ctx.exception)
         self.assertIn("frozen base weights", msg)
         self.assertIn("latent_channels", msg)
@@ -1410,19 +1410,19 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         """`scaling_factor` is not spelling: `save_pretrained` bakes it into the
         exported config.json and the sidecar/inference override path reads it, so
         a resume must not change what the run finally writes in silence."""
-        trainer = self._trainer(self._identity("M:/model/x", "aaaa",
+        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
                                                scaling_factor=0.18215))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/x", "aaaa")))
+            self._identity("Z:/model/x", "aaaa")))
         self.assertIn("scaling_factor", out)
         self.assertIn("0.18215", out)
         self.assertIn("exported config.json", out)
 
     def test_a_changed_shift_factor_warns_even_when_the_digests_match(self):
-        trainer = self._trainer(self._identity("M:/model/x", "aaaa",
+        trainer = self._trainer(self._identity("Z:/model/x", "aaaa",
                                                shift_factor=0.1159))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/x", "aaaa")))
+            self._identity("Z:/model/x", "aaaa")))
         self.assertIn("shift_factor", out)
 
     def test_equal_factors_with_equal_digests_stay_silent(self):
@@ -1431,7 +1431,7 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         trainer = self._trainer(self._identity("D:/moved/vae.safetensors", "aaaa",
                                                format="single_file"))
         out = self._run(trainer, self._checkpoint(
-            self._identity("M:/model/x", "aaaa")))
+            self._identity("Z:/model/x", "aaaa")))
         self.assertNotIn("WARNING", out)
 
     # ── the recording side: select_trainable must WIRE the fingerprint in ─
@@ -1468,7 +1468,7 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         if this assignment is lost the authoritative axis silently stops being
         recorded and the guard degrades to path warnings with CI still green.
         """
-        trainer = self._trainer(self._identity("M:/model/x", fingerprint=False))
+        trainer = self._trainer(self._identity("Z:/model/x", fingerprint=False))
         trainer.vae = self._tiny_autoencoder()
         self._select_trainable(trainer)
         fp = trainer._base_vae_identity.get("frozen_fingerprint")
@@ -1481,19 +1481,19 @@ class VaeResumeBaseVaeIdentityTest(unittest.TestCase):
         """End to end over the real recording path: two runs whose FROZEN halves
         differ produce checkpoints that refuse each other, and a run against the
         same base resumes silently. Nothing here injects an identity by hand."""
-        old = self._trainer(self._identity("M:/model/x", fingerprint=False))
+        old = self._trainer(self._identity("Z:/model/x", fingerprint=False))
         old.vae = self._tiny_autoencoder(encoder_fill=1.0, decoder_fill=1.0)
         self._select_trainable(old)
         ckpt = self._checkpoint(copy.deepcopy(old._base_vae_identity))
 
-        same = self._trainer(self._identity("M:/model/x", fingerprint=False))
+        same = self._trainer(self._identity("Z:/model/x", fingerprint=False))
         # Same frozen weights, DIFFERENT trained weights: the checkpoint
         # overwrites those, so this must resume silently.
         same.vae = self._tiny_autoencoder(encoder_fill=1.0, decoder_fill=9.0)
         self._select_trainable(same)
         self.assertNotIn("WARNING", self._run(same, ckpt))
 
-        other = self._trainer(self._identity("M:/model/x", fingerprint=False))
+        other = self._trainer(self._identity("Z:/model/x", fingerprint=False))
         other.vae = self._tiny_autoencoder(encoder_fill=2.0, decoder_fill=1.0)
         self._select_trainable(other)
         with self.assertRaises(VaeConfigError) as ctx:

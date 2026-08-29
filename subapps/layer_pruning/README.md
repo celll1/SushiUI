@@ -27,7 +27,7 @@ python subapps/layer_pruning/extract_samples.py \
 
 ```bash
 python subapps/layer_pruning/prune_layers.py \
-    --model-path "M:\sushiUI\training\full_dezit\full_dezit_step_47058.safetensors" \
+    --model-path "<TRAINING_ROOT>/my_run/my_run_step_47058.safetensors" \
     --samples samples.json \
     --target-layers 20 \
     --strategy greedy \
@@ -48,7 +48,7 @@ python subapps/layer_pruning/prune_layers.py \
 
 ```bash
 python subapps/layer_pruning/evaluate_pruned.py \
-    --original-model "M:\sushiUI\training\full_dezit\full_dezit_step_47058.safetensors" \
+    --original-model "<TRAINING_ROOT>/my_run/my_run_step_47058.safetensors" \
     --pruned-model pruned_model.safetensors \
     --samples samples.json
 ```

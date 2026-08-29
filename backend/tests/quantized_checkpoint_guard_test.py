@@ -607,7 +607,7 @@ class DeclaredSemanticsGuardTest(unittest.TestCase):
         sd["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
         with self.assertRaises(guard.UnsupportedQuantSemanticsError) as ctx:
             guard.quantized_state_dict_report(
-                sd, arch="MiniMax-H3", path=r"M:\x\int8_convrot.safetensors")
+                sd, arch="MiniMax-H3", path=r"Z:\x\int8_convrot.safetensors")
         message = str(ctx.exception)
         self.assertIn("int8_convrot.safetensors", message)
         self.assertIn("convrot", message)

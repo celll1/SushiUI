@@ -1,6 +1,6 @@
 """``MiniMaxMusic3Pipeline.execution_device`` / ``.flow_execution_device`` offload-hook resolution.
 
-Under the group-offload configurations the design doc targets (``M:/model/minimax-music3``'s ~8GB leaf-level
+Under the group-offload configurations the design doc targets (``<MODEL_ROOT>/minimax-music3``'s ~8GB leaf-level
 group-offload path, or plain ``accelerate`` sequential offload), a component's WEIGHTS rest on CPU/meta between
 calls while an offload hook onloads them to the accelerator only for the forward. Reading
 ``next(component.parameters()).device`` in that state returns the resting device, not the device the next forward

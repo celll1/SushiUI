@@ -4,7 +4,7 @@ Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minimax_music3_loader_test.py -v
 
 Everything here is header/JSON-only: no multi-GB weight file is opened. A
-real load (against ``M:/model/minimax-music3``) was verified manually while
+real load (against ``<MODEL_ROOT>/minimax-music3``) was verified manually while
 writing this loader (structural build + a real forward through the
 transformer/condition_encoder/vocoder chain); that is not repeated here
 because it requires the model snapshot, which is not part of this repo.

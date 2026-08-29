@@ -6,8 +6,8 @@ Run with:
 Exercises ``core.models.minimax_h3.minimax_h3_lora`` against two REAL LoRA
 checkpoints (outside the repo, read-only, never moved to GPU):
 
-    M:/model/minimax_h3/loras/minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors
-    M:/model/minimax_h3/loras/minimax_h3_fl2va_4step_lora.safetensors
+    <MODEL_ROOT>/minimax_h3/loras/minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors
+    <MODEL_ROOT>/minimax_h3/loras/minimax_h3_fl2va_4step_lora.safetensors
 
 Both files are skipped (not failed) when absent, since they live outside the
 repository.
@@ -39,7 +39,9 @@ from core.models.minimax_h3 import minimax_h3_lora as lora_mod  # noqa: E402
 from core.training.adapters.minimax_h3_adapter import _resolve_leaf  # noqa: E402
 
 
-LORA_DIR = "M:/model/minimax_h3/loras"
+from model_root import model_path  # noqa: E402
+
+LORA_DIR = model_path("minimax_h3", "loras")
 F1_PATH = os.path.join(LORA_DIR, "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors")
 F2_PATH = os.path.join(LORA_DIR, "minimax_h3_fl2va_4step_lora.safetensors")
 

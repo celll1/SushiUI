@@ -2,7 +2,7 @@
 Runnable equivalence / guard tests for the unified attention conduit.
 
 Run:
-    d:/celll1/webui_cl/venv/Scripts/python.exe backend/core/attention/tests_conduit.py
+    venv/Scripts/python.exe backend/core/attention/tests_conduit.py
 
 Covers (per design R1 / R3):
     * sage-vs-native numerical equivalence at head_dim 64 and 128 for BOTH

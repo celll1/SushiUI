@@ -9050,7 +9050,7 @@ def _expand_minimax_h3_tree(tree_path: str, name_prefix: str, source_dir: str) -
     Shared by both scan shapes in `get_models`: the tree sitting one level
     under `models_dir` (`item_path`) and `models_dir` pointing directly at the
     tree root, which is how every other arch's own directory is added there
-    (see `M:\\model\\{sdxl,krea2,anima}` -- one models_dir per arch root, not
+    (see `<MODEL_ROOT>/{sdxl,krea2,anima}` -- one models_dir per arch root, not
     per parent). Both must resolve to the same two entries.
     """
     from core.models.minimax_h3.loader import (

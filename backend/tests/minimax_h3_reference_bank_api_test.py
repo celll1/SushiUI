@@ -123,7 +123,7 @@ class _Manager:
     """The three attributes the job reads off the pipeline manager."""
 
     def __init__(self, components):
-        self.current_model_info = {"type": "minimax_h3", "source": "M:/model/minimax_h3"}
+        self.current_model_info = {"type": "minimax_h3", "source": "Z:/model/minimax_h3"}
         self.minimax_h3_components = components
         self._load_model_lock = threading.Lock()
 
@@ -285,7 +285,7 @@ def test_naming_an_encoder_other_than_the_loaded_one_is_refused(tmp_path, monkey
     _install(monkeypatch, _Manager(_released_components(tmp_path)))
 
     with pytest.raises(HTTPException) as excinfo:
-        _start("M:/somewhere/else/qwen3vl_32b_other.safetensors")
+        _start("Z:/somewhere/else/qwen3vl_32b_other.safetensors")
     assert excinfo.value.status_code == 400
     assert "Load the encoder you are naming" in excinfo.value.detail
     assert not (store / "banks").exists()
@@ -293,7 +293,7 @@ def test_naming_an_encoder_other_than_the_loaded_one_is_refused(tmp_path, monkey
 
 def test_a_non_h3_model_has_no_bank_to_build(monkeypatch, store, suite):
     manager = _Manager(None)
-    manager.current_model_info = {"type": "sdxl", "source": "M:/model/sdxl/x.safetensors"}
+    manager.current_model_info = {"type": "sdxl", "source": "Z:/model/sdxl/x.safetensors"}
     _install(monkeypatch, manager)
 
     with pytest.raises(HTTPException) as excinfo:
@@ -339,7 +339,7 @@ def test_a_build_reports_progress_and_stores_the_bank(tmp_path, monkeypatch, sto
     manifest = ta.find_reference_bank(components["text_encoder_path"])
     assert manifest is not None and len(manifest["presentations"]) == corpus
 
-    status = _status("M:/model/minimax_h3")
+    status = _status("Z:/model/minimax_h3")
     assert status["bank"]["reference"] == RELEASED
     assert status["bank"]["is_loaded_encoder"] is True
     assert status["can_build"] is True
@@ -393,7 +393,7 @@ def test_status_without_a_bank_states_the_cost_and_no_bank(tmp_path, monkeypatch
                                                            suite, no_tree_scan):
     _install(monkeypatch, _Manager(_released_components(tmp_path)))
 
-    status = _status("M:/model/minimax_h3")
+    status = _status("Z:/model/minimax_h3")
     assert status["supported"] is True and status["can_build"] is True
     assert status["reason"] is None
     assert status["bank"] is None and status["banks"] == []
@@ -430,7 +430,7 @@ def test_a_bank_from_another_encoder_is_listed_but_does_not_answer_for_this_one(
     ta.build_reference_bank(built, reference_basename=other.name)
 
     _install(monkeypatch, _Manager(_released_components(tmp_path)))
-    status = _status("M:/model/minimax_h3")
+    status = _status("Z:/model/minimax_h3")
 
     assert status["bank"] is None
     assert [entry["reference"] for entry in status["banks"]] == [other.name]
@@ -455,7 +455,7 @@ def test_the_automatic_measurement_surfaces_once_a_bank_exists(tmp_path, monkeyp
         "clip_projections": [{"path": substitute["te_projection"]["path"]}]})
     _install(monkeypatch, _Manager(substitute))
 
-    status = _status("M:/model/minimax_h3")
+    status = _status("Z:/model/minimax_h3")
     assert len(status["measurements"]) == 1
     measurement = status["measurements"][0]
     assert measurement["encoder"] == CONVERTED
@@ -481,7 +481,7 @@ def test_measurements_from_another_tree_are_not_reported(tmp_path, monkeypatch, 
     assert ta.maybe_measure_substitution(_substitute_components(tmp_path)) is not None
 
     _install(monkeypatch, _Manager(reference))
-    assert _status("M:/model/other_tree")["measurements"] == []
+    assert _status("Z:/model/other_tree")["measurements"] == []
 
 
 def test_a_tree_that_cannot_be_scanned_says_so(tmp_path, monkeypatch, store, suite):
@@ -493,6 +493,6 @@ def test_a_tree_that_cannot_be_scanned_says_so(tmp_path, monkeypatch, store, sui
     monkeypatch.setattr(loader, "describe_minimax_h3_text_encoder_choices", explode)
     _install(monkeypatch, _Manager(_released_components(tmp_path)))
 
-    status = _status("M:/not/a/tree")
+    status = _status("Z:/not/a/tree")
     assert status["measurements"] == []
     assert "could not be scanned" in status["measurements_reason"]

@@ -3,8 +3,8 @@
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minimax_h3_hybrid_api_test.py -v
 
-Design doc: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` (rev2) sections 6.1
-and 6.2. Three things this layer can get wrong, each silently:
+Contract: `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md`. Three things this
+layer can get wrong, each silently:
 
 * sending something on a load that named no overlay, which would change every
   other architecture's load path for a MiniMax-H3 feature;
@@ -15,7 +15,7 @@ and 6.2. Three things this layer can get wrong, each silently:
 
 Everything here is header-only: the fixtures are the fake trees from
 `minimax_h3_hybrid_preflight_test` and no real load ever runs, so no checkpoint
-under `M:/model/minimax_h3` is opened.
+under `<MODEL_ROOT>/minimax_h3` is opened.
 """
 
 import asyncio
@@ -85,7 +85,7 @@ def _post(monkeypatch, manager, **fields):
     register_error_handlers(app)
     app.post("/models/load")(routes.load_model)
 
-    data = {"source_type": "safetensors", "source": "M:/model/x.safetensors"}
+    data = {"source_type": "safetensors", "source": "Z:/model/x.safetensors"}
     data.update({k: v for k, v in fields.items() if v is not None})
 
     async def run():
@@ -167,11 +167,11 @@ def test_an_empty_overlay_forwards_exactly_the_pre_c5_kwargs(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_an_overlay_reaches_the_pipeline_as_a_hybrid_request(monkeypatch):
-    seen = _load(monkeypatch, overlay_file="M:/model/minimax_h3/o.safetensors",
+    seen = _load(monkeypatch, overlay_file="Z:/model/minimax_h3/o.safetensors",
                  hybrid_block_range_start=3, hybrid_block_range_end=9,
                  hybrid_final_adaln_from_overlay=True)
     assert seen["hybrid"] == {
-        "overlay_file": "M:/model/minimax_h3/o.safetensors",
+        "overlay_file": "Z:/model/minimax_h3/o.safetensors",
         "preset": PRESET_BLOCK_RANGE_ADALN,
         "block_range_start": 3,
         "block_range_end": 9,
@@ -182,12 +182,12 @@ def test_an_overlay_reaches_the_pipeline_as_a_hybrid_request(monkeypatch):
 def test_the_assembled_request_is_one_the_loader_accepts_unchanged(monkeypatch):
     """The route builds the dict and validates nothing; if its SHAPE were wrong
     the whole feature would fail as an "unrecognised field" refusal."""
-    seen = _load(monkeypatch, overlay_file="M:/o.safetensors")
+    seen = _load(monkeypatch, overlay_file="Z:/o.safetensors")
     assert normalize_hybrid_request(seen["hybrid"]) == seen["hybrid"]
 
 
 def test_omitting_the_recipe_sends_the_documented_defaults(monkeypatch):
-    seen = _load(monkeypatch, overlay_file="M:/o.safetensors")
+    seen = _load(monkeypatch, overlay_file="Z:/o.safetensors")
     assert seen["hybrid"]["block_range_start"] == DEFAULT_BLOCK_RANGE_START
     assert seen["hybrid"]["block_range_end"] == DEFAULT_BLOCK_RANGE_END
     assert seen["hybrid"]["final_adaln_from_overlay"] is False
@@ -212,7 +212,7 @@ def test_a_refused_preset_is_a_400_naming_its_code(monkeypatch, hybrid_preset, e
     def raiser(**kwargs):
         normalize_hybrid_request(kwargs["hybrid"])
 
-    status, message = _refused(monkeypatch, raiser, overlay_file="M:/o.safetensors",
+    status, message = _refused(monkeypatch, raiser, overlay_file="Z:/o.safetensors",
                                hybrid_preset=hybrid_preset)
     assert status == 400
     assert message.startswith(f"[{expected}]")
@@ -257,7 +257,7 @@ def test_an_overlay_on_another_architecture_is_a_coded_400(monkeypatch):
     def raiser(**kwargs):
         ModelLoader._refuse_hybrid_on_other_arch("sdxl", kwargs["hybrid"])
 
-    status, message = _refused(monkeypatch, raiser, overlay_file="M:/o.safetensors")
+    status, message = _refused(monkeypatch, raiser, overlay_file="Z:/o.safetensors")
     assert status == 400
     assert message.startswith("[hybrid_wrong_architecture]")
     assert "sdxl" in message
@@ -271,7 +271,7 @@ def test_the_same_guard_passes_a_minimax_h3_hybrid_through():
     assert ModelLoader._refuse_hybrid_on_other_arch("sdxl", None) is None
 
 
-@pytest.mark.parametrize("fields", [{}, {"overlay_file": "M:/o.safetensors"}])
+@pytest.mark.parametrize("fields", [{}, {"overlay_file": "Z:/o.safetensors"}])
 def test_a_fault_that_is_not_a_refusal_is_a_500_even_under_a_hybrid(monkeypatch, fields):
     """The merge itself raising `ValueError` -- a dtype complaint from the real
     read, a selector bug -- is a fault to debug, not a bad request. Answering it
@@ -289,7 +289,7 @@ def test_the_traceback_is_printed_for_a_refused_hybrid(monkeypatch, capfd):
     def raiser(**kwargs):
         normalize_hybrid_request(dict(kwargs["hybrid"], nonsense=1))
 
-    status, _message = _refused(monkeypatch, raiser, overlay_file="M:/o.safetensors")
+    status, _message = _refused(monkeypatch, raiser, overlay_file="Z:/o.safetensors")
     assert status == 400
     printed = capfd.readouterr().out
     assert "Error loading model:" in printed and "Traceback" in printed
@@ -301,7 +301,7 @@ def test_a_busy_lifecycle_gate_is_still_a_409_with_a_hybrid(monkeypatch):
     def raiser(**_kwargs):
         raise ModelStateBusyError("a generation is running")
 
-    status, _message = _refused(monkeypatch, raiser, overlay_file="M:/o.safetensors")
+    status, _message = _refused(monkeypatch, raiser, overlay_file="Z:/o.safetensors")
     assert status == 409
 
 
@@ -414,7 +414,7 @@ def test_the_listing_route_maps_a_refusal_to_400(monkeypatch, tmp_path):
         "core.models.minimax_h3.hybrid_spec.describe_minimax_h3_hybrid_overlay_choices",
         raiser)
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(routes.list_minimax_h3_hybrid_overlays(model_path="M:/whatever"))
+        asyncio.run(routes.list_minimax_h3_hybrid_overlays(model_path="Z:/whatever"))
     assert excinfo.value.status_code == 400
     assert "[header_unreadable]" in excinfo.value.detail
 

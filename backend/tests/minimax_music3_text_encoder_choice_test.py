@@ -19,7 +19,7 @@ with no architecture guard, and silently misfired when an H3 model was
 loaded and a Music3-unrelated `text_encoder_file` request reached it (and the
 symmetric bug existed on `_minimax_h3_te_selection_differs` itself, fixed
 alongside this file). Entirely header-only / fixture-only: no real checkpoint
-under `M:/model/minimax-music3` is opened.
+under `<MODEL_ROOT>/minimax-music3` is opened.
 """
 
 import json
@@ -33,6 +33,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import pytest  # noqa: E402
 import torch  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
+
+from model_root import model_path  # noqa: E402
 
 from core.models.minimax_music3 import loader  # noqa: E402
 from core.models.minimax_music3.loader import (  # noqa: E402
@@ -420,8 +422,8 @@ def test_wrong_extension_text_encoder_file_is_refused_before_teardown_too(tmp_pa
 # `__metadata__` and so did not catch this).
 # ---------------------------------------------------------------------------
 
-_REAL_TEXT_ENCODERS_ROOT = "M:/model/minimax-music3/text_encoders"
-_REAL_DIT_ROOT = "M:/model/minimax-music3/diffusion_models"
+_REAL_TEXT_ENCODERS_ROOT = model_path("minimax-music3", "text_encoders")
+_REAL_DIT_ROOT = model_path("minimax-music3", "diffusion_models")
 
 
 def test_real_non_pruned_bf16_encoder_is_accepted_not_refused():

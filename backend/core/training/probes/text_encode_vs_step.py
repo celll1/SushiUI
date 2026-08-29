@@ -45,13 +45,28 @@ ARMS = ("te-cpu", "te-cpu-contended", "te-gpu", "dit-step")
 # SenseNova-only arms, dispatched in main() alongside ARMS.
 SENSENOVA_ARMS = ("sensenova", "sensenova-four-phase")
 
-DEFAULT_MODEL_PATHS = {
-    "anima": r"M:\model\anima\split_files\diffusion_models\anima-base-v1.0.safetensors",
-    "krea2": r"M:\model\krea2",
-    "sdxl": r"M:\model\sdxl\Illustrious-XL-v2.0.safetensors",
-    "sensenova": r"M:\model\sensenova\sensenova_int8.safetensors",
+# The model trees and the caption corpus live outside the repository and sit
+# somewhere different on every machine, so both are read from the environment.
+# `--model-path` / `--caption-dir` override either one per run.
+MODEL_ROOT_ENV = "SUSHIUI_MODEL_ROOT"
+CAPTION_DIR_ENV = "SUSHIUI_PROBE_CAPTION_DIR"
+
+DEFAULT_MODEL_RELATIVE_PATHS = {
+    "anima": "anima/split_files/diffusion_models/anima-base-v1.0.safetensors",
+    "krea2": "krea2",
+    "sdxl": "sdxl/Illustrious-XL-v2.0.safetensors",
+    "sensenova": "sensenova/sensenova_int8.safetensors",
 }
-DEFAULT_CAPTION_DIR = r"M:\dataset_working\copyright\kouyoku_senki_exs-tia"
+
+
+def _default_model_path(arch: str) -> str:
+    root = os.environ.get(MODEL_ROOT_ENV, "").strip()
+    if not root:
+        raise SystemExit(
+            f"Set {MODEL_ROOT_ENV} to the directory holding the per-architecture "
+            f"model trees, or pass --model-path."
+        )
+    return os.path.join(root, *DEFAULT_MODEL_RELATIVE_PATHS[arch].split("/"))
 
 
 def _repo_venv_python() -> Path:
@@ -1197,7 +1212,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--arch", required=True, choices=ARCHS)
     parser.add_argument("--arm", required=True, choices=ARMS + SENSENOVA_ARMS)
     parser.add_argument("--model-path", default=None)
-    parser.add_argument("--caption-dir", default=DEFAULT_CAPTION_DIR)
+    parser.add_argument("--caption-dir", default=os.environ.get(CAPTION_DIR_ENV, ""))
     parser.add_argument("--captions", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--resolution", type=int, default=1024)
@@ -1219,7 +1234,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args()
     if args.model_path is None:
-        args.model_path = DEFAULT_MODEL_PATHS[args.arch]
+        args.model_path = _default_model_path(args.arch)
+    if not args.caption_dir:
+        raise SystemExit(
+            f"Set {CAPTION_DIR_ENV} to a directory of .txt captions, or pass "
+            f"--caption-dir."
+        )
     return args
 
 

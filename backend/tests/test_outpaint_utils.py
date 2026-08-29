@@ -3,7 +3,7 @@ Tests for the image spatial outpaint orchestration helpers
 (core/inference/outpaint_utils.py).
 
 Run with:
-    d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe -m pytest backend/tests/test_outpaint_utils.py -v
+    venv\\Scripts\\python.exe -m pytest backend/tests/test_outpaint_utils.py -v
 
 Test coverage:
   1. paste_preserved_region -- the placed rect is BYTE-IDENTICAL to placed_img

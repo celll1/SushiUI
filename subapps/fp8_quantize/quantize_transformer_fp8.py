@@ -180,7 +180,7 @@ gets no ``--link-siblings`` treatment: its loader resolves the VAE from the
 Apache-2.0 VAE store and the text encoder / tokenizer / scheduler from the
 detected base repo, and probes nothing next to the checkpoint.
 
-Write the output to a scratch location, NOT under a ``M:/model/<arch>/`` root:
+    Write the output to a scratch location, NOT under a ``<MODEL_ROOT>/<arch>/`` root:
 those roots hold the vanilla checkpoints and their sibling directories are
 completion sources for the loaders.
 

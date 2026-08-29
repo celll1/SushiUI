@@ -7,9 +7,9 @@ Run with:
 WHY THIS FILE EXISTS
 --------------------
 Every other architecture in this repo is added to Settings -> Directories as
-its OWN root (`M:\\model\\sdxl`, `M:\\model\\krea2`, `M:\\model\\anima`, ...),
+its OWN root (`<MODEL_ROOT>/sdxl`, `<MODEL_ROOT>/krea2`, `<MODEL_ROOT>/anima`, ...),
 with the individual checkpoints as its direct children. A user who follows
-that same convention for MiniMax-H3 and adds `M:\\model\\minimax_h3` itself
+that same convention for MiniMax-H3 and adds `<MODEL_ROOT>/minimax_h3` itself
 hits a shape the scanner's H3 expansion did not cover: it only looked for a
 tree ONE LEVEL BELOW the configured directory (`models_dir/<item>/diffusion_
 models/`), so `os.listdir(models_dir)` fell through to the per-child loop and

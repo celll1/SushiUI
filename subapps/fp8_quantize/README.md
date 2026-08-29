@@ -68,7 +68,7 @@ venv/Scripts/python.exe subapps/fp8_quantize/quantize_transformer_fp8.py \
 Add `--dry-run` first: it prints how many Linears would be quantized and why
 each skipped one was skipped, and writes nothing.
 
-**Write the output to a scratch location, not under a `M:/model/<arch>/` root.**
+**Write the output to a scratch location, not under a `<MODEL_ROOT>/<arch>/` root.**
 Those roots hold the vanilla checkpoints, and their sibling directories are
 completion sources for the loaders.
 

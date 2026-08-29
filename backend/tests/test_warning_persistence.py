@@ -2,7 +2,7 @@
 Tests for durable per-image generation warnings (``effective_warnings``).
 
 Run with:
-    d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe -m pytest backend/tests/test_warning_persistence.py -v
+    venv\\Scripts\\python.exe -m pytest backend/tests/test_warning_persistence.py -v
 
 A generation that silently degrades has to say so ON THE ROW, because the row
 is the only artifact that survives the request. Two real diagnoses were blocked
@@ -63,7 +63,7 @@ from api.generation_overrides import apply_overrides  # noqa: E402
 from utils.path_redaction import redact_params_for_sharing  # noqa: E402
 
 # A path that must never reach a shared PNG, and is not this machine's.
-_FAKE_VAE_PATH = r"M:\models\private\someone\vae_dec_run\diffusion_pytorch_model.safetensors"
+_FAKE_VAE_PATH = r"Z:\models\private\someone\vae_dec_run\diffusion_pytorch_model.safetensors"
 
 
 def _codes(warnings):
@@ -430,7 +430,7 @@ class TestPersistedWarningsAreShareable(unittest.TestCase):
         shared = redact_params_for_sharing(warnings)
         self.assertIn("vae_override_error", _codes(shared))
         blob = repr(shared)
-        for fragment in ("M:\\models", "M:/models", "private", "someone"):
+        for fragment in ("Z:\\models", "Z:/models", "private", "someone"):
             self.assertNotIn(fragment, blob, f"{fragment!r} leaked into a shared PNG chunk")
 
     def test_attention_fallback_message_survives_verbatim(self):
@@ -520,7 +520,7 @@ class TestPngChunkMatchesTheRow(unittest.TestCase):
         self.assertEqual(_codes(row), _codes(written), "PNG and DB row disagree")
         self.assertIn("vae_override_error", _codes(written))
         blob = json.dumps(chunks)
-        for fragment in ("M:\\\\models", "M:/models", "private", "someone"):
+        for fragment in ("Z:\\\\models", "Z:/models", "private", "someone"):
             self.assertNotIn(fragment, blob,
                              f"{fragment!r} leaked into a PNG text chunk")
 

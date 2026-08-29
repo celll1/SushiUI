@@ -22,6 +22,8 @@ BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
+from model_root import model_path  # noqa: E402
+
 from core.models.minimax_h3.loader import MINIMAX_H3_TE_PATTERNS  # noqa: E402
 from core.models.minimax_h3.te_gguf_convert import (  # noqa: E402
     ConversionError,
@@ -271,7 +273,7 @@ def test_shipped_32b_filenames_are_refused(synthetic_gguf, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_real_converted_encoders_are_not_auto_selectable():
-    root = "M:/model/minimax_h3"
+    root = model_path("minimax_h3")
     if not os.path.isdir(root):
         pytest.skip(f"{root} not present on this machine")
     directory = os.path.join(root, "text_encoders")

@@ -393,10 +393,10 @@ def test_the_switch_route_forwards_projection_path(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(routes.pipeline_manager, "current_model_info",
-                        {"type": "minimax_h3", "source": "M:/model/minimax_h3"}, raising=False)
+                        {"type": "minimax_h3", "source": "Z:/model/minimax_h3"}, raising=False)
 
     async def catalog(_db):
-        return {"text_encoder": [{"candidate_id": "abc", "_path": "M:/te.safetensors"}]}
+        return {"text_encoder": [{"candidate_id": "abc", "_path": "Z:/te.safetensors"}]}
 
     monkeypatch.setattr(routes, "_current_component_catalog", catalog)
     monkeypatch.setattr(component_catalog, "find_candidate",
@@ -410,7 +410,7 @@ def test_the_switch_route_forwards_projection_path(monkeypatch):
         ComponentSwitchRequest(
             slot="text_encoder", candidate_id="abc",
             expected_model_revision=1, expected_component_revision=1,
-            projection_path="M:/model/minimax_h3/clip_projections/" + SECOND),
+            projection_path="Z:/model/minimax_h3/clip_projections/" + SECOND),
         db=None))
 
     assert seen["kwargs"]["projection_path"].endswith(SECOND)

@@ -11,7 +11,7 @@ consume, since the tree-root scan case was new. That was checked and refuted:
 `ModelLoader.detect_model_type` and `detect_minimax_h3_layout` already resolve
 a bare DiT `.safetensors` path (the exact `path` a listing entry carries) to
 the right component tree and variant -- confirmed against the real on-disk
-model (`M:/model/minimax_h3`) and pinned here with synthetic header-only files
+model (`<MODEL_ROOT>/minimax_h3`) and pinned here with synthetic header-only files
 so it does not need the real 21 GB weights to run in CI. The actual retry
 succeeded, corroborating this.
 

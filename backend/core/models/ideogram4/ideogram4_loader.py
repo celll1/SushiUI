@@ -358,8 +358,8 @@ def _resolve_ideogram4_base_dir(file_path: str, base_dir_hint: str = None) -> st
       2. ``settings.models_dir`` entries whose name contains "ideogram"
       3. ancestor directories of the file (up to 4 levels)
       4. sibling SUBDIRECTORIES of the file's parent (one level down): a
-         root-level single file at ``M:/model/ideogram4/ideogram4_transformers.safetensors``
-         thus finds the base dir ``M:/model/ideogram4/ideogram4/``.
+      root-level single file at ``<MODEL_ROOT>/ideogram4/ideogram4_transformers.safetensors``
+      thus finds the base dir ``<MODEL_ROOT>/ideogram4/ideogram4/``.
     A directory qualifies when it contains ``transformer/config.json`` and a
     ``text_encoder/`` subfolder.
     """

@@ -41,7 +41,9 @@ from core.models.minimax_h3.loader import (  # noqa: E402
     read_safetensors_header,
 )
 
-REAL_ROOT = "M:/model/minimax_h3"
+from model_root import model_path  # noqa: E402
+
+REAL_ROOT = model_path("minimax_h3")
 REAL_TE = os.path.join(
     REAL_ROOT, "text_encoders", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 )

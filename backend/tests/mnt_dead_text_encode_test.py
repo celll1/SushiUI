@@ -11,7 +11,7 @@ Source-level assertions, not a live trainer: BaseTrainer.train() cannot be
 driven without a model, and the property under test is which branch runs.
 
 Run:
-    "d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe" -m pytest \\
+    venv\\Scripts\\python.exe -m pytest \\
         backend/tests/mnt_dead_text_encode_test.py -q
 """
 

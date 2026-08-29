@@ -1695,9 +1695,7 @@ class ModelLoader:
     #     print(f"[ModelLoader] Using diffusers DeusPipeline.from_single_file()")
     #
     #     try:
-    #         # Import diffusers DEUS pipeline from custom location
-    #         # Note: This uses the local diffusers installation at D:\celll1\diffusers
-    #         sys.path.insert(0, "D:\\celll1\\diffusers\\src")
+    #         # Import the DEUS pipeline from the installed diffusers package.
     #         from diffusers.pipelines.deus import DeusPipeline
     #         from diffusers.schedulers import EulerDiscreteScheduler
     #

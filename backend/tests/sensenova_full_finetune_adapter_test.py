@@ -509,15 +509,15 @@ def test_full_finetune_config_defaults_to_the_generation_half_for_sensenova():
             )
         )["config"]["process"][0]["train"]
 
-    assert _train_section("M:/model/sensenova/sensenova_int8.safetensors")[
+    assert _train_section("Z:/model/sensenova/sensenova_int8.safetensors")[
         "train_text_encoder"] is False
     # Every other architecture keeps the default it always had.
-    assert _train_section("M:/model/sdxl/some_model.safetensors")[
+    assert _train_section("Z:/model/sdxl/some_model.safetensors")[
         "train_text_encoder"] is True
     # And an explicit request still wins: this is a default, not a refusal.
     explicit = yaml.safe_load(
         TrainingConfigGenerator.generate_full_finetune_config(
-            run_name="r", base_model_path="M:/model/sensenova/x.safetensors",
+            run_name="r", base_model_path="Z:/model/sensenova/x.safetensors",
             output_dir="o", dataset_path="d", total_steps=10,
             train_text_encoder=True,
         )

@@ -28,7 +28,7 @@ not asserted from memory):
    ``num_key_value_heads`` is absent from its config, so its qkv_proj splits
    evenly in three, unlike the language model's).
 
-Numerically verified against the real snapshot (``M:/model/minimax-music3``):
+Numerically verified against the real snapshot (``<MODEL_ROOT>/minimax-music3``):
 every per-layer split tensor (q/k/v/gate/up, both the language model and the
 depth decoder) and both vocab-table rows (``embed_tokens_prefill`` /
 ``embed_tokens_audio`` against ``official/language_model``'s single

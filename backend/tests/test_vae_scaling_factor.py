@@ -111,7 +111,7 @@ def _write_bare_vae_file(path: Path) -> str:
 def _write_stock_ldm_vae_file(path: Path) -> str:
     """The shape a REAL stock ``sdxl_vae.safetensors`` has.
 
-    Measured on M:/model/sdxl/VAE (250 keys): its top-level prefixes are
+    Measured on `<MODEL_ROOT>/sdxl/VAE` (250 keys): its top-level prefixes are
     ``decoder`` / ``encoder`` / ``model_ema`` / ``post_quant_conv`` /
     ``quant_conv``. The ``model_ema.*`` block is why the original allow-list
     classifier called this file a FULL CHECKPOINT and skipped the repair
@@ -385,7 +385,7 @@ class UninspectableFileTest(unittest.TestCase):
 
     # Nothing is read from disk: _is_bare_vae_single_file answers None from the
     # extension alone, which is the branch under test.
-    CKPT = "M:/model/sd15/some_vae.ckpt"
+    CKPT = "Z:/model/sd15/some_vae.ckpt"
 
     def test_matching_arch_is_accepted_without_writing(self):
         vae = _tiny_vae(SD15_SCALING)

@@ -18,8 +18,8 @@ header-only (dtype/shape round-trip, no tensor data re-read).
 USAGE
 -----
     venv/Scripts/python.exe subapps/sensenova_convert/convert_sensenova.py \\
-        --source D:/sensenova_staging/base \\
-        --output M:/model/sensenova/sensenova_int8.safetensors \\
+        --source <STAGING_ROOT>/sensenova/base \\
+        --output <MODEL_ROOT>/sensenova/sensenova_int8.safetensors \\
         --wait-for-download
 """
 

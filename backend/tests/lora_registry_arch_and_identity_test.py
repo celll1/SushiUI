@@ -5,10 +5,10 @@ metadata-derived recommendations.
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/lora_registry_arch_and_identity_test.py -v
 
-Two real MiniMax-H3 LoRA files live OUTSIDE the repo at
-``M:/model/minimax_h3/loras``; tests that need them skip cleanly (with a
-message) when absent instead of failing the suite on a machine without that
-model.
+Two real MiniMax-H3 LoRA files live OUTSIDE the repo, under the model tree
+`model_root.py` resolves (``<MODEL_ROOT>/minimax_h3/loras``); tests that need
+them skip cleanly (with a message) when absent instead of failing the suite on
+a machine without that model.
 """
 
 from __future__ import annotations
@@ -30,12 +30,15 @@ from core.extensions.lora_manager import (  # noqa: E402
     classify_lora_keys,
 )
 
-MINIMAX_H3_LORA_NO_METADATA = (
-    r"M:\model\minimax_h3\loras"
-    r"\minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors"
+from model_root import model_path  # noqa: E402
+
+_MINIMAX_H3_LORA_DIR = ("minimax_h3", "loras")
+MINIMAX_H3_LORA_NO_METADATA = model_path(
+    *_MINIMAX_H3_LORA_DIR,
+    "minimax_h3_fl2v_lightx2v_turbo_4step_v0.1_comfy_resized_avg_rank_21_bf16.safetensors",
 )
-MINIMAX_H3_LORA_WITH_STUDENT_STEPS = (
-    r"M:\model\minimax_h3\loras\minimax_h3_fl2va_4step_lora.safetensors"
+MINIMAX_H3_LORA_WITH_STUDENT_STEPS = model_path(
+    *_MINIMAX_H3_LORA_DIR, "minimax_h3_fl2va_4step_lora.safetensors"
 )
 
 # A real image LoRA that ships in the repo's configured lora/ dir (SDXL,

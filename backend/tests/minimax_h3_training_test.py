@@ -47,7 +47,7 @@ class _FakeTrainer:
     """The narrow surface `normalize_dtypes` / the batch guard read."""
 
     def __init__(self, weight_dtype, training_dtype, use_grad_scaler=False, batch_size=1,
-                 model_path="M:/model/minimax_h3"):
+                 model_path="Z:/model/minimax_h3"):
         self.log_prefix = "[test]"
         self.model_path = model_path
         self.weight_dtype = weight_dtype
@@ -131,7 +131,7 @@ def test_train_runner_treats_minimax_h3_as_bf16_native():
     Path-name branch only -- no checkpoint is read, so this is a pure string
     test. Reverting the `_is_bf16_native_base_model` change makes it False and
     the UI/runner hand the trainer fp32."""
-    assert _is_bf16_native_base_model("M:/model/minimax_h3") is True
+    assert _is_bf16_native_base_model("Z:/model/minimax_h3") is True
     assert _is_bf16_native_base_model("/models/MiniMax-H3/fl2va.safetensors") is True
     # Negative control: an unrelated path must not be swept in by the substrings.
     assert _is_bf16_native_base_model("/models/sdxl/base.safetensors") is False

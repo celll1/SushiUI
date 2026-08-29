@@ -7342,7 +7342,6 @@ class BaseTrainer(ABC):
         arch_name = getattr(arch, "name", None)
         resolution = resolve_and_check(self.config, arch=arch_name)
         for warning in resolution.warnings:
-            from core.training.training_events import emit_training_warning
             emit_training_warning(warning, code="cfg_uncond_drop_rate",
                                   prefix=self.log_prefix)
         rate = resolution.rate
@@ -7356,6 +7355,29 @@ class BaseTrainer(ABC):
                 f"declares no cfg_null_stage, so no aligned null condition can "
                 f"be built for it"
             )
+        if rate and arch_name == "minit2i":
+            # MiniT2I is the one architecture whose null predates the shared
+            # mechanism, so its rate can be unchanged while what the rate DOES
+            # changed underneath a resumed run. The deprecation warning above
+            # says "the run uses 0.1", which on its own reads as "nothing
+            # moved". Both differences are stated because neither is visible
+            # from the config: the config that produces them is byte-identical
+            # to the one that produced the old behaviour.
+            mnt = int(self.config.get("multi_noise_timesteps", 1) or 1)
+            emit_training_warning(
+                f"MiniT2I aligned-null draw changed: the label is now drawn "
+                f"once per assembled batch and reused by every MNT transform "
+                f"(previously redrawn each MNT iteration), and from the CPU RNG "
+                f"(previously CUDA). At multi_noise_timesteps={mnt} this "
+                + ("changes the objective at the same nominal rate, since an "
+                   "item can no longer be null on one pass and conditional on "
+                   "the next. "
+                   if mnt > 1 else
+                   "leaves the objective unchanged. ")
+                + f"A resumed seeded run does not reproduce its previous drop "
+                  f"pattern either way.",
+                code="cfg_uncond_drop_rate", prefix=self.log_prefix)
+
         self._cfg_null_drop_rate_resolved = rate
         return rate
 
@@ -13974,12 +13996,20 @@ class BaseTrainer(ABC):
                     # redrawn: a second draw here would give the encode-stage
                     # architectures' already-built prefixes a different label
                     # than the one they were built from.
+                    # A misaligned label would train the wrong items against the
+                    # null, so the batch is dropped rather than used -- but it is
+                    # dropped like every other unusable batch, not by aborting a
+                    # run that may be days old. The skip is counted and warned so
+                    # it cannot pass as a healthy step.
                     if cfg_drop_mask is not None and cfg_drop_mask.numel() != batch_size:
-                        raise RuntimeError(
+                        emit_training_warning(
                             f"cfg_drop_mask carries {cfg_drop_mask.numel()} labels "
                             f"for a batch of {batch_size}; the per-item label lost "
-                            f"its alignment during batch assembly"
-                        )
+                            f"its alignment during batch assembly. Batch skipped.",
+                            code="cfg_null_mask_misaligned", prefix=self.log_prefix)
+                        global_step += multi_noise_timesteps
+                        self._batches_skipped += 1
+                        continue
 
                     # ============================================================
                     # MNT loop: Process same batch with different noise-timesteps

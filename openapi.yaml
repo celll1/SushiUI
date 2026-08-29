@@ -527,12 +527,33 @@ paths:
       tags: [Schema]
       responses:
         '200':
-          description: Map of training parameter name to default value
+          description: |
+            Map of training parameter name to default value, plus the one
+            non-parameter member `_sample_defaults_by_arch`. The underscore
+            marks it as not a request field: the frontend strips it before
+            applying the rest as parameter defaults (`StartupContext.tsx`), so
+            a client that treats every key as a parameter would send a field
+            `TrainingRunCreateRequest` does not define.
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: true
+                properties:
+                  _sample_defaults_by_arch:
+                    type: object
+                    description: |
+                      Architecture name -> the training-preview defaults that an
+                      OMITTED request field resolves to for that architecture
+                      (`TRAINING_SAMPLE_DEFAULTS_BY_ARCH`). `_default` carries
+                      the fallback for architectures with no entry. Not a
+                      training parameter; see the response description.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      _default: {sample_steps: 28, sample_cfg_scale: 7.0}
+                      sensenova: {sample_steps: 50, sample_cfg_scale: 4.0}
   /schema/tagger-training-defaults:
     get:
       summary: Get default parameter values for tagger training
@@ -18255,7 +18276,7 @@ components:
           example: 1
         optimizer:
           type: string
-          default: "adamw"
+          default: "adamw8bit"
           description: |
             Optimizer type, resolved by
             `core/training/optimizer_factory.OptimizerFactory`: `adamw`,

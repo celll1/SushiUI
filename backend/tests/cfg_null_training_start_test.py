@@ -168,3 +168,90 @@ def test_the_preflight_runs_before_the_scan_and_before_any_trainer(monkeypatch):
         "run.base_model_path")
     assert call < _TRAIN_RUNNER_SOURCE.index('print(f"[TrainRunner] Loading {len(dataset_configs)}')
     assert call < _TRAIN_RUNNER_SOURCE.index("trainer = LoRATrainer(")
+
+
+# ---------------------------------------------------------------------------
+# The MiniT2I draw change: same rate, different mechanism
+# ---------------------------------------------------------------------------
+# 05f8806a moved MiniT2I's label from a per-MNT-iteration CUDA draw to one CPU
+# draw per assembled batch. Neither difference is visible from the config -- a
+# resumed run's YAML is byte-identical to the one that produced the old
+# behaviour -- and the deprecation warning that fires for a legacy config says
+# "the run uses 0.1", which reads as "nothing moved". These pin the notice.
+
+
+class _StubLensArch:
+    name = "lens"
+    cfg_null_stage = "collated"
+
+
+def _drain(capsys):
+    return capsys.readouterr().out
+
+
+def test_minit2i_is_told_the_draw_moved_to_once_per_batch(capsys):
+    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 1})
+    assert trainer.cfg_null_drop_rate() == 0.1
+    out = _drain(capsys)
+    assert "once per assembled batch" in out
+    assert "CPU RNG" in out
+
+
+def test_minit2i_is_told_the_objective_changes_when_mnt_exceeds_one(capsys):
+    """At MNT > 1 an item could previously be null on one pass and conditional
+    on the next; now it is one or the other for the whole batch."""
+    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 3})
+    trainer.cfg_null_drop_rate()
+    out = _drain(capsys)
+    assert "multi_noise_timesteps=3" in out
+    assert "changes the objective" in out
+
+
+def test_minit2i_at_mnt_one_is_told_the_objective_did_not_change(capsys):
+    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 1})
+    trainer.cfg_null_drop_rate()
+    assert "leaves the objective unchanged" in _drain(capsys)
+
+
+def test_a_legacy_key_config_gets_the_draw_notice_too(capsys):
+    """The path an actually-resumed pre-change run takes: the generator wrote
+    minit2i_label_drop_rate into every config it produced."""
+    trainer = _StubTrainer(**{LEGACY_KEY: 0.1, "multi_noise_timesteps": 2})
+    assert trainer.cfg_null_drop_rate() == 0.1
+    out = _drain(capsys)
+    assert "deprecated" in out
+    assert "once per assembled batch" in out
+
+
+def test_no_draw_notice_for_another_architecture(capsys):
+    """Lens and SenseNova have no pre-change behaviour to diverge from."""
+    trainer = _StubTrainer(**{CFG_KEY: 0.1})
+    trainer.arch = _StubLensArch()
+    assert trainer.cfg_null_drop_rate() == 0.1
+    assert "once per assembled batch" not in _drain(capsys)
+
+
+def test_no_draw_notice_when_the_mechanism_is_off(capsys):
+    trainer = _StubTrainer(**{CFG_KEY: 0.0})
+    assert trainer.cfg_null_drop_rate() == 0.0
+    assert "once per assembled batch" not in _drain(capsys)
+
+
+# ---------------------------------------------------------------------------
+# A misaligned label drops its batch; it does not abort the run
+# ---------------------------------------------------------------------------
+
+_BASE_TRAINER_SOURCE = (BACKEND / "core" / "training"
+                        / "base_trainer.py").read_text(encoding="utf-8")
+
+
+def test_a_misaligned_mask_skips_the_batch_rather_than_killing_the_run():
+    """Training the wrong items against the null is not acceptable, so the
+    batch is dropped -- but by the same skip path as every other unusable
+    batch, because the alternative aborts a run that may be days old."""
+    site = _BASE_TRAINER_SOURCE.index("cfg_drop_mask.numel() != batch_size")
+    window = _BASE_TRAINER_SOURCE[site:site + 900]
+    assert "raise RuntimeError" not in window
+    assert "cfg_null_mask_misaligned" in window
+    assert "self._batches_skipped += 1" in window
+    assert "continue" in window

@@ -71,3 +71,29 @@ Not established by those checks:
 Report measurements with architecture half, resolution, token count, optimizer,
 offload settings, checkpoint format, and hardware. Raw campaigns and future
 optimization proposals belong in the ignored local working area.
+
+## Measured footprint of the both-halves run (U-2-5)
+
+These figures are quoted by the `text_encoder_training` advisory that
+`GET /schema/arch-capabilities` serves, so they live here rather than only in
+the working area; a test pins the two against each other.
+
+Conditions: real plain-int8 checkpoint, `SenseNovaFullParameterAdapter`, 64px,
+3 steps, adafactor, batch 1, accumulation 1, bf16, gradient checkpointing on,
+`blocks_to_swap=0`, one process per arm, on a 48 GB card. The probe caps itself
+with `set_per_process_memory_fraction(0.72)` = **34.551 GiB**, so percentages
+below are against that cap unless the card is named.
+
+| | understanding half (294 Linears) | both halves (588 Linears) |
+|---|---|---|
+| VRAM peak allocated | 26.2571 GiB (76.0% of the cap) | **32.6606 GiB** (94.5% of the cap, 68% of the card) |
+| VRAM peak reserved | 26.5508 GiB | 33.9063 GiB |
+| host RSS peak | 32.101 GiB | **51.965 GiB** |
+| saved checkpoint | 25.129 GiB (`mixed`) | 32.682 GiB (`mixed` requested, written as `bf16`) |
+
+A second both-halves run whose working set matched to three decimals peaked at
+**61.67 GiB** host RSS, so the host requirement is quoted as a 51.97-61.67 GiB
+range and should not be stated more precisely than tens of GiB.
+
+These are footprint measurements. No quality or convergence claim attaches to
+any of them.

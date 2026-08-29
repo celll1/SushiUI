@@ -16,7 +16,7 @@ merged here under a name that states what the directory actually is.
 |---|---|
 | One-time DB migrations and backfills | `backend/migrations/` |
 | The backend test suite | `backend/tests/` |
-| Schema/DB migration procedure | `docs/DATABASE_MIGRATION_GUIDE.md` |
+| Schema/DB migration procedure | `docs/guides/DATABASE_MIGRATION.md` |
 
 A script that the repository genuinely needs — one that another clone would
 have to run, or that documentation refers to — does not belong here. Put it in
@@ -25,8 +25,16 @@ the code.
 
 ## Layout
 
-- `local/` — ad-hoc scripts, analysis and reports
+- `local/strategy/` — roadmaps, future direction and implementation proposals
+- `local/research/` — paper notes, exploratory comparisons and source excerpts
+- `local/measurements/` — raw benchmarks and machine-specific measurements
+- `local/docs/` — drafts and historical documents retained for local reference
 - `local/tests/` — scratch tests and debugging utilities
+
+Tracked documentation policy and the public taxonomy live in
+`docs/README.md`. A current behavior contract must not exist only under
+`local/`; extract it into a tracked guide, reference, decision, audit, or
+code-adjacent document first.
 
 Note that several filename patterns are ignored repository-wide regardless of
 directory (`test_*.py`, `verify_*.py`, `check_*.py`, `debug_*.py`,

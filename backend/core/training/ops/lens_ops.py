@@ -369,6 +369,11 @@ def train_step(
     mse_loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float(), reduction="mean")
     loss = mse_loss
 
+    # Per-item MSE for the CFG-null loss split. Lens batches can be mixed, and
+    # this reduction has already thrown the per-item values away. No-op unless
+    # the run draws null labels over a batch larger than one.
+    trainer.stash_cfg_null_per_sample_loss(v_pred, v_target)
+
     pred_loss_value = mse_loss.item()
     recon_loss_value = 0.0
 

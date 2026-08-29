@@ -5834,7 +5834,26 @@ paths:
     get:
       tags: [training]
       summary: Get training metrics from the database
-      description: Returns metrics with uniform step sampling from 0 to the latest step.
+      description: |
+        Returns metrics with uniform step sampling from 0 to the latest step.
+
+        `extra_metrics` carries the bespoke per-step scalars a run actually
+        emitted, `{name: MetricPoint[]}`, with `extra_metric_defs` giving each
+        present name its chart label/colour from
+        `core/training/metric_registry.EXTRA_METRIC_DEFS`. The set of names is
+        open by design — a trainer adds one with `log_extra_metric()` and no
+        schema changes here.
+
+        The loss and grad-norm monitors' CFG-condition filter reads four of
+        those names, emitted only by a run with a nonzero
+        `cfg_uncond_drop_rate`: `loss_null` / `loss_cond` split the step's loss
+        by whether each item was trained against the architecture's inference
+        CFG null or its own caption, and `gnorm_null` / `gnorm_cond` label the
+        optimizer step's total gradient norm — present only when every item
+        behind that norm was drawn the same way, since a norm covers the whole
+        accumulated batch and cannot be split. `cfg_null_frac` reports the
+        fraction drawn null, which is what distinguishes a full split from one
+        side of a batch that happened to be homogeneous.
       parameters:
         - name: run_id
           in: path

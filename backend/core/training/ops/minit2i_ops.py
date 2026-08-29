@@ -346,6 +346,11 @@ def train_step(
     v_pred = (x0_pred.float() - x_t.float()) / denom.float()
     loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
 
+    # Per-item MSE for the CFG-null loss split (see lens_ops for the rationale).
+    # Taken before the REPA term is added below, to match pred_loss_value --
+    # which is what the chart's "Loss" series carries.
+    trainer.stash_cfg_null_per_sample_loss(v_pred, target)
+
     pred_loss_value = loss.item()
     # Reconstruction loss (monitoring only, no gradients): unweighted MSE of the
     # predicted clean image (x0) vs the target image. This is a cleaner quality

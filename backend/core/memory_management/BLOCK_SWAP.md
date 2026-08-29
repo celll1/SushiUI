@@ -250,7 +250,7 @@ torch.cuda.current_stream().wait_stream(self.transfer_stream)
 
 - [Ring Buffer Allocator](./RING_BUFFER_OPTIMIZER.md) - Optimizer state管理
 - [MODEL_ARCHITECTURES.md](../training/MODEL_ARCHITECTURES.md) - モデルアーキテクチャ詳細
-- [VRAM_OPTIMIZATION.md](../VRAM_OPTIMIZATION.md) - 総合VRAM最適化ガイド
+- [../vram_optimization.py](../vram_optimization.py) - コンポーネント単位のGPU/CPU移動
 
 ---
 

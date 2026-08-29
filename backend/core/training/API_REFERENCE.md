@@ -1543,4 +1543,4 @@ bucket_manager = BucketManager(
 ## Related Documentation
 
 - [MODEL_ARCHITECTURES.md](MODEL_ARCHITECTURES.md) - Model architecture specifications (SD1.5, SDXL, Z-Image)
-- [../../CLAUDE.md](../../CLAUDE.md) - Development guidelines for Claude Code
+- [../../../AGENTS.md](../../../AGENTS.md) - Task router and development guidelines

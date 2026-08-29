@@ -12866,6 +12866,21 @@ class BaseTrainer(ABC):
                     _sdxl_microcond_active = self.is_sdxl and bool(self.config.get("sdxl_micro_conditioning", True))
                     self._last_micro_cond = None
 
+                    # A trainable TE at MNT>1 re-encodes every caption once per MNT
+                    # iteration (the graph is freed by each backward), so the
+                    # batch-assembly encode below would be built, kept alive for the
+                    # whole window, and then discarded unread. Skip it -- and the
+                    # collation that consumes it -- when that is guaranteed.
+                    # SenseNova is excluded: its prefix takes a separate branch that
+                    # never fills these lists, and _sensenova_mnt_conditioning reuses
+                    # the assembly prefix for iteration 0.
+                    _te_recompute_per_mnt = (
+                        text_encoder_trainable
+                        and multi_noise_timesteps > 1
+                        and text_encoding_mode == "onthefly_gpu"
+                        and not self.is_sensenova
+                    )
+
                     # Flag to track if batch should be skipped due to corrupted image
                     batch_has_corrupted_image = False
                     corrupted_image_path = None
@@ -13176,12 +13191,20 @@ class BaseTrainer(ABC):
                                 auxiliary_data_list.append(auxiliary)
 
                         elif text_encoding_mode == "onthefly_gpu":
-                            # Encode on GPU without cache
-                            embeddings, auxiliary = self.encode_caption(
-                                caption, requires_grad=True, lyrics=item.get("lyrics", "")
-                            )
-                            text_embeddings_list.append(embeddings)
-                            auxiliary_data_list.append(auxiliary)
+                            if _te_recompute_per_mnt:
+                                # Dead work: the MNT loop re-encodes this caption on
+                                # every iteration, including the first. Placeholders
+                                # keep these lists index-aligned with latents_list so
+                                # the size-mismatch filter below still works.
+                                text_embeddings_list.append(None)
+                                auxiliary_data_list.append(None)
+                            else:
+                                # Encode on GPU without cache
+                                embeddings, auxiliary = self.encode_caption(
+                                    caption, requires_grad=True, lyrics=item.get("lyrics", "")
+                                )
+                                text_embeddings_list.append(embeddings)
+                                auxiliary_data_list.append(auxiliary)
 
                         # ============================================================
                         # Reference Image Latent Encoding (FLUX.2 only)
@@ -13431,7 +13454,12 @@ class BaseTrainer(ABC):
 
                     # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                     # IMPORTANT: Pad embeddings to same sequence length if chunking is used
-                    if text_embeddings_list:
+                    if _te_recompute_per_mnt:
+                        # Assembly encode was skipped; the list holds placeholders. The
+                        # MNT loop builds mnt_text_embeddings from scratch every
+                        # iteration, so there is nothing to collate here.
+                        text_embeddings = None
+                    elif text_embeddings_list:
                         # Per-item encoders (Anima/Z-Image) drop the batch dim and
                         # return 2D [L, D]; the collation below assumes 3D [1, L, D]
                         # (it reads shape[1] as seq and cats on dim 0). Without this
@@ -13472,7 +13500,10 @@ class BaseTrainer(ABC):
                     # These are also reused across MNT iterations
                     attention_mask = None
                     pooled_embeddings = None
-                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+                    if _te_recompute_per_mnt:
+                        # Placeholders only -- the MNT loop rebuilds aux per iteration.
+                        pass
+                    elif self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                     elif self.is_anima:
                         # Anima aux is a per-item dict {source_mask, t5_input_ids,
@@ -13592,6 +13623,10 @@ class BaseTrainer(ABC):
                     # IMPORTANT: When Text Encoder is trainable AND MNT > 1, we need to
                     # re-encode text embeddings for each MNT iteration to maintain gradient flow.
                     # Otherwise, detach() would cut the gradient to Text Encoder.
+                    # Same predicate as _te_recompute_per_mnt, minus its SenseNova
+                    # exclusion: SenseNova never reaches this branch (its conditioning
+                    # is built by _sensenova_mnt_conditioning above), so the two agree
+                    # everywhere this one is read.
                     need_recompute_text_embeddings = (
                         text_encoder_trainable and
                         multi_noise_timesteps > 1 and

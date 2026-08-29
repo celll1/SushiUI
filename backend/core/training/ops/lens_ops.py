@@ -219,6 +219,38 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     return latents
 
 
+def apply_cfg_null_collated(
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    drop_mask: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Rewrite the ``drop_mask`` rows of a collated Lens batch into the condition
+    its inference CFG uncond branch builds.
+
+    ``lens_pipeline_ops.encode_prompt`` builds that branch, for a blank negative,
+    as ``neg_features = [f.new_zeros(f.shape) for f in pos_features]`` and
+    ``neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)`` -- zeros shaped
+    like the POSITIVE encoding, at the positive's own sequence length. So the
+    rewrite is ``features[drop] = 0`` / ``mask[drop] = False`` and nothing else:
+    L stays the batch's own length (``_align_text_features`` is the identity when
+    the two sides already match), and the per-layer axis is untouched.
+
+    Out of place: both tensors belong to the assembled batch and are handed to
+    every MNT iteration, so an in-place write would leak one iteration's null
+    into the next.
+    """
+    if drop_mask is None:
+        return encoder_features, encoder_mask
+    selected = drop_mask.to(dtype=torch.bool)
+    if not bool(selected.any()):
+        return encoder_features, encoder_mask
+    features = encoder_features.clone()
+    features[selected.to(features.device)] = 0
+    mask = encoder_mask.clone()
+    mask[selected.to(mask.device)] = False
+    return features, mask
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -228,6 +260,7 @@ def train_step(
     profile_vram: bool = False,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Lens DiT training step (flow-matching, velocity prediction).
 
@@ -253,6 +286,14 @@ def train_step(
     latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
     encoder_features = encoder_features.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
     encoder_mask = encoder_mask.to(device=trainer.device, non_blocking=True)
+
+    if cfg_drop_mask is not None:
+        # Aligned CFG null, applied AFTER the device/dtype moves (which may be
+        # identity no-ops that would have handed back the batch's own tensors)
+        # and BEFORE the per-layer conditioning list below. Routed through the
+        # declared handler hook so a stage mismatch raises.
+        encoder_features, encoder_mask = trainer.arch.apply_cfg_null_collated(
+            trainer, encoder_features, encoder_mask, cfg_drop_mask)
 
     batch_size = latents.shape[0]
 

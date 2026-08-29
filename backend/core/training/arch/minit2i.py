@@ -16,6 +16,11 @@ class MiniT2IArchHandler(ArchHandler):
     name = "minit2i"
     wiring = MINIT2I_WIRING
     pixel_align = 16  # GRID_ALIGN = patch_size(16); pixel-space patchify unit
+    # The inference uncond branch reuses the SAME text tensor with a zeroed mask
+    # (minit2i_pipeline_ops._predict_x0_cfg), so the aligned null is reachable by
+    # rewriting the already-collated conditioning. Mirrored for the API process
+    # by api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
+    cfg_null_stage = "collated"
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/minit2i_ops (shared with the base_trainer load-time
@@ -53,16 +58,28 @@ class MiniT2IArchHandler(ArchHandler):
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("minit2i.vae_decode: phase P5/P7")
 
+    def apply_cfg_null_collated(self, trainer, conditioning, auxiliary,
+                                drop_mask):
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.apply_cfg_null_collated(
+            conditioning, auxiliary, drop_mask)
+
     def train_step(self, trainer, ctx: TrainStepContext):
         # P6c: verbatim body in ops/minit2i_ops.train_step. ctx fields map 1:1 to
         # the previous train_step_minit2i kwargs bundle (mnt_latents is the
         # pixel-space image tensor; text_embeds/attention_mask carry FLAN-T5).
         from core.training.ops import minit2i_ops
+        text_embeds, attention_mask = ctx.text_embeddings, ctx.attention_mask
+        if ctx.cfg_drop_mask is not None:
+            # Collated-stage rewrite, out of place: these conditioning tensors
+            # are the batch's, reused by every MNT iteration.
+            text_embeds, attention_mask = self.apply_cfg_null_collated(
+                trainer, text_embeds, attention_mask, ctx.cfg_drop_mask)
         return minit2i_ops.train_step(
             trainer,
             images=ctx.latents,
-            text_embeds=ctx.text_embeddings,
-            attention_mask=ctx.attention_mask,
+            text_embeds=text_embeds,
+            attention_mask=attention_mask,
             timesteps=ctx.timesteps,
             profile_vram=ctx.profile_vram,
             debug_save_path=ctx.debug_save_path,

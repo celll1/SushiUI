@@ -96,6 +96,13 @@ class TrainStepContext:
     use_condition_images: bool = False
     condition_images: Optional[torch.Tensor] = None
 
+    # --- aligned CFG null condition (strategy §5) ---
+    # CPU boolean [B], sampled ONCE per assembled optimization batch before any
+    # MNT repetition, so every MNT transform of an item carries the same label,
+    # and sliced alongside the batch by the OOM micro-batching path. None when
+    # the run does not train an aligned null.
+    cfg_drop_mask: Optional[torch.Tensor] = None
+
     # --- debug / profiling (common) ---
     debug_save_path: Optional[Path] = None
     debug_captions: Optional[List[str]] = None

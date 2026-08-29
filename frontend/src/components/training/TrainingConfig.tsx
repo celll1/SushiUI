@@ -5836,17 +5836,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     id="minit2i-label-drop-rate"
-                    value={params.minit2i_label_drop_rate ?? minit2iLabelDropDefault ?? ""}
+                    value={params.minit2i_label_drop_rate ?? ""}
                     onChange={(e) => updateParam("minit2i_label_drop_rate", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("minit2i_label_drop_rate", undefined as any); }}
                     min={0}
                     max={1}
                     step="any"
+                    placeholder={minit2iLabelDropDefault !== undefined ? String(minit2iLabelDropDefault) : ""}
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Deprecated spelling of cfg_uncond_drop_rate. Cleared = not
-                    supplied, which resolves to {minit2iLabelDropDefault ?? "the backend default"}.
+                    Deprecated spelling of cfg_uncond_drop_rate. When both carry
+                    a value only cfg_uncond_drop_rate is sent; sending both is
+                    answered 400. Cleared = not supplied, which resolves to
+                    {" "}{minit2iLabelDropDefault ?? "the backend default"}.
                   </p>
                 </div>
 

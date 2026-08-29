@@ -1113,11 +1113,23 @@ _add_training_feature_unsupported(
 # module cannot import the trainer package. `cfg_null_resolver_test.py` pins the
 # two against each other.
 #
-# Every value is None today: the parameter surface exists, the mechanism does
-# not. An architecture is enabled by its HANDLER declaring a stage, and this
-# mirror plus the unsupported entries below following it.
+# An architecture is enabled by its HANDLER declaring a stage, with this mirror
+# and the unsupported entries below following it.
+_CFG_NULL_STAGES: Dict[str, str] = {
+    # MiniT2I's inference uncond branch is `u_text=text, u_mask=zeros_like(mask)`
+    # and MMJiT.forward replaces every masked text row with the learned
+    # mask_token, so the aligned null is a rewrite of the collated text MASK
+    # alone (core/models/minit2i/minit2i_pipeline_ops.py::_predict_x0_cfg).
+    "minit2i": "collated",
+    # Lens's inference uncond branch, when every negative is blank, is
+    # `neg_features = [f.new_zeros(f.shape) for f in pos_features]` with
+    # `neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)` at the POSITIVE's
+    # own sequence length (core/models/lens/lens_pipeline_ops.py::encode_prompt),
+    # so the aligned null is a rewrite of the collated features and mask.
+    "lens": "collated",
+}
 CFG_NULL_STAGE_BY_ARCH: Dict[str, Optional[str]] = {
-    arch: None for arch in sorted(TRAINING_DECLARED_ARCHS)
+    arch: _CFG_NULL_STAGES.get(arch) for arch in sorted(TRAINING_DECLARED_ARCHS)
 }
 
 _CFG_NULL_ABSENT_REASON = (

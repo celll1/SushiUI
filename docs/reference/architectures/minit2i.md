@@ -171,7 +171,7 @@ reading both forwards; there is no other consumer of `vec` in `mmjit.py`.
 | Pixel normalization | `[-1, 1]`, `arr/127.5 - 1` | `minit2i_pipeline_ops.image_to_tensor` / `tensor_to_image` |
 | Text embedding | FLAN-T5-Large `last_hidden_state`, `[B, prompt_length, 1024]`, padded to `max_length` | `minit2i_pipeline_ops.encode_prompt`, `MMJiTConfig.txt_input_size = 1024`, `prompt_length = 256`, `MINIT2I_WIRING.te_out_dim = 1024` |
 | Pooled / auxiliary cond | `context.mean(dim=1)` → `pooled_embedder`, summed with the timestep embedding into `vec` — **not consumed downstream** | `MMJiT.forward` |
-| Uncond expression | text rows replaced by `mask_token` where the mask is 0 | `MMJiT.forward`, `_predict_x0_cfg`, training `minit2i_label_drop_rate` |
+| Uncond expression | text rows replaced by `mask_token` where the mask is 0 | `MMJiT.forward`, `_predict_x0_cfg`, training `cfg_uncond_drop_rate` (`minit2i_ops.apply_cfg_null_collated`) |
 | Positional encoding | image: 2D sincos absolute (row-major `h*gw + w`) **plus** 2D RoPE in-block; text: 1D RoPE. `rotate_half` layout, `theta = 10000` | `get_2d_sincos_pos_embed`, `VisionRotaryEmbeddingFast`, `TextRotaryEmbedding1D`, `rotate_half` |
 | RoPE axes | image `h` and `w` split the head dim in half each (`dim = head_dim // 2`, `arange(0, dim, 2)`); text uses the full head dim | `VisionRotaryEmbeddingFast.__init__/forward`, `TextRotaryEmbedding1D.forward` |
 | Timestep convention | `t ∈ (0, 1)` with **`t = 1` data, `t = 0` noise**; inference grid `linspace(0, 1, steps+1)`, integrated forward | `MiniT2IFlowMatchScheduler.get_inference_timesteps`, `minit2i_pipeline_ops.denoise_loop` |
@@ -258,9 +258,13 @@ FLAN-T5 and (latent variants only) the VAE.
 Training step (`minit2i_ops.train_step`): flow noising in the model's own convention, MSE on
 **velocity** (`v_pred = (x0_pred - x_t)/clamp(1-t, 0.05)` against `(images - x_t)/…`), with an
 unweighted x0 reconstruction MSE reported for monitoring only. CFG label drop
-(`minit2i_label_drop_rate`, default 0.1) zeroes the attention mask for the dropped rows, which is
-the same `mask_token` uncond inference uses. `vae_encode` short-circuits: for pixel-space the
-"latent" IS the `[-1, 1]` RGB tensor.
+(`cfg_uncond_drop_rate`; omitted resolves to 0.1, and `minit2i_label_drop_rate` is the deprecated
+spelling) zeroes the attention mask for the dropped rows, which is the same `mask_token` uncond
+inference uses. The Bernoulli is drawn ONCE per assembled optimization batch by
+`BaseTrainer.sample_cfg_drop_mask`, before the MNT loop, and the rewrite happens in
+`MiniT2IArchHandler.apply_cfg_null_collated` (`cfg_null_stage = "collated"`) — `train_step` itself
+draws nothing. `vae_encode` short-circuits: for pixel-space the "latent" IS the `[-1, 1]` RGB
+tensor.
 
 Refusals: `MiniT2IFullParameterAdapter` calls
 `base_adapter.reject_quantized_base(trainer.transformer, model_label="MiniT2I")` twice (in

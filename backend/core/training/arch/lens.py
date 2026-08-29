@@ -17,6 +17,12 @@ class LensArchHandler(ArchHandler):
     wiring = LENS_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
     text_seq_axis = 2  # encode_prompt returns [1, num_layers, L, D]
+    # The inference uncond branch for a blank negative is zero features plus an
+    # all-false mask at the positive's own length
+    # (lens_pipeline_ops.encode_prompt), so the aligned null is reachable by
+    # rewriting the already-collated conditioning. Mirrored for the API process
+    # by api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
+    cfg_null_stage = "collated"
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/lens_ops (shared with the base_trainer
@@ -52,6 +58,12 @@ class LensArchHandler(ArchHandler):
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("lens.vae_decode: phase P5/P7")
 
+    def apply_cfg_null_collated(self, trainer, conditioning, auxiliary,
+                                drop_mask):
+        from core.training.ops import lens_ops
+        return lens_ops.apply_cfg_null_collated(
+            conditioning, auxiliary, drop_mask)
+
     def train_step(self, trainer, ctx: TrainStepContext):
         # P6b: verbatim body in ops/lens_ops.train_step. encoder_features rides in
         # ctx.encoder_features, encoder mask in ctx.encoder_mask, latent geometry in
@@ -66,6 +78,8 @@ class LensArchHandler(ArchHandler):
             profile_vram=ctx.profile_vram,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
+            # Applied inside ops.train_step, after the device/dtype moves.
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

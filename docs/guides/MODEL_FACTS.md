@@ -31,19 +31,23 @@ them. No subjective performance claims.
   ControlNet, or frame inputs likewise remain conditions rather than being
   marginalized out.
 - **Dedicated null representation:** MiniT2I's correct CFG control is
-  `minit2i_label_drop_rate`, which reproduces inference's zero text mask.
+  `cfg_uncond_drop_rate` (`minit2i_label_drop_rate` is the deprecated spelling),
+  which reproduces inference's zero text mask.
   `MMJiT.forward` then replaces every text row with the same learned mask token,
   so this is exact rather than approximate. Dataset-level empty-caption dropout
   is not equivalent: FLAN-T5 retains an active EOS row. The current dedicated
-  label-drop default is 0.1.
+  label-drop default is 0.1. Lens shares the same control: an explicit
+  `cfg_uncond_drop_rate` rewrites the selected rows to zero encoder features and
+  an all-false encoder mask, which is what `lens_pipeline_ops.encode_prompt`
+  builds when every negative is blank. Its default is 0.0, so omitting the key
+  changes nothing.
 - **Mismatched null representation:** SenseNova's training empty-caption prefix
   differs from its inference uncond prefix **and** the prefix-length-dependent
-  image-token t indexes differ. The inference null has no system block. Lens
-  trains an empty chat-template condition while inference uses zero features and
-  an all-false text mask, which structurally removes text keys from image
-  attention. Neither path supports an exact implicit-classifier claim after
-  fine-tuning. SenseNova's served `cfg_norm="global"` also makes the final field
-  nonlinear.
+  image-token t indexes differ. The inference null has no system block. It does
+  not support an exact implicit-classifier claim after fine-tuning, and its
+  served `cfg_norm="global"` also makes the final field nonlinear. Lens's
+  dataset-level caption dropout is likewise not this null: it encodes an empty
+  chat-template condition, which keeps text keys in image attention.
 - **Distilled / no twin CFG:** MiniMax-H3 and ACE-Step 1.5 use single-forward
   guidance-distilled inference. H3 additionally rejects empty prompts. Distilled
   FLUX.2 and Krea2 also must not be analysed as their base two-branch routes.

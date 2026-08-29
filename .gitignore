@@ -207,24 +207,8 @@ backend/.port_info
 frontend/.package_hash
 user_tag_additions.json
 
-# ドキュメント（個別に除外）
-docs/DATASET_VIEWER_DESIGN.md
-docs/DEVELOPMENT.md
-docs/TRAINING_REQUIREMENTS.md
-docs/sd-app-requirements.md
-docs/FLOW_MATCHING_LOSS_ANALYSIS.md
-docs/FLOW_MATCHING_LOSS_RELATIONSHIPS.md
-docs/SLA_ANALYSIS_REPORT.md
-docs/ZIMAGE_NOISE_CONSISTENCY_ANALYSIS.md
-docs/DIT_DDPM_FEASIBILITY_ANALYSIS.md
-docs/METADATA_ANALYSIS_SUMMARY.md
-docs/NEXT_STEPS_UNIFIED_FRAMEWORK.md
-docs/UNIFIED_FRAMEWORK_METADATA_STRATEGY.md
-docs/UNIFIED_TRAINING_FRAMEWORK_DESIGN.md
-docs/UNIFIED_TRAINING_FRAMEWORK_TERMINOLOGY.md
-docs/VPRED_VS_FLOW_MATCHING_ANALYSIS.md
-docs/SAMPLE_GENERATION_ANALYSIS.md
-docs/VRAM_ANALYSIS_REPORT.md
+# Non-public documentation belongs under local/ rather than being hidden among
+# tracked docs. See docs/README.md and local/README.md.
 CLAUDE.md
 memo.md
 **/memo.md
@@ -244,12 +228,7 @@ archive/
 CFG_2PASS_IMPLEMENTATION_PLAN.md
 DEUS_TRAINING_IMPLEMENTATION_PLAN.md
 update_cfg_two_pass.py
-docs/MIXED_PRECISION_COMPARISON.md
-docs/FLUX2_IMAGE_EDIT_IMPLEMENTATION.md
-docs/FLUX2_IMAGE_EDIT_HYBRID_ANALYSIS.md
 run_tagger_inference.py
-docs/custom_loss_specs.md
-docs/TAGGER_DETAIL_SIDECHAIN_DESIGN.md
 tq-attention/
 
 # Scratch/working dir for throwaway smoke tests, research recipes, and generated

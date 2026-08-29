@@ -503,11 +503,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const saveEveryUnit = (params.save_every_unit ?? "steps") as "steps" | "epochs";
   const maxStepSavesToKeep = params.max_step_saves_to_keep ?? null;
   const maxOptimizerSavesToKeep = params.max_optimizer_saves_to_keep ?? DEFAULT_PARAMS.max_optimizer_saves_to_keep;
-  const sampleEvery = params.sample_every ?? 100;
+  const sampleEvery = params.sample_every ?? DEFAULT_PARAMS.sample_every!;
   const resumeFromCheckpoint = params.resume_from_checkpoint ?? null;
 
   // Sample generation (Phase 3e: migrated to params)
-  const samplePrompts = params.sample_prompts ?? [];
+  const samplePrompts = params.sample_prompts ?? DEFAULT_PARAMS.sample_prompts ?? [];
   const setSamplePrompts = useCallback((next: SamplePrompt[] | ((prev: SamplePrompt[]) => SamplePrompt[])) => {
     setParams(prev => ({
       ...prev,
@@ -516,13 +516,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         : next,
     }));
   }, []);
-  const sampleWidth = params.sample_width ?? 1024;
-  const sampleHeight = params.sample_height ?? 1024;
-  const sampleSteps = params.sample_steps ?? 28;
-  const sampleCfgScale = params.sample_cfg_scale ?? 7.0;
-  const sampleSampler = params.sample_sampler ?? "euler";
-  const sampleScheduleType = params.sample_schedule_type ?? "uniform";
-  const sampleSeed = params.sample_seed ?? -1;
+  const sampleWidth = params.sample_width ?? DEFAULT_PARAMS.sample_width!;
+  const sampleHeight = params.sample_height ?? DEFAULT_PARAMS.sample_height!;
+  const sampleSteps = params.sample_steps ?? DEFAULT_PARAMS.sample_steps!;
+  const sampleCfgScale = params.sample_cfg_scale ?? DEFAULT_PARAMS.sample_cfg_scale!;
+  const sampleSampler = params.sample_sampler ?? DEFAULT_PARAMS.sample_sampler!;
+  const sampleScheduleType = params.sample_schedule_type ?? DEFAULT_PARAMS.sample_schedule_type!;
+  const sampleSeed = params.sample_seed ?? DEFAULT_PARAMS.sample_seed!;
   const [conditionImagePreviews, setConditionImagePreviews] = useState<Record<number, string>>({});
   const conditionImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const [referenceImagePreviews, setReferenceImagePreviews] = useState<Record<number, string>>({});
@@ -6592,7 +6592,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="0"
               value={sampleEvery}
-              onChange={(e) => updateParam("sample_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_every", 100); }}
+              onChange={(e) => updateParam("sample_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_every", DEFAULT_PARAMS.sample_every); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="e.g., 100 (0 to disable)"
             />
@@ -6830,7 +6830,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleWidth}
-                onChange={(e) => updateParam("sample_width", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_width", 1024); }}
+                onChange={(e) => updateParam("sample_width", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_width", DEFAULT_PARAMS.sample_width); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -6842,7 +6842,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleHeight}
-                onChange={(e) => updateParam("sample_height", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_height", 1024); }}
+                onChange={(e) => updateParam("sample_height", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_height", DEFAULT_PARAMS.sample_height); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -6853,7 +6853,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => updateParam("sample_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_steps", 28); }}
+                onChange={(e) => updateParam("sample_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_steps", DEFAULT_PARAMS.sample_steps); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -6865,7 +6865,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="30"
                 step="any"
                 value={sampleCfgScale}
-                onChange={(e) => updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", 7.0); }}
+                onChange={(e) => updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", DEFAULT_PARAMS.sample_cfg_scale); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -6905,7 +6905,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <input
               type="number"
               value={sampleSeed}
-              onChange={(e) => updateParam("sample_seed", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_seed", 42); }}
+              onChange={(e) => updateParam("sample_seed", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_seed", DEFAULT_PARAMS.sample_seed); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="-1 for random"
             />

@@ -56,6 +56,7 @@ def _kwargs(**overrides):
         sample_guidance_scale=4.0,
         sample_steps=4,
         sample_seed=1,
+        sample_sampler="euler",
         sample_schedule_type="uniform",
         global_step=0,
     )
@@ -104,6 +105,7 @@ def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
             "seed": "1",
             "width": "64",
             "height": "64",
+            "sampler": "euler",
             "schedule_type": "uniform",
             "condition_image_path": "condition.png",
             "reference_image_path": "reference.png",

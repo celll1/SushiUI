@@ -16,6 +16,9 @@ class AnimaArchHandler(ArchHandler):
     name = "anima"
     wiring = ANIMA_WIRING
     pixel_align = 16  # vae_scale(8) * patch_spatial(2); patchify asserts on non-/16 dims
+    # noisy_latents = (1-sigma)*latents + sigma*noise (ops/anima_ops.py train_step).
+    # sampler t=0 is clean.
+    timestep_convention = "t0"
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/anima_ops (shared with the base_trainer

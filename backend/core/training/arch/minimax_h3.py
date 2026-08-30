@@ -40,6 +40,10 @@ class MiniMaxH3ArchHandler(ArchHandler):
     #: Audio preprocessing token for the window-level clip record (video AND
     #: audio latents under one key).
     clip_audio_prep_version = MINIMAX_H3_AUDIO_PREP_VERSION
+    # ops/minimax_h3_ops.py: x_t = (1-sigma)*x0 + sigma*eps, sigma = shift_sigma(u,
+    # shift), monotonic increasing in the sampler draw u. sampler u=0 -> sigma=0
+    # -> x_t=x0 (clean); u=1 -> sigma=1 -> x_t=noise. sampler t=0 is clean.
+    timestep_convention = "t0"
 
     def load_components(self, trainer) -> None:
         from core.training.ops import minimax_h3_ops

@@ -18,6 +18,9 @@ class AceStepArchHandler(ArchHandler):
     # No spatial axis to align (audio latents are [B, T, 64]); keep the base
     # default (8) — it is never consulted for this arch (no still-image items).
     pixel_align = 8
+    # xt = (1-sigma)*latents + sigma*noise (ops/acestep_ops.py train_step; the
+    # vendored model's own x1=noise naming). sampler t=0 is clean.
+    timestep_convention = "t0"
 
     def load_components(self, trainer) -> None:
         from core.training.ops import acestep_ops

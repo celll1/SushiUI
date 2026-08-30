@@ -17,6 +17,9 @@ class LensArchHandler(ArchHandler):
     wiring = LENS_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
     text_seq_axis = 2  # encode_prompt returns [1, num_layers, L, D]
+    # noisy_latents = (1-sigma)*latents + sigma*noise (ops/lens_ops.py train_step).
+    # sampler t=0 is clean.
+    timestep_convention = "t0"
     # The inference uncond branch for a blank negative is zero features plus an
     # all-false mask at the positive's own length
     # (lens_pipeline_ops.encode_prompt), so the aligned null is reachable by

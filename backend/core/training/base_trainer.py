@@ -998,6 +998,31 @@ def get_target_from_prediction_type(
         raise ValueError(f"Unknown prediction_type: {prediction_type}")
 
 
+def log_timestep_distribution_median(log_prefix: str, timestep_sampler, convention: str) -> None:
+    """Diagnostic-only log line: which side (clean/noisy) the CONFIGURED
+    distribution's median falls on, per ``convention`` ("t0"/"t1", see
+    ``ArchHandler.resolve_timestep_convention``).
+
+    Must not perturb the training RNG stream: this runs before any training
+    draw, on the CPU generator only (``timestep_sampler.sample`` is called
+    with ``device="cpu"``; CUDA generator state is never touched by
+    ``torch.random.get_rng_state``/``set_rng_state``), so the CPU state is
+    saved and restored around the probe. 512 draws places a median within one
+    display decimal without meaningfully slowing startup. Any failure here
+    (e.g. an unusual sampler implementation) is a log-quality issue, not a
+    training one, so it is caught and skipped rather than raised.
+    """
+    rng_state = torch.random.get_rng_state()
+    try:
+        median = float(timestep_sampler.sample(512, torch.device("cpu")).median())
+        side = "clean" if (median < 0.5) == (convention == "t0") else "noisy"
+        print(f"{log_prefix} Timestep distribution median (diagnostic, t={median:.3f}) is on the {side} side")
+    except Exception as e:
+        print(f"{log_prefix} Timestep distribution median: diagnostic probe skipped ({e})")
+    finally:
+        torch.random.set_rng_state(rng_state)
+
+
 def add_noise_unified(
     noise_process: str,
     noise_scheduler,
@@ -11360,11 +11385,9 @@ class BaseTrainer(ABC):
         elif hasattr(timestep_sampler, 'alpha') and hasattr(timestep_sampler, 'beta'):
             print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
         _convention = self.arch.resolve_timestep_convention(self)
-        _sample_median = float(timestep_sampler.sample(4096, torch.device("cpu")).median())
-        _median_side = "clean" if (_sample_median < 0.5) == (_convention == "t0") else "noisy"
         print(f"{self.log_prefix} Timestep convention: '{_convention}' "
-              f"({'t=0 clean / t=1 noise' if _convention == 't0' else 't=1 clean / t=0 noise'}); "
-              f"sampled median t={_sample_median:.3f} is on the {_median_side} side")
+              f"({'t=0 clean / t=1 noise' if _convention == 't0' else 't=1 clean / t=0 noise'})")
+        log_timestep_distribution_median(self.log_prefix, timestep_sampler, _convention)
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
         # Resolve (and refuse) the aligned CFG null rate before the first batch,

@@ -1879,13 +1879,27 @@ export const trainingFeatureUnsupportedReason = (
   return entry.reason;
 };
 
+// Whether `arch`'s training-sample path READS `parameter`, i.e. whether its
+// control is worth offering. Same direction as trainingFeatureUnsupportedReason
+// above, and for the same reason: an unknown arch or an unloaded matrix answers
+// TRUE, so the control stays visible and the value is simply not written for an
+// architecture that turns out not to read it. The opposite direction makes every
+// sample control vanish on a startup fetch that has not landed yet — including
+// the sampler and schedule selects, which were unconditional before this gate
+// existed — and a control that disappears because the frontend has not heard
+// back from the backend is not recoverable by the user.
+//
+// Matches api/arch_capabilities.training_sample_key_supported, which gates the
+// generated YAML and the sample PNG's metadata on the backend and fails open on
+// the same input.
 export const trainingSampleParameterSupported = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
   parameter: string
 ): boolean => {
-  if (!arch) return false;
-  return caps?.training_sample_supported_params?.[arch]?.includes(parameter) === true;
+  const table = caps?.training_sample_supported_params;
+  if (!arch || !table || !table[arch]) return true;
+  return table[arch].includes(parameter);
 };
 
 export const trainingSampleNote = (

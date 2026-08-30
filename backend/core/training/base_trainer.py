@@ -1806,7 +1806,16 @@ class BaseTrainer(ABC):
         print(f"  VAE dtype: {vae_dtype} ({self.vae_dtype})")
         print(f"  Mixed precision: {mixed_precision}")
         print(f"  Loss calculation: Always FP32 for numerical stability")
-        print(f"  Min-SNR gamma: {min_snr_gamma} ({'enabled' if min_snr_gamma > 0 else 'disabled'})")
+        if min_snr_gamma > 0:
+            print(
+                f"  Min-SNR gamma: {min_snr_gamma} (read only by SD1.5/SDXL training "
+                "with prediction_target='epsilon', or by ControlNet training on "
+                "SD1.5/SDXL/Z-Image/FLUX.2 with prediction_target='epsilon'; "
+                "unused by every other architecture/prediction_target combination -- "
+                "see the per-run consumption check logged at train() start)"
+            )
+        else:
+            print(f"  Min-SNR gamma: {min_snr_gamma} (disabled)")
 
         # Warn about FP32 training VRAM usage
         if self.training_dtype == torch.float32:
@@ -3558,6 +3567,67 @@ class BaseTrainer(ABC):
             "total_item_count": len(all_image_paths),
             "image_paths_hash": paths_hash,
         }
+
+    def _warn_unused_loss_regularization_keys(self, arch_name: str) -> None:
+        """Warn once, in a single block, about configured loss-weighting keys
+        that this run will not read.
+
+        Consumption is verified against the actual op-dispatch code, not
+        inferred:
+          - min_snr_gamma: read only in ops/sd_sdxl_ops.py (sd15, sdxl), gated
+            on prediction_target == "epsilon". BaseTrainer.train_step_controlnet
+            (ControlNet training, self.use_condition_images) reads it too, for
+            every architecture ControlNetTrainer supports (sd15, sdxl, zimage,
+            flux2), with the same prediction_target == "epsilon" gate. No other
+            op module references min_snr_gamma.
+          - snr_regularization_loss / energy_regularization_loss: read only in
+            ops/sd_sdxl_ops.py, ops/flux2_ops.py, ops/zimage_ops.py (sd15, sdxl,
+            flux2, zimage). train_step_controlnet never reads either attribute,
+            so ControlNet training does not consume them on any architecture.
+        This function only prints; it does not alter self.min_snr_gamma,
+        self.snr_regularization_loss, or self.energy_regularization_loss, so
+        loss computation is unaffected either way.
+        """
+        use_condition_images = bool(getattr(self, "use_condition_images", False))
+        prediction_target = getattr(self, "prediction_target", "epsilon")
+        min_snr_archs = {"sd15", "sdxl", "zimage", "flux2"} if use_condition_images else {"sd15", "sdxl"}
+        regularization_archs = set() if use_condition_images else {"sd15", "sdxl", "flux2", "zimage"}
+
+        unused = []
+        if self.min_snr_gamma > 0:
+            if arch_name not in min_snr_archs:
+                unused.append(
+                    f"min_snr_gamma={self.min_snr_gamma}: not read by architecture "
+                    f"'{arch_name or 'unknown'}'"
+                    + (" in ControlNet training" if use_condition_images else "")
+                )
+            elif prediction_target != "epsilon":
+                unused.append(
+                    f"min_snr_gamma={self.min_snr_gamma}: only read when "
+                    f"prediction_target='epsilon' (this run has "
+                    f"prediction_target='{prediction_target}')"
+                )
+        if getattr(self, "snr_regularization_loss", None) is not None and arch_name not in regularization_archs:
+            reason = (
+                "not read by ControlNet training (train_step_controlnet) on any architecture"
+                if use_condition_images
+                else f"not read by architecture '{arch_name or 'unknown'}'"
+            )
+            unused.append(f"snr_regularization_* (regularization_type=snr): {reason}")
+        if getattr(self, "energy_regularization_loss", None) is not None and arch_name not in regularization_archs:
+            reason = (
+                "not read by ControlNet training (train_step_controlnet) on any architecture"
+                if use_condition_images
+                else f"not read by architecture '{arch_name or 'unknown'}'"
+            )
+            unused.append(f"energy_regularization_* (regularization_type=energy): {reason}")
+
+        if unused:
+            print(f"{self.log_prefix} WARNING: the following configured loss-weighting "
+                  f"keys are not consumed by this training run and have no effect on the "
+                  f"loss:")
+            for msg in unused:
+                print(f"{self.log_prefix}   - {msg}")
 
     def _check_dataset_fingerprint_changed(self, saved_fingerprint: Optional[dict], current_fingerprint: dict) -> bool:
         """
@@ -11099,6 +11169,7 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Dataset fingerprint: {self._dataset_fingerprint['total_item_count']} items, hash={self._dataset_fingerprint['image_paths_hash'][:8]}...")
 
         _arch_name = getattr(getattr(self, "arch", None), "name", "")
+        self._warn_unused_loss_regularization_keys(_arch_name)
         _sd_ve_arch = _arch_name in ("sd15", "sdxl")
         if vision_encoder_path and not _sd_ve_arch:
             raise ValueError(

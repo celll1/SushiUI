@@ -2571,7 +2571,7 @@ def main():
                     print(f"  Penalty mode: {train_config.get('snr_penalty_mode', 'relu')}")
                 elif regularization_type.lower() == 'energy':
                     from core.training.losses.energy_regularization import create_energy_regularization_loss
-                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                    trainer.energy_regularization_loss = create_energy_regularization_loss(train_config)
                     print(f"[TrainRunner] Energy Regularization enabled:")
                     print(f"  Weight: {train_config.get('energy_regularization_weight', 0.05)}")
                     print(f"  Timestep adaptive: {train_config.get('energy_timestep_adaptive', True)}")
@@ -3022,7 +3022,7 @@ def main():
                     trainer.snr_regularization_loss = create_snr_regularization_loss(train_config)
                 elif regularization_type.lower() == 'energy':
                     from core.training.losses.energy_regularization import create_energy_regularization_loss
-                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                    trainer.energy_regularization_loss = create_energy_regularization_loss(train_config)
                 else:
                     print(f"[TrainRunner] WARNING: Unknown regularization type '{regularization_type}', skipping")
             else:
@@ -3471,7 +3471,7 @@ def main():
                     print(f"  Penalty mode: {train_config.get('snr_penalty_mode', 'relu')}")
                 elif regularization_type.lower() == 'energy':
                     from core.training.losses.energy_regularization import create_energy_regularization_loss
-                    trainer.snr_regularization_loss = create_energy_regularization_loss(train_config)
+                    trainer.energy_regularization_loss = create_energy_regularization_loss(train_config)
                     print(f"[TrainRunner] Energy Regularization enabled:")
                     print(f"  Weight: {train_config.get('energy_regularization_weight', 0.05)}")
                     print(f"  Timestep adaptive: {train_config.get('energy_timestep_adaptive', True)}")

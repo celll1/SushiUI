@@ -21,6 +21,10 @@ class MiniT2IArchHandler(ArchHandler):
     # rewriting the already-collated conditioning. Mirrored for the API process
     # by api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
     cfg_null_stage = "collated"
+    # x_t = images*t + noise*(1-t) (ops/minit2i_ops.py train_step, explicitly
+    # documented there as "t=1 data, t=0 noise"). sampler t=1 is clean -- the
+    # inverse of the SD3/FLUX-style default.
+    timestep_convention = "t1"
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/minit2i_ops (shared with the base_trainer load-time

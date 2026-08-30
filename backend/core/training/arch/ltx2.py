@@ -25,6 +25,9 @@ class Ltx2ArchHandler(ArchHandler):
     # policy to key on and LTX-2.3 clip-cache keys are unchanged. See
     # ArchHandler.clip_vae_tiling_policy for why this matters when an arch does.
     clip_vae_tiling_policy = None
+    # x_t = (1-sigma)*x_0 + sigma*noise (ops/ltx2_ops.py train_step comment).
+    # sampler t=0 is clean.
+    timestep_convention = "t0"
 
     def load_components(self, trainer) -> None:
         from core.training.ops import ltx2_ops

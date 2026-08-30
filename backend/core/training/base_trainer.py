@@ -11359,6 +11359,12 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Timestep params: mean={timestep_sampler.mean:.2f}, std={timestep_sampler.std:.2f}")
         elif hasattr(timestep_sampler, 'alpha') and hasattr(timestep_sampler, 'beta'):
             print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
+        _convention = self.arch.resolve_timestep_convention(self)
+        _sample_median = float(timestep_sampler.sample(4096, torch.device("cpu")).median())
+        _median_side = "clean" if (_sample_median < 0.5) == (_convention == "t0") else "noisy"
+        print(f"{self.log_prefix} Timestep convention: '{_convention}' "
+              f"({'t=0 clean / t=1 noise' if _convention == 't0' else 't=1 clean / t=0 noise'}); "
+              f"sampled median t={_sample_median:.3f} is on the {_median_side} side")
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
         # Resolve (and refuse) the aligned CFG null rate before the first batch,

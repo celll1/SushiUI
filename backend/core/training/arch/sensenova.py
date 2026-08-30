@@ -16,6 +16,10 @@ class SenseNovaArchHandler(ArchHandler):
     # while encoding the item. Mirrored for the API process by
     # api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
     cfg_null_stage = "encode"
+    # z_image = t*x0 + (1-t)*noise (ops/sensenova_ops.py train_step, and
+    # sensenova_pipeline_ops.py at inference). sampler t=1 is clean -- the
+    # inverse of the SD3/FLUX-style default.
+    timestep_convention = "t1"
 
     def load_components(self, trainer) -> None:
         from core.training.ops import sensenova_ops

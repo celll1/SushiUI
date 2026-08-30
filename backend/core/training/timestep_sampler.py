@@ -15,11 +15,22 @@ NOTE on terminology:
 - This matches sd-scripts, ai-toolkit, and diffusers implementations
 - It is NOT the mathematical log-normal distribution (exp of normal)
 
-Timestep interpretation (Flow Matching):
-- t=0: Clean image (no noise)
-- t=1: Pure noise
-- "High timestep" = early denoising (more noise to remove)
-- "Low timestep" = late denoising (mostly clean, fine details)
+Timestep interpretation is ARCHITECTURE-DEPENDENT, not a property of this
+module. This sampler only draws a value in [min_timestep, max_timestep] -- it
+does not decide which end is "clean" and which is "noise". Each architecture's
+``train_step`` (``core/training/ops/*.py``) fixes that mapping, and the
+authoritative declaration per architecture is
+``core.training.arch.base_arch.ArchHandler.timestep_convention`` /
+``resolve_timestep_convention()``:
+
+- "t0" (most architectures: SD3/FLUX/Z-Image/FLUX.2/Krea 2/Ideogram 4/Lens/
+  Anima/LTX-2.3/MiniMax-H3/ACE-Step, and SD1.5/SDXL when noise_process="flow"):
+  t=0 is the clean image, t=1 is pure noise.
+- "t1" (SenseNova, MiniT2I, and SD1.5/SDXL when noise_process="ddpm"): t=1 is
+  the clean image, t=0 is pure noise -- the INVERSE of the above.
+
+Do not assume "t0" when configuring ``mean``/``std`` for a "t1" architecture:
+the sign that biases toward "clean" or "noisy" flips.
 """
 
 from abc import ABC, abstractmethod
@@ -203,23 +214,28 @@ class LogitNormalTimestepSampler(TimestepSampler):
 
     Formula: timestep = sigmoid(normal(mean, std))
 
-    Parameter effects:
+    Parameter effects (in terms of the RAW [0,1] value this sampler emits,
+    independent of which end an architecture calls "clean" -- see the module
+    docstring's "t0"/"t1" convention before reading "high"/"low" as
+    "noisy"/"clean"):
     - mean=0, std=1: Centered around 0.5, smooth bell curve
-    - mean=-1, std=1: Biased toward LOW timesteps (cleaner images, later denoising)
-    - mean=1, std=1: Biased toward HIGH timesteps (noisier images, early denoising)
+    - mean=-1, std=1: Biased toward LOW output values (~0.27 mean)
+    - mean=1, std=1: Biased toward HIGH output values (~0.73 mean)
     - mean=0, std=0.5: Very concentrated around 0.5
     - mean=0, std=2: Spread out but still [0,1] bounded
 
-    Note: "High timestep" = more noise = early in denoising process
-          "Low timestep" = less noise = later in denoising process (cleaner)
+    Whether "low" means clean or noisy depends on the consuming architecture's
+    convention ("t0": low=clean/high=noisy; "t1": low=noisy/high=clean -- see
+    the module docstring). The SAME mean sign biases toward opposite ends of
+    the noise schedule depending on that convention.
 
     Example:
-        >>> # Focus on high-noise (early denoising) timesteps
+        >>> # Bias toward high output values
         >>> sampler = LogitNormalTimestepSampler(mean=1.0, std=1.0)
         >>> timesteps = sampler.sample(1000, torch.device("cpu"))
         >>> print(f"Mean: {timesteps.mean():.3f}")  # ~0.73
 
-        >>> # Focus on low-noise (late denoising) timesteps
+        >>> # Bias toward low output values
         >>> sampler = LogitNormalTimestepSampler(mean=-1.0, std=1.0)
         >>> timesteps = sampler.sample(1000, torch.device("cpu"))
         >>> print(f"Mean: {timesteps.mean():.3f}")  # ~0.27

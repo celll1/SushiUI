@@ -557,6 +557,8 @@ class ControlNetTrainer(BaseTrainer):
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
                 self._safe_unlink(state_json_path)
 
+            self._delete_checkpoint_db_row(step_num)
+
     # ============================================================
     # Sample Generation (ControlNet-aware)
     # ============================================================

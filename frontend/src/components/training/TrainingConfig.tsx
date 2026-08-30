@@ -359,6 +359,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setParams(prev => ({ ...DEFAULT_PARAMS, ...(trainingDefaults as Partial<TrainingRunCreateRequest>) }));
   }, [trainingDefaults, editRunId]);
 
+  // Edit mode gets no such replacement -- it would overwrite the run's own
+  // values with defaults -- so a control added AFTER a run was created had
+  // nothing to render: its key is in neither the run's YAML nor DEFAULT_PARAMS,
+  // and the input came up empty. That is not "unset"; the backend resolves
+  // TRAINING_DEFAULTS for an absent key, so the empty box stated something
+  // untrue about the run. Run 121's config predates the three SenseNova preview
+  // controls and showed exactly that.
+  //
+  // Back-fill only what the restore left undefined, so a value the YAML does
+  // carry always wins, and only preview keys: cfg_uncond_drop_rate and its
+  // deprecated twin distinguish "the caller said nothing" from an explicit 0.0,
+  // and filling one in would convert one into the other. No sample key carries
+  // that distinction. Order-independent -- the restore below merges by key, so
+  // it does not matter whether the defaults or the run's params land first.
+  useEffect(() => {
+    if (!editRunId || !trainingDefaults) return;
+    setParams(prev => {
+      const next = { ...prev } as Record<string, unknown>;
+      let changed = false;
+      for (const [key, value] of Object.entries(trainingDefaults as Record<string, unknown>)) {
+        if (key === "sample_prompts") continue;
+        if (!key.startsWith("sample_") && !key.startsWith("sensenova_sample_")) continue;
+        if (next[key] === undefined && value !== undefined) {
+          next[key] = value;
+          changed = true;
+        }
+      }
+      return changed ? (next as typeof prev) : prev;
+    });
+  }, [trainingDefaults, editRunId]);
+
   const updateParam = useCallback(
     <K extends keyof TrainingRunCreateRequest>(
       key: K,
@@ -5249,67 +5280,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
-        {!trainingSamplesUnsupported && (
-          sensenovaTimestepShiftSupported || sensenovaImgCfgSupported || sensenovaCfgNormSupported
-        ) && (
-          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
-            <h3 className="text-sm font-medium text-gray-300">SenseNova Sample Generation</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {sensenovaTimestepShiftSupported && <div>
-                <label className="block text-xs text-gray-400 mb-1">Timestep Shift</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={params.sensenova_sample_timestep_shift ?? ""}
-                  onChange={(e) => updateParam("sensenova_sample_timestep_shift", e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                />
-              </div>}
-              {sensenovaImgCfgSupported && <div>
-                <label className="block text-xs text-gray-400 mb-1">Image CFG Scale</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={params.sensenova_sample_img_cfg_scale ?? ""}
-                  onChange={(e) => updateParam("sensenova_sample_img_cfg_scale", e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                />
-              </div>}
-              {sensenovaCfgNormSupported && <div>
-                <label className="block text-xs text-gray-400 mb-1">CFG Norm</label>
-                <select
-                  value={params.sensenova_sample_cfg_norm ?? ""}
-                  onChange={(e) => updateParam("sensenova_sample_cfg_norm", e.target.value as "none" | "global")}
-                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                >
-                  <option value="global">Global</option>
-                  <option value="none">None</option>
-                </select>
-              </div>}
-            </div>
-            <p className="text-xs text-gray-500">
-              These settings affect only SenseNova training previews. Image CFG is used when the sample prompt includes a reference image.
-            </p>
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="sensenova-sample-kv-cache-streaming"
-                checked={params.sensenova_sample_kv_cache_streaming ?? false}
-                onChange={(e) => updateParam("sensenova_sample_kv_cache_streaming", e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="sensenova-sample-kv-cache-streaming" className="text-xs text-gray-300 cursor-pointer">
-                Stream Sample KV Cache
-              </label>
-            </div>
-            <p className="text-xs text-gray-500">
-              Applies only to the in-training sample image, not to training steps. Streams each layer&apos;s prefix KV cache from pinned host memory through a 2-slot GPU ring instead of holding the full per-layer, per-branch KV cache resident during the sample&apos;s denoise loop. Independent of MoT Phase Eviction above. If the install fails, the sample runs with the full resident cache and a warning is logged.
-            </p>
-          </div>
-        )}
-
         {isSenseNovaModel(baseModelPath) && trainingMethod === "full_finetune" && (
           <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
             <h3 className="text-sm font-medium text-gray-300">SenseNova Checkpoint Format</h3>
@@ -7070,6 +7040,71 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </select>
             </div>}
           </div>
+
+          {/* SenseNova's preview controls belong to the preview, not to the
+              memory options they used to sit among -- eleven cards away from
+              the section they configure, which is where they were looked for
+              and not found. */}
+          {(
+            sensenovaTimestepShiftSupported || sensenovaImgCfgSupported || sensenovaCfgNormSupported
+          ) && (
+            <details className="border border-gray-700 rounded p-3">
+              <summary className="text-sm text-gray-300 cursor-pointer">SenseNova Preview Options</summary>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
+                {sensenovaTimestepShiftSupported && <div>
+                  <label className="block text-xs text-gray-400 mb-1">Timestep Shift</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={params.sensenova_sample_timestep_shift ?? ""}
+                    onChange={(e) => updateParam("sensenova_sample_timestep_shift", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>}
+                {sensenovaImgCfgSupported && <div>
+                  <label className="block text-xs text-gray-400 mb-1">Image CFG Scale</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={params.sensenova_sample_img_cfg_scale ?? ""}
+                    onChange={(e) => updateParam("sensenova_sample_img_cfg_scale", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>}
+                {sensenovaCfgNormSupported && <div>
+                  <label className="block text-xs text-gray-400 mb-1">CFG Norm</label>
+                  <select
+                    value={params.sensenova_sample_cfg_norm ?? ""}
+                    onChange={(e) => updateParam("sensenova_sample_cfg_norm", e.target.value as "none" | "global")}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="global">Global</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>}
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                These settings affect only SenseNova training previews. Image CFG is used when the sample prompt includes a reference image.
+              </p>
+              <div className="flex items-center space-x-2 mt-2">
+                <input
+                  type="checkbox"
+                  id="sensenova-sample-kv-cache-streaming"
+                  checked={params.sensenova_sample_kv_cache_streaming ?? false}
+                  onChange={(e) => updateParam("sensenova_sample_kv_cache_streaming", e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="sensenova-sample-kv-cache-streaming" className="text-xs text-gray-300 cursor-pointer">
+                  Stream Sample KV Cache
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Applies only to the in-training sample image, not to training steps. Streams each layer&apos;s prefix KV cache from pinned host memory through a 2-slot GPU ring instead of holding the full per-layer, per-branch KV cache resident during the sample&apos;s denoise loop. Independent of MoT Phase Eviction in the SenseNova Training Memory section. If the install fails, the sample runs with the full resident cache and a warning is logged.
+              </p>
+            </details>
+          )}
 
           {sampleAdvancedCfgSupported && (
             <details className="border border-gray-700 rounded p-3">

@@ -4461,6 +4461,8 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
                 self._safe_unlink(state_json_path)
 
+            self._delete_checkpoint_db_row(step_num)
+
             # Also delete VE checkpoint for this step if it exists
             ve_pattern = f"*_vision_encoder_step_{step_num:06d}.safetensors"
             for ve_file in checkpoint_path.parent.glob(ve_pattern):
@@ -4648,6 +4650,88 @@ class BaseTrainer(ABC):
         if isinstance(progress, tuple) and progress[0] == int(step):
             progress[1].add(stage)
 
+    def _record_checkpoint_db_row(self, step: int, epoch: int, before_entries: set) -> None:
+        """Register this step's checkpoint in ``TrainingCheckpoint`` (non-fatal).
+
+        The API and Training Monitor read checkpoints from this table only
+        (``GET /training/runs/{id}/checkpoints`` no longer scans the
+        filesystem), but only ``vae_trainer.py`` ever wrote a row -- every
+        other training method (LoRA, full fine-tune, ReLoRA, ControlNet, on
+        any architecture) left the checkpoint list empty despite real files
+        on disk.
+
+        Finds the entry by diffing ``self.output_dir`` before/after
+        ``save_checkpoint()`` rather than assuming a naming convention,
+        because checkpoint layout differs by training method: a single
+        safetensors file, a sharded index + shard files, or a ControlNet
+        "standard" directory. Sidecars written by a later bundle stage
+        (optimizer/state/EMA) are not in this diff and are not counted.
+        """
+        if self.run_id is None:
+            return
+        try:
+            marker = f"_step_{int(step):06d}"
+            after_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
+            new_entries = [p for p in (after_entries - before_entries) if marker in p.name]
+            aux_markers = ("_optimizer.pt", "_state.json", EMA_ENTRY_MARKER, "vision_encoder")
+            primary = [p for p in new_entries if not any(m in p.name for m in aux_markers)]
+            if not primary:
+                return
+
+            index_entries = [p for p in primary if p.name.endswith(_INDEX_SUFFIX)]
+            entry_path = index_entries[0] if index_entries else primary[0]
+            if entry_path.is_dir():
+                size = sum(f.stat().st_size for f in entry_path.rglob("*") if f.is_file())
+            else:
+                size = sum(p.stat().st_size for p in primary if p.is_file())
+
+            from database import get_training_db
+            from database.models import TrainingCheckpoint
+            db = next(get_training_db())
+            try:
+                existing = (db.query(TrainingCheckpoint)
+                            .filter(TrainingCheckpoint.run_id == self.run_id,
+                                    TrainingCheckpoint.step == step)
+                            .first())
+                if existing is None:
+                    db.add(TrainingCheckpoint(
+                        run_id=self.run_id,
+                        checkpoint_name=entry_path.name,
+                        step=int(step),
+                        epoch=epoch,
+                        file_path=str(entry_path),
+                        file_size=size,
+                    ))
+                else:
+                    existing.checkpoint_name = entry_path.name
+                    existing.file_path = str(entry_path)
+                    existing.file_size = size
+                    existing.epoch = epoch
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"{self.log_prefix} checkpoint DB row failed (non-fatal): {e}")
+
+    def _delete_checkpoint_db_row(self, step: int) -> None:
+        """Remove a pruned checkpoint's ``TrainingCheckpoint`` row (non-fatal)."""
+        if self.run_id is None:
+            return
+        try:
+            from database import get_training_db
+            from database.models import TrainingCheckpoint
+            db = next(get_training_db())
+            try:
+                (db.query(TrainingCheckpoint)
+                 .filter(TrainingCheckpoint.run_id == self.run_id,
+                         TrainingCheckpoint.step == step)
+                 .delete())
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"{self.log_prefix} checkpoint DB row delete failed (non-fatal): {e}")
+
     def _completed_checkpoint_bundle_stages(self, step: int) -> set:
         """Bundle stages whose output for ``step`` is COMPLETE on disk."""
         progress = getattr(self, "_checkpoint_bundle_progress", None)
@@ -4695,8 +4779,10 @@ class BaseTrainer(ABC):
         if self.run_id is not None:
             self._log_metrics_to_db(step=step, force_flush=True)
         self._begin_checkpoint_bundle(step)
+        _pre_save_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
         self.save_checkpoint(step=step, epoch=epoch)
         self._note_checkpoint_bundle_stage(step, "weights")
+        self._record_checkpoint_db_row(step=step, epoch=epoch, before_entries=_pre_save_entries)
         # Set here, not after the guard returns: the post-write prune can raise,
         # and the emergency handler that follows uses this to decide whether
         # this step's files are partial.

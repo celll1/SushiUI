@@ -90,6 +90,11 @@ class FakeTrainer:
     _begin_checkpoint_bundle = bt.BaseTrainer._begin_checkpoint_bundle
     _note_checkpoint_bundle_stage = bt.BaseTrainer._note_checkpoint_bundle_stage
     _completed_checkpoint_bundle_stages = bt.BaseTrainer._completed_checkpoint_bundle_stages
+    # run_id is always None below, so both are a no-op -- bound only so the
+    # shared _save_checkpoint_bundle / _cleanup_old_checkpoints code they're
+    # called from doesn't AttributeError on this fake.
+    _record_checkpoint_db_row = bt.BaseTrainer._record_checkpoint_db_row
+    _delete_checkpoint_db_row = bt.BaseTrainer._delete_checkpoint_db_row
     _delete_partial_step_artifacts = bt.BaseTrainer._delete_partial_step_artifacts
     _save_checkpoint_bundle = bt.BaseTrainer._save_checkpoint_bundle
     _periodic_save_with_space_guard = bt.BaseTrainer._periodic_save_with_space_guard

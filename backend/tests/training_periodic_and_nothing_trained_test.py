@@ -342,7 +342,7 @@ def test_negative_control_all_batches_dropped_reported_success():
 # --------------------------------------------------------------------------
 
 def _stub_trainer(unfittable=(), epochs_entered=0, backwards_completed=0,
-                  batches_skipped=0):
+                  batches_skipped=0, mnt_iterations_oom_skipped=0):
     """A trainer-shaped object carrying only what the two guards read, so the
     real methods run without a model, dataset or optimizer."""
     from core.training.base_trainer import BaseTrainer
@@ -351,10 +351,13 @@ def _stub_trainer(unfittable=(), epochs_entered=0, backwards_completed=0,
         _epochs_entered=epochs_entered,
         _backwards_completed=backwards_completed,
         _batches_skipped=batches_skipped,
+        _mnt_iterations_oom_skipped=mnt_iterations_oom_skipped,
+        _epoch_skips_reported=None,
         log_prefix="[Test]",
     )
-    for name in ("_nothing_trainable_message", "_buckets_exhausted_message"):
-        setattr(stub, name, (lambda m: lambda n=0: getattr(BaseTrainer, m)(stub, n))(name))
+    for name in ("_nothing_trainable_message", "_buckets_exhausted_message",
+                 "_report_epoch_skips"):
+        setattr(stub, name, (lambda m: lambda *a: getattr(BaseTrainer, m)(stub, *a))(name))
     return stub
 
 
@@ -508,6 +511,44 @@ def test_every_whole_batch_skip_site_counts_itself():
     """Each `continue` that abandons a whole batch must bump _batches_skipped,
     so the failure message can say how many and why."""
     assert BASE_TRAINER_SRC.count("self._batches_skipped += 1") == 4
+
+
+def test_mnt_iteration_oom_skip_does_not_touch_batch_counter():
+    """The MNT-loop backward failure is a per-iteration event, not a whole
+    batch `continue`: it must land in its own counter, not _batches_skipped,
+    or the epoch summary could report more skips than there are batches."""
+    idx = BASE_TRAINER_SRC.index("self._mnt_iterations_oom_skipped += 1")
+    preceding = BASE_TRAINER_SRC[:idx].rsplit("\n", 2)[-2].strip()
+    assert preceding == "else:"
+    window = BASE_TRAINER_SRC[idx - 200:idx + 200]
+    assert "self._batches_skipped" not in window
+
+
+def test_mnt_iteration_oom_skip_counter_advances_and_is_visible():
+    """The new counter is a real counter (mirrors _backwards_completed) and
+    is surfaced in the nothing-trained message without being confused with
+    the whole-batch counter."""
+    from core.training.base_trainer import NothingTrainedError
+    stub = _stub_trainer(epochs_entered=1, backwards_completed=0,
+                         mnt_iterations_oom_skipped=5)
+    with pytest.raises(NothingTrainedError) as exc:
+        _assert_trained(stub)
+    msg = str(exc.value)
+    assert "5 iteration(s)" in msg
+    assert "unrecoverable CUDA error" in msg
+    # It must not be mistaken for a whole-batch skip in the same message.
+    assert "5 batch(es) were skipped" not in msg
+
+
+def test_epoch_skip_report_never_exceeds_batch_count():
+    """MNT-level OOM skips ride _mnt_iterations_oom_skipped, which
+    _report_epoch_skips never reads, so its count of skipped batches cannot
+    exceed the batch count of the epoch even when many MNT iterations failed."""
+    stub = _stub_trainer(batches_skipped=2, mnt_iterations_oom_skipped=37)
+    n_batches = 3
+    epoch_skipped = stub._report_epoch_skips(0, 0, n_batches)
+    assert epoch_skipped == 2
+    assert epoch_skipped <= n_batches
 
 
 def test_nothing_trained_writes_no_emergency_checkpoint():

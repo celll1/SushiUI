@@ -12428,6 +12428,11 @@ class BaseTrainer(ABC):
         self._epochs_entered = 0
         self._backwards_completed = 0
         self._batches_skipped = 0
+        # Iteration-level counterpart to _backwards_completed: an MNT
+        # iteration whose backward hit an unrecoverable CUDA error, without
+        # dropping the whole batch. Kept separate from _batches_skipped,
+        # which counts whole batches abandoned via `continue`.
+        self._mnt_iterations_oom_skipped = 0
         # What "resume from the last periodic checkpoint" refers to, or None
         # when none has been written yet -- in which case _resume_point_sentence
         # falls back to what this invocation resumed from, and says which of
@@ -14736,7 +14741,7 @@ class BaseTrainer(ABC):
                         if not cuda_error_skip:
                             self._backwards_completed += 1
                         else:
-                            self._batches_skipped += 1
+                            self._mnt_iterations_oom_skipped += 1
 
                         # G-RB3: every trainable parameter must have received an
                         # update during that backward. Skipped when the batch was
@@ -14819,6 +14824,11 @@ class BaseTrainer(ABC):
                         # own, so the count has to ride the next completed step.
                         if self._batches_skipped:
                             self.log_extra_metric("batches_skipped", float(self._batches_skipped))
+                        if self._mnt_iterations_oom_skipped:
+                            self.log_extra_metric(
+                                "mnt_iterations_oom_skipped",
+                                float(self._mnt_iterations_oom_skipped),
+                            )
 
                         # Aligned-CFG-null split. Emitted per MNT iteration, the
                         # same granularity as the loss it splits: every MNT
@@ -15632,6 +15642,10 @@ class BaseTrainer(ABC):
             head += (f" {skipped} batch(es) were skipped before their backward pass "
                      f"(OOM, corrupted image, no valid latents, or missing condition "
                      f"images -- see the WARNING lines above).")
+        mnt_skipped = getattr(self, "_mnt_iterations_oom_skipped", 0)
+        if mnt_skipped:
+            head += (f" {mnt_skipped} iteration(s) within an otherwise-kept batch "
+                     f"hit an unrecoverable CUDA error during their backward pass.")
         return (
             head + " No parameter was updated, so this run is failed rather than "
             "reported complete. " + _MEMORY_BUDGET_ADVICE

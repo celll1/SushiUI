@@ -46,6 +46,64 @@ def _detect_arch(base_model_path: str) -> str:
         return "unknown"
 
 
+# The gated sample-section keys, in the order the section carried them before
+# this became a gate, split around the ungated ones so a regenerated config for
+# a supporting architecture is unchanged down to key order. Which of them an
+# architecture actually reads lives in ONE place,
+# api.arch_capabilities.TRAINING_SAMPLE_KEY_PARAM, not here.
+_GATED_SAMPLE_KEYS_LEADING = (
+    "sampler", "schedule_type",
+    "cfg_schedule_type", "cfg_schedule_min", "cfg_schedule_max",
+    "cfg_schedule_power", "cfg_rescale_snr_alpha",
+    "dynamic_threshold_percentile", "dynamic_threshold_mimic_scale",
+    "nag_enable", "nag_scale", "nag_tau", "nag_alpha", "nag_sigma_end",
+    "nag_negative_prompt",
+)
+_GATED_SAMPLE_KEYS_TRAILING = (
+    "sensenova_timestep_shift", "sensenova_img_cfg_scale", "sensenova_cfg_norm",
+)
+
+
+def _build_sample_section(
+    p: Dict[str, Any], sample_prompts: Optional[list], arch: str,
+) -> Dict[str, Any]:
+    """The `process.sample` section, carrying only what ``arch`` can honor.
+
+    A control this architecture's sample path never reads is not written at
+    all, rather than written and ignored. The stored value was reaching the
+    saved PNG's metadata, where an inert `sampler`/`schedule_type` is not a
+    harmless leftover but a false statement about how the image was produced.
+    Dropping the key changes no behaviour: train_runner's
+    ``_resolve_training_sample_config`` reads every one of them with a
+    TRAINING_DEFAULTS fallback, and the default is exactly as unread.
+    """
+    from api.arch_capabilities import (
+        TRAINING_SAMPLE_KEY_PARAM, training_sample_key_supported,
+    )
+
+    section: Dict[str, Any] = {}
+
+    def _emit(keys):
+        for key in keys:
+            if training_sample_key_supported(arch, key):
+                param = TRAINING_SAMPLE_KEY_PARAM[key]
+                section[key] = p.get(param, TRAINING_DEFAULTS[param])
+
+    _emit(_GATED_SAMPLE_KEYS_LEADING)
+    section.update({
+        "sample_every": p.get("sample_every", TRAINING_DEFAULTS["sample_every"]),
+        "width": p.get("sample_width", TRAINING_DEFAULTS["sample_width"]),
+        "height": p.get("sample_height", TRAINING_DEFAULTS["sample_height"]),
+        "prompts": sample_prompts or [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]],
+        "neg": "",
+        "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
+        "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
+        "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
+    })
+    _emit(_GATED_SAMPLE_KEYS_TRAILING)
+    return section
+
+
 def _max_optimizer_saves_to_keep(p: Dict[str, Any]) -> int:
     """Optimizer-sidecar retention. Uniform across training methods (unlike
     max_step_saves_to_keep). SSoT: api/param_defaults.TRAINING_DEFAULTS."""
@@ -765,34 +823,8 @@ class TrainingConfigGenerator:
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": {
-                            "sampler": p.get("sample_sampler", TRAINING_DEFAULTS["sample_sampler"]),
-                            "schedule_type": p.get("sample_schedule_type", TRAINING_DEFAULTS["sample_schedule_type"]),
-                            "cfg_schedule_type": p.get("sample_cfg_schedule_type", TRAINING_DEFAULTS["sample_cfg_schedule_type"]),
-                            "cfg_schedule_min": p.get("sample_cfg_schedule_min", TRAINING_DEFAULTS["sample_cfg_schedule_min"]),
-                            "cfg_schedule_max": p.get("sample_cfg_schedule_max", TRAINING_DEFAULTS["sample_cfg_schedule_max"]),
-                            "cfg_schedule_power": p.get("sample_cfg_schedule_power", TRAINING_DEFAULTS["sample_cfg_schedule_power"]),
-                            "cfg_rescale_snr_alpha": p.get("sample_cfg_rescale_snr_alpha", TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"]),
-                            "dynamic_threshold_percentile": p.get("sample_dynamic_threshold_percentile", TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"]),
-                            "dynamic_threshold_mimic_scale": p.get("sample_dynamic_threshold_mimic_scale", TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"]),
-                            "nag_enable": p.get("sample_nag_enable", TRAINING_DEFAULTS["sample_nag_enable"]),
-                            "nag_scale": p.get("sample_nag_scale", TRAINING_DEFAULTS["sample_nag_scale"]),
-                            "nag_tau": p.get("sample_nag_tau", TRAINING_DEFAULTS["sample_nag_tau"]),
-                            "nag_alpha": p.get("sample_nag_alpha", TRAINING_DEFAULTS["sample_nag_alpha"]),
-                            "nag_sigma_end": p.get("sample_nag_sigma_end", TRAINING_DEFAULTS["sample_nag_sigma_end"]),
-                            "nag_negative_prompt": p.get("sample_nag_negative_prompt", TRAINING_DEFAULTS["sample_nag_negative_prompt"]),
-                            "sample_every": p.get("sample_every", TRAINING_DEFAULTS["sample_every"]),
-                            "width": p.get("sample_width", TRAINING_DEFAULTS["sample_width"]),
-                            "height": p.get("sample_height", TRAINING_DEFAULTS["sample_height"]),
-                            "prompts": sample_prompts or [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]],
-                            "neg": "",
-                            "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
-                            "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
-                            "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
-                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
-                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
-                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
-                        },
+                        "sample": _build_sample_section(
+                            p, sample_prompts, _detect_arch(base_model_path)),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
@@ -970,34 +1002,8 @@ class TrainingConfigGenerator:
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": {
-                            "sampler": p.get("sample_sampler", TRAINING_DEFAULTS["sample_sampler"]),
-                            "schedule_type": p.get("sample_schedule_type", TRAINING_DEFAULTS["sample_schedule_type"]),
-                            "cfg_schedule_type": p.get("sample_cfg_schedule_type", TRAINING_DEFAULTS["sample_cfg_schedule_type"]),
-                            "cfg_schedule_min": p.get("sample_cfg_schedule_min", TRAINING_DEFAULTS["sample_cfg_schedule_min"]),
-                            "cfg_schedule_max": p.get("sample_cfg_schedule_max", TRAINING_DEFAULTS["sample_cfg_schedule_max"]),
-                            "cfg_schedule_power": p.get("sample_cfg_schedule_power", TRAINING_DEFAULTS["sample_cfg_schedule_power"]),
-                            "cfg_rescale_snr_alpha": p.get("sample_cfg_rescale_snr_alpha", TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"]),
-                            "dynamic_threshold_percentile": p.get("sample_dynamic_threshold_percentile", TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"]),
-                            "dynamic_threshold_mimic_scale": p.get("sample_dynamic_threshold_mimic_scale", TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"]),
-                            "nag_enable": p.get("sample_nag_enable", TRAINING_DEFAULTS["sample_nag_enable"]),
-                            "nag_scale": p.get("sample_nag_scale", TRAINING_DEFAULTS["sample_nag_scale"]),
-                            "nag_tau": p.get("sample_nag_tau", TRAINING_DEFAULTS["sample_nag_tau"]),
-                            "nag_alpha": p.get("sample_nag_alpha", TRAINING_DEFAULTS["sample_nag_alpha"]),
-                            "nag_sigma_end": p.get("sample_nag_sigma_end", TRAINING_DEFAULTS["sample_nag_sigma_end"]),
-                            "nag_negative_prompt": p.get("sample_nag_negative_prompt", TRAINING_DEFAULTS["sample_nag_negative_prompt"]),
-                            "sample_every": p.get("sample_every", TRAINING_DEFAULTS["sample_every"]),
-                            "width": p.get("sample_width", TRAINING_DEFAULTS["sample_width"]),
-                            "height": p.get("sample_height", TRAINING_DEFAULTS["sample_height"]),
-                            "prompts": sample_prompts or [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]],
-                            "neg": "",
-                            "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
-                            "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
-                            "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
-                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
-                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
-                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
-                        },
+                        "sample": _build_sample_section(
+                            p, sample_prompts, _detect_arch(base_model_path)),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
@@ -1151,34 +1157,8 @@ class TrainingConfigGenerator:
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": {
-                            "sampler": p.get("sample_sampler", TRAINING_DEFAULTS["sample_sampler"]),
-                            "schedule_type": p.get("sample_schedule_type", TRAINING_DEFAULTS["sample_schedule_type"]),
-                            "cfg_schedule_type": p.get("sample_cfg_schedule_type", TRAINING_DEFAULTS["sample_cfg_schedule_type"]),
-                            "cfg_schedule_min": p.get("sample_cfg_schedule_min", TRAINING_DEFAULTS["sample_cfg_schedule_min"]),
-                            "cfg_schedule_max": p.get("sample_cfg_schedule_max", TRAINING_DEFAULTS["sample_cfg_schedule_max"]),
-                            "cfg_schedule_power": p.get("sample_cfg_schedule_power", TRAINING_DEFAULTS["sample_cfg_schedule_power"]),
-                            "cfg_rescale_snr_alpha": p.get("sample_cfg_rescale_snr_alpha", TRAINING_DEFAULTS["sample_cfg_rescale_snr_alpha"]),
-                            "dynamic_threshold_percentile": p.get("sample_dynamic_threshold_percentile", TRAINING_DEFAULTS["sample_dynamic_threshold_percentile"]),
-                            "dynamic_threshold_mimic_scale": p.get("sample_dynamic_threshold_mimic_scale", TRAINING_DEFAULTS["sample_dynamic_threshold_mimic_scale"]),
-                            "nag_enable": p.get("sample_nag_enable", TRAINING_DEFAULTS["sample_nag_enable"]),
-                            "nag_scale": p.get("sample_nag_scale", TRAINING_DEFAULTS["sample_nag_scale"]),
-                            "nag_tau": p.get("sample_nag_tau", TRAINING_DEFAULTS["sample_nag_tau"]),
-                            "nag_alpha": p.get("sample_nag_alpha", TRAINING_DEFAULTS["sample_nag_alpha"]),
-                            "nag_sigma_end": p.get("sample_nag_sigma_end", TRAINING_DEFAULTS["sample_nag_sigma_end"]),
-                            "nag_negative_prompt": p.get("sample_nag_negative_prompt", TRAINING_DEFAULTS["sample_nag_negative_prompt"]),
-                            "sample_every": p.get("sample_every", TRAINING_DEFAULTS["sample_every"]),
-                            "width": p.get("sample_width", TRAINING_DEFAULTS["sample_width"]),
-                            "height": p.get("sample_height", TRAINING_DEFAULTS["sample_height"]),
-                            "prompts": sample_prompts or [dict(prompt) for prompt in TRAINING_DEFAULTS["sample_prompts"]],
-                            "neg": "",
-                            "seed": p.get("sample_seed", TRAINING_DEFAULTS["sample_seed"]),
-                            "guidance_scale": p.get("sample_cfg_scale", TRAINING_DEFAULTS["sample_cfg_scale"]),
-                            "sample_steps": p.get("sample_steps", TRAINING_DEFAULTS["sample_steps"]),
-                            "sensenova_timestep_shift": p.get("sensenova_sample_timestep_shift", TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]),
-                            "sensenova_img_cfg_scale": p.get("sensenova_sample_img_cfg_scale", TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]),
-                            "sensenova_cfg_norm": p.get("sensenova_sample_cfg_norm", TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]),
-                        },
+                        "sample": _build_sample_section(
+                            p, sample_prompts, _detect_arch(base_model_path)),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }

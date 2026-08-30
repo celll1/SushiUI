@@ -340,6 +340,53 @@ TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
     "sensenova_sample_cfg_norm",
 ]
 
+# The same allowlist, keyed the way the YAML `process.sample` section and the
+# sample PNG's metadata spell each control, which is the same spelling in both.
+# A key ABSENT from this map is not gated at all (prompt, steps, seed, size…):
+# every architecture's sample path reads those.
+#
+# This is what stops a control from being written where it is not read. The
+# section is generated from it (training_config._build_sample_section) and the
+# PNG metadata is filtered by it (BaseTrainer._save_sample_with_metadata) —
+# an inert `sampler`/`schedule_type` in a SenseNova sample's metadata is not a
+# harmless leftover, it is a false statement about how that image was made.
+TRAINING_SAMPLE_KEY_PARAM: Dict[str, str] = {
+    "sampler": "sample_sampler",
+    "schedule_type": "sample_schedule_type",
+    "cfg_schedule_type": "sample_cfg_schedule_type",
+    "cfg_schedule_min": "sample_cfg_schedule_min",
+    "cfg_schedule_max": "sample_cfg_schedule_max",
+    "cfg_schedule_power": "sample_cfg_schedule_power",
+    "cfg_rescale_snr_alpha": "sample_cfg_rescale_snr_alpha",
+    "dynamic_threshold_percentile": "sample_dynamic_threshold_percentile",
+    "dynamic_threshold_mimic_scale": "sample_dynamic_threshold_mimic_scale",
+    "nag_enable": "sample_nag_enable",
+    "nag_scale": "sample_nag_scale",
+    "nag_tau": "sample_nag_tau",
+    "nag_alpha": "sample_nag_alpha",
+    "nag_sigma_end": "sample_nag_sigma_end",
+    "nag_negative_prompt": "sample_nag_negative_prompt",
+    "sensenova_timestep_shift": "sensenova_sample_timestep_shift",
+    "sensenova_img_cfg_scale": "sensenova_sample_img_cfg_scale",
+    "sensenova_cfg_norm": "sensenova_sample_cfg_norm",
+}
+
+
+def training_sample_key_supported(arch: Optional[str], key: str) -> bool:
+    """Does ``arch``'s sample path read the control spelled ``key``?
+
+    An UNDECLARED architecture answers True for everything. ``_detect_arch``
+    returns "unknown" for a model it cannot identify, and stripping an
+    unidentified model's controls would be a silent downgrade — absence from
+    the table means "not described here", never "supports nothing".
+    """
+    param = TRAINING_SAMPLE_KEY_PARAM.get(key)
+    if param is None:
+        return True
+    if arch not in TRAINING_SAMPLE_SUPPORTED_PARAMS:
+        return True
+    return param in TRAINING_SAMPLE_SUPPORTED_PARAMS[arch]
+
 # Supported sample paths whose output contract is narrower than the image
 # preview section suggests.
 TRAINING_SAMPLE_NOTES: Dict[str, str] = {

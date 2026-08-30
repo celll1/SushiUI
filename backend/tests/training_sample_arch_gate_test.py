@@ -228,3 +228,59 @@ def test_the_generated_yaml_round_trips(tmp_path):
     text = yaml.dump({"sample": _section("sensenova")}, sort_keys=False,
                      allow_unicode=True)
     assert yaml.safe_load(text)["sample"] == _section("sensenova")
+
+
+# ---------------------------------------------------------------------------
+# The frontend gate, which has to fail in the SAME direction
+# ---------------------------------------------------------------------------
+# There is no JS test runner here, so these read the source. They exist because
+# the frontend gate shipped failing CLOSED: an unloaded capability matrix or an
+# unrecognised model hid every sample control, including the sampler and
+# schedule selects that were unconditional before the gate existed. The comment
+# on the helper directly above it in the same file already stated the opposite
+# policy.
+
+_API_TS = (BACKEND.parent / "frontend" / "src" / "utils"
+           / "api.ts").read_text(encoding="utf-8")
+_PANEL_TS = (BACKEND.parent / "frontend" / "src" / "components" / "training"
+             / "TrainingConfig.tsx").read_text(encoding="utf-8")
+
+
+def _helper_body():
+    start = _API_TS.index("export const trainingSampleParameterSupported")
+    return _API_TS[start:_API_TS.index("};", start)]
+
+
+def test_the_frontend_gate_fails_open_on_an_unloaded_matrix():
+    body = _helper_body()
+    assert "return true" in body, body
+    # The shipped form. `if (!arch) return false` hides everything the moment
+    # the model list has not resolved the architecture yet.
+    assert "return false" not in body, body
+
+
+def test_the_frontend_gate_only_hides_for_a_declared_architecture():
+    body = _helper_body()
+    assert "!table" in body and "!table[arch]" in body
+
+
+def test_the_sensenova_preview_controls_sit_inside_the_sample_section():
+    """They were eleven cards away, among the memory options -- which is where
+    they were looked for and not found."""
+    sample_card = _PANEL_TS.index("Sample Generation (Optional)")
+    controls = _PANEL_TS.index("SenseNova Preview Options")
+    next_card = _PANEL_TS.index("Debug Options", sample_card)
+    assert sample_card < controls < next_card
+    assert "SenseNova Sample Generation" not in _PANEL_TS
+
+
+def test_edit_mode_backfills_preview_defaults_but_not_the_explicit_only_keys():
+    """A control the run's YAML predates renders blank otherwise, while the
+    backend is really applying its default. cfg_uncond_drop_rate must stay out
+    of it: there, absent and 0.0 mean different things."""
+    start = _PANEL_TS.index("if (!editRunId || !trainingDefaults) return;")
+    block = _PANEL_TS[start:start + 900]
+    assert 'key.startsWith("sample_")' in block
+    assert 'key.startsWith("sensenova_sample_")' in block
+    assert "next[key] === undefined" in block, "must not overwrite the run's own value"
+    assert "cfg_uncond_drop_rate" not in block

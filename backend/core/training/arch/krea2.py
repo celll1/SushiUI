@@ -16,6 +16,9 @@ class Krea2ArchHandler(ArchHandler):
     name = "krea2"
     wiring = KREA2_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
+    # noisy = (1-sigma)*latents + sigma*noise (ops/krea2_ops.py, "sigma=1 ->
+    # noise" comment). sampler t=0 is clean.
+    timestep_convention = "t0"
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/krea2_ops (shared with the base_trainer load-time

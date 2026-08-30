@@ -241,6 +241,36 @@ class ArchHandler(ABC):
     #: are different data and must not share an address.
     clip_audio_prep_version: Optional[str] = None
 
+    #: Timestep convention this architecture's ``train_step`` noise-mixing
+    #: formula uses: which end of the trainer's ``[0,1]`` ``timestep_sampler``
+    #: output is a CLEAN (noise-free) latent.
+    #:
+    #:   ``"t0"`` -- sampler ``t=0`` is clean, ``t=1`` is pure noise. The
+    #:   SD3/FLUX/Z-Image-style convention (``noisy = (1-t)*latents + t*noise``)
+    #:   used by every architecture in this codebase except the two below.
+    #:   ``"t1"`` -- sampler ``t=1`` is clean, ``t=0`` is pure noise
+    #:   (``noisy = t*latents + (1-t)*noise``). SenseNova and MiniT2I.
+    #:
+    #: This is NOT a distribution choice -- it fixes what a
+    #: ``timestep_sampling.mean`` biased toward 0 or 1 actually MEANS for a
+    #: given architecture: the same ``mean=-0.8`` concentrates sampling near
+    #: the CLEAN side under ``"t0"`` and near the NOISE side under ``"t1"``.
+    #: Declared here as the architecture's fixed default. SD15ArchHandler /
+    #: SDXLArchHandler override ``resolve_timestep_convention()`` instead,
+    #: because that ONE handler flips between the two conventions depending on
+    #: the run's ``noise_process`` (the ddpm/flow branches in
+    #: ``ops/sd_sdxl_ops.py`` use opposite ends of the sampler range).
+    timestep_convention: str = "t0"
+
+    def resolve_timestep_convention(self, trainer: Any = None) -> str:
+        """Returns ``"t0"`` or ``"t1"`` -- see ``timestep_convention``.
+
+        Default: the class attribute, independent of trainer state. Overridden
+        only by handlers whose convention depends on trainer runtime config
+        (SD15/SDXL: ``trainer.noise_process``).
+        """
+        return self.timestep_convention
+
     #: At which stage this architecture can build the SAME null condition its
     #: inference CFG uncond branch uses, or ``None`` when it cannot build one at
     #: all. Three admitted values:

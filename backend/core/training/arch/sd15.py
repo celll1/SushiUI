@@ -16,6 +16,17 @@ class SD15ArchHandler(ArchHandler):
     name = "sd15"
     wiring = SD15_WIRING
 
+    def resolve_timestep_convention(self, trainer=None) -> str:
+        # ops/sd_sdxl_ops.py train_step maps the sampler's [0,1] draw
+        # DIFFERENTLY depending on noise_process: ddpm scales it to a discrete
+        # DDPM timestep via (1-t)*num_train_timesteps (t=0 -> near-T, noisy;
+        # t=1 -> near-0, clean), while flow feeds it straight into
+        # add_noise_unified's flow branch (t=0 -> clean, t=1 -> noise). Default
+        # matches ops/sd_sdxl_ops.py's own fallback ('ddpm', for backward
+        # compatibility) when noise_process is not yet set on the trainer.
+        noise_process = getattr(trainer, "noise_process", "ddpm") if trainer is not None else "ddpm"
+        return "t0" if noise_process == "flow" else "t1"
+
     def load_components(self, trainer) -> None:
         # P3a: ONE loader serves both SD1.5 and SDXL (sets trainer.is_sdxl).
         # Body lives in ops/sd_sdxl_ops (shared with the base_trainer load-time

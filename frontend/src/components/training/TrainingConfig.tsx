@@ -758,6 +758,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture;
   };
 
+  // Which end of the timestep_sampling [0,1] range is the CLEAN (noise-free)
+  // latent for the selected architecture. Mirrors the backend's single source
+  // of truth: backend/core/training/arch/*.py ArchHandler.timestep_convention
+  // / resolve_timestep_convention(). SD15/SDXL flip between the two
+  // conventions depending on noise_process (ops/sd_sdxl_ops.py ddpm/flow
+  // branches), so "auto" cannot be resolved client-side.
+  const getTimestepConvention = (modelPath: string, noiseProcessValue: string): "t0" | "t1" | "auto" => {
+    const arch = getModelArchitecture(modelPath);
+    if (arch === "sensenova" || arch === "minit2i") return "t1";
+    if (arch === "sd15" || arch === "sdxl") {
+      if (noiseProcessValue === "flow") return "t0";
+      if (noiseProcessValue === "ddpm") return "t1";
+      return "auto";
+    }
+    return "t0";
+  };
+
   // The backend's own reason a training method is REFUSED for this base model,
   // or undefined when it is offered. Read from GET /schema/arch-capabilities
   // (`training_unsupported`), so the disabled control, its tooltip and the
@@ -3817,6 +3834,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* Timestep Sampling */}
+            {(() => {
+              const timestepConvention = getTimestepConvention(baseModelPath, noiseProcess);
+              const cleanEndLabel = timestepConvention === "t1"
+                ? "1.0 = clean, 0.0 = fully noised"
+                : timestepConvention === "auto"
+                  ? "0.0 = clean, 1.0 = fully noised for noise_process=flow; the reverse for noise_process=ddpm"
+                  : "0.0 = clean, 1.0 = fully noised";
+              const meanBiasNote = timestepConvention === "t1"
+                ? "Mean: positive = high timesteps (clean), negative = low timesteps (noisy). Std: spread"
+                : timestepConvention === "auto"
+                  ? "Mean sign meaning depends on noise_process (flow: positive=noisy/negative=clean; ddpm: reversed). Std: spread"
+                  : "Mean: positive = high timesteps (noisy), negative = low timesteps (clean). Std: spread";
+              const graphAxisLabel = timestepConvention === "t1"
+                ? "X-axis: Timestep (0=noisy, 1=clean) | Y-axis: Sampling probability"
+                : timestepConvention === "auto"
+                  ? "X-axis: Timestep (0=clean/1=noisy for flow; reversed for ddpm) | Y-axis: Sampling probability"
+                  : "X-axis: Timestep (0=clean, 1=noisy) | Y-axis: Sampling probability";
+              return (
             <div className="col-span-2 border-t border-gray-700 pt-4">
               <h3 className="text-sm font-semibold text-gray-300 mb-3">Timestep Sampling</h3>
               <div className="grid grid-cols-1 gap-4">
@@ -3864,7 +3899,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                 </div>
                 <p className="text-xs text-gray-500">
-                  Timestep range for sampling (0.0 = clean, 1.0 = fully noised)
+                  Timestep range for sampling ({cleanEndLabel})
                 </p>
 
                 {/* Distribution-specific parameters: Mean/Std for logit_normal and normal */}
@@ -3899,7 +3934,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       {timestepDistribution === "normal" ? (
                         <>Mean: center of distribution (0.0-1.0). Std: spread (smaller = more concentrated)</>
                       ) : (
-                        <>Mean: positive = high timesteps (noisy), negative = low timesteps (clean). Std: spread</>
+                        <>{meanBiasNote}</>
                       )}
                     </p>
                   </div>
@@ -3951,11 +3986,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     beta={timestepBeta}
                   />
                   <p className="text-[10px] text-gray-500 mt-1 text-center">
-                    X-axis: Timestep (0=clean, 1=noisy) | Y-axis: Sampling probability
+                    {graphAxisLabel}
                   </p>
                 </div>
               </div>
             </div>
+              );
+            })()}
 
             {/* Regularization Settings */}
             <div className="space-y-4 p-3 bg-gray-900/50 rounded border border-gray-700/50">

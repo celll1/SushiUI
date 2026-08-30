@@ -651,8 +651,8 @@ def train_step(
             if trainer.timestep_sampler is not None:
                 # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
                 # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-                # DDPM: t=999 (noisy) → t=0 (clean)
-                # Flow: t=0 (noisy) → t=1 (clean)
+                # DDPM: t=999 (noisy) → t=0 (clean); sampler t=0 → noisy, t=1 → clean
+                # Flow (add_noise_unified): sampler t=0 → clean, t=1 → noise
                 # So we need to flip: YAML [0,1] → DDPM [999,0]
                 # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
                 timesteps_continuous = trainer.timestep_sampler.sample(batch_size, trainer.device)
@@ -679,8 +679,8 @@ def train_step(
         if noise_process == "ddpm":
             # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
             # IMPORTANT: DDPM convention is REVERSED from Flow Matching
-            # DDPM: t=999 (noisy) → t=0 (clean)
-            # Flow: t=0 (noisy) → t=1 (clean)
+            # DDPM: t=999 (noisy) → t=0 (clean); sampler t=0 → noisy, t=1 → clean
+            # Flow (add_noise_unified): sampler t=0 → clean, t=1 → noise
             # So we need to flip: YAML [0,1] → DDPM [999,0]
             timesteps = ((1.0 - timesteps) * trainer.noise_scheduler.config.num_train_timesteps).long()
             timesteps = timesteps.clamp(0, trainer.noise_scheduler.config.num_train_timesteps - 1)

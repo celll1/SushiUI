@@ -16,6 +16,13 @@ class SDXLArchHandler(ArchHandler):
     name = "sdxl"
     wiring = SDXL_WIRING
 
+    def resolve_timestep_convention(self, trainer=None) -> str:
+        # Same dual convention as SD15ArchHandler -- see that docstring; the
+        # ddpm/flow branches are shared between sd15 and sdxl in
+        # ops/sd_sdxl_ops.py.
+        noise_process = getattr(trainer, "noise_process", "ddpm") if trainer is not None else "ddpm"
+        return "t0" if noise_process == "flow" else "t1"
+
     def load_components(self, trainer) -> None:
         # P3a: ONE loader serves both SD1.5 and SDXL; it SETS trainer.is_sdxl.
         # Body lives in ops/sd_sdxl_ops (shared with the base_trainer load-time

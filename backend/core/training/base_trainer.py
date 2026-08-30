@@ -9362,8 +9362,11 @@ class BaseTrainer(ABC):
         except OSError:
             pass
 
-    @staticmethod
+    # Not a staticmethod: the metadata is filtered by what THIS run's
+    # architecture reads, which only the instance knows. Both call sites
+    # already invoked it through `self`.
     def _save_sample_with_metadata(
+        self,
         sample: Image.Image,
         sample_path: Path,
         *,
@@ -9395,6 +9398,15 @@ class BaseTrainer(ABC):
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
     ) -> None:
+        # Only what this architecture's sample path actually reads. A SenseNova
+        # preview is produced by its own prefix + Euler loop, which has no
+        # sampler, no schedule_type and no NAG; recording them anyway made the
+        # PNG state how the image was made and be wrong about it. The gate is
+        # the same one that decides which keys the YAML carries, so a control
+        # cannot be inert in the config and authoritative in the metadata.
+        from api.arch_capabilities import training_sample_key_supported
+        _arch_name = getattr(getattr(self, "arch", None), "name", None)
+
         metadata = PngImagePlugin.PngInfo()
         for key, value in {
             "prompt": prompt,
@@ -9423,6 +9435,8 @@ class BaseTrainer(ABC):
             "sensenova_img_cfg_scale": sensenova_img_cfg_scale,
             "sensenova_cfg_norm": sensenova_cfg_norm,
         }.items():
+            if not training_sample_key_supported(_arch_name, key):
+                continue
             metadata.add_text(key, str(value))
         if condition_image_path:
             metadata.add_text("condition_image_path", condition_image_path)

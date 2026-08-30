@@ -330,10 +330,15 @@ def test_sd_advanced_sample_controls_are_threaded_and_capability_gated():
         "cfg_rescale_snr_alpha", "dynamic_threshold_percentile", "dynamic_threshold_mimic_scale",
         "nag_enable", "nag_scale", "nag_tau", "nag_alpha", "nag_sigma_end", "nag_negative_prompt",
     )
+    # The three generators reach the sample section through ONE arch-gated
+    # builder (training_config._build_sample_section), so the key appears once
+    # in the generator rather than three times -- see
+    # training_sample_arch_gate_test for what the gate withholds and why.
+    assert config_source.count('"sample": _build_sample_section(') == 3
     for key in keys:
         sample_key = f"sample_{key}"
         assert f'"{sample_key}": GENERATION_DEFAULTS["{key}"]' in defaults_source
-        assert config_source.count(f'p.get("{sample_key}"') == 3
+        assert f'"{key}"' in config_source
         assert runner_source.count(f'sample_{key}=sample_config["{key}"]') == 4
         assert sample_key in capabilities_source
         assert sample_key in frontend_source

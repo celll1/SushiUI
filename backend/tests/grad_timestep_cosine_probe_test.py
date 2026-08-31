@@ -30,6 +30,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.training.base_trainer import BaseTrainer as BaseTrainerRef
 from core.training.probes.grad_timestep_cosine import GradTimestepCosineProbe
 
 
@@ -205,6 +206,54 @@ def test_projection_is_stable_across_buckets_and_windows():
 
     fresh = GradTimestepCosineProbe(t_split=0.5, sketch_dim=8, seed=11)
     assert torch.equal(first, fresh._projection(64, torch.device("cpu"), torch.float32))
+
+
+def test_probe_is_armed_after_the_optimizer_exists():
+    """Regression: it was armed next to the timestep sampler, which runs BEFORE
+    setup_optimizer. `use_fused_backward` is set while the optimizer is built,
+    so the probe's own guard disabled it every time and it silently produced no
+    data. The two conditions it needs -- the fused path and the adapter's
+    parameter classification -- only exist after setup_optimizer."""
+    import inspect
+
+    from core.training.base_trainer import BaseTrainer
+
+    src = inspect.getsource(BaseTrainer.train)
+    setup = src.index("self.setup_optimizer(")
+    arm = src.index("self._maybe_build_grad_t_cos_probe(")
+    assert setup < arm, "probe armed before setup_optimizer; it will disable itself"
+
+
+def test_probe_refuses_without_the_fused_backward_path():
+    class Harness:
+        _maybe_build_grad_t_cos_probe = BaseTrainerRef._maybe_build_grad_t_cos_probe
+        _grad_t_cos_components = BaseTrainerRef._grad_t_cos_components
+
+        def __init__(self, fused):
+            self.config = {"grad_timestep_cosine_probe": True}
+            self.log_prefix = "[Test]"
+            self.use_fused_backward = fused
+
+        def _full_parameter_grad_components(self):
+            return {}
+
+    class _Sampler:
+        def icdf(self, u):
+            return torch.full_like(u, 0.31)
+
+    h = Harness(False)
+    h._maybe_build_grad_t_cos_probe(_Sampler(), 16)
+    assert h._grad_t_cos_probe is None
+
+    h = Harness(True)
+    h._maybe_build_grad_t_cos_probe(_Sampler(), 16)
+    assert h._grad_t_cos_probe is not None
+    assert h._grad_t_cos_probe.t_split == pytest.approx(0.31)
+
+    # MNT=1 has no second bucket to compare against.
+    h = Harness(True)
+    h._maybe_build_grad_t_cos_probe(_Sampler(), 1)
+    assert h._grad_t_cos_probe is None
 
 
 def test_projection_does_not_consume_the_training_rng():

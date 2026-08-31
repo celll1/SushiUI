@@ -562,6 +562,12 @@ def _build_train_section(
     train["multi_noise_mode"] = p.get("multi_noise_mode", "independent")
     train["stratified_timesteps"] = bool(
         p.get("stratified_timesteps", TRAINING_DEFAULTS["stratified_timesteps"]))
+    train["grad_timestep_cosine_probe"] = bool(
+        p.get("grad_timestep_cosine_probe",
+              TRAINING_DEFAULTS["grad_timestep_cosine_probe"]))
+    train["grad_timestep_cosine_sketch_dim"] = int(
+        p.get("grad_timestep_cosine_sketch_dim",
+              TRAINING_DEFAULTS["grad_timestep_cosine_sketch_dim"]))
     train["trajectory_blend_alpha"] = p.get("trajectory_blend_alpha", 0.7)
     if p.get("timestep_sampling"):
         train["timestep_sampling"] = p["timestep_sampling"]

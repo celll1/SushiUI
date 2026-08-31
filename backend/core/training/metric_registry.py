@@ -64,6 +64,22 @@ EXTRA_METRIC_DEFS = {
     # accumulation that is every step, and with a mixed window it is none.
     "gnorm_null": {"label": "Grad norm (null)", "color": "#fb7185", "dashed": False},
     "gnorm_cond": {"label": "Grad norm (cond)", "color": "#4ade80", "dashed": False},
+    # Cosine between the MNT window's noisy-half and clean-half accumulated
+    # gradients (probes/grad_timestep_cosine.py), opt-in. Bounded to [-1, 1] and
+    # centred on 0, so it belongs on the right axis rather than pooling into the
+    # loss range. Near 0 means distant timesteps are merely uncorrelated -- a
+    # variance problem that stratified sampling addresses. Negative means real
+    # negative transfer, which is the premise the timestep-clustering and
+    # gradient-surgery literature rests on and which nothing has established
+    # for a MoT whose conditioning tower is a separate weight set.
+    "grad_cos_t_all": {"label": "Grad cos noisy/clean (all)", "color": "#a78bfa",
+                       "dashed": False, "axis": "right"},
+    "grad_cos_t_unet": {"label": "Grad cos noisy/clean (gen)", "color": "#38bdf8",
+                        "dashed": True, "axis": "right"},
+    "grad_cos_t_te1": {"label": "Grad cos noisy/clean (und)", "color": "#f472b6",
+                       "dashed": True, "axis": "right"},
+    "grad_cos_t_te": {"label": "Grad cos noisy/clean (TE)", "color": "#f472b6",
+                      "dashed": True, "axis": "right"},
     # Actually-applied per-step learning rate (optimizer.param_groups[0]['lr']),
     # logged for every trainer (LoRA/full-FT/ControlNet share the same
     # BaseTrainer.train() loop). Schedules can now be non-constant

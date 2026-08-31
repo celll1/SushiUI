@@ -283,6 +283,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   multi_noise_timesteps: 1,
   multi_noise_mode: "independent",
   stratified_timesteps: true,
+  grad_timestep_cosine_probe: false,
+  grad_timestep_cosine_sketch_dim: 8,
   trajectory_blend_alpha: 0.7,
   timestep_sampling: {
     distribution: "uniform",
@@ -1196,6 +1198,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       activation_dispatch_threshold_mb: params.activation_dispatch_threshold_mb,
       multi_noise_timesteps: params.multi_noise_timesteps,
       stratified_timesteps: params.stratified_timesteps,
+      grad_timestep_cosine_probe: params.grad_timestep_cosine_probe,
+      grad_timestep_cosine_sketch_dim: params.grad_timestep_cosine_sketch_dim,
       multi_noise_mode: params.multi_noise_mode,
       trajectory_blend_alpha: params.trajectory_blend_alpha,
       timestep_sampling: {
@@ -1467,7 +1471,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
       "activation_dispatch_threshold_mb",
-      "multi_noise_timesteps", "multi_noise_mode", "stratified_timesteps", "trajectory_blend_alpha",
+      "multi_noise_timesteps", "multi_noise_mode", "stratified_timesteps",
+      "grad_timestep_cosine_probe", "grad_timestep_cosine_sketch_dim", "trajectory_blend_alpha",
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
       "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
       "energy_normalize_by_pixels",
@@ -3825,6 +3830,44 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   marginal distribution, so the configured timestep density is unchanged.
                   Not available for the beta distribution.
                 </p>
+              </div>
+            )}
+
+            {multiNoiseTimesteps > 1 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.grad_timestep_cosine_probe ?? false}
+                    onChange={(e) => updateParam("grad_timestep_cosine_probe", e.target.checked)}
+                    className="w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-400">Gradient cosine probe (noisy vs clean timesteps)</span>
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Diagnostic. Splits each MNT window's gradients at the sampler's median
+                  timestep and charts the cosine between the two halves per branch
+                  (grad_cos_t_*). Near 0 means distant timesteps are uncorrelated;
+                  negative means they conflict. Needs the fused backward path.
+                </p>
+                {params.grad_timestep_cosine_probe && (
+                  <div className="mt-2">
+                    <label className="block text-xs text-gray-400 mb-1">Sketch dimension</label>
+                    <NumberInput
+                      value={params.grad_timestep_cosine_sketch_dim ?? 8}
+                      onCommit={(v) => updateParam("grad_timestep_cosine_sketch_dim", v)}
+                      defaultValue={8}
+                      min={1}
+                      max={64}
+                      step={1}
+                      parse="int"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Higher is a less noisy cosine estimate at more compute
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

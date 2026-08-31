@@ -7449,6 +7449,8 @@ export interface TrainingRunCreateRequest {
   multi_noise_timesteps?: number;
   multi_noise_mode?: string;
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)
+  grad_timestep_cosine_probe?: boolean;  // Diagnostic: cosine between the noisy-half and clean-half gradients of each MNT window
+  grad_timestep_cosine_sketch_dim?: number;  // Bilinear sketch width for the above (default 8)
   trajectory_blend_alpha?: number;
   timestep_sampling?: {
     distribution: string;

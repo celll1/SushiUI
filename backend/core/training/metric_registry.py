@@ -74,11 +74,14 @@ EXTRA_METRIC_DEFS = {
     # for a MoT whose conditioning tower is a separate weight set.
     # Conditioning strength, measured on the periodic training sample. Both CFG
     # branches already exist at every step of that generation, so these cost no
-    # extra forward and nothing at all per training iteration. cfg_guidance_rel
-    # is ||v_cond - v_uncond|| / ||v_uncond||: the size of the direction CFG
-    # applies, which is exactly what conditioning collapse destroys. The cosine
-    # is the same collapse from the direction side. Ratios and correlations, so
-    # they sit on the right axis rather than pooling into the loss range.
+    # extra forward and nothing at all per training iteration.
+    #
+    # Measured in x0 SPACE: ||x0_cond - x0_uncond|| / ||x0_uncond||, i.e. how
+    # differently the caption makes the model predict the clean image. The
+    # velocity-space version of the same ratio is dominated by the noised sample
+    # z, which is identical on both branches -- at 1024px it pinned the series
+    # near 0.01 with the cosine at 1.000 regardless of conditioning strength.
+    # The x0 form has ~6x the dynamic range and a cosine that actually moves.
     "cfg_guidance_rel": {"label": "CFG guidance strength", "color": "#22d3ee",
                          "dashed": False, "axis": "right"},
     "cfg_guidance_rel_early": {"label": "CFG guidance (high noise)", "color": "#67e8f9",

@@ -224,6 +224,60 @@ def test_probe_is_armed_after_the_optimizer_exists():
     assert setup < arm, "probe armed before setup_optimizer; it will disable itself"
 
 
+def test_every_fused_hook_site_feeds_the_observer():
+    """Regression: the probe armed but never saw a gradient. Its observe() call
+    lived only in the trainer's own hook loop, and adamw8bit_ringbuffer /
+    lion8bit_ringbuffer register their hooks themselves and return before that
+    loop runs -- which is the optimizer the SenseNova full-FT contract actually
+    uses. Carried on the optimizer now, so every site feeds it; this pins that
+    every site calls it."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "core" / "training"
+    sites = [
+        root / "optimizers" / "adamw8bit_ringbuffer.py",
+        root / "optimizers" / "lion8bit_ringbuffer.py",
+        root / "optimizers" / "fused_optimizer_groups.py",
+        root / "base_trainer.py",
+    ]
+    for path in sites:
+        src = path.read_text(encoding="utf-8")
+        norms = len(re.findall(r"record_fused_grad_norm\(\w", src))
+        obs = len(re.findall(r"record_fused_grad_observation\(\w", src))
+        assert norms > 0, path.name
+        assert obs == norms, (
+            f"{path.name}: {norms} grad-norm record site(s) but {obs} observer "
+            f"site(s); a hook that records the norm but not the observation is "
+            f"a probe that silently sees nothing"
+        )
+
+
+def test_observer_attaches_to_and_detaches_from_an_optimizer():
+    from core.training.optimizers.fused_grad_norm import (
+        attach_grad_observer,
+        record_fused_grad_observation,
+    )
+
+    class Recorder:
+        def __init__(self):
+            self.seen = []
+
+        def observe(self, param):
+            self.seen.append(param)
+
+    opt = torch.optim.SGD([torch.nn.Parameter(torch.zeros(2))], lr=0.1)
+    p = _param(torch.randn(4, 4))
+
+    record_fused_grad_observation(opt, p)  # nothing attached yet
+    rec = Recorder()
+    attach_grad_observer(opt, rec)
+    record_fused_grad_observation(opt, p)
+    attach_grad_observer(opt, None)
+    record_fused_grad_observation(opt, p)
+    assert len(rec.seen) == 1
+
+
 def test_probe_refuses_without_the_fused_backward_path():
     class Harness:
         _maybe_build_grad_t_cos_probe = BaseTrainerRef._maybe_build_grad_t_cos_probe

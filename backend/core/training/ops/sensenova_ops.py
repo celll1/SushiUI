@@ -1746,6 +1746,42 @@ def _teardown_sample_kv_streaming(transformer: Any, streamer: Any) -> None:
     kv_cache_streaming.uninstall(transformer, streamer)
 
 
+def _log_sample_guidance(trainer: Any, steps: Any) -> None:
+    """Turn a sample's per-step CFG guidance into two conditioning-strength series.
+
+    ``cfg_guidance_rel`` is ``||v_cond - v_uncond|| / ||v_uncond||`` averaged
+    over the denoise trajectory: the size of the direction CFG applies. It is
+    what conditioning collapse destroys -- if the conditional and unconditional
+    predictions converge, this goes to zero and the served cfg_scale stops
+    doing anything, regardless of what the training loss shows.
+
+    ``cfg_guidance_cos`` is the cosine between the two branches. Rising toward
+    1 is the same collapse seen from the direction side rather than the
+    magnitude side, and it separates "the branches agree" from "both shrank".
+
+    Also emitted for the first third of the trajectory alone
+    (``cfg_guidance_rel_early``), which is where the noise level is highest and
+    where the conditioning is measurably most load-bearing: the caption-drop
+    ablation moves the understanding branch's gradient 45% at the noisy end and
+    only 8% at the clean end.
+
+    Best-effort. A sample that failed, or a run at cfg_scale <= 1 where no
+    unconditional branch is built, simply logs nothing.
+    """
+    try:
+        rows = list(steps or [])
+        if not rows:
+            return
+        rel = [r["relative_diff"] for r in rows]
+        cos = [r["cosine_similarity"] for r in rows]
+        trainer.log_extra_metric("cfg_guidance_rel", sum(rel) / len(rel))
+        trainer.log_extra_metric("cfg_guidance_cos", sum(cos) / len(cos))
+        early = rel[: max(1, len(rel) // 3)]
+        trainer.log_extra_metric("cfg_guidance_rel_early", sum(early) / len(early))
+    except Exception:
+        return
+
+
 def generate_sample(
     trainer: Any,
     *,
@@ -1846,15 +1882,21 @@ def generate_sample(
             if evictor is not None:
                 evictor.enter_denoise()
                 evictor.assert_generation_resident()
-            image_tensor = ops.denoise_loop(
-                transformer,
-                prefix,
-                cfg_scale=guidance_scale,
-                timestep_shift=timestep_shift,
-                num_inference_steps=num_inference_steps,
-                seed=seed if seed is not None and seed >= 0 else None,
-                cfg_norm=cfg_norm,
-            )
+            # Both CFG branches are computed at every step of this generation
+            # anyway, so the guidance strength comes out for the price of a norm
+            # -- and it is the direct read on whether the fine-tune's text
+            # conditioning is still alive. Nothing here costs a training step.
+            with ops.collect_guidance_metrics() as guidance_steps:
+                image_tensor = ops.denoise_loop(
+                    transformer,
+                    prefix,
+                    cfg_scale=guidance_scale,
+                    timestep_shift=timestep_shift,
+                    num_inference_steps=num_inference_steps,
+                    seed=seed if seed is not None and seed >= 0 else None,
+                    cfg_norm=cfg_norm,
+                )
+            _log_sample_guidance(trainer, guidance_steps)
         image = ops.tensor_to_image(image_tensor.float())
         del image_tensor
         return image

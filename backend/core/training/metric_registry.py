@@ -72,6 +72,19 @@ EXTRA_METRIC_DEFS = {
     # negative transfer, which is the premise the timestep-clustering and
     # gradient-surgery literature rests on and which nothing has established
     # for a MoT whose conditioning tower is a separate weight set.
+    # Conditioning strength, measured on the periodic training sample. Both CFG
+    # branches already exist at every step of that generation, so these cost no
+    # extra forward and nothing at all per training iteration. cfg_guidance_rel
+    # is ||v_cond - v_uncond|| / ||v_uncond||: the size of the direction CFG
+    # applies, which is exactly what conditioning collapse destroys. The cosine
+    # is the same collapse from the direction side. Ratios and correlations, so
+    # they sit on the right axis rather than pooling into the loss range.
+    "cfg_guidance_rel": {"label": "CFG guidance strength", "color": "#22d3ee",
+                         "dashed": False, "axis": "right"},
+    "cfg_guidance_rel_early": {"label": "CFG guidance (high noise)", "color": "#67e8f9",
+                               "dashed": True, "axis": "right"},
+    "cfg_guidance_cos": {"label": "cos(cond, uncond)", "color": "#fda4af",
+                         "dashed": True, "axis": "right"},
     "grad_cos_t_all": {"label": "Grad cos noisy/clean (all)", "color": "#a78bfa",
                        "dashed": False, "axis": "right"},
     "grad_cos_t_unet": {"label": "Grad cos noisy/clean (gen)", "color": "#38bdf8",

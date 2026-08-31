@@ -611,6 +611,10 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
         float((noise_pred_text.float() * noise_pred_uncond.float()).sum().item() / denominator)
         if denominator > 1e-8 else 0.0
     )
+    # Clamped: the norms and the dot product are separate reductions, so two
+    # identical branches -- which is what a fully collapsed conditioning looks
+    # like -- come out at 1.0001 and read as an impossible cosine.
+    cosine_similarity = max(-1.0, min(1.0, cosine_similarity))
 
     # Relative difference: how much CFG will change the prediction
     # This is more meaningful than absolute norms

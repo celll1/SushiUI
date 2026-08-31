@@ -5164,6 +5164,8 @@ class BaseTrainer(ABC):
         try:
             from .probes.grad_timestep_cosine import GradTimestepCosineProbe
 
+            from .optimizers.fused_grad_norm import attach_grad_observer
+
             self._grad_t_cos_probe = GradTimestepCosineProbe(
                 t_split=split,
                 sketch_dim=int(self.config.get(
@@ -5171,9 +5173,17 @@ class BaseTrainer(ABC):
                     _TRAINING_DEFAULTS["grad_timestep_cosine_sketch_dim"])),
                 components=self._grad_t_cos_components(),
             )
+            # Every optimizer, not just self.optimizer: under fused optimizer
+            # groups each one owns a slice of the parameters and runs its own
+            # hooks, so attaching to the first would silently sketch 1/N of the
+            # gradient.
+            attached = 0
+            for optimizer in all_optimizers(self):
+                attach_grad_observer(optimizer, self._grad_t_cos_probe)
+                attached += 1
             print(f"{self.log_prefix} grad_timestep_cosine_probe armed: split at "
                   f"t={split:.4f} (the sampler's median), sketch dim "
-                  f"{self._grad_t_cos_probe.k}")
+                  f"{self._grad_t_cos_probe.k}, attached to {attached} optimizer(s)")
         except Exception as exc:
             print(f"{self.log_prefix} grad_timestep_cosine_probe failed to arm "
                   f"({exc}); continuing without it")
@@ -6149,7 +6159,10 @@ class BaseTrainer(ABC):
             return  # Skip the hook registration loop below
 
         # Register hooks for all trainable parameters
-        from .optimizers.fused_grad_norm import record_fused_grad_norm
+        from .optimizers.fused_grad_norm import (
+            record_fused_grad_norm,
+            record_fused_grad_observation,
+        )
 
         hooks_registered = 0
         for param_group in self.optimizer.param_groups:
@@ -6164,12 +6177,9 @@ class BaseTrainer(ABC):
                         # Before the update, which is free to scale the gradient
                         # in place, and before the clear below.
                         record_fused_grad_norm(self.optimizer, tensor)
-
-                        # Same window: the gradient is only live between the
-                        # accumulation that triggered this hook and the clear
-                        # below. Read-only; the probe never touches .grad.
-                        if self._grad_t_cos_probe is not None:
-                            self._grad_t_cos_probe.observe(tensor)
+                        # Same window, and carried on the optimizer so every
+                        # fused hook site feeds it -- see attach_grad_observer.
+                        record_fused_grad_observation(self.optimizer, tensor)
 
                         # Update THIS parameter immediately (while on GPU)
                         self.optimizer.step_param(tensor, pg)

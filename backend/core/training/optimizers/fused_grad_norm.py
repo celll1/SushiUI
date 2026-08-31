@@ -18,6 +18,7 @@ from typing import Dict, Iterable, List, Optional
 import torch
 
 ACCUMULATOR_ATTR = "_sushiui_fused_grad_norm"
+OBSERVER_ATTR = "_sushiui_fused_grad_observer"
 
 
 class FusedGradNormAccumulator:
@@ -78,6 +79,36 @@ def record_fused_grad_norm(optimizer, param: torch.nn.Parameter) -> None:
     accumulator = getattr(optimizer, ACCUMULATOR_ATTR, None)
     if accumulator is not None and accumulator.enabled:
         accumulator.record(param)
+
+
+def attach_grad_observer(optimizer, observer) -> None:
+    """Give ``optimizer``'s fused hooks a second reader of each gradient.
+
+    Carried on the optimizer for the same reason the norm accumulator is: the
+    per-parameter hooks are built in four different places (the trainer's own
+    loop, fused optimizer groups, and each ring-buffer optimizer's own
+    registration), and only the optimizer is in scope in all of them. A probe
+    that instead reached for the trainer would have to be wired into each one
+    separately -- which is exactly how the timestep-cosine probe came to be
+    armed but never fed: the ring-buffer path registers its hooks itself and
+    returns before the trainer's loop runs.
+
+    ``observer`` needs one method, ``observe(param)``, and must not raise.
+    Passing None detaches.
+    """
+    setattr(optimizer, OBSERVER_ATTR, observer)
+
+
+def record_fused_grad_observation(optimizer, param: torch.nn.Parameter) -> None:
+    """Hand ``param``'s gradient to ``optimizer``'s observer, if one is attached.
+
+    Called from the same point as :func:`record_fused_grad_norm` -- before the
+    hook applies its update and clears the gradient, which is the only window
+    in which it exists. When nothing is attached this is one attribute lookup.
+    """
+    observer = getattr(optimizer, OBSERVER_ATTR, None)
+    if observer is not None:
+        observer.observe(param)
 
 
 def squared_norms_from_grads(params: Iterable[torch.nn.Parameter]) -> Dict[int, float]:

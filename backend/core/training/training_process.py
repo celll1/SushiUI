@@ -30,6 +30,34 @@ def _is_venv_interpreter(python_path: Path) -> bool:
         return False
 
 
+def resolve_cuda_visible_devices(
+    inherited: Optional[str], gpu_index: Optional[int]
+) -> Optional[str]:
+    """The child's CUDA_VISIBLE_DEVICES, or None to leave the parent's alone.
+
+    Pinning a run to a GPU goes through the environment rather than a device
+    argument because the trainer addresses its device as "cuda"/"cuda:0" in
+    ~100 places; hiding the other GPUs makes every one of them resolve to the
+    selected card with no code change.
+
+    If the backend itself was launched with CUDA_VISIBLE_DEVICES, indices are
+    already remapped, so ``gpu_index`` selects *within that list* rather than
+    being a physical index. Composing the two is the only reading that cannot
+    silently point at a different card than the one the UI offered.
+    """
+    if gpu_index is None:
+        return None
+    visible = [t.strip() for t in (inherited or "").split(",") if t.strip()]
+    if not visible:
+        return str(gpu_index)
+    if gpu_index >= len(visible):
+        raise ValueError(
+            f"gpu_index={gpu_index} is outside the backend's "
+            f"CUDA_VISIBLE_DEVICES={inherited} ({len(visible)} device(s) visible)"
+        )
+    return visible[gpu_index]
+
+
 def resolve_venv_python() -> str:
     """Resolve the interpreter to use for spawning the training subprocess.
 
@@ -89,6 +117,7 @@ class TrainingProcess:
         config_path: str,
         output_dir: str,
         venv_python: str = None,
+        gpu_index: Optional[int] = None,
     ):
         """
         Initialize training process.
@@ -97,6 +126,10 @@ class TrainingProcess:
             run_id: Training run ID
             config_path: Path to YAML config file
             output_dir: Output directory for checkpoints
+            gpu_index: Physical GPU index to pin the child to via
+                CUDA_VISIBLE_DEVICES. None inherits the parent's visible
+                devices. Because the child sees only the selected GPU, every
+                "cuda"/"cuda:0" in the trainer resolves to it unchanged.
             venv_python: Path to venv Python executable. If not given, it is
                 resolved via ``resolve_venv_python()`` (prefers the currently
                 running interpreter if it is itself a venv Python, otherwise
@@ -106,6 +139,7 @@ class TrainingProcess:
         self.run_id = run_id
         self.config_path = config_path
         self.output_dir = output_dir
+        self.gpu_index = gpu_index
         self.venv_python = venv_python or resolve_venv_python()
 
         self.process: Optional[subprocess.Popen] = None
@@ -188,6 +222,13 @@ class TrainingProcess:
         env["PYTHONUNBUFFERED"] = "1"  # Disable buffering for real-time logs
         # Add backend directory to PYTHONPATH so imports work
         env["PYTHONPATH"] = str(backend_dir) + os.pathsep + env.get("PYTHONPATH", "")
+
+        selected_gpu = resolve_cuda_visible_devices(
+            env.get("CUDA_VISIBLE_DEVICES"), self.gpu_index
+        )
+        if selected_gpu is not None:
+            env["CUDA_VISIBLE_DEVICES"] = selected_gpu
+            print(f"[Training] Run {self.run_id} pinned to GPU {selected_gpu} (CUDA_VISIBLE_DEVICES)")
 
         # Pre-spawn cleanup: a leftover .stop_training flag from a previous run
         # in the same output_dir (e.g. a prior stop request that raced with, or
@@ -437,6 +478,7 @@ class TrainingProcessManager:
         config_path: str,
         output_dir: str,
         venv_python: str = None,
+        gpu_index: Optional[int] = None,
     ) -> TrainingProcess:
         """
         Create and register a training process.
@@ -446,6 +488,7 @@ class TrainingProcessManager:
             config_path: Path to YAML config file
             output_dir: Output directory
             venv_python: Path to venv Python executable
+            gpu_index: Physical GPU index to pin the child to (None: inherit)
 
         Returns:
             TrainingProcess instance
@@ -461,7 +504,7 @@ class TrainingProcessManager:
                 f"(pid {getattr(self.processes[run_id].process, 'pid', '?')}); "
                 f"stop it before starting the run again."
             )
-        process = TrainingProcess(run_id, config_path, output_dir, venv_python)
+        process = TrainingProcess(run_id, config_path, output_dir, venv_python, gpu_index)
         self.processes[run_id] = process
         return process
 

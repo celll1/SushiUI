@@ -9,6 +9,7 @@ import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
+import GpuSelect from "./GpuSelect";
 
 interface TrainingConfigProps {
   onClose: () => void;
@@ -105,6 +106,7 @@ const RequiredValueNote = ({ entry }: { entry?: TrainingRequiredValue }) =>
 const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   training_method: "lora",
   base_model_path: "",
+  gpu_index: null,
   dataset_configs: [],
   total_steps: 1000,
   // Initialized (not undefined) so users can toggle the "Epochs" radio
@@ -1041,6 +1043,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ema_decay: params.ema_decay,
       ema_update_every: params.ema_update_every,
       ema_device: params.ema_device,
+      gpu_index: params.gpu_index,
       optimizer: params.optimizer,
       optimizer_cautious: params.optimizer_cautious,
       optimizer_beta1: localBeta1Text ? parseFloat(localBeta1Text) : undefined,
@@ -1402,7 +1405,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
       "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
-      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "ema_update_every", "ema_device", "optimizer",
+      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "ema_update_every", "ema_device", "gpu_index", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -2812,6 +2815,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             placeholder="Leave empty for auto-generated name (e.g., 20251130_174523_a1b2c3d4)"
             className={`w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500 ${editRunId ? 'opacity-50 cursor-not-allowed' : ''}`}
             disabled={!!editRunId}
+          />
+        </div>
+
+        {/* GPU Selection */}
+        <div className="break-inside-avoid">
+          <GpuSelect
+            value={params.gpu_index ?? null}
+            onChange={(v) => updateParam("gpu_index", v)}
+            label="GPU"
           />
         </div>
 

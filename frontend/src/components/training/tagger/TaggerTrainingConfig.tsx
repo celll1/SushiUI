@@ -12,6 +12,7 @@ import {
 } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import NumberInput from "../../common/NumberInput";
+import GpuSelect from "../GpuSelect";
 
 interface TaggerTrainingConfigProps {
   onClose: () => void;
@@ -24,6 +25,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   run_name: "",
   training_method: "lora",
   vision_encoder_path: "",
+  gpu_index: null,
   init_head_from: "",
   lora_rank: 32,
   lora_alpha: 16,
@@ -153,6 +155,7 @@ export default function TaggerTrainingConfig({
         run_name: editRun.run_name,
         training_method: (editRun.config?.training_method as ConfigState["training_method"]) ?? DEFAULT_CONFIG.training_method,
         vision_encoder_path: editRun.vision_encoder_path,
+        gpu_index: (editRun.config?.gpu_index as number | null) ?? DEFAULT_CONFIG.gpu_index,
         init_head_from: (editRun.config?.init_head_from as string) ?? DEFAULT_CONFIG.init_head_from,
         lora_rank: (editRun.config?.lora_rank as number) ?? DEFAULT_CONFIG.lora_rank,
         lora_alpha: (editRun.config?.lora_alpha as number) ?? DEFAULT_CONFIG.lora_alpha,
@@ -370,6 +373,15 @@ export default function TaggerTrainingConfig({
             onChange={(e) => setField("run_name", e.target.value)}
             placeholder="e.g. siglip2_tagger_v1_20260409"
             className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          />
+        </section>
+
+        {/* GPU Selection */}
+        <section>
+          <GpuSelect
+            value={config.gpu_index ?? null}
+            onChange={(v) => setField("gpu_index", v)}
+            label="GPU"
           />
         </section>
 

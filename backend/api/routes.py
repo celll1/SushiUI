@@ -12517,6 +12517,29 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+def _cuda_visible_index_map() -> Optional[Dict[int, int]]:
+    """Physical (nvidia-smi) GPU index -> torch device index.
+
+    Returns None when CUDA_VISIBLE_DEVICES is unset, i.e. the two spaces are
+    identical. Returns an empty dict when the variable is set to something that
+    cannot be resolved to physical indices (UUID form), which means "no entry
+    can be addressed by index" rather than "identity" -- guessing there would
+    hand out a selection that points at a different card.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None or not raw.strip():
+        return None
+    mapping: Dict[int, int] = {}
+    for visible_index, token in enumerate(t.strip() for t in raw.split(",")):
+        if not token:
+            continue
+        try:
+            mapping[int(token)] = visible_index
+        except ValueError:
+            return {}
+    return mapping
+
+
 @router.get("/system/gpu-stats")
 async def get_gpu_stats():
     """Get GPU statistics (VRAM, utilization, temperature)"""
@@ -12530,6 +12553,12 @@ async def get_gpu_stats():
             }
 
         stats = []
+        # nvidia-smi reports PHYSICAL indices; NVML does not honour
+        # CUDA_VISIBLE_DEVICES. Everything that consumes a GPU choice (torch,
+        # gpu_index) works in torch's VISIBLE index space, so each entry also
+        # carries the index torch would address it by -- null when this GPU is
+        # not visible to torch at all, or when the mapping cannot be derived.
+        visible_map = _cuda_visible_index_map()
 
         # Try nvidia-smi first (most reliable method)
         try:
@@ -12562,6 +12591,9 @@ async def get_gpu_stats():
 
                         gpu_stats = {
                             "index": index,
+                            "cuda_index": (
+                                index if visible_map is None else visible_map.get(index)
+                            ),
                             "name": name,
                             "vram_used_gb": round(mem_used, 2),
                             "vram_total_gb": round(mem_total, 2),
@@ -12589,8 +12621,11 @@ async def get_gpu_stats():
             mem_reserved = torch.cuda.memory_reserved(i) / (1024 ** 3)
             mem_total = props.total_memory / (1024 ** 3)
 
+            # This branch enumerates torch itself, so the index already is the
+            # visible one.
             stats.append({
                 "index": i,
+                "cuda_index": i,
                 "name": props.name,
                 "vram_used_gb": round(mem_allocated, 2),
                 "vram_total_gb": round(mem_total, 2),
@@ -15146,6 +15181,11 @@ class TrainingRunCreateRequest(BaseModel):
     run_name: Optional[str] = None  # Optional - will use UUID if not provided
     training_method: str  # 'lora' | 'relora' | 'controlnet' | 'full_finetune' | 'vae_decoder'
     base_model_path: str
+    # Physical GPU index to pin this run's training subprocess to. None keeps
+    # the previous behaviour (inherit the backend's visible devices). Validated
+    # against the machine's device count at start time, not here: a run may be
+    # created on one machine's config and started on another.
+    gpu_index: Optional[int] = Field(default=TRAINING_DEFAULTS["gpu_index"], ge=0)
 
     # VAE decoder fine-tune (training_method == "vae_decoder"). A single nested
     # dict mirroring VAE_TRAINING_DEFAULTS (the SSOT) rather than ~30 flat
@@ -16390,6 +16430,40 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # Finished/never-spawned entry: reap it so create_process starts clean.
         await training_process_manager.remove_process(run_id)
 
+    # GPU pinning (config.process[0].train.gpu_index). Read and validated before
+    # the row is touched and before the drift/rescan pre-flight, which can run
+    # for hours: a bad index should be reported now, not then. Validated at start
+    # rather than at creation because a run's YAML can be written on one machine
+    # and started on another with a different device count.
+    _gpu_index = None
+    try:
+        import yaml as _yaml
+        _gpu_doc = _yaml.safe_load(run.config_yaml or "") or {}
+        _gpu_root = _gpu_doc.get("config") or _gpu_doc
+        _gpu_proc = (_gpu_root.get("process") or [{}])[0] or {}
+        _gpu_index = (_gpu_proc.get("train") or {}).get("gpu_index")
+    except Exception as _gpu_err:
+        print(f"[API] WARNING: could not read gpu_index from config_yaml "
+              f"for run {run_id}: {_gpu_err}")
+    if _gpu_index is not None:
+        if isinstance(_gpu_index, bool) or not isinstance(_gpu_index, int):
+            raise CustomValidationError(
+                "Invalid gpu_index in training config",
+                detail=f"Expected an integer, got {_gpu_index!r}",
+            )
+        import torch as _torch
+        _device_count = _torch.cuda.device_count()
+        if _gpu_index < 0 or _gpu_index >= _device_count:
+            raise CustomValidationError(
+                "Selected GPU is not available",
+                detail=(
+                    f"gpu_index={_gpu_index} but this machine exposes "
+                    f"{_device_count} CUDA device(s) (valid: 0-{_device_count - 1})."
+                    if _device_count
+                    else f"gpu_index={_gpu_index} but no CUDA device is available."
+                ),
+            )
+
     previous_training_state = {
         "status": run.status,
         "error_message": run.error_message,
@@ -16676,7 +16750,8 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         process = training_process_manager.create_process(
             run_id=run.id,
             config_path=config_path,
-            output_dir=run.output_dir
+            output_dir=run.output_dir,
+            gpu_index=_gpu_index,
         )
         print(f"[API] Training process created")
 
@@ -16791,58 +16866,69 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # back while this log claims success. wait_for_activities=False because
         # subprocess training never touches these in-process modules. Run off the
         # event loop: it is a multi-second call ending in cuda.synchronize().
-        try:
-            from core.pipeline import pipeline_manager
-            from core.model_state_coordinator import model_state_coordinator
+        #
+        # Skipped when the run is pinned to another GPU: release_gpu_memory() is
+        # device-agnostic and would tear down the generation stack (keep-hot
+        # included) on the backend's own card, which the trainer is not going to
+        # touch. Freeing VRAM the run cannot use is the exact opposite of what
+        # choosing a second GPU is for. The backend generates on bare "cuda",
+        # i.e. visible index 0, so only that index (and "inherit") contends.
+        if _gpu_index not in (None, 0):
+            print(f"[API] Run {run_id} is pinned to GPU {_gpu_index}; skipping the "
+                  f"backend's pre-training VRAM release (different device)")
+        else:
+            try:
+                from core.pipeline import pipeline_manager
+                from core.model_state_coordinator import model_state_coordinator
 
-            def _report_release_wait(reasons):
-                message = "Waiting to release the backend's generation VRAM: " + ", ".join(reasons)
-                print(f"[API] {message}")
+                def _report_release_wait(reasons):
+                    message = "Waiting to release the backend's generation VRAM: " + ", ".join(reasons)
+                    print(f"[API] {message}")
+                    try:
+                        manager.send_training_log(run_id=run_id, level="info", message=message,
+                                                  code="pre_training_vram_release_waiting")
+                    except Exception:
+                        pass
+
+                def _release_under_gate():
+                    with model_state_coordinator.mutation(
+                        f"training run {run_id} start",
+                        wait_timeout=PRE_TRAINING_VRAM_RELEASE_WAIT_SECONDS,
+                        wait_for_activities=False,
+                        on_wait=_report_release_wait,
+                    ):
+                        return pipeline_manager.release_gpu_memory(
+                            reason=f"training run {run_id} start")
+
+                _release = await asyncio.to_thread(_release_under_gate)
+                print(f"[API] Pre-training VRAM release: {_release['components']} "
+                      f"({_release['freed_bytes'] / 1024 ** 3:.2f} GB), "
+                      f"keep-hot cleared: {_release['keep_hot_cleared'] or 'none'}, "
+                      f"auxiliary: {_release.get('auxiliary') or 'none'}")
+            except Exception as _rel_err:
+                # Includes ModelStateBusyError (the gate stayed blocked): a run that
+                # the user asked to start still starts, with the warning below —
+                # this is a VRAM optimization, not a precondition.
+                print(f"[API] WARNING: pre-training VRAM release failed: {_rel_err}")
                 try:
-                    manager.send_training_log(run_id=run_id, level="info", message=message,
-                                              code="pre_training_vram_release_waiting")
+                    from core.training.training_events import merge_run_warnings
+                    _event = {
+                        "level": "warning",
+                        "code": "pre_training_vram_release_failed",
+                        "message": (
+                            f"Could not release the backend's generation VRAM before starting "
+                            f"this run ({_rel_err}); training may run slower or hit OOM. "
+                            f"Restarting the backend releases it."
+                        ),
+                    }
+                    manager.send_training_log(run_id=run_id, level="warning",
+                                              message=_event["message"], code=_event["code"])
+                    _merged = merge_run_warnings(run.warnings, _event)
+                    if _merged is not None:
+                        run.warnings = _merged
+                        db.commit()
                 except Exception:
                     pass
-
-            def _release_under_gate():
-                with model_state_coordinator.mutation(
-                    f"training run {run_id} start",
-                    wait_timeout=PRE_TRAINING_VRAM_RELEASE_WAIT_SECONDS,
-                    wait_for_activities=False,
-                    on_wait=_report_release_wait,
-                ):
-                    return pipeline_manager.release_gpu_memory(
-                        reason=f"training run {run_id} start")
-
-            _release = await asyncio.to_thread(_release_under_gate)
-            print(f"[API] Pre-training VRAM release: {_release['components']} "
-                  f"({_release['freed_bytes'] / 1024 ** 3:.2f} GB), "
-                  f"keep-hot cleared: {_release['keep_hot_cleared'] or 'none'}, "
-                  f"auxiliary: {_release.get('auxiliary') or 'none'}")
-        except Exception as _rel_err:
-            # Includes ModelStateBusyError (the gate stayed blocked): a run that
-            # the user asked to start still starts, with the warning below —
-            # this is a VRAM optimization, not a precondition.
-            print(f"[API] WARNING: pre-training VRAM release failed: {_rel_err}")
-            try:
-                from core.training.training_events import merge_run_warnings
-                _event = {
-                    "level": "warning",
-                    "code": "pre_training_vram_release_failed",
-                    "message": (
-                        f"Could not release the backend's generation VRAM before starting "
-                        f"this run ({_rel_err}); training may run slower or hit OOM. "
-                        f"Restarting the backend releases it."
-                    ),
-                }
-                manager.send_training_log(run_id=run_id, level="warning",
-                                          message=_event["message"], code=_event["code"])
-                _merged = merge_run_warnings(run.warnings, _event)
-                if _merged is not None:
-                    run.warnings = _merged
-                    db.commit()
-            except Exception:
-                pass
 
         # Start training process (non-blocking)
         print(f"[API] Starting training process...")
@@ -16872,6 +16958,14 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                 setattr(run, key, value)
             db.commit()
             raise HTTPException(status_code=409, detail=str(e)) from e
+        # A rejected request is the caller's mistake, not a start failure:
+        # restore the row and let the standard ErrorResponse handler answer 400
+        # instead of masking it as a 500.
+        if isinstance(e, CustomValidationError):
+            for key, value in previous_training_state.items():
+                setattr(run, key, value)
+            db.commit()
+            raise
         raise HTTPException(status_code=500, detail=f"Failed to start training: {str(e)}")
 
 @router.post("/training/runs/{run_id}/stop")
@@ -18385,6 +18479,11 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     run_name: Optional[str] = None
     vision_encoder_path: str
     dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]
+    # Physical GPU index to train on. None uses the default device. Validated
+    # at start time against the machine's device count, not here.
+    gpu_index: Optional[int] = Field(
+        default=TAGGER_TRAINING_DEFAULTS["gpu_index"], ge=0
+    )
     training_method: str = "lora"                  # "lora" | "full"
     lora_rank: int = 32
     lora_alpha: float = 16.0
@@ -18840,6 +18939,22 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
+
+    # GPU selection is validated before the row is moved to "starting": the
+    # trainer thread would otherwise have to fail the run to report it.
+    _tagger_gpu_index = (run.config or {}).get("gpu_index")
+    if _tagger_gpu_index is not None:
+        import torch as _torch
+        _device_count = _torch.cuda.device_count()
+        if not isinstance(_tagger_gpu_index, int) or not (0 <= _tagger_gpu_index < _device_count):
+            raise CustomValidationError(
+                "Selected GPU is not available",
+                detail=(
+                    f"gpu_index={_tagger_gpu_index!r} but this machine exposes "
+                    f"{_device_count} CUDA device(s)."
+                ),
+            )
+
     previous_status = run.status
     previous_started_at = run.started_at
     previous_error_message = run.error_message

@@ -5121,6 +5121,45 @@ class BaseTrainer(ABC):
                     prefix=self.log_prefix,
                 )
 
+    def _stratified_mnt_timesteps(self, timestep_sampler, multi_noise_timesteps: int,
+                                  batch_size: int):
+        """One stratified timestep per MNT iteration, or None to keep IID draws.
+
+        An MNT window is a ``multi_noise_timesteps``-sample Monte-Carlo estimate
+        of an integral over t on ONE image, so at batch size 1 the t draw is
+        very nearly the only source of within-window variance. Stratifying it
+        removes the between-strata component at zero cost and without changing
+        the marginal law, so the configured density -- which for SenseNova is
+        upstream's own pretraining density -- is preserved exactly.
+
+        Returns None (leaving the existing per-iteration draw in place) when the
+        window is trivial, the feature is off, or the sampler has no closed-form
+        quantile (Beta). Never fatal: losing this costs variance, not
+        correctness, and it must not be able to take down a run.
+        """
+        if multi_noise_timesteps <= 1:
+            return None
+        if not self.config.get(
+            "stratified_timesteps", _TRAINING_DEFAULTS["stratified_timesteps"]
+        ):
+            return None
+        try:
+            return timestep_sampler.sample_stratified(
+                multi_noise_timesteps, batch_size, self.device)
+        except NotImplementedError:
+            if not getattr(self, "_stratified_timesteps_warned", False):
+                self._stratified_timesteps_warned = True
+                print(f"{self.log_prefix} stratified_timesteps: "
+                      f"{type(timestep_sampler).__name__} has no quantile function; "
+                      f"falling back to independent draws")
+            return None
+        except Exception as exc:
+            if not getattr(self, "_stratified_timesteps_warned", False):
+                self._stratified_timesteps_warned = True
+                print(f"{self.log_prefix} stratified_timesteps failed ({exc}); "
+                      f"falling back to independent draws")
+            return None
+
     def _rearm_warmup_after_optimizer_reset(self, global_step: int) -> bool:
         """Re-apply the configured warmup when a resume got a FRESH optimizer.
 
@@ -14479,6 +14518,13 @@ class BaseTrainer(ABC):
                         text_encoding_mode == "onthefly_gpu"
                     )
 
+                    # One stratified block of timesteps for the whole MNT window,
+                    # drawn before the loop so the strata are known jointly.
+                    # None => this sampler has no quantile function, or the
+                    # feature is off; the per-iteration IID draw below stands.
+                    mnt_timestep_block = self._stratified_mnt_timesteps(
+                        timestep_sampler, multi_noise_timesteps, batch_size)
+
                     for mnt_idx in range(multi_noise_timesteps):
                         # A skipped batch discarded this window's shared boundary
                         # cut. The remaining iterations have no cut to accumulate
@@ -14491,7 +14537,10 @@ class BaseTrainer(ABC):
                             break
 
                         # Sample timesteps for this MNT iteration
-                        timesteps = timestep_sampler.sample(batch_size, self.device)
+                        if mnt_timestep_block is not None:
+                            timesteps = mnt_timestep_block[mnt_idx]
+                        else:
+                            timesteps = timestep_sampler.sample(batch_size, self.device)
 
                         # Determine if we should save debug latents (only on first MNT iteration)
                         # With MNT > 1, global_step increments multiple times per batch.

@@ -15522,6 +15522,8 @@ class TrainingRunCreateRequest(BaseModel):
     # Multi Noise-Timestep (MNT) settings
     multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
     multi_noise_mode: str = "independent"  # "independent" or "trajectory_blend"
+    # Stratify the MNT window's timesteps instead of drawing them independently
+    stratified_timesteps: bool = TRAINING_DEFAULTS["stratified_timesteps"]
     trajectory_blend_alpha: float = 0.7  # Blend strength for trajectory_blend mode
     timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
 

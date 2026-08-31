@@ -560,6 +560,8 @@ def _build_train_section(
     # Multi Noise-Timestep
     train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)
     train["multi_noise_mode"] = p.get("multi_noise_mode", "independent")
+    train["stratified_timesteps"] = bool(
+        p.get("stratified_timesteps", TRAINING_DEFAULTS["stratified_timesteps"]))
     train["trajectory_blend_alpha"] = p.get("trajectory_blend_alpha", 0.7)
     if p.get("timestep_sampling"):
         train["timestep_sampling"] = p["timestep_sampling"]

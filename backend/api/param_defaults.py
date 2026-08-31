@@ -2507,6 +2507,18 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # multi_noise_timesteps <= 1, and for the Beta sampler, whose quantile
     # function torch does not provide.
     "stratified_timesteps": True,
+    # Diagnostic (opt-in, never modifies a gradient): accumulate each MNT
+    # window's gradients into two buckets split at the sampler's median
+    # timestep, and report the cosine between them per branch. Answers the one
+    # question gradient NORMS cannot -- whether the noisy and clean ends of the
+    # range merely differ or actively disagree -- which is the premise the
+    # negative-transfer literature (Min-SNR's multi-task framing, timestep
+    # clustering, per-interval experts, PCGrad) rests on. Needs the fused
+    # backward path and multi_noise_timesteps > 1.
+    "grad_timestep_cosine_probe": False,
+    # Bilinear sketch width per parameter; the concatenated sketch has
+    # (trainable Linears) x k^2 dimensions, 37,632 at k=8 over SenseNova's 588.
+    "grad_timestep_cosine_sketch_dim": 8,
     "timestep_sampling": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
     # Regularization
     "regularization_type": None,

@@ -19730,6 +19730,36 @@ components:
           type: 'object'
           additionalProperties: true
           nullable: true
+        grad_timestep_cosine_probe:
+          type: 'boolean'
+          default: false
+          description: |
+            Diagnostic, opt-in, never modifies a gradient. Accumulates each
+            multi-noise-timestep window's gradients into two buckets split at the
+            sampler's median timestep and reports the cosine between them, per
+            branch, on the `grad_cos_t_*` extra-metrics series.
+
+            This answers what gradient NORMS cannot: whether the noisy and clean
+            ends of the timestep range merely differ, or actively disagree. A
+            cosine near 0 means they are uncorrelated — a variance problem, which
+            `stratified_timesteps` already addresses. A negative cosine means real
+            negative transfer, which is the premise the timestep-clustering and
+            gradient-surgery literature rests on.
+
+            Gradients are compressed by a bilinear sketch (L^T G R) before
+            accumulation, so the cost is ~0.1% of a parameter's backward and the
+            memory is k^2 floats per parameter rather than a second copy of the
+            gradient. Requires the fused backward path and
+            `multi_noise_timesteps` > 1; disabled with a log line otherwise.
+          example: false
+        grad_timestep_cosine_sketch_dim:
+          type: 'integer'
+          default: 8
+          minimum: 1
+          description: |
+            Bilinear sketch width for `grad_timestep_cosine_probe`. The
+            concatenated sketch has (trainable Linears) x k^2 dimensions.
+          example: 8
         regularization_type:
           type: 'string'
           nullable: true

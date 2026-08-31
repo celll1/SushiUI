@@ -668,11 +668,68 @@ def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.
     )
 
 
+# Armed only inside collect_guidance_metrics(). When it is None -- which is
+# every generation the app serves and every training step -- the cost is one
+# module-global lookup per denoise step, and nothing at all per training
+# iteration. See that context manager for why this exists.
+_GUIDANCE_COLLECTOR: Optional[list] = None
+
+
+@contextmanager
+def collect_guidance_metrics():
+    """Record this generation's per-step CFG guidance strength.
+
+    ``||v_cond - v_uncond|| / ||v_uncond||`` is the magnitude of the direction
+    CFG actually applies, and the cosine is how much the two branches still
+    disagree. Together they are the direct read on whether a fine-tune's TEXT
+    CONDITIONING is alive: if the conditional and unconditional predictions
+    converge, guidance shrinks toward zero and the served cfg_scale stops doing
+    anything, no matter what the training loss says.
+
+    Collected here rather than by a separate evaluation pass because both
+    branches are ALREADY computed at every step of any cfg_scale > 1 generation
+    -- including the periodic sample a training run makes -- so the marginal
+    cost is a norm over tensors that are in memory anyway. There is no
+    per-training-iteration cost of any kind.
+
+    Yields the list the steps are appended to. Nesting is not supported; the
+    previous collector is restored on exit so an inner use cannot strand it.
+    """
+    global _GUIDANCE_COLLECTOR
+    previous = _GUIDANCE_COLLECTOR
+    collected: list = []
+    _GUIDANCE_COLLECTOR = collected
+    try:
+        yield collected
+    finally:
+        _GUIDANCE_COLLECTOR = previous
+
+
+def _record_guidance(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float,
+                     step_i: int) -> None:
+    """Best-effort: a diagnostic must never break a generation."""
+    if _GUIDANCE_COLLECTOR is None:
+        return
+    try:
+        from core.inference.custom_sampling import calculate_cfg_metrics
+
+        metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_scale, developer_mode=True)
+        if metrics:
+            _GUIDANCE_COLLECTOR.append({
+                "step": int(step_i),
+                "relative_diff": float(metrics["relative_diff"]),
+                "cosine_similarity": float(metrics.get("cosine_similarity", 0.0)),
+            })
+    except Exception:
+        return
+
+
 def _cfg_combine(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float, cfg_norm: str,
                  step_i: int) -> torch.Tensor:
     """Mirrors ``t2i_generate``'s CFG blend, all four ``cfg_norm`` modes. Used
     for the classic cond/uncond pair only -- see ``_cfg_combine_refs`` for the
     reference-image branch set."""
+    _record_guidance(v_cond, v_uncond, cfg_scale, step_i)
     if cfg_norm == "cfg_zero_star":
         positive_flat = v_cond.reshape(v_cond.shape[0], -1)
         negative_flat = v_uncond.reshape(v_uncond.shape[0], -1)

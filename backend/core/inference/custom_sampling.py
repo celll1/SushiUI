@@ -601,6 +601,17 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
     diff = noise_pred_text - noise_pred_uncond
     diff_norm = torch.norm(diff).item()
 
+    # Direction agreement between the two branches. Listed as a key metric in
+    # this docstring since it was written but never actually returned; the
+    # magnitude-side metrics below cannot separate "the branches agree" from
+    # "both predictions shrank", which is what a collapsing text conditioning
+    # looks like from the other side.
+    denominator = uncond_norm * text_norm
+    cosine_similarity = (
+        float((noise_pred_text.float() * noise_pred_uncond.float()).sum().item() / denominator)
+        if denominator > 1e-8 else 0.0
+    )
+
     # Relative difference: how much CFG will change the prediction
     # This is more meaningful than absolute norms
     relative_diff = diff_norm / uncond_norm if uncond_norm > 1e-8 else 0.0
@@ -620,6 +631,7 @@ def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torc
         # Primary metrics (most important for understanding CFG)
         'relative_diff': round(relative_diff, 6),
         'snr': round(snr, 6),
+        'cosine_similarity': round(cosine_similarity, 6),
 
         # L2 norms (for reference)
         'uncond_norm': round(uncond_norm, 4),

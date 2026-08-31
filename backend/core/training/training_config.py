@@ -149,6 +149,9 @@ def _build_train_section(
 
     lr = learning_rate if learning_rate is not None else p.get("learning_rate", 1e-4)
     train: Dict[str, Any] = {
+        # Consumed at spawn time (TrainingProcess -> CUDA_VISIBLE_DEVICES), not
+        # by the trainer: the child always sees its GPU as cuda:0.
+        "gpu_index": p.get("gpu_index"),
         "batch_size": p.get("batch_size", 1),
         **({"steps": total_steps} if total_steps else {"epochs": epochs}),
         "gradient_accumulation_steps": p.get("gradient_accumulation_steps", 1),
@@ -1311,6 +1314,8 @@ class TrainingConfigGenerator:
                             "max_step_saves_to_keep": value_of("max_step_saves_to_keep"),
                         },
                         "train": {
+                            # Spawn-time key; see _build_train_section.
+                            "gpu_index": p.get("gpu_index"),
                             "batch_size": value_of("batch_size"),
                             "steps": value_of("total_steps"),
                             "gradient_accumulation_steps": value_of("gradient_accumulation_steps"),

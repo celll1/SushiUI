@@ -54,6 +54,29 @@ except ImportError:
     _BNB_AVAILABLE = False
 
 
+def resolve_training_device(gpu_index: Optional[int]) -> torch.device:
+    """The device this run trains on, pinning the calling thread to it.
+
+    Tagger training runs in a backend thread rather than a subprocess, so it
+    cannot use CUDA_VISIBLE_DEVICES the way diffusion runs do -- that would
+    move the whole backend, generation included. torch's current device is
+    thread-local, so set_device() here pins only the trainer thread; the bare
+    torch.device("cuda") in tagger_offload's restore path (which asserts it is
+    on that same thread) then resolves to the selected card.
+    """
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    if gpu_index is None:
+        return torch.device("cuda")
+    count = torch.cuda.device_count()
+    if gpu_index < 0 or gpu_index >= count:
+        raise ValueError(
+            f"gpu_index={gpu_index} but this machine exposes {count} CUDA device(s)"
+        )
+    torch.cuda.set_device(gpu_index)
+    return torch.device(f"cuda:{gpu_index}")
+
+
 # ------------------------------------------------------------------
 # Optimizer factory
 # ------------------------------------------------------------------
@@ -746,6 +769,7 @@ class TaggerTrainer:
             pause_event=self._pause_event,
             resumed_event=self._resumed_event,
             restored_event=self._restored_event,
+            device_index=config.get("gpu_index"),
         )
 
         os.makedirs(output_dir, exist_ok=True)
@@ -789,7 +813,7 @@ class TaggerTrainer:
     ) -> Dict[str, Any]:
         """Run training loop. Returns summary metrics dict."""
         cfg = self.config
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_training_device(cfg.get("gpu_index"))
 
         # Build model
         print(f"[TaggerTrainer] === Phase: model build ===")
@@ -2295,6 +2319,10 @@ def run_tagger_training(
         else:
             effective_workers = num_workers
         print(f"[TaggerTraining] DataLoader: batch_size={batch_size}, num_workers={effective_workers}")
+        # pin_memory=False also keeps gpu_index honest: resolve_training_device()
+        # pins the trainer thread with a thread-local torch.cuda.set_device(),
+        # which PyTorch's pin-memory thread would not inherit. Batches reach the
+        # GPU via .to(device) on the trainer thread, so workers stay CPU-only.
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=effective_workers, collate_fn=tagger_collate_fn,

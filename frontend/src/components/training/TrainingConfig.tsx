@@ -282,6 +282,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   activation_dispatch_threshold_mb: 4,
   multi_noise_timesteps: 1,
   multi_noise_mode: "independent",
+  stratified_timesteps: true,
   trajectory_blend_alpha: 0.7,
   timestep_sampling: {
     distribution: "uniform",
@@ -1194,6 +1195,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       activation_dispatch_residual_frac: params.activation_dispatch_residual_frac,
       activation_dispatch_threshold_mb: params.activation_dispatch_threshold_mb,
       multi_noise_timesteps: params.multi_noise_timesteps,
+      stratified_timesteps: params.stratified_timesteps,
       multi_noise_mode: params.multi_noise_mode,
       trajectory_blend_alpha: params.trajectory_blend_alpha,
       timestep_sampling: {
@@ -1465,7 +1467,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
       "activation_dispatch_threshold_mb",
-      "multi_noise_timesteps", "multi_noise_mode", "trajectory_blend_alpha",
+      "multi_noise_timesteps", "multi_noise_mode", "stratified_timesteps", "trajectory_blend_alpha",
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
       "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
       "energy_normalize_by_pixels",
@@ -3805,6 +3807,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Process each batch with multiple different timesteps (default: 1)
               </p>
             </div>
+
+            {multiNoiseTimesteps > 1 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.stratified_timesteps ?? true}
+                    onChange={(e) => updateParam("stratified_timesteps", e.target.checked)}
+                    className="w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-400">Stratified timesteps</span>
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Draw one timestep per equal-probability stratum across the {multiNoiseTimesteps}
+                  {" "}MNT iterations instead of drawing each independently. Each draw keeps the same
+                  marginal distribution, so the configured timestep density is unchanged.
+                  Not available for the beta distribution.
+                </p>
+              </div>
+            )}
 
             {/* MNT Mode */}
             <div>

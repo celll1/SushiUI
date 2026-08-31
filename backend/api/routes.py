@@ -15524,6 +15524,9 @@ class TrainingRunCreateRequest(BaseModel):
     multi_noise_mode: str = "independent"  # "independent" or "trajectory_blend"
     # Stratify the MNT window's timesteps instead of drawing them independently
     stratified_timesteps: bool = TRAINING_DEFAULTS["stratified_timesteps"]
+    # Diagnostic: cosine between the noisy-half and clean-half gradients
+    grad_timestep_cosine_probe: bool = TRAINING_DEFAULTS["grad_timestep_cosine_probe"]
+    grad_timestep_cosine_sketch_dim: int = TRAINING_DEFAULTS["grad_timestep_cosine_sketch_dim"]
     trajectory_blend_alpha: float = 0.7  # Blend strength for trajectory_blend mode
     timestep_sampling: Optional[Dict[str, Any]] = None  # Timestep sampling config (distribution, min/max)
 

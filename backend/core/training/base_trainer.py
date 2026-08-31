@@ -5121,6 +5121,81 @@ class BaseTrainer(ABC):
                     prefix=self.log_prefix,
                 )
 
+    #: Set by _maybe_build_grad_t_cos_probe(); None unless the probe is enabled.
+    #: A class attribute so the fused backward hook can read it on any trainer
+    #: instance without every __init__ having to define it.
+    _grad_t_cos_probe = None
+
+    def _maybe_build_grad_t_cos_probe(self, timestep_sampler,
+                                      multi_noise_timesteps: int) -> None:
+        """Arm the noisy-vs-clean gradient cosine probe, if the config asks for it.
+
+        Answers one question the measured gradient NORMS cannot: are the two
+        ends of the timestep range merely different, or do they disagree? That
+        decides whether the negative-transfer literature (Min-SNR's multi-task
+        framing, timestep clustering, per-interval experts, PCGrad) applies here
+        at all, or whether this is purely a variance problem that stratified
+        sampling already addresses.
+
+        Requires the fused backward path, which is where the gradient is
+        observable: it is cleared per parameter inside the hook, so there is no
+        later point at which both buckets' gradients exist. That is also the
+        SenseNova full-fine-tune contract, which is the run this exists for.
+        """
+        self._grad_t_cos_probe = None
+        if not self.config.get(
+            "grad_timestep_cosine_probe",
+            _TRAINING_DEFAULTS["grad_timestep_cosine_probe"],
+        ):
+            return
+        if multi_noise_timesteps <= 1:
+            print(f"{self.log_prefix} grad_timestep_cosine_probe needs "
+                  f"multi_noise_timesteps > 1 to have two buckets; disabled")
+            return
+        if not getattr(self, "use_fused_backward", False):
+            print(f"{self.log_prefix} grad_timestep_cosine_probe needs the fused "
+                  f"backward path (the gradient is cleared per parameter inside "
+                  f"the hook); disabled")
+            return
+        try:
+            split = float(timestep_sampler.icdf(torch.tensor([0.5])).item())
+        except Exception:
+            split = 0.5
+        try:
+            from .probes.grad_timestep_cosine import GradTimestepCosineProbe
+
+            self._grad_t_cos_probe = GradTimestepCosineProbe(
+                t_split=split,
+                sketch_dim=int(self.config.get(
+                    "grad_timestep_cosine_sketch_dim",
+                    _TRAINING_DEFAULTS["grad_timestep_cosine_sketch_dim"])),
+                components=self._grad_t_cos_components(),
+            )
+            print(f"{self.log_prefix} grad_timestep_cosine_probe armed: split at "
+                  f"t={split:.4f} (the sampler's median), sketch dim "
+                  f"{self._grad_t_cos_probe.k}")
+        except Exception as exc:
+            print(f"{self.log_prefix} grad_timestep_cosine_probe failed to arm "
+                  f"({exc}); continuing without it")
+            self._grad_t_cos_probe = None
+
+    def _grad_t_cos_components(self) -> Dict[int, str]:
+        """``id(param) -> component`` for the probe's per-branch cosines.
+
+        Reuses the adapter's own classification -- the same one
+        ``_calculate_grad_norms`` consults -- rather than re-deriving it from
+        parameter names, which is what mis-binned every architecture whose keys
+        are plain module paths (SenseNova among them). Mapped through
+        ``grad_norm_bucket`` so the metric names match the grad-norm slots the
+        chart already uses ('unet' for the generation half, 'te1' for
+        SenseNova's understanding half).
+        """
+        try:
+            raw = self._full_parameter_grad_components() or {}
+            return {key: grad_norm_bucket(value) for key, value in raw.items()}
+        except Exception:
+            return {}
+
     def _stratified_mnt_timesteps(self, timestep_sampler, multi_noise_timesteps: int,
                                   batch_size: int):
         """One stratified timestep per MNT iteration, or None to keep IID draws.
@@ -6089,6 +6164,12 @@ class BaseTrainer(ABC):
                         # Before the update, which is free to scale the gradient
                         # in place, and before the clear below.
                         record_fused_grad_norm(self.optimizer, tensor)
+
+                        # Same window: the gradient is only live between the
+                        # accumulation that triggered this hook and the clear
+                        # below. Read-only; the probe never touches .grad.
+                        if self._grad_t_cos_probe is not None:
+                            self._grad_t_cos_probe.observe(tensor)
 
                         # Update THIS parameter immediately (while on GPU)
                         self.optimizer.step_param(tensor, pg)
@@ -11688,6 +11769,7 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Timestep params: mean={timestep_sampler.mean:.2f}, std={timestep_sampler.std:.2f}")
         elif hasattr(timestep_sampler, 'alpha') and hasattr(timestep_sampler, 'beta'):
             print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
+        self._maybe_build_grad_t_cos_probe(timestep_sampler, multi_noise_timesteps)
         _convention = self.arch.resolve_timestep_convention(self)
         print(f"{self.log_prefix} Timestep convention: '{_convention}' "
               f"({'t=0 clean / t=1 noise' if _convention == 't0' else 't=1 clean / t=0 noise'})")
@@ -14525,6 +14607,9 @@ class BaseTrainer(ABC):
                     mnt_timestep_block = self._stratified_mnt_timesteps(
                         timestep_sampler, multi_noise_timesteps, batch_size)
 
+                    if self._grad_t_cos_probe is not None:
+                        self._grad_t_cos_probe.begin_window()
+
                     for mnt_idx in range(multi_noise_timesteps):
                         # A skipped batch discarded this window's shared boundary
                         # cut. The remaining iterations have no cut to accumulate
@@ -14541,6 +14626,12 @@ class BaseTrainer(ABC):
                             timesteps = mnt_timestep_block[mnt_idx]
                         else:
                             timesteps = timestep_sampler.sample(batch_size, self.device)
+
+                        if self._grad_t_cos_probe is not None:
+                            # Bucket this pass BEFORE its backward, since the
+                            # hook fires during it.
+                            self._grad_t_cos_probe.begin_pass(
+                                float(timesteps.reshape(-1)[0]))
 
                         # Determine if we should save debug latents (only on first MNT iteration)
                         # With MNT > 1, global_step increments multiple times per batch.
@@ -15284,6 +15375,14 @@ class BaseTrainer(ABC):
                         # since batch cleanup follows immediately.
                         if multi_noise_timesteps > 1 and mnt_idx < multi_noise_timesteps - 1:
                             torch.cuda.empty_cache()
+
+                    # Noisy-vs-clean gradient cosine for the window just finished.
+                    # Emitted through the generic extra-metrics channel, so it
+                    # rides the next completed step's row (the same way
+                    # batches_skipped does) rather than needing a DB column.
+                    if self._grad_t_cos_probe is not None:
+                        for _k, _v in self._grad_t_cos_probe.finish_window().items():
+                            self.log_extra_metric(_k, _v)
 
                     # Free batch tensors AFTER all MNT iterations complete
                     del latents, text_embeddings

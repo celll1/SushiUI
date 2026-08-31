@@ -2180,6 +2180,17 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # other scheduler types.
     "lr_decay_start_ratio": 0.85,
     "lr_floor_ratio": 0.25,
+    # Re-arm the configured warmup when a resume comes up with a FRESH optimizer
+    # state -- the `_optimizer.pt` was pruned or missing, or load_state_dict
+    # rejected it (optimizer type / trainable-parameter change). The resume path
+    # fast-forwards the LR schedule to the resumed step BEFORE loading the
+    # optimizer, so without this a reset restarts a zero-moment optimizer at the
+    # full post-warmup LR: Adam's first step with exp_avg_sq == 0 has magnitude
+    # ~lr on every parameter at once, which is the condition warmup exists to
+    # prevent. Observed on run 121 (steps 8400 / 39672, "Starting with fresh
+    # optimizer state"). Inert when the state restores and when
+    # lr_warmup_steps == 0.
+    "rewarmup_on_optimizer_reset": True,
     # Weight EMA (opt-in, default off). When enabled, a fp32 shadow copy of
     # the trainable params is maintained and saved as a separate, fully
     # loadable checkpoint alongside (not instead of) each normal checkpoint,

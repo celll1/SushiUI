@@ -190,6 +190,11 @@ def _build_train_section(
         # all other schedulers unchanged.
         train["lr_decay_start_ratio"] = p.get("lr_decay_start_ratio", 0.85)
         train["lr_floor_ratio"] = p.get("lr_floor_ratio", 0.25)
+    # Emitted unconditionally: unlike the two above it is not tied to a
+    # scheduler type, and the trainer reads it on EVERY resume.
+    train["rewarmup_on_optimizer_reset"] = bool(
+        p.get("rewarmup_on_optimizer_reset",
+              TRAINING_DEFAULTS["rewarmup_on_optimizer_reset"]))
     if p.get("use_ema"):
         train["use_ema"] = p["use_ema"]
         train["ema_decay"] = p.get("ema_decay", 0.9999)

@@ -3908,6 +3908,10 @@ class BaseTrainer(ABC):
         """
         import re
 
+        # Reset per call: a True return with this set means "some groups
+        # resumed, others came up fresh" (see the pre-fix partial branch below).
+        self._optimizer_state_partially_fresh = False
+
         optimizers = all_optimizers(self)
         if not optimizers:
             print(f"{self.log_prefix} WARNING: Cannot load optimizer state (optimizer not initialized)")
@@ -4003,6 +4007,12 @@ class BaseTrainer(ABC):
                 code="optimizer_state_partial_fused_resume",
                 prefix=self.log_prefix,
             )
+            # Group 0's moments resume, so the bool below is True, but every
+            # other group starts at zero -- the same hazard the warmup re-arm
+            # exists for. Flagged separately because the return value cannot
+            # express "partly fresh" without changing a contract other callers
+            # (and the SenseNova probe) read as a plain bool.
+            self._optimizer_state_partially_fresh = True
             return self._load_one_optimizer_state(
                 optimizers[0], saved_states[0], optimizer_file.name)
 
@@ -5110,6 +5120,104 @@ class BaseTrainer(ABC):
                     code="component_lr_zero",
                     prefix=self.log_prefix,
                 )
+
+    def _rearm_warmup_after_optimizer_reset(self, global_step: int) -> bool:
+        """Re-apply the configured warmup when a resume got a FRESH optimizer.
+
+        ``train()`` fast-forwards every scheduler to the resumed step and only
+        THEN loads the optimizer state, because ``Optimizer.load_state_dict``
+        would otherwise reinstate the checkpoint's ``lr``. That ordering is
+        correct while the state actually restores. When it does not -- the
+        ``_optimizer.pt`` was pruned or never written, or the load was rejected
+        because the optimizer type or the trainable parameter set changed -- the
+        run continues with ``exp_avg``/``exp_avg_sq`` at zero while the schedule
+        sits past its warmup. Adam's first step with a zero second moment is
+        ``~lr`` on EVERY parameter simultaneously regardless of gradient
+        magnitude, which is precisely the transient warmup exists to damp. Run
+        121 took that path twice (steps 8400 and 39672).
+
+        Rather than rewind the schedule -- which would also restart a cosine or
+        plateau segment and lose the resume's position -- this composes a second
+        warmup ramp ON TOP of each scheduler's existing lambda, anchored at the
+        resumed step::
+
+            lr(step) = base_lr * schedule(step) * min(1, (step - resume) / W)
+
+        so the underlying schedule keeps its absolute position and only the
+        first ``W`` post-reset steps are attenuated. Every scheduler this
+        project builds is a ``LambdaLR`` (all seven diffusers types plus the
+        in-house ``plateau_cosine_floor``; see lr_utils), and each is wrapped,
+        not just ``self.lr_scheduler``, so fused optimizer groups re-arm too.
+
+        Must run BEFORE ``_reassert_config_lr_on_resume()``: that method
+        evaluates the live lambdas to write each param group's LR, so installing
+        the composed lambda first is what makes the very FIRST post-resume
+        optimizer step ramped as well -- the training loop calls
+        ``optimizer.step()`` before ``lr_scheduler.step()``.
+
+        Returns True when at least one scheduler was re-armed.
+        """
+        if not self.config.get(
+            "rewarmup_on_optimizer_reset",
+            _TRAINING_DEFAULTS["rewarmup_on_optimizer_reset"],
+        ):
+            print(f"{self.log_prefix} Optimizer state was NOT restored, but "
+                  f"rewarmup_on_optimizer_reset is off: resuming at the "
+                  f"schedule's un-warmed LR with zeroed optimizer moments")
+            return False
+
+        warmup = max(0, int(getattr(self, "optimizer_warmup_steps", 0) or 0))
+        if warmup <= 0:
+            print(f"{self.log_prefix} Optimizer state was NOT restored; no warmup "
+                  f"to re-arm (lr_warmup_steps=0). The first steps run at the "
+                  f"full scheduled LR with zeroed optimizer moments.")
+            return False
+
+        anchor = int(global_step)
+        rearmed = 0
+        skipped = 0
+        for scheduler in all_lr_schedulers(self):
+            if scheduler is None:
+                continue
+            lambdas = getattr(scheduler, "lr_lambdas", None)
+            if not lambdas:
+                # ReLoRA's restart scheduler is not a LambdaLR; it has no lambda
+                # to compose against and is left alone rather than guessed at.
+                skipped += 1
+                continue
+            scheduler.lr_lambdas = [
+                self._compose_warmup_lambda(fn, anchor, warmup) for fn in lambdas
+            ]
+            rearmed += 1
+
+        if not rearmed:
+            print(f"{self.log_prefix} WARNING: optimizer state was NOT restored and "
+                  f"no schedule could be re-armed ({skipped} non-LambdaLR "
+                  f"scheduler(s)); resuming at the full scheduled LR")
+            return False
+
+        print(f"{self.log_prefix} Optimizer state was NOT restored (fresh moments). "
+              f"Re-arming the configured {warmup}-step warmup from step {anchor} "
+              f"over {rearmed} schedule(s)"
+              + (f" ({skipped} non-LambdaLR skipped)" if skipped else "")
+              + " -- the underlying schedule keeps its position.")
+        return True
+
+    @staticmethod
+    def _compose_warmup_lambda(inner, anchor: int, warmup: int):
+        """``inner(step) * min(1, (step - anchor) / warmup)``, clamped at 0.
+
+        A module-level factory rather than a closure written inline so each
+        wrapped lambda captures its OWN ``inner`` (a loop-body closure would
+        capture the loop variable and every scheduler would end up sharing the
+        last one).
+        """
+        def _warmed(step: int) -> float:
+            progress = (int(step) - anchor) / float(warmup)
+            factor = 0.0 if progress < 0.0 else (1.0 if progress > 1.0 else progress)
+            return float(inner(step)) * factor
+
+        return _warmed
 
     def _reassert_config_lr_on_resume(self):
         """Make the YAML config's per-component LRs win over the resumed ones.
@@ -12041,7 +12149,14 @@ class BaseTrainer(ABC):
                     # -- 'lr' included -- from the SAVED group, so loading after
                     # it would silently reinstate the checkpoint's LR for the
                     # first step after a resume.
-                    self.load_optimizer_state(checkpoint_step)
+                    optimizer_restored = self.load_optimizer_state(checkpoint_step)
+
+                    # A fresh optimizer resuming past its warmup is the run-121
+                    # failure; re-arm the ramp BEFORE the LR re-assertion below,
+                    # which evaluates the live lambdas to write the param groups.
+                    if not optimizer_restored or getattr(
+                            self, "_optimizer_state_partially_fresh", False):
+                        self._rearm_warmup_after_optimizer_reset(global_step)
 
                     # Re-assert the YAML config's LR over whatever the resume
                     # restored (needed when the user edits LR before resuming),
@@ -12106,7 +12221,14 @@ class BaseTrainer(ABC):
                     # LR re-assertion below -- see the note in the "latest"
                     # branch: Optimizer.load_state_dict restores the checkpoint's
                     # 'lr' into every param group, so it must not run after it.
-                    self.load_optimizer_state(checkpoint_step)
+                    optimizer_restored = self.load_optimizer_state(checkpoint_step)
+
+                    # Same re-arm as the "latest" branch above -- see
+                    # _rearm_warmup_after_optimizer_reset for why it must run
+                    # before the re-assertion.
+                    if not optimizer_restored or getattr(
+                            self, "_optimizer_state_partially_fresh", False):
+                        self._rearm_warmup_after_optimizer_reset(global_step)
 
                     # Re-assert the YAML config's LR over whatever the resume
                     # restored, at the schedule's current position (see the

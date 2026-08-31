@@ -7272,6 +7272,7 @@ export interface TrainingRunCreateRequest {
   lr_warmup_steps?: number;
   lr_decay_start_ratio?: number;  // plateau_cosine_floor only: fraction of total steps where decay begins (default 0.85)
   lr_floor_ratio?: number;  // plateau_cosine_floor only: floor as a fraction of base LR (default 0.25)
+  rewarmup_on_optimizer_reset?: boolean;  // Re-apply lr_warmup_steps when a resume gets a fresh optimizer state (default true)
   use_ema?: boolean;  // Weight EMA (opt-in, default off); saves a separate, loadable "_ema" checkpoint alongside the normal one
   ema_decay?: number;  // EMA decay factor (default 0.9999)
   ema_update_every?: number;  // Apply the EMA update every N optimizer steps (default 1 = every step)

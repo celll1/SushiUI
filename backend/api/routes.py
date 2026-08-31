@@ -15212,6 +15212,9 @@ class TrainingRunCreateRequest(BaseModel):
     # consumed when lr_scheduler == "plateau_cosine_floor".
     lr_decay_start_ratio: float = TRAINING_DEFAULTS["lr_decay_start_ratio"]
     lr_floor_ratio: float = TRAINING_DEFAULTS["lr_floor_ratio"]
+    # Re-apply the configured warmup when a resume comes up with a fresh
+    # optimizer state (state file pruned/missing, or load rejected).
+    rewarmup_on_optimizer_reset: bool = TRAINING_DEFAULTS["rewarmup_on_optimizer_reset"]
     # Weight EMA (opt-in, default off)
     use_ema: bool = TRAINING_DEFAULTS["use_ema"]
     ema_decay: float = TRAINING_DEFAULTS["ema_decay"]

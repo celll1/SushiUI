@@ -18456,6 +18456,29 @@ components:
             the base learning rate the cosine decay settles at and holds for the
             remainder of training (never decays to 0).
           example: 0.25
+        rewarmup_on_optimizer_reset:
+          type: boolean
+          default: true
+          description: |
+            Re-apply the configured `lr_warmup_steps` ramp when a resume comes up
+            with a FRESH optimizer state — the `_optimizer.pt` was pruned or never
+            written, or the load was rejected because the optimizer type or the
+            trainable parameter set changed.
+
+            The resume path fast-forwards the LR schedule to the resumed step
+            before it loads the optimizer, so without this a reset continues with
+            zeroed `exp_avg`/`exp_avg_sq` at the full post-warmup learning rate.
+            Adam's first step with a zero second moment has magnitude `~lr` on
+            every parameter at once, independent of the gradient.
+
+            The ramp is composed on top of the existing schedule and anchored at
+            the resumed step, so the underlying schedule keeps its absolute
+            position (a cosine or plateau segment is not restarted). Every fused
+            optimizer group's scheduler is re-armed, not just the first.
+
+            No effect when the optimizer state restores normally, and none when
+            `lr_warmup_steps` is 0.
+          example: true
         use_ema:
           type: boolean
           default: false

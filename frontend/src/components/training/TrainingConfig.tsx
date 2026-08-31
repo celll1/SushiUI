@@ -124,6 +124,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lr_warmup_steps: 0,
   lr_decay_start_ratio: 0.85,
   lr_floor_ratio: 0.25,
+  rewarmup_on_optimizer_reset: true,
   use_ema: false,
   ema_decay: 0.9999,
   ema_update_every: 1,
@@ -1039,6 +1040,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lr_warmup_steps: params.lr_warmup_steps,
       lr_decay_start_ratio: params.lr_decay_start_ratio,
       lr_floor_ratio: params.lr_floor_ratio,
+      rewarmup_on_optimizer_reset: params.rewarmup_on_optimizer_reset,
       use_ema: params.use_ema,
       ema_decay: params.ema_decay,
       ema_update_every: params.ema_update_every,
@@ -1405,7 +1407,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
       "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
-      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "ema_update_every", "ema_device", "gpu_index", "optimizer",
+      "lr_decay_start_ratio", "lr_floor_ratio", "rewarmup_on_optimizer_reset",
+      "use_ema", "ema_decay", "ema_update_every", "ema_device", "gpu_index", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -4384,6 +4387,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   />
                   <p className="text-xs text-gray-500 mt-1">Floor as a fraction of base LR (held after decay)</p>
                 </div>
+              </div>
+            )}
+
+            {lrWarmupSteps > 0 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.rewarmup_on_optimizer_reset ?? true}
+                    onChange={(e) => updateParam("rewarmup_on_optimizer_reset", e.target.checked)}
+                    className="w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-400">Re-apply warmup if a resume resets the optimizer</span>
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  When a resume finds no usable optimizer state, the schedule has already
+                  advanced past its warmup. This re-applies the {lrWarmupSteps}-step ramp
+                  from the resumed step without moving the schedule.
+                </p>
               </div>
             )}
 

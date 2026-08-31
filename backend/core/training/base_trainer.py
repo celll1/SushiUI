@@ -11769,7 +11769,6 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Timestep params: mean={timestep_sampler.mean:.2f}, std={timestep_sampler.std:.2f}")
         elif hasattr(timestep_sampler, 'alpha') and hasattr(timestep_sampler, 'beta'):
             print(f"{self.log_prefix} Timestep params: alpha={timestep_sampler.alpha:.2f}, beta={timestep_sampler.beta:.2f}")
-        self._maybe_build_grad_t_cos_probe(timestep_sampler, multi_noise_timesteps)
         _convention = self.arch.resolve_timestep_convention(self)
         print(f"{self.log_prefix} Timestep convention: '{_convention}' "
               f"({'t=0 clean / t=1 noise' if _convention == 't0' else 't=1 clean / t=0 noise'})")
@@ -11958,6 +11957,12 @@ class BaseTrainer(ABC):
         self._warn_gradient_accumulation_ignored_under_fused(
             gradient_accumulation_steps, batch_size, multi_noise_timesteps
         )
+
+        # Same reason, and it must be AFTER setup_optimizer for two of them: the
+        # probe needs `use_fused_backward` (set while the optimizer is built) and
+        # the adapter's parameter classification, neither of which exists at the
+        # point the timestep sampler is constructed.
+        self._maybe_build_grad_t_cos_probe(timestep_sampler, multi_noise_timesteps)
 
         # Resolution curriculum phase-0 setup: seed the original-size map (so a later
         # warmup->target rebucket can grow dims back), and point the initial bucketing at

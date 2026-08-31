@@ -71,7 +71,50 @@ def test_one_row_per_denoise_step():
         for i in range(5):
             ops._cfg_combine(cond, uncond, 4.0, "global", i)
     assert [r["step"] for r in rows] == [0, 1, 2, 3, 4]
-    assert set(rows[0]) == {"step", "relative_diff", "cosine_similarity"}
+    assert set(rows[0]) == {"step", "space", "relative_diff", "cosine_similarity"}
+
+
+def test_x0_space_has_the_dynamic_range_velocity_space_lacks():
+    """Regression: the first live sample reported rel=0.0118 / cos=1.0003 at a
+    perfectly healthy conditioning. v = (x0_pred - z)/(1-t) and both branches
+    share z, so a velocity-space ratio is dominated by a term identical on both
+    sides -- at 1024px the noise scale is 4 and it pinned the series near 0.01
+    with the cosine at 1.000. Inverting to x0 space removes the shared term."""
+    torch.manual_seed(0)
+    shape = (1, 512, 96)
+    t = torch.tensor([0.25])
+    x0 = torch.randn(shape) * 0.5
+    z = t * x0 + (1 - t) * 4.0 * torch.randn(shape)   # noise_scale 4 == 1024px
+
+    def as_v(x0_pred):
+        return (x0_pred - z) / (1 - t)
+
+    v_rel, x0_rel, x0_cos = [], [], []
+    for delta in (0.02, 0.05, 0.15, 0.4):
+        cond, uncond = as_v(x0 + delta * torch.randn(shape)), as_v(x0)
+        with ops.collect_guidance_metrics() as plain:
+            ops._cfg_combine(cond, uncond, 4.0, "none", 0)
+        with ops.collect_guidance_metrics() as full:
+            ops._cfg_combine(cond, uncond, 4.0, "none", 0, z, t)
+        v_rel.append(plain[0]["relative_diff"])
+        x0_rel.append(full[0]["relative_diff"])
+        x0_cos.append(full[0]["cosine_similarity"])
+        assert plain[0]["space"] == "v" and full[0]["space"] == "x0"
+
+    # Both track conditioning strength, but x0 space resolves it far better.
+    assert v_rel == sorted(v_rel) and x0_rel == sorted(x0_rel)
+    assert x0_rel[-1] > 4 * v_rel[-1]
+    # The velocity cosine is stuck at ~1; the x0 cosine actually separates.
+    assert x0_cos[0] - x0_cos[-1] > 0.1
+
+
+def test_cosine_is_clamped_to_a_legal_range():
+    """Two identical branches -- a fully collapsed conditioning -- came out at
+    1.0001 because the norms and the dot product are separate reductions."""
+    a = torch.randn(2, 32, 32)
+    for x, y in ((a, a.clone()), (a, -a), (a * 1e-6, a * 1e6)):
+        c = calculate_cfg_metrics(x, y, 4.0, developer_mode=True)["cosine_similarity"]
+        assert -1.0 <= c <= 1.0, c
 
 
 def test_collapsed_conditioning_reads_as_collapsed():

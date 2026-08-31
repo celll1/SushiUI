@@ -46,7 +46,7 @@ from .quantization_map import create_quantization_map
 from .fused_backward_registration import register_fused_backward_hooks
 
 # Gradient-norm recording (the hooks clear param.grad before it can be measured)
-from .fused_grad_norm import record_fused_grad_norm
+from .fused_grad_norm import record_fused_grad_norm, record_fused_grad_observation
 
 # Updated-parameter census (G-RB3): which parameters an update actually reached
 from .update_census import record_param_update
@@ -1211,6 +1211,7 @@ def patch_adamw8bit_ringbuffer(model: Optional[nn.Module], optimizer: AdamW8bit_
             # Before the update: the hook clears param.grad below, and the
             # trainer's grad-norm reporting runs after the whole backward.
             record_fused_grad_norm(optimizer, param)
+            record_fused_grad_observation(optimizer, param)
 
             # Initialize state if needed
             if len(optimizer.state[param]) == 0:

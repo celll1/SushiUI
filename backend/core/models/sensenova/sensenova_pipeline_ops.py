@@ -706,30 +706,64 @@ def collect_guidance_metrics():
 
 
 def _record_guidance(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float,
-                     step_i: int) -> None:
-    """Best-effort: a diagnostic must never break a generation."""
+                     step_i: int, z: Optional[torch.Tensor] = None,
+                     t: Optional[torch.Tensor] = None) -> None:
+    """Measure the two branches in x0 SPACE, not velocity space.
+
+    ``v = (x0_pred - z) / (1-t)`` and both branches share the same ``z``, so a
+    velocity-space ratio is dominated by a term that is identical on both sides:
+    at 1024px the noise scale is 4, which makes ``||z||`` an order of magnitude
+    larger than the conditioning difference and pins ``||dv||/||v_uncond||``
+    near 0.01 and the cosine at 1.000 no matter how strong the conditioning is.
+    Measured that way the series has almost no dynamic range and moves with the
+    noise level rather than with what it is supposed to track.
+
+    Inverting the same identity, ``x0_pred = z + (1-t) * v``, removes the shared
+    term: ``x0_cond - x0_uncond = (1-t)(v_cond - v_uncond)`` measured against
+    ``||x0_uncond||``, i.e. how differently the caption makes the model predict
+    the CLEAN IMAGE. That is the quantity conditioning actually controls.
+
+    Falls back to velocity space when the caller cannot supply ``z``/``t`` --
+    the number is then still monotone in conditioning strength, just compressed.
+    Everything is computed in fp32: the branches agree to within a few parts in
+    a thousand, which is the precision floor of bf16, and a mixed-precision
+    ratio was reporting cosines above 1.
+
+    Best-effort throughout: a diagnostic must never break a generation.
+    """
     if _GUIDANCE_COLLECTOR is None:
         return
     try:
         from core.inference.custom_sampling import calculate_cfg_metrics
 
-        metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_scale, developer_mode=True)
+        a = v_cond.detach().float()
+        b = v_uncond.detach().float()
+        space = "v"
+        if z is not None and t is not None:
+            scale = (1.0 - t).detach().float().reshape(-1)[0]
+            base = z.detach().float()
+            a = base + scale * a
+            b = base + scale * b
+            space = "x0"
+        metrics = calculate_cfg_metrics(b, a, cfg_scale, developer_mode=True)
         if metrics:
             _GUIDANCE_COLLECTOR.append({
                 "step": int(step_i),
+                "space": space,
                 "relative_diff": float(metrics["relative_diff"]),
-                "cosine_similarity": float(metrics.get("cosine_similarity", 0.0)),
+                "cosine_similarity": float(metrics["cosine_similarity"]),
             })
     except Exception:
         return
 
 
 def _cfg_combine(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float, cfg_norm: str,
-                 step_i: int) -> torch.Tensor:
+                 step_i: int, z: Optional[torch.Tensor] = None,
+                 t: Optional[torch.Tensor] = None) -> torch.Tensor:
     """Mirrors ``t2i_generate``'s CFG blend, all four ``cfg_norm`` modes. Used
     for the classic cond/uncond pair only -- see ``_cfg_combine_refs`` for the
     reference-image branch set."""
-    _record_guidance(v_cond, v_uncond, cfg_scale, step_i)
+    _record_guidance(v_cond, v_uncond, cfg_scale, step_i, z, t)
     if cfg_norm == "cfg_zero_star":
         positive_flat = v_cond.reshape(v_cond.shape[0], -1)
         negative_flat = v_uncond.reshape(v_uncond.shape[0], -1)
@@ -979,7 +1013,9 @@ def _euler_run(
                     # has_img_cond is always False there).
                     v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
                                                  branch="uncond")
-                    return _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j)
+                    # z/t are passed for the guidance diagnostic only; the blend
+                    # itself is byte-for-byte the call it always was.
+                    return _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j, z, t)
                 return v_cond
 
             if style_refs is not None and len(style_refs) > 1:

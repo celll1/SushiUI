@@ -4999,7 +4999,13 @@ paths:
     get:
       tags: [system]
       summary: Get GPU statistics
-      description: Get current GPU memory usage and statistics
+      description: |
+        Per-GPU memory, utilization, temperature and power. Read from
+        `nvidia-smi` when available, otherwise from torch (which cannot report
+        utilization, temperature or power, so those come back null).
+
+        This is also the source for the selectable GPUs of the `gpu_index`
+        training parameter — select on `cuda_index`, not `index`.
       operationId: getGpuStats
       responses:
         '200':
@@ -5009,16 +5015,28 @@ paths:
               schema:
                 type: object
                 properties:
-                  gpu_name:
+                  available:
+                    type: boolean
+                    description: False when CUDA is unavailable or the query failed.
+                  error:
                     type: string
-                  total_memory:
-                    type: number
-                  used_memory:
-                    type: number
-                  free_memory:
-                    type: number
-                  utilization:
-                    type: number
+                    description: Present only when `available` is false.
+                  gpus:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GpuStatsEntry'
+              example:
+                available: true
+                gpus:
+                  - index: 0
+                    cuda_index: 0
+                    name: "NVIDIA RTX 6000 Ada Generation"
+                    vram_used_gb: 3.46
+                    vram_total_gb: 47.99
+                    vram_percent: 7.2
+                    gpu_utilization: 12
+                    temperature: 44
+                    power_watts: 61.3
 
   /port-info:
     get:
@@ -18209,6 +18227,54 @@ components:
           description: Human-readable text, the same text the trainer wrote to its console.
           example: "max_grad_norm=1.0 is IGNORED under the fused backward pass. ..."
 
+    GpuStatsEntry:
+      type: object
+      properties:
+        index:
+          type: integer
+          description: |
+            Physical GPU index as reported by `nvidia-smi`. NVML does not honour
+            `CUDA_VISIBLE_DEVICES`, so this is not the index torch addresses the
+            card by whenever that variable is set.
+          example: 0
+        cuda_index:
+          type: integer
+          nullable: true
+          description: |
+            The index torch addresses this GPU by, i.e. the value to send as
+            `gpu_index` when starting a training run. Null when the GPU is not
+            visible to torch, or when `CUDA_VISIBLE_DEVICES` is expressed in a
+            form (GPU UUIDs) that cannot be resolved back to physical indices.
+            Equal to `index` when `CUDA_VISIBLE_DEVICES` is unset.
+          example: 0
+        name:
+          type: string
+          example: "NVIDIA RTX 6000 Ada Generation"
+        vram_used_gb:
+          type: number
+          example: 3.46
+        vram_total_gb:
+          type: number
+          example: 47.99
+        vram_percent:
+          type: number
+          example: 7.2
+        gpu_utilization:
+          type: integer
+          nullable: true
+          description: Percent. Null when read through the torch fallback.
+          example: 12
+        temperature:
+          type: integer
+          nullable: true
+          description: Degrees Celsius. Null when read through the torch fallback.
+          example: 44
+        power_watts:
+          type: number
+          nullable: true
+          description: Null when read through the torch fallback.
+          example: 61.3
+
     TrainingRunCreateRequest:
       type: object
       required:
@@ -18240,6 +18306,29 @@ components:
           type: string
           description: Path to the base model file
           example: "<MODEL_ROOT>/animagine-xl-3.1.safetensors"
+        gpu_index:
+          type: integer
+          minimum: 0
+          nullable: true
+          default: null
+          description: |
+            Physical GPU index this run's training subprocess is pinned to.
+            `null` (default) leaves the environment untouched, so the child
+            inherits the backend's visible devices and uses the default one.
+
+            Applied by exporting `CUDA_VISIBLE_DEVICES` for the child process,
+            so the trainer still addresses its GPU as `cuda:0` whatever index is
+            selected here. Stored in `config_yaml` at
+            `config.process[0].train.gpu_index`.
+
+            Validated at `POST /training/runs/{run_id}/start` against
+            `torch.cuda.device_count()`, not at creation time: an out-of-range
+            index returns 400 there. Enumerate the selectable indices with
+            `GET /system/gpu-stats`.
+
+            This selects which GPU a run occupies; it does not split one run
+            across GPUs.
+          example: 0
         vae_config:
           type: object
           nullable: true
@@ -20491,6 +20580,23 @@ components:
           items:
             type: object
             additionalProperties: true
+        gpu_index:
+          type: integer
+          minimum: 0
+          nullable: true
+          default: null
+          description: |
+            Physical GPU index this run trains on. `null` (default) uses the
+            backend's default device.
+
+            Tagger training runs in a backend thread, not a subprocess, so this
+            is applied with a thread-local `torch.cuda.set_device()` rather than
+            `CUDA_VISIBLE_DEVICES` (which would move the whole backend,
+            generation included). Validated at
+            `POST /tagger-training/runs/{run_id}/start` against
+            `torch.cuda.device_count()`; an out-of-range index returns 400.
+            Enumerate the selectable indices with `GET /system/gpu-stats`.
+          example: 0
         training_method:
           type: string
           default: 'lora'

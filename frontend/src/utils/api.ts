@@ -6705,7 +6705,8 @@ export const addTagToCategory = async (
 };
 
 export interface GPUStats {
-  index: number;
+  index: number; // physical index from nvidia-smi; ignores CUDA_VISIBLE_DEVICES
+  cuda_index: number | null; // index torch addresses it by = the value to send as gpu_index; null when not visible to torch
   name: string;
   vram_used_gb: number;
   vram_total_gb: number;
@@ -7254,6 +7255,7 @@ export interface TrainingRunCreateRequest {
   // sensenova_mot_phase_eviction; refused together with pageable staging.
   sensenova_mot_overlap_transfer?: boolean;
   base_model_path: string;
+  gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion
   // default happens to have this value": generate_vae_config takes a flat field
@@ -8233,6 +8235,7 @@ export interface TaggerTrainingRunCreateRequest {
   training_method: "full" | "lora";
   vision_encoder_path: string;
   dataset_configs: TaggerDatasetConfig[];
+  gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device
   lora_rank?: number;
   lora_alpha?: number;
   learning_rate?: number;

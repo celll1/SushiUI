@@ -56,9 +56,14 @@ class TaggerTrainerHandle:
     def __init__(self, run_id: str, output_dir: str,
                  pause_event: threading.Event,
                  resumed_event: threading.Event,
-                 restored_event: threading.Event):
+                 restored_event: threading.Event,
+                 device_index: Optional[int] = None):
         self.run_id = run_id
         self.output_dir = output_dir
+        # None = the default device, which is also where generation runs, so the
+        # coordinator pauses this trainer. A pinned index other than the
+        # generation device tells it not to bother.
+        self.device_index = device_index
         self.pause_event = pause_event
         self.resumed_event = resumed_event
         self.restored_event = restored_event

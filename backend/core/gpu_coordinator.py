@@ -80,6 +80,10 @@ class TrainerHandle(Protocol):
     pending_decision: Optional[OffloadDecision]
     # For disk-tier swap location
     output_dir: str
+    # torch device index the trainer's state lives on, or None for "the default
+    # device". A trainer on another GPU is not competing with generation, so the
+    # coordinator leaves it running.
+    device_index: Optional[int]
 
     def estimate_state_bytes(self) -> int: ...
     def trainer_label(self) -> str: ...
@@ -88,6 +92,17 @@ class TrainerHandle(Protocol):
 # ---------------------------------------------------------------------------
 # Coordinator singleton
 # ---------------------------------------------------------------------------
+
+def _generation_device_index() -> int:
+    """The device index generation allocates on.
+
+    The generation path resolves bare ``"cuda"``, i.e. torch's current device
+    for that thread, which is never reassigned: visible index 0. Named rather
+    than inlined so the assumption is greppable if generation ever becomes
+    device-selectable too.
+    """
+    return 0
+
 
 class GPUCoordinator:
     """Refcounted serialization point for GPU access.
@@ -230,6 +245,21 @@ class GPUCoordinator:
             handles = list(self._handles)
             if not handles:
                 return []
+
+        # Only trainers sharing the generation device are worth pausing.
+        # Generation runs on bare "cuda", i.e. visible index 0; offloading a
+        # trainer pinned to another GPU would cost a multi-second state
+        # round-trip (and possibly disk I/O) to free memory on a card the
+        # generation never touches.
+        generation_device = _generation_device_index()
+        skipped = [h for h in handles
+                   if getattr(h, "device_index", None) not in (None, generation_device)]
+        for h in skipped:
+            print(f"[GPUCoordinator] Not pausing {h.trainer_label()}: "
+                  f"on cuda:{h.device_index}, generation is on cuda:{generation_device}")
+        handles = [h for h in handles if h not in skipped]
+        if not handles:
+            return []
 
         paused: List[TrainerHandle] = []
         for h in handles:

@@ -2161,6 +2161,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "run_name": None,
     "training_method": "lora",
     "base_model_path": "",
+    # Physical GPU index this run's training subprocess is pinned to, via
+    # CUDA_VISIBLE_DEVICES. None leaves the environment untouched, so the child
+    # sees every visible GPU and uses the default device (previous behaviour).
+    # The child always addresses its GPU as cuda:0 regardless of this value.
+    "gpu_index": None,
     # Training parameters
     "total_steps": 1000,
     "epochs": 10,
@@ -2989,6 +2994,11 @@ def resolve_bundle_vae(value, arch: str) -> bool:
 TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "run_name": None,
     "vision_encoder_path": "",
+    # Physical GPU index this run trains on. None uses the default device.
+    # Unlike diffusion runs (separate subprocess, pinned with
+    # CUDA_VISIBLE_DEVICES), tagger training runs in a backend thread, so the
+    # index is applied with a thread-local torch.cuda.set_device().
+    "gpu_index": None,
     "training_method": "lora",
     "lora_rank": 32,
     "lora_alpha": 16.0,

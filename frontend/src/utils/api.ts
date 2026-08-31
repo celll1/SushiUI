@@ -7448,6 +7448,7 @@ export interface TrainingRunCreateRequest {
   activation_dispatch_threshold_mb?: number;
   multi_noise_timesteps?: number;
   multi_noise_mode?: string;
+  stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)
   trajectory_blend_alpha?: number;
   timestep_sampling?: {
     distribution: string;

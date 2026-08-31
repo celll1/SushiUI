@@ -2495,6 +2495,18 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "multi_noise_timesteps": 1,
     "multi_noise_mode": "independent",
     "trajectory_blend_alpha": 0.7,
+    # Draw the MNT window's timesteps one per equal-probability stratum of
+    # `timestep_sampling` instead of independently. An MNT window is a
+    # multi_noise_timesteps-sample Monte-Carlo estimate of an integral over t on
+    # ONE image, so at batch size 1 the t draw is very nearly the only source of
+    # within-window variance. Stratification leaves each draw's MARGINAL law
+    # untouched (the estimator stays unbiased, the configured density is
+    # preserved exactly) and removes the between-strata variance -- stratified
+    # sampling never increases the variance of a mean. Default on: it has no
+    # hyperparameter, no compute cost and no quality risk. Inert at
+    # multi_noise_timesteps <= 1, and for the Beta sampler, whose quantile
+    # function torch does not provide.
+    "stratified_timesteps": True,
     "timestep_sampling": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
     # Regularization
     "regularization_type": None,

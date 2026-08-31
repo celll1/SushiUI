@@ -88,6 +88,56 @@ class TimestepSampler(ABC):
         """
         pass
 
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        """Quantile function: map u in [0,1) to a timestep, same law as ``sample``.
+
+        Only implemented where the quantile is available in closed form. A
+        subclass without one raises, and ``sample_stratified`` falls back to
+        independent draws rather than silently sampling a different law.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no closed-form quantile function"
+        )
+
+    def sample_stratified(
+        self, n_strata: int, batch_size: int, device: torch.device
+    ) -> torch.Tensor:
+        """``n_strata`` draws per batch element, one from each equal-probability stratum.
+
+        Returns ``[n_strata, batch_size]``. Row i is the draw from stratum i, so a
+        caller running an MNT window indexes row ``mnt_idx``.
+
+        Why: a multi-noise-timestep window is a Monte-Carlo estimate of a
+        one-dimensional integral over t, and at batch size 1 the t draw is very
+        nearly the ONLY source of within-window variance. Drawing the strata
+        u_i = (i + v_i)/n with v_i ~ U(0,1) iid is proportional stratified
+        sampling: the marginal law of each row is unchanged (so the estimator
+        stays unbiased for the SAME objective, and the architecture's configured
+        density is preserved exactly), while the between-strata component of the
+        variance is removed. Stratified sampling never increases the variance of
+        the mean -- that is a theorem, not a tuning choice, so this needs no
+        hyperparameter and carries no quality risk.
+
+        Reference for the construction: Kingma, Salimans, Poole & Ho,
+        "Variational Diffusion Models", NeurIPS 2021, appendix I.1, which uses
+        the low-discrepancy variant u_i = mod(u_0 + i/n, 1) (one shared jitter).
+        The independent-jitter form used here is the one with the general
+        variance theorem attached; the shared-jitter lattice has lower variance
+        for smooth integrands but no guarantee off that assumption.
+
+        The row ORDER is permuted before returning. Callers give mnt_idx 0 a
+        special meaning (SenseNova reuses the batch's already-built prefix on
+        iteration 0 and recomputes it after, and debug_latents saves there), so
+        a monotone stratum order would permanently bind those behaviours to the
+        noisiest stratum.
+        """
+        if n_strata < 1:
+            raise ValueError(f"n_strata must be >= 1, got {n_strata}")
+        edges = torch.arange(n_strata, device=device, dtype=torch.float32).unsqueeze(1)
+        u = (edges + torch.rand(n_strata, batch_size, device=device)) / float(n_strata)
+        t = self.icdf(u)
+        return t[torch.randperm(n_strata, device=device)]
+
     @staticmethod
     def from_config(config: Dict[str, Any]) -> 'TimestepSampler':
         """
@@ -174,6 +224,9 @@ class UniformTimestepSampler(TimestepSampler):
 
         return timesteps
 
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        return u * (self.max_timestep - self.min_timestep) + self.min_timestep
+
 
 # ============================================================
 # Future Implementations (not implemented yet)
@@ -203,6 +256,12 @@ class NormalTimestepSampler(TimestepSampler):
         timesteps = torch.randn(batch_size, device=device) * self.std + self.mean
         timesteps = torch.clamp(timesteps, self.min_timestep, self.max_timestep)
         return timesteps
+
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        # Clamping is monotone, so the quantile of the clamped variable is the
+        # clamped quantile -- the same law ``sample`` produces, atoms included.
+        z = torch.special.ndtri(u.clamp(1e-7, 1 - 1e-7))
+        return torch.clamp(z * self.std + self.mean, self.min_timestep, self.max_timestep)
 
 
 class LogitNormalTimestepSampler(TimestepSampler):
@@ -274,6 +333,13 @@ class LogitNormalTimestepSampler(TimestepSampler):
         timesteps = timesteps * (self.max_timestep - self.min_timestep) + self.min_timestep
 
         return timesteps
+
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        # sigmoid and the affine rescale are both monotone, so composing them
+        # with the normal quantile gives this sampler's quantile exactly.
+        z = torch.special.ndtri(u.clamp(1e-7, 1 - 1e-7))
+        t = torch.sigmoid(z * self.std + self.mean)
+        return t * (self.max_timestep - self.min_timestep) + self.min_timestep
 
 
 # Alias for backward compatibility (config may use "lognormal")
@@ -347,3 +413,21 @@ class CustomTimestepSampler(TimestepSampler):
         )
 
         return timesteps
+
+    def icdf(self, u: torch.Tensor) -> torch.Tensor:
+        """Piecewise-linear inverse CDF of the binned density.
+
+        ``sample`` draws a bin by weight and then uniformly inside it, so the CDF
+        is linear across each bin with the bin's weight as its rise -- inverting
+        it is a bucketize plus one linear interpolation.
+        """
+        device = u.device
+        n = len(self.weights)
+        w = self.weights.to(device=device, dtype=torch.float32)
+        edges = torch.linspace(self.min_timestep, self.max_timestep, n + 1, device=device)
+        cum = torch.cat([torch.zeros(1, device=device), torch.cumsum(w, 0)])
+        cum[-1] = 1.0  # absorb float error so u just below 1 still lands in bin n-1
+        idx = (torch.bucketize(u.contiguous(), cum, right=True) - 1).clamp(0, n - 1)
+        span = (cum[idx + 1] - cum[idx]).clamp_min(1e-12)
+        frac = ((u - cum[idx]) / span).clamp(0.0, 1.0)
+        return edges[idx] + frac * (edges[idx + 1] - edges[idx])

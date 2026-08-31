@@ -19701,6 +19701,31 @@ components:
         trajectory_blend_alpha:
           type: 'number'
           default: 0.7
+        stratified_timesteps:
+          type: 'boolean'
+          default: true
+          description: |
+            Draw the multi-noise-timestep window's timesteps one per
+            equal-probability stratum of `timestep_sampling`, instead of drawing
+            each independently.
+
+            An MNT window is a `multi_noise_timesteps`-sample Monte-Carlo estimate
+            of an integral over t on ONE image, so at batch size 1 the timestep
+            draw is very nearly the only source of within-window variance.
+            Stratification leaves each draw's marginal law untouched — the
+            estimator stays unbiased and the configured density is preserved
+            exactly — while removing the between-strata component of the variance.
+            Stratified sampling never increases the variance of a mean, so this
+            has no hyperparameter, no compute cost and no quality risk.
+
+            The stratum order is permuted, because callers give MNT iteration 0 a
+            special meaning (SenseNova reuses the batch's prefix there; debug
+            latents are saved there).
+
+            Inert when `multi_noise_timesteps` <= 1, and for the `beta`
+            distribution, whose quantile function torch does not provide — that
+            case falls back to independent draws and logs once.
+          example: true
         timestep_sampling:
           type: 'object'
           additionalProperties: true

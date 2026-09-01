@@ -34,6 +34,30 @@ export interface ChartSeries {
    *  different scale than the primary series (e.g. learning rate ~1e-4 vs
    *  loss ~0.03), which would otherwise render as an invisible flat line. */
   secondaryAxis?: boolean;
+  /** Explicit axis assignment. When absent the legacy `secondaryAxis` hint
+   *  decides (right when set, left otherwise). */
+  axis?: AxisSide;
+  /** Declared for the band/marker renderers; not read yet -- every mode still
+   *  draws as a line. */
+  renderMode?: "line" | "markers" | "band";
+  /** Exempt from EMA smoothing (0/1 indicators and sparse periodic probes read
+   *  as their own values, not as a lagged average of them). */
+  noSmooth?: boolean;
+}
+
+export type AxisSide = "left" | "right";
+
+/** How an axis derives its domain. `auto` runs the robust percentile clip with
+ *  an optional hard floor; `fixed` pins the domain and bypasses the clip. */
+export type MetricRangePolicy =
+  | { kind: "auto"; floor?: number }
+  | { kind: "fixed"; min: number; max: number };
+
+export interface AxisConfig {
+  scale: "linear" | "log";
+  range: MetricRangePolicy;
+  /** Draw a gridline at 0 when the domain spans it. Defaults on for `fixed`. */
+  zeroLine?: boolean;
 }
 
 export interface EpochBoundary {
@@ -61,6 +85,16 @@ interface SharedMetricChartProps {
   resumeMarkers?: ResumeMarker[];
   /** Header right-side extra controls (rendered before the smoothing slider). */
   headerExtra?: React.ReactNode;
+  /** Declared per-axis scale/domain. When absent the entire legacy path runs:
+   *  left = robustYRange(yMinFloor, bounded) + the `allowLogScale` toggle,
+   *  right = independent linear auto-range. */
+  axes?: { left: AxisConfig; right?: AxisConfig };
+  /** Controlled legend visibility; falls back to local state when absent. */
+  hiddenIds?: Set<string>;
+  onHiddenIdsChange?: (next: Set<string>) => void;
+  /** Controlled smoothing; falls back to local state when absent. */
+  smoothing?: number;
+  onSmoothingChange?: (next: number) => void;
 }
 
 interface Pt { step: number; value: number; }
@@ -69,6 +103,11 @@ const BASE_PAD = { top: 6, right: 8, bottom: 18, left: 44 };
 // Extra right margin reserved for the secondary axis's tick labels when at
 // least one visible series uses it.
 const SECONDARY_AXIS_RIGHT_PAD = 34;
+// Domain the right axis falls back to when no series is assigned to it (module
+// constant so the memo below keeps a stable identity).
+const INACTIVE_RIGHT_RANGE = { min: 0, max: 1 };
+
+const axisOf = (s: ChartSeries): AxisSide => s.axis ?? (s.secondaryAxis ? "right" : "left");
 
 function applySmoothing(points: Pt[], factor: number): Pt[] {
   if (factor <= 0 || points.length === 0) return points;
@@ -141,6 +180,95 @@ function robustPositiveLogRange(values: number[]): { min: number; max: number } 
   return { min: Math.pow(10, logLo - logPad), max: Math.pow(10, logHi + logPad) };
 }
 
+interface AxisScale {
+  min: number;
+  max: number;
+  span: number;
+  isLog: boolean;
+  /** Whether a log domain exists at all (drives the log button's disabled state). */
+  logAvailable: boolean;
+  toY: (realValue: number) => number;
+  /** Domain-space tick values (log10'd when isLog), top -> bottom. */
+  tickValues: number[];
+  /** Domain value -> real value (undoes the log10 when isLog). */
+  fromDomain: (domainValue: number) => number;
+  /** Y pixel of the zero line, or null when it should not be drawn. */
+  zeroY: number | null;
+}
+
+/** One axis's pooling + domain + pixel mapping. Both the left and the right
+ *  axis go through this; the two previously-duplicated blocks differed only in
+ *  which series they pooled and in whether a floor/bounded/log applied. */
+function useAxisScale(o: {
+  /** Series assigned to this axis (memoized by the caller). */
+  seriesForAxis: ChartSeries[];
+  visibleSmoothed: Map<string, Pt[]>;
+  visibleRaw: Map<string, Pt[]>;
+  smoothing: number;
+  /** Hard lower clamp for an auto range (legacy `yMinFloor`; -Infinity = none). */
+  yMinFloor: number;
+  bounded: boolean;
+  allowLog: boolean;
+  logOn: boolean;
+  config?: AxisConfig;
+  /** Domain used when the axis carries no series (legacy right axis: 0..1). */
+  inactiveRange: { min: number; max: number } | null;
+  padTop: number;
+  chartH: number;
+}): AxisScale {
+  const { values, mustInclude } = useMemo(() => {
+    const vals: number[] = [];
+    const must: number[] = [];
+    for (const s of o.seriesForAxis) {
+      const sm = o.visibleSmoothed.get(s.id) ?? [];
+      const rw = o.visibleRaw.get(s.id) ?? [];
+      if (s.rawRange) {
+        for (const p of rw) must.push(p.value);
+      } else if (o.smoothing > 0 && sm.length > 0) {
+        for (const p of sm) vals.push(p.value);
+      } else {
+        for (const p of rw) vals.push(p.value);
+      }
+    }
+    return { values: vals, mustInclude: must };
+  }, [o.seriesForAxis, o.visibleSmoothed, o.visibleRaw, o.smoothing]);
+
+  const policy = o.config?.range;
+  const fixed = policy && policy.kind === "fixed" ? policy : null;
+  const floor = !policy ? o.yMinFloor : policy.kind === "auto" ? (policy.floor ?? -Infinity) : -Infinity;
+  const inactive = o.inactiveRange;
+  const empty = o.seriesForAxis.length === 0;
+
+  const linearRange = useMemo(() => {
+    if (fixed) return { min: fixed.min, max: fixed.max };
+    if (empty && inactive) return inactive;
+    return robustYRange(values, floor, mustInclude, o.bounded);
+  }, [fixed?.min, fixed?.max, empty, inactive?.min, inactive?.max, values, floor, mustInclude, o.bounded]);
+
+  const logRange = useMemo(() => {
+    if (!o.allowLog) return null;
+    // A fixed domain declares its own bounds; only a positive one is log-able.
+    if (fixed) return fixed.min > 0 ? { min: fixed.min, max: fixed.max } : null;
+    return robustPositiveLogRange([...values, ...mustInclude]);
+  }, [o.allowLog, fixed?.min, fixed?.max, values, mustInclude]);
+
+  const isLog = o.allowLog && o.logOn && logRange !== null;
+  const min = isLog && logRange ? Math.log10(logRange.min) : linearRange.min;
+  const max = isLog && logRange ? Math.log10(logRange.max) : linearRange.max;
+  const span = max - min || 1;
+  const toY = (v: number) =>
+    o.padTop + ((max - (isLog ? Math.log10(Math.max(v, 1e-9)) : v)) / span) * o.chartH;
+  const wantZeroLine = policy ? (o.config?.zeroLine ?? policy.kind === "fixed") : false;
+  return {
+    min, max, span, isLog,
+    logAvailable: logRange !== null,
+    toY,
+    tickValues: [max, min + span * 0.5, min],
+    fromDomain: (d: number) => (isLog ? Math.pow(10, d) : d),
+    zeroY: wantZeroLine && !isLog && min < 0 && max > 0 ? toY(0) : null,
+  };
+}
+
 /** Compute epoch boundaries from per-point resume-aware data when the caller
  *  does not provide them. Returns the last step seen for each epoch. */
 export function computeEpochBoundariesFromPoints(
@@ -169,6 +297,11 @@ export default function SharedMetricChart({
   epochBoundaries,
   resumeMarkers,
   headerExtra,
+  axes,
+  hiddenIds: hiddenIdsProp,
+  onHiddenIdsChange,
+  smoothing: smoothingProp,
+  onSmoothingChange,
 }: SharedMetricChartProps) {
   // Unique per-instance id for the plot-area clipPath (multiple charts render
   // in the same DOM — e.g. Loss + GradNorm + ParamChange stacked in one run's
@@ -179,7 +312,8 @@ export default function SharedMetricChart({
   const clipId = `metric-chart-plot-clip-${clipIdRaw.replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
+  const [localSmoothing, setLocalSmoothing] = useState(smoothable ? defaultSmoothing : 0);
+  const smoothing = smoothingProp ?? localSmoothing;
   // Separate "display" value so the slider thumb / % label track the pointer
   // instantly (cheap state, no recompute below), while the value that actually
   // drives the EMA + Y-range recompute is committed at most once per animation
@@ -192,14 +326,26 @@ export default function SharedMetricChart({
   const [smoothingDisplay, setSmoothingDisplay] = useState(smoothing);
   const smoothingRafRef = useRef<number | null>(null);
   const pendingSmoothingRef = useRef<number | null>(null);
+  const commitSmoothingRef = useRef<(v: number) => void>(() => {});
+  commitSmoothingRef.current = (v: number) => {
+    if (onSmoothingChange) onSmoothingChange(v); else setLocalSmoothing(v);
+  };
   useEffect(() => () => { if (smoothingRafRef.current !== null) cancelAnimationFrame(smoothingRafRef.current); }, []);
+  // A controlled value that did NOT come from this slider (parent reset, slot
+  // restore) must move the thumb; one echoed back from our own pending commit
+  // must not, or it would drag the thumb back a frame behind the pointer.
+  useEffect(() => {
+    if (smoothingProp !== undefined && smoothingProp !== pendingSmoothingRef.current) {
+      setSmoothingDisplay(smoothingProp);
+    }
+  }, [smoothingProp]);
   const scheduleSmoothing = (v: number) => {
     setSmoothingDisplay(v);
     pendingSmoothingRef.current = v;
     if (smoothingRafRef.current !== null) return;
     smoothingRafRef.current = requestAnimationFrame(() => {
       smoothingRafRef.current = null;
-      if (pendingSmoothingRef.current !== null) setSmoothing(pendingSmoothingRef.current);
+      if (pendingSmoothingRef.current !== null) commitSmoothingRef.current(pendingSmoothingRef.current);
     });
   };
   const [logScale, setLogScale] = useState(false);
@@ -207,7 +353,11 @@ export default function SharedMetricChart({
   // Series hidden via legend clicks. Hidden series are excluded from rendering
   // AND from the Y-range pooling, so the remaining series auto-rescale to fill
   // the view (lets you isolate one metric's variation instead of all forced on).
-  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const [localHiddenIds, setLocalHiddenIds] = useState<Set<string>>(new Set());
+  const hiddenIds = hiddenIdsProp ?? localHiddenIds;
+  const setHiddenIds = (next: Set<string>) => {
+    if (onHiddenIdsChange) onHiddenIdsChange(next); else setLocalHiddenIds(next);
+  };
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
   const [brush, setBrush] = useState<{ startStep: number; endStep: number } | null>(null);
   const pointerXRef = useRef<number | null>(null);
@@ -262,7 +412,8 @@ export default function SharedMetricChart({
   const smoothedSeries = useMemo<Map<string, Pt[]>>(() => {
     const out = new Map<string, Pt[]>();
     for (const s of visibleSeries) {
-      out.set(s.id, applySmoothing(s.points.map((p) => ({ step: p.step, value: p.value })), smoothing));
+      const pts = s.points.map((p) => ({ step: p.step, value: p.value }));
+      out.set(s.id, s.noSmooth ? pts : applySmoothing(pts, smoothing));
     }
     return out;
   }, [visibleSeries, smoothing]);
@@ -270,8 +421,10 @@ export default function SharedMetricChart({
   // Whether any currently-visible series wants a secondary (right-hand) axis,
   // and which color to label its ticks with (first such series' own color, so
   // the axis reads as "belonging to" that series rather than a fixed hue).
-  const hasSecondary = useMemo(() => visibleSeries.some((s) => s.secondaryAxis), [visibleSeries]);
-  const secondaryColor = useMemo(() => visibleSeries.find((s) => s.secondaryAxis)?.color ?? "#38bdf8", [visibleSeries]);
+  const hasSecondary = useMemo(() => visibleSeries.some((s) => axisOf(s) === "right"), [visibleSeries]);
+  const secondaryColor = useMemo(() => visibleSeries.find((s) => axisOf(s) === "right")?.color ?? "#38bdf8", [visibleSeries]);
+  const leftSeries = useMemo(() => visibleSeries.filter((s) => axisOf(s) === "left"), [visibleSeries]);
+  const rightSeries = useMemo(() => visibleSeries.filter((s) => axisOf(s) === "right"), [visibleSeries]);
 
   // Layout. Reserve extra right margin for the secondary axis's tick labels
   // when active.
@@ -328,67 +481,11 @@ export default function SharedMetricChart({
   //    to the percentile calc is smoothed once smoothing > 0. It won't track
   //    the slider as tightly as a single-series chart (Tagger) — that's the
   //    accepted trade-off for a 5-series chart with heterogeneous scales.
-  const { primaryVals, mustInclude } = useMemo(() => {
-    const prim: number[] = [];
-    const must: number[] = [];
-    for (const s of visibleSeries) {
-      // secondaryAxis series get their own independent Y-range below and must
-      // never influence the primary axis's pooling (same intent as excluding
-      // hidden series — they live on a wholly different scale).
-      if (s.secondaryAxis) continue;
-      const sm = visibleSmoothed.get(s.id) ?? [];
-      const rw = visibleRaw.get(s.id) ?? [];
-      if (s.rawRange) {
-        for (const p of rw) must.push(p.value);
-      } else if (smoothing > 0 && sm.length > 0) {
-        for (const p of sm) prim.push(p.value);
-      } else {
-        for (const p of rw) prim.push(p.value);
-      }
-    }
-    return { primaryVals: prim, mustInclude: must };
-  }, [visibleSeries, visibleSmoothed, visibleRaw, smoothing]);
-
-  // Secondary axis: same pooling logic as primary, but scoped to only
-  // secondaryAxis series and scaled into its OWN independent Y-range (always
-  // linear -- log mode only applies to the primary axis).
-  const { secondaryVals, secondaryMustInclude } = useMemo(() => {
-    const prim: number[] = [];
-    const must: number[] = [];
-    for (const s of visibleSeries) {
-      if (!s.secondaryAxis) continue;
-      const sm = visibleSmoothed.get(s.id) ?? [];
-      const rw = visibleRaw.get(s.id) ?? [];
-      if (s.rawRange) {
-        for (const p of rw) must.push(p.value);
-      } else if (smoothing > 0 && sm.length > 0) {
-        for (const p of sm) prim.push(p.value);
-      } else {
-        for (const p of rw) prim.push(p.value);
-      }
-    }
-    return { secondaryVals: prim, secondaryMustInclude: must };
-  }, [visibleSeries, visibleSmoothed, visibleRaw, smoothing]);
-
-  const rawYRange2 = useMemo(
-    () => (hasSecondary ? robustYRange(secondaryVals, -Infinity, secondaryMustInclude, false) : { min: 0, max: 1 }),
-    [hasSecondary, secondaryVals, secondaryMustInclude],
-  );
-  const yMin2 = rawYRange2.min;
-  const yMax2 = rawYRange2.max;
-  const ySpan2 = yMax2 - yMin2 || 1;
-  const toY2 = (v: number) => PAD.top + ((yMax2 - v) / ySpan2) * chartH;
-
-  // Memoized: robustYRange sorts the pooled array (O(n log n)). Without this,
-  // it re-sorted on every render — including ones unrelated to the pooled data,
-  // e.g. tooltip hover or brush-drag — since it was called inline in render body.
-  const rawYRange = useMemo(
-    () => robustYRange(primaryVals, yMinFloor, mustInclude, bounded),
-    [primaryVals, yMinFloor, mustInclude, bounded],
-  );
-  // Log-domain range: a robust (p5-p95, log-space padded) range over the
-  // POSITIVE subset of the pooled data — see robustPositiveLogRange() history
-  // note. Two prior guards were both wrong in different ways:
+  //
+  // Log-domain range (primary only in the legacy path): a robust (p5-p95,
+  // log-space padded) range over the POSITIVE subset of the pooled data — see
+  // robustPositiveLogRange()'s history note. Two prior guards were both wrong
+  // in different ways:
   //  - `rawYRange.min > 0`: a single zero/unrecorded point anywhere pinned the
   //    LINEAR range's min to 0 (via yMinFloor clamping), so log mode never
   //    activated at all — the button looked pressable but did nothing.
@@ -396,16 +493,31 @@ export default function SharedMetricChart({
   //    one low transient (e.g. nearzero warm-up point right after a resume)
   //    pinned the axis low and squeezed the steady-state data into a thin
   //    band at the top.
-  const logRange = useMemo(
-    () => (allowLogScale ? robustPositiveLogRange([...primaryVals, ...mustInclude]) : null),
-    [allowLogScale, primaryVals, mustInclude],
-  );
-  const canLog = allowLogScale && logScale && logRange !== null;
-  const yMin = canLog && logRange ? Math.log10(logRange.min) : rawYRange.min;
-  const yMax = canLog && logRange ? Math.log10(logRange.max) : rawYRange.max;
-  const ySpan = yMax - yMin || 1;
-  const yTransform = (v: number) => (canLog ? Math.log10(Math.max(v, 1e-9)) : v);
-  const toY = (v: number) => PAD.top + ((yMax - yTransform(v)) / ySpan) * chartH;
+  const leftAxis = useAxisScale({
+    seriesForAxis: leftSeries,
+    visibleSmoothed, visibleRaw, smoothing,
+    yMinFloor, bounded,
+    allowLog: axes ? axes.left.scale === "log" : allowLogScale,
+    logOn: axes ? true : logScale,
+    config: axes?.left,
+    inactiveRange: null,
+    padTop: PAD.top, chartH,
+  });
+  // Legacy right axis: independent linear auto-range over its own series only,
+  // no floor / no bounded / no log.
+  const rightAxis = useAxisScale({
+    seriesForAxis: rightSeries,
+    visibleSmoothed, visibleRaw, smoothing,
+    yMinFloor: -Infinity, bounded: false,
+    allowLog: axes?.right ? axes.right.scale === "log" : false,
+    logOn: true,
+    config: axes?.right,
+    inactiveRange: INACTIVE_RIGHT_RANGE,
+    padTop: PAD.top, chartH,
+  });
+
+  const toY = leftAxis.toY;
+  const toY2 = rightAxis.toY;
 
   const buildPath = (pts: Pt[], toYFn: (v: number) => number = toY) =>
     pts
@@ -413,9 +525,8 @@ export default function SharedMetricChart({
       .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toYFn(p.value).toFixed(1)}`)
       .join(" ");
 
-  // Shared numeric formatting, without the primary axis's log-domain unwrap
-  // (canLog only ever applies to the primary axis -- the secondary axis is
-  // always linear, so its values are already "real").
+  // Shared numeric formatting; each axis unwraps its own domain (log10 or
+  // identity) via fromDomain before formatting.
   const formatReal = (real: number) => {
     if (Math.abs(real) >= 100) return real.toFixed(0);
     if (Math.abs(real) >= 1) return real.toFixed(2);
@@ -423,8 +534,8 @@ export default function SharedMetricChart({
     if (real === 0) return "0";
     return real.toExponential(1);
   };
-  const formatY = (v: number) => formatReal(canLog ? Math.pow(10, v) : v);
-  const formatY2 = (v: number) => formatReal(v);
+  const formatY = (v: number) => formatReal(leftAxis.fromDomain(v));
+  const formatY2 = (v: number) => formatReal(rightAxis.fromDomain(v));
   const formatTooltip = (v: number) => {
     if (v === 0) return "0.00";
     if (Math.abs(v) >= 0.01) return v.toFixed(2);
@@ -435,7 +546,7 @@ export default function SharedMetricChart({
     if (step >= 1000) return `${(step / 1000).toFixed(1)}k`;
     return String(step);
   };
-  const yTickValues = [yMax, yMin + ySpan * 0.5, yMin];
+  const yTickValues = leftAxis.tickValues;
   const xTickValues = [xMin, xMin + xSpan * 0.5, xMax].map((s) => Math.round(s));
 
   // Auto-extend xRange while brushing past the chart edge
@@ -508,10 +619,13 @@ export default function SharedMetricChart({
         const d = Math.abs(pts[i].step - targetStep);
         if (d < dist) { dist = d; idx = i; }
       }
-      const smv = sm[idx]?.value ?? null;
+      // A noSmooth series' "smoothed" points ARE its raw points, so surfacing
+      // one would read as "the EMA equals the sample" for exactly the series
+      // where an EMA was never computed.
+      const smv = s.noSmooth ? null : (sm[idx]?.value ?? null);
       values.push({ id: s.id, label: s.label, color: s.color, value: pts[idx].value, smoothValue: smv });
       const av = (smoothing > 0 && smv !== null) ? smv : pts[idx].value;
-      anchorPy = s.secondaryAxis ? toY2(av) : toY(av);
+      anchorPy = axisOf(s) === "right" ? toY2(av) : toY(av);
     }
     if (values.length === 0 || anchorPy === null) { setTooltip(null); return; }
     setTooltip({ px: toX(targetStep), py: anchorPy, step: Math.round(targetStep), values });
@@ -569,9 +683,9 @@ export default function SharedMetricChart({
           {allowLogScale && (
             <button
               onClick={() => setLogScale((v) => !v)}
-              disabled={logRange === null}
+              disabled={!leftAxis.logAvailable}
               className={`text-[10px] px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${logScale ? "bg-blue-700 text-blue-100" : "bg-gray-700 hover:bg-gray-600 text-gray-300"}`}
-              title={logRange === null ? "No positive values to log-scale" : "Toggle log Y scale"}
+              title={!leftAxis.logAvailable ? "No positive values to log-scale" : "Toggle log Y scale"}
             >log</button>
           )}
           {epochBoundaries && epochBoundaries.length >= 1 && (() => {
@@ -603,11 +717,11 @@ export default function SharedMetricChart({
             return (
               <button
                 key={s.id}
-                onClick={() => setHiddenIds((prev) => {
-                  const next = new Set(prev);
+                onClick={() => {
+                  const next = new Set(hiddenIds);
                   if (next.has(s.id)) next.delete(s.id); else next.add(s.id);
-                  return next;
-                })}
+                  setHiddenIds(next);
+                }}
                 className={`inline-flex items-center gap-1 text-[10px] transition-opacity hover:text-gray-200 ${hidden ? "text-gray-600 opacity-50 line-through" : "text-gray-400"}`}
                 title={hidden ? `Show ${s.label}` : `Hide ${s.label}`}
               >
@@ -655,16 +769,25 @@ export default function SharedMetricChart({
             {/* Y grid + ticks (primary axis) */}
             {yTickValues.map((v, i) => (
               <g key={`y${i}`}>
-                <line x1={PAD.left} y1={toY(canLog ? Math.pow(10, v) : v)} x2={width - PAD.right} y2={toY(canLog ? Math.pow(10, v) : v)} stroke="#374151" strokeWidth={1} />
-                <text x={PAD.left - 4} y={toY(canLog ? Math.pow(10, v) : v) + 3} textAnchor="end" fontSize={9} fill="#6b7280">{formatY(v)}</text>
+                <line x1={PAD.left} y1={toY(leftAxis.fromDomain(v))} x2={width - PAD.right} y2={toY(leftAxis.fromDomain(v))} stroke="#374151" strokeWidth={1} />
+                <text x={PAD.left - 4} y={toY(leftAxis.fromDomain(v)) + 3} textAnchor="end" fontSize={9} fill="#6b7280">{formatY(v)}</text>
               </g>
             ))}
+            {/* Zero gridline for an axis whose declared domain spans zero (a
+                signed-correlation axis, say) — the percentile-clipped auto
+                axes never guarantee 0 sits on a tick row. */}
+            {leftAxis.zeroY !== null && (
+              <line x1={PAD.left} y1={leftAxis.zeroY} x2={width - PAD.right} y2={leftAxis.zeroY} stroke="#4b5563" strokeWidth={1} strokeDasharray="2 2" />
+            )}
+            {hasSecondary && rightAxis.zeroY !== null && (
+              <line x1={PAD.left} y1={rightAxis.zeroY} x2={width - PAD.right} y2={rightAxis.zeroY} stroke="#4b5563" strokeWidth={1} strokeDasharray="2 2" />
+            )}
             {/* Secondary axis tick labels (right side). No separate gridlines --
                 toY and toY2 both map their own [min,max] linearly onto the same
                 [PAD.top, PAD.top+chartH] pixel span, so the canonical top/mid/
                 bottom rows already line up with the primary axis's gridlines;
                 only the displayed VALUE differs per axis. */}
-            {hasSecondary && [yMax2, yMin2 + ySpan2 * 0.5, yMin2].map((v, i) => (
+            {hasSecondary && rightAxis.tickValues.map((v, i) => (
               <text key={`y2-${i}`} x={width - PAD.right + 4} y={PAD.top + (i * chartH) / 2 + 3} textAnchor="start" fontSize={9} fill={secondaryColor}>
                 {formatY2(v)}
               </text>
@@ -700,7 +823,7 @@ export default function SharedMetricChart({
                 rather than a legible line — the smoothed dashed line alone is
                 enough context for an overlay metric. */}
             <g clipPath={`url(#${clipId})`}>
-              {smoothing > 0 && visibleSeries.filter((s) => !s.dashed && !s.secondaryAxis).map((s) => (
+              {smoothing > 0 && visibleSeries.filter((s) => !s.dashed && !s.noSmooth && axisOf(s) !== "right").map((s) => (
                 <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
                   fill="none" stroke={s.color} strokeWidth={1}
                   opacity={0.22} />
@@ -708,7 +831,7 @@ export default function SharedMetricChart({
               {visibleSeries.map((s) => {
                 const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
                 return (
-                  <path key={s.id} d={buildPath(pts, s.secondaryAxis ? toY2 : toY)} fill="none" stroke={s.color} strokeWidth={1.5}
+                  <path key={s.id} d={buildPath(pts, axisOf(s) === "right" ? toY2 : toY)} fill="none" stroke={s.color} strokeWidth={1.5}
                     strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
                 );
               })}

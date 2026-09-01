@@ -7838,15 +7838,32 @@ export interface ResumeMarker {
   step: number;
 }
 
-/** Display metadata for a bespoke extra metric (from the backend registry). */
+export type MetricFamily =
+  | "loss" | "gradient_norm" | "learning_rate" | "bounded_diagnostic"
+  | "signed_correlation" | "binary_indicator" | "count" | "duration"
+  | "data_volume" | "validation" | "other";
+
+export type MetricRange =
+  | { kind: "auto"; floor?: number }
+  | { kind: "fixed"; min: number; max: number };
+
+/** Display + semantic metadata for a bespoke extra metric (from the backend
+ *  registry, core/training/metric_registry.py). Every semantic field is
+ *  optional; unannotated keys fall back to metricCatalog's key heuristics. */
 export interface MetricSeriesDef {
   label?: string;
   color?: string;
   dashed?: boolean;
-  /** "right" renders the series on a separate, independently-scaled secondary
-   *  Y-axis instead of pooling it into the primary Y-range (e.g. learning
-   *  rate, which lives orders of magnitude below loss). */
+  /** LEGACY hint. "right" renders the series on a separate, independently-scaled
+   *  secondary Y-axis instead of pooling it into the primary Y-range (e.g.
+   *  learning rate, which lives orders of magnitude below loss). Superseded by
+   *  `scale_group`; still read by the older charts. */
   axis?: "right";
+  family?: MetricFamily;
+  /** Two series may share a Y-axis iff their scale groups are equal. */
+  scale_group?: string;
+  range?: MetricRange;
+  sampling?: "dense" | "periodic" | "event";
 }
 
 export interface TrainingMetrics {

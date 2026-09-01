@@ -17980,6 +17980,12 @@ async def get_training_metrics_db(
             "recon_loss": recon_loss_data,
             "extra_metrics": extra_series,
             "extra_metric_defs": {
+                # Deliberately NO "family" for an unregistered key: the frontend
+                # resolves one from the key shape, and stamping "other" here
+                # would defeat that (`lr_controlnet` would land on the LR axis
+                # while being invisible to the LR preset, which selects by
+                # family). An unknown key that matches no heuristic already gets
+                # its own scale group there, so nothing silently pools.
                 k: EXTRA_METRIC_DEFS.get(k, {"label": k, "dashed": True})
                 for k in extra_series
             },

@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
 import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
+import { TrainingMetricsProvider } from "./TrainingMetricsContext";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
@@ -786,18 +787,20 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
           {/* Loss Chart */}
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
-            <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
-              <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
-                <h3 className="font-semibold mb-2 text-xs sm:text-sm">Loss</h3>
-                <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+            <TrainingMetricsProvider key={currentRun.id} runId={currentRun.id} isRunning={currentRun.status === "running"}>
+              <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
+                <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
+                  <h3 className="font-semibold mb-2 text-xs sm:text-sm">Loss</h3>
+                  <LossChart />
+                </div>
+                <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
+                  <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
+                  <GradNormChart />
+                </div>
+                <ParamChangeChart />
+                <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
               </div>
-              <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
-                <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
-                <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
-              </div>
-              <ParamChangeChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
-              <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
-            </div>
+            </TrainingMetricsProvider>
           )}
 
           {/* Checkpoint List */}

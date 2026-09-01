@@ -2414,6 +2414,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # mechanism, own pinned pool). If the install fails, the sample runs with
     # the full resident KV cache and a training_log warning is emitted.
     "sensenova_sample_kv_cache_streaming": False,
+    # SenseNova full fine-tune only: also train transformer.fm_modules (the
+    # generation ViT embeddings, the timestep/noise-scale embedders and the
+    # fm_head), 16 tensors / 63,117,504 parameters that the decoder-Linear scope
+    # leaves frozen -- two real checkpoints 4,960 steps apart hold them
+    # byte-identical. Joins the generation parameter group at unet_lr;
+    # ignored (warned) when the resolved branch is understanding-only.
+    "sensenova_train_fm_modules": False,
     "block_swap_h2d_only": False,   # H2D-only swap (FLUX.2 LoRA training: no D2H of frozen base)
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1)
     "num_optimizer_groups": 0,

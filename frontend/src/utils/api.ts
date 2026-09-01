@@ -7254,6 +7254,12 @@ export interface TrainingRunCreateRequest {
   // concurrently on two CUDA streams instead of back to back. Requires
   // sensenova_mot_phase_eviction; refused together with pageable staging.
   sensenova_mot_overlap_transfer?: boolean;
+  // SenseNova full fine-tune only: also train transformer.fm_modules (16
+  // tensors / 63,117,504 params -- the generation ViT embeddings, the timestep
+  // and noise-scale embedders, fm_head), in the generation group at unet_lr.
+  // Needs train_unet; warned and ignored on an understanding-only branch.
+  // Changing it on a resume resets the optimizer state (group count moves).
+  sensenova_train_fm_modules?: boolean;
   base_model_path: string;
   gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).

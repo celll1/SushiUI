@@ -153,6 +153,9 @@ export interface MetricPreset {
   restrict?: Partial<Record<MetricFamily, RegExp>>;
   /** Extra built-in keys included for context, regardless of family. */
   anchors: string[];
+  /** At least one of these must exist in the run for the preset to be offered.
+   *  For a preset named after a distinction a run may simply not draw. */
+  requires?: string[];
   /** Scale groups in the order they should claim the left then right axis.
    *  Anything past the second active group is refused (see assignAxes). */
   preferredAxes: string[];
@@ -173,6 +176,7 @@ export const PRESETS: MetricPreset[] = [
     question: "Do the caption-free items behave differently from the conditional ones?",
     families: ["loss", "binary_indicator"],
     restrict: { binary_indicator: /^cfg_null_frac$/ },
+    requires: ["cfg_null_frac", "loss_null", "loss_cond"],
     anchors: [],
     preferredAxes: ["loss_scale", "unit_interval"],
   },
@@ -306,7 +310,7 @@ export function assignAxes(
     left, right, byKey, refusedGroups, refusedKeys,
     refusalMessage: refusedGroups.length
       ? `Both axes are in use: ${scaleGroupLabel(left!)} (left) and ${scaleGroupLabel(right!)} (right). `
-        + `Mute one of them to make room for ${refusedGroups.map(scaleGroupLabel).join(", ")}, or use the other pane.`
+        + `Untick one of them to make room for ${refusedGroups.map(scaleGroupLabel).join(", ")}, or use the other pane.`
       : null,
     canSwap: left !== null && right !== null,
   };

@@ -5857,21 +5857,38 @@ paths:
 
         `extra_metrics` carries the bespoke per-step scalars a run actually
         emitted, `{name: MetricPoint[]}`, with `extra_metric_defs` giving each
-        present name its chart label/colour from
-        `core/training/metric_registry.EXTRA_METRIC_DEFS`. The set of names is
-        open by design — a trainer adds one with `log_extra_metric()` and no
-        schema changes here.
+        present name its presentation AND its semantics from
+        `core/training/metric_registry.EXTRA_METRIC_DEFS`:
 
-        The loss and grad-norm monitors' CFG-condition filter reads four of
-        those names, emitted only by a run with a nonzero
-        `cfg_uncond_drop_rate`: `loss_null` / `loss_cond` split the step's loss
-        by whether each item was trained against the architecture's inference
-        CFG null or its own caption, and `gnorm_null` / `gnorm_cond` label the
-        optimizer step's total gradient norm — present only when every item
-        behind that norm was drawn the same way, since a norm covers the whole
-        accumulated batch and cannot be split. `cfg_null_frac` reports the
-        fraction drawn null, which is what distinguishes a full split from one
-        side of a batch that happened to be homogeneous.
+        - `label` / `color` / `dashed` — how the series is drawn.
+        - `family` — what the metric IS (`loss`, `gradient_norm`,
+          `learning_rate`, `bounded_diagnostic`, `signed_correlation`,
+          `binary_indicator`, `count`, `duration`, `data_volume`,
+          `validation`, `other`). The monitor's chart presets select by family;
+          a metric never names a UI preset.
+        - `scale_group` — two series may share a Y-axis iff their scale groups
+          are equal.
+        - `range` — `{kind: auto, floor?}` or `{kind: fixed, min, max}`.
+        - `sampling` — `dense` | `periodic` | `event`; a non-dense series is
+          drawn as markers rather than a curve.
+        - `axis` — legacy `"right"` hint, superseded by `scale_group`.
+
+        Every semantic field is optional; an unannotated name falls back to the
+        frontend's key-shape heuristics. The set of names is open by design — a
+        trainer adds one with `log_extra_metric()` and no schema changes here.
+
+        A run with a nonzero `cfg_uncond_drop_rate` emits four extra names:
+        `loss_null` / `loss_cond` split the step's loss by whether each item was
+        trained against the architecture's inference CFG null or its own
+        caption, and `gnorm_null` / `gnorm_cond` label the optimizer step's
+        total gradient norm — present only when every item behind that norm was
+        drawn the same way, since a norm covers the whole accumulated batch and
+        cannot be split. `cfg_null_frac` reports the fraction drawn null, which
+        is what distinguishes a full split from one side of a batch that
+        happened to be homogeneous. These are ordinary selectable series in the
+        monitor (the `cfg-loss-split` preset selects them in one click); the
+        older All/Null/Cond filter that implicitly dropped the pooled series was
+        removed.
       parameters:
         - name: run_id
           in: path

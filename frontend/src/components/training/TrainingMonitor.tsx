@@ -5,8 +5,7 @@ import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
 import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
-import LossChart from "./LossChart";
-import GradNormChart from "./GradNormChart";
+import TrainingMetricsChart from "./TrainingMetricsChart";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import ParamChangeChart from "./ParamChangeChart";
 import CheckpointList from "./CheckpointList";
@@ -789,14 +788,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
             <TrainingMetricsProvider key={currentRun.id} runId={currentRun.id} isRunning={currentRun.status === "running"}>
               <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
-                <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
-                  <h3 className="font-semibold mb-2 text-xs sm:text-sm">Loss</h3>
-                  <LossChart />
-                </div>
-                <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
-                  <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
-                  <GradNormChart />
-                </div>
+                {/* Two panes, not one: a third scale group is refused rather
+                    than crammed onto a shared axis, and the second pane is the
+                    escape hatch that makes that refusal workable. */}
+                <TrainingMetricsChart slot="a" defaultPreset="loss-overview" />
+                <TrainingMetricsChart slot="b" defaultPreset="gradient-norms" />
                 <ParamChangeChart />
                 <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
               </div>

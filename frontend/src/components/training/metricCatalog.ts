@@ -51,6 +51,14 @@ export const BUILTIN_DESCRIPTORS: Record<string, Omit<MetricDescriptor, "key">> 
   grad_norm_text_encoder_1: { label: "Grad norm (TE1)", color: "#a78bfa", dashed: false, family: "gradient_norm", scaleGroup: "gradient_norm", range: AUTO_0, sampling: "dense" },
   grad_norm_text_encoder_2: { label: "Grad norm (TE2)", color: "#facc15", dashed: false, family: "gradient_norm", scaleGroup: "gradient_norm", range: AUTO_0, sampling: "dense" },
   grad_norm_vision_encoder: { label: "Grad norm (VE)", color: "#22d3ee", dashed: false, family: "gradient_norm", scaleGroup: "gradient_norm", range: AUTO_0, sampling: "dense" },
+  param_update_norm_unet: { label: "Update (U-Net/DiT)", color: "#60a5fa", dashed: false, family: "param_change", scaleGroup: "param_update", range: AUTO_0, sampling: "periodic" },
+  param_update_norm_te1: { label: "Update (TE1)", color: "#34d399", dashed: false, family: "param_change", scaleGroup: "param_update", range: AUTO_0, sampling: "periodic" },
+  param_update_norm_te2: { label: "Update (TE2)", color: "#f59e0b", dashed: false, family: "param_change", scaleGroup: "param_update", range: AUTO_0, sampling: "periodic" },
+  param_update_norm_ve: { label: "Update (VE)", color: "#f87171", dashed: false, family: "param_change", scaleGroup: "param_update", range: AUTO_0, sampling: "periodic" },
+  param_cumulative_drift_unet: { label: "Drift (U-Net/DiT)", color: "#60a5fa", dashed: true, family: "param_change", scaleGroup: "param_drift", range: AUTO_0, sampling: "periodic" },
+  param_cumulative_drift_te1: { label: "Drift (TE1)", color: "#34d399", dashed: true, family: "param_change", scaleGroup: "param_drift", range: AUTO_0, sampling: "periodic" },
+  param_cumulative_drift_te2: { label: "Drift (TE2)", color: "#f59e0b", dashed: true, family: "param_change", scaleGroup: "param_drift", range: AUTO_0, sampling: "periodic" },
+  param_cumulative_drift_ve: { label: "Drift (VE)", color: "#f87171", dashed: true, family: "param_change", scaleGroup: "param_drift", range: AUTO_0, sampling: "periodic" },
 };
 
 /** Key-shape fallbacks for an unannotated metric, in priority order. `_cos$`
@@ -133,6 +141,8 @@ export const SCALE_GROUP_LABELS: Record<string, string> = {
   decibels: "dB",
   blockiness: "blockiness",
   legacy_right: "unannotated (right)",
+  param_update: "per-step update norm",
+  param_drift: "cumulative drift",
   guidance_relative: "guidance strength",
   gibibytes_peak: "GiB (run peak)",
 };
@@ -239,6 +249,24 @@ export const PRESETS: MetricPreset[] = [
     families: ["validation"],
     anchors: [],
     preferredAxes: ["decibels", "blockiness"],
+  },
+  {
+    id: "param-update",
+    name: "Param update norm",
+    question: "How big is each component's step, and is any of them stalled?",
+    families: ["param_change"],
+    restrict: { param_change: /^param_update_norm_/ },
+    anchors: [],
+    preferredAxes: ["param_update"],
+  },
+  {
+    id: "param-drift",
+    name: "Param cumulative drift",
+    question: "How far has each component moved from where it started?",
+    families: ["param_change"],
+    restrict: { param_change: /^param_cumulative_drift_/ },
+    anchors: [],
+    preferredAxes: ["param_drift"],
   },
 ];
 

@@ -7841,7 +7841,7 @@ export interface ResumeMarker {
 export type MetricFamily =
   | "loss" | "gradient_norm" | "learning_rate" | "bounded_diagnostic"
   | "signed_correlation" | "binary_indicator" | "count" | "duration"
-  | "data_volume" | "validation" | "other";
+  | "data_volume" | "validation" | "param_change" | "other";
 
 export type MetricRange =
   | { kind: "auto"; floor?: number }

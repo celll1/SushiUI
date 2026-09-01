@@ -271,6 +271,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_sample_kv_cache_streaming: false,
   sensenova_mot_pageable_staging: false,
   sensenova_mot_overlap_transfer: false,
+  sensenova_train_fm_modules: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -851,6 +852,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoderTrainingAdvisory = featureAdvisory("text_encoder_training");
   const motEvictionAdvisory = featureAdvisory("sensenova_mot_eviction");
   const motEvictionUnsupported = unsupportedTrainingFeature("sensenova_mot_eviction");
+  // fm_modules is generation-side, so the flag does nothing on an
+  // understanding-only branch; the backend warns and proceeds rather than
+  // refusing, so this is a note next to the control, not a disable.
+  const fmModulesUnsupported = unsupportedTrainingFeature("sensenova_train_fm_modules");
+  const fmModulesInertReason: string | undefined =
+    !trainUnet
+      ? "Train U-Net is off, so this run trains the understanding half only. fm_modules is generation-side: the backend warns and trains the decoder Linears alone."
+      : undefined;
   // The preconditions train_runner checks before the checkpoint loads: three on
   // the split itself, plus the both-halves branch that its own required flag
   // (MoT Phase Eviction under a full fine-tune) demands. undefined = the split
@@ -1187,6 +1196,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenova_sample_kv_cache_streaming: params.sensenova_sample_kv_cache_streaming,
       sensenova_mot_pageable_staging: params.sensenova_mot_pageable_staging,
       sensenova_mot_overlap_transfer: params.sensenova_mot_overlap_transfer,
+      sensenova_train_fm_modules: params.sensenova_train_fm_modules,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1465,7 +1475,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",
       "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
       "sensenova_sample_kv_cache_streaming", "sensenova_mot_pageable_staging",
-      "sensenova_mot_overlap_transfer",
+      "sensenova_mot_overlap_transfer", "sensenova_train_fm_modules",
       "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
@@ -2369,6 +2379,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       sensenovaSampleKvCacheStreaming: params.sensenova_sample_kv_cache_streaming,
       sensenovaMotPageableStaging: params.sensenova_mot_pageable_staging,
       sensenovaMotOverlapTransfer: params.sensenova_mot_overlap_transfer,
+      sensenovaTrainFmModules: params.sensenova_train_fm_modules,
       optimizerStateHostResident: params.optimizer_state_host_resident,
       numOptimizerGroups,
       multiNoiseTimesteps,
@@ -2593,6 +2604,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.sensenovaSampleKvCacheStreaming !== undefined) updateParam("sensenova_sample_kv_cache_streaming", config.sensenovaSampleKvCacheStreaming);
     if (config.sensenovaMotPageableStaging !== undefined) updateParam("sensenova_mot_pageable_staging", config.sensenovaMotPageableStaging);
     if (config.sensenovaMotOverlapTransfer !== undefined) updateParam("sensenova_mot_overlap_transfer", config.sensenovaMotOverlapTransfer);
+    if (config.sensenovaTrainFmModules !== undefined) updateParam("sensenova_train_fm_modules", config.sensenovaTrainFmModules);
     if (config.optimizerStateHostResident !== undefined) updateParam("optimizer_state_host_resident", config.optimizerStateHostResident);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
@@ -5448,6 +5460,44 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               requantization. Requantizing an untrained half gives RMS relative error 6.58e-4,
               max 7.81e-3. Training both halves leaves no INT8 half, so mixed writes the BF16 file.
             </p>
+          </div>
+        )}
+
+        {isSenseNovaModel(baseModelPath) && !fmModulesUnsupported && trainingMethod === "full_finetune" && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Trained Scope</h3>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="sensenova-train-fm-modules"
+                checked={params.sensenova_train_fm_modules ?? false}
+                onChange={(e) => updateParam("sensenova_train_fm_modules", e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="sensenova-train-fm-modules" className="text-xs text-gray-300 cursor-pointer">
+                Train Flow-Matching Modules (fm_modules)
+              </label>
+            </div>
+            <p className="text-xs text-gray-500">
+              A full fine-tune trains the 294 decoder Linears per MoT half, which is the set the
+              INT8 load dequantizes. fm_modules is not quantized, so it is not in that set: the
+              generation ViT&apos;s patch and dense embeddings, the timestep and noise-scale
+              embedders and the two fm_head convolutions — 16 tensors, 63,117,504 parameters
+              (120.4 MiB in BF16) — stay frozen. Measured across two run checkpoints 4,960 steps
+              apart, every one of them is byte-identical while the generation decoder moved
+              3.09e-3 relative.
+              Enabling this adds them to the generation parameter group at the U-Net learning rate.
+              Every save format already writes them, so an update is kept.
+              Changing this setting on a resume changes the generation group&apos;s parameter count,
+              so the saved optimizer state cannot be reloaded and momentum/variance restart from
+              zero for every trained parameter, not just the new ones.
+              Cost is not measured; expect extra activation memory, since with these frozen the
+              generation ViT&apos;s input never requires grad and its forward builds no autograd
+              graph at all.
+            </p>
+            {fmModulesInertReason && (
+              <p className="text-xs text-amber-400">{fmModulesInertReason}</p>
+            )}
           </div>
         )}
 

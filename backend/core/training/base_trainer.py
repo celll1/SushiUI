@@ -1401,6 +1401,11 @@ class BaseTrainer(ABC):
             "sensenova_sample_kv_cache_streaming",
             _TD_PHASE_EVICTION["sensenova_sample_kv_cache_streaming"],
         ))
+        # Read by SenseNovaFullParameterAdapter only; see its _fm_parameters.
+        self.sensenova_train_fm_modules = bool(_tc.get(
+            "sensenova_train_fm_modules",
+            _TD_PHASE_EVICTION["sensenova_train_fm_modules"],
+        ))
         # Validated by SenseNovaFullParameterAdapter, its only reader.
         self.sensenova_full_finetune_save_format = str(_tc.get(
             "sensenova_full_finetune_save_format",

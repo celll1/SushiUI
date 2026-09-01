@@ -19638,6 +19638,50 @@ components:
             warning is emitted on the training_log channel; training itself is
             unaffected. Ignored (accepted and warned) by every other
             architecture.
+        sensenova_train_fm_modules:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova U1.5 full fine-tuning only. Adds `transformer.fm_modules`
+            to the trained set, in the GENERATION parameter group at `unet_lr`.
+
+            A full fine-tune's scope is the set of decoder Linears the loader
+            dequantized from INT8 (294 per MoT half), which is a consequence of
+            the INT8 layout rather than a statement about what is worth
+            training: `fm_modules` is not quantized, so it is not materialized,
+            so it is not optimized. Measured on two real run checkpoints 4,960
+            steps apart with this option off, every `fm_modules` tensor is
+            byte-identical (0.0 drift) while the generation decoder moved
+            3.09e-3 relative.
+
+            The container holds 16 tensors / 63,117,504 parameters (120.4 MiB
+            bf16) on the distributed checkpoint's index: the generation ViT's
+            patch and dense embeddings, the timestep embedder, the noise-scale
+            embedder and the two `fm_head` convolutions — the pixel head the
+            loss is taken through. All generation-side, so the option needs
+            `train_unet`. If the resolved branch is understanding-only, a
+            `sensenova_train_fm_modules_branch_mismatch` warning is emitted on
+            the training_log channel and the run proceeds with the decoder
+            Linears alone rather than failing.
+
+            The decoder-Linear count is unchanged and still checked exactly;
+            these parameters are collected separately. They are already written
+            by every save format (`mixed`, `bf16`, `int8` all pass non-decoder
+            tensors through as they stand), so no format change is needed to
+            keep an update.
+
+            ON A RESUME, changing this setting changes the generation parameter
+            group's count (294 vs 310), so the saved optimizer state cannot be
+            reloaded and momentum/variance restart from zero for every trained
+            parameter, not just the new ones.
+
+            COST is not measured. Expect extra activation memory: with
+            `fm_modules` frozen, the generation ViT's input never requires grad
+            and its forward currently produces no autograd graph at all.
+
+            Ignored (accepted and warned) by every other architecture and by
+            SenseNova LoRA, which wraps Linears and has no `fm_modules` target.
+            See docs/guides/SENSENOVA_TRAINING_DESIGN.md, "Trained scope".
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

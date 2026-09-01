@@ -53,6 +53,37 @@ accepted bf16 compute contract above and writes through the SenseNova-specific
 checkpoint path. The training registry and architecture handler are the
 authoritative implementation; this guide does not override their refusals.
 
+### Trained scope
+
+A full fine-tune's default scope is the 294 decoder Linears per selected half —
+the set the int8 load dequantizes. That is a consequence of the quantization
+layout, not a claim about what is worth training: `transformer.fm_modules` (the
+generation ViT's patch and dense embeddings, the timestep and noise-scale
+embedders, and the `fm_head` convolutions that emit the pixel prediction) is not
+quantized, so it is not materialized and was never optimized. Measured on two
+checkpoints of one run 4,960 steps apart, all 16 of its tensors are
+byte-identical while the generation decoder moved 3.09e-3 relative.
+
+`sensenova_train_fm_modules` (default off) adds those 16 tensors / 63,117,504
+parameters (120.4 MiB bf16, counted from the checkpoint index) to the generation
+parameter group at `unet_lr`. It is generation-side, so an understanding-only
+branch warns (`sensenova_train_fm_modules_branch_mismatch`) and proceeds without
+them. The decoder-Linear count is collected and checked exactly as before; the fm
+parameters come from a separate path so the unmaterialized-int8 guard keeps its
+exact expectation. Every save format already writes non-decoder tensors as they
+stand, so an update survives the checkpoint. The `*_norm_mot_gen` norms stay
+frozen either way.
+
+Changing the setting on a resume changes the generation group's parameter count
+(294 vs 310). `optimizer.load_state_dict` rejects that, and the partial-load
+fallback requires identical counts in the overlapping leading groups, so the run
+continues with fresh optimizer state: momentum and variance restart from zero for
+every trained parameter, not only the added ones.
+
+Cost is unmeasured. With these frozen the generation ViT's input never requires
+grad and its forward builds no autograd graph at all, so enabling the option adds
+activation memory.
+
 ## Verified boundary
 
 The production path has completed real short-run checks for generation-half and

@@ -15508,6 +15508,11 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_sample_kv_cache_streaming: bool = TRAINING_DEFAULTS[
         "sensenova_sample_kv_cache_streaming"
     ]
+    # SenseNova full fine-tune only: add transformer.fm_modules to the generation
+    # parameter group. Off keeps the decoder-Linear-only scope byte for byte.
+    sensenova_train_fm_modules: bool = TRAINING_DEFAULTS[
+        "sensenova_train_fm_modules"
+    ]
     block_swap_h2d_only: bool = TRAINING_DEFAULTS["block_swap_h2d_only"]  # FLUX.2 LoRA: H2D-only swap (no device->host of frozen base)
     block_swap_ring_size: int = TRAINING_DEFAULTS["block_swap_ring_size"]  # GPU weight-buffer ring slots (>=1)
     num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)

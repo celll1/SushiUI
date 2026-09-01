@@ -153,24 +153,62 @@ function medianStepGap(pts: { step: number }[]): number | null {
   return gaps[Math.floor(gaps.length / 2)];
 }
 
+/**
+ * Bias-corrected EMA (the Adam correction, same algebra).
+ *
+ * Seeding `s = points[0].value` anchored the whole head of the curve to ONE
+ * sample: at factor 0.99 that sample still carries 99% of the weight at the
+ * second point and ~37% a hundred points later, so a run whose first step
+ * happened to draw a high-loss timestep drew a curve pulled visibly upward for
+ * its first few hundred points. Two runs then could not be compared at the
+ * start, and neither could two series inside one run.
+ *
+ * Accumulating from zero and dividing by `1 - factor^n` fixes it exactly: the
+ * result is the weighted mean of the points seen SO FAR, so point 1 is its own
+ * value, point 2 is a proper weighted pair, and the tail is the same EMA as
+ * before. No luck of the draw, no new parameter.
+ */
 function applySmoothing(points: Pt[], factor: number): Pt[] {
   if (factor <= 0 || points.length === 0) return points;
   const out: Pt[] = [];
-  let s = points[0].value;
+  let s = 0;
+  let bias = 1;
   for (const p of points) {
     s = s * factor + p.value * (1 - factor);
-    out.push({ step: p.step, value: s });
+    bias *= factor;
+    out.push({ step: p.step, value: s / (1 - bias) });
   }
   return out;
 }
 
+/** p5-p95 of ONE series, or its full extent when `bounded`. */
+function seriesExtent(values: number[], bounded: boolean): { lo: number; hi: number } | null {
+  const valid = values.filter((v) => Number.isFinite(v));
+  if (valid.length === 0) return null;
+  if (valid.length === 1) return { lo: valid[0], hi: valid[0] };
+  const sorted = [...valid].sort((a, b) => a - b);
+  if (bounded) return { lo: sorted[0], hi: sorted[sorted.length - 1] };
+  return {
+    lo: sorted[Math.floor(sorted.length * 0.05)],
+    hi: sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)],
+  };
+}
+
 function robustYRange(
-  values: number[],
+  perSeries: number[][],
   yMinFloor: number,
   mustInclude: number[] = [],
   bounded = false,
 ): { min: number; max: number } {
-  const valid = values.filter((v) => Number.isFinite(v));
+  // Percentile-clip each series SEPARATELY and take the union, rather than
+  // clipping one pooled array. Pooling let a dense series decide the ceiling for
+  // a sparse one: loss_null is 3.2% of the pooled points and sits in the highest
+  // band, so the pooled p95 cut all of it and it drew as a flat line pinned to
+  // the top of the frame. Per-series, each keeps its own middle 90% and the axis
+  // covers all of them, while within-series outliers are still clipped -- which
+  // was the point of the percentile in the first place.
+  const extents = perSeries.map((v) => seriesExtent(v, bounded)).filter(Boolean) as { lo: number; hi: number }[];
+  const valid = extents.length ? [Math.min(...extents.map((e) => e.lo)), Math.max(...extents.map((e) => e.hi))] : [];
   let lo: number, hi: number;
   if (valid.length === 0) {
     // yMinFloor is -Infinity for a floorless axis, which would make the whole
@@ -178,18 +216,12 @@ function robustYRange(
     // say) just needs a sane empty frame.
     lo = Number.isFinite(yMinFloor) ? yMinFloor : 0;
     hi = lo + 1;
-  } else if (valid.length === 1) {
+  } else if (valid[0] === valid[1]) {
     const v = valid[0];
     const pad = Math.max(Math.abs(v) * 0.1, 1e-6);
     lo = Math.max(yMinFloor, v - pad); hi = v + pad;
-  } else if (bounded) {
-    const sorted = [...valid].sort((a, b) => a - b);
-    lo = sorted[0];
-    hi = sorted[sorted.length - 1];
   } else {
-    const sorted = [...valid].sort((a, b) => a - b);
-    lo = sorted[Math.floor(sorted.length * 0.05)];
-    hi = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
+    [lo, hi] = valid;
   }
   for (const v of mustInclude) {
     if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
@@ -264,21 +296,23 @@ function useAxisScale(o: {
   padTop: number;
   chartH: number;
 }): AxisScale {
-  const { values, mustInclude } = useMemo(() => {
-    const vals: number[] = [];
+  const { perSeries, values, mustInclude } = useMemo(() => {
+    const per: number[][] = [];
+    const flat: number[] = [];
     const must: number[] = [];
     for (const s of o.seriesForAxis) {
       const sm = o.visibleSmoothed.get(s.id) ?? [];
       const rw = o.visibleRaw.get(s.id) ?? [];
       if (s.rawRange) {
         for (const p of rw) must.push(p.value);
-      } else if (o.smoothing > 0 && sm.length > 0) {
-        for (const p of sm) vals.push(p.value);
-      } else {
-        for (const p of rw) vals.push(p.value);
+        continue;
       }
+      const src = (o.smoothing > 0 && sm.length > 0) ? sm : rw;
+      const one = src.map((p) => p.value);
+      if (one.length) { per.push(one); flat.push(...one); }
     }
-    return { values: vals, mustInclude: must };
+    // `values` stays flat for the log range, which needs every positive sample.
+    return { perSeries: per, values: flat, mustInclude: must };
   }, [o.seriesForAxis, o.visibleSmoothed, o.visibleRaw, o.smoothing]);
 
   const policy = o.config?.range;
@@ -290,7 +324,7 @@ function useAxisScale(o: {
   const linearRange = useMemo(() => {
     if (fixed) return { min: fixed.min, max: fixed.max };
     if (empty && inactive) return inactive;
-    return robustYRange(values, floor, mustInclude, o.bounded);
+    return robustYRange(perSeries, floor, mustInclude, o.bounded);
   }, [fixed?.min, fixed?.max, empty, inactive?.min, inactive?.max, values, floor, mustInclude, o.bounded]);
 
   const logRange = useMemo(() => {

@@ -134,10 +134,15 @@ class GradTimestepCosineProbe:
             if grad is None or grad.dim() != 2:
                 return
             with torch.no_grad():
-                g = grad.detach().float()
+                g = grad.detach()
+                # Project in the gradient's OWN dtype and upcast only the k x k
+                # result. `g.float()` here allocated a full fp32 copy of every
+                # gradient -- ~49 GB of traffic per step at 8.1B params -- to
+                # feed a matmul whose accumulation is fp32 on tensor cores
+                # anyway. Measured effect on the reported cosine: 4th decimal.
                 left = self._projection(g.shape[0], g.device, g.dtype)
                 right = self._projection(g.shape[1], g.device, g.dtype)
-                sketch = left.t() @ g @ right  # [k, k]
+                sketch = (left.t() @ g @ right).float()  # [k, k]
                 store = self._acc[self._bucket]
                 key = id(param)
                 prev = store.get(key)

@@ -331,6 +331,10 @@ def _build_train_section(
             "sensenova_sample_kv_cache_streaming",
             _TD["sensenova_sample_kv_cache_streaming"],
         )
+        train["sensenova_train_fm_modules"] = p.get(
+            "sensenova_train_fm_modules",
+            _TD["sensenova_train_fm_modules"],
+        )
         train["sensenova_mot_pageable_staging"] = p.get(
             "sensenova_mot_pageable_staging",
             _TD["sensenova_mot_pageable_staging"],

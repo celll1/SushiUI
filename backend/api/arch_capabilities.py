@@ -286,6 +286,9 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # for the same reason as the staging-mode one above. Mutually exclusive with
     # it, but that is a per-run refusal, not a capability fact.
     "sensenova_mot_overlap_transfer": ["sensenova_mot_overlap_transfer"],
+    # Widens a SenseNova full fine-tune's scope past the decoder Linears; no
+    # relation to the eviction keys above.
+    "sensenova_train_fm_modules": ["sensenova_train_fm_modules"],
     # Aligned CFG null-condition training. The deprecated MiniT2I-only
     # `minit2i_label_drop_rate` is deliberately NOT an arming key: an
     # architecture without the mechanism has always accepted and ignored it,
@@ -304,6 +307,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
     "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
     "sensenova_mot_overlap_transfer": "SenseNova MoT phase eviction overlapped half swap",
+    "sensenova_train_fm_modules": "SenseNova flow-matching module training (fm_modules)",
     "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
 }
 
@@ -1131,6 +1135,21 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
     _add_training_feature_unsupported(
         _a, "sensenova_mot_overlap_transfer",
         "overlapping a swap's two directions on separate CUDA streams is a sub-option of SenseNova's per-phase MoT weight-half CPU eviction, which this architecture has no equivalent of")
+
+# --- SenseNova fm_modules training ------------------------------------------
+# `fm_modules` is SenseNova's own container (generation ViT embeddings, timestep
+# and noise-scale embedders, fm_head); every other architecture trains its
+# equivalents as part of the one module a full fine-tune already walks.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_train_fm_modules",
+        "transformer.fm_modules is SenseNova's flow-matching container; this architecture has no separately scoped equivalent and its full fine-tune already trains the whole model")
+# LoRA wraps Linears rather than choosing a parameter scope, and none of the 16
+# fm_modules tensors is a LoRA target, so the flag has nothing to act on.
+_add_training_feature_unsupported(
+    "sensenova", "sensenova_train_fm_modules",
+    "fm_modules training is a full-fine-tune parameter-scope option; SenseNova LoRA wraps the 294 decoder Linears per branch and fm_modules holds none of them",
+    methods=["lora", "relora", "controlnet"])
 
 # --- Sample generation during training --------------------------------------
 _add_training_feature_unsupported(

@@ -241,11 +241,71 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
     half, ``train_text_encoder`` the understanding one.
 
     The generation modules outside the decoder (``fm_head``, the generation ViT,
-    the embedders, the ``*_norm_mot_gen`` norms) are deliberately not trained:
-    they are not quantized, so the loader does not materialize them, and
-    including them would break that identity. SENSENOVA_TRAINING_DESIGN.md 6.2
-    leaves the question open.
+    the embedders, the ``*_norm_mot_gen`` norms) are frozen by default: they are
+    not quantized, so the loader does not materialize them, and including them
+    unconditionally would break that identity. ``sensenova_train_fm_modules``
+    (SENSENOVA_TRAINING_DESIGN.md, "Trained scope") opts the ``fm_modules``
+    container back in, through ``_fm_parameters`` not ``_resolve_scope`` so the
+    decoder-Linear count stays exactly what the loader materialized. The
+    ``*_norm_mot_gen`` norms stay frozen either way.
     """
+
+    def _fm_parameters(self, branch: str) -> List[nn.Parameter]:
+        """``transformer.fm_modules`` parameters when the option is on, else [].
+
+        16 tensors / 63,117,504 parameters on the real checkpoint: the
+        generation ViT's patch and dense embeddings, the timestep and
+        noise-scale embedders and the two ``fm_head`` convolutions. All
+        generation-side, so they join the generation group and are collected
+        only when that half is trained.
+        """
+        trainer = self.trainer
+        if not bool(getattr(trainer, "sensenova_train_fm_modules", False)):
+            return []
+        if branch not in ("gen", "both"):
+            if not getattr(self, "_fm_branch_warned", False):
+                from core.training.training_events import emit_training_warning
+
+                self._fm_branch_warned = True
+                emit_training_warning(
+                    "SenseNova sensenova_train_fm_modules is set, but this run "
+                    f"trains the {branch!r} branch only. fm_modules (the "
+                    "generation ViT embeddings, the timestep/noise-scale "
+                    "embedders and fm_head) is generation-side, so it stays "
+                    "frozen and the run proceeds with the decoder Linears alone.",
+                    code="sensenova_train_fm_modules_branch_mismatch",
+                    prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+                )
+            return []
+
+        fm_modules = getattr(trainer.transformer, "fm_modules", None)
+        if fm_modules is None:
+            raise RuntimeError(
+                "SenseNova sensenova_train_fm_modules is set but the transformer "
+                "has no fm_modules container; this tree is not the NEOChatModel "
+                "this route was built for."
+            )
+        parameters = list(fm_modules.parameters())
+        if not parameters:
+            raise RuntimeError(
+                "SenseNova sensenova_train_fm_modules collected no parameter from "
+                "fm_modules. Enabling an option that trains nothing is refused "
+                "rather than run as a silent no-op."
+            )
+        # Same failure mode the decoder guard covers, asked of the real tensors
+        # rather than assumed from "these are not quantized": a non-float or
+        # buffer-held weight takes no gradient and would train nothing.
+        bad = [
+            f"{name} ({parameter.dtype})"
+            for name, parameter in fm_modules.named_parameters()
+            if not parameter.dtype.is_floating_point
+        ]
+        if bad:
+            raise RuntimeError(
+                f"SenseNova fm_modules holds {len(bad)} non-floating-point "
+                f"parameter(s) (first: {bad[0]}); they cannot take a gradient."
+            )
+        return parameters
 
     def _resolve_scope(self) -> Tuple[str, List[Tuple[str, Any, str, nn.Module]]]:
         """(branch, targets) -- the same enumeration the loader materialized."""
@@ -315,15 +375,23 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer.transformer.requires_grad_(False)
         for _, _, _, module in targets:
             module.requires_grad_(True)
+        fm_parameters = self._fm_parameters(branch)
+        for parameter in fm_parameters:
+            parameter.requires_grad_(True)
         trainer.transformer.train()
 
         trainable = sum(
             p.numel() for p in trainer.transformer.parameters() if p.requires_grad
         )
+        fm_note = (
+            f" plus {len(fm_parameters)} fm_modules tensor(s), "
+            f"{sum(p.numel() for p in fm_parameters):,} element(s),"
+            if fm_parameters else ""
+        )
         print(
             f"[SenseNovaFullParameterAdapter] {branch} branch: {len(targets)} decoder "
-            f"Linear(s), {trainable:,} trainable parameter element(s); everything "
-            f"else in the transformer is frozen"
+            f"Linear(s),{fm_note} {trainable:,} trainable parameter element(s); "
+            f"everything else in the transformer is frozen"
         )
 
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
@@ -363,6 +431,12 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 for parameter in module.parameters()
                 if parameter.requires_grad
             ]
+            if half == "gen":
+                params.extend(
+                    parameter
+                    for parameter in self._fm_parameters(branch)
+                    if parameter.requires_grad
+                )
             if params:
                 groups.append({"params": params, "lr": lr})
         if not groups:
@@ -402,6 +476,10 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             ):
                 for parameter in module.parameters():
                     components[id(parameter)] = component
+        # Generation-side, and stated rather than left to the module walk: on a
+        # `both` run every override is explicit or the bucket is arbitrary.
+        for parameter in self._fm_parameters(branch):
+            components[id(parameter)] = LORA_COMPONENT_UNET
         return components
 
     def _resolve_save_format(self) -> str:

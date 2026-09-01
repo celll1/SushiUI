@@ -15,8 +15,8 @@ import { wsClient, type TrainingMetrics as LiveMetrics } from "@/utils/websocket
  * Single source of per-run training metrics for every chart in the monitor.
  *
  * Replaces three independent copies of the same fetch + 7s poll + SSE
- * subscription + epoch/resume derivation (LossChart, GradNormChart,
- * ParamChangeChart), which issued three requests for one payload and each
+ * subscription + epoch/resume derivation (the former loss / grad-norm charts
+ * and ParamChangeChart), which issued three requests for one payload and each
  * re-derived identical epoch boundaries and resume markers.
  */
 

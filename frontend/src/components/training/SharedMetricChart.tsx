@@ -37,8 +37,14 @@ export interface ChartSeries {
   /** Explicit axis assignment. When absent the legacy `secondaryAxis` hint
    *  decides (right when set, left otherwise). */
   axis?: AxisSide;
-  /** Declared for the band/marker renderers; not read yet -- every mode still
-   *  draws as a line. */
+  /** How the series is drawn.
+   *  - `line` (default): polyline, optionally EMA-smoothed.
+   *  - `markers`: a dot per sample plus a faint joining line, for a series whose
+   *    samples are too few or too widely spaced to read as a curve.
+   *  - `band`: a 0/1 state strip in a reserved row below the plot. A 0/1 series
+   *    drawn as a polyline at ~1px per 20 steps is a wall of vertical
+   *    connectors; as a strip it reads as "on here, off there". A band belongs
+   *    to NO Y-axis and is excluded from every axis's pooling. */
   renderMode?: "line" | "markers" | "band";
   /** Exempt from EMA smoothing (0/1 indicators and sparse periodic probes read
    *  as their own values, not as a lagged average of them). */
@@ -85,6 +91,9 @@ interface SharedMetricChartProps {
   resumeMarkers?: ResumeMarker[];
   /** Header right-side extra controls (rendered before the smoothing slider). */
   headerExtra?: React.ReactNode;
+  /** Header controls rendered AFTER the smoothing slider, where the legacy log
+   *  button sits — for a caller that owns its own per-axis log toggles. */
+  headerTrailing?: React.ReactNode;
   /** Declared per-axis scale/domain. When absent the entire legacy path runs:
    *  left = robustYRange(yMinFloor, bounded) + the `allowLogScale` toggle,
    *  right = independent linear auto-range. */
@@ -99,7 +108,25 @@ interface SharedMetricChartProps {
 
 interface Pt { step: number; value: number; }
 
+interface TooltipValue {
+  id: string;
+  label: string;
+  color: string;
+  value: number;
+  smoothValue: number | null;
+  /** The matched sample's own step, when it is far enough from the hovered step
+   *  that reporting it under the crosshair's step would be a lie (a sparse
+   *  series matched via its widened tolerance). Null when they agree. */
+  realStep: number | null;
+}
+
 const BASE_PAD = { top: 6, right: 8, bottom: 18, left: 44 };
+// One band row: a 6px strip plus 2px of separation, reserved below the plot and
+// above the x-tick text.
+const BAND_ROW_H = 8;
+// Clear of the bottom Y-axis tick label, whose glyphs reach ~5px below the plot.
+const BAND_TOP_GAP = 5;
+const BAND_H = 6;
 // Extra right margin reserved for the secondary axis's tick labels when at
 // least one visible series uses it.
 const SECONDARY_AXIS_RIGHT_PAD = 34;
@@ -108,6 +135,23 @@ const SECONDARY_AXIS_RIGHT_PAD = 34;
 const INACTIVE_RIGHT_RANGE = { min: 0, max: 1 };
 
 const axisOf = (s: ChartSeries): AxisSide => s.axis ?? (s.secondaryAxis ? "right" : "left");
+const isBand = (s: ChartSeries) => s.renderMode === "band";
+
+/** Median step spacing of a series, or null when it has fewer than two
+ *  distinct steps. Used to widen the tooltip's nearest-point tolerance for a
+ *  sparse series (kept local so this shared chart stays independent of the
+ *  training-side metric catalog). */
+function medianStepGap(pts: { step: number }[]): number | null {
+  if (pts.length < 2) return null;
+  const gaps: number[] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const g = pts[i].step - pts[i - 1].step;
+    if (g > 0) gaps.push(g);
+  }
+  if (gaps.length === 0) return null;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)];
+}
 
 function applySmoothing(points: Pt[], factor: number): Pt[] {
   if (factor <= 0 || points.length === 0) return points;
@@ -129,7 +173,11 @@ function robustYRange(
   const valid = values.filter((v) => Number.isFinite(v));
   let lo: number, hi: number;
   if (valid.length === 0) {
-    lo = yMinFloor; hi = yMinFloor + 1;
+    // yMinFloor is -Infinity for a floorless axis, which would make the whole
+    // domain NaN. An axis with nothing on it (every selected series is a band,
+    // say) just needs a sane empty frame.
+    lo = Number.isFinite(yMinFloor) ? yMinFloor : 0;
+    hi = lo + 1;
   } else if (valid.length === 1) {
     const v = valid[0];
     const pad = Math.max(Math.abs(v) * 0.1, 1e-6);
@@ -297,6 +345,7 @@ export default function SharedMetricChart({
   epochBoundaries,
   resumeMarkers,
   headerExtra,
+  headerTrailing,
   axes,
   hiddenIds: hiddenIdsProp,
   onHiddenIdsChange,
@@ -363,7 +412,7 @@ export default function SharedMetricChart({
   const pointerXRef = useRef<number | null>(null);
   const [tooltip, setTooltip] = useState<{
     px: number; py: number; step: number;
-    values: { id: string; label: string; color: string; value: number; smoothValue: number | null }[];
+    values: TooltipValue[];
   } | null>(null);
 
   // Width tracking
@@ -421,14 +470,22 @@ export default function SharedMetricChart({
   // Whether any currently-visible series wants a secondary (right-hand) axis,
   // and which color to label its ticks with (first such series' own color, so
   // the axis reads as "belonging to" that series rather than a fixed hue).
-  const hasSecondary = useMemo(() => visibleSeries.some((s) => axisOf(s) === "right"), [visibleSeries]);
-  const secondaryColor = useMemo(() => visibleSeries.find((s) => axisOf(s) === "right")?.color ?? "#38bdf8", [visibleSeries]);
-  const leftSeries = useMemo(() => visibleSeries.filter((s) => axisOf(s) === "left"), [visibleSeries]);
-  const rightSeries = useMemo(() => visibleSeries.filter((s) => axisOf(s) === "right"), [visibleSeries]);
+  // Band series belong to no axis: they never pool into a Y-range, never make
+  // the secondary axis appear, and get their own reserved rows below the plot.
+  const bandSeries = useMemo(() => visibleSeries.filter(isBand), [visibleSeries]);
+  const curveSeries = useMemo(() => visibleSeries.filter((s) => !isBand(s)), [visibleSeries]);
+  const hasSecondary = useMemo(() => curveSeries.some((s) => axisOf(s) === "right"), [curveSeries]);
+  const secondaryColor = useMemo(() => curveSeries.find((s) => axisOf(s) === "right")?.color ?? "#38bdf8", [curveSeries]);
+  const leftSeries = useMemo(() => curveSeries.filter((s) => axisOf(s) === "left"), [curveSeries]);
+  const rightSeries = useMemo(() => curveSeries.filter((s) => axisOf(s) === "right"), [curveSeries]);
 
   // Layout. Reserve extra right margin for the secondary axis's tick labels
-  // when active.
-  const PAD = hasSecondary ? { ...BASE_PAD, right: SECONDARY_AXIS_RIGHT_PAD } : BASE_PAD;
+  // when active, and one row of bottom margin per band.
+  const PAD = useMemo(() => ({
+    ...BASE_PAD,
+    right: hasSecondary ? SECONDARY_AXIS_RIGHT_PAD : BASE_PAD.right,
+    bottom: BASE_PAD.bottom + (bandSeries.length ? BAND_TOP_GAP : 0) + BAND_ROW_H * bandSeries.length,
+  }), [hasSecondary, bandSeries.length]);
   const chartW = Math.max(50, width - PAD.left - PAD.right);
   const chartH = Math.max(20, height - PAD.top - PAD.bottom);
   const hasEnoughData = totalPoints >= 2 && width > 0;
@@ -457,6 +514,15 @@ export default function SharedMetricChart({
     }
     return out;
   }, [visibleSeries, xRange, xMin, xMax]);
+
+  // Precomputed once per (series, zoom) rather than per pointermove: the
+  // tooltip needs each series' sample spacing on every mouse move, and the
+  // median is a sort.
+  const stepGaps = useMemo(() => {
+    const out = new Map<string, number | null>();
+    for (const [id, pts] of visibleRaw) out.set(id, medianStepGap(pts));
+    return out;
+  }, [visibleRaw]);
 
   // Y scale (pool all visible series' SMOOTHED values through the percentile
   // calc; only rawRange series are forced fully visible via raw min/max).
@@ -604,7 +670,7 @@ export default function SharedMetricChart({
     if (x < 0 || x > chartW || y < -PAD.top || y > chartH + PAD.bottom) { setTooltip(null); return; }
     const targetStep = pxToStep(x);
     const stepTolerance = (16 / Math.max(1, chartW)) * xSpan;
-    const values: { id: string; label: string; color: string; value: number; smoothValue: number | null }[] = [];
+    const values: TooltipValue[] = [];
     // Tracked in PIXEL space (not raw value) so it stays correct regardless of
     // which axis (primary/log or secondary/linear) the last-matched series
     // belongs to -- toY and toY2 have independent domains.
@@ -613,22 +679,37 @@ export default function SharedMetricChart({
       const pts = visibleRaw.get(s.id) ?? [];
       const sm = visibleSmoothed.get(s.id) ?? [];
       if (pts.length === 0) continue;
-      if (targetStep < pts[0].step - stepTolerance || targetStep > pts[pts.length - 1].step + stepTolerance) continue;
+      // A series sampled every 500 steps has NO point within the 16px global
+      // tolerance at most hover positions, so it would silently never appear in
+      // the tooltip. Half its own sample spacing is the widest tolerance that
+      // still maps each hover to exactly one of its samples.
+      const gap = stepGaps.get(s.id) ?? null;
+      const tol = Math.max(stepTolerance, gap !== null ? gap / 2 : 0);
+      if (targetStep < pts[0].step - tol || targetStep > pts[pts.length - 1].step + tol) continue;
       let idx = 0, dist = Math.abs(pts[0].step - targetStep);
       for (let i = 1; i < pts.length; i++) {
         const d = Math.abs(pts[i].step - targetStep);
         if (d < dist) { dist = d; idx = i; }
       }
+      if (dist > tol) continue;
       // A noSmooth series' "smoothed" points ARE its raw points, so surfacing
       // one would read as "the EMA equals the sample" for exactly the series
       // where an EMA was never computed.
       const smv = s.noSmooth ? null : (sm[idx]?.value ?? null);
-      values.push({ id: s.id, label: s.label, color: s.color, value: pts[idx].value, smoothValue: smv });
+      values.push({
+        id: s.id, label: s.label, color: s.color,
+        value: pts[idx].value, smoothValue: smv,
+        realStep: dist > stepTolerance ? pts[idx].step : null,
+      });
+      // A band has no Y-axis, so its value cannot place the crosshair dot.
+      if (isBand(s)) continue;
       const av = (smoothing > 0 && smv !== null) ? smv : pts[idx].value;
       anchorPy = axisOf(s) === "right" ? toY2(av) : toY(av);
     }
-    if (values.length === 0 || anchorPy === null) { setTooltip(null); return; }
-    setTooltip({ px: toX(targetStep), py: anchorPy, step: Math.round(targetStep), values });
+    if (values.length === 0) { setTooltip(null); return; }
+    // Bands-only selection: no curve to anchor the dot to, so pin it to the top
+    // of the plot rather than dropping the tooltip entirely.
+    setTooltip({ px: toX(targetStep), py: anchorPy ?? PAD.top, step: Math.round(targetStep), values });
   };
 
   const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -680,7 +761,12 @@ export default function SharedMetricChart({
               </span>
             </div>
           )}
-          {allowLogScale && (
+          {headerTrailing}
+          {/* F8: `axes` callers own their per-axis log state and drive it through
+              axes.{left,right}.scale, which is why useAxisScale passes logOn:true
+              in that path. The legacy single-axis button would toggle a state
+              that path ignores, so it is suppressed rather than left dead. */}
+          {allowLogScale && !axes && (
             <button
               onClick={() => setLogScale((v) => !v)}
               disabled={!leftAxis.logAvailable}
@@ -823,19 +909,87 @@ export default function SharedMetricChart({
                 rather than a legible line — the smoothed dashed line alone is
                 enough context for an overlay metric. */}
             <g clipPath={`url(#${clipId})`}>
-              {smoothing > 0 && visibleSeries.filter((s) => !s.dashed && !s.noSmooth && axisOf(s) !== "right").map((s) => (
+              {smoothing > 0 && curveSeries.filter((s) => !s.dashed && !s.noSmooth && s.renderMode !== "markers" && axisOf(s) !== "right").map((s) => (
                 <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
                   fill="none" stroke={s.color} strokeWidth={1}
                   opacity={0.22} />
               ))}
-              {visibleSeries.map((s) => {
+              {curveSeries.map((s) => {
                 const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
+                const yFn = axisOf(s) === "right" ? toY2 : toY;
+                if (s.renderMode === "markers") {
+                  // A dot per sample: a handful of widely-spaced probes drawn as
+                  // a polyline reads as a straight line through the dense noise
+                  // around it, hiding where the samples actually are.
+                  const vis = pts.filter((p) => inX(p.step));
+                  return (
+                    <g key={s.id}>
+                      {vis.length > 1 && (
+                        <path d={buildPath(pts, yFn)} fill="none" stroke={s.color} strokeWidth={1}
+                          strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.55} />
+                      )}
+                      {/* One sample has no line to draw, and a lone 2.5px dot is
+                          easy to miss — give it a tick to sit on. */}
+                      {vis.length === 1 && (
+                        <line x1={toX(vis[0].step) - 6} y1={yFn(vis[0].value)} x2={toX(vis[0].step) + 6} y2={yFn(vis[0].value)}
+                          stroke={s.color} strokeWidth={1} opacity={0.55} />
+                      )}
+                      {vis.map((p, i) => (
+                        <circle key={i} cx={toX(p.step)} cy={yFn(p.value)} r={2.5} fill={s.color} opacity={0.95} />
+                      ))}
+                    </g>
+                  );
+                }
                 return (
-                  <path key={s.id} d={buildPath(pts, axisOf(s) === "right" ? toY2 : toY)} fill="none" stroke={s.color} strokeWidth={1.5}
+                  <path key={s.id} d={buildPath(pts, yFn)} fill="none" stroke={s.color} strokeWidth={1.5}
                     strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
                 );
               })}
             </g>
+
+            {/* State bands. Outside the plot clip (their reserved rows are in
+                PAD.bottom), so the run rects are clamped to the plot width by
+                hand instead. */}
+            {bandSeries.map((s, bi) => {
+              const yTop = PAD.top + chartH + BAND_TOP_GAP + bi * BAND_ROW_H;
+              const xLo = PAD.left, xHi = PAD.left + chartW;
+              const rects: { x: number; w: number }[] = [];
+              const push = (a: number, b: number) => {
+                const xa = toX(a), xb = toX(b);
+                if (xb < xLo || xa > xHi) return;
+                const ca = Math.max(xLo, xa), cb = Math.min(xHi, xb);
+                rects.push({ x: ca, w: Math.max(1.5, cb - ca) });
+              };
+              // A run of consecutive "on" samples coalesces into ONE rect; a
+              // sample holds until the next one, so a run ends at the step of
+              // the first "off" sample after it. Fractional values (a partial
+              // batch) read as on above 0.5 — the band answers "was this step
+              // mostly in this state", which is what the 0/1 curve failed to.
+              let start: number | null = null;
+              for (let i = 0; i < s.points.length; i++) {
+                const on = s.points[i].value >= 0.5;
+                if (on && start === null) start = s.points[i].step;
+                else if (!on && start !== null) { push(start, s.points[i].step); start = null; }
+              }
+              if (start !== null) {
+                // Hold the trailing run for one more sample interval: closing it
+                // at its own last step made the CURRENT state a 1.5px sliver,
+                // while every interior run got a full hold width.
+                const last = s.points[s.points.length - 1].step;
+                push(start, last + (stepGaps.get(s.id) ?? 0));
+              }
+              return (
+                <g key={`band-${s.id}`}>
+                  <rect x={xLo} y={yTop} width={chartW} height={BAND_H} fill="#1f2937" />
+                  {rects.map((r, i) => (
+                    <rect key={i} x={r.x} y={yTop} width={r.w} height={BAND_H} fill={s.color} opacity={0.8} />
+                  ))}
+                  <text x={PAD.left - 4} y={yTop + BAND_H - 1} textAnchor="end" fontSize={8} fill="#6b7280">
+                    {s.label.length > 9 ? `${s.label.slice(0, 8)}…` : s.label}
+                  </text>
+                </g>
+              );
+            })}
 
             {/* Brush rect */}
             {brushRect && brushRect.w > 0 && (
@@ -870,6 +1024,9 @@ export default function SharedMetricChart({
                 <span className="font-mono ml-auto">
                   {formatTooltip(smoothing > 0 && v.smoothValue !== null ? v.smoothValue : v.value)}
                 </span>
+                {v.realStep !== null && (
+                  <span className="font-mono text-gray-500">@{v.realStep}</span>
+                )}
               </div>
             ))}
           </div>

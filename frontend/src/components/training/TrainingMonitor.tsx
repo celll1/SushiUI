@@ -6,9 +6,8 @@ import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, start
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
 import TrainingMetricsChart from "./TrainingMetricsChart";
-import ResizableChartPair from "./ResizableChartPair";
+import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableChartRow";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
-import ParamChangeChart from "./ParamChangeChart";
 import CheckpointList from "./CheckpointList";
 
 interface TrainingMonitorProps {
@@ -49,7 +48,14 @@ const formatIterationRate = (seconds: number | null): string => {
 const formatSeconds = (seconds: number): string =>
   `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
 
+// Per-pane persistence slot and the preset each pane opens on. Pane 3 defaults
+// to the param-change view, which is why ParamChangeChart no longer exists as a
+// component -- its two tabs are two presets now.
+const PANE_SLOTS = ["a", "b", "c"] as const;
+const PANE_DEFAULT_PRESETS = ["loss-overview", "gradient-norms", "param-update"];
+
 export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete, onEditConfig }: TrainingMonitorProps) {
+  const { layout: chartLayout, setLayout: setChartLayout, setPanes: setChartPanes } = useChartLayout();
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -793,12 +799,21 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                   escape hatch that makes that refusal workable. The pair is
                   resizable as a unit -- panes that could differ in height stop
                   being comparable at a glance, which is why there are two. */}
-              <ResizableChartPair
-                left={(h) => <TrainingMetricsChart slot="a" defaultPreset="loss-overview" height={h} />}
-                right={(h) => <TrainingMetricsChart slot="b" defaultPreset="gradient-norms" height={h} />}
+              <div className="flex items-center justify-end mb-1">
+                <ChartPaneCount panes={chartLayout.panes} onChange={setChartPanes} />
+              </div>
+              <ResizableChartRow
+                layout={chartLayout}
+                onLayoutChange={setChartLayout}
+                renderPane={(i, h) => (
+                  <TrainingMetricsChart
+                    slot={PANE_SLOTS[i]}
+                    defaultPreset={PANE_DEFAULT_PRESETS[i]}
+                    height={h}
+                  />
+                )}
               />
               <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
-                <ParamChangeChart />
                 <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
               </div>
             </TrainingMetricsProvider>

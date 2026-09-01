@@ -36,6 +36,7 @@ const FAMILY_LABELS: Record<MetricFamily, string> = {
   duration: "Duration",
   data_volume: "Data volume",
   validation: "Validation",
+  param_change: "Param change",
   other: "Other",
 };
 

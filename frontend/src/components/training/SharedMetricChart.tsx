@@ -744,9 +744,12 @@ export default function SharedMetricChart({
 
   return (
     <div className="bg-gray-800 rounded p-2 border border-gray-700">
-      <div className="flex items-center justify-between mb-1">
-        <div className="text-sm font-medium text-gray-300">{title}</div>
-        <div className="flex items-center gap-2">
+      {/* h-6 and truncate together: a wrapping title made this row two lines
+          tall, so two panes of the same `height` drew their plots at different
+          y and stopped lining up. */}
+      <div className="flex items-center justify-between mb-1 h-6">
+        <div className="text-sm font-medium text-gray-300 truncate shrink min-w-0 mr-2" title={title}>{title}</div>
+        <div className="flex items-center gap-2 shrink-0">
           {headerExtra}
           {smoothable && (
             <div className="flex items-center gap-1.5">

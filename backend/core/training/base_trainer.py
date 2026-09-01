@@ -6013,14 +6013,28 @@ class BaseTrainer(ABC):
         self._fused_clipping_warned = True
         mode = ("fused optimizer groups" if self.fused_optimizer_groups is not None
                 else "the fused backward pass")
+        # Naming the real cause matters: the old text told the reader to set
+        # blocks_to_swap=0 and num_optimizer_groups=0, which run 122 already had
+        # -- its fused path comes from the OPTIMIZER, not from block swap, and
+        # every optimizer SenseNova's full-fine-tune contract allows is one of
+        # them. Advice the reader has already followed reads as a bug in the
+        # warning.
+        optimizer_type = str(self.config.get("optimizer", "") or "").lower()
+        by_optimizer = optimizer_type in FUSED_BACKWARD_OPTIMIZERS
+        if by_optimizer:
+            remedy = (f"The fused path here comes from optimizer='{optimizer_type}', not from "
+                      f"Block Swap, so blocks_to_swap/num_optimizer_groups do not affect it. "
+                      f"A non-fused optimizer would clip, if this architecture's training "
+                      f"contract allows one; set max_grad_norm=0 to silence this.")
+        else:
+            remedy = ("To clip, disable the fused path (blocks_to_swap=0 and "
+                      "num_optimizer_groups=0); to silence this, set max_grad_norm=0.")
         emit_training_warning(
             f"max_grad_norm={max_grad_norm} is IGNORED under "
             f"{mode}. Gradient clipping by global norm has to see every gradient "
             f"before it can scale them, and this mode applies each parameter's update "
             f"as soon as that parameter's gradient exists, so no global norm is ever "
-            f"available. No clipping of any kind is applied. To clip, disable the fused "
-            f"path (blocks_to_swap=0 and num_optimizer_groups=0); to silence this, set "
-            f"max_grad_norm=0.",
+            f"available. No clipping of any kind is applied. " + remedy,
             code="fused_grad_clipping_ignored",
             prefix=self.log_prefix,
         )

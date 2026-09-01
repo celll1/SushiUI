@@ -43,9 +43,14 @@ class FusedGradNormAccumulator:
         grad = param.grad
         if grad is None:
             return
-        # FP32 before squaring: a BF16 grad squared in BF16 loses most of the
-        # mantissa. Result is a 0-dim device tensor, so no sync here.
-        square = grad.detach().float().pow(2).sum()
+        # FP32 accumulation, but WITHOUT materialising the gradient in fp32: a
+        # BF16 grad squared in BF16 loses most of the mantissa, so the dtype=
+        # argument is load-bearing -- it upcasts inside the reduction. The old
+        # `grad.detach().float().pow(2).sum()` allocated two full-size temporaries
+        # per parameter, which at 8.1B trainable params is ~113 GB of memory
+        # traffic per step for a number that is only ever charted.
+        # Result is a 0-dim device tensor, so no sync here.
+        square = torch.linalg.vector_norm(grad.detach(), ord=2, dtype=torch.float32).pow(2)
         previous = self._squares.get(id(param))
         self._squares[id(param)] = square if previous is None else previous + square
 

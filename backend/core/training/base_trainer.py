@@ -6019,7 +6019,8 @@ class BaseTrainer(ABC):
         # every optimizer SenseNova's full-fine-tune contract allows is one of
         # them. Advice the reader has already followed reads as a bug in the
         # warning.
-        optimizer_type = str(self.config.get("optimizer", "") or "").lower()
+        config = getattr(self, "config", None) or {}
+        optimizer_type = str(config.get("optimizer", "") or "").lower()
         by_optimizer = optimizer_type in FUSED_BACKWARD_OPTIMIZERS
         if by_optimizer:
             remedy = (f"The fused path here comes from optimizer='{optimizer_type}', not from "

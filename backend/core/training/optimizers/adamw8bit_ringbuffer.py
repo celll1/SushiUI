@@ -9,15 +9,22 @@ Modified for SushiUI Ring Buffer integration:
   transfer during the update -- but ONLY when a ``get_state_buffer`` allocator is
   passed to the constructor.
 
-NOTE: no caller passes one. ``optimizer_factory`` forwards
-``kwargs.get("get_state_buffer", None)`` and nothing supplies it (never has, since
-190c876e), so ``get_state_buffer`` resolves to None and ``_init_param_state`` takes
-its "Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)" branch. What
-this class delivers by default is therefore a fused 8-bit AdamW with GPU-resident
-state: the 8-bit quantization saving is real, the CPU residency this file is named
-for is not wired up. The implementation is complete -- the wiring is what is
-missing. See RINGBUFFER_OPTIMIZERS.md and, for the work needed to enable it,
-docs/guides/SENSENOVA_TRAINING_DESIGN.md section 6.5.
+The allocator IS supplied now, and the host-resident path is what a SenseNova
+full fine-tune actually runs. ``BaseTrainer._ringbuffer_optimizer_kwargs`` passes
+``HostOptimizerStateAllocator`` (host_state_allocator.py) whenever
+``optimizer_state_host_resident`` is set, and ``optimizer_factory`` forwards it;
+run 122 holds 30.19 GiB of 8-bit state in pinned host memory that way, with only
+the ``absmax*`` tensors on the GPU. Without the flag ``get_state_buffer`` is
+still None and ``_init_param_state`` takes its "Ring Buffer disabled: GPU
+allocation (bitsandbytes-compatible)" branch, which is the plain fused 8-bit
+AdamW with GPU-resident state.
+
+The host buffers are PINNED, which is what makes the mode work rather than
+merely fit: the update kernels are handed ``state['exp_avg']`` directly and read
+it across PCIe through UVA, so there is no per-step copy to stage. The transfer
+therefore overlaps the backward that triggers each per-parameter update instead
+of serialising after it. See host_state_allocator.py, RINGBUFFER_OPTIMIZERS.md
+and docs/guides/SENSENOVA_TRAINING_DESIGN.md section 6.5.
 
 The "~75% VRAM savings for optimizer states" this docstring used to claim is
 arithmetic from RINGBUFFER_OPTIMIZERS.md's hypothetical 350M-parameter table, not a

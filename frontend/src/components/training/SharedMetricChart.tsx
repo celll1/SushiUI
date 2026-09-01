@@ -181,6 +181,42 @@ function applySmoothing(points: Pt[], factor: number): Pt[] {
   return out;
 }
 
+/**
+ * The slider travels in the EMA's effective WINDOW, log-spaced, not in its
+ * factor.
+ *
+ * The factor and the window are related by N = 1/(1-f), which is violently
+ * non-linear: a linear 0..0.99 slider spent 90 of its 100 positions on windows
+ * of 10 points or fewer, and offered exactly ONE position at 50 points or more.
+ * On a 25,000-point run that made every useful setting land in the last
+ * fraction of the travel, and its maximum -- a 100-point window, 0.4% of the
+ * run -- was still the weakest smoothing anyone wanted.
+ *
+ * Log-spacing N over 1..MAX_SMOOTH_WINDOW gives even travel in the thing the
+ * eye actually responds to, and the readout is a point count rather than a
+ * percentage that means nothing on its own.
+ *
+ * Raising the ceiling is only safe because the EMA is bias-corrected: with the
+ * old seeded form a 2000-point window would have pinned the head of the curve
+ * to its first sample for the whole visible range.
+ */
+const MAX_SMOOTH_WINDOW = 2000;
+
+export function smoothingToWindow(factor: number): number {
+  return factor <= 0 ? 1 : Math.min(MAX_SMOOTH_WINDOW, 1 / (1 - factor));
+}
+
+/** Slider position (0..1) -> EMA factor. */
+function positionToSmoothing(pos: number): number {
+  const n = Math.exp(pos * Math.log(MAX_SMOOTH_WINDOW));
+  return n <= 1 ? 0 : 1 - 1 / n;
+}
+
+/** EMA factor -> slider position (0..1). */
+function smoothingToPosition(factor: number): number {
+  return Math.log(smoothingToWindow(factor)) / Math.log(MAX_SMOOTH_WINDOW);
+}
+
 /** p5-p95 of ONE series, or its full extent when `bounded`. */
 function seriesExtent(values: number[], bounded: boolean): { lo: number; hi: number } | null {
   const valid = values.filter((v) => Number.isFinite(v));
@@ -789,12 +825,17 @@ export default function SharedMetricChart({
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-gray-500">Smooth</span>
               <input
-                type="range" min={0} max={0.99} step={0.01} value={smoothingDisplay}
-                onChange={(e) => scheduleSmoothing(parseFloat(e.target.value))}
-                className="w-20 h-1 cursor-pointer" title="EMA smoothing"
+                type="range" min={0} max={1} step={0.005}
+                value={smoothingToPosition(smoothingDisplay)}
+                onChange={(e) => scheduleSmoothing(positionToSmoothing(parseFloat(e.target.value)))}
+                className="w-20 h-1 cursor-pointer"
+                title="EMA window, log-spaced in points"
               />
-              <span className="text-[10px] text-gray-400 font-mono w-7 text-right">
-                {(smoothingDisplay * 100).toFixed(0)}%
+              <span
+                className="text-[10px] text-gray-400 font-mono w-10 text-right"
+                title={`EMA factor ${smoothingDisplay.toFixed(4)}`}
+              >
+                {smoothingDisplay <= 0 ? "off" : `${Math.round(smoothingToWindow(smoothingDisplay))}pt`}
               </span>
             </div>
           )}

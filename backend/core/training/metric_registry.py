@@ -20,50 +20,96 @@ Fields per entry:
   - dashed: draw as a dashed overlay line (default True for aux losses — they
             typically live on a different scale than the main loss and should
             not dominate the chart's Y-range pooling).
-  - axis:   optional. Set to "right" to render the series against a separate,
-            independently-auto-scaled secondary Y-axis instead of pooling it
-            into the primary (loss-scale) Y-range. Use this for metrics whose
-            magnitude is orders of magnitude away from loss (e.g. learning
-            rate, ~1e-4) and would otherwise be an invisible flat line.
+  - axis:   optional, LEGACY. Set to "right" to render the series against a
+            separate, independently-auto-scaled secondary Y-axis instead of
+            pooling it into the primary (loss-scale) Y-range. Superseded by
+            scale_group below, which the new chart uses; kept because the older
+            charts still read it.
+
+Semantic annotation (all optional; the frontend falls back to key heuristics).
+A trainer author declares what the metric IS, never which chart preset it
+belongs to -- presets select over families, so the backend never learns a
+frontend layout name.
+
+  - family:      loss | gradient_norm | learning_rate | bounded_diagnostic |
+                 signed_correlation | binary_indicator | count | duration |
+                 data_volume | validation | other
+  - scale_group: free string. Two series may share a Y-axis iff their groups
+                 are equal; different groups never share one.
+  - range:       {"kind": "auto", "floor": 0} | {"kind": "fixed", "min", "max"}
+  - sampling:    dense (every step) | periodic (every N steps) | event
+
+The profile dicts below are the canonical assignment per family; they are
+splatted into the entries and must be treated as read-only.
 """
+
+_AUTO_0 = {"kind": "auto", "floor": 0}
+_AUTO = {"kind": "auto"}
+_UNIT = {"kind": "fixed", "min": 0, "max": 1}
+_SIGNED_UNIT = {"kind": "fixed", "min": -1, "max": 1}
+
+_LOSS = {"family": "loss", "scale_group": "loss_scale", "range": _AUTO_0, "sampling": "dense"}
+_GRAD_NORM = {"family": "gradient_norm", "scale_group": "gradient_norm", "range": _AUTO_0, "sampling": "dense"}
+_LR = {"family": "learning_rate", "scale_group": "learning_rate", "range": _AUTO_0, "sampling": "dense"}
+_BINARY = {"family": "binary_indicator", "scale_group": "unit_interval", "range": _UNIT, "sampling": "dense"}
+_UNIT_DIAG = {"family": "bounded_diagnostic", "scale_group": "unit_interval", "range": _UNIT, "sampling": "dense"}
+_UNIT_DIAG_PERIODIC = {**_UNIT_DIAG, "sampling": "periodic"}
+# A relative-norm ratio is NOT bounded above: two near-orthogonal predictions of
+# similar norm already give ~1.41. A fixed range would bypass the auto-scaler and
+# clip any excursion past 1.0 off the top of the frame with no indication.
+_GUIDANCE_REL = {"family": "bounded_diagnostic", "scale_group": "guidance_relative",
+                 "range": _AUTO_0, "sampling": "periodic"}
+_SIGNED_PERIODIC = {"family": "signed_correlation", "scale_group": "signed_unit",
+                    "range": _SIGNED_UNIT, "sampling": "periodic"}
+_DURATION = {"family": "duration", "scale_group": "seconds", "range": _AUTO_0, "sampling": "dense"}
+_DATA_VOLUME = {"family": "data_volume", "scale_group": "gibibytes", "range": _AUTO_0, "sampling": "dense"}
+# Run-cumulative CUDA high-water, never reset -- same unit as the per-step
+# transfer volumes but ~20x their magnitude and a different question. Sharing
+# `gibibytes` would flatten the per-step curves onto the axis floor.
+_DATA_VOLUME_PEAK = {**_DATA_VOLUME, "scale_group": "gibibytes_peak"}
+_COUNT = {"family": "count", "scale_group": "counts", "range": _AUTO_0, "sampling": "dense"}
 
 EXTRA_METRIC_DEFS = {
     # REPA representation-alignment loss (MiniT2I). Formerly the dedicated
     # repa_loss column (backfilled into extra_metrics by auto_migrate).
-    "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True},
+    "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).
-    "gen_loss": {"label": "Gen region", "color": "#a78bfa", "dashed": True},
+    "gen_loss": {"label": "Gen region", "color": "#a78bfa", "dashed": True, **_LOSS},
     # Outpaint ControlNet: raw MSE over ONLY the 1-cell generate-side ring
     # adjacent to the known region (~2-3% of generate cells) -- gen_loss
     # averages this away, so this is the dedicated instrument for the seam band.
-    "seam_loss": {"label": "Seam", "color": "#f43f5e", "dashed": True},
+    "seam_loss": {"label": "Seam", "color": "#f43f5e", "dashed": True, **_LOSS},
     # Outpaint ControlNet: raw MSE over the known (anchored) region only --
     # the loss-vs-timestep instrumentation's live-chart counterpart to
     # gen_loss/seam_loss (full per-sample/per-timestep breakdown goes to the
     # loss_vs_t.jsonl sidecar; see scratchpad "Outpaint ControlNet:
     # loss-vs-timestep instrumentation" design doc).
-    "known_loss": {"label": "Known region", "color": "#34d399", "dashed": True},
+    "known_loss": {"label": "Known region", "color": "#34d399", "dashed": True, **_LOSS},
     # Aligned-CFG-null split of the step's loss (BaseTrainer._log_cfg_null_loss_
     # split), emitted only by a run with a nonzero cfg_uncond_drop_rate. The
     # null items predict the caption-free marginal, so they sit in their own
     # band and the charted mean is a blend of two populations: at rate 0.1 on
     # run 121 the mean rose ~20% while the median barely moved. Same scale as
     # the main loss, so they pool into the primary Y-range with it.
-    "loss_null": {"label": "Loss (null)", "color": "#fb7185", "dashed": False},
-    "loss_cond": {"label": "Loss (cond)", "color": "#4ade80", "dashed": False},
+    "loss_null": {"label": "Loss (null)", "color": "#fb7185", "dashed": False, **_LOSS},
+    "loss_cond": {"label": "Loss (cond)", "color": "#4ade80", "dashed": False, **_LOSS},
     # Fraction of the step's batch drawn null. Also the reader's only way to
     # tell a full split from one side of a homogeneous batch, which is all a
     # mixed batch yields when the architecture stashes no per-item loss.
     "cfg_null_frac": {"label": "CFG null fraction", "color": "#fbbf24",
-                      "dashed": True, "axis": "right"},
+                      "dashed": True, "axis": "right", **_BINARY},
     # The optimizer step's total grad norm, labelled by side. A norm is a
     # property of the whole accumulated batch, so this is emitted ONLY when
     # every batch behind it was drawn the same way -- at batch 1 with no
     # accumulation that is every step, and with a mixed window it is none.
-    "gnorm_null": {"label": "Grad norm (null)", "color": "#fb7185", "dashed": False},
-    "gnorm_cond": {"label": "Grad norm (cond)", "color": "#4ade80", "dashed": False},
+    # Their scale_group is NOT loss_scale: at 0.05-0.35 against a 0.01-0.19 loss
+    # they dominated the shared left axis, which is what made the loss chart
+    # unreadable. The `axis` key stays absent (the legacy charts pool them with
+    # loss); the new chart honours the group.
+    "gnorm_null": {"label": "Grad norm (null)", "color": "#fb7185", "dashed": False, **_GRAD_NORM},
+    "gnorm_cond": {"label": "Grad norm (cond)", "color": "#4ade80", "dashed": False, **_GRAD_NORM},
     # Cosine between the MNT window's noisy-half and clean-half accumulated
     # gradients (probes/grad_timestep_cosine.py), opt-in. Bounded to [-1, 1] and
     # centred on 0, so it belongs on the right axis rather than pooling into the
@@ -83,39 +129,39 @@ EXTRA_METRIC_DEFS = {
     # near 0.01 with the cosine at 1.000 regardless of conditioning strength.
     # The x0 form has ~6x the dynamic range and a cosine that actually moves.
     "cfg_guidance_rel": {"label": "CFG guidance strength", "color": "#22d3ee",
-                         "dashed": False, "axis": "right"},
+                         "dashed": False, "axis": "right", **_GUIDANCE_REL},
     "cfg_guidance_rel_early": {"label": "CFG guidance (high noise)", "color": "#67e8f9",
-                               "dashed": True, "axis": "right"},
+                               "dashed": True, "axis": "right", **_GUIDANCE_REL},
     "cfg_guidance_cos": {"label": "cos(cond, uncond)", "color": "#fda4af",
-                         "dashed": True, "axis": "right"},
+                         "dashed": True, "axis": "right", **_SIGNED_PERIODIC},
     "grad_cos_t_all": {"label": "Grad cos noisy/clean (all)", "color": "#a78bfa",
-                       "dashed": False, "axis": "right"},
+                       "dashed": False, "axis": "right", **_SIGNED_PERIODIC},
     "grad_cos_t_unet": {"label": "Grad cos noisy/clean (gen)", "color": "#38bdf8",
-                        "dashed": True, "axis": "right"},
+                        "dashed": True, "axis": "right", **_SIGNED_PERIODIC},
     "grad_cos_t_te1": {"label": "Grad cos noisy/clean (und)", "color": "#f472b6",
-                       "dashed": True, "axis": "right"},
+                       "dashed": True, "axis": "right", **_SIGNED_PERIODIC},
     "grad_cos_t_te": {"label": "Grad cos noisy/clean (TE)", "color": "#f472b6",
-                      "dashed": True, "axis": "right"},
+                      "dashed": True, "axis": "right", **_SIGNED_PERIODIC},
     # Actually-applied per-step learning rate (optimizer.param_groups[0]['lr']),
     # logged for every trainer (LoRA/full-FT/ControlNet share the same
     # BaseTrainer.train() loop). Schedules can now be non-constant
     # (plateau_cosine_floor), so this is a real curve, not just a flat line --
     # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
     # its own axis rather than the shared pooled Y-range.
-    "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right"},
+    "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right", **_LR},
     # Run-cumulative batches abandoned before their backward pass (OOM, unusable
     # item, no valid latents, missing condition image). Monotone staircase: a
     # skip writes no metrics row of its own, so this rides the next completed
     # step and is the only in-chart trace that data is being dropped.
     "batches_skipped": {"label": "Batches skipped", "color": "#f97316",
-                        "dashed": True, "axis": "right"},
+                        "dashed": True, "axis": "right", **_COUNT},
     # SenseNova shared-prefix four-phase: cumulative count of generation
     # backwards whose understanding gradient a skipped batch threw away. A
     # skip mid-window drops every backward the window had run, whose generation
     # updates already landed, so it is charted rather than only logged. A count,
     # not a loss, hence the secondary axis. Emitted only on a skip.
     "sn_und_grad_dropped": {"label": "SenseNova und grad dropped", "color": "#f87171",
-                            "dashed": True, "axis": "right"},
+                            "dashed": True, "axis": "right", **_COUNT},
     # SenseNova MoT phase eviction: per-step time and volume of the half swaps,
     # split by direction (see sensenova_phase_eviction's TRANSFER ACCOUNTING).
     # Seconds and GiB are both orders away from the loss scale, so they share
@@ -127,13 +173,13 @@ EXTRA_METRIC_DEFS = {
     # two directions run concurrently and their sum EXCEEDS the transition's
     # wall. Read the two series against that flag, never across it.
     "sn_d2h_s": {"label": "SenseNova D2H (s)", "color": "#38bdf8", "dashed": False,
-                 "axis": "right"},
+                 "axis": "right", **_DURATION},
     "sn_h2d_s": {"label": "SenseNova H2D (s)", "color": "#a78bfa", "dashed": False,
-                 "axis": "right"},
+                 "axis": "right", **_DURATION},
     "sn_d2h_gib": {"label": "SenseNova D2H (GiB)", "color": "#22d3ee", "dashed": True,
-                   "axis": "right"},
+                   "axis": "right", **_DATA_VOLUME},
     "sn_h2d_gib": {"label": "SenseNova H2D (GiB)", "color": "#c084fc", "dashed": True,
-                   "axis": "right"},
+                   "axis": "right", **_DATA_VOLUME},
     # 1 while sensenova_mot_overlap_transfer is running the two-stream path.
     # Not decorative: it is what tells a reader which unit the two seconds
     # series above are in, including mid-run if a pin failure downgrades it.
@@ -141,14 +187,14 @@ EXTRA_METRIC_DEFS = {
     # downgrade -- whose seconds are part event time, part host wall -- reads 0
     # rather than claiming a unit half of its total is not in.
     "sn_swap_overlap": {"label": "SenseNova swap overlapped", "color": "#facc15",
-                        "dashed": True, "axis": "right"},
+                        "dashed": True, "axis": "right", **_BINARY},
     # RUN-CUMULATIVE CUDA high-water (never reset), so these are monotone step
     # curves, not per-step usage: they say when the peak last moved, not what a
     # step cost. Emitted only alongside the swap counters above.
     "sn_peak_alloc_gib": {"label": "SenseNova peak allocated (GiB)", "color": "#34d399",
-                          "dashed": False, "axis": "right"},
+                          "dashed": False, "axis": "right", **_DATA_VOLUME_PEAK},
     "sn_peak_resv_gib": {"label": "SenseNova peak reserved (GiB)", "color": "#fb923c",
-                         "dashed": False, "axis": "right"},
+                         "dashed": False, "axis": "right", **_DATA_VOLUME_PEAK},
     # Per-component actual LRs (only emitted when a run trains more than one
     # optimizer param group at potentially-different LRs, e.g. UNet+TE1/TE2 or
     # +VisionEncoder runs -- see base_trainer.py's per-step logging site next
@@ -159,18 +205,18 @@ EXTRA_METRIC_DEFS = {
     # the same unit and often overlapping magnitude. Any component not listed
     # here (e.g. lr_controlnet) still renders via the frontend's generic
     # lr*-prefix -> secondary-axis fallback, just without a curated label.
-    "lr_unet": {"label": "LR (U-Net)", "color": "#38bdf8", "dashed": False, "axis": "right"},
-    "lr_te1": {"label": "LR (TE1)", "color": "#fb923c", "dashed": False, "axis": "right"},
-    "lr_te2": {"label": "LR (TE2)", "color": "#c084fc", "dashed": False, "axis": "right"},
-    "lr_visionencoder": {"label": "LR (Vision Encoder)", "color": "#4ade80", "dashed": False, "axis": "right"},
+    "lr_unet": {"label": "LR (U-Net)", "color": "#38bdf8", "dashed": False, "axis": "right", **_LR},
+    "lr_te1": {"label": "LR (TE1)", "color": "#fb923c", "dashed": False, "axis": "right", **_LR},
+    "lr_te2": {"label": "LR (TE2)", "color": "#c084fc", "dashed": False, "axis": "right", **_LR},
+    "lr_visionencoder": {"label": "LR (Vision Encoder)", "color": "#4ade80", "dashed": False, "axis": "right", **_LR},
     # ---- VAE decoder fine-tune (network.type == "vae_decoder") ------------
     # Per-step loss components. The chart's primary Y-range is the total loss,
     # which these sum into (times their weights), so they stay on the main axis.
-    "vae_recon_loss": {"label": "VAE recon (MSE+L1)", "color": "#60a5fa", "dashed": True},
-    "vae_lpips_loss": {"label": "VAE LPIPS", "color": "#f472b6", "dashed": True},
-    "vae_dc_loss": {"label": "VAE YCbCr DC", "color": "#facc15", "dashed": True},
+    "vae_recon_loss": {"label": "VAE recon (MSE+L1)", "color": "#60a5fa", "dashed": True, **_LOSS},
+    "vae_lpips_loss": {"label": "VAE LPIPS", "color": "#f472b6", "dashed": True, **_LOSS},
+    "vae_dc_loss": {"label": "VAE YCbCr DC", "color": "#facc15", "dashed": True, **_LOSS},
     # Only emitted when pattern_weight > 0 (opt-in; see param_defaults.py).
-    "vae_pattern_loss": {"label": "VAE pattern", "color": "#c084fc", "dashed": True},
+    "vae_pattern_loss": {"label": "VAE pattern", "color": "#c084fc", "dashed": True, **_LOSS},
     # Only emitted when l_invented_weight > 0 (opt-in; see param_defaults.py).
     # The UNWEIGHTED term, in (8-bit levels)^2 inside flat windows. Its square
     # root is a RELATIVE TREND INDICATOR, NOT an absolute level: the value
@@ -178,14 +224,14 @@ EXTRA_METRIC_DEFS = {
     # and its channel weights, so it under-reads true invented luma by ~1.1x in
     # dark windows and ~2.5x in bright ones. Absolute levels against the 1/255
     # visibility bar come from the frozen g1flat harness only.
-    "vae_invented_loss": {"label": "VAE invented HF", "color": "#22d3ee", "dashed": True},
+    "vae_invented_loss": {"label": "VAE invented HF", "color": "#22d3ee", "dashed": True, **_LOSS},
     # Fraction of candidate windows that passed the flat test on that step.
     # Charted next to the term because the two are only interpretable together:
     # a falling loss with a collapsing coverage means the term stopped firing,
     # not that the decoder stopped inventing. It is a 0..1 fraction, so it goes
     # on the secondary axis rather than into the loss-scale pooled range.
     "vae_invented_cov": {"label": "VAE invented coverage", "color": "#818cf8",
-                         "dashed": False, "axis": "right"},
+                         "dashed": False, "axis": "right", **_UNIT_DIAG},
     # Only emitted when the ENCODER is trainable: under a frozen encoder the
     # posterior KL is constant w.r.t. every trainable parameter and the term is
     # not constructed at all.
@@ -197,22 +243,28 @@ EXTRA_METRIC_DEFS = {
     # signals that a fine-tune is going wrong. The weighted contribution shares
     # the magnitude of the other loss components, so it belongs with them on the
     # main axis; the raw KL stays in the per-step console log.
-    "vae_kl_loss": {"label": "VAE KL (weighted)", "color": "#a3e635", "dashed": True},
+    "vae_kl_loss": {"label": "VAE KL (weighted)", "color": "#a3e635", "dashed": True, **_LOSS},
     # Periodic held-out validation. These are the user's only signal that a
     # fine-tune is going wrong (PSNR falling = the decoder is drifting off the
     # data; blockiness rising above ~1.0 = it is manufacturing latent-cell grid
     # structure). Both live on the secondary axis: PSNR is ~25-35 dB and
     # blockiness ~1.0, orders of magnitude away from the loss scale.
-    "vae_val_psnr": {"label": "Val PSNR (dB)", "color": "#34d399", "dashed": False, "axis": "right"},
-    "vae_val_blockiness": {"label": "Val blockiness", "color": "#fb923c", "dashed": False, "axis": "right"},
+    # Separate scale groups: dB (~25-35) and a ~1.0 ratio must never be forced
+    # onto one axis just because both are "validation".
+    "vae_val_psnr": {"label": "Val PSNR (dB)", "color": "#34d399", "dashed": False, "axis": "right",
+                     "family": "validation", "scale_group": "decibels",
+                     "range": _AUTO, "sampling": "periodic"},
+    "vae_val_blockiness": {"label": "Val blockiness", "color": "#fb923c", "dashed": False, "axis": "right",
+                           "family": "validation", "scale_group": "blockiness",
+                           "range": _AUTO_0, "sampling": "periodic"},
     # ---- MiniMax-H3 (joint video + audio) ---------------------------------
     # Per-modality velocity MSE that sum (video + audio_loss_weight * audio)
     # into the total loss -- see minimax_h3_ops.train_step.
-    "h3_video_loss": {"label": "H3 video loss", "color": "#60a5fa", "dashed": True},
-    "h3_audio_loss": {"label": "H3 audio loss", "color": "#f472b6", "dashed": True},
+    "h3_video_loss": {"label": "H3 video loss", "color": "#60a5fa", "dashed": True, **_LOSS},
+    "h3_audio_loss": {"label": "H3 audio loss", "color": "#f472b6", "dashed": True, **_LOSS},
     # Fraction of the batch whose item carried a real audio track this step (vs.
     # the noise-filled, zero-weighted fallback rows). A flat 0 for the whole run
     # means the audio term never actually saw data.
     "h3_audio_present": {"label": "H3 audio present", "color": "#facc15",
-                         "dashed": False, "axis": "right"},
+                         "dashed": False, "axis": "right", **_BINARY},
 }

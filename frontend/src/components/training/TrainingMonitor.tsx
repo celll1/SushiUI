@@ -6,6 +6,7 @@ import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, start
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
 import TrainingMetricsChart from "./TrainingMetricsChart";
+import ResizableChartPair from "./ResizableChartPair";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import ParamChangeChart from "./ParamChangeChart";
 import CheckpointList from "./CheckpointList";
@@ -787,12 +788,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           {/* Loss Chart */}
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
             <TrainingMetricsProvider key={currentRun.id} runId={currentRun.id} isRunning={currentRun.status === "running"}>
+              {/* Two panes, not one: a third scale group is refused rather
+                  than crammed onto a shared axis, and the second pane is the
+                  escape hatch that makes that refusal workable. The pair is
+                  resizable as a unit -- panes that could differ in height stop
+                  being comparable at a glance, which is why there are two. */}
+              <ResizableChartPair
+                left={(h) => <TrainingMetricsChart slot="a" defaultPreset="loss-overview" height={h} />}
+                right={(h) => <TrainingMetricsChart slot="b" defaultPreset="gradient-norms" height={h} />}
+              />
               <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
-                {/* Two panes, not one: a third scale group is refused rather
-                    than crammed onto a shared axis, and the second pane is the
-                    escape hatch that makes that refusal workable. */}
-                <TrainingMetricsChart slot="a" defaultPreset="loss-overview" />
-                <TrainingMetricsChart slot="b" defaultPreset="gradient-norms" />
                 <ParamChangeChart />
                 <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
               </div>

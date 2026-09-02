@@ -7924,6 +7924,11 @@ export interface TrainingSampleImage {
     condition_image_path?: string;
     reference_image_path?: string;
   };
+  // Rendered by a "sample now" request rather than by `sample_every`. Same
+  // generation code and same step; a distinct filename so the two do not
+  // overwrite each other.
+  on_demand?: boolean;
+  request_id?: string | null;
 }
 
 export interface TrainingSampleStep {
@@ -7937,6 +7942,60 @@ export interface TrainingSamplesResponse {
 
 export const getTrainingSamples = async (runId: number): Promise<TrainingSamplesResponse> => {
   const response = await api.get(`/training/runs/${runId}/samples`);
+  return response.data;
+};
+
+export interface TrainingSampleRequestAccepted {
+  request_id: string;
+  run_id: number;
+  queued_at: number;
+  pending_count: number;
+  max_pending: number;
+  seed: number;
+}
+
+export interface TrainingSampleQueueItem {
+  request_id: string;
+  queued_at: number;
+  seed: number;
+}
+
+export interface TrainingSampleResult {
+  request_id: string;
+  ok: boolean;
+  step: number;
+  files: string[];
+  seeds: number[];
+  architecture?: string | null;
+  error?: string | null;
+  notes?: string[];
+  completed_at: number;
+}
+
+export interface TrainingSampleQueueResponse {
+  run_id: number;
+  is_running: boolean;
+  architecture: string | null;
+  unsupported_reason: string | null;
+  max_pending: number;
+  pending: TrainingSampleQueueItem[];
+  results: TrainingSampleResult[];
+}
+
+// Ask a running trainer to render a sample now. Fire and forget: the 202 means
+// the request was queued, not that an image exists. The trainer claims it at
+// the end of the batch it is in, at the same point scheduled sampling happens.
+export const queueTrainingSample = async (
+  runId: number
+): Promise<TrainingSampleRequestAccepted> => {
+  const response = await api.post(`/training/runs/${runId}/sample`);
+  return response.data;
+};
+
+export const getTrainingSampleQueue = async (
+  runId: number
+): Promise<TrainingSampleQueueResponse> => {
+  const response = await api.get(`/training/runs/${runId}/sample-queue`);
   return response.data;
 };
 

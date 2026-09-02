@@ -329,3 +329,84 @@ def test_native_branch_uses_file_metadata_alpha_when_no_per_key_alpha():
 def test_per_key_alpha_outranks_metadata_on_both_branches():
     assert _ratios(_comfy_raw(with_alpha=2.0), {"lora_alpha": "8.0"}) == {0.5}
     assert _ratios(_native_raw(with_alpha=2.0), {"lora_alpha": "8.0"}) == {0.5}
+
+
+# ---------------------------------------------------------------------------
+# 4. Numerical effect, restore identity and the model-reload guard
+#    (this file's original three sections cover the key codec, the refusals and
+#    alpha precedence; these are the assertions they do not reach)
+# ---------------------------------------------------------------------------
+
+_STRENGTH = 0.75
+
+
+def _resolve(root, dotted):
+    from core.training.adapters.minimax_h3_adapter import _resolve_leaf
+    return _resolve_leaf(root, dotted)
+
+
+def test_native_wrapped_forward_is_base_plus_scaled_branch(tmp_path):
+    """alpha=8 / rank=4 -> 2.0, times strength. Only meaningful because
+    ``_save_native_lora`` randomises lora_up out of its zero init."""
+    path, _count = _save_native_lora(tmp_path)
+    raw, metadata = lora_mod.load_lora_safetensors(path)
+    targets = lora_mod.normalise_lora_state_dict(raw, metadata)
+
+    transformer = _StubTransformer()
+    originals, wrapped = {}, set()
+    lora_mod.apply_lora_group(transformer, targets, _STRENGTH, originals, wrapped)
+
+    for module_path, weights in targets.items():
+        _parent, _attr, wrapper = _resolve(transformer, module_path)
+        x = torch.randn(3, wrapper.original_module.in_features)
+        base = wrapper.original_module(x)
+        expected = base + 2.0 * _STRENGTH * (x @ weights["down"].T @ weights["up"].T)
+        assert torch.allclose(wrapper(x), expected, atol=1e-5), module_path
+        assert not torch.allclose(wrapper(x), base, atol=1e-5), f"{module_path}: inert"
+
+
+def test_restore_returns_the_identical_original_objects(tmp_path):
+    path, _count = _save_native_lora(tmp_path)
+    raw, metadata = lora_mod.load_lora_safetensors(path)
+    targets = lora_mod.normalise_lora_state_dict(raw, metadata)
+
+    transformer = _StubTransformer()
+    before = {p: _resolve(transformer, p)[2] for p in _expected_target_paths()}
+    originals, wrapped = {}, set()
+    lora_mod.apply_lora_group(transformer, targets, 1.0, originals, wrapped)
+
+    assert lora_mod.restore_originals(transformer, originals, wrapped) == _N_TARGETS
+    for module_path, original in before.items():
+        # id(), not tensor equality: a fresh Linear carrying the same weights
+        # would pass an equality check and still have dropped every hook,
+        # device placement and quantized buffer the real module carried.
+        assert _resolve(transformer, module_path)[2] is original, module_path
+    assert not wrapped
+    assert lora_mod.restore_originals(transformer, originals, wrapped) == 0
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "OPEN DEFECT: _unload_lora_minimax_h3 restores into components['transformer'] "
+    "without consulting _minimax_h3_lora_state, which is the only place the weakref "
+    "ownership check lives. A model swap while wrappers are still live therefore "
+    "installs model A's Linears into model B (measured: 18 of 18). The load path is "
+    "guarded; the unload path is not. Remove this marker with the fix."))
+def test_model_reload_never_splices_model_a_into_model_b(tmp_path, monkeypatch):
+    from core.extensions import lora_manager as lm
+
+    path, _count = _save_native_lora(tmp_path)
+    monkeypatch.setattr(lm.lora_manager, "_resolve_lora_path", lambda p: path)
+
+    model_a = _StubTransformer()
+    backend = _StubBackend(model_a)
+    backend._load_lora_minimax_h3([{"path": path, "strength": 1.0}], {})
+    a_ids = ({id(m) for _n, m in model_a.named_modules()}
+             | {id(m) for m in backend._minimax_h3_lora_original_modules.values()})
+
+    model_b = _StubTransformer()
+    b_ids_before = {id(m) for _n, m in model_b.named_modules()}
+    assert not (a_ids & b_ids_before), "setup: A and B must not already share modules"
+
+    backend.minimax_h3_components = {"transformer": model_b, "variant": "fl2va"}
+    assert backend._unload_lora_minimax_h3() == 0
+    assert {id(m) for _n, m in model_b.named_modules()} == b_ids_before

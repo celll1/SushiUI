@@ -372,11 +372,12 @@ class ZImageMixin:
                 print(f"[Z-Image LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
                 import traceback
                 traceback.print_exc()
-                self._zimage_lora_warn(
-                    f"LoRA '{lora_file}' failed to load: {e}",
-                    code="lora_load_failed",
-                )
-                raise RuntimeError(f"Z-Image LoRA '{lora_file}' could not be applied: {e}") from e
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"Z-Image LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._zimage_lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
 
             # A requested LoRA that matched nothing is not a successful generation.
             if applied_count == 0:

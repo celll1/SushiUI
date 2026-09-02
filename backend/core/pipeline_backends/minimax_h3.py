@@ -794,7 +794,10 @@ class MiniMaxH3Mixin:
                 print(f"[MiniMax-H3 LoRA] ERROR loading {lora_file}: {exc}")
                 import traceback
                 traceback.print_exc()
-                message = f"LoRA '{lora_file}' could not be applied: {exc}"
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"MiniMax-H3 LoRA '{lora_file}' could not be applied "
+                           f"({type(exc).__name__}); see the server log for details")
                 warn(message, "lora_load_failed")
                 raise RuntimeError(message) from exc
 
@@ -839,8 +842,11 @@ class MiniMaxH3Mixin:
         try:
             return load_lora_safetensors(resolved)
         except Exception as exc:
-            message = f"LoRA '{lora_file}' could not be read: {exc}"
-            print(f"[MiniMax-H3 LoRA] ERROR: {message}")
+            print(f"[MiniMax-H3 LoRA] ERROR reading {lora_file}: {exc}")
+            # Type + basename only: this rides into the PNG text chunk and the API
+            # response, and an OSError's str() carries the absolute resolved path.
+            message = (f"MiniMax-H3 LoRA '{lora_file}' could not be applied "
+                       f"({type(exc).__name__}); see the server log for details")
             warn(message, "lora_load_failed")
             raise RuntimeError(message) from exc
 

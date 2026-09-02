@@ -824,10 +824,11 @@ class AceStepMixin:
                 print(f"[AceStep LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
                 import traceback
                 traceback.print_exc()
-                raise GenerationError(
-                    f"Failed to load LoRA '{os.path.basename(lora_path)}'",
-                    detail=f"{type(e).__name__}: {e}",
-                ) from e
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"ACE-Step LoRA '{os.path.basename(lora_path)}' could not be "
+                           f"applied ({type(e).__name__}); see the server log for details")
+                raise GenerationError(message) from e
 
     def _apply_lora_acestep_sdscripts_format(self, dit, lora_state_dict, lora_strength, lora_path):
         """Apply an sd-scripts-native ACE-Step LoRA (this repo's own training

@@ -41,6 +41,7 @@ from core.attention import (
     resolve_backend,
     to_diffusers_backend,
 )
+from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_warning
 from core.training.image_preprocessing import flatten_to_rgb
@@ -7841,6 +7842,18 @@ class BaseTrainer(ABC):
         ):
             prefix, _ = self.encode_caption(captions[0], requires_grad=True,
                                             cfg_null=cfg_null)
+        elif (
+            mnt_index > 0
+            and captions
+            and cfg_null != bool(getattr(self, "_sensenova_prefix_cfg_null", False))
+        ):
+            alt = getattr(self, "_sensenova_alt_cfg_null_prefix", None)
+            if alt is None or alt[0] != cfg_null:
+                alt_prefix, _ = self.encode_caption(
+                    captions[0], requires_grad=False, cfg_null=cfg_null)
+                alt = (cfg_null, alt_prefix)
+                self._sensenova_alt_cfg_null_prefix = alt
+            prefix = alt[1]
         return None, None, None, prefix
 
     def cfg_null_drop_rate(self) -> Optional[float]:
@@ -9863,6 +9876,41 @@ class BaseTrainer(ABC):
     def _resolve_sample_seed(configured_seed: int) -> int:
         """Resolve the random sentinel without perturbing training RNG state."""
         return secrets.randbelow(2**32) if configured_seed < 0 else configured_seed
+
+    def _claim_on_demand_sample_request(self) -> Optional[Dict[str, Any]]:
+        """The one on-demand sample request this batch may run, or None.
+
+        Nothing is claimed once a stop has been asked for: the request would
+        delay the stop by a whole generation. Never raises into the loop.
+        """
+        try:
+            if (self.output_dir / ".stop_training").exists():
+                return None
+            return sample_rpc.claim_next_request(self.output_dir, self.run_id)
+        except Exception as e:   # noqa: BLE001
+            print(f"{self.log_prefix} WARNING: on-demand sample poll failed: {e}")
+            return None
+
+    def _record_on_demand_sample_result(
+        self, request_id: str, *, step: int, files: List[str],
+        seeds: List[int], error: Optional[str],
+    ) -> None:
+        arch_name = getattr(getattr(self, "arch", None), "name", None)
+        note = sample_rpc.blank_on_failure_note(arch_name)
+        try:
+            sample_rpc.write_result(self.output_dir, request_id, {
+                "ok": bool(files) and error is None,
+                "step": int(step),
+                "files": list(files),
+                "seeds": list(seeds),
+                "run_id": self.run_id,
+                "architecture": arch_name,
+                "error": error,
+                "notes": [note] if note else [],
+            })
+        except Exception as e:   # noqa: BLE001
+            print(f"{self.log_prefix} WARNING: could not record on-demand sample "
+                  f"result {request_id}: {e}")
 
     def _step0_marker_path(self) -> Path:
         return self.output_dir / "samples" / ".step0_done"
@@ -13903,6 +13951,10 @@ class BaseTrainer(ABC):
                     latents_list = []
                     text_embeddings_list = []
                     sensenova_prefixes = []
+                    # Frozen-branch per-MNT null: memoizes at most one alternate-
+                    # label prefix per batch (see _sensenova_mnt_conditioning).
+                    # Reset every batch so it cannot leak into the next one.
+                    self._sensenova_alt_cfg_null_prefix = None
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
@@ -14199,6 +14251,15 @@ class BaseTrainer(ABC):
                                           and bool(cfg_drop_mask[item_index])),
                             )
                             sensenova_prefixes.append(prefix)
+                            # Same expression as the encode call above (kept
+                            # literal rather than a shared variable, for
+                            # cfg_null_sensenova_test.py's source check). What
+                            # _sensenova_mnt_conditioning's frozen branch
+                            # compares a later iteration's label against, to
+                            # know whether this assembly prefix still applies.
+                            self._sensenova_prefix_cfg_null = (
+                                cfg_drop_mask is not None
+                                and bool(cfg_drop_mask[item_index]))
                         elif text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
                             # Get from swap buffer using image_path as key (dict lookup).
                             # Both swap_onthefly and cpu_prefetch share this consumer:
@@ -14805,8 +14866,8 @@ class BaseTrainer(ABC):
                                 captions=batch_captions,
                                 mnt_index=mnt_idx,
                                 # B1: the batch's one item is the one label.
-                                cfg_null=(cfg_drop_mask is not None
-                                          and bool(cfg_drop_mask[0])),
+                                cfg_null=(mnt_cfg_drop_mask is not None
+                                          and bool(mnt_cfg_drop_mask[0])),
                             )
                             # Declare the window the shared boundary cut serves.
                             # No-op unless the shared route is armed.
@@ -15029,7 +15090,7 @@ class BaseTrainer(ABC):
                                 mnt_time_ids=mnt_time_ids,
                                 loss_weight_maps_batch=loss_weight_maps_batch,
                                 sensenova_prefix=mnt_sensenova_prefix,
-                                cfg_drop_mask=cfg_drop_mask,
+                                cfg_drop_mask=mnt_cfg_drop_mask,
                             )
                         except PartialOptimizerStepError:
                             # Half-applied step: the safety net below would swallow
@@ -15219,11 +15280,11 @@ class BaseTrainer(ABC):
                             )
 
                         # Aligned-CFG-null split. Emitted per MNT iteration, the
-                        # same granularity as the loss it splits: every MNT
-                        # transform of a batch reuses that batch's one label, so
-                        # the attribution is the same on each pass.
-                        if cfg_drop_mask is not None:
-                            self._log_cfg_null_loss_split(cfg_drop_mask, mnt_pred_loss_value)
+                        # same granularity as the loss it splits: this reads
+                        # mnt_cfg_drop_mask, this ITERATION's label, so the
+                        # attribution is correct whether or not it was redrawn.
+                        if mnt_cfg_drop_mask is not None:
+                            self._log_cfg_null_loss_split(mnt_cfg_drop_mask, mnt_pred_loss_value)
 
                         # SenseNova MoT phase eviction: this step's half swaps.
                         # Drained ONCE here because log_extra_metric overwrites,
@@ -15595,90 +15656,147 @@ class BaseTrainer(ABC):
                                 should_generate_sample = True
                                 sample_step = next_sample_step
 
+                    # On-demand sample requests join the scheduled block rather
+                    # than getting a path of their own, so the output, metadata,
+                    # TensorBoard write and the onthefly_gpu TE re-home below are
+                    # the same code. At most one per batch (see the cap in
+                    # training_sample_rpc).
+                    on_demand_request = self._claim_on_demand_sample_request()
+                    sample_jobs: List[Tuple[int, Optional[Dict[str, Any]]]] = []
                     if should_generate_sample:
+                        sample_jobs.append((sample_step, None))
+                    if on_demand_request is not None:
+                        sample_jobs.append((global_step, on_demand_request))
+
+                    for sample_step, on_demand_request in sample_jobs:
                         import torchvision
+                        on_demand_id = (on_demand_request or {}).get("request_id")
+                        on_demand_files: List[str] = []
+                        on_demand_seeds: List[int] = []
+                        on_demand_error: Optional[str] = None
 
-                        for sample_idx, prompt_config in enumerate(self._sample_prompts):
-                            positive = prompt_config.get('positive', 'a beautiful landscape')
-                            condition_image_path = prompt_config.get('condition_image_path') or None
-                            reference_image_path = prompt_config.get('reference_image_path') or None
-                            actual_seed = self._resolve_sample_seed(sample_seed)
+                        try:
+                            for sample_idx, prompt_config in enumerate(self._sample_prompts):
+                                positive = prompt_config.get('positive', 'a beautiful landscape')
+                                condition_image_path = prompt_config.get('condition_image_path') or None
+                                reference_image_path = prompt_config.get('reference_image_path') or None
+                                if on_demand_request is None:
+                                    actual_seed = self._resolve_sample_seed(sample_seed)
+                                else:
+                                    # Concrete seed resolved when the request was created,
+                                    # but re-resolved here rather than trusted: the value
+                                    # came off disk and a negative one would reach the arch
+                                    # ops as generator=None and draw from the training RNG.
+                                    # Offset per prompt only when the run configured the
+                                    # random sentinel, matching what the scheduled block
+                                    # does (a fixed configured seed is shared by prompts).
+                                    try:
+                                        _req_seed = int(on_demand_request.get("seed", -1))
+                                    except (TypeError, ValueError):
+                                        _req_seed = -1
+                                    actual_seed = self._resolve_sample_seed(_req_seed)
+                                    if sample_seed < 0:
+                                        actual_seed = (actual_seed + sample_idx) % (2 ** 32)
 
-                            print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
-                            sample = self._dispatch_sample(
-                                positive,
-                                width=sample_width,
-                                height=sample_height,
-                                num_inference_steps=sample_steps,
-                                guidance_scale=sample_guidance_scale,
-                                seed=actual_seed,
-                                negative_prompt=prompt_config.get('negative', ''),
-                                reference_image_path=reference_image_path,
-                                condition_image_path=condition_image_path,
-                                current_step=global_step,
-                                sampler=sample_sampler,
-                                schedule_type=sample_schedule_type,
-                                cfg_schedule_type=sample_cfg_schedule_type,
-                                cfg_schedule_min=sample_cfg_schedule_min,
-                                cfg_schedule_max=sample_cfg_schedule_max,
-                                cfg_schedule_power=sample_cfg_schedule_power,
-                                cfg_rescale_snr_alpha=sample_cfg_rescale_snr_alpha,
-                                dynamic_threshold_percentile=sample_dynamic_threshold_percentile,
-                                dynamic_threshold_mimic_scale=sample_dynamic_threshold_mimic_scale,
-                                nag_enable=sample_nag_enable, nag_scale=sample_nag_scale,
-                                nag_tau=sample_nag_tau, nag_alpha=sample_nag_alpha,
-                                nag_sigma_end=sample_nag_sigma_end,
-                                nag_negative_prompt=sample_nag_negative_prompt,
-                                sensenova_timestep_shift=sensenova_sample_timestep_shift,
-                                sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
-                                sensenova_cfg_norm=sensenova_sample_cfg_norm,
-                            )
-                            # None => architecture can't sample yet; skip this prompt.
-                            if sample is None:
-                                continue
+                                print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
+                                sample = self._dispatch_sample(
+                                    positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=actual_seed,
+                                    negative_prompt=prompt_config.get('negative', ''),
+                                    reference_image_path=reference_image_path,
+                                    condition_image_path=condition_image_path,
+                                    current_step=global_step,
+                                    sampler=sample_sampler,
+                                    schedule_type=sample_schedule_type,
+                                    cfg_schedule_type=sample_cfg_schedule_type,
+                                    cfg_schedule_min=sample_cfg_schedule_min,
+                                    cfg_schedule_max=sample_cfg_schedule_max,
+                                    cfg_schedule_power=sample_cfg_schedule_power,
+                                    cfg_rescale_snr_alpha=sample_cfg_rescale_snr_alpha,
+                                    dynamic_threshold_percentile=sample_dynamic_threshold_percentile,
+                                    dynamic_threshold_mimic_scale=sample_dynamic_threshold_mimic_scale,
+                                    nag_enable=sample_nag_enable, nag_scale=sample_nag_scale,
+                                    nag_tau=sample_nag_tau, nag_alpha=sample_nag_alpha,
+                                    nag_sigma_end=sample_nag_sigma_end,
+                                    nag_negative_prompt=sample_nag_negative_prompt,
+                                    sensenova_timestep_shift=sensenova_sample_timestep_shift,
+                                    sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                                    sensenova_cfg_norm=sensenova_sample_cfg_norm,
+                                )
+                                # None => architecture can't sample yet; skip this prompt.
+                                if sample is None:
+                                    on_demand_error = (
+                                        f"the training-sample path for architecture "
+                                        f"'{getattr(getattr(self, 'arch', None), 'name', 'unknown')}' "
+                                        f"returned no image")
+                                    continue
 
-                            # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
-                            # Use sample_step (which accounts for MNT batch range) for consistent naming
-                            sample_path = self.output_dir / "samples" / f"step_{sample_step:06d}_sample_{sample_idx}.png"
-                            self._save_sample_with_metadata(
-                                sample,
-                                sample_path,
-                                prompt=positive,
-                                negative_prompt=prompt_config.get('negative', ''),
-                                steps=sample_steps,
-                                cfg_scale=sample_guidance_scale,
-                                seed=actual_seed,
-                                width=sample_width,
-                                height=sample_height,
-                                sampler=sample_sampler,
-                                schedule_type=sample_schedule_type,
-                                cfg_schedule_type=sample_cfg_schedule_type,
-                                cfg_schedule_min=sample_cfg_schedule_min,
-                                cfg_schedule_max=sample_cfg_schedule_max,
-                                cfg_schedule_power=sample_cfg_schedule_power,
-                                cfg_rescale_snr_alpha=sample_cfg_rescale_snr_alpha,
-                                dynamic_threshold_percentile=sample_dynamic_threshold_percentile,
-                                dynamic_threshold_mimic_scale=sample_dynamic_threshold_mimic_scale,
-                                nag_enable=sample_nag_enable, nag_scale=sample_nag_scale,
-                                nag_tau=sample_nag_tau, nag_alpha=sample_nag_alpha,
-                                nag_sigma_end=sample_nag_sigma_end,
-                                nag_negative_prompt=sample_nag_negative_prompt,
-                                sensenova_timestep_shift=sensenova_sample_timestep_shift,
-                                sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
-                                sensenova_cfg_norm=sensenova_sample_cfg_norm,
-                                condition_image_path=condition_image_path,
-                                reference_image_path=reference_image_path,
-                            )
-                            if sample_step == 0 and sample_idx == 0:
-                                self._mark_step0_sample_done()
-                            print(f"{self.log_prefix} Saved sample to {sample_path}")
+                                # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
+                                # Use sample_step (which accounts for MNT batch range) for consistent naming
+                                sample_name = sample_rpc.sample_filename(
+                                    sample_step, sample_idx, on_demand_id)
+                                sample_path = self.output_dir / "samples" / sample_name
+                                self._save_sample_with_metadata(
+                                    sample,
+                                    sample_path,
+                                    prompt=positive,
+                                    negative_prompt=prompt_config.get('negative', ''),
+                                    steps=sample_steps,
+                                    cfg_scale=sample_guidance_scale,
+                                    seed=actual_seed,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    sampler=sample_sampler,
+                                    schedule_type=sample_schedule_type,
+                                    cfg_schedule_type=sample_cfg_schedule_type,
+                                    cfg_schedule_min=sample_cfg_schedule_min,
+                                    cfg_schedule_max=sample_cfg_schedule_max,
+                                    cfg_schedule_power=sample_cfg_schedule_power,
+                                    cfg_rescale_snr_alpha=sample_cfg_rescale_snr_alpha,
+                                    dynamic_threshold_percentile=sample_dynamic_threshold_percentile,
+                                    dynamic_threshold_mimic_scale=sample_dynamic_threshold_mimic_scale,
+                                    nag_enable=sample_nag_enable, nag_scale=sample_nag_scale,
+                                    nag_tau=sample_nag_tau, nag_alpha=sample_nag_alpha,
+                                    nag_sigma_end=sample_nag_sigma_end,
+                                    nag_negative_prompt=sample_nag_negative_prompt,
+                                    sensenova_timestep_shift=sensenova_sample_timestep_shift,
+                                    sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
+                                    sensenova_cfg_norm=sensenova_sample_cfg_norm,
+                                    condition_image_path=condition_image_path,
+                                    reference_image_path=reference_image_path,
+                                )
+                                if on_demand_request is None and sample_step == 0 and sample_idx == 0:
+                                    self._mark_step0_sample_done()
+                                print(f"{self.log_prefix} Saved sample to {sample_path}")
+                                on_demand_files.append(sample_name)
+                                on_demand_seeds.append(actual_seed)
 
-                            # Log to TensorBoard
-                            image_tensor = torchvision.transforms.ToTensor()(sample)
-                            self.writer.add_image(f"samples/sample_{sample_idx}", image_tensor, global_step=sample_step)
+                                # Log to TensorBoard
+                                image_tensor = torchvision.transforms.ToTensor()(sample)
+                                self.writer.add_image(f"samples/sample_{sample_idx}", image_tensor, global_step=sample_step)
 
-                            # Free sample-related tensors
-                            del sample, image_tensor
+                                # Free sample-related tensors
+                                del sample, image_tensor
+                        except Exception as sample_err:
+                            # A scheduled sample has always been allowed to abort the run;
+                            # an on-demand one must not, or a button press could kill a
+                            # multi-hour run.
+                            if on_demand_id is None:
+                                raise
+                            on_demand_error = f"{type(sample_err).__name__}: {sample_err}"
+                            print(f"{self.log_prefix} WARNING: on-demand sample {on_demand_id} "
+                                  f"failed: {on_demand_error}")
+                        finally:
+                            # In a finally: claim_next_request already unlinked the request, so a
+                            # raise here would otherwise leave it neither pending nor resulted.
+                            if on_demand_id is not None:
+                                self._record_on_demand_sample_result(
+                                    on_demand_id, step=sample_step, files=on_demand_files,
+                                    seeds=on_demand_seeds, error=on_demand_error)
 
                         torch.cuda.empty_cache()
 

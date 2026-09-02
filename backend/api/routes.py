@@ -18019,6 +18019,150 @@ async def get_training_metrics_db(
         raise HTTPException(status_code=500, detail=f"Failed to read metrics from DB: {str(e)}")
 
 
+# ---------------------------------------------------------------------------
+# On-demand training samples ("sample now")
+# ---------------------------------------------------------------------------
+# File-RPC (core/training/training_sample_rpc), same shape as the preview RPC
+# but fire-and-forget: the trainer claims a request at its scheduled-sample
+# seam, which is at the end of the current batch and can be minutes away, so no
+# HTTP call waits for it.
+
+# Detection opens the checkpoint and lists its keys, which for a multi-GB
+# safetensors file is not something the 5s sample-queue poll may do on the event
+# loop while the machine is under training I/O. Keyed on identity, so replacing
+# the file re-detects.
+_SAMPLE_ARCH_CACHE: Dict[tuple, Optional[str]] = {}
+
+
+def _detect_arch_cached(base_model_path: str) -> Optional[str]:
+    from core.training.training_config import _detect_arch
+    try:
+        st = os.stat(base_model_path)
+        key = (base_model_path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (base_model_path, None, None)
+    if key not in _SAMPLE_ARCH_CACHE:
+        try:
+            _SAMPLE_ARCH_CACHE[key] = _detect_arch(base_model_path)
+        except Exception:
+            _SAMPLE_ARCH_CACHE[key] = None
+    return _SAMPLE_ARCH_CACHE[key]
+
+
+def _training_sample_support(run: "TrainingRun") -> tuple[Optional[str], Optional[str]]:
+    """(architecture, reason this run cannot sample at all)."""
+    from api.arch_capabilities import training_feature_unsupported_reason
+    if run.training_method == "vae_decoder":
+        return None, ("a VAE decoder fine-tune has no denoiser and no prompt to "
+                      "generate from; it produces no sample images at all")
+    arch = _detect_arch_cached(run.base_model_path)
+    reason = training_feature_unsupported_reason(
+        arch, "training_samples", run.training_method)
+    return arch, reason
+
+
+def _configured_sample_seed(run: "TrainingRun") -> Any:
+    """The run's configured `sample.seed`, or -1 when it cannot be read."""
+    if not run.config_yaml:
+        return -1
+    try:
+        import yaml as _yaml
+        cfg = _yaml.safe_load(run.config_yaml) or {}
+        process = (cfg.get("config", {}) or {}).get("process") or [{}]
+        return (process[0].get("sample") or {}).get("seed", -1)
+    except Exception:
+        return -1
+
+
+@router.post("/training/runs/{run_id}/sample", status_code=202)
+async def queue_training_sample(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """Queue an on-demand sample for a running training run.
+
+    Returns as soon as the request file is written. See openapi.yaml for the
+    latency and no-overrides contract.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_sample_rpc import (
+        MAX_PENDING_REQUESTS, SampleQueueFullError, list_pending_requests,
+        queue_request, resolve_seed,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    _arch, unsupported = _training_sample_support(run)
+    if unsupported:
+        raise HTTPException(status_code=400,
+                            detail=f"This run cannot generate samples: {unsupported}")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick "
+                   f"the request up")
+
+    try:
+        payload = queue_request(
+            proc.output_dir, run_id=int(run_id),
+            seed=resolve_seed(_configured_sample_seed(run)))
+    except SampleQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue sample request: {e}")
+
+    return {
+        "request_id": payload["request_id"],
+        "run_id": int(run_id),
+        "queued_at": payload["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "seed": payload["seed"],
+    }
+
+
+@router.get("/training/runs/{run_id}/sample-queue")
+async def get_training_sample_queue(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """Pending on-demand sample requests and recent results for a run."""
+    from core.training.training_process import training_process_manager
+    from core.training.training_sample_rpc import (
+        MAX_PENDING_REQUESTS, list_results, pending_requests,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    arch, unsupported = _training_sample_support(run)
+    proc = training_process_manager.processes.get(int(run_id))
+    output_dir = proc.output_dir if proc is not None else run.output_dir
+
+    return {
+        "run_id": int(run_id),
+        "is_running": bool(proc is not None and proc.is_running),
+        "architecture": arch,
+        "unsupported_reason": unsupported,
+        "max_pending": MAX_PENDING_REQUESTS,
+        "pending": [
+            {
+                "request_id": r.get("request_id"),
+                "queued_at": r.get("queued_at"),
+                "seed": r.get("seed"),
+            }
+            for r in pending_requests(output_dir, int(run_id))
+        ],
+        "results": list_results(output_dir, int(run_id)),
+    }
+
+
 @router.get("/training/runs/{run_id}/samples")
 async def get_training_samples(
     run_id: int,
@@ -18043,12 +18187,14 @@ async def get_training_samples(
     if not samples_dir.exists():
         return {"samples": []}
 
-    # Find all sample images: step_{step:06d}_sample_{i}.png
+    # Scheduled: step_{step:06d}_sample_{i}.png
+    # On-demand ("sample now"): the same plus _ondemand_{request_id}, so the two
+    # cannot overwrite each other at the same step.
     sample_files = list(samples_dir.glob("step_*_sample_*.png"))
 
     # Parse step numbers and organize
     samples_by_step = {}
-    pattern = re.compile(r"step_(\d+)_sample_(\d+)\.png")
+    pattern = re.compile(r"step_(\d+)_sample_(\d+)(?:_ondemand_([0-9a-fA-F]+))?\.png$")
 
     # Build sample file list using run.output_dir (not UserSettings.training_dir)
     for file in sample_files:
@@ -18056,6 +18202,7 @@ async def get_training_samples(
         if match:
             step = int(match.group(1))
             sample_idx = int(match.group(2))
+            request_id = match.group(3)
 
             if step not in samples_by_step:
                 samples_by_step[step] = []
@@ -18078,14 +18225,19 @@ async def get_training_samples(
                 "sample_index": sample_idx,
                 "path": path_url,
                 "params": img_params,
+                "on_demand": request_id is not None,
+                "request_id": request_id,
             })
 
-    # Sort by step and return
+    # Sort by step and return. Scheduled samples first within a step, so the
+    # settings panel keyed on images[0] keeps showing the scheduled one.
     samples = []
     for step in sorted(samples_by_step.keys()):
         samples.append({
             "step": step,
-            "images": sorted(samples_by_step[step], key=lambda x: x["sample_index"])
+            "images": sorted(samples_by_step[step],
+                             key=lambda x: (x["on_demand"], x["sample_index"],
+                                            x["path"]))
         })
 
     return {"samples": samples}

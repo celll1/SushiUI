@@ -5939,6 +5939,129 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/sample:
+    post:
+      tags: [training]
+      summary: Queue an on-demand sample for a running training run
+      description: |
+        Ask a running training run to render a sample now, instead of waiting
+        for the next `sample_every` step.
+
+        **Fire and forget.** The response is a 202 as soon as the request file is
+        written; it does not wait for the image. The trainer claims the request
+        at the end of the batch it is currently in, at exactly the point in the
+        loop where scheduled sampling happens, so the image is produced by the
+        same code as a scheduled one — same prompts, same size, same sampler,
+        same metadata, same TensorBoard write. A batch can take minutes, and the
+        request also waits out any dataset scan, bucketing and latent/text-encoder
+        caching still to come, because nothing is claimed before the first batch.
+
+        **No overrides.** Parameters come from the run's configured `sample:`
+        section. The only value resolved per request is the seed, and only when
+        the run configured the `-1` random sentinel.
+
+        **One per batch, three queued at most.** Each request runs a full
+        generation with training stalled, so the queue is capped and the trainer
+        takes at most one request per batch.
+
+        The image appears in `GET /training/runs/{run_id}/samples` under a
+        filename of the form `step_{step:06d}_sample_{i}_ondemand_{request_id}.png`,
+        which cannot collide with the scheduled `step_{step:06d}_sample_{i}.png`
+        at the same step.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '202':
+          description: Request queued. Not yet rendered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingSampleRequestAccepted'
+        '400':
+          description: |
+            This run cannot produce samples: its architecture's training-sample
+            path is not implemented, or its training method has no sample concept.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing, so nothing would claim the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The pending queue for this run is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The request file could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/sample-queue:
+    get:
+      tags: [training]
+      summary: Pending on-demand sample requests and recent results
+      description: |
+        Reads the run's output directory: requests queued but not yet claimed,
+        and the recorded outcome of the recent ones (including failures, which is
+        the only place an architecture returning no image is reported). Works for
+        a stopped run too — the files live on disk, not in the subprocess.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Queue state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingSampleQueueResponse'
+              example:
+                run_id: 112
+                is_running: true
+                architecture: sdxl
+                unsupported_reason: null
+                max_pending: 3
+                pending:
+                  - request_id: "9f1c2ab4d7e05613"
+                    queued_at: 1772500123.482
+                    seed: 3134081726
+                results:
+                  - request_id: "0ac31b77f9d24e80"
+                    ok: true
+                    step: 4210
+                    files: ["step_004210_sample_0_ondemand_0ac31b77f9d24e80.png"]
+                    seeds: [1188223401]
+                    architecture: sdxl
+                    error: null
+                    notes:
+                      - "On sdxl the training-sample helper returns a blank white image when generation fails, so a written PNG does not by itself establish success."
+                    completed_at: 1772500401.117
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /training/runs/{run_id}/samples/{filename}:
     get:
       tags: [training]
@@ -18243,6 +18366,172 @@ components:
           type: string
           description: Human-readable text, the same text the trainer wrote to its console.
           example: "max_grad_norm=1.0 is IGNORED under the fused backward pass. ..."
+
+    TrainingSampleRequestAccepted:
+      type: object
+      description: |
+        Acknowledgement of a queued on-demand sample request. The request has
+        been written to the run's output directory; it has NOT run yet.
+
+        The trainer claims it at the end of the batch it is currently in, at the
+        same point in the loop the scheduled `sample_every` sampling happens, so
+        the wait is however long the rest of the current batch takes — for a
+        large model or a large batch that can be minutes. Poll
+        `GET /training/runs/{run_id}/sample-queue` for the outcome and
+        `GET /training/runs/{run_id}/samples` for the image itself.
+      required: [request_id, run_id, queued_at, pending_count, max_pending, seed]
+      properties:
+        request_id:
+          type: string
+          description: Identifier of this request; also appears in the sample's filename.
+          example: "9f1c2ab4d7e05613"
+        run_id:
+          type: integer
+          example: 112
+        queued_at:
+          type: number
+          format: double
+          description: Unix timestamp at which the request file was written.
+          example: 1772500123.482
+        pending_count:
+          type: integer
+          description: Number of requests queued for this run including this one.
+          example: 1
+        max_pending:
+          type: integer
+          description: |
+            Queue cap. A further request past this is refused with 429: each one
+            runs a full generation with training stalled.
+          example: 3
+        seed:
+          type: integer
+          description: |
+            The concrete seed resolved for this request. Never `-1`: the random
+            sentinel reaches some architectures as `generator=None`, which draws
+            from the global torch RNG and would perturb the training stream, so
+            it is resolved in the API process instead.
+          example: 3134081726
+      example:
+        request_id: "9f1c2ab4d7e05613"
+        run_id: 112
+        queued_at: 1772500123.482
+        pending_count: 1
+        max_pending: 3
+        seed: 3134081726
+
+    TrainingSampleQueueItem:
+      type: object
+      description: One request the trainer has not claimed yet.
+      properties:
+        request_id:
+          type: string
+          example: "9f1c2ab4d7e05613"
+        queued_at:
+          type: number
+          format: double
+          example: 1772500123.482
+        seed:
+          type: integer
+          example: 3134081726
+
+    TrainingSampleResult:
+      type: object
+      description: |
+        The outcome of one on-demand sample request, recorded by the trainer.
+        Kept only for the most recent requests of the current run and cleared
+        when a run is started.
+      properties:
+        request_id:
+          type: string
+          example: "9f1c2ab4d7e05613"
+        ok:
+          type: boolean
+          description: True when at least one image was written and no prompt failed.
+          example: true
+        step:
+          type: integer
+          description: The `global_step` the sample was generated at.
+          example: 4210
+        files:
+          type: array
+          description: |
+            Filenames written under `<output_dir>/samples/`, in prompt order.
+            Servable through `GET /training/runs/{run_id}/samples/{filename}`.
+          items:
+            type: string
+          example: ["step_004210_sample_0_ondemand_9f1c2ab4d7e05613.png"]
+        seeds:
+          type: array
+          items:
+            type: integer
+          example: [3134081726]
+        architecture:
+          type: string
+          nullable: true
+          example: sdxl
+        error:
+          type: string
+          nullable: true
+          description: |
+            Set when the architecture's sample dispatch returned no image (the
+            three architectures whose training-sample path is not implemented
+            return None, and the run continues).
+          example: null
+        notes:
+          type: array
+          description: |
+            Factual qualifications about this result. On `sd15` and `sdxl` the
+            training-sample helper returns a blank white image instead of
+            raising when generation fails, so a written PNG does not by itself
+            establish success; that is stated here.
+          items:
+            type: string
+          example: []
+        completed_at:
+          type: number
+          format: double
+          example: 1772500401.117
+
+    TrainingSampleQueueResponse:
+      type: object
+      description: Pending on-demand sample requests and recent results for a run.
+      required: [run_id, max_pending, pending, results]
+      properties:
+        run_id:
+          type: integer
+          example: 112
+        is_running:
+          type: boolean
+          description: Whether a trainer subprocess is alive to service requests.
+          example: true
+        architecture:
+          type: string
+          nullable: true
+          description: |
+            The architecture detected from the run's `base_model_path`, so a
+            client can resolve the same `training_samples` capability refusal the
+            POST enforces.
+          example: sdxl
+        unsupported_reason:
+          type: string
+          nullable: true
+          description: |
+            Why this run cannot produce samples at all, or null. Non-null for the
+            architectures whose training-sample path is not implemented, and for
+            the `vae_decoder` training method, which has no denoiser or prompt.
+          example: null
+        max_pending:
+          type: integer
+          example: 3
+        pending:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrainingSampleQueueItem'
+        results:
+          type: array
+          description: Most recent first.
+          items:
+            $ref: '#/components/schemas/TrainingSampleResult'
 
     GpuStatsEntry:
       type: object

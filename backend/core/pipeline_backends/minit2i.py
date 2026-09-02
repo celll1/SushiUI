@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -77,7 +78,7 @@ class MiniT2IMixin:
 
         MiniT2I applies LoRA in place to BOTH the transformer and (when TE-LoRA
         keys are present) the text encoder -- see _load_lora_minit2i /
-        _unload_lora_minit2i -- so both are gated off whenever any LoRA is
+        _apply_te_lora_minit2i -- so both are gated off whenever any LoRA is
         requested (the reference's "no LoRA" hazard, extended here to the TE for
         the same in-place-mutation reason: a resident TE would carry a stale
         LoRA-wrapped state into the next generation). The transformer is
@@ -526,57 +527,207 @@ class MiniT2IMixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
-        from core.models.minit2i.minit2i_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
-            apply_te_lora_group, TE_NAMESPACE,
-        )
-        from core.extensions.lora_manager import lora_manager
-        if not lora_configs or not self.minit2i_components:
-            return 0
-        transformer = self.minit2i_components["transformer"]
-        text_encoder = self.minit2i_components.get("text_encoder")
+    @staticmethod
+    def _minit2i_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _minit2i_lora_state(self, transformer, text_encoder):
+        """The shared (originals, wrapped_keys) maps, minus any reloaded component's
+        entries.
+
+        Transformer keys are bare module paths and text-encoder keys carry
+        TE_NAMESPACE, so each component's half is dropped independently. Keyed by
+        weakref rather than id(), which is reusable after a free: a map that outlived
+        its model would have restore_originals graft the old model's Linears into the
+        new one, undetectably, since the shapes match.
+        """
+        from core.models.minit2i.minit2i_lora import TE_NAMESPACE
         if not hasattr(self, "_minit2i_lora_orig"):
             self._minit2i_lora_orig: Dict[str, torch.nn.Module] = {}
             self._minit2i_lora_keys: set = set()
-        total = 0
-        for i, cfg in enumerate(lora_configs):
+
+        def reloaded(attr, module):
+            ref = getattr(self, attr, None)
+            if module is not None and ref is not None and ref() is module:
+                return False
+            setattr(self, attr, weakref.ref(module) if module is not None else None)
+            return True
+
+        drop_tf = reloaded("_minit2i_lora_transformer_ref", transformer)
+        drop_te = reloaded("_minit2i_lora_te_ref", text_encoder)
+        if drop_tf or drop_te:
+            stale = {k for k in (self._minit2i_lora_keys | set(self._minit2i_lora_orig))
+                     if (drop_te if k.startswith(TE_NAMESPACE) else drop_tf)}
+            self._minit2i_lora_keys -= stale
+            for key in stale:
+                self._minit2i_lora_orig.pop(key, None)
+        return self._minit2i_lora_orig, self._minit2i_lora_keys
+
+    def _minit2i_prepare_loras(self, lora_configs: List[Dict]) -> List[Dict]:
+        """Resolve and parse every requested LoRA, before any of it is applied.
+
+        MiniT2I wraps in two places at two different times -- the text encoder BEFORE
+        _minit2i_encode, the transformer after it is staged -- so each file is read
+        once here and the parsed groups are carried across both passes. A missing or
+        unreadable file refuses the generation here, with nothing yet wrapped.
+        """
+        import os
+        from core.models.minit2i.minit2i_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, alpha_from_metadata,
+            TE_NAMESPACE,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        components = self.minit2i_components or {}
+        # Unconditional, and BEFORE the empty-config exit: bookkeeping that outlived a
+        # model reload would splice the previous model's Linears into this one.
+        self._minit2i_lora_state(components.get("transformer"), components.get("text_encoder"))
+        if not lora_configs or not components:
+            return []
+
+        prepared: List[Dict] = []
+        for cfg in lora_configs:
             lora_path = cfg.get("path", "")
-            strength = float(cfg.get("strength", 1.0))
+            lora_file = os.path.basename(str(lora_path))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                print(f"[MiniT2I LoRA] WARNING: file not found: {lora_path}")
-                continue
+                message = f"MiniT2I LoRA '{lora_file}' not found in any configured LoRA directory"
+                print(f"[MiniT2I LoRA] ERROR: {message}")
+                self._minit2i_lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
             try:
-                raw, fmt = load_lora_safetensors(str(resolved))
+                raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
-                # Transformer LoRA (lora_unet_) and TE LoRA (lora_te_) auto-route by key.
-                applied = apply_lora_group(transformer, grouped, strength,
-                                           self._minit2i_lora_orig, self._minit2i_lora_keys)
-                applied_te = 0
-                has_te_keys = any(k.startswith(TE_NAMESPACE) for k in grouped)
-                if has_te_keys and text_encoder is not None:
-                    applied_te = apply_te_lora_group(text_encoder, grouped, strength,
-                                                     self._minit2i_lora_orig, self._minit2i_lora_keys)
-                elif has_te_keys:
-                    print(f"[MiniT2I LoRA] WARNING: {lora_path} has TE-LoRA keys but no text encoder is loaded; "
-                          f"TE-LoRA skipped")
-                print(f"[MiniT2I LoRA] {i+1}/{len(lora_configs)}: {lora_path} fmt={fmt} "
-                      f"matched={len(grouped)} wrapped(transformer)={applied} wrapped(te)={applied_te} "
-                      f"strength={strength}")
-                total += applied + applied_te
             except Exception as e:
-                print(f"[MiniT2I LoRA] ERROR loading {lora_path}: {e}")
+                print(f"[MiniT2I LoRA] ERROR loading {lora_file}: {e}")
                 import traceback; traceback.print_exc()
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"MiniT2I LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._minit2i_lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
+            prepared.append({
+                "file": lora_file,
+                "strength": float(cfg.get("strength", 1.0)),
+                "fmt": fmt,
+                "grouped": grouped,
+                "alpha": alpha_from_metadata(metadata),
+                "sample_keys": list(raw.keys())[:5],
+                "te_pairs": sum(1 for k in grouped if k.startswith(TE_NAMESPACE)),
+                "applied_te": 0,
+                "occupied_te": 0,
+            })
+        return prepared
+
+    def _apply_te_lora_minit2i(self, prepared: List[Dict]) -> int:
+        """Wrap the text encoder for every prepared LoRA carrying lora_te_ keys.
+
+        MUST run BEFORE _minit2i_encode: the embeddings are produced there and never
+        recomputed, so a TE wrapper installed after it would report a count and change
+        nothing. The per-file verdict is deferred to _load_lora_minit2i, which sees
+        both halves.
+        """
+        from core.models.minit2i.minit2i_lora import apply_te_lora_group
+        components = self.minit2i_components or {}
+        text_encoder = components.get("text_encoder")
+        originals, keys = self._minit2i_lora_state(
+            components.get("transformer"), text_encoder)
+        total = 0
+        for entry in prepared:
+            if not entry["te_pairs"]:
+                continue
+            if text_encoder is None:
+                print(f"[MiniT2I LoRA] WARNING: {entry['file']} has TE-LoRA keys but no text "
+                      f"encoder is loaded; TE-LoRA skipped")
+                continue
+            applied, occupied = apply_te_lora_group(
+                text_encoder, entry["grouped"], entry["strength"], originals, keys,
+                default_alpha=entry["alpha"])
+            entry["applied_te"], entry["occupied_te"] = applied, occupied
+            print(f"[MiniT2I LoRA] {entry['file']}: wrapped(te)={applied} of "
+                  f"{entry['te_pairs']} TE pair(s)")
+            total += applied
+        return total
+
+    def _load_lora_minit2i(self, prepared: List[Dict]) -> int:
+        """Wrap the transformer, then pass the per-file verdict on BOTH halves.
+
+        Takes _minit2i_prepare_loras' output, whose text-encoder half
+        _apply_te_lora_minit2i has already applied. A LoRA that matches no target
+        module at all must not produce a successful generation of the base model's
+        image, so that raises; survivable degradations (some of the file's modules
+        unmatched, or held by an earlier LoRA) are reported through add_warning.
+        """
+        from core.models.minit2i.minit2i_lora import apply_lora_group
+        components = self.minit2i_components or {}
+        transformer = components.get("transformer")
+        originals, keys = self._minit2i_lora_state(
+            transformer, components.get("text_encoder"))
+        if not prepared:
+            return 0
+        if transformer is None:
+            raise RuntimeError("MiniT2I LoRA requested but no transformer is loaded.")
+        total = 0
+        for i, entry in enumerate(prepared):
+            lora_file = entry["file"]
+            grouped = entry["grouped"]
+            fmt = entry["fmt"]
+            applied, occupied = apply_lora_group(
+                transformer, grouped, entry["strength"], originals, keys,
+                default_alpha=entry["alpha"])
+            print(f"[MiniT2I LoRA] {i+1}/{len(prepared)}: {lora_file} fmt={fmt} "
+                  f"matched={len(grouped)} wrapped(transformer)={applied} "
+                  f"wrapped(te)={entry['applied_te']} strength={entry['strength']}")
+
+            applied_all = applied + entry["applied_te"]
+            occupied_all = occupied + entry["occupied_te"]
+            if applied_all == 0:
+                if occupied_all:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {occupied_all} target modules is "
+                        f"already wrapped by an earlier LoRA in this request. MiniT2I applies one "
+                        f"LoRA per target; select a single MiniT2I LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
+                        f"loaded MiniT2I model (format={fmt}) -- unrecognized key format or a "
+                        f"different model. Sample keys in file: {entry['sample_keys']}"
+                    )
+                    code = "lora_incompatible"
+                print(f"[MiniT2I LoRA] ERROR: {message}")
+                self._minit2i_lora_warn(message, code=code)
+                raise RuntimeError(message)
+
+            if applied_all + occupied_all < len(grouped) or occupied_all:
+                self._minit2i_lora_warn(
+                    f"LoRA '{lora_file}': applied {applied_all} of {len(grouped)} down/up pairs "
+                    f"({occupied_all} already wrapped by an earlier LoRA, "
+                    f"{len(grouped) - applied_all - occupied_all} matched no target module).",
+                    code="lora_partial",
+                )
+            total += applied_all
         return total
 
     def _unload_lora_minit2i(self) -> int:
         from core.models.minit2i.minit2i_lora import restore_originals
-        if not self.minit2i_components or not getattr(self, "_minit2i_lora_keys", None):
+        components = self.minit2i_components or {}
+        transformer = components.get("transformer")
+        text_encoder = components.get("text_encoder")
+        # Same guard as the load path: maps that outlived their component must be
+        # dropped, not restored into whatever now sits at the same module paths.
+        originals, keys = self._minit2i_lora_state(transformer, text_encoder)
+        if transformer is None or not keys:
             return 0
         restored = restore_originals(
-            self.minit2i_components["transformer"], self._minit2i_lora_orig, self._minit2i_lora_keys,
-            text_encoder=self.minit2i_components.get("text_encoder"),
+            transformer, originals, keys, text_encoder=text_encoder,
         )
         if restored:
             print(f"[MiniT2I LoRA] Unloaded {restored} LoRA wrappers")
@@ -638,12 +789,16 @@ class MiniT2IMixin:
             self._minit2i_kh_setup(params)
         _kh_gen_succeeded = False
         try:
+            # The text-encoder half goes on BEFORE the encode below, which produces the
+            # embeddings once: a TE wrapper installed after it would change nothing.
+            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
+            self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
                 nag_negative_prompt=params.get("nag_negative_prompt"),
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
-            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
             style_active = style_cfg is not None or style_refs is not None
@@ -717,6 +872,10 @@ class MiniT2IMixin:
             self._minit2i_kh_setup(params)
         _kh_gen_succeeded = False
         try:
+            # The text-encoder half goes on BEFORE the encode below, which produces the
+            # embeddings once: a TE wrapper installed after it would change nothing.
+            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
+            self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
                 nag_negative_prompt=params.get("nag_negative_prompt"),
@@ -736,7 +895,7 @@ class MiniT2IMixin:
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
-            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
             style_active = style_cfg is not None or style_refs is not None
@@ -794,6 +953,10 @@ class MiniT2IMixin:
             self._minit2i_kh_setup(params)
         _kh_gen_succeeded = False
         try:
+            # The text-encoder half goes on BEFORE the encode below, which produces the
+            # embeddings once: a TE wrapper installed after it would change nothing.
+            prepared_loras = self._minit2i_prepare_loras(params.get("loras") or [])
+            self._apply_te_lora_minit2i(prepared_loras)
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
                 nag_negative_prompt=params.get("nag_negative_prompt"),
@@ -816,7 +979,7 @@ class MiniT2IMixin:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
-            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
             style_active = style_cfg is not None or style_refs is not None

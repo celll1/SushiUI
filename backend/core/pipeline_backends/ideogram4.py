@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -74,6 +75,38 @@ def set_ideogram4_attention_backend(transformer, uncond_transformer, backend: st
 class Ideogram4Mixin:
     """Ideogram4Mixin: ideogram4 backend methods extracted verbatim from pipeline.py."""
 
+    @staticmethod
+    def _ideogram4_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _ideogram4_lora_state(self, transformer, uncond):
+        """The (originals, wrapped_keys) maps for THESE transformers, per branch.
+
+        A branch's maps are reset when that branch's model was reloaded: they hold
+        the OLD module objects, ``restore_originals`` grafts by module path, and the
+        shapes match, so they would be spliced into the new model unnoticed. Keyed by
+        weakref rather than id(), which is reusable after a free.
+        """
+        ref = getattr(self, "_ideogram4_lora_transformer_ref", None)
+        if transformer is None or ref is None or ref() is not transformer:
+            self._ideogram4_lora_orig: Dict[str, torch.nn.Module] = {}
+            self._ideogram4_lora_keys: set = set()
+            self._ideogram4_lora_transformer_ref = (
+                weakref.ref(transformer) if transformer is not None else None)
+        ref_u = getattr(self, "_ideogram4_lora_uncond_ref", None)
+        if uncond is None or ref_u is None or ref_u() is not uncond:
+            self._ideogram4_lora_orig_uncond: Dict[str, torch.nn.Module] = {}
+            self._ideogram4_lora_keys_uncond: set = set()
+            self._ideogram4_lora_uncond_ref = (
+                weakref.ref(uncond) if uncond is not None else None)
+        return (self._ideogram4_lora_orig, self._ideogram4_lora_keys,
+                self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond)
+
     def _load_lora_ideogram4(self, lora_configs: List[Dict]) -> int:
         """Wrap Ideogram 4 transformer Linear/Fp8Linear modules with LoRA adapters.
 
@@ -81,72 +114,128 @@ class Ideogram4Mixin:
         also carries unconditional-branch keys (lora_uncond_*) and the
         unconditional transformer is loaded, those are applied to it too.
         Must be called after the transformer(s) are staged on GPU.
+
+        A LoRA that is missing, unreadable, or matches no target module REFUSES
+        the generation rather than returning the base model's image as a success;
+        survivable degradations are reported through add_warning.
         """
+        import os
         from core.models.ideogram4.ideogram4_lora import (
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            alpha_from_metadata,
         )
         from core.extensions.lora_manager import lora_manager
 
-        if not lora_configs or not self.ideogram4_components:
-            return 0
+        components = self.ideogram4_components or {}
+        transformer = components.get("transformer")
+        uncond = components.get("unconditional_transformer")
+        # Unconditional, and BEFORE the empty-config exit: bookkeeping that outlived
+        # a model reload would splice the previous model's Linears into this one.
+        originals, keys, originals_u, keys_u = self._ideogram4_lora_state(transformer, uncond)
 
-        transformer = self.ideogram4_components["transformer"]
-        uncond = self.ideogram4_components.get("unconditional_transformer")
-        if not hasattr(self, "_ideogram4_lora_orig"):
-            self._ideogram4_lora_orig: Dict[str, torch.nn.Module] = {}
-            self._ideogram4_lora_keys: set = set()
-            self._ideogram4_lora_orig_uncond: Dict[str, torch.nn.Module] = {}
-            self._ideogram4_lora_keys_uncond: set = set()
+        if not lora_configs or transformer is None:
+            return 0
 
         total = 0
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
+            lora_file = os.path.basename(str(lora_path))
             strength = float(cfg.get("strength", 1.0))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                print(f"[Ideogram4 LoRA] WARNING: file not found: {lora_path}")
-                continue
+                message = f"Ideogram 4 LoRA '{lora_file}' not found in any configured LoRA directory"
+                print(f"[Ideogram4 LoRA] ERROR: {message}")
+                self._ideogram4_lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
             try:
-                raw, fmt = load_lora_safetensors(str(resolved))
+                raw, fmt, metadata = load_lora_safetensors(str(resolved))
+                default_alpha = alpha_from_metadata(metadata)
                 grouped = normalise_lora_state_dict(raw, branch="cond")
-                applied = apply_lora_group(
-                    transformer, grouped, strength,
-                    self._ideogram4_lora_orig, self._ideogram4_lora_keys,
+                grouped_u = normalise_lora_state_dict(raw, branch="uncond")
+                applied, occupied = apply_lora_group(
+                    transformer, grouped, strength, originals, keys,
+                    default_alpha=default_alpha,
                 )
-                print(f"[Ideogram4 LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                print(f"[Ideogram4 LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                       f"format={fmt} cond_modules={len(grouped)} wrapped={applied} strength={strength}")
-                total += applied
 
-                if uncond is not None:
-                    grouped_u = normalise_lora_state_dict(raw, branch="uncond")
-                    if grouped_u:
-                        applied_u = apply_lora_group(
-                            uncond, grouped_u, strength,
-                            self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond,
-                        )
-                        print(f"[Ideogram4 LoRA]   uncond wrapped {applied_u} module(s)")
-                        total += applied_u
+                applied_u = occupied_u = 0
+                if grouped_u and uncond is not None:
+                    applied_u, occupied_u = apply_lora_group(
+                        uncond, grouped_u, strength, originals_u, keys_u,
+                        default_alpha=default_alpha,
+                    )
+                    print(f"[Ideogram4 LoRA]   uncond wrapped {applied_u} module(s)")
+                elif grouped_u:
+                    print(f"[Ideogram4 LoRA]   WARNING: {lora_file} carries {len(grouped_u)} "
+                          f"unconditional-branch module(s) but no unconditional transformer "
+                          f"is loaded; those are skipped")
             except Exception as e:
-                print(f"[Ideogram4 LoRA] ERROR loading {lora_path}: {e}")
+                print(f"[Ideogram4 LoRA] ERROR loading {lora_file}: {e}")
                 import traceback; traceback.print_exc()
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"Ideogram 4 LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._ideogram4_lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
+
+            pairs = len(grouped) + len(grouped_u)
+            applied_all = applied + applied_u
+            occupied_all = occupied + occupied_u
+            if applied_all == 0:
+                if occupied_all:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {occupied_all} target modules is "
+                        f"already wrapped by an earlier LoRA in this request. Ideogram 4 applies "
+                        f"one LoRA per target; select a single Ideogram 4 LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                elif grouped_u and not grouped and uncond is None:
+                    # Every pair it carries is unconditional-branch, and this model has
+                    # no unconditional transformer: the keys were recognized, so the
+                    # generic "different model" wording would be wrong.
+                    message = (
+                        f"LoRA '{lora_file}': all {len(grouped_u)} of its down/up pairs target "
+                        f"the unconditional branch, and no unconditional Ideogram 4 transformer "
+                        f"is loaded, so none of them could be applied."
+                    )
+                    code = "lora_uncond_unavailable"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {pairs} down/up pairs applied to the loaded "
+                        f"Ideogram 4 transformer (format={fmt}) -- unrecognized key format or a "
+                        f"different model. Sample keys in file: {list(raw.keys())[:5]}"
+                    )
+                    code = "lora_incompatible"
+                print(f"[Ideogram4 LoRA] ERROR: {message}")
+                self._ideogram4_lora_warn(message, code=code)
+                raise RuntimeError(message)
+
+            if applied_all + occupied_all < pairs or occupied_all:
+                self._ideogram4_lora_warn(
+                    f"LoRA '{lora_file}': applied {applied_all} of {pairs} down/up pairs "
+                    f"({occupied_all} already wrapped by an earlier LoRA, "
+                    f"{pairs - applied_all - occupied_all} matched no target module).",
+                    code="lora_partial",
+                )
+            total += applied_all
         return total
 
     def _unload_lora_ideogram4(self) -> int:
         """Restore every Ideogram 4 transformer Linear to its pre-LoRA original."""
         from core.models.ideogram4.ideogram4_lora import restore_originals
-        if not self.ideogram4_components:
-            return 0
+        components = self.ideogram4_components or {}
+        transformer = components.get("transformer")
+        uncond = components.get("unconditional_transformer")
+        # Same guard as the load path: maps that outlived their model must be dropped,
+        # not restored into whatever now sits at the same module paths.
+        originals, keys, originals_u, keys_u = self._ideogram4_lora_state(transformer, uncond)
         restored = 0
-        if getattr(self, "_ideogram4_lora_keys", None):
-            restored += restore_originals(
-                self.ideogram4_components["transformer"],
-                self._ideogram4_lora_orig, self._ideogram4_lora_keys,
-            )
-        uncond = self.ideogram4_components.get("unconditional_transformer")
-        if uncond is not None and getattr(self, "_ideogram4_lora_keys_uncond", None):
-            restored += restore_originals(
-                uncond, self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond,
-            )
+        if transformer is not None and keys:
+            restored += restore_originals(transformer, originals, keys)
+        if uncond is not None and keys_u:
+            restored += restore_originals(uncond, originals_u, keys_u)
         if restored:
             print(f"[Ideogram4 LoRA] Unloaded {restored} LoRA wrappers")
         return restored
@@ -698,6 +787,14 @@ class Ideogram4Mixin:
         ``keep_transformer`` gates offloading BOTH.
         """
         from core.keep_hot import mark_resident, discard_resident, clear_resident
+
+        # LoRA unwrap belongs HERE, not only in the denoise finally: the wrappers
+        # are installed before NAG/NegPip/style setup, so an exception in any of
+        # those would otherwise carry them into the NEXT generation.
+        try:
+            self._unload_lora_ideogram4()
+        except Exception:
+            pass
 
         # Strip any leftover block-swap offloaders (e.g. if setup raised mid-way).
         for _comp in ("transformer", "unconditional_transformer"):

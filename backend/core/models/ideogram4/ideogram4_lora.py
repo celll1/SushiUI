@@ -119,10 +119,11 @@ def normalise_lora_state_dict(
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
-    """Load a LoRA safetensors file → (raw_state_dict, format_label)."""
+def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
+    """Load a LoRA safetensors file → (raw_state_dict, format_label, metadata)."""
     raw: Dict[str, torch.Tensor] = {}
     with safe_open(path, framework="pt", device="cpu") as f:
+        metadata = dict(f.metadata() or {})
         for k in f.keys():
             raw[k] = f.get_tensor(k)
     n_sd = sum(1 for k in raw if k.startswith("lora_unet_") or k.startswith("lora_uncond_"))
@@ -130,7 +131,27 @@ def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
     fmt = "sd-scripts" if n_sd >= n_ix else "interchange"
     if n_sd == 0 and n_ix == 0:
         fmt = "unknown"
-    return raw, fmt
+    return raw, fmt, metadata
+
+
+def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:
+    """File-level LoRA alpha, or None.
+
+    Second rung of the precedence per-key ``.alpha`` tensor -> file metadata ->
+    rank. Without it a trainer that records alpha only in metadata (kohya's
+    ``ss_network_alpha``) silently applies at scale 1.0 instead of alpha/rank.
+    """
+    if not metadata:
+        return None
+    for key in ("lora_alpha", "ss_network_alpha"):
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -249,27 +270,46 @@ def apply_lora_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
-) -> int:
-    """Wrap matching modules with LoRALinearLayer (stackable, reversible)."""
+    default_alpha: Optional[float] = None,
+) -> Tuple[int, int]:
+    """Wrap matching modules with LoRALinearLayer -> (applied, already_wrapped).
+
+    ``default_alpha`` is the file-metadata alpha used for a module with no
+    per-key ``.alpha`` tensor (see alpha_from_metadata).
+
+    A target already wrapped by an earlier LoRA is counted, not re-wrapped:
+    LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The
+    caller turns the count into a refusal or a warning.
+    """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0
+    occupied = 0
 
     for module_path, parent, attr, linear in iter_ideogram4_lora_targets(transformer, effective_scope):
         weights = grouped.get(module_path)
         if weights is None:
             continue
 
+        if isinstance(linear, LoRALinearLayer):
+            occupied += 1
+            continue
+
         down = weights["down"]
         up = weights["up"]
         alpha_tensor = weights.get("alpha")
 
-        true_original = linear.original_module if isinstance(linear, LoRALinearLayer) else linear
+        true_original = linear
         lora_original_modules.setdefault(module_path, true_original)
 
         rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
+        if alpha_tensor is not None:
+            alpha_value = float(alpha_tensor.item())
+        elif default_alpha is not None:
+            alpha_value = float(default_alpha)
+        else:
+            alpha_value = float(rank)
 
         wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
         device = true_original.weight.device
@@ -294,7 +334,7 @@ def apply_lora_group(
         wrapped_keys.add(module_path)
         applied += 1
 
-    return applied
+    return applied, occupied
 
 
 def restore_originals(
@@ -302,11 +342,21 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original."""
+    """Revert every wrapped module to its pre-LoRA original.
+
+    Restores only paths this session actually wrapped, and drops their
+    bookkeeping afterwards: a surviving ``lora_original_modules`` entry would be
+    written into the NEXT model loaded at the same path, i.e. one model's
+    Linear installed into another.
+    """
     restored = 0
+    restored_keys: Set[str] = set()
     for module_path, parent, attr, _linear in iter_ideogram4_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in lora_original_modules:
+        if module_path in wrapped_keys and module_path in lora_original_modules:
             _set_module(parent, attr, lora_original_modules[module_path])
+            restored_keys.add(module_path)
             restored += 1
-    wrapped_keys.clear()
+    for key in restored_keys:
+        lora_original_modules.pop(key, None)
+    wrapped_keys -= restored_keys
     return restored

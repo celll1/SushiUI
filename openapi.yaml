@@ -9760,9 +9760,6 @@ components:
                     enum: [lora, relora, full_finetune, controlnet]
           example:
             sensenova:
-              batch_size:
-                value: 1
-                reason: "SenseNova training runs at physical batch 1; under LoRA use gradient_accumulation_steps for a larger effective batch"
               optimizer:
                 value: adafactor
                 reason: "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half"

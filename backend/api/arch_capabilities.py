@@ -1170,9 +1170,6 @@ _add_training_feature_unsupported(
 # which is why they are declared -- an overwritten control is a user choice the
 # run drops without saying so. None of them is a recommendation.
 _add_training_required_value(
-    "sensenova", "batch_size", 1,
-    "SenseNova training runs at physical batch 1; under LoRA use gradient_accumulation_steps for a larger effective batch")
-_add_training_required_value(
     "sensenova", "optimizer", "adafactor",
     "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half. Adafactor meets both unconditionally (0.002991 B/param, factored second moment). The two ring-buffer optimizers meet the second one only with optimizer_state_host_resident, which moves their 8-bit state to pinned host memory (measured 2.0 B/param for AdamW, 1.0 for Lion, i.e. 30.19 / 15.09 GiB pinned over both MoT halves) and leaves absmax on the GPU; without it they allocate a measured 2.031250 / 1.015625 B/param of GPU state (32.9 / 16.5 GB over both halves) beside the materialized bf16 weights, and the run is refused before the checkpoint loads. No step-wall comparison between them has been measured on this route",
     methods=["full_finetune"],

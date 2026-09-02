@@ -5,11 +5,14 @@ Companion to the image-side plumbing tests (`attention_type_validation_test.py`,
 drops a site fails loudly instead of silently regressing to `lora_names=None`
 or a dropped `params["loras"]`.
 
-Backend application already existed for MiniMax-H3
-(`core.models.minimax_h3.minimax_h3_lora` + `MiniMaxH3Mixin._load_lora_minimax_h3`,
-hooked into `_generate_minimax_h3`, which every one of that architecture's five
-video entry points routes through). This test proves the KEY actually reaches
-that code and the gallery row, on all five video routes:
+Both video architectures apply the key in their own backend: MiniMax-H3 via
+`core.models.minimax_h3.minimax_h3_lora` + `MiniMaxH3Mixin._load_lora_minimax_h3`
+(hooked into `_generate_minimax_h3`, which all five of that architecture's video
+entry points route through), and LTX-2.3 via `core.models.ltx2.ltx2_lora` +
+`LTX2Mixin._load_lora_ltx2` (hooked into each of the three video entry points
+LTX-2.3 has; ref2vid and temporal inpaint are MiniMax-H3-only mechanisms and
+refuse for LTX-2.3 before any LoRA is consulted). This test proves the KEY
+actually reaches that code and the gallery row, on all five video routes:
 
     POST /generate/txt2vid
     POST /generate/img2vid
@@ -171,8 +174,9 @@ class VideoRouteLoraPlumbingTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 4. arch_capabilities.py: LTX-2.3 (no video LoRA loader) is warned when
-#    `loras` is non-empty; MiniMax-H3 (has the loader) is not gated.
+# 4. arch_capabilities.py: neither video architecture gates `loras` -- both
+#    have a real generation-side loader, so a correct request must not be told
+#    its LoRA was ignored.
 # ---------------------------------------------------------------------------
 class ArchCapabilitiesLoraTest(unittest.TestCase):
     def test_lora_feature_is_declared(self):
@@ -181,26 +185,24 @@ class ArchCapabilitiesLoraTest(unittest.TestCase):
         self.assertEqual(FEATURE_PARAMS.get("lora"), ["loras"])
         self.assertIn("lora", FEATURE_LABELS)
 
-    def test_ltx2_is_unsupported_and_minimax_h3_is_not(self):
+    def test_neither_video_arch_declares_lora_unsupported(self):
         from api.arch_capabilities import ARCH_UNSUPPORTED
 
-        self.assertIn("lora", ARCH_UNSUPPORTED.get("ltx2", {}))
-        self.assertNotIn("lora", ARCH_UNSUPPORTED.get("minimax_h3", {}))
+        for arch in ("ltx2", "minimax_h3"):
+            with self.subTest(arch=arch):
+                self.assertNotIn("lora", ARCH_UNSUPPORTED.get(arch, {}))
 
-    def test_non_empty_loras_warns_only_on_ltx2(self):
+    def test_non_empty_loras_warns_on_neither_video_arch(self):
         from api.arch_capabilities import check_arch_capabilities
 
         params = {"loras": [{"path": "x.safetensors", "strength": 1.0}]}
-        ltx2_warnings = check_arch_capabilities(params, "ltx2", defaults=TXT2VID_DEFAULTS)
-        self.assertTrue(
-            any("loras" in w["message"] for w in ltx2_warnings),
-            "a non-empty loras list on ltx2 must warn",
-        )
-        h3_warnings = check_arch_capabilities(params, "minimax_h3", defaults=TXT2VID_DEFAULTS)
-        self.assertFalse(
-            any("loras" in w["message"] for w in h3_warnings),
-            "minimax_h3 has a real LoRA loader and must not warn",
-        )
+        for arch in ("ltx2", "minimax_h3"):
+            with self.subTest(arch=arch):
+                warnings = check_arch_capabilities(params, arch, defaults=TXT2VID_DEFAULTS)
+                self.assertFalse(
+                    any("loras" in w["message"] for w in warnings),
+                    f"{arch} has a real LoRA loader and must not warn",
+                )
 
     def test_empty_loras_never_warns(self):
         from api.arch_capabilities import check_arch_capabilities
@@ -208,6 +210,147 @@ class ArchCapabilitiesLoraTest(unittest.TestCase):
         params = {"loras": []}
         warnings = check_arch_capabilities(params, "ltx2", defaults=TXT2VID_DEFAULTS)
         self.assertFalse(any("loras" in w["message"] for w in warnings))
+
+
+# ---------------------------------------------------------------------------
+# 4b. LTX-2.3 backend application: the mirror of the MiniMax-H3 hookup, across
+#     the same five routes -- three of which LTX-2.3 serves and two of which it
+#     refuses outright.
+# ---------------------------------------------------------------------------
+class Ltx2BackendLoraApplicationTest(unittest.TestCase):
+    # (pipeline dispatcher, LTX-2.3 entry point) for every route LTX-2.3 serves.
+    SERVED = (
+        ("generate_txt2vid", "_generate_txt2vid_ltx2"),
+        ("generate_img2vid", "_generate_img2vid_ltx2"),
+        ("generate_vid_outpaint", "_generate_vidoutpaint_ltx2"),
+    )
+    # Routes with no LTX-2.3 mechanism at all: they must refuse, not silently
+    # generate without the LoRA.
+    REFUSED = ("generate_ref2vid", "generate_vid_inpaint")
+
+    def setUp(self):
+        from core.pipeline_backends.ltx2 import LTX2Mixin
+        from core.pipeline import DiffusionPipelineManager
+
+        self.mixin = LTX2Mixin
+        self.manager = DiffusionPipelineManager
+
+    def test_the_loader_and_unloader_exist(self):
+        for name in ("_load_lora_ltx2", "_unload_lora_ltx2",
+                     "_ltx2_sync_block_swap_after_lora"):
+            with self.subTest(method=name):
+                self.assertTrue(hasattr(self.mixin, name))
+
+    def test_every_served_entry_point_applies_and_restores_the_lora(self):
+        for dispatcher, entry_point in self.SERVED:
+            with self.subTest(entry_point=entry_point):
+                source = inspect.getsource(getattr(self.mixin, entry_point))
+                self.assertIn(
+                    'self._load_lora_ltx2(params.get("loras"))', source,
+                    f"{entry_point} never applies params['loras'] -- the request's "
+                    f"LoRA silently does nothing on this route",
+                )
+                finally_idx = source.rindex("finally:")
+                self.assertIn(
+                    "self._unload_lora_ltx2()", source[finally_idx:],
+                    f"{entry_point} does not restore the wrapped Linears in a "
+                    f"finally -- a failed generation would leak the adapters into "
+                    f"the next one",
+                )
+
+    def test_every_served_route_dispatches_to_the_ltx2_entry_point(self):
+        for dispatcher, entry_point in self.SERVED:
+            with self.subTest(route=dispatcher):
+                source = inspect.getsource(getattr(self.manager, dispatcher))
+                self.assertIn("if self.is_ltx2_model:", source)
+                self.assertIn(entry_point, source)
+
+    def test_the_two_unserved_routes_refuse_rather_than_ignore(self):
+        for dispatcher in self.REFUSED:
+            with self.subTest(route=dispatcher):
+                source = inspect.getsource(getattr(self.manager, dispatcher))
+                self.assertNotIn(
+                    "_ltx2(", source,
+                    f"{dispatcher} appears to dispatch to an LTX-2.3 entry point; "
+                    f"this test's five-route accounting is stale",
+                )
+                self.assertIn("raise ValidationError", source)
+
+    def test_block_swap_caches_are_invalidated_on_both_wrap_and_unwrap(self):
+        """M1: the offloader is persistent across generations and every cache it
+        holds (H2D masters AND the standard swap's staging buffers) describes the
+        pre-LoRA block tree."""
+        from core.pipeline_backends import ltx2 as ltx2_mod
+
+        caches = ("h2d_masters", "h2d_ring", "h2d_slot_futures",
+                  "h2d_loaded_block", "staging_buffer_a", "staging_buffer_b",
+                  "pinned_buffer", "_dtype_split_paths")
+
+        class FakeOffloader:
+            pass
+
+        offloader = FakeOffloader()
+        for attr in caches:
+            setattr(offloader, attr, ["stale"])
+        ltx2_mod._ltx2_invalidate_block_swap_caches(offloader)
+        for attr in caches:
+            with self.subTest(cache=attr):
+                self.assertIsNone(
+                    getattr(offloader, attr),
+                    f"{attr} survives a LoRA wrap/unwrap and would then describe a "
+                    f"block tree that no longer exists",
+                )
+        for name in ("_ltx2_sync_block_swap_after_lora", "_unload_lora_ltx2"):
+            with self.subTest(method=name):
+                self.assertIn(
+                    "_ltx2_invalidate_block_swap_caches",
+                    inspect.getsource(getattr(self.mixin, name)),
+                )
+
+    def test_the_offloader_reconciliation_is_not_h2d_only(self):
+        """The standard swap needs it too: its staging buffers are sized from the
+        first job list and zip-paired with every later one."""
+        source = inspect.getsource(self.mixin._ltx2_sync_block_swap_after_lora)
+        invalidate = source.index("_ltx2_invalidate_block_swap_caches(offloader)")
+        self.assertNotIn(
+            'h2d_only", False)', source[:invalidate],
+            "the cache drop is gated on h2d_only again; the standard swap path "
+            "then keeps staging buffers shaped for the wrapped tree",
+        )
+
+    def test_lora_bookkeeping_is_weakref_keyed(self):
+        """S1: a reload can allocate the new transformer at the dead one's
+        address, so id() is not an identity."""
+        source = inspect.getsource(self.mixin._ltx2_lora_state)
+        self.assertIn("weakref.ref(transformer)", source)
+        self.assertNotIn("id(transformer)",
+                         inspect.getsource(self.mixin._load_lora_ltx2))
+        self.assertNotIn("id(transformer)",
+                         inspect.getsource(self.mixin._unload_lora_ltx2))
+
+    def test_state_is_reset_before_the_empty_config_exit(self):
+        source = inspect.getsource(self.mixin._load_lora_ltx2)
+        self.assertLess(
+            source.index("self._ltx2_lora_state(transformer)"),
+            source.index("if not lora_configs:"),
+            "an evicted model's bookkeeping survives a request that installs no "
+            "LoRA, and the next restore would splice it into the new transformer",
+        )
+
+    def test_warnings_carry_a_basename_and_the_shared_warning_codes(self):
+        """M2/M3: warnings ride into the PNG metadata chunk and the response's
+        warnings[], and their codes are the cross-architecture ones."""
+        source = inspect.getsource(self.mixin._load_lora_ltx2)
+        self.assertIn("os.path.basename(lora_path)", source)
+        self.assertNotIn("{lora_path}", source)
+        for code in ("lora_not_found", "lora_incompatible", "lora_partial",
+                     "lora_stacking_unsupported"):
+            with self.subTest(code=code):
+                self.assertIn(f'"{code}"', source)
+        for arch_prefixed in ("ltx2_lora_not_found", "ltx2_lora_incompatible",
+                              "ltx2_lora_targets_unresolved"):
+            with self.subTest(code=arch_prefixed):
+                self.assertNotIn(arch_prefixed, source)
 
 
 # ---------------------------------------------------------------------------

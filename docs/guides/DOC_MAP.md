@@ -47,6 +47,7 @@ machine-local working material.
 | `docs/guides/SDXL_REGULARIZATION.md` | SD/SDXL regularization behavior. |
 | `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and implemented/pending boundary. |
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
+| `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | LyCORIS 4.0.0 assessment and the shared LoRA/LoHa/LoKr/DoRA training and inference plan. |
 | `docs/guides/VAE_TRAINING.md` | VAE decoder training contract. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | VAE tiled-decode behavior and measured non-locality. |
 | `docs/guides/VAE_TRAINING_RESOLUTION.md` | VAE crop/resolution semantics and scaling measurements. |

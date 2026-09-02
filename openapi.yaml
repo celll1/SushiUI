@@ -20013,10 +20013,14 @@ components:
             `bf16` has none quantized. RESTARTING the run that wrote the file goes
             through `accept_resume_shaped_base` instead, which requires the layout
             that run was already training in: a single-half run (`train_unet` xor
-            `train_text_encoder`) resumes losslessly only from `mixed`, and a
+            `train_text_encoder`) resumes losslessly from `mixed`, and a
             both-halves run only from `bf16` — which is also what `mixed`
             degenerates to there, so `mixed` is the resumable choice on every
-            branch. `int8` does resume, but it re-rounds the trained half onto the
+            branch. A single-half run can also resume from `bf16`: the frozen
+            half is restored from the run's own base model and verified tensor-for-tensor
+            against the saved checkpoint before it is used, so this only works
+            while that base file is still present and unchanged on disk.
+            `int8` does resume, but it re-rounds the trained half onto the
             INT8 grid on every save, so a long run loses a little at each
             checkpoint. In short: `int8` to distribute, `mixed` (or `bf16`) for a
             run you intend to restart. The format cannot be changed after the

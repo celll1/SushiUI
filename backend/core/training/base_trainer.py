@@ -1327,6 +1327,11 @@ class BaseTrainer(ABC):
             min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, 0 to disable)
         """
         self.model_path = model_path
+        # The run's OWN configured base model path, kept even after a resume
+        # overwrites self.model_path with a checkpoint path (e.g.
+        # _load_checkpoint_as_base:2860). SenseNova's bf16-single-half resume
+        # fallback needs this to locate the original int8 base.
+        self.configured_model_path = model_path
         self.output_dir = Path(output_dir)
         self.run_name = run_name or Path(output_dir).name
         self.run_id = run_id  # Database run ID (for dual logging: TensorBoard + DB)

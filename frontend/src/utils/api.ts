@@ -7181,7 +7181,7 @@ export interface TrainingRun {
   progress: number;
   current_step: number;
   total_steps: number;
-  phase?: string;  // "initializing", "latent_cache", "text_encoder_cache", "training"
+  phase?: string;  // "initializing", "bucketing", "crop_precompute", "latent_cache", "text_encoder_cache", "training", "sampling"
   phase_progress?: number;  // 0-100
   phase_detail?: string;  // Detailed status message
   loss?: number;

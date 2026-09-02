@@ -7962,7 +7962,13 @@ class BaseTrainer(ABC):
         four_phase = getattr(self, "sensenova_four_phase", None)
         if four_phase is not None and four_phase.shared_window:
             return None, None, None, prefix
-        if isinstance(cfg_null, (list, tuple)):
+        assembly_labels = getattr(self, "_sensenova_prefix_cfg_null", None)
+        if isinstance(cfg_null, (list, tuple)) or isinstance(assembly_labels, list):
+            # A packed batch: one label per item. A scalar label here means
+            # no draw happened this iteration (no drop rate), so every item
+            # keeps the assembly's own label.
+            if not isinstance(cfg_null, (list, tuple)):
+                cfg_null = list(assembly_labels) if not cfg_null else [True] * len(assembly_labels)
             return self._sensenova_mnt_conditioning_packed(
                 prefix, captions=list(captions or []), mnt_index=mnt_index,
                 cfg_null=list(cfg_null),
@@ -15111,8 +15117,10 @@ class BaseTrainer(ABC):
                                 # B1: the batch's one item is the one label.
                                 # A packed batch passes one label per item.
                                 cfg_null=(
-                                    [bool(x) for x in mnt_cfg_drop_mask.tolist()]
-                                    if mnt_cfg_drop_mask is not None and batch_size > 1
+                                    ([bool(x) for x in mnt_cfg_drop_mask.tolist()]
+                                     if mnt_cfg_drop_mask is not None
+                                     else [False] * batch_size)
+                                    if batch_size > 1
                                     else (mnt_cfg_drop_mask is not None
                                           and bool(mnt_cfg_drop_mask[0]))
                                 ),

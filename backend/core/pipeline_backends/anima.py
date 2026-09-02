@@ -171,7 +171,10 @@ class AnimaMixin:
             except Exception as e:
                 print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")
                 import traceback; traceback.print_exc()
-                message = f"LoRA '{lora_file}': {type(e).__name__}: {e}"
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"Anima LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
                 self._anima_lora_warn(message, "lora_load_failed")
                 failures.append(message)
 

@@ -543,6 +543,22 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
             )
 
+        extra_metadata = {"step": str(step), "epoch": str(epoch)}
+        # Self-describing: a later bf16 resume can name its base without this
+        # run's config. Identity is a cheap size check; the resume path is
+        # what actually proves the content matches.
+        configured_base = str(getattr(trainer, "configured_model_path", "") or "").strip()
+        if configured_base:
+            extra_metadata["sensenova_base_model_path"] = configured_base
+            try:
+                from core.models.sensenova.loader import sensenova_base_model_identity
+
+                extra_metadata["sensenova_base_model_identity"] = (
+                    sensenova_base_model_identity(configured_base)
+                )
+            except OSError:
+                pass  # Base unreadable right now; the path alone is still useful.
+
         written, census = save_sensenova_full_finetune_checkpoint(
             trainer.transformer,
             str(output_path),
@@ -551,7 +567,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             config=getattr(trainer, "sensenova_model_config", None),
             raw_config=getattr(trainer, "sensenova_config_dict", None),
             source_dir=source_dir,
-            extra_metadata={"step": str(step), "epoch": str(epoch)},
+            extra_metadata=extra_metadata,
         )
         print(
             f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "

@@ -586,6 +586,24 @@ def test_adapter_announces_the_both_branch_degeneracy(tmp_path):
     assert any(code == "sensenova_save_format_degenerate" for _msg, code in seen)
 
 
+def test_adapter_stamps_the_configured_base_model_identity(tmp_path):
+    """The resume-fallback's other half: what ``restore_sensenova_frozen_half_from_base``
+    reads back (``core.training.ops.sensenova_ops._sensenova_resume_base_model_path``)."""
+    from core.models.sensenova.loader import sensenova_base_model_identity
+
+    base_path = tmp_path / "base" / "sensenova_int8.safetensors"
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_bytes(b"\x00" * 1024)
+
+    transformer = _trained_tree("gen")
+    adapter = _adapter(transformer, "gen", "bf16")
+    adapter.trainer.configured_model_path = str(base_path)
+    adapter.save_checkpoint(100, 1, tmp_path / "run_step_000100")
+    _model, metadata = _load_back(str(tmp_path / "run_step_000100.safetensors"))
+    assert metadata["sensenova_base_model_path"] == str(base_path)
+    assert metadata["sensenova_base_model_identity"] == sensenova_base_model_identity(base_path)
+
+
 # ---------------------------------------------------------------------------
 # The setting's plumbing, end to end
 # ---------------------------------------------------------------------------

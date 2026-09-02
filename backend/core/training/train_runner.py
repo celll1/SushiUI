@@ -468,12 +468,25 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
 def _warn_on_unresumable_sensenova_save_format(
     train_config: Dict[str, Any], save_format: str
 ) -> None:
-    """Say at run creation which resume a full fine-tune's save format leaves it.
+    """Say at run creation which resume path a full fine-tune's save format leaves it.
 
-    Which format resumes losslessly depends on the branch (``ops.sensenova_ops``
-    ``_SENSENOVA_RESUME_FORMAT_FOR_BRANCH``), and the answer is only discovered
-    when a run is restarted -- possibly hours in, and the file is written by
-    then. Warned, never refused: every combination produces a usable model.
+    Which format resumes without any extra requirement depends on the branch
+    (``ops.sensenova_ops`` ``_SENSENOVA_RESUME_FORMAT_FOR_BRANCH``), and the
+    answer used to only be discovered when a run was restarted -- possibly
+    hours in, and the file already written by then. Every format still
+    produces a checkpoint this repo can load for INFERENCE; not every format
+    resumes THIS run the same way:
+
+    * the branch's own lossless format (``mixed`` for a single half, ``bf16``
+      for ``both``) resumes with nothing else required;
+    * ``bf16`` on a single-half branch ALSO resumes, but only via
+      ``accept_resume_shaped_base``'s base-model fallback: it restores the
+      frozen half's int8 weights from this run's configured base model,
+      verified tensor-for-tensor before use, so it fails if that base is
+      later moved, deleted, or replaced with a different file;
+    * ``int8`` resumes but is lossy (requantizes the trained half on every
+      save);
+    * any other case is refused at resume rather than silently reshaped.
     """
     from types import SimpleNamespace
 
@@ -498,6 +511,20 @@ def _warn_on_unresumable_sensenova_save_format(
     # both halves are trained, so it degenerates to 'bf16' -- which IS resumable.
     effective = "bf16" if (save_format == "mixed" and branch == "both") else save_format
     if effective == lossless:
+        return
+    if effective == "bf16" and branch != "both":
+        # Resumable via accept_resume_shaped_base's base-model fallback, not
+        # refused -- but conditionally, unlike 'lossless' above.
+        emit_training_warning(
+            f"SenseNova full fine-tuning on the {branch!r} branch is set to "
+            f"sensenova_full_finetune_save_format='bf16'; a restart resumes by "
+            f"restoring the frozen half from this run's configured base model "
+            f"(verified tensor-for-tensor against the saved checkpoint) rather "
+            f"than from '{lossless}', which keeps both halves inside the "
+            f"checkpoint file itself. This fails if that base model is later "
+            f"moved, deleted, or replaced with a different file.",
+            code="sensenova_save_format_resume_needs_base",
+        )
         return
     if effective == "int8":
         detail = (

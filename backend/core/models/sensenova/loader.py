@@ -100,20 +100,24 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional
 
 import torch
+from safetensors import safe_open
 from torch import nn
 
-from core.models.common.single_file_format import read_state_dict, strip_prefix, TRANSFORMER_PREFIX
+from core.models.common.single_file_format import (
+    is_index_path, read_state_dict, strip_prefix, TRANSFORMER_PREFIX,
+)
 from core.models.common.convrot_marker import int8_convrot_layers_from_markers
 from core.models.common.quantized_checkpoint_guard import (
     quantized_state_dict_report, refuse_unsupported_quant_semantics,
     scaled_quantization_report, verify_quantized_swap,
 )
 from core.models.ideogram4.vendor.int8_linear import (
-    disable_int8_mm, is_int8_state_dict, swap_linears_to_int8,
+    Int8Linear, disable_int8_mm, is_int8_state_dict, swap_linears_to_int8,
 )
 
 from .vendor import NEOChatConfig, NEOChatModel
@@ -497,6 +501,173 @@ def materialize_int8_decoder_linears(
         f"int8 codes, allocated {allocated_bytes / 2**20:.1f} MiB of weights"
     )
     return materialized
+
+
+def sensenova_base_model_identity(path: str) -> str:
+    """A cheap (stat-only) content identifier for a base model file.
+
+    Not a hash of the 18+ GiB payload -- just its byte size, so a checkpoint
+    can be stamped with what base it was trained against without paying to
+    read that base. It is a fast pre-check only; ``restore_sensenova_frozen_half_from_base``
+    is what actually proves the content matches, tensor by tensor.
+    """
+    return str(os.path.getsize(str(path)))
+
+
+class _LazySafetensorsSource:
+    """Per-tensor lazy reader for a single-file or shard-index safetensors save.
+
+    Opens each shard on demand via ``safe_open`` (memory-mapped, not eagerly
+    read) and only for the tensors actually requested, so verifying a handful
+    of Linears never materializes the rest of a multi-GB base model. Shard
+    handles stay open for the lifetime of the context manager.
+    """
+
+    def __init__(self, path: str):
+        self._stack = ExitStack()
+        self._handles: Dict[str, Any] = {}
+        resolved = str(path)
+        if not is_index_path(resolved) and not os.path.isfile(resolved):
+            sibling_index = resolved + ".index.json"
+            if os.path.isfile(sibling_index):
+                resolved = sibling_index
+        if is_index_path(resolved):
+            if not os.path.isfile(resolved):
+                raise FileNotFoundError(f"SenseNova base model index not found: {resolved!r}")
+            with open(resolved, encoding="utf-8") as f:
+                index = json.load(f)
+            self._directory = os.path.dirname(resolved)
+            self._weight_map: Optional[Dict[str, str]] = index.get("weight_map", {}) or {}
+            self._single_path = None
+        else:
+            if not os.path.isfile(resolved):
+                raise FileNotFoundError(f"SenseNova base model not found: {resolved!r}")
+            self._directory = None
+            self._weight_map = None
+            self._single_path = resolved
+
+    def _handle_for(self, shard_name: Optional[str]):
+        key = shard_name or "__single__"
+        handle = self._handles.get(key)
+        if handle is None:
+            shard_path = (
+                os.path.join(self._directory, shard_name)
+                if shard_name is not None
+                else self._single_path
+            )
+            handle = self._stack.enter_context(safe_open(shard_path, framework="pt", device="cpu"))
+            self._handles[key] = handle
+        return handle
+
+    def get(self, key: str) -> torch.Tensor:
+        if self._weight_map is not None:
+            shard = self._weight_map.get(key)
+            if shard is None:
+                raise KeyError(key)
+            return self._handle_for(shard).get_tensor(key)
+        handle = self._handle_for(None)
+        if key not in handle.keys():
+            raise KeyError(key)
+        return handle.get_tensor(key)
+
+    def __enter__(self) -> "_LazySafetensorsSource":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self._stack.close()
+        return False
+
+
+def restore_sensenova_frozen_half_from_base(
+    transformer: NEOChatModel,
+    *,
+    frozen_half: str,
+    base_path: str,
+    compute_dtype: torch.dtype,
+) -> int:
+    """Restore ``frozen_half``'s decoder Linears to ``Int8Linear`` from ``base_path``.
+
+    Bf16 single-half resume fallback (``sensenova_ops.accept_resume_shaped_base``):
+    verifies each frozen Linear against ``base_path`` before swapping it, so a
+    wrong or changed base is refused by name rather than silently substituted.
+    Per-Linear order is load-bearing exactly as in
+    ``materialize_int8_decoder_linears``: each replaced float module's
+    reference is dropped before the next one is read, so the peak stays the
+    resident tree plus one Linear, not both halves' worth of both dtypes.
+
+    Returns the number of Linears restored.
+    """
+    from .sensenova_lora import iter_sensenova_lora_targets
+
+    targets = list(iter_sensenova_lora_targets(transformer, branch=frozen_half))
+    restored = 0
+    with _LazySafetensorsSource(base_path) as source:
+        for index in range(len(targets)):
+            module_path, parent, attr, module = targets[index]
+            # Drop the list's own reference now: the module (and its float
+            # weight) is freed at the setattr below only if nothing else in
+            # this frame still points to it.
+            targets[index] = None
+            weight = getattr(module, "weight", None)
+            if not (isinstance(weight, nn.Parameter) and weight.dtype.is_floating_point):
+                raise RuntimeError(
+                    f"SenseNova bf16 resume fallback expected {module_path} on the "
+                    f"frozen {frozen_half} half to be a floating-point Linear (the "
+                    f"bf16 writer's layout); found {type(module).__name__}."
+                )
+            weight_key = f"{TRANSFORMER_PREFIX}{module_path}.weight"
+            scale_key = f"{TRANSFORMER_PREFIX}{module_path}.weight_scale"
+            try:
+                codes = source.get(weight_key)
+                scale = source.get(scale_key)
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"SenseNova bf16 resume fallback could not find {exc} in the "
+                    f"configured base model {base_path!r}; it is not a plain-int8 "
+                    f"SenseNova checkpoint, or not the base this run trained against."
+                ) from exc
+            if codes.dtype is not torch.int8:
+                raise RuntimeError(
+                    f"SenseNova bf16 resume fallback found a {codes.dtype} weight for "
+                    f"{module_path} in {base_path!r}, expected int8; this is not the "
+                    f"plain-int8 base the frozen half must be restored from."
+                )
+            if scale.dim() != 1 or scale.shape[0] != module.out_features:
+                raise RuntimeError(
+                    f"SenseNova bf16 resume fallback found a weight_scale of shape "
+                    f"{tuple(scale.shape)} for {module_path} in {base_path!r}; "
+                    f"Int8Linear registers it as (out_features,) = "
+                    f"({module.out_features},)."
+                )
+            dequant = codes * scale.to(weight.dtype).unsqueeze(1)
+            live = weight.detach()
+            if dequant.shape != live.shape or not torch.equal(dequant, live):
+                raise RuntimeError(
+                    f"SenseNova bf16 resume fallback refused: the frozen "
+                    f"{frozen_half} half's {module_path} does not dequantize from "
+                    f"{base_path!r} to the checkpoint's saved weight. Either this is "
+                    f"not the base the run trained against, or the base file has "
+                    f"changed since; resuming would silently substitute a different "
+                    f"frozen half."
+                )
+            del dequant
+
+            replacement = Int8Linear(
+                module.in_features, module.out_features,
+                bias=module.bias is not None, compute_dtype=compute_dtype,
+            )
+            replacement.weight.copy_(codes)
+            replacement.weight_scale.copy_(scale.to(torch.float32))
+            if module.bias is not None:
+                replacement.bias.copy_(module.bias.detach().to(compute_dtype))
+            setattr(parent, attr, replacement)
+            del module, codes, scale
+            restored += 1
+    # Every other Int8Linear in this tree was pinned off W8A8 by
+    # load_sensenova_from_path's own disable_int8_mm call; these were built
+    # afterward and default to the class's _allow_int8_mm=True otherwise.
+    disable_int8_mm(transformer, label=f"restored {frozen_half} half")
+    return restored
 
 
 # Loose sibling files ``_load_sensenova_tokenizer`` and the ``config.json``

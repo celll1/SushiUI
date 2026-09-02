@@ -41,6 +41,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from core.models.ideogram4.vendor.int8_linear import Int8Linear  # noqa: E402
+from core.models.common.single_file_format import TRANSFORMER_PREFIX  # noqa: E402
+from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets  # noqa: E402
 from core.training.ops.sensenova_ops import (  # noqa: E402
     _SENSENOVA_RESUME_FORMAT_FOR_BRANCH,
     _assert_supported_quantized_training_base,
@@ -114,15 +116,34 @@ class _MoTTree(nn.Module):
 
 
 def _trainer(tmp_path: Path, *, entry: str, resume: str = "latest",
-             run_name: str = RUN_NAME, output_dir: Path = None):
+             run_name: str = RUN_NAME, output_dir: Path = None,
+             configured_model_path: str = None, weight_dtype=torch.bfloat16):
     directory = output_dir if output_dir is not None else tmp_path
-    return SimpleNamespace(
+    kwargs = dict(
         model_path=str(directory / entry),
         output_dir=directory,
         run_name=run_name,
         resume_from_checkpoint=resume,
         log_prefix="[test]",
+        weight_dtype=weight_dtype,
     )
+    if configured_model_path is not None:
+        kwargs["configured_model_path"] = configured_model_path
+    return SimpleNamespace(**kwargs)
+
+
+def _write_base_safetensors(path: Path, tree: nn.Module) -> Path:
+    """A base int8 model file: ``tree``'s state dict, TRANSFORMER_PREFIX-keyed.
+
+    Mirrors what the SenseNova single-file reader expects on disk -- see
+    ``core.models.sensenova.loader.restore_sensenova_frozen_half_from_base``.
+    """
+    from safetensors.torch import save_file
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sd = {f"{TRANSFORMER_PREFIX}{k}": v.contiguous() for k, v in tree.state_dict().items()}
+    save_file(sd, str(path))
+    return path
 
 
 def _write(path: Path) -> Path:
@@ -136,12 +157,29 @@ def _sidecars(tmp_path: Path, step: int, run_name: str = RUN_NAME):
         _write(tmp_path / f"{run_name}_step_{step:06d}{suffix}")
 
 
-def _metadata(branch: str, save_format: str) -> dict:
+def _metadata(branch: str, save_format: str, **extra: str) -> dict:
     return {
         "sensenova_trained_branch": branch,
         "sensenova_save_format": save_format,
         "step": "100",
+        **extra,
     }
+
+
+def _matching_frozen_tree(base_tree: nn.Module, half: str, trained_half: str) -> nn.Module:
+    """A checkpoint-shaped tree: ``half`` float, dequantized exactly from
+    ``base_tree``; the other half arbitrary float (the trained half's content
+    is never verified against the base)."""
+    tree = _MoTTree(gen_factory=_float, und_factory=_float)
+    for (_, _, _, base_mod), (_, _, _, ck_mod) in zip(
+        iter_sensenova_lora_targets(base_tree, branch=half),
+        iter_sensenova_lora_targets(tree, branch=half),
+    ):
+        with torch.no_grad():
+            ck_mod.weight.copy_(
+                base_mod.weight * base_mod.weight_scale.to(torch.bfloat16).unsqueeze(1)
+            )
+    return tree
 
 
 # ---------------------------------------------------------------------------
@@ -286,18 +324,188 @@ def test_a_missing_sidecar_warns_rather_than_refusing(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_the_wrong_layout_for_the_branch_is_refused(tmp_path):
-    """A ``bf16`` file cannot resume a ``gen`` run: its frozen half is no longer
-    int8, and the next save requires that it is."""
+    """Neither the 'mixed' Int8Linear layout nor the 'bf16' float layout: a
+    frozen half that is ConvRot-quantized is refused either way."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+    tree = _MoTTree(gen_factory=_float, und_factory=_convrot)
+    with pytest.raises(RuntimeError, match="und half of its decoder is not the") as e:
+        accept_resume_shaped_base(
+            _trainer(tmp_path, entry=entry), tree, _metadata("gen", "mixed"),
+            branch="gen")
+    assert "save_format='mixed' or 'bf16'" in str(e.value)
+    # The census itself is pinned, not just the shape of the message.
+    assert "gen half: float=294" in str(e.value)
+    assert "und half: float=0, int8=0, other=294" in str(e.value)
+    assert "ConvRotInt8Linear" in str(e.value)
+
+
+# ---------------------------------------------------------------------------
+# The bf16 single-half fallback: the frozen half restored from the base model
+# ---------------------------------------------------------------------------
+
+def test_a_bf16_checkpoint_resumes_a_single_half_run_from_its_base(tmp_path):
+    """``sensenova_full_finetune_save_format='bf16'`` on a 'gen' run writes
+    BOTH halves float. Resuming restores the frozen 'und' half's Int8Linear
+    from the run's own base model, verified tensor-for-tensor first."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+
+    base_tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    base_path = _write_base_safetensors(tmp_path / "base" / "sensenova_int8.safetensors",
+                                         base_tree)
+
+    tree = _MoTTree(gen_factory=_float, und_factory=_float)
+    for (_, _, _, base_mod), (_, _, _, ck_mod) in zip(
+        iter_sensenova_lora_targets(base_tree, branch="und"),
+        iter_sensenova_lora_targets(tree, branch="und"),
+    ):
+        with torch.no_grad():
+            ck_mod.weight.copy_(
+                base_mod.weight * base_mod.weight_scale.to(torch.bfloat16).unsqueeze(1)
+            )
+
+    trainer = _trainer(tmp_path, entry=entry, configured_model_path=str(base_path))
+    assert accept_resume_shaped_base(
+        trainer, tree, _metadata("gen", "bf16"), branch="gen") == "bf16"
+
+    # The frozen half is restored to Int8Linear with the base's own codes/scale.
+    for (_, _, _, base_mod), (_, _, _, restored_mod) in zip(
+        iter_sensenova_lora_targets(base_tree, branch="und"),
+        iter_sensenova_lora_targets(tree, branch="und"),
+    ):
+        assert type(restored_mod) is Int8Linear
+        assert torch.equal(restored_mod.weight, base_mod.weight)
+        assert torch.equal(restored_mod.weight_scale, base_mod.weight_scale)
+    # The trained half is untouched: still the float weights the checkpoint carried.
+    for _, _, _, gen_mod in iter_sensenova_lora_targets(tree, branch="gen"):
+        assert type(gen_mod) is nn.Linear
+
+
+def test_a_bf16_checkpoint_refuses_a_mismatching_base(tmp_path):
+    """A base whose frozen half does not dequantize to the checkpoint's saved
+    weight is refused by name, not silently substituted."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+
+    base_tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    base_path = _write_base_safetensors(tmp_path / "base" / "sensenova_int8.safetensors",
+                                         base_tree)
+
+    tree = _MoTTree(gen_factory=_float, und_factory=_float)
+    for (_, _, _, base_mod), (_, _, _, ck_mod) in zip(
+        iter_sensenova_lora_targets(base_tree, branch="und"),
+        iter_sensenova_lora_targets(tree, branch="und"),
+    ):
+        with torch.no_grad():
+            ck_mod.weight.copy_(
+                base_mod.weight * base_mod.weight_scale.to(torch.bfloat16).unsqueeze(1)
+            )
+    # Perturb one frozen-half weight so it no longer matches the base.
+    first_frozen = next(iter_sensenova_lora_targets(tree, branch="und"))[3]
+    with torch.no_grad():
+        first_frozen.weight.add_(1.0)
+
+    trainer = _trainer(tmp_path, entry=entry, configured_model_path=str(base_path))
+    with pytest.raises(RuntimeError, match="does not dequantize"):
+        accept_resume_shaped_base(trainer, tree, _metadata("gen", "bf16"), branch="gen")
+
+
+def test_a_bf16_checkpoint_refuses_when_the_base_is_missing(tmp_path):
     entry = f"{RUN_NAME}_step_000100.safetensors"
     _write(tmp_path / entry)
     _sidecars(tmp_path, 100)
     tree = _MoTTree(gen_factory=_float, und_factory=_float)
-    with pytest.raises(RuntimeError, match="und half of its decoder is not the") as e:
+
+    missing_base = str(tmp_path / "base" / "sensenova_int8.safetensors")
+    trainer = _trainer(tmp_path, entry=entry, configured_model_path=missing_base)
+    with pytest.raises(RuntimeError, match="base model not found"):
+        accept_resume_shaped_base(trainer, tree, _metadata("gen", "bf16"), branch="gen")
+
+    # No configured base at all -- refused by name, not a crash on a missing attr.
+    trainer_unconfigured = _trainer(tmp_path, entry=entry)
+    with pytest.raises(RuntimeError, match="base model path is unknown"):
         accept_resume_shaped_base(
-            _trainer(tmp_path, entry=entry), tree, _metadata("gen", "bf16"),
-            branch="gen")
-    assert "float=294" in str(e.value)
-    assert "save_format='mixed'" in str(e.value)
+            trainer_unconfigured, tree, _metadata("gen", "bf16"), branch="gen")
+
+
+def test_int8_format_is_still_refused_unconditionally(tmp_path):
+    """The bf16 fallback exists only because the FROZEN half's int8 codes are
+    exactly recoverable; the TRAINED half's are not (the int8 writer
+    requantizes them, lossily), so 'int8' widens nothing here."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+    # What an 'int8'-format save actually produces: no float Linear anywhere.
+    tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    assert accept_resume_shaped_base(
+        _trainer(tmp_path, entry=entry), tree, _metadata("gen", "int8"),
+        branch="gen") is None
+
+
+def test_the_identity_hint_refuses_a_size_mismatched_base(tmp_path):
+    """The cheap size stamp catches a wrong base before any tensor is read."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+
+    base_tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    base_path = _write_base_safetensors(tmp_path / "base" / "sensenova_int8.safetensors",
+                                         base_tree)
+    tree = _matching_frozen_tree(base_tree, "und", trained_half="gen")
+
+    trainer = _trainer(tmp_path, entry=entry, configured_model_path=str(base_path))
+    metadata = _metadata("gen", "bf16", sensenova_base_model_identity="99999999999")
+    with pytest.raises(RuntimeError, match="byte.*byte"):
+        accept_resume_shaped_base(trainer, tree, metadata, branch="gen")
+
+
+def test_the_stamped_base_path_is_preferred_over_configured_model_path(tmp_path):
+    """A future checkpoint's own ``sensenova_base_model_path`` stamp is used
+    even when the trainer's configured path points somewhere else (or
+    nowhere) -- self-describing, per the design's requirement 2."""
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+
+    base_tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    base_path = _write_base_safetensors(tmp_path / "base" / "sensenova_int8.safetensors",
+                                         base_tree)
+    tree = _matching_frozen_tree(base_tree, "und", trained_half="gen")
+
+    trainer = _trainer(tmp_path, entry=entry,
+                        configured_model_path=str(tmp_path / "nonexistent.safetensors"))
+    metadata = _metadata("gen", "bf16", sensenova_base_model_path=str(base_path))
+    assert accept_resume_shaped_base(trainer, tree, metadata, branch="gen") == "bf16"
+
+
+def test_a_sharded_base_is_read_correctly(tmp_path):
+    """The base model can be a shard-index save (diffusers convention, >10 GB
+    on the real 18.9 GB checkpoint); the streaming reader must follow it."""
+    from core.models.common.single_file_format import TRANSFORMER_PREFIX, save_single_file_state
+
+    base_tree = _MoTTree(gen_factory=_int8, und_factory=_int8)
+    sd = {f"{TRANSFORMER_PREFIX}{k}": v.contiguous() for k, v in base_tree.state_dict().items()}
+    base_dir = tmp_path / "base"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    # Small enough that these ~300 tiny (8x8) tensors span many shards.
+    written = save_single_file_state(sd, {}, str(base_dir / "sensenova_int8.safetensors"),
+                                      max_shard_bytes=256)
+    assert written.endswith(".safetensors.index.json")
+
+    entry = f"{RUN_NAME}_step_000100.safetensors"
+    _write(tmp_path / entry)
+    _sidecars(tmp_path, 100)
+    tree = _matching_frozen_tree(base_tree, "und", trained_half="gen")
+
+    trainer = _trainer(tmp_path, entry=entry, configured_model_path=written)
+    assert accept_resume_shaped_base(
+        trainer, tree, _metadata("gen", "bf16"), branch="gen") == "bf16"
+    for _, _, _, restored_mod in iter_sensenova_lora_targets(tree, branch="und"):
+        assert type(restored_mod) is Int8Linear
 
 
 def test_a_half_materialized_tree_is_refused(tmp_path):
@@ -451,7 +659,10 @@ def test_the_base_refusal_separates_base_substitution_from_resume():
     [
         (True, False, "mixed", None),
         (True, True, "bf16", None),
-        (True, False, "bf16", "sensenova_save_format_not_resumable"),
+        # 'bf16' on a single-half branch resumes via the base-model fallback,
+        # not the branch's own lossless format -- a different warning, not a
+        # refusal.
+        (True, False, "bf16", "sensenova_save_format_resume_needs_base"),
         (True, False, "int8", "sensenova_save_format_not_resumable"),
         (True, True, "int8", "sensenova_save_format_not_resumable"),
         (True, True, "mixed", None),  # degenerates to bf16, which IS the format
@@ -481,10 +692,12 @@ def test_a_run_with_nothing_to_train_is_not_warned_about_a_branch_it_lacks():
             {"train_unet": False, "train_text_encoder": False}, "bf16")
     warn.assert_not_called()
     # ... while an und-only run, which IS a branch, still gets the advice.
+    # 'bf16' on a single-half branch resumes via the base-model fallback, so
+    # this is the "needs base" advisory rather than a flat refusal.
     with patch("core.training.training_events.emit_training_warning") as warn:
         _warn_on_unresumable_sensenova_save_format(
             {"train_unet": False, "train_text_encoder": True}, "bf16")
-    assert warn.call_args.kwargs["code"] == "sensenova_save_format_not_resumable"
+    assert warn.call_args.kwargs["code"] == "sensenova_save_format_resume_needs_base"
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +722,11 @@ def test_the_save_format_description_separates_the_two_gates():
     # ... and the resume claim is scoped to what was actually run.
     assert "resume has not been" in _OPENAPI
     assert "an inference from the same" in _OPENAPI
+    # The old sentence claimed 'mixed' was the ONLY resumable format for a
+    # single-half run; the bf16 base-model fallback makes that false.
+    assert "resumes losslessly only from `mixed`" not in _OPENAPI
+    assert "A single-half run can also resume from `bf16`" in _OPENAPI
+    assert "verified tensor-for-tensor" in _OPENAPI
 
 
 @pytest.mark.parametrize(

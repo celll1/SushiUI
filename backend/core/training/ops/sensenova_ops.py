@@ -754,6 +754,13 @@ def accept_resume_shaped_base(
     Materialization is SKIPPED for an accepted base: its halves are already in
     the shape it produces, and running it would refuse (it requires every target
     to be a plain ``Int8Linear``).
+
+    THE bf16 SINGLE-HALF FALLBACK: a single-half ``bf16`` save is float on
+    both halves, indistinguishable by class census from a genuine ``both``
+    resume, so it is accepted only when the metadata names THIS branch (not
+    ``'both'``), and even then the frozen half is not trusted from the
+    checkpoint -- it is restored from the run's own base model and verified
+    bit-identical first (``restore_sensenova_frozen_half_from_base``).
     """
     layout = _half_linear_layout(transformer)
     if sum(layout[half]["counts"]["float"] for half in ("gen", "und")) == 0:
@@ -779,22 +786,47 @@ def accept_resume_shaped_base(
     entry = _resume_entry_stem(checkpoint.name) or checkpoint.stem
     step = int(_RESUME_STEP_RE.search(entry).group(1))
     trained_halves = ("gen", "und") if branch == "both" else (branch,)
+    frozen_halves = tuple(h for h in ("gen", "und") if h not in trained_halves)
+    HALF = _SENSENOVA_QUANT_LINEAR_COUNT // 2
     expected_format = _SENSENOVA_RESUME_FORMAT_FOR_BRANCH[branch]
-    for half in ("gen", "und"):
-        want = "float" if half in trained_halves else "int8"
-        if layout[half]["counts"][want] != _SENSENOVA_QUANT_LINEAR_COUNT // 2:
+
+    for half in trained_halves:
+        if layout[half]["counts"]["float"] != HALF:
             raise RuntimeError(
                 f"SenseNova cannot resume the {branch!r} branch from "
                 f"{entry}: the {half} half of its decoder is not the "
-                f"shape this run trains in. Expected all "
-                f"{_SENSENOVA_QUANT_LINEAR_COUNT // 2} of its Linears to be "
-                f"{'floating-point nn.Linear' if want == 'float' else 'plain Int8Linear'}; "
-                f"got {census}. A resume of this branch is only lossless from a "
-                f"checkpoint written as "
-                f"sensenova_full_finetune_save_format='{expected_format}'; the "
-                f"other formats leave the decoder in a different layout and are "
-                f"refused rather than reshaped."
+                f"shape this run trains in. Expected all {HALF} of its "
+                f"Linears to be floating-point nn.Linear; got {census}. A "
+                f"resume of this branch is only lossless from a checkpoint "
+                f"written as sensenova_full_finetune_save_format="
+                f"'{expected_format}'; the other formats leave the decoder "
+                f"in a different layout and are refused rather than "
+                f"reshaped."
             )
+
+    # A single-half branch also accepts a fully-float frozen half (the bf16
+    # writer's output): restorable from the run's own base model, verified
+    # below. 'int8' requantizes the TRAINED half on save, so it stays refused.
+    using_bf16_fallback = False
+    for half in frozen_halves:
+        if layout[half]["counts"]["int8"] == HALF:
+            continue
+        if layout[half]["counts"]["float"] == HALF:
+            using_bf16_fallback = True
+            expected_format = "bf16"
+            continue
+        raise RuntimeError(
+            f"SenseNova cannot resume the {branch!r} branch from "
+            f"{entry}: the {half} half of its decoder is not the shape "
+            f"this run trains in. Expected all {HALF} of its Linears to be "
+            f"plain Int8Linear (the 'mixed' layout), or floating-point "
+            f"nn.Linear (the 'bf16' layout, restorable from this run's own "
+            f"base model); got {census}. A resume of this branch is only "
+            f"lossless from a checkpoint written as "
+            f"sensenova_full_finetune_save_format='mixed' or 'bf16'; "
+            f"'int8' requantizes the trained half on every save and is "
+            f"refused unconditionally."
+        )
 
     claimed = metadata or {}
     claimed_branch = str(claimed.get("sensenova_trained_branch") or "").strip()
@@ -820,6 +852,45 @@ def accept_resume_shaped_base(
             f"tell different stories is refused rather than believed on either."
         )
 
+    if using_bf16_fallback:
+        frozen_half = frozen_halves[0]
+        base_path = _sensenova_resume_base_model_path(trainer, claimed)
+        if not base_path:
+            raise RuntimeError(
+                f"SenseNova refuses to resume the {branch!r} branch from "
+                f"{entry}: it was written as "
+                f"sensenova_full_finetune_save_format='bf16', which drops "
+                f"the frozen {frozen_half} half's int8 weight_scale, and "
+                f"this run's base model path is unknown (no "
+                f"sensenova_base_model_path in the checkpoint's metadata, "
+                f"and no configured base model path on this run), so the "
+                f"frozen half cannot be restored."
+            )
+        _sensenova_check_base_identity_hint(claimed, base_path, entry=entry)
+        from core.models.sensenova.loader import restore_sensenova_frozen_half_from_base
+
+        try:
+            restored = restore_sensenova_frozen_half_from_base(
+                transformer,
+                frozen_half=frozen_half,
+                base_path=base_path,
+                compute_dtype=trainer.weight_dtype,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"SenseNova refuses to resume the {branch!r} branch from "
+                f"{entry}: its frozen {frozen_half} half needs the run's "
+                f"base model to restore int8 weights, but {exc}"
+            ) from exc
+        if restored != HALF:
+            raise RuntimeError(
+                f"SenseNova bf16 resume fallback restored {restored} of "
+                f"{HALF} {frozen_half}-half decoder Linear(s) from "
+                f"{base_path!r} for {entry}; expected all of them. Refusing "
+                f"rather than resuming with a partially restored frozen "
+                f"half."
+            )
+
     aux_base = f"{getattr(trainer, 'run_name', '')}_step_{step:06d}"
     missing = [
         name
@@ -843,17 +914,71 @@ def accept_resume_shaped_base(
 
     # On the channel, not just stdout: relaxing a safety gate is at least as
     # worth telling the user about as the degraded case above, which warns.
+    detail = (
+        f"its frozen {frozen_halves[0]} half was restored from this run's own "
+        f"base model, verified tensor-for-tensor before the swap"
+        if using_bf16_fallback else
+        "the trained half is already floating point, so it is loaded as "
+        "saved and not re-materialized from int8"
+    )
     emit_training_event(
         "info",
         f"SenseNova is resuming the {branch!r} branch from its own checkpoint "
         f"{entry} at step {step}, accepted losslessly as "
-        f"sensenova_full_finetune_save_format='{claimed_format}' ({census}). The "
-        f"trained half is already floating point, so it is loaded as saved and "
-        f"not re-materialized from int8.",
+        f"sensenova_full_finetune_save_format='{claimed_format}' ({census}); "
+        f"{detail}.",
         code="sensenova_resume_base_accepted",
         prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
     )
     return claimed_format
+
+
+def _sensenova_resume_base_model_path(trainer: Any, claimed_metadata: Dict[str, Any]) -> Optional[str]:
+    """The base model this run trained against, for the bf16 resume fallback.
+
+    Prefers the checkpoint's OWN stamp (``sensenova_base_model_path``, written
+    by ``sensenova_adapter.save_checkpoint`` going forward, self-describing
+    even if this trainer is somehow reconstructed with a different config).
+    Falls back to this run's configured base model path -- what every
+    checkpoint written before that stamp existed (e.g. run 125) has instead.
+    """
+    stamped = str((claimed_metadata or {}).get("sensenova_base_model_path") or "").strip()
+    if stamped:
+        return stamped
+    configured = str(getattr(trainer, "configured_model_path", "") or "").strip()
+    return configured or None
+
+
+def _sensenova_check_base_identity_hint(
+    claimed_metadata: Dict[str, Any], base_path: str, *, entry: str
+) -> None:
+    """Fast pre-check: refuse early if the checkpoint's stamped base size disagrees.
+
+    Only fires when the checkpoint carries ``sensenova_base_model_identity``
+    (checkpoints written before that stamp existed have nothing to compare).
+    This is a cheap (stat-only) hint, not the proof -- the per-Linear dequant
+    compare in ``restore_sensenova_frozen_half_from_base`` is what actually
+    verifies the content, and runs regardless of what this finds.
+    """
+    import os
+
+    stamped_size = str((claimed_metadata or {}).get("sensenova_base_model_identity") or "").strip()
+    if not stamped_size:
+        return
+    try:
+        actual_size = str(os.path.getsize(base_path))
+    except OSError as exc:
+        raise RuntimeError(
+            f"SenseNova refuses to resume from {entry}: its stamped base "
+            f"model {base_path!r} could not be read ({exc})."
+        ) from exc
+    if actual_size != stamped_size:
+        raise RuntimeError(
+            f"SenseNova refuses to resume from {entry}: the base model at "
+            f"{base_path!r} is {actual_size} byte(s), but the checkpoint "
+            f"was stamped as trained against a base of {stamped_size} "
+            f"byte(s). This is not the base this run trained against."
+        )
 
 
 def _assert_supported_quantized_training_base(

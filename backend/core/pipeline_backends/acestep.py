@@ -57,6 +57,7 @@ import functools
 import os
 import random
 import re
+import weakref
 
 import torch
 
@@ -722,6 +723,21 @@ class AceStepMixin:
             code="lora_partial",
         )
 
+    def _acestep_lora_state(self, dit):
+        """The (originals, wrapped) maps for THIS DiT.
+
+        Reset when the model was reloaded: the maps hold the OLD DiT's Linears,
+        and `_unload_lora_acestep` re-resolves each stale path against the LIVE
+        DiT, so an inherited map installs model A's modules into model B. Keyed
+        by weakref rather than id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_acestep_lora_dit_ref", None)
+        if ref is None or ref() is not dit:
+            self._acestep_lora_original_modules: Dict[str, torch.nn.Module] = {}
+            self._acestep_lora_wrapped_modules: set = set()
+            self._acestep_lora_dit_ref = weakref.ref(dit)
+        return self._acestep_lora_original_modules, self._acestep_lora_wrapped_modules
+
     def _load_lora_acestep(self, lora_configs: list):
         """Load LoRAs onto the ACE-Step DiT (decoder attention + feed-forward).
 
@@ -734,6 +750,11 @@ class AceStepMixin:
             lora_configs: list of {"path": str, "strength": float, ...}
                 (same shape as every other arch's `params["loras"]`).
         """
+        # Unconditional, and BEFORE the empty-config exit: this is what re-keys
+        # the state to the live DiT, and a restore that failed in an earlier
+        # request must not leak its wrappers into this generation.
+        self._unload_lora_acestep()
+
         if not lora_configs:
             return
 
@@ -754,9 +775,7 @@ class AceStepMixin:
                 detail="The LoRA target scope (decoder.layers.*) does not exist on this model.",
             )
 
-        if not hasattr(self, "_acestep_lora_original_modules"):
-            self._acestep_lora_original_modules = {}
-            self._acestep_lora_wrapped_modules = set()
+        self._acestep_lora_state(dit)
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
@@ -774,8 +793,14 @@ class AceStepMixin:
                 print(f"[AceStep LoRA] ERROR: LoRA file not found: {lora_path}")
                 print(f"[AceStep LoRA]   Searched in: {lora_manager.lora_dir}")
                 print(f"[AceStep LoRA]   Additional dirs: {lora_manager.additional_dirs}")
+                lora_file = os.path.basename(str(lora_path))
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+                self._acestep_lora_warn(message, code="lora_not_found")
                 raise ValidationError(
-                    f"LoRA file not found: {os.path.basename(str(lora_path))}",
+                    f"LoRA file not found: {lora_file}",
                     detail="No such file exists in the registered LoRA directories.",
                 )
 
@@ -1239,37 +1264,44 @@ class AceStepMixin:
         wrap `encoder.lyric_encoder.layers.*` modules) via
         `_acestep_walk_module_path`, rather than re-deriving a fixed
         `decoder.layers` scope here; this keeps unload correct regardless of
-        which scopes a given LoRA touched."""
-        if not hasattr(self, "_acestep_lora_original_modules"):
-            print("[AceStep LoRA] No LoRAs loaded")
-            return
+        which scopes a given LoRA touched.
 
-        if not self.acestep_components:
-            print("[AceStep LoRA] WARNING: ACE-Step components not loaded")
-            return
-
-        dit = self.acestep_components.get("dit")
+        Those paths are re-resolved against the LIVE DiT, so which DiT the set
+        belongs to is decided by `_acestep_lora_state`, not by the call order."""
+        dit = (getattr(self, "acestep_components", None) or {}).get("dit")
         if dit is None:
-            print("[AceStep LoRA] WARNING: ACE-Step DiT not loaded -- cannot unload LoRA")
-            return
+            # Model unloaded: drop the maps so a later load cannot inherit them.
+            self._acestep_lora_original_modules = {}
+            self._acestep_lora_wrapped_modules = set()
+            self._acestep_lora_dit_ref = None
+            return 0
+
+        originals, wrapped = self._acestep_lora_state(dit)
+        if not wrapped:
+            return 0
 
         unloaded_count = 0
-        print(f"[AceStep LoRA] Unloading LoRAs ({len(self._acestep_lora_wrapped_modules)} modules)...")
+        print(f"[AceStep LoRA] Unloading LoRAs ({len(wrapped)} modules)...")
 
-        for module_key in list(self._acestep_lora_wrapped_modules):
-            original = self._acestep_lora_original_modules.get(module_key)
+        for module_key in list(wrapped):
+            original = originals.get(module_key)
             if original is None:
+                wrapped.discard(module_key)
                 continue
             parent, leaf = self._acestep_walk_module_path(dit, module_key)
             if parent is None:
                 print(f"[AceStep LoRA] WARNING: could not re-resolve {module_key!r} to unload -- skipping")
+                wrapped.discard(module_key)
                 continue
             setattr(parent, leaf, original)
+            # Discarded as each one lands, so a raise part way through leaves
+            # only the modules still wrapped for the next attempt to restore.
+            wrapped.discard(module_key)
             unloaded_count += 1
 
-        self._acestep_lora_wrapped_modules.clear()
         print(f"[AceStep LoRA] Unloaded {unloaded_count} LoRA modules")
         print("[AceStep LoRA] Original modules preserved for future LoRA loads")
+        return unloaded_count
 
     def _apply_or_clear_lora_acestep(self, lora_configs: list):
         """Shared load/unload gate, called by every generate path before the
@@ -1277,8 +1309,7 @@ class AceStepMixin:
         request, so the leading unload is a belt-and-braces guard against a
         wrapper that outlived its request rather than the normal path."""
         if lora_configs:
-            if getattr(self, "_acestep_lora_wrapped_modules", None):
-                self._unload_lora_acestep()
+            # `_load_lora_acestep` unloads first, unconditionally.
             self._load_lora_acestep(lora_configs)
         else:
             if getattr(self, "_acestep_lora_wrapped_modules", None):

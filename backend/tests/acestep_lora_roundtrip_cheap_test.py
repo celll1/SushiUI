@@ -186,9 +186,6 @@ def test_acestep_missing_file_refuses(warnings_seen):
         _Backend(_Dit())._load_lora_acestep([{"path": "no_such_acestep_lora.safetensors"}])
 
 
-@pytest.mark.xfail(reason="ACE-Step's missing-file branch raises ValidationError without "
-                          "calling _acestep_lora_warn, so the refusal never reaches "
-                          "warnings[]; its zero-target and stacking refusals do warn.")
 def test_acestep_missing_file_warns(warnings_seen):
     with pytest.raises(ValidationError):
         _Backend(_Dit())._load_lora_acestep([{"path": "no_such_acestep_lora.safetensors"}])
@@ -232,13 +229,6 @@ def test_acestep_disjoint_scopes_stack_additively(tmp_path, warnings_seen):
     assert warning_codes(warnings_seen) == []
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN DEFECT: _acestep_lora_original_modules/_acestep_lora_wrapped_modules are plain "
-    "attributes with no ownership key, so they outlive a model swap and "
-    "_unload_lora_acestep re-resolves each stale path against the NEW dit and installs "
-    "model A's Linears into model B (measured: 22 of 22 targets). Every other "
-    "architecture keys this state to the live component; ACE-Step does not. Remove this "
-    "marker with the fix."))
 def test_acestep_model_reload_never_splices_model_a_into_model_b(tmp_path):
     path, trained_paths = train_and_save(tmp_path)
 

@@ -514,7 +514,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-800 bg-gray-900/50 px-3">
         <div className="min-w-0">
           <p className="app-kicker">Training monitor</p>
-          <h2 className="truncate text-sm font-semibold">{currentRun.run_name}</h2>
+          <h2 className="truncate text-sm font-semibold">
+            <span className="mr-1.5 font-mono text-xs text-gray-500">#{currentRun.id}</span>
+            {currentRun.run_name}
+          </h2>
         </div>
         <button
           onClick={onClose}

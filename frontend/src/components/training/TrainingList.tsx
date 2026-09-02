@@ -85,7 +85,10 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
               className="w-full text-left p-2.5 pr-10"
             >
               <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-medium truncate">{run.run_name}</span>
+                <span className="text-sm font-medium truncate">
+                  <span className="mr-1.5 font-mono text-xs text-gray-500">#{run.id}</span>
+                  {run.run_name}
+                </span>
                 {getStatusIcon(run.status)}
               </div>
 

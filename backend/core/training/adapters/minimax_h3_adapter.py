@@ -37,13 +37,20 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from safetensors.torch import save_file
+
+# Temporary Phase 1 shim: ``MiniMaxH3LoRALinearLayer`` moved to
+# ``core.adapters.layers``, outside the training package, and is re-exported
+# here so existing importers (generation included) keep working. Removed at the
+# end of Phase 1.
+from core.adapters.layers import (  # noqa: F401
+    LoRALinearLayer,
+    MiniMaxH3LoRALinearLayer,
+)
 
 from .base_adapter import (
     BaseLoRAAdapter, is_lora_wrappable_linear, resolve_component_lr, LORA_COMPONENT_UNET
 )
-from .sd15_adapter import LoRALinearLayer
 
 
 # Default LoRA scope. BOTH groups default ON: that is the 300-module target set
@@ -67,32 +74,6 @@ def parse_scope_csv(scope_csv: str) -> Dict[str, bool]:
     """
     wanted = {tok.strip() for tok in (scope_csv or "").split(",") if tok.strip()}
     return {"attention": "attention" in wanted, "ff": "ff" in wanted}
-
-
-class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
-    """``LoRALinearLayer`` with the LoRA branch cast to the ACTIVATION dtype.
-
-    MiniMax-H3's training forward runs WITHOUT ``torch.autocast``: the vendored
-    transformer owns its own mixed-precision policy (fp32 I/O heads and AdaLN
-    projections, bf16 block stack, each activation aligned to its projection's
-    parameter dtype), and an autocast context would override those casts and make
-    training a different function from generation.
-
-    The stock layer relies on autocast to reconcile its fp32 master weights with
-    a bf16 activation. Without autocast that is not a style difference, it is a
-    ``RuntimeError`` on the first ``F.linear`` -- and, if the branch happened to
-    be built in the activation dtype instead, a silent loss of the fp32 master.
-    So the masters stay fp32 and are cast per call; the gradient flows back
-    through the cast to the fp32 parameters unchanged. This is exactly the LoRA
-    shape Phase 0T measured (bitwise save->reload, 600/600 tensors receiving
-    finite gradients).
-    """
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        org_out = self.original_module(x)
-        down = F.linear(x, self.lora_down.weight.to(x.dtype))
-        up = F.linear(down, self.lora_up.weight.to(x.dtype))
-        return org_out + up * self.scale
 
 
 def _flatten_to_sdscripts(module_path: str) -> str:

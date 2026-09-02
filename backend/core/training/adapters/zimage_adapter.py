@@ -181,6 +181,15 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
         """
         Save LoRA checkpoint in safetensors format.
 
+        Key stem is ``lora_name`` verbatim (``lora_transformer_<module path with
+        dots flattened>``), which is also the resume key in
+        ``LoRATrainer.load_checkpoint``; the generation loader
+        (``pipeline_backends/zimage._zimage_lora_key_stems``) reconstructs it
+        from the module path. Renaming it here would strand resume for every
+        checkpoint already on disk, so a spelling mismatch is repaired on the
+        load side instead. Alpha is metadata-only, and that loader reads it
+        from there -- an ``alpha != rank`` LoRA would otherwise apply at scale 1.
+
         Args:
             lora_layers: Dictionary of LoRA layers
             step: Current training step

@@ -54,6 +54,10 @@ class _Probe:
     _split_saved_optimizer_states = staticmethod(BaseTrainer._split_saved_optimizer_states)
     _repartition_optimizer_states = BaseTrainer._repartition_optimizer_states
     _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
+    _remap_optimizer_state_by_group_prefix = (
+        BaseTrainer._remap_optimizer_state_by_group_prefix)
+    _optimizer_state_entry_fits_param = staticmethod(
+        BaseTrainer._optimizer_state_entry_fits_param)
     _optimizer_state_param_count = staticmethod(BaseTrainer._optimizer_state_param_count)
     _fast_forward_lr_schedulers = BaseTrainer._fast_forward_lr_schedulers
     _fast_forward_one_lr_scheduler = staticmethod(BaseTrainer._fast_forward_one_lr_scheduler)

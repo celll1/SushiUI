@@ -159,3 +159,27 @@ def test_packed_mnt_conditioning_refuses_a_missing_label_vector():
     conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, owner)
     with pytest.raises(RuntimeError, match="per-item labels"):
         conditioning(object(), captions=["a", "b"], mnt_index=1, cfg_null=[True, False])
+
+
+def test_packed_batch_without_a_drop_mask_still_takes_the_packed_route():
+    """No drop rate -> the MNT loop hands a scalar False; a packed batch must
+    not fall into the single-prompt re-encode (which encodes captions[0] alone)."""
+    calls = []
+
+    class _Arch:
+        def encode_prompts(self, trainer, prompts, *, requires_grad, reference_image_paths, cfg_null):
+            calls.append((list(prompts), requires_grad, list(cfg_null)))
+            return "packed-rebuilt"
+
+    owner = SimpleNamespace(
+        train_text_encoder=True, arch=_Arch(), sensenova_four_phase=None,
+        _sensenova_prefix_cfg_null=[False, False], _sensenova_batch_ref_paths=None,
+        _sensenova_alt_cfg_null_prefixes={},
+    )
+    owner._sensenova_mnt_conditioning_packed = MethodType(
+        BaseTrainer._sensenova_mnt_conditioning_packed, owner)
+    owner.encode_caption = lambda *a, **k: (_ for _ in ()).throw(AssertionError("single encode used"))
+    conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, owner)
+    assembly = object()
+    assert conditioning(assembly, captions=["a", "b"], mnt_index=1, cfg_null=False)[3] == "packed-rebuilt"
+    assert calls == [(["a", "b"], True, [False, False])]

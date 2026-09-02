@@ -9,10 +9,23 @@ construction path.
 
 Used by ``TrainingPreviewGenerator`` to run txt2img / img2img / inpaint
 inference using the in-training model weights.
+
+LoRA stacking on a preview goes through the REAL diffusers loader mixin (the
+SD / SDXL subclasses below inherit it), because ``lora_manager.load_loras``
+needs kohya-key conversion, PEFT injection and a read-back count of installed
+branch containers -- none of which a hand-written shim reproduces.  PEFT
+refuses to wrap the trainer's own ``LoRALinearLayer``, so those wrappers are
+spliced out for the duration of the load and spliced back around the PEFT
+layer afterwards; see :func:`training_lora_detour`.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, List, Optional, Tuple
+
+
+class LoraStackingUnsupported(RuntimeError):
+    """Extra LoRAs cannot be stacked on this trainer's models."""
 
 
 class TempPipeline:
@@ -25,10 +38,13 @@ class TempPipeline:
         ``vae_scale_factor``);
       - ``StableDiffusion(XL)ControlNetPipeline(**components)``
         constructor (need ``.components`` property);
-      - LoRA loading via diffusers' ``load_lora_weights`` interface
-        (delegated to the underlying ``unet`` / ``text_encoder`` if
-        they have peft adapters attached, otherwise a manual fallback).
+      - ``lora_manager.load_loras``, which needs the diffusers loader mixin
+        that only the SD / SDXL subclasses below carry.
     """
+
+    # Read by diffusers' offload probe (_func_optionally_disable_offloading)
+    # before any LoRA load. The trainer moves modules itself; no accelerate hooks.
+    hf_device_map = None
 
     def __init__(
         self,
@@ -42,6 +58,7 @@ class TempPipeline:
         tokenizer_2: Optional[Any] = None,
         is_sdxl: bool = False,
         vae_scale_factor: int = 8,
+        arch_name: str = "unknown",
     ) -> None:
         self.unet = unet
         self.vae = vae
@@ -51,6 +68,7 @@ class TempPipeline:
         self.tokenizer = tokenizer
         self.tokenizer_2 = tokenizer_2
         self.is_sdxl = is_sdxl
+        self.arch_name = arch_name
         # custom_sampling_loop reads these directly
         self.vae_scale_factor = vae_scale_factor
         self.image_processor = None   # not needed by custom_sampling_loop
@@ -83,109 +101,162 @@ class TempPipeline:
             "feature_extractor": None,
         }
 
-    # ------------------------------------------------------------------
-    # LoRA loading (delegate to peft adapters on the underlying modules)
-    # ------------------------------------------------------------------
+    def lora_components(self) -> List[Any]:
+        """The modules a stacked LoRA may touch, in load order."""
+        return [m for m in (self.unet, self.text_encoder, self.text_encoder_2)
+                if m is not None]
 
-    def load_lora_weights(
-        self,
-        pretrained_model_name_or_path_or_dict,
-        adapter_name: Optional[str] = None,
-        **kwargs,
-    ):
-        """Forward to the underlying U-Net's peft adapter loader, if
-        available.  This is a best-effort path so ``lora_manager`` can
-        attach additional LoRAs on top of an in-training LoRA.
+    def assert_can_stack_loras(self) -> None:
+        """Raise before any load if this facade cannot apply extra LoRAs."""
 
-        Falls back to a no-op with a warning if the underlying modules
-        don't expose ``load_adapter``.
-        """
-        # The diffusers mixin would normally split the state_dict between
-        # unet and text_encoder and call adapter loading on each.  For
-        # the preview path, the most common request is "stack a saved
-        # diffusers-format LoRA on top of the training LoRA"; we lean on
-        # the loaders the lora_manager already routes through.  When
-        # neither path applies, we fail loudly so the calling code can
-        # report a clear error rather than silently dropping LoRAs.
-        loaded = False
-        for mod_name, mod in [("unet", self.unet),
-                              ("text_encoder", self.text_encoder),
-                              ("text_encoder_2", self.text_encoder_2)]:
-            if mod is None:
-                continue
-            if hasattr(mod, "load_adapter"):
-                try:
-                    mod.load_adapter(
-                        pretrained_model_name_or_path_or_dict,
-                        adapter_name=adapter_name,
-                        **kwargs,
-                    )
-                    loaded = True
-                except Exception as e:   # noqa: BLE001
-                    print(f"[TempPipeline] load_adapter on {mod_name} failed: {e}")
-        if not loaded:
-            raise NotImplementedError(
-                "TempPipeline.load_lora_weights: neither unet nor "
-                "text_encoders expose peft 'load_adapter'.  Stacking "
-                "additional LoRAs on top of the in-training model is "
-                "only supported when the trainer wraps modules with "
-                "PeftModel.  Use --bypass-preview-loras to skip."
+
+class NoLoraStackingTempPipeline(TempPipeline):
+    """Facade for an architecture the diffusers SD LoRA loader cannot serve."""
+
+    def _refusal(self) -> "LoraStackingUnsupported":
+        return LoraStackingUnsupported(
+            f"Stacking additional LoRAs on a training preview is implemented for "
+            f"SD1.5 and SDXL only. This run trains '{self.arch_name}' "
+            f"({type(self.unet).__name__}), whose LoRA key format the diffusers "
+            f"Stable Diffusion loader does not read, so loading one here would "
+            f"install nothing. Remove the extra LoRAs from the preview request."
+        )
+
+    def assert_can_stack_loras(self) -> None:
+        # Raised by the caller, not from inside load_lora_weights: lora_manager
+        # rewrites anything thrown there into a generic "could not be applied".
+        raise self._refusal()
+
+    def load_lora_weights(self, *args, **kwargs):
+        raise self._refusal()
+
+
+def _sd_temp_pipeline_classes():
+    """Built lazily so importing this module does not pull in diffusers for
+    callers that only want the sampling facade."""
+    from diffusers.loaders.lora_pipeline import (
+        StableDiffusionLoraLoaderMixin,
+        StableDiffusionXLLoraLoaderMixin,
+    )
+
+    class SDTempPipeline(TempPipeline, StableDiffusionLoraLoaderMixin):
+        pass
+
+    class SDXLTempPipeline(TempPipeline, StableDiffusionXLLoraLoaderMixin):
+        pass
+
+    return SDTempPipeline, SDXLTempPipeline
+
+
+# ---------------------------------------------------------------------------
+# Training-LoRA detour
+#
+# The trainer replaces target Linears with its own ``LoRALinearLayer``, and PEFT
+# refuses to wrap one ("Target module ... is not supported"), so a stacked LoRA
+# could never load over a LoRA run. Splicing the wrapper out for the load and
+# back around the PEFT layer afterwards composes them in the right order:
+#     wrapper(x) = peft(x) + training_branch(x) = base(x) + extra(x) + training(x)
+# and leaves the wrapper object itself in place, which matters because the
+# optimizer holds its parameters.
+# ---------------------------------------------------------------------------
+
+# (parent module, attribute name or list index, the trainer's wrapper)
+TrainingLoraSite = Tuple[Any, Any, Any]
+
+
+def _get_child(parent: Any, attr: Any) -> Any:
+    return parent[attr] if isinstance(attr, int) else getattr(parent, attr)
+
+
+def _set_child(parent: Any, attr: Any, module: Any) -> None:
+    if isinstance(attr, int):
+        parent[attr] = module
+    else:
+        setattr(parent, attr, module)
+
+
+def collect_training_lora_sites(components: List[Any]) -> List[TrainingLoraSite]:
+    """Every ``LoRALinearLayer`` the trainer installed, with its parent."""
+    from core.adapters.layers import LoRALinearLayer
+
+    sites: List[TrainingLoraSite] = []
+    for component in components:
+        if component is None or not hasattr(component, "named_modules"):
+            continue
+        for _name, parent in component.named_modules():
+            for attr, child in list(getattr(parent, "_modules", {}).items()):
+                if isinstance(child, LoRALinearLayer):
+                    sites.append((parent, int(attr) if attr.isdigit() else attr, child))
+    return sites
+
+
+@contextmanager
+def training_lora_detour(sites: List[TrainingLoraSite]):
+    """Expose each wrapper's inner module in its place, then put the wrapper
+    back around whatever now sits there.
+
+    Restores per site under its own guard: one failure must not strand the
+    remaining wrappers outside the model, which would silently disable part of
+    the in-training adapter for the rest of the run.
+    """
+    spliced: List[TrainingLoraSite] = []
+    try:
+        for parent, attr, wrapper in sites:
+            spliced.append((parent, attr, wrapper))
+            _set_child(parent, attr, wrapper.original_module)
+        yield
+    finally:
+        errors = []
+        for parent, attr, wrapper in reversed(spliced):
+            try:
+                current = _get_child(parent, attr)
+                if current is not wrapper:
+                    wrapper.original_module = current
+                    _set_child(parent, attr, wrapper)
+            except Exception as e:   # noqa: BLE001
+                errors.append(f"{type(wrapper).__name__}.{attr}: {e}")
+        if errors:
+            raise RuntimeError(
+                f"Restoring the in-training LoRA wrappers failed for "
+                f"{len(errors)} site(s): {errors[:3]}"
             )
 
-    def set_adapters(self, adapter_names, adapter_weights=None):
-        """Forward adapter activation to the underlying modules."""
-        for mod in (self.unet, self.text_encoder, self.text_encoder_2):
-            if mod is None:
-                continue
-            if hasattr(mod, "set_adapter"):
-                try:
-                    mod.set_adapter(adapter_names)
-                except Exception:   # noqa: BLE001
-                    pass
-            # PEFT-style scaling
-            if hasattr(mod, "set_adapters"):
-                try:
-                    mod.set_adapters(adapter_names, adapter_weights)
-                except Exception:   # noqa: BLE001
-                    pass
 
-    def delete_adapters(self, adapter_names):
-        """Remove a previously-loaded adapter from the underlying modules."""
-        if isinstance(adapter_names, str):
-            adapter_names = [adapter_names]
-        for mod in (self.unet, self.text_encoder, self.text_encoder_2):
-            if mod is None:
-                continue
-            for n in adapter_names:
-                if hasattr(mod, "delete_adapter"):
-                    try:
-                        mod.delete_adapter(n)
-                    except Exception:   # noqa: BLE001
-                        pass
+def components_with_peft_adapters(components: List[Any]) -> List[str]:
+    """Components that already carry PEFT adapters before a preview loads any.
 
-    def unload_lora_weights(self):
-        """Delete every adapter we know about — best-effort cleanup."""
-        for mod in (self.unet, self.text_encoder, self.text_encoder_2):
-            if mod is None:
-                continue
-            adapters = getattr(mod, "peft_config", None)
-            if adapters:
-                for name in list(adapters.keys()):
-                    if hasattr(mod, "delete_adapter"):
-                        try:
-                            mod.delete_adapter(name)
-                        except Exception:   # noqa: BLE001
-                            pass
+    Nothing in the trainer installs PEFT (LoRA training uses
+    ``LoRALinearLayer``), so a non-empty result is state this module did not
+    create and cannot promise to restore.
+    """
+    named = []
+    for component in components:
+        config = getattr(component, "peft_config", None)
+        if config:
+            named.append(f"{type(component).__name__}({sorted(config)})")
+    return named
 
 
 def build_temp_pipeline_for_trainer(trainer, scheduler) -> TempPipeline:
     """Convenience constructor: build the wrapper from a BaseTrainer.
 
     The trainer carries ``unet``, ``vae``, ``text_encoder``, ``tokenizer``,
-    and optionally ``text_encoder_2`` / ``tokenizer_2`` (SDXL).
+    and optionally ``text_encoder_2`` / ``tokenizer_2`` (SDXL).  The class
+    returned decides whether extra LoRAs can be stacked: only a diffusers
+    ``UNet2DConditionModel`` (SD1.5 / SDXL) is served by the SD loader mixin.
     """
+    from diffusers import UNet2DConditionModel
+
     is_sdxl = getattr(trainer, "is_sdxl", False) and trainer.text_encoder_2 is not None
-    return TempPipeline(
+    arch_name = getattr(getattr(trainer, "arch", None), "name", None) or "unknown"
+
+    if isinstance(trainer.unet, UNet2DConditionModel):
+        sd_cls, sdxl_cls = _sd_temp_pipeline_classes()
+        cls = sdxl_cls if is_sdxl else sd_cls
+    else:
+        cls = NoLoraStackingTempPipeline
+
+    return cls(
         unet=trainer.unet,
         vae=trainer.vae,
         text_encoder=trainer.text_encoder,
@@ -194,4 +265,5 @@ def build_temp_pipeline_for_trainer(trainer, scheduler) -> TempPipeline:
         tokenizer=trainer.tokenizer,
         tokenizer_2=trainer.tokenizer_2 if is_sdxl else None,
         is_sdxl=is_sdxl,
+        arch_name=arch_name,
     )

@@ -5371,20 +5371,26 @@ class BaseTrainer(ABC):
 
         Returns True when at least one scheduler was re-armed.
         """
+        # A partial load re-arms too, and saying "NOT restored" there contradicts
+        # the line above it, which reports how many parameters kept their state.
+        cause = ("Some parameters have fresh optimizer moments"
+                 if getattr(self, "_optimizer_state_partially_fresh", False)
+                 else "Optimizer state was NOT restored")
+
         if not self.config.get(
             "rewarmup_on_optimizer_reset",
             _TRAINING_DEFAULTS["rewarmup_on_optimizer_reset"],
         ):
-            print(f"{self.log_prefix} Optimizer state was NOT restored, but "
+            print(f"{self.log_prefix} {cause}, but "
                   f"rewarmup_on_optimizer_reset is off: resuming at the "
-                  f"schedule's un-warmed LR with zeroed optimizer moments")
+                  f"schedule's un-warmed LR")
             return False
 
         warmup = max(0, int(getattr(self, "optimizer_warmup_steps", 0) or 0))
         if warmup <= 0:
-            print(f"{self.log_prefix} Optimizer state was NOT restored; no warmup "
+            print(f"{self.log_prefix} {cause}; no warmup "
                   f"to re-arm (lr_warmup_steps=0). The first steps run at the "
-                  f"full scheduled LR with zeroed optimizer moments.")
+                  f"full scheduled LR.")
             return False
 
         anchor = int(global_step)
@@ -5410,7 +5416,7 @@ class BaseTrainer(ABC):
                   f"scheduler(s)); resuming at the full scheduled LR")
             return False
 
-        print(f"{self.log_prefix} Optimizer state was NOT restored (fresh moments). "
+        print(f"{self.log_prefix} {cause}. "
               f"Re-arming the configured {warmup}-step warmup from step {anchor} "
               f"over {rearmed} schedule(s)"
               + (f" ({skipped} non-LambdaLR skipped)" if skipped else "")

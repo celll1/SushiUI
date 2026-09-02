@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -47,6 +48,65 @@ def _is_lora_target(module) -> bool:
     from core.training.adapters.base_adapter import is_lora_wrappable_linear
 
     return is_lora_wrappable_linear(module)
+
+
+def _zimage_lora_candidate(module) -> bool:
+    """A wrappable Linear, OR one an earlier LoRA in this request already wrapped.
+
+    ``_is_lora_target`` deliberately excludes ``LoRALinearLayer``; without this
+    second case a second selected LoRA would skip every occupied target and
+    report zero matches as if its keys were wrong.
+    """
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    return _is_lora_target(module) or isinstance(module, LoRALinearLayer)
+
+
+def _zimage_lora_key_stems(module_path: str) -> List[str]:
+    """Checkpoint key stems that may carry the LoRA branch of one transformer
+    submodule, in priority order.
+
+    ``module_path`` is the dotted path inside ``ZImageTransformer2DModel``
+    (e.g. ``layers.0.attention.to_q``), identical on both sides: the trainer
+    walks the same unwrapped model this loader does.
+
+    - ``lora_transformer_<flattened>`` is what ``ZImageLoRAAdapter`` writes; see
+      its ``save_checkpoint`` for why that codec is repaired here, not there.
+    - ``transformer.<dotted>`` is the spelling this loader accepted before;
+      kept so files already on disk keep applying.
+    """
+    return [
+        f"lora_transformer_{module_path.replace('.', '_')}",
+        f"transformer.{module_path}",
+    ]
+
+
+def _zimage_lora_branch(state_dict: Dict[str, Any], module_path: str):
+    """``(down, up, alpha_or_None)`` for ``module_path``, or None if absent."""
+    for stem in _zimage_lora_key_stems(module_path):
+        down = state_dict.get(f"{stem}.lora_down.weight")
+        up = state_dict.get(f"{stem}.lora_up.weight")
+        if down is not None and up is not None:
+            return down, up, state_dict.get(f"{stem}.alpha")
+    return None
+
+
+def _zimage_lora_metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
+    """Alpha from safetensors metadata, for files carrying no per-key ``.alpha``.
+
+    ``ZImageLoRAAdapter.save_checkpoint`` records rank/alpha in metadata only;
+    without this an ``alpha != rank`` LoRA would apply at scale 1.0 instead of
+    the scale it was trained at.
+    """
+    for key in ("lora_alpha", "ss_network_alpha"):
+        raw = (metadata or {}).get(key)
+        if raw is None:
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 class ZImageMixin:
@@ -189,6 +249,20 @@ class ZImageMixin:
                 stale.clear()
         return model
 
+    def _zimage_lora_state(self, transformer):
+        """The (originals, wrapped) maps for THIS transformer.
+
+        Reset when the model was reloaded: the maps hold the OLD transformer's
+        Linears, and restoring them would splice them into the new model. Keyed
+        by weakref rather than id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_zimage_lora_transformer_ref", None)
+        if ref is None or ref() is not transformer:
+            self._zimage_lora_original_modules = {}
+            self._zimage_lora_wrapped_modules = set()
+            self._zimage_lora_transformer_ref = weakref.ref(transformer)
+        return self._zimage_lora_original_modules, self._zimage_lora_wrapped_modules
+
     def _load_lora_zimage(self, lora_configs: List[Dict]):
         """Load LoRAs for Z-Image Transformer
 
@@ -199,7 +273,11 @@ class ZImageMixin:
             Z-Image uses component-based architecture (not pipeline-based).
             LoRAs wrap original linear layers (forward-time addition, not weight merging).
             This allows LoRAs to be unloaded by restoring original modules.
-            Based on training implementation in lora_trainer.py:674-708
+
+        Raises:
+            FileNotFoundError / RuntimeError when a requested LoRA cannot be
+            applied at all. A requested-but-ineffective LoRA must not produce a
+            successful generation.
         """
         if not lora_configs:
             return
@@ -209,11 +287,7 @@ class ZImageMixin:
             return
 
         transformer = self.zimage_components["transformer"]
-
-        # Store original modules for unloading (first time only)
-        if not hasattr(self, '_zimage_lora_original_modules'):
-            self._zimage_lora_original_modules = {}
-            self._zimage_lora_wrapped_modules = set()  # Track which modules have LoRA
+        self._zimage_lora_state(transformer)
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
@@ -222,16 +296,23 @@ class ZImageMixin:
 
         for i, lora_config in enumerate(lora_configs):
             lora_path = lora_config.get("path", "")
+            # Warnings ride into the PNG metadata chunk, so never an absolute path.
+            lora_file = os.path.basename(str(lora_path))
             lora_strength = lora_config.get("strength", 1.0)
 
             # Resolve path using LoRAManager (checks lora_dir + additional_dirs)
             resolved_path = lora_manager._resolve_lora_path(lora_path)
 
             if resolved_path is None:
-                print(f"[Z-Image LoRA] WARNING: LoRA file not found: {lora_path}")
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+                print(f"[Z-Image LoRA] ERROR: {message}")
                 print(f"[Z-Image LoRA]   Searched in: {lora_manager.lora_dir}")
                 print(f"[Z-Image LoRA]   Additional dirs: {lora_manager.additional_dirs}")
-                continue
+                self._zimage_lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
 
             print(f"[Z-Image LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
 
@@ -240,13 +321,19 @@ class ZImageMixin:
 
             try:
                 with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    metadata = f.metadata()
                     lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
 
-                print(f"[Z-Image LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+                fallback_alpha = _zimage_lora_metadata_alpha(metadata)
+                file_pairs = sum(1 for k in lora_state_dict if k.endswith(".lora_down.weight"))
+                print(f"[Z-Image LoRA] Loaded {len(lora_state_dict)} tensors "
+                      f"({file_pairs} down/up pairs) from {lora_path}")
 
                 # Apply LoRA to transformer attention modules
                 # Target modules: to_q, to_k, to_v, to_out.0 in ZImageAttention
                 applied_count = 0
+                mismatch_count = 0
+                occupied_count = 0
 
                 # Find all attention modules
                 for attn_name, attn_module in transformer.named_modules():
@@ -255,70 +342,29 @@ class ZImageMixin:
 
                     # Apply to to_q, to_k, to_v
                     for attr_name in ["to_q", "to_k", "to_v"]:
-                        if hasattr(attn_module, attr_name):
-                            original_linear = getattr(attn_module, attr_name)
-
-                            if _is_lora_target(original_linear):
-                                # Build LoRA key prefix
-                                lora_key_prefix = f"transformer.{attn_name}.{attr_name}"
-                                lora_down_key = f"{lora_key_prefix}.lora_down.weight"
-                                lora_up_key = f"{lora_key_prefix}.lora_up.weight"
-
-                                # Check if LoRA weights exist for this module
-                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                    lora_down_weight = lora_state_dict[lora_down_key]
-                                    lora_up_weight = lora_state_dict[lora_up_key]
-
-                                    # Load alpha if present
-                                    lora_alpha_key = f"{lora_key_prefix}.alpha"
-                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                    # Wrap with LoRA layer
-                                    module_key = f"{attn_name}.{attr_name}"
-                                    wrapped_module = self._wrap_with_lora(
-                                        attn_module,
-                                        attr_name,
-                                        original_linear,
-                                        lora_down_weight,
-                                        lora_up_weight,
-                                        lora_strength,
-                                        lora_alpha,
-                                        module_key
-                                    )
-                                    if wrapped_module is not None:
-                                        applied_count += 1
+                        original_linear = getattr(attn_module, attr_name, None)
+                        if not _zimage_lora_candidate(original_linear):
+                            continue
+                        status = self._zimage_apply_lora_branch(
+                            attn_module, attr_name, original_linear,
+                            f"{attn_name}.{attr_name}", lora_state_dict,
+                            lora_strength, fallback_alpha,
+                        )
+                        applied_count += status == "applied"
+                        mismatch_count += status == "shape_mismatch"
+                        occupied_count += status == "already_wrapped"
 
                     # Apply to to_out.0 (ModuleList)
                     if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
-                        if len(attn_module.to_out) > 0 and _is_lora_target(attn_module.to_out[0]):
-                            original_linear = attn_module.to_out[0]
-
-                            lora_key_prefix = f"transformer.{attn_name}.to_out.0"
-                            lora_down_key = f"{lora_key_prefix}.lora_down.weight"
-                            lora_up_key = f"{lora_key_prefix}.lora_up.weight"
-
-                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                lora_down_weight = lora_state_dict[lora_down_key]
-                                lora_up_weight = lora_state_dict[lora_up_key]
-
-                                # Load alpha if present
-                                lora_alpha_key = f"{lora_key_prefix}.alpha"
-                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                # Wrap with LoRA layer (to_out is ModuleList, replace [0])
-                                module_key = f"{attn_name}.to_out.0"
-                                wrapped_module = self._wrap_with_lora(
-                                    attn_module.to_out,
-                                    0,  # ModuleList index
-                                    original_linear,
-                                    lora_down_weight,
-                                    lora_up_weight,
-                                    lora_strength,
-                                    lora_alpha,
-                                    module_key
-                                )
-                                if wrapped_module is not None:
-                                    applied_count += 1
+                        if len(attn_module.to_out) > 0 and _zimage_lora_candidate(attn_module.to_out[0]):
+                            status = self._zimage_apply_lora_branch(
+                                attn_module.to_out, 0, attn_module.to_out[0],
+                                f"{attn_name}.to_out.0", lora_state_dict,
+                                lora_strength, fallback_alpha,
+                            )
+                            applied_count += status == "applied"
+                            mismatch_count += status == "shape_mismatch"
+                            occupied_count += status == "already_wrapped"
 
                 print(f"[Z-Image LoRA] Applied LoRA to {applied_count} modules")
 
@@ -326,8 +372,97 @@ class ZImageMixin:
                 print(f"[Z-Image LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
                 import traceback
                 traceback.print_exc()
+                self._zimage_lora_warn(
+                    f"LoRA '{lora_file}' failed to load: {e}",
+                    code="lora_load_failed",
+                )
+                raise RuntimeError(f"Z-Image LoRA '{lora_file}' could not be applied: {e}") from e
 
-    def _wrap_with_lora(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
+            # A requested LoRA that matched nothing is not a successful generation.
+            if applied_count == 0:
+                if occupied_count:
+                    # This backend replaces the target Linear, so a second file
+                    # can only overwrite the first (last-wins) -- refuse instead.
+                    # Stacking needs the composite wrapper (LYCORIS_ADAPTER_DESIGN
+                    # Phase 1), not a re-wrap here.
+                    mismatch_note = (
+                        f" ({mismatch_count} more skipped on shape mismatch)"
+                        if mismatch_count else ""
+                    )
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {file_pairs} down/up pairs applied - "
+                        f"{occupied_count} target module(s) are already wrapped by an earlier "
+                        f"LoRA in this request{mismatch_note}. Z-Image applies one LoRA at a "
+                        f"time; select a single Z-Image LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {file_pairs} down/up pairs applied to the loaded "
+                        f"Z-Image transformer ({mismatch_count} skipped on shape mismatch) -- "
+                        f"unrecognized key format or a different model. Expected key stems like "
+                        f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[0]}' or "
+                        f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[1]}'. "
+                        f"Sample keys in file: {list(lora_state_dict.keys())[:5]}"
+                    )
+                    code = "lora_incompatible"
+                print(f"[Z-Image LoRA] ERROR: {message}")
+                self._zimage_lora_warn(message, code=code)
+                raise RuntimeError(message)
+
+            if mismatch_count or occupied_count or applied_count < file_pairs:
+                self._zimage_lora_warn(
+                    f"LoRA '{lora_file}': applied {applied_count} of {file_pairs} down/up pairs "
+                    f"({mismatch_count} skipped on shape mismatch, {occupied_count} already wrapped "
+                    f"by an earlier LoRA).",
+                    code="lora_partial",
+                )
+
+    @staticmethod
+    def _zimage_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _zimage_apply_lora_branch(
+        self, parent_module, attr_name, original_linear, module_path,
+        lora_state_dict, strength, fallback_alpha,
+    ) -> str:
+        """Wrap one target module with its branch from ``lora_state_dict``.
+
+        Returns "applied", "absent", "already_wrapped" or "shape_mismatch". A
+        shape mismatch is skipped rather than assigned: ``.data = tensor`` would
+        replace the parameter wholesale and only fail later, inside the denoise
+        loop.
+        """
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+        found = _zimage_lora_branch(lora_state_dict, module_path)
+        if found is None:
+            return "absent"
+        if isinstance(original_linear, LoRALinearLayer):
+            return "already_wrapped"
+
+        down, up, alpha = found
+        in_features = getattr(original_linear, "in_features", None)
+        out_features = getattr(original_linear, "out_features", None)
+        if (down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]
+                or down.shape[1] != in_features or up.shape[0] != out_features):
+            print(f"[Z-Image LoRA] WARNING: shape mismatch at {module_path}: "
+                  f"down{tuple(down.shape)} up{tuple(up.shape)} vs Linear"
+                  f"({in_features} -> {out_features}); skipping this module")
+            return "shape_mismatch"
+
+        self._wrap_with_lora(
+            parent_module, attr_name, original_linear, down, up,
+            strength, alpha, module_path, fallback_alpha,
+        )
+        return "applied"
+
+    def _wrap_with_lora(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key, fallback_alpha=None):
         """Wrap a linear layer with LoRA
 
         Args:
@@ -337,15 +472,15 @@ class ZImageMixin:
             lora_down_weight: LoRA down projection weight [rank, in_features]
             lora_up_weight: LoRA up projection weight [out_features, rank]
             strength: LoRA strength multiplier
-            alpha: LoRA alpha parameter
+            alpha: per-key alpha tensor, or None
             module_key: Unique key for this module (for tracking)
+            fallback_alpha: alpha from file metadata, used when no per-key tensor
 
         Returns:
             Wrapped LoRA module or None if failed
         """
         # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
         from core.training.adapters.sd15_adapter import LoRALinearLayer
-        import numpy as np
 
         # Get true original module (unwrap if it's already a LoRA wrapper)
         LoRALinearLayerClass = LoRALinearLayer  # Same class, just alias for clarity
@@ -361,9 +496,14 @@ class ZImageMixin:
         if module_key not in self._zimage_lora_original_modules:
             self._zimage_lora_original_modules[module_key] = true_original
 
-        # Compute rank and alpha value
+        # Per-key tensor wins, then file metadata, then rank (alpha == rank).
         rank = lora_down_weight.shape[0]
-        alpha_value = alpha.item() if alpha is not None else rank
+        if alpha is not None:
+            alpha_value = float(alpha.item()) if torch.is_tensor(alpha) else float(alpha)
+        elif fallback_alpha is not None:
+            alpha_value = float(fallback_alpha)
+        else:
+            alpha_value = float(rank)
 
         # Create LoRA wrapper using the true original module
         # lora_name is required parameter, use module_key for identification
@@ -404,7 +544,7 @@ class ZImageMixin:
         # Track wrapped modules
         self._zimage_lora_wrapped_modules.add(module_key)
 
-        print(f"[Z-Image LoRA DEBUG] Wrapped {module_key}: alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, scaling={lora_wrapper.scaling:.4f}")
+        print(f"[Z-Image LoRA DEBUG] Wrapped {module_key}: alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, scale={lora_wrapper.scale:.4f}")
 
         return lora_wrapper
 
@@ -413,45 +553,48 @@ class ZImageMixin:
 
         Restores original linear layers by removing LoRA wrappers.
         """
-        if not hasattr(self, '_zimage_lora_original_modules'):
-            print("[Z-Image LoRA] No LoRAs loaded")
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+        components = getattr(self, "zimage_components", None)
+        transformer = components.get("transformer") if components else None
+        if transformer is None:
+            # Model unloaded: drop the maps so a later load cannot inherit them.
+            self._zimage_lora_original_modules = {}
+            self._zimage_lora_wrapped_modules = set()
+            self._zimage_lora_transformer_ref = None
             return
 
-        if not self.zimage_components:
-            print("[Z-Image LoRA] WARNING: Z-Image components not loaded")
+        originals, wrapped = self._zimage_lora_state(transformer)
+        if not wrapped:
             return
 
-        transformer = self.zimage_components["transformer"]
+        print(f"[Z-Image LoRA] Unloading LoRAs ({len(wrapped)} wrapped module(s))...")
         unloaded_count = 0
 
-        print(f"[Z-Image LoRA] Unloading LoRAs ({len(self._zimage_lora_wrapped_modules)} modules)...")
-
-        # Restore original modules
+        # Driven by what is actually wrapped, not by map membership: the originals
+        # map outlives an unload (kept for the next load) and would overcount.
         for attn_name, attn_module in transformer.named_modules():
             if "ZImageAttention" not in attn_module.__class__.__name__:
                 continue
 
-            # Restore to_q, to_k, to_v
             for attr_name in ["to_q", "to_k", "to_v"]:
-                module_key = f"{attn_name}.{attr_name}"
-                if module_key in self._zimage_lora_original_modules:
-                    original_module = self._zimage_lora_original_modules[module_key]
-                    setattr(attn_module, attr_name, original_module)
+                current = getattr(attn_module, attr_name, None)
+                if not isinstance(current, LoRALinearLayer):
+                    continue
+                key = f"{attn_name}.{attr_name}"
+                setattr(attn_module, attr_name, originals.get(key, current.original_module))
+                unloaded_count += 1
+
+            to_out = getattr(attn_module, "to_out", None)
+            if isinstance(to_out, torch.nn.ModuleList) and len(to_out) > 0:
+                current = to_out[0]
+                if isinstance(current, LoRALinearLayer):
+                    key = f"{attn_name}.to_out.0"
+                    to_out[0] = originals.get(key, current.original_module)
                     unloaded_count += 1
 
-            # Restore to_out.0 (ModuleList)
-            if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
-                module_key = f"{attn_name}.to_out.0"
-                if module_key in self._zimage_lora_original_modules:
-                    original_module = self._zimage_lora_original_modules[module_key]
-                    attn_module.to_out[0] = original_module
-                    unloaded_count += 1
-
-        # Clear wrapped modules tracking (but keep original modules for future loads)
-        self._zimage_lora_wrapped_modules.clear()
-
+        wrapped.clear()
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
-        print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
     def _zimage_cleanup(self, gen_succeeded=True, keep_te=False, keep_transformer=False, keep_vae=False):
         """Safety-net CPU offload for Z-Image components.

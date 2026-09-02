@@ -996,7 +996,7 @@ def denoise_loop(
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
             if progress_callback is not None:
-                progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+                progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
     finally:
         # Defensive clear: never let a stale StyleContext leak into a later forward
         # (e.g. a subsequent non-style generation reusing this transformer instance,

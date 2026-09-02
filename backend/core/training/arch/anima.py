@@ -15,6 +15,7 @@ from core.training.components.wiring import ANIMA_WIRING
 class AnimaArchHandler(ArchHandler):
     name = "anima"
     wiring = ANIMA_WIRING
+    wires_sample_step_progress = True
     pixel_align = 16  # vae_scale(8) * patch_spatial(2); patchify asserts on non-/16 dims
     # noisy_latents = (1-sigma)*latents + sigma*noise (ops/anima_ops.py train_step).
     # sampler t=0 is clean.
@@ -91,4 +92,5 @@ class AnimaArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

@@ -15,6 +15,7 @@ from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 class Ltx2ArchHandler(ArchHandler):
     name = "ltx2"
     wiring = LTX2_WIRING
+    wires_sample_step_progress = True
     pixel_align = 32  # LTX spatial VAE downscale (÷32); dims must be a multiple of 32.
     # Temporal contract: 8*k+1 clip lengths, (L-1)//8+1 latent frames, NO fixed
     # frame rate (the clip keeps its source fps, which train_step feeds to the
@@ -93,4 +94,5 @@ class Ltx2ArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

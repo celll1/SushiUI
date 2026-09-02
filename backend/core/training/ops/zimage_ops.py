@@ -538,6 +538,7 @@ def generate_sample(
     guidance_scale: float = 3.5,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ) -> Image.Image:
     """
     Generate sample image during training (Z-Image).
@@ -549,6 +550,7 @@ def generate_sample(
         num_inference_steps: Number of denoising steps
         guidance_scale: CFG scale
         seed: Random seed (-1 for random)
+        step_progress_callback: optional (completed_steps, total_steps) reporter
 
     Returns:
         PIL Image
@@ -679,6 +681,7 @@ def generate_sample(
             uncond_mask=uncond_mask,
             guidance_scale=guidance_scale,
             scheduler=inference_scheduler,
+            step_progress_callback=step_progress_callback,
         )
 
         # Free prompt embeddings
@@ -760,6 +763,7 @@ def _run_zimage_denoising_loop(
     uncond_mask: torch.Tensor,
     guidance_scale: float,
     scheduler,
+    step_progress_callback=None,
 ) -> torch.Tensor:
     """Run Z-Image denoising loop for sample generation.
 
@@ -773,6 +777,7 @@ def _run_zimage_denoising_loop(
     # inside the forward — regardless of the mixed_precision flag. Mirrors the
     # anima/lens fix (a3db4a1); VAE decode stays outside in _decode_zimage_latents.
     compute_dtype = next(trainer.transformer_original.parameters()).dtype
+    total_steps = len(scheduler.timesteps)
     with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=compute_dtype):
         for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
             # Check for stop flag during sample generation (allow graceful shutdown)
@@ -783,6 +788,8 @@ def _run_zimage_denoising_loop(
 
             # Skip last step if t=0 (flow matching termination, same as pipeline.py:1001-1004)
             if t == 0 and i == len(scheduler.timesteps) - 1:
+                if step_progress_callback is not None:
+                    step_progress_callback(total_steps, total_steps)
                 continue
 
             # Prepare input
@@ -845,6 +852,9 @@ def _run_zimage_denoising_loop(
 
             # Denoise step
             latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+
+            if step_progress_callback is not None:
+                step_progress_callback(i + 1, total_steps)
 
     return latents
 

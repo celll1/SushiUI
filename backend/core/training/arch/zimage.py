@@ -15,6 +15,7 @@ from core.training.components.wiring import ZIMAGE_WIRING
 class ZImageArchHandler(ArchHandler):
     name = "zimage"
     wiring = ZIMAGE_WIRING
+    wires_sample_step_progress = True
     pixel_align = 16  # vae_scale(8) * patch(2)
     # noisy = (1-t)*latents + t*noise via add_noise_unified(noise_process="flow")
     # (ops/zimage_ops.py train_step; default and only supported noise_process).
@@ -87,4 +88,5 @@ class ZImageArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

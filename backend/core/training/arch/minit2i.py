@@ -16,6 +16,7 @@ class MiniT2IArchHandler(ArchHandler):
     name = "minit2i"
     wiring = MINIT2I_WIRING
     pixel_align = 16  # GRID_ALIGN = patch_size(16); pixel-space patchify unit
+    wires_sample_step_progress = True
     # The inference uncond branch reuses the SAME text tensor with a zeroed mask
     # (minit2i_pipeline_ops._predict_x0_cfg), so the aligned null is reachable by
     # rewriting the already-collated conditioning. Mirrored for the API process
@@ -102,4 +103,5 @@ class MiniT2IArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

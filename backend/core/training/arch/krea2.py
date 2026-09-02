@@ -16,6 +16,7 @@ class Krea2ArchHandler(ArchHandler):
     name = "krea2"
     wiring = KREA2_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
+    wires_sample_step_progress = True
     # noisy = (1-sigma)*latents + sigma*noise (ops/krea2_ops.py, "sigma=1 ->
     # noise" comment). sampler t=0 is clean.
     timestep_convention = "t0"
@@ -81,4 +82,5 @@ class Krea2ArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

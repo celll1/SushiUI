@@ -15,6 +15,7 @@ from core.training.components.wiring import FLUX2_WIRING
 class Flux2ArchHandler(ArchHandler):
     name = "flux2"
     wiring = FLUX2_WIRING
+    wires_sample_step_progress = True
     pixel_align = 16  # vae_scale(8) * patch(2)
     # noisy = (1-t)*latents + t*noise via add_noise_unified(noise_process="flow")
     # (ops/flux2_ops.py train_step; default and only supported noise_process).
@@ -91,4 +92,5 @@ class Flux2ArchHandler(ArchHandler):
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
             reference_image_path=sample_ctx.reference_image_path,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

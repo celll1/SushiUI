@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -22,7 +24,11 @@ from api.param_defaults import (
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
 )
 from api.routes import TrainingRunCreateRequest, get_training_defaults
+from core.training.arch import ARCH_REGISTRY
 from core.training.arch.base_arch import SampleContext
+from core.training.arch.krea2 import Krea2ArchHandler
+from core.training.arch.lens import LensArchHandler
+from core.training.arch.minit2i import MiniT2IArchHandler
 from core.training.arch.sd15 import SD15ArchHandler
 from core.training.arch.sdxl import SDXLArchHandler
 from core.training.arch.sensenova import SenseNovaArchHandler
@@ -670,3 +676,180 @@ def test_sample_step_progress_reaches_segment_end_when_scheduler_underruns():
 
     assert calls[-1]["step"] == 28
     assert calls[-1]["total"] == 28
+
+
+def _resolve_generate_sample_callee(func: ast.FunctionDef, call: ast.Call):
+    """Resolve a ``<x>.generate_sample(...)`` call site to the actual callable
+    it targets, so its real signature can be inspected. Handles the two
+    shapes every handler uses: ``trainer.generate_sample`` (BaseTrainer's thin
+    delegator, sd15/sdxl) and ``<ops_module>.generate_sample`` where the
+    module is bound via a local ``from core.training.ops import <ops_module>``
+    inside the same function body."""
+    if not isinstance(call.func, ast.Attribute) or not isinstance(call.func.value, ast.Name):
+        return None
+    base_name = call.func.value.id
+    attr = call.func.attr
+    if base_name == "trainer" and attr == "generate_sample":
+        return BaseTrainer.generate_sample
+    import_map = {
+        (alias.asname or alias.name): alias.name
+        for node in ast.walk(func)
+        if isinstance(node, ast.ImportFrom) and node.module == "core.training.ops"
+        for alias in node.names
+    }
+    if base_name in import_map:
+        module = importlib.import_module(f"core.training.ops.{import_map[base_name]}")
+        return getattr(module, attr, None)
+    return None
+
+
+def _sample_forwards_step_progress_callback(handler_cls) -> bool:
+    """AST-inspect ``handler_cls.sample`` for a keyword argument that forwards
+    ``sample_ctx.step_progress_callback`` unchanged (``sample_ctx`` being
+    whatever the method names its ``SampleContext`` parameter). String-count
+    is deliberately NOT used here (a prior brittle string-occurrence check on
+    this same file was removed) -- this walks the real call-site AST instead.
+
+    True requires: (a) every ``*.generate_sample(...)`` call site in the
+    method forwards the keyword -- a handler with two dispatch branches that
+    wires only one of them is NOT considered forwarding (F4b); and (b) each
+    forwarding call's resolved callee actually declares a
+    ``step_progress_callback`` parameter, so a renamed callee parameter fails
+    here instead of raising a silently-swallowed TypeError at sample time
+    (F4a)."""
+    source = textwrap.dedent(inspect.getsource(handler_cls.sample))
+    func = ast.parse(source).body[0]
+    assert isinstance(func, ast.FunctionDef), f"{handler_cls.__name__}.sample is not a plain def"
+    positional = func.args.args
+    assert len(positional) >= 3, (
+        f"{handler_cls.__name__}.sample() must take (self, trainer, sample_ctx), got {[a.arg for a in positional]}"
+    )
+    ctx_param = positional[2].arg
+    target = f"{ctx_param}.step_progress_callback"
+
+    generate_sample_calls = [
+        node for node in ast.walk(func)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "generate_sample"
+    ]
+    if not generate_sample_calls:
+        return False
+
+    forwarding_calls = [
+        call for call in generate_sample_calls
+        if any(
+            isinstance(kw, ast.keyword) and kw.arg == "step_progress_callback"
+            and ast.unparse(kw.value) == target
+            for kw in call.keywords
+        )
+    ]
+    if len(forwarding_calls) != len(generate_sample_calls):
+        return False
+
+    for call in forwarding_calls:
+        callee = _resolve_generate_sample_callee(func, call)
+        assert callee is not None, (
+            f"{handler_cls.__name__}.sample(): could not resolve callee for "
+            f"{ast.unparse(call.func)}() to verify step_progress_callback acceptance"
+        )
+        assert "step_progress_callback" in inspect.signature(callee).parameters, (
+            f"{handler_cls.__name__}.sample() forwards step_progress_callback into "
+            f"{ast.unparse(call.func)}(), but its signature has no such parameter"
+        )
+    return True
+
+
+@pytest.mark.parametrize("arch_name,handler_cls", sorted(ARCH_REGISTRY.items()))
+def test_wires_sample_step_progress_flag_matches_actual_forwarding(arch_name, handler_cls):
+    """The ``wires_sample_step_progress`` claim (base_arch.py) must be exactly
+    true for a handler whose ``sample()`` actually forwards
+    ``SampleContext.step_progress_callback`` into its ops call, and exactly
+    false otherwise -- enforced for every registered arch, including ones a
+    parallel wiring pass adds later, so a stale/false claim (a bar frozen at
+    0% for the whole sample) cannot land silently."""
+    forwards = _sample_forwards_step_progress_callback(handler_cls)
+    claims = handler_cls.wires_sample_step_progress
+    assert claims is forwards, (
+        f"{arch_name}: wires_sample_step_progress={claims!r} but sample() "
+        f"{'forwards' if forwards else 'does NOT forward'} step_progress_callback"
+    )
+
+
+def test_sensenova_sample_forwards_step_progress_callback():
+    callback = Mock()
+    context = SampleContext(
+        prompt="prompt", width=64, height=64, num_inference_steps=2,
+        guidance_scale=4.0, seed=1, step_progress_callback=callback,
+    )
+    trainer = SimpleNamespace()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        from core.training.ops import sensenova_ops
+
+        generate = Mock(return_value="sample")
+        monkeypatch.setattr(sensenova_ops, "generate_sample", generate)
+        assert SenseNovaArchHandler().sample(trainer, context) == "sample"
+    assert generate.call_args.kwargs["step_progress_callback"] is callback
+
+
+def test_krea2_sample_forwards_step_progress_callback():
+    callback = Mock()
+    context = SampleContext(
+        prompt="prompt", width=64, height=64, num_inference_steps=2,
+        guidance_scale=4.0, seed=1, step_progress_callback=callback,
+    )
+    trainer = SimpleNamespace()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        from core.training.ops import krea2_ops
+
+        generate = Mock(return_value="sample")
+        monkeypatch.setattr(krea2_ops, "generate_sample", generate)
+        assert Krea2ArchHandler().sample(trainer, context) == "sample"
+    assert generate.call_args.kwargs["step_progress_callback"] is callback
+
+
+def test_lens_sample_forwards_step_progress_callback():
+    callback = Mock()
+    context = SampleContext(
+        prompt="prompt", width=64, height=64, num_inference_steps=2,
+        guidance_scale=4.0, seed=1, step_progress_callback=callback,
+    )
+    trainer = SimpleNamespace()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        from core.training.ops import lens_ops
+
+        generate = Mock(return_value="sample")
+        monkeypatch.setattr(lens_ops, "generate_sample", generate)
+        assert LensArchHandler().sample(trainer, context) == "sample"
+    assert generate.call_args.kwargs["step_progress_callback"] is callback
+
+
+def test_minit2i_sample_forwards_step_progress_callback():
+    callback = Mock()
+    context = SampleContext(
+        prompt="prompt", width=64, height=64, num_inference_steps=2,
+        guidance_scale=4.0, seed=1, step_progress_callback=callback,
+    )
+    trainer = SimpleNamespace()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        from core.training.ops import minit2i_ops
+
+        generate = Mock(return_value="sample")
+        monkeypatch.setattr(minit2i_ops, "generate_sample", generate)
+        assert MiniT2IArchHandler().sample(trainer, context) == "sample"
+    assert generate.call_args.kwargs["step_progress_callback"] is callback
+
+
+@pytest.mark.parametrize(
+    "ops_module_name",
+    ["krea2_ops", "lens_ops", "minit2i_ops"],
+)
+def test_reused_denoise_progress_adapter_maps_completed_steps(ops_module_name):
+    """Krea2/Lens/MiniT2I route their pipeline's 0-based-i progress_callback
+    through the SAME shared adapter SD/SDXL uses (sd_sdxl_ops), rather than a
+    fourth bespoke one -- verified at the source level, since the adapter
+    object itself is already covered by
+    test_denoise_progress_adapter_maps_completed_and_skips_negative_index."""
+    source = (ROOT / f"backend/core/training/ops/{ops_module_name}.py").read_text(encoding="utf-8")
+    assert "from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback" in source
+    assert "make_denoise_progress_callback(step_progress_callback)" in source

@@ -10,6 +10,36 @@ from pathlib import Path
 from config.settings import settings
 
 
+def dir_tag(directory) -> str:
+    """Short, stable, order-independent identifier for a LoRA search directory
+    (used to disambiguate LoRA identifiers that collide across roots)."""
+    try:
+        resolved = str(Path(directory).resolve())
+    except Exception:
+        resolved = str(directory)
+    return hashlib.sha1(resolved.encode('utf-8')).hexdigest()[:8]
+
+
+def _colliding_dir_tags(identifier: str, matches: List[Path]) -> List[str]:
+    """Tags of the registered directories the matches came from.
+
+    Each match is ``<registered dir> / identifier``, so stripping as many
+    trailing components as the identifier has recovers the root without
+    naming it.
+    """
+    depth = len([p for p in str(identifier).replace("\\", "/").split("/") if p])
+    tags: List[str] = []
+    for match in matches:
+        try:
+            root = Path(match)
+            for _ in range(depth):
+                root = root.parent
+            tags.append(dir_tag(root))
+        except Exception:
+            continue
+    return tags
+
+
 class LoRAAmbiguousIdentifierError(Exception):
     """Raised by ``_resolve_lora_path`` when a bare (untagged) LoRA identifier
     matches files in more than one registered directory. Previously this
@@ -21,10 +51,15 @@ class LoRAAmbiguousIdentifierError(Exception):
     def __init__(self, identifier: str, matches: List[Path]):
         self.identifier = identifier
         self.matches = matches
+        # Raised outside every loader's try, so this text reaches the API
+        # response verbatim: name the file and the directory tags (which is
+        # what the caller types back as 'tag::relative_path'), never a path.
+        name = str(identifier).replace("\\", "/").rsplit("/", 1)[-1]
+        tags = ", ".join(_colliding_dir_tags(identifier, matches)) or "unavailable"
         super().__init__(
-            f"LoRA identifier '{identifier}' is ambiguous: it resolves to "
-            f"{len(matches)} different files across registered directories: "
-            f"{[str(m) for m in matches]}. Refusing to guess -- use the "
+            f"LoRA identifier '{name}' is ambiguous: it resolves to "
+            f"{len(matches)} different files across registered directories "
+            f"(directory tags: {tags}). Refusing to guess -- use the "
             f"disambiguated 'tag::relative_path' identifier returned by "
             f"GET /loras instead."
         )
@@ -48,47 +83,60 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
     (arch tag at scan time) and ``LoRAManager.get_lora_layers`` (block list for
     the UI) -- do not add a second signature table elsewhere; extend HERE.
 
-    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of
-    "sd15", "sdxl", "zimage", "flux2", "minimax_h3", "sensenova", "unknown"
-    ("unknown" is a first-class value, not an error).
+    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of the 13
+    ``core.training.arch.ARCH_REGISTRY`` keys -- "sd15", "sdxl", "zimage",
+    "anima", "lens", "ideogram4", "minit2i", "krea2", "flux2", "ltx2",
+    "minimax_h3", "acestep", "sensenova" -- or "unknown" ("unknown" is a
+    first-class value, not an error).
+
+    ORDERING RULE: each architecture's signature is ANCHORED on the key prefix
+    its own training adapter writes, and every one of them is tested BEFORE the
+    sd-scripts ``lora_unet_`` / ``lora_te*`` catch-all at the bottom. Eight
+    architectures besides SD1.5/SDXL write ``lora_unet_*`` stems, and an
+    SD1.5/SDXL U-Net stem contains their spellings as substrings
+    (``lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_q``),
+    so a DiT check that is unanchored, or ordered after the catch-all, either
+    steals SD files or is shadowed by them. The anchored roots are mutually
+    exclusive; ``backend/tests/lora_key_classification_test.py`` drives the real
+    adapters and asserts the full cross-product.
     """
     keys = list(keys)
     blocks = set()
-    arch = "unknown"
 
-    # --- SenseNova-U1.5-8B-MoT (distillation LoRA over the Qwen3-as-denoiser
-    # gen branch) --------------------------------------------------------
-    # Keys: language_model.model.layers.{N}.self_attn.{q,k,v,o}_proj_mot_gen.
-    # <lora_down.weight|lora_up.weight|alpha> and
-    # language_model.model.layers.{N}.mlp_mot_gen.{gate,up,down}_proj.<...>.
-    # No other architecture's LoRA keys ever start with
-    # "language_model.model.layers." (every other arch here is a diffusion
-    # U-Net/DiT, spelling "lora_unet_"/"diffusion_model."/"transformer.*");
-    # the "_mot_gen" (Mixture-of-Transformers generation branch) suffix is a
-    # second, independent marker checked alongside it so a same-prefixed key
-    # from some future non-MoT LLM-backed arch is not misclassified here.
-    is_sensenova = any(
-        key.startswith('language_model.model.layers.') and 'mot_gen' in key
-        for key in keys
-    )
-    if is_sensenova:
-        arch = "sensenova"
-        for key in keys:
-            match = re.search(r'language_model\.model\.layers\.(\d+)\.', key)
-            if match:
-                blocks.add(f"L{int(match.group(1)):02d}")
+    def classified(arch: str) -> Dict[str, Any]:
         if not blocks:
             blocks.add("BASE")
         return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
 
-    # --- MiniMax-H3 (ComfyUI-exported LoRA) ---------------------------------
+    # --- SenseNova-U1.5-8B-MoT (LoRA over either MoT half) -----------------
+    # Keys are plain module paths (sensenova_adapter.py:49-53):
+    # language_model.model.layers.{N}.self_attn.{q,k,v,o}_proj[_mot_gen] and
+    # .{mlp_mot_gen|mlp}.{gate,up,down}_proj. "_mot_gen" marks the generation
+    # branch; the understanding half carries the un-suffixed names, so its leaf
+    # spelling is a second accepted marker -- today only ever seen ALONGSIDE the
+    # gen half (save_checkpoint refuses an understanding-only file,
+    # sensenova_adapter.py:192), so it is a guard, not a producible artefact.
+    # No other architecture here writes keys under "language_model.model.layers.",
+    # and requiring one of the two markers keeps a future LLM-backed arch out.
+    is_sensenova = any(
+        key.startswith('language_model.model.layers.')
+        and ('mot_gen' in key
+             or re.search(r'\.(?:self_attn|mlp)\.(?:[qkvo]|gate|up|down)_proj\.', key))
+        for key in keys
+    )
+    if is_sensenova:
+        for key in keys:
+            match = re.search(r'language_model\.model\.layers\.(\d+)\.', key)
+            if match:
+                blocks.add(f"L{int(match.group(1)):02d}")
+        return classified("sensenova")
+
+    # --- MiniMax-H3, ComfyUI/interchange layout ----------------------------
     # Keys: diffusion_model.blocks.{N}.<attn.qkv_proj|attn.out_proj|mlp.fc1|
     # mlp.fc2|adaln_proj.linear>.<lora_A|lora_B|alpha>, plus
     # diffusion_model.final_layer.* and diffusion_model.token_refiner.blocks.*.
-    # Checked before every other signature: it never contains "transformer_blocks_"
-    # (the FLUX.2 signature below) or any of the SD/SDXL/Z-Image substrings, but
-    # is checked first regardless so a future overlapping format can't silently
-    # steal these keys.
+    # (The sd-scripts layout THIS repo's trainer writes is handled with Lens and
+    # LTX-2.3 further down -- minimax_h3_lora.py documents both conventions.)
     is_minimax_h3 = any(
         key.startswith('diffusion_model.blocks.')
         or key.startswith('diffusion_model.final_layer.')
@@ -96,7 +144,6 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
         for key in keys
     )
     if is_minimax_h3:
-        arch = "minimax_h3"
         for key in keys:
             match = re.search(r'diffusion_model\.blocks\.(\d+)\.', key)
             if match:
@@ -106,11 +153,177 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
                 blocks.add(f"TREF{int(match.group(1)):02d}")
             if key.startswith('diffusion_model.final_layer.'):
                 blocks.add("FINAL")
-        if not blocks:
-            blocks.add("BASE")
-        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+        return classified("minimax_h3")
 
-    # --- SD1.5 / SDXL (kohya-ss "lora_unet_*"/"lora_te*_*" or diffusers dot format) ---
+    # --- Z-Image (zimage_adapter.py:99/117) --------------------------------
+    # lora_transformer_{layers|noise_refiner|context_refiner}_<N>_attention_*.
+    # "transformer.layers." is the dotted spelling the generation loader also
+    # accepts (repaired load-side in 1b0a192c; the save side deliberately keeps
+    # writing the flattened form, so BOTH must yield FDiT blocks here).
+    is_zimage = any(
+        'noise_refiner' in key or 'context_refiner' in key
+        or key.startswith('lora_transformer_layers_')
+        or 'transformer.layers.' in key
+        for key in keys
+    )
+    if is_zimage:
+        for key in keys:
+            match = re.search(r'noise_refiner[_.](\d+)', key)
+            if match:
+                blocks.add(f"NRef{int(match.group(1))}")
+            match = re.search(r'context_refiner[_.](\d+)', key)
+            if match:
+                blocks.add(f"CRef{int(match.group(1))}")
+            match = (re.match(r'lora_transformer_layers_(\d+)_', key)
+                     or re.search(r'transformer\.layers\.(\d+)\.', key))
+            if match:
+                blocks.add(f"FDiT{int(match.group(1)):02d}")
+        return classified("zimage")
+
+    # --- FLUX.2 (flux2_adapter.py:84/122, TE at :210) ----------------------
+    # lora_transformer_(single_)transformer_blocks_<N>_*, plus
+    # lora_te_model_layers_<N>_* for a text-encoder-only run (train_unet=False).
+    # The TE root is narrow on purpose: kohya SD1.5 files spell their single
+    # text encoder "lora_te_text_model_encoder_layers_<N>_*".
+    is_flux2 = any(
+        key.startswith('lora_transformer_transformer_blocks_')
+        or key.startswith('lora_transformer_single_transformer_blocks_')
+        or key.startswith('lora_te_model_layers_')
+        for key in keys
+    )
+    if is_flux2:
+        for key in keys:
+            match = re.match(r'lora_transformer_transformer_blocks_(\d+)_', key)
+            if match:
+                blocks.add(f"DUAL{int(match.group(1)):02d}")
+            match = re.match(r'lora_transformer_single_transformer_blocks_(\d+)_', key)
+            if match:
+                blocks.add(f"SING{int(match.group(1)):02d}")
+        return classified("flux2")
+
+    # --- Ideogram 4 (ideogram4_adapter.py:60, iter_ideogram4_lora_targets) --
+    # lora_unet_layers_<N>_{attention_to_*,feed_forward_w*,adaln_modulation};
+    # the optional unconditional twin repeats the same stem under lora_uncond_.
+    if any(re.match(r'lora_(?:unet|uncond)_layers_\d+_', key) for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_layers_(\d+)_', key)
+            if match:
+                blocks.add(f"FDiT{int(match.group(1)):02d}")
+            match = re.match(r'lora_uncond_layers_(\d+)_', key)
+            if match:
+                blocks.add(f"UDiT{int(match.group(1)):02d}")
+        return classified("ideogram4")
+
+    # --- Anima (anima_adapter.py:114, anima_lora._flatten_to_sdscripts) ----
+    # lora_unet_blocks_<N>_{self_attn,cross_attn,mlp,adaln_modulation_*}_* and
+    # lora_unet_llm_adapter_{blocks_<N>_*,in_proj,out_proj}.
+    if any(re.match(r'lora_unet_(?:blocks_\d+_|llm_adapter_)', key) for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_blocks_(\d+)_', key)
+            if match:
+                blocks.add(f"DIT{int(match.group(1)):02d}")
+                continue
+            match = re.match(r'lora_unet_llm_adapter_blocks_(\d+)_', key)
+            if match:
+                blocks.add(f"LAD{int(match.group(1)):02d}")
+            elif key.startswith('lora_unet_llm_adapter_'):
+                blocks.add("LAPROJ")
+        return classified("anima")
+
+    # --- ACE-Step 1.5 (acestep_adapter.py:150, iter_acestep_lora_targets) --
+    # lora_unet_decoder_layers_<N>_{self_attn,cross_attn,mlp}_*_proj.
+    if any(re.match(r'lora_unet_decoder_layers_\d+_', key) for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_decoder_layers_(\d+)_', key)
+            if match:
+                blocks.add(f"L{int(match.group(1)):02d}")
+        return classified("acestep")
+
+    # --- MiniT2I (minit2i_lora.flatten_to_key / flatten_to_te_key) ---------
+    # Flattens "." to "__", so the roots are lora_unet_model__net__* and
+    # lora_te_encoder__block__* (FLAN-T5, train_text_encoder) -- disjoint from
+    # every single-underscore root by construction.
+    if any(key.startswith('lora_unet_model__net__')
+           or key.startswith('lora_te_encoder__block__') for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_model__net__double_blocks__(\d+)__', key)
+            if match:
+                blocks.add(f"MMB{int(match.group(1)):02d}")
+                continue
+            match = re.match(r'lora_unet_model__net__txt_preamble_blocks__(\d+)__', key)
+            if match:
+                blocks.add(f"TPRE{int(match.group(1)):02d}")
+            elif re.match(r'lora_unet_model__net__(?:txt|pooled)_embedder', key):
+                blocks.add("EMB")
+        return classified("minit2i")
+
+    # --- Krea 2 (krea2_lora.flatten_to_key) --------------------------------
+    # Also "__"-flattened: lora_unet_transformer_blocks__<N>__{attn,ff}__*, plus
+    # the opt-in text_fusion and projection scopes. Tested before the
+    # single-underscore transformer_blocks family below, whose regex these stems
+    # cannot match anyway (the char after "transformer_blocks_" is "_", not a digit).
+    krea2_proj_roots = ('lora_unet_img_in', 'lora_unet_txt_in__',
+                        'lora_unet_final_layer__', 'lora_unet_time_embed__',
+                        'lora_unet_time_mod_proj')
+    if any(key.startswith(('lora_unet_transformer_blocks__',
+                           'lora_unet_text_fusion__') + krea2_proj_roots)
+           for key in keys):
+        for key in keys:
+            match = re.match(r'lora_unet_transformer_blocks__(\d+)__', key)
+            if match:
+                blocks.add(f"MMB{int(match.group(1)):02d}")
+                continue
+            match = re.match(r'lora_unet_text_fusion__layerwise_blocks__(\d+)__', key)
+            if match:
+                blocks.add(f"TFL{int(match.group(1)):02d}")
+                continue
+            match = re.match(r'lora_unet_text_fusion__refiner_blocks__(\d+)__', key)
+            if match:
+                blocks.add(f"TFR{int(match.group(1)):02d}")
+            elif key.startswith('lora_unet_text_fusion__projector'):
+                blocks.add("TFP")
+            elif key.startswith(krea2_proj_roots):
+                blocks.add("PROJ")
+        return classified("krea2")
+
+    # --- Lens / LTX-2.3 / MiniMax-H3 (sd-scripts native) -------------------
+    # All three write lora_unet_transformer_blocks_<N>_<leaf> and are told apart
+    # by the leaf, because their target iterators are disjoint:
+    #   lens_lora.iter_lens_lora_targets      -> attn_{img,txt}_qkv, attn_to_add_out,
+    #                                            {img,txt}_mlp_w*, {img,txt}_mod_*
+    #   ltx2_adapter.iter_ltx2_lora_targets   -> attn1/attn2, audio_*, *_to_*_attn_
+    #   minimax_h3_adapter.iter_..._targets   -> attn_to_{q,k,v,out_0}, ff_net_*
+    # LTX-2.3's opt-in ff leaves are spelled exactly like MiniMax-H3's
+    # (ff_net_0_proj / ff_net_2), so an ff-ONLY LTX-2.3 file would read as
+    # minimax_h3; it is unreachable because lora_trainer.py:231 resolves ltx2
+    # "attention" to True for every scope string, leaving attn1/attn2 to break
+    # the tie. A stem matching none of the three falls through to the catch-all
+    # rather than being guessed at.
+    dit_blocks = [
+        (int(match.group(1)), match.group(2))
+        for match in (re.match(r'lora_unet_transformer_blocks_(\d+)_(.+)$', key)
+                      for key in keys)
+        if match is not None
+    ]
+    if dit_blocks:
+        leaves = [leaf for _, leaf in dit_blocks]
+        families = (
+            ("lens", "DUAL", r'(?:attn_(?:img|txt)_qkv|attn_to_add_out'
+                             r'|(?:img|txt)_mlp_w|(?:img|txt)_mod_)'),
+            ("ltx2", "MMB", r'(?:attn[12]_|audio_attn[12]_'
+                            r'|audio_to_video_attn_|video_to_audio_attn_)'),
+            ("minimax_h3", "MMB", r'(?:attn_to_[qkv]|attn_to_out_|ff_net_)'),
+        )
+        for arch, label, leaf_pattern in families:
+            if any(re.match(leaf_pattern, leaf) for leaf in leaves):
+                for index, _ in dit_blocks:
+                    blocks.add(f"{label}{index:02d}")
+                return classified(arch)
+
+    # --- SD1.5 / SDXL (kohya-ss "lora_unet_*"/"lora_te*_*" or diffusers dot
+    # format). The catch-all, and it must stay LAST: it accepts ANY lora_unet_/
+    # lora_te prefix, which is why every signature above is anchored and tested
+    # first.
     has_te2 = any(key.startswith('lora_te2_') or key.startswith('text_encoder_2.') for key in keys)
     for key in keys:
         if 'input_blocks' in key:
@@ -137,54 +350,24 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
                 blocks.add(f"OUT{3 * i + j:02d}")
 
     if blocks or any(k.startswith('lora_unet_') or k.startswith('lora_te') for k in keys):
-        arch = "sdxl" if has_te2 else "sd15"
-        if not blocks:
-            blocks.add("BASE")
-        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
-
-    # --- Z-Image (transformer-based) ---------------------------------------
-    for key in keys:
-        if 'noise_refiner' in key:
-            match = re.search(r'noise_refiner[_.](\d+)', key)
-            if match:
-                blocks.add(f"NRef{int(match.group(1))}")
-        elif 'context_refiner' in key:
-            match = re.search(r'context_refiner[_.](\d+)', key)
-            if match:
-                blocks.add(f"CRef{int(match.group(1))}")
-        elif 'transformer.layers.' in key:
-            match = re.search(r'layers[_.](\d+)', key)
-            if match:
-                blocks.add(f"FDiT{int(match.group(1)):02d}")
-
-    if blocks or any('noise_refiner' in k or 'context_refiner' in k or 'transformer.layers.' in k for k in keys):
-        arch = "zimage"
-        if not blocks:
-            blocks.add("BASE")
-        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
-
-    # --- FLUX.2 (dual + single stream transformer blocks) ------------------
-    for key in keys:
-        if 'transformer_blocks_' in key or 'single_transformer_blocks_' in key:
-            match_dual = re.search(r'transformer_blocks_(\d+)', key)
-            if match_dual and 'single_transformer_blocks' not in key:
-                blocks.add(f"DUAL{int(match_dual.group(1)):02d}")
-            match_single = re.search(r'single_transformer_blocks_(\d+)', key)
-            if match_single:
-                blocks.add(f"SING{int(match_single.group(1)):02d}")
-
-    if blocks:
-        arch = "flux2"
-        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+        return classified("sdxl" if has_te2 else "sd15")
 
     # --- Unknown / unrecognized structure ------------------------------------
-    blocks.add("BASE")
-    return {"arch": "unknown", "blocks": _sort_lora_blocks(blocks)}
+    return classified("unknown")
 
 
 def _sort_lora_blocks(blocks) -> List[str]:
-    """Sort block labels: BASE, IN00-IN.., MID, OUT00-.., NRef/CRef/FDiT
-    (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3), L00-.. (SenseNova)."""
+    """Sort block labels: BASE, IN00-IN.., MID, OUT00-.. (SD/SDXL); NRef/CRef/
+    FDiT (Z-Image); FDiT/UDiT (Ideogram 4 cond/uncond twins); DUAL/SING (FLUX.2),
+    DUAL alone (Lens); DIT/LAD/LAPROJ (Anima DiT blocks, LLM-adapter blocks,
+    LLM-adapter projections); TPRE/MMB/EMB (MiniT2I); MMB/TFL/TFR/TFP/PROJ
+    (Krea 2); MMB (LTX-2.3); TREF/MMB/FINAL (MiniMax-H3); L00-.. (SenseNova
+    layers, ACE-Step decoder layers).
+
+    Each architecture's own labels carry distinct group indices, so its list is
+    totally ordered; indices are reused ACROSS architectures, which is harmless
+    because a file is only ever labelled by one of them.
+    """
     def sort_key(block):
         if block == "BASE":
             return (0, 0)
@@ -202,22 +385,41 @@ def _sort_lora_blocks(blocks) -> List[str]:
             return (2, int(block[4:]))
         elif block.startswith("FDiT"):
             return (3, int(block[4:]))
+        elif block.startswith("UDiT"):
+            return (4, int(block[4:]))
         elif block.startswith("DUAL"):
             return (1, int(block[4:]))
         elif block.startswith("SING"):
             return (2, int(block[4:]))
+        elif block.startswith("DIT"):
+            return (1, int(block[3:]))
         elif block.startswith("TREF"):
             return (1, int(block[4:]))
+        elif block.startswith("TPRE"):
+            return (1, int(block[4:]))
+        elif block.startswith("TFL"):
+            return (3, int(block[3:]))
+        elif block.startswith("TFR"):
+            return (4, int(block[3:]))
+        elif block == "TFP":
+            return (5, 0)
+        elif block == "EMB":
+            return (3, 0)
+        elif block == "PROJ":
+            return (6, 0)
         elif block == "FINAL":
             return (3, 0)
         elif block.startswith("MMB"):
+            return (2, int(block[3:]))
+        elif block == "LAPROJ":
+            return (3, 0)
+        elif block.startswith("LAD"):
             return (2, int(block[3:]))
         elif block.startswith("L"):
             return (1, int(block[1:]))
         return (9, 0)
 
     return sorted(list(blocks), key=sort_key)
-
 
 class LoRAConfig:
     """Configuration for a single LoRA"""
@@ -402,13 +604,7 @@ class LoRAManager:
         return result
 
     def _dir_tag(self, directory: Path) -> str:
-        """Short, stable, order-independent identifier for a search directory
-        (used to disambiguate LoRA identifiers that collide across roots)."""
-        try:
-            resolved = str(Path(directory).resolve())
-        except Exception:
-            resolved = str(directory)
-        return hashlib.sha1(resolved.encode('utf-8')).hexdigest()[:8]
+        return dir_tag(directory)
 
     def _tag_to_dir(self, tag: str) -> Optional[Path]:
         for d in [self.lora_dir] + self._effective_extra_dirs():
@@ -475,9 +671,8 @@ class LoRAManager:
         3. Excludes training artifacts (optimizer states, debug latents, etc.)
 
         Returns:
-            The detected arch string ("sd15" | "sdxl" | "zimage" | "flux2" |
-            "minimax_h3" | "sensenova" | "unknown") if this is a valid LoRA
-            file, else None.
+            The detected arch string -- any ARCH_REGISTRY key or "unknown", see
+            classify_lora_keys() -- if this is a valid LoRA file, else None.
         """
         # Exclude known training artifacts by filename patterns
         filename = file_path.name.lower()
@@ -981,8 +1176,9 @@ class LoRAManager:
     def get_lora_layers(self, lora_name: str) -> List[str]:
         """
         Extract U-Net/transformer block structure from a LoRA file.
-        Returns blocks in format: BASE, IN00-IN11, MID, OUT00-OUT11 (SD/SDXL),
-        NRef/CRef/FDiT (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3).
+        Returns the labels _sort_lora_blocks() documents, for whichever
+        architecture classify_lora_keys() detected (BASE when a file carries no
+        block-structured keys, e.g. a text-encoder-only checkpoint).
         """
         # Use _resolve_lora_path to check both lora/ and training/ directories
         lora_path = self._resolve_lora_path(lora_name)

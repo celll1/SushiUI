@@ -217,9 +217,10 @@ class Krea2Mixin:
             if resolved is None:
                 print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
                       f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
-                raise RuntimeError(
-                    f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
-                    f"registered LoRA directory.")
+                message = (f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
+                           f"registered LoRA directory.")
+                self._krea2_lora_warn(message, "lora_not_found")
+                raise RuntimeError(message)
 
             try:
                 raw, fmt = load_lora_safetensors(str(resolved))

@@ -170,9 +170,6 @@ def test_krea2_missing_file_refuses(warnings_seen):
         _Backend(_Stub())._load_lora_krea2([{"path": "no_such_krea2_lora.safetensors"}])
 
 
-@pytest.mark.xfail(reason="Krea 2's missing-file branch raises without calling "
-                          "_krea2_lora_warn, so the refusal never reaches warnings[] "
-                          "or the PNG chunk; every other Krea 2 refusal does warn.")
 def test_krea2_missing_file_warns(warnings_seen):
     with pytest.raises(RuntimeError):
         _Backend(_Stub())._load_lora_krea2([{"path": "no_such_krea2_lora.safetensors"}])

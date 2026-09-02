@@ -2632,6 +2632,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # `danbooru_aug_caption_dropout_rate`: those drop the CAPTION TEXT, whose
     # encoding is a real conditional forward on an empty string, not the null.
     "cfg_uncond_drop_rate": None,
+    # True: redraw the null label independently for each MNT transform of a
+    # batch instead of sharing one draw across all of them (avoids training
+    # multi_noise_timesteps consecutive optimizer steps null on one image).
+    "cfg_uncond_drop_per_mnt": True,
 
     # ---- Anima (Cosmos-Predict2 DiT) training ----
     # LoRA targets enumerated by core/models/anima/anima_lora.py.

@@ -246,12 +246,16 @@ def test_the_batch_assembly_arm_passes_the_items_own_label():
     assert "bool(cfg_drop_mask[item_index])" in arm
 
 
-def test_the_mnt_reencode_arm_passes_the_same_label():
+def test_the_mnt_reencode_arm_passes_this_iterations_own_label():
+    """Not the batch-level `cfg_drop_mask` (mnt_index 0's draw): the MNT loop
+    binds `mnt_cfg_drop_mask` from `cfg_drop_mask_for_mnt` at the top of every
+    iteration, and that -- not the shared batch mask -- is what every
+    downstream consumer of the label reads (cfg_null_per_mnt_test.py)."""
     call = _BASE_TRAINER[_BASE_TRAINER.index(
         ") = self._sensenova_mnt_conditioning("):]
     call = call[:call.index(")\n")]
-    assert "cfg_null=(cfg_drop_mask is not None" in call
-    assert "bool(cfg_drop_mask[0])" in call
+    assert "cfg_null=(mnt_cfg_drop_mask is not None" in call
+    assert "bool(mnt_cfg_drop_mask[0])" in call
 
 
 def test_the_mnt_reencode_forwards_the_label_into_the_encode():
@@ -277,6 +281,74 @@ def test_the_mnt_reencode_forwards_the_label_into_the_encode():
     trainer._sensenova_mnt_conditioning(
         "assembly", captions=["a cat"], mnt_index=1, cfg_null=False)
     assert seen == [("a cat", True), ("a cat", False)]
+
+
+# ---------------------------------------------------------------------------
+# Frozen understanding branch + per-MNT redraw (cfg_uncond_drop_per_mnt)
+# ---------------------------------------------------------------------------
+
+
+def _frozen_trainer(assembly_cfg_null, rebuilt="rebuilt"):
+    from core.training.base_trainer import BaseTrainer
+
+    class _FrozenTrainer:
+        train_text_encoder = False
+        sensenova_four_phase = None
+        _sensenova_mnt_conditioning = BaseTrainer._sensenova_mnt_conditioning
+        _sensenova_prefix_cfg_null = assembly_cfg_null
+        _sensenova_alt_cfg_null_prefix = None
+
+        def __init__(self):
+            self.encode_calls = []
+
+        def encode_caption(self, caption, requires_grad=False, cfg_null=False):
+            self.encode_calls.append((caption, requires_grad, cfg_null))
+            return rebuilt, None
+
+    return _FrozenTrainer()
+
+
+def test_frozen_branch_reuses_the_assembly_prefix_when_the_label_matches():
+    trainer = _frozen_trainer(assembly_cfg_null=False)
+    assembly_prefix = object()
+    result = trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=1, cfg_null=False)
+    assert result[3] is assembly_prefix
+    assert trainer.encode_calls == []
+
+
+def test_frozen_branch_rebuilds_frozen_when_the_label_differs():
+    trainer = _frozen_trainer(assembly_cfg_null=False)
+    assembly_prefix = object()
+    result = trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=1, cfg_null=True)
+    assert result[3] == "rebuilt"
+    assert trainer.encode_calls == [("a cat", False, True)]
+
+
+def test_frozen_branch_memoizes_the_alternate_label_within_a_batch():
+    """At most one extra build per label per batch: iterations 1 and 3 both
+    want the alternate label; only iteration 1 pays for it."""
+    trainer = _frozen_trainer(assembly_cfg_null=False)
+    assembly_prefix = object()
+    trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=1, cfg_null=True)
+    trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=2, cfg_null=False)
+    trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=3, cfg_null=True)
+    assert trainer.encode_calls == [("a cat", False, True)]
+
+
+def test_frozen_branch_mnt_index_zero_never_rebuilds_even_on_a_mismatched_label():
+    """mnt_index 0 always keeps the assembly prefix -- a mismatched cfg_null
+    here would mean the caller mixed up which mask belongs to iteration 0."""
+    trainer = _frozen_trainer(assembly_cfg_null=False)
+    assembly_prefix = object()
+    result = trainer._sensenova_mnt_conditioning(
+        assembly_prefix, captions=["a cat"], mnt_index=0, cfg_null=True)
+    assert result[3] is assembly_prefix
+    assert trainer.encode_calls == []
 
 
 def test_the_label_is_drawn_before_the_prefix_encode():

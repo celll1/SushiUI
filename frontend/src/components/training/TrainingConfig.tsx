@@ -220,6 +220,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // default, while 0 explicitly disables the mechanism. getRequestData omits
   // the key while it is null/undefined so the backend sees the difference.
   cfg_uncond_drop_rate: undefined,
+  cfg_uncond_drop_per_mnt: true,
   // MiniMax-H3 only: weight of the audio half of its joint objective.
   // Overwritten by trainingDefaults on startup; literal here is the
   // no-backend fallback (and matches TRAINING_DEFAULTS).
@@ -1010,6 +1011,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         : params.minit2i_label_drop_rate != null
         ? { minit2i_label_drop_rate: params.minit2i_label_drop_rate }
         : {}),
+      cfg_uncond_drop_per_mnt: params.cfg_uncond_drop_per_mnt,
       minit2i_lr_factor: params.minit2i_lr_factor,
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
       minit2i_lora_scope: params.minit2i_lora_scope,
@@ -1443,7 +1445,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "gradient_checkpointing", "torch_compile", "torch_compile_dynamic",
       "cpu_offload_checkpointing", "async_cpu_offload_checkpointing", "fp8_base_dtype",
       "res_curriculum_enable", "res_curriculum_warmup_steps", "res_curriculum_warmup_scale",
-      "cfg_uncond_drop_rate",
+      "cfg_uncond_drop_rate", "cfg_uncond_drop_per_mnt",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
       "minit2i_inherit_final_layer", "minit2i_lora_scope", "minit2i_te_lora_scope",
       "anima_lora_scope", "train_llm_adapter", "anima_attn_mlp_lr_factor",
@@ -5214,6 +5216,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   images: the null trained here is the text-only one, while a
                   reference-conditioned generation blends against the
                   reference-conditioned branch at the default img_cfg_scale 1.
+                </p>
+                <label className="flex items-center space-x-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    checked={params.cfg_uncond_drop_per_mnt ?? true}
+                    onChange={(e) => updateParam("cfg_uncond_drop_per_mnt", e.target.checked)}
+                    className="w-3.5 h-3.5"
+                  />
+                  <span className="text-xs text-gray-300">
+                    Draw the CFG-null label independently for each multi-noise timestep
+                  </span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Only applies when multi_noise_timesteps &gt; 1. With this off, one draw
+                  covers the whole multi-noise-timestep window for an item instead of each
+                  iteration drawing its own.
                 </p>
               </div>
             )}

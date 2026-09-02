@@ -198,13 +198,28 @@ def test_minit2i_is_told_the_draw_moved_to_once_per_batch(capsys):
 
 
 def test_minit2i_is_told_the_objective_changes_when_mnt_exceeds_one(capsys):
-    """At MNT > 1 an item could previously be null on one pass and conditional
-    on the next; now it is one or the other for the whole batch."""
-    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 3})
+    """With cfg_uncond_drop_per_mnt explicitly off, MNT > 1 shares the one
+    batch draw across the whole window: an item that could previously be
+    null on one pass and conditional on the next is now one or the other
+    for the whole batch."""
+    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 3,
+                              "cfg_uncond_drop_per_mnt": False})
     trainer.cfg_null_drop_rate()
     out = _drain(capsys)
     assert "multi_noise_timesteps=3" in out
     assert "changes the objective" in out
+
+
+def test_minit2i_default_per_mnt_is_told_the_objective_matches_pre_change(capsys):
+    """The new default (cfg_uncond_drop_per_mnt on) redraws per MNT
+    iteration, which is what MiniT2I did before 05f8806a -- only the RNG
+    source changed (CPU, not CUDA)."""
+    trainer = _StubTrainer(**{CFG_KEY: 0.1, "multi_noise_timesteps": 3})
+    trainer.cfg_null_drop_rate()
+    out = _drain(capsys)
+    assert "multi_noise_timesteps=3" in out
+    assert "matching the pre-change objective" in out
+    assert "changes the objective" not in out
 
 
 def test_minit2i_at_mnt_one_is_told_the_objective_did_not_change(capsys):

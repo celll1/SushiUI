@@ -7374,6 +7374,9 @@ export interface TrainingRunCreateRequest {
   // archCapabilities.cfg_null_stage entry is null, so gate the control on
   // trainingFeatureUnsupportedReason(caps, arch, "cfg_uncond_drop").
   cfg_uncond_drop_rate?: number | null;
+  // Redraw the null label independently per MNT transform instead of sharing
+  // one draw across the whole multi_noise_timesteps window. Default true.
+  cfg_uncond_drop_per_mnt?: boolean;
   // MiniT2I
   // DEPRECATED spelling of cfg_uncond_drop_rate; sending both is a 400.
   minit2i_label_drop_rate?: number | null;

@@ -345,9 +345,12 @@ class ArchHandler(ABC):
         ``drop_mask`` selects into the architecture's inference null condition,
         and return the rewritten ``(conditioning, auxiliary)``.
 
-        ``drop_mask`` is the one CPU boolean mask sampled per assembled
-        optimization batch, before any MNT repetition, so every MNT transform of
-        an item carries the same label. Only a handler with
+        ``drop_mask`` is a CPU boolean mask: the one draw sampled per assembled
+        optimization batch on the first MNT transform, and (when
+        ``cfg_uncond_drop_per_mnt`` is on) independently redrawn per later
+        transform (``BaseTrainer.cfg_drop_mask_for_mnt``) -- always THIS
+        forward's own label, never assumed shared with any other MNT
+        transform of the same batch. Only a handler with
         ``cfg_null_stage == "collated"`` may override it.
         """
         self._reject_cfg_null("apply_cfg_null_collated", "collated")

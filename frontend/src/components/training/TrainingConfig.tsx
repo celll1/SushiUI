@@ -5491,9 +5491,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               Changing this setting on a resume changes the generation group&apos;s parameter count,
               so the saved optimizer state cannot be reloaded and momentum/variance restart from
               zero for every trained parameter, not just the new ones.
-              Cost is not measured; expect extra activation memory, since with these frozen the
-              generation ViT&apos;s input never requires grad and its forward builds no autograd
-              graph at all.
+              Cost is not measured. Enabling this makes the training step build an autograd graph
+              over the generation ViT and the timestep/noise-scale embedders, which it did not
+              build before — with these frozen that stage runs under no_grad and builds no graph
+              at all — so expect extra activation memory when the option is on.
             </p>
             {fmModulesInertReason && (
               <p className="text-xs text-amber-400">{fmModulesInertReason}</p>

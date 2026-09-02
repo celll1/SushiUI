@@ -1646,8 +1646,22 @@ def train_step(
         token_h=token_h,
         token_w=token_w,
     )
+    # _build_step_context is inference's, so it is no-grad by default; it calls
+    # the gen ViT and both embedders, i.e. 12 of the 16 fm_modules tensors.
+    # Ask the parameters rather than the flag: sensenova_train_fm_modules on an
+    # understanding-only run collects no fm parameter (the adapter warns), and a
+    # graph there would cost activation memory for nothing.
+    # is_grad_enabled keeps this strictly weaker than the decorator it replaced:
+    # set_grad_enabled(True) would otherwise re-enable grad inside a caller's
+    # no_grad, which the decorator could never do.
+    fm_modules = getattr(transformer, "fm_modules", None)
+    fm_trainable = (
+        torch.is_grad_enabled()
+        and fm_modules is not None
+        and any(p.requires_grad for p in fm_modules.parameters())
+    )
     z, image_embeds, _ = _build_step_context(
-        transformer, shape, z_image, t[0], noise_scale
+        transformer, shape, z_image, t[0], noise_scale, enable_grad=fm_trainable
     )
     indexes = transformer._build_t2i_image_indexes(
         token_h, token_w, prefix.text_length, device=device

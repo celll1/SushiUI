@@ -19675,9 +19675,12 @@ components:
             reloaded and momentum/variance restart from zero for every trained
             parameter, not just the new ones.
 
-            COST is not measured. Expect extra activation memory: with
-            `fm_modules` frozen, the generation ViT's input never requires grad
-            and its forward currently produces no autograd graph at all.
+            COST is not measured. Enabling it makes the training step build an
+            autograd graph over the generation ViT and the timestep/noise-scale
+            embedders, which it did not build before: those run inside the
+            per-step embed builder the inference path shares, under no_grad
+            whenever the fm parameters are frozen. Expect extra activation
+            memory when the option is on; the frozen path is unchanged.
 
             Ignored (accepted and warned) by every other architecture and by
             SenseNova LoRA, which wraps Linears and has no `fm_modules` target.

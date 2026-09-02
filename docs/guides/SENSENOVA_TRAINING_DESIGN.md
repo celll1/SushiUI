@@ -75,14 +75,24 @@ stand, so an update survives the checkpoint. The `*_norm_mot_gen` norms stay
 frozen either way.
 
 Changing the setting on a resume changes the generation group's parameter count
-(294 vs 310). `optimizer.load_state_dict` rejects that, and the partial-load
-fallback requires identical counts in the overlapping leading groups, so the run
-continues with fresh optimizer state: momentum and variance restart from zero for
-every trained parameter, not only the added ones.
+(294 vs 310), which `optimizer.load_state_dict` rejects. The per-group
+leading-prefix remap salvages the rest: on run 122's resume at step 38,768 it
+kept 588 of 604 parameters' saved state and started the 16 added ones fresh, and
+the re-warmup fired for them.
 
-Cost is unmeasured. With these frozen the generation ViT's input never requires
-grad and its forward builds no autograd graph at all, so enabling the option adds
-activation memory.
+Until the `enable_grad` plumbing below, the option moved only the 4 `fm_head`
+tensors: the other 12 sat inside a `@torch.no_grad()` and received no gradient at
+all. Measured over 976 steps of run 122 with the option on -- `fm_head.conv2.bias`
+moved 78.6% of its elements, the other 12 tensors stayed byte-identical. A run
+from before that fix trained a smaller set than this section describes.
+
+Cost is unmeasured. Three of the four fm modules (the generation ViT and both
+embedders) are called from `_build_step_context`, the per-step embed builder the
+training step shares with inference; it is no-grad by default and the training
+step passes `enable_grad=True` only when the fm parameters are actually
+trainable. So enabling the option builds an autograd graph there that the step
+did not build before, and adds activation memory; with them frozen the step is
+unchanged.
 
 ## Verified boundary
 

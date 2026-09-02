@@ -408,18 +408,33 @@ $$
 長さが最初から入るので、K/V cache だけ揃えて image token の t 座標が conditional 長のまま
 残る「半分だけの修正」にはならない。
 
-Bernoulli は他 2 architecture と同じ `BaseTrainer.sample_cfg_drop_mask` の1回の抽選だが、
-抽選位置は batch 組み立て**前**（`len(batch)` 個）である。SenseNova の prefix は組み立ての
-最中に作られるため、組み立て後に引いたのでは prefix が既に conditional になっている。
+Bernoulli は他 2 architecture と同じ `BaseTrainer.sample_cfg_drop_mask` による**batch 組み立て時
+の1回**の抽選だが、抽選位置は batch 組み立て**前**（`len(batch)` 個）である。SenseNova の prefix
+は組み立ての最中に作られるため、組み立て後に引いたのでは prefix が既に conditional になっている。
 label は caption を読む前に item 数だけ引かれ、latent サイズ filter では他の per-item list と
-同様に `valid_indices` で並べ替えられる（再抽選はしない）。encode 側の呼び出し口は 2 箇所
-あり、batch 組み立ての `if self.is_sensenova:` 枝と、trainable 理解側 + MNT>1 の
-`_sensenova_mnt_conditioning` の再 encode で、両方が同じ label を受け取る。片方を落とすと
-同じ画像が MNT 0 では null、以降は conditional になる。
+同様に `valid_indices` で並べ替えられる（再抽選はしない）。encode 側の呼び出し口は 2 箇所ある。
+batch 組み立ての `if self.is_sensenova:` 枝は組み立て時点の `cfg_drop_mask[item_index]` を渡し、
+trainable 理解側 + MNT>1 の `_sensenova_mnt_conditioning` の再 encode は **その MNT iteration
+自身の** `mnt_cfg_drop_mask[0]` を渡す。`mnt_index == 0` ではこの2つは同じ値になる
+（`cfg_drop_mask_for_mnt` が assembly の draw をそのまま返す）。`mnt_index > 0` では
+`cfg_uncond_drop_per_mnt`（既定 on、§7.3.6）に従って一致することも再抽選されて不一致になる
+こともある。どちらの呼び出し口でも label の受け渡し自体を落とすと、同じ画像が一部の MNT
+iteration では null、別の iteration では conditional として encode される。
 
-null prefix は memoize しない。理解側が trainable な run では cache が無効になり、frozen な
-場合も cache object が forward / checkpointing / phase eviction / cleanup を通して read-only に
-留まる保証がまだ無い。
+null prefix の memoize は frozen 理解側の分岐だけで起きる（trainable 分岐は前段で処理済みであり、
+four-phase の shared-window route は `train_text_encoder=true` を要求するため、four-phase object が
+memo 経路に乗ることはない）。iteration の label が assembly prefix の label と異なる場合に限り、
+その label 用の alt prefix を `no_grad` 下で一度だけ構築し、`_sensenova_alt_cfg_null_prefix` に
+batch 単位で memoize する（label は null/非null の2値しかないため、batch あたり最大2種類の prefix
+で足りる）。この cache は `_assert_prefix_cache_detached` を通過し、消費側は
+`forward_gen_decoder_layers(..., use_cache=False, update_cache=False)`（`sensenova_ops.py`）で
+あって cache へは書き込まない。`_assert_immutable_prefix_cache` は `train_step` の先頭と
+`forward_gen_decoder_layers` の内部の双方で毎 iteration 再実行される。phase evictor が動かすのは
+module の parameter/buffer であって cache tensor ではなく、training 経路のどこからも
+`clear_prefix_caches` は呼ばれない（呼ぶのは sample 経路だけ）。ただし、これらの assert が検査する
+のは構造と grad-mode だけであり、tensor の長さや内容までは検査しない。read-only の保証は
+`update_cache=False` という呼び出し側の契約に依存しており、in-place な append があれば
+`_assert_prefix_cache_structure` をすり抜け得る。memo は batch ごとに `None` へ戻る。
 
 reference-conditioned な run（`use_reference_images=true`）は非ゼロ rate を**拒否**する。
 出荷時の `img_cfg_scale=1` では推論の CFG baseline は `img_cond`（reference を残し text だけ
@@ -482,6 +497,47 @@ $$
 で合成する。これは text-only の単一 implicit classifier より広い、text guidance と reference
 guidance の2方向合成である。各枝が同じ joint distribution の対応する条件周辺を表すという追加
 仮定が必要になる。
+
+#### 7.3.6 `cfg_uncond_drop_per_mnt`（MNT ごとの再抽選）
+
+`multi_noise_timesteps`（MNT）が1より大きい run では、`BaseTrainer.sample_cfg_drop_mask` が
+batch 組み立て時に一度だけ引いた label を、`BaseTrainer.cfg_drop_mask_for_mnt(batch_mask,
+mnt_index, batch_size)` が MNT loop の各 iteration へ配る。`mnt_index == 0` では常に assembly の
+draw をそのまま返す（encode-stage architecture は既にその label で prefix を組んでいるため、
+iteration 0 には再抽選する対象がない）。`mnt_index > 0` では、`cfg_uncond_drop_per_mnt`
+（`TRAINING_DEFAULTS` 既定 `True`）が on の場合、window 全体で1つの draw を共有する代わりに、
+iteration ごとに新しい CPU Bernoulli を引き直す。
+
+MNT loop は iteration ごとに forward → backward → `optimizer.step()` → `zero_grad()` を実行し、
+`global_step` も iteration ごとに進む。したがって window 全体で1つの draw を共有する設定
+（`cfg_uncond_drop_per_mnt=False`）では、同じ1枚の画像に対して `multi_noise_timesteps` 回連続で
+null 側の optimizer step が並ぶ。`multi_noise_timesteps=8` の run では、これが `Loss (null)`
+chart 上の16点連続（2 window 分）として観測された。
+
+これは偏りではなく、window 内の相関（クラスタリング）の問題である。timestep は null label と
+独立に `_stratified_mnt_timesteps` で層別抽出され、どの画像が null に選ばれるかは画像内容と
+独立である。共有 draw と per-MNT 再抽選のどちらの方式も unbiased であり、期待される drop rate は
+同じである。`cfg_uncond_drop_per_mnt` が変えるのは、window 内で label が連続する相関の有無だけ
+であって、null 側が特定の timestep や画像へ偏るということではない。
+
+この設定は `cfg_null_stage` を宣言する全 architecture に共通して効く（collated: Lens §7.10、
+MiniT2I §7.12 / encode: SenseNova、本節）。`ArchHandler.apply_cfg_null_step` /
+`apply_cfg_null_collated` が受け取る `drop_mask` は、`mnt_index == 0` の draw か、それ以降で
+再抽選された **この forward 自身の label** であり、他の MNT iteration と共有されているとは
+仮定しない。SenseNova の `_sensenova_mnt_conditioning`（§7.3.3）も同じ規約で `mnt_cfg_drop_mask`
+を読む。
+
+SenseNova の four-phase shared-window route（`sensenova_four_phase_eviction`、
+`train_text_encoder=true` を要求）はこの設定の対象外である。window の境界 leaf は window 全体に
+わたって gradient を蓄積するため、window 途中で label を変えることは安全ではない。この route は
+設定に関わらず window の1つの label を使い続け、初回だけ `code="cfg_null_per_mnt_shared_window"`
+の warning を出す。
+
+`sensenova_mot_phase_eviction` を有効にした run では、frozen 理解側の alt prefix 構築（§7.3.3）が
+`phase_evictor.enter_prefix()` → `enter_denoise()` を経由する。`denoise` state からの
+`enter_prefix()` は `_swap_generation_plan` を実行するため、iteration 間で label が一致しない
+batch では追加の MoT half-swap が往復する。このコストは未計測であり、一度だけの warning がその
+発生を通知する。
 
 ### 7.4 MiniMax-H3
 
@@ -605,10 +661,14 @@ exact implicit-classifier identity は保証されない。整合させるには
 （`neg_features = [f.new_zeros(f.shape) for f in pos_features]`,
 `neg_mask = torch.zeros_like(pos_mask, dtype=torch.bool)`）と同じ表現であり、sequence 長は
 positive のものをそのまま使う（推論側も `_align_text_features` で positive 長へ揃える）。
-Bernoulli は MiniT2I と同じく `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で batch ごとに
-1回引き、`LensArchHandler.train_step` が `ArchHandler.apply_cfg_null_step` 経由で適用する
-（MiniT2I と同一の呼び出し階層。`lens_ops.train_step` の device/dtype 移動より前なので clone は
-host 側に置かれ、値は移動後の書き換えと bitwise 一致する）。既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0` であり、key を省略した
+Bernoulli は MiniT2I と同じく `BaseTrainer.sample_cfg_drop_mask` が batch 組み立て時に一度だけ
+引く。`multi_noise_timesteps>1` の run では、`BaseTrainer.cfg_drop_mask_for_mnt` が MNT loop の
+各 iteration へその label を配り、既定（`cfg_uncond_drop_per_mnt=True`、§7.3.6）では
+`mnt_index>0` の iteration ごとに再抽選される（`cfg_uncond_drop_per_mnt=False` にすると window
+全体で1つの draw を共有する）。`LensArchHandler.train_step` が `ArchHandler.apply_cfg_null_step`
+経由で適用するのは常に **その iteration 自身の** label である（MiniT2I と同一の呼び出し階層。
+`lens_ops.train_step` の device/dtype 移動より前なので clone は host 側に置かれ、値は移動後の
+書き換えと bitwise 一致する）。既定値は `CFG_UNCOND_DROP_DEFAULTS_BY_ARCH["lens"] = 0.0` であり、key を省略した
 run の挙動は変わらない。
 
 ### 7.11 Krea2
@@ -632,9 +692,15 @@ branch も conditional text tensor と zero mask の組を使うため、この�
 `MMJiT.forward` で mask が使われる箇所は、無効 row の context を同じ learned `mask_token` へ
 置換する部分であり、zero mask なら元の text embedding の値は出力へ残らない。
 
-Bernoulli は `BaseTrainer.sample_cfg_drop_mask` が MNT loop の外側で assembled batch ごとに1回だけ
-引き、CPU boolean `[B]` として `TrainStepContext.cfg_drop_mask` に載る。OOM micro-batching では
-再抽選せず slice される。書き換えは `MiniT2IArchHandler.train_step` が
+Bernoulli は `BaseTrainer.sample_cfg_drop_mask` が assembled batch 組み立て時に一度だけ引き、CPU
+boolean `[B]` になる。`multi_noise_timesteps>1` の run では `BaseTrainer.cfg_drop_mask_for_mnt`
+が MNT loop の各 iteration へこの label を配り、既定（`cfg_uncond_drop_per_mnt=True`、§7.3.6）
+では `mnt_index>0` の iteration ごとに新しい draw を引き直して `TrainStepContext.cfg_drop_mask`
+に載せる。`cfg_uncond_drop_per_mnt=False` にすると、window 全体で `mnt_index==0` の draw を
+共有する旧来の挙動に戻る。これは MiniT2I の `cfg_uncond_drop_per_mnt` 導入前（label が
+MNT iteration ごとに CUDA RNG で独立に引かれていた挙動）と分布としては同じ IID Bernoulli(rate)
+であり、RNG が CPU に変わった点だけが異なる。OOM micro-batching では（1つの MNT iteration の中
+では）再抽選せず slice される。書き換えは `MiniT2IArchHandler.train_step` が
 `ArchHandler.apply_cfg_null_step` 経由で `apply_cfg_null_collated`
 （`cfg_null_stage = "collated"`）を呼んで out-of-place で行い、`minit2i_ops.train_step` 側に
 抽選も書き換えも無い。collated stage を宣言する architecture は全てこの階層で適用する。
@@ -720,6 +786,7 @@ states を選ぶ condition dropout が必要になる。
 
 ## 10. 実装監査箇所
 
+- `backend/core/training/base_trainer.py`: `sample_cfg_drop_mask` が assembled batch ごとに1回 label を引き、`cfg_drop_mask_for_mnt`（§7.3.6）が `cfg_uncond_drop_per_mnt` に従って MNT iteration ごとにそれを共有するか再抽選するかを決める。`cfg_null_stage` を宣言する全 architecture に共通。
 - `backend/core/training/ops/sd_sdxl_ops.py`: 共有 U-Net に processed-caption embedding と SDXL `time_ids` を渡す。
 - `backend/core/training/ops/zimage_ops.py`: Z-Image の共有 flow loss と sampling 時の同一 prompt encode を実装する。
 - `backend/core/training/ops/flux2_ops.py`: base/distilled の guidance 条件、同一 chat template、reference latent を扱う。

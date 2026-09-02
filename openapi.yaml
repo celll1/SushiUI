@@ -19363,6 +19363,17 @@ components:
             while a reference-conditioned generation at the default
             img_cfg_scale=1 blends against the reference-conditioned branch, so
             one per-sample label cannot supervise both.
+        cfg_uncond_drop_per_mnt:
+          type: 'boolean'
+          default: true
+          description: >-
+            When multi_noise_timesteps > 1, redraw the null label
+            independently for each MNT transform of a batch instead of
+            sharing one draw across the whole window. false reuses the one
+            per-batch draw for every MNT transform (the pre-existing
+            behaviour). Has no effect when cfg_uncond_drop_rate resolves to 0,
+            when multi_noise_timesteps is 1, or on SenseNova's four-phase
+            shared-window route, which keeps the window's one label and warns.
         minit2i_lr_factor:
           type: 'number'
           minimum: 0

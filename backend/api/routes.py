@@ -15431,6 +15431,9 @@ class TrainingRunCreateRequest(BaseModel):
     # Refused before the model loads on an architecture with no null stage, and
     # refused alongside whole-caption dropout; see api/cfg_null_resolver.py.
     cfg_uncond_drop_rate: Optional[float] = TRAINING_DEFAULTS["cfg_uncond_drop_rate"]
+    # True: redraw the null label independently per MNT transform instead of
+    # sharing one draw across the whole multi_noise_timesteps window.
+    cfg_uncond_drop_per_mnt: bool = TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2

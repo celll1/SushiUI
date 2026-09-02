@@ -452,6 +452,8 @@ def _build_train_section(
     from api.cfg_null_resolver import resolve_cfg_uncond_drop_rate
     resolve_cfg_uncond_drop_rate(p, arch=arch)
     train["cfg_uncond_drop_rate"] = p.get("cfg_uncond_drop_rate")
+    train["cfg_uncond_drop_per_mnt"] = bool(p.get(
+        "cfg_uncond_drop_per_mnt", _TD["cfg_uncond_drop_per_mnt"]))
 
     # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
     train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")

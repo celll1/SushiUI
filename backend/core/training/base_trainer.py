@@ -7811,26 +7811,12 @@ class BaseTrainer(ABC):
     ):
         """Build the opaque conditioning payload for one MNT iteration.
 
-        A frozen understanding branch reuses the same detached prefix every
-        iteration. A TRAINABLE one cannot: the MNT loop steps the optimizer once
-        per iteration, so reusing the graph (``retain_graph``) would either trip
-        the version counter or backpropagate against stale parameters. The
-        prefix is therefore recomputed per iteration, the same resolution
-        ``need_recompute_text_embeddings`` applies to the other architectures'
-        trainable text encoders.
-
-        The SHARED-WINDOW four-phase route is the exception, and reuses the
-        prefix for the same reason the frozen branch does. What arrives there is
-        not a graph but the boundary LEAVES, which no optimizer step can stale
-        because the understanding half is bit-identically invariant until phase 3
-        runs at the window's end; every iteration's backward accumulates into
-        those same leaves rather than building a second set.
-
-        ``cfg_null`` is the item's ONE aligned-null label, drawn before the
-        batch's prefix encode and passed here unchanged. This re-encode is the
-        second construction site of the same prefix, so leaving it conditional
-        would make MNT iteration 0 null and every later one conditional for the
-        same image.
+        ``cfg_null`` is this iteration's label (``cfg_drop_mask_for_mnt``). A
+        trainable branch re-encodes every iteration regardless; a frozen one
+        reuses the assembly prefix, and on a label disagreement builds the
+        other-label prefix once per batch and memoizes it -- which under phase
+        eviction costs two MoT half swaps, not a text prefill (unmeasured; see
+        CFG_UNCONDITIONAL_TRAINING.md 7.3.6).
         """
         four_phase = getattr(self, "sensenova_four_phase", None)
         if four_phase is not None and four_phase.shared_window:
@@ -7842,18 +7828,25 @@ class BaseTrainer(ABC):
         ):
             prefix, _ = self.encode_caption(captions[0], requires_grad=True,
                                             cfg_null=cfg_null)
-        elif (
-            mnt_index > 0
-            and captions
-            and cfg_null != bool(getattr(self, "_sensenova_prefix_cfg_null", False))
-        ):
-            alt = getattr(self, "_sensenova_alt_cfg_null_prefix", None)
-            if alt is None or alt[0] != cfg_null:
-                alt_prefix, _ = self.encode_caption(
-                    captions[0], requires_grad=False, cfg_null=cfg_null)
-                alt = (cfg_null, alt_prefix)
-                self._sensenova_alt_cfg_null_prefix = alt
-            prefix = alt[1]
+        elif mnt_index > 0 and captions:
+            prefix_cfg_null = getattr(self, "_sensenova_prefix_cfg_null", None)
+            if prefix_cfg_null is None:
+                raise RuntimeError(
+                    "_sensenova_prefix_cfg_null is unset at mnt_index > 0 on "
+                    "a SenseNova batch; the assembly encode should have "
+                    "stashed it before the MNT loop started"
+                )
+            if cfg_null != bool(prefix_cfg_null):
+                alt = getattr(self, "_sensenova_alt_cfg_null_prefix", None)
+                # Batch size is 1 for SenseNova, so the assembly label is
+                # fixed for the whole batch: whenever this branch runs,
+                # cfg_null is the same single "other" value every time.
+                if alt is None:
+                    alt_prefix, _ = self.encode_caption(
+                        captions[0], requires_grad=False, cfg_null=cfg_null)
+                    alt = (cfg_null, alt_prefix)
+                    self._sensenova_alt_cfg_null_prefix = alt
+                prefix = alt[1]
         return None, None, None, prefix
 
     def cfg_null_drop_rate(self) -> Optional[float]:
@@ -7907,33 +7900,92 @@ class BaseTrainer(ABC):
             # from the config: the config that produces them is byte-identical
             # to the one that produced the old behaviour.
             mnt = int(self.config.get("multi_noise_timesteps", 1) or 1)
+            per_mnt = mnt > 1 and bool(self.config.get(
+                "cfg_uncond_drop_per_mnt",
+                _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]))
+            if mnt == 1:
+                branch = "leaves the objective unchanged. "
+            elif per_mnt:
+                branch = (
+                    "is drawn per MNT iteration (cfg_uncond_drop_per_mnt is "
+                    "on), matching the pre-change objective at the same "
+                    "nominal rate -- only the RNG source (CPU, not CUDA) "
+                    "differs. "
+                )
+            else:
+                branch = (
+                    "changes the objective at the same nominal rate, since an "
+                    "item can no longer be null on one pass and conditional on "
+                    "the next. "
+                )
             emit_training_warning(
-                f"MiniT2I aligned-null draw changed: the label is now drawn "
-                f"once per assembled batch and reused by every MNT transform "
-                f"(previously redrawn each MNT iteration), and from the CPU RNG "
-                f"(previously CUDA). At multi_noise_timesteps={mnt} this "
-                + ("changes the objective at the same nominal rate, since an "
-                   "item can no longer be null on one pass and conditional on "
-                   "the next. "
-                   if mnt > 1 else
-                   "leaves the objective unchanged. ")
-                + f"A resumed seeded run does not reproduce its previous drop "
-                  f"pattern either way.",
+                f"MiniT2I aligned-null draw changed: iteration 0's label is "
+                f"now drawn once per assembled batch, from the CPU RNG "
+                f"(previously CUDA, redrawn every MNT iteration). At "
+                f"multi_noise_timesteps={mnt} this " + branch +
+                f"A resumed seeded run does not reproduce its previous drop "
+                f"pattern either way.",
                 code="cfg_uncond_drop_rate", prefix=self.log_prefix)
+
+        if rate and arch_name != "minit2i":
+            # The other archs shared one draw across the window from the day
+            # the mechanism landed, so per-MNT is a change to what a resumed
+            # config means, not a restoration. Stated because the config that
+            # produces it is byte-identical to the one that produced the old
+            # behaviour.
+            mnt = int(self.config.get("multi_noise_timesteps", 1) or 1)
+            if mnt > 1 and bool(self.config.get(
+                    "cfg_uncond_drop_per_mnt",
+                    _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"])):
+                emit_training_warning(
+                    f"The aligned-null label is drawn per MNT iteration "
+                    f"(cfg_uncond_drop_per_mnt, default on), not once per "
+                    f"assembled batch. At multi_noise_timesteps={mnt} a run "
+                    f"resumed from a config written before this option no "
+                    f"longer trains {mnt} consecutive steps on one label, and "
+                    f"a seeded run does not reproduce its previous drop "
+                    f"pattern. cfg_uncond_drop_per_mnt: false restores the "
+                    f"single draw per window.",
+                    code="cfg_uncond_drop_per_mnt", prefix=self.log_prefix)
+
+        if rate and arch_name == "sensenova":
+            mnt = int(self.config.get("multi_noise_timesteps", 1) or 1)
+            per_mnt = mnt > 1 and bool(self.config.get(
+                "cfg_uncond_drop_per_mnt",
+                _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]))
+            # Only the FROZEN understanding branch pays the extra swap: a
+            # trainable one re-encodes every iteration regardless of the label,
+            # and the shared-window route keeps the window's one label.
+            _fp = getattr(self, "sensenova_four_phase", None)
+            if (per_mnt
+                    and getattr(self, "sensenova_phase_evictor", None) is not None
+                    and not bool(getattr(self, "train_text_encoder", False))
+                    and (_fp is None or not _fp.shared_window)):
+                self._cfg_null_per_mnt_phase_eviction_warned = True
+                emit_training_warning(
+                    "cfg_uncond_drop_per_mnt is on with SenseNova's MoT phase "
+                    "eviction armed: a batch whose MNT iterations disagree on "
+                    "the null label pays an extra MoT half-swap round trip, "
+                    "because the frozen understanding branch has to build the "
+                    "other label's prefix. cfg_uncond_drop_per_mnt: false "
+                    "restores the single draw per MNT window and avoids the "
+                    "extra swap.",
+                    code="cfg_null_per_mnt_phase_eviction", prefix=self.log_prefix)
 
         self._cfg_null_drop_rate_resolved = rate
         return rate
 
     def sample_cfg_drop_mask(self, batch_size: int) -> Optional[torch.Tensor]:
-        """One CPU boolean ``[B]`` label per assembled optimization batch.
+        """One CPU boolean ``[B]`` label, used as MNT iteration 0's null.
 
         Drawn BEFORE the batch's per-item encode loop, and so before the MNT
-        loop, then reused by every MNT transform of the batch: an item does not
-        change meaning between passes over the same images (strategy §5), and an
-        encode-stage architecture -- which builds its null while encoding the
-        item, not afterwards -- still has its label in hand when it needs it.
-        ``batch_size`` is therefore the item COUNT of the batch, taken before
-        any caption is read, so the label cannot depend on caption content.
+        loop, so an encode-stage architecture -- which builds its null while
+        encoding the item, not afterwards -- has its label in hand when it
+        needs it. Later MNT iterations draw their own label via
+        ``cfg_drop_mask_for_mnt`` unless ``cfg_uncond_drop_per_mnt`` is off, in
+        which case this one draw covers the whole window. ``batch_size`` is
+        therefore the item COUNT of the batch, taken before any caption is
+        read, so the label cannot depend on caption content.
 
         CPU because it is a label, not a tensor the forward consumes: the
         collated rewrite moves it to the conditioning's device itself, and
@@ -7943,6 +7995,39 @@ class BaseTrainer(ABC):
         rate = self.cfg_null_drop_rate()
         if not rate:
             return None
+        return torch.rand(batch_size) < float(rate)
+
+    def cfg_drop_mask_for_mnt(
+        self, batch_mask: Optional[torch.Tensor], mnt_index: int, batch_size: int,
+    ) -> Optional[torch.Tensor]:
+        """This MNT iteration's null label: ``batch_mask`` reused, or redrawn.
+
+        ``mnt_index == 0`` keeps ``batch_mask``. Past that,
+        ``cfg_uncond_drop_per_mnt`` (default on) draws a fresh CPU Bernoulli
+        per iteration instead of sharing one draw across the whole window.
+        SenseNova's four-phase shared-window route is the exception: it returns
+        the assembly prefix unchanged (``_sensenova_mnt_conditioning``), so a
+        redrawn label would only mislabel the loss split.
+        """
+        if batch_mask is None or mnt_index == 0:
+            return batch_mask
+        if not self.config.get("cfg_uncond_drop_per_mnt",
+                                _TRAINING_DEFAULTS["cfg_uncond_drop_per_mnt"]):
+            return batch_mask
+        four_phase = getattr(self, "sensenova_four_phase", None)
+        if four_phase is not None and four_phase.shared_window:
+            if not getattr(self, "_cfg_null_per_mnt_shared_window_warned", False):
+                self._cfg_null_per_mnt_shared_window_warned = True
+                emit_training_warning(
+                    "cfg_uncond_drop_per_mnt has no effect on SenseNova's "
+                    "four-phase shared-window route: the boundary leaves "
+                    "accumulate across the whole MNT window, so every "
+                    "iteration keeps the window's one label.",
+                    code="cfg_null_per_mnt_shared_window", prefix=self.log_prefix)
+            return batch_mask
+        rate = self.cfg_null_drop_rate()
+        if not rate:
+            return batch_mask
         return torch.rand(batch_size) < float(rate)
 
     # ------------------------------------------------------------------
@@ -13953,8 +14038,10 @@ class BaseTrainer(ABC):
                     sensenova_prefixes = []
                     # Frozen-branch per-MNT null: memoizes at most one alternate-
                     # label prefix per batch (see _sensenova_mnt_conditioning).
-                    # Reset every batch so it cannot leak into the next one.
+                    # Reset every batch so a stale value cannot be read as this
+                    # batch's own.
                     self._sensenova_alt_cfg_null_prefix = None
+                    self._sensenova_prefix_cfg_null = None
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
@@ -14251,12 +14338,8 @@ class BaseTrainer(ABC):
                                           and bool(cfg_drop_mask[item_index])),
                             )
                             sensenova_prefixes.append(prefix)
-                            # Same expression as the encode call above (kept
-                            # literal rather than a shared variable, for
-                            # cfg_null_sensenova_test.py's source check). What
-                            # _sensenova_mnt_conditioning's frozen branch
-                            # compares a later iteration's label against, to
-                            # know whether this assembly prefix still applies.
+                            # Kept literal rather than a shared variable, to
+                            # match cfg_null_sensenova_test.py's source check.
                             self._sensenova_prefix_cfg_null = (
                                 cfg_drop_mask is not None
                                 and bool(cfg_drop_mask[item_index]))
@@ -14743,9 +14826,10 @@ class BaseTrainer(ABC):
                     batch_size = latents.shape[0]
 
                     # The one aligned-null label, drawn before the assembly loop
-                    # and re-indexed by the latent-size filter, is what every MNT
-                    # transform of this batch reuses. It is checked rather than
-                    # redrawn: a second draw here would give the encode-stage
+                    # and re-indexed by the latent-size filter, is MNT iteration
+                    # 0's label; later iterations go through
+                    # cfg_drop_mask_for_mnt. It is checked rather than redrawn:
+                    # a second draw here would give the encode-stage
                     # architectures' already-built prefixes a different label
                     # than the one they were built from.
                     # A misaligned label would train the wrong items against the
@@ -14797,7 +14881,17 @@ class BaseTrainer(ABC):
                     if self._grad_t_cos_probe is not None:
                         self._grad_t_cos_probe.begin_window()
 
+                    # Bound here, not only inside the loop: the window-aborted
+                    # break below can leave iteration 0 before the loop body
+                    # assigns it, and the post-loop del would then raise.
+                    mnt_sensenova_prefix = None
+
                     for mnt_idx in range(multi_noise_timesteps):
+                        # Every downstream consumer in this iteration reads
+                        # this variable, never the batch-level cfg_drop_mask.
+                        mnt_cfg_drop_mask = self.cfg_drop_mask_for_mnt(
+                            cfg_drop_mask, mnt_idx, batch_size)
+
                         # A skipped batch discarded this window's shared boundary
                         # cut. The remaining iterations have no cut to accumulate
                         # into (the shared route does not re-encode) and no
@@ -15579,6 +15673,12 @@ class BaseTrainer(ABC):
                         del pooled_embeddings
                     if reference_latents_nested is not None:
                         del reference_latents_nested
+                    # Last MNT iteration's SenseNova prefix, and the frozen
+                    # branch's memoized alternate-label one: both would
+                    # otherwise stay resident through checkpoint save and
+                    # sample generation.
+                    del mnt_sensenova_prefix
+                    self._sensenova_alt_cfg_null_prefix = None
 
                     # ============================================================
                     # Post-batch processing (Sequential MNT: optimizer step done in loop)

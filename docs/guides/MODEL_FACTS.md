@@ -306,6 +306,28 @@ Paths below are relative to `backend/core/training/`.
     `unet_quantization` entry in `ARCH_UNSUPPORTED` (unlike
     krea2/ideogram4/ltx2/acestep, which need `ARCH_SUPPORTED_VALUES: ["int8"]`) —
     it honours both axes for every value.
+  - **Generation-time LoRA key codec** (`1b0a192c`): `ZImageLoRAAdapter`
+    writes FLATTENED `lora_transformer_<module_path_with_underscores>` stems,
+    while the generation loader used to search only dotted
+    `transformer.<module.path>` stems — so a SushiUI-trained Z-Image LoRA
+    matched none of its 136 targets. `_zimage_lora_key_stems` now tries the
+    flattened stem FIRST and keeps the dotted one for files already on disk.
+    The flattened stem is also the trainer's in-memory layer identity and its
+    resume key, which is why the repair is in the loader and not in
+    `save_checkpoint`: renaming on save would strand training resume for every
+    existing checkpoint.
+  - **Z-Image alpha lives only in safetensors file metadata**
+    (`lora_alpha` / `ss_network_alpha`), because `save_checkpoint` records
+    rank/alpha there and writes no per-key `.alpha` tensor. Precedence is now
+    per-key tensor, then file metadata, then rank; the previous rank fallback
+    applied every `alpha != rank` LoRA at the wrong scale. A missing file,
+    a load failure and zero matched targets now refuse
+    (`lora_not_found` / `lora_load_failed` / `lora_incompatible`), and
+    shape-mismatched targets are skipped with `lora_partial` instead of being
+    assigned and failing inside the denoise loop. **Behaviour change:** two
+    Z-Image LoRAs used to succeed while silently applying only the first; a
+    fully shadowed second file is now `lora_stacking_unsupported` (400), so
+    presets and loop queues carrying two Z-Image LoRAs start erroring.
   - **Stale block offloader**: `transformer._block_offloader` is attached per
     block-swap generation and NEVER cleared (`_zimage_cleanup` says so, and the
     transformer's `forward` consults the attribute whenever present). The INT8
@@ -473,11 +495,36 @@ Paths below are relative to `backend/core/training/`.
 - **lens** — GPT-OSS mxfp4 text encoder permanently holds ~9.7 GB VRAM while loaded
   (packed FP4 buffers untracked by PyTorch, cannot be moved to CPU). VAE falls back
   to the shared FLUX.2-klein-4B vae store when the model ships none.
+  - **TRANSFORMER quantization is dropped while LoRA wrappers are live**
+    (`5d80c042`, `_lens_quantization_with_lora`). `move_lens_transformer_to_gpu`
+    → `_anima_quantize_fp8` DEEP-COPIES the transformer and casts every
+    `nn.Linear` weight to FP8, which on a wrapped tree includes the adapter's
+    own `lora_down`/`lora_up`; the copy also strands
+    `_lens_lora_original_modules` on modules no longer in the tree, so unload
+    could not put the base back. The LoRA wins and the request is warned
+    (`quantization_fallback`), so VRAM use is higher than requested. Same
+    precedence as FLUX.2's `_flux2_te_quantization_with_lora`, which drops
+    TEXT-ENCODER quantization for the same deep-copy reason.
+  - Generation previously applied only Lens's DEFAULT LoRA scope, so a
+    mod-scope LoRA lost its modulation tensors. LoRAs were also loaded outside
+    the `try`, with attention-backend and processor setup in between, so an
+    exception there carried wrappers into the next generation; restore now
+    runs in the `finally` of every entry point, guarded so a restore failure
+    cannot replace the real error.
 - **minit2i** — Pixel-space MM-JiT: default variants have no VAE and decode is a
   tensor→image passthrough (`is_latent=False`); a latent VAE variant exists. x0
   (sample) prediction under flow matching. b16 head_dim 64 routes tq; l16 head_dim
   52 pads to 56 and stays native. `scratch:minit2i:<variant>:<vae_type>` sentinel
   builds from scratch in memory.
+  - **Text-encoder LoRAs now ACT** (`5d80c042`). They were applied AFTER the
+    prompt had already been encoded and removed before the next generation, so
+    a MiniT2I text-encoder LoRA reported a nonzero applied count and changed
+    nothing at all. The load is split: `_minit2i_prepare_loras` +
+    `_apply_te_lora_minit2i` run BEFORE `_minit2i_encode`, while the
+    transformer pass (`_load_lora_minit2i`) stays after transformer staging,
+    where the block-swap offloader captures its Linears. The per-file verdict
+    is deferred to the transformer pass so it can judge both halves together —
+    a file binding nothing in EITHER component refuses.
 - **anima** — Cosmos-Predict2-style DiT with AdaLN-LoRA; Qwen3-0.6B TE plus a
   6-layer LLM Adapter (T5 tokenizer produces the adapter's target input ids).
   Training can be restricted to the LLM Adapter only; TE and Qwen-Image VAE frozen.
@@ -730,6 +777,20 @@ Paths below are relative to `backend/core/training/`.
   - Host RAM: a runtime INT8 conversion of the 23.9 GB bf16 transformer holds
     roughly 36 GB of host RAM for the session (source mapping + quantized
     module); see the measured Anima ratio in the Anima row.
+  - **Krea 2 applies LoRAs at generation at all only since `10f470d5`.** The
+    parser, apply and restore helpers existed in `core.models.krea2.krea2_lora`
+    but the generation backend never read `params["loras"]`, so selecting a
+    Krea 2 LoRA in AddLoRA was a silent no-op. It is wired into all three
+    generation paths AFTER the INT8 runtime conversion, because the wrappers
+    copy the base module's device. Restore runs unconditionally in each inner
+    `finally` AND again at the top of the loader, so a restore that failed in
+    an earlier request cannot leak wrappers into a later generation; a failed
+    restore is reported rather than swallowed. Zero matched targets, an
+    unresolvable path, a file with no usable keys and a fully shadowed second
+    LoRA all refuse before denoising. `apply_to_text_encoder` is absent by
+    design (Krea 2's TE is frozen); `unet_layer_weights` and a non-default
+    `step_range` are reported as ignored. Keep-models-hot residency stays
+    disabled while LoRAs are present, matching every other architecture.
 - **ltx2** — Video (+ optional audio) generation, not part of the 10-architecture
   image roster; loaded/routed separately from `model_loader.py`'s image-model
   detection. All speed/lightweight features below are opt-in (default OFF) and
@@ -843,6 +904,39 @@ Paths below are relative to `backend/core/training/`.
     the naive test drops every quantized target silently. `ltx2_ops
     .load_components` calls `disable_scaled_mm` + `disable_int8_mm` on the
     transformer, the text encoder and the connectors: training is dequant-only.
+  - **LTX-2.3 now HAS a generation LoRA loader** (`70dad40c`,
+    `core.models.ltx2.ltx2_lora`), on all three routes it serves
+    (`/generate/txt2vid`, `/generate/img2vid`, `/generate/outpaint/video`).
+    Before this it had a working training adapter and no generation loader at
+    all, so a trained LTX-2.3 LoRA could never be used; the
+    `arch_capabilities` entry declaring LoRA unimplemented is gone, since it
+    produced a false "ignored" warning on a correct request. Targets come from
+    the trainer's own iterator and are flattened forward into key space, so
+    the two sides cannot drift. The trainer's feed-forward branch tested a
+    predicate that EXCLUDES the wrapper class, so a wrapped slot vanished from
+    the iterator — restore missed those targets and a second application would
+    have wrapped the adapter's own branches.
+  - **LTX-2.3's block-swap offloader persists across generations** (it is
+    torn down only by a change of `blocks_to_swap`), unlike FLUX.2's and
+    MiniMax-H3's which are rebuilt per generation. That makes three
+    interactions with LoRA load-bearing, all handled in
+    `_ltx2_sync_block_swap_after_lora` / `_ltx2_invalidate_block_swap_caches`:
+    - **Every offloader cache is invalidated on BOTH apply and restore.** The
+      H2D masters hold module references and a flat layout; the standard
+      swap's staging buffers are sized from the FIRST job list and then
+      `zip`-paired with every later one. A wrap adds two Linears per target
+      and renames the base to `.original_module`, so a stale list mispairs a
+      buffer with a differently shaped tensor and drops every job past its
+      end. Cost of the drop: rebuilding the H2D masters re-pins one flat CPU
+      buffer per swappable block while the old ones are still referenced, i.e.
+      a transient ~2x pinned host footprint on the first forward afterwards.
+    - Masters built over the pre-LoRA tree are dropped so the next forward
+      rebuilds them; otherwise adapters stay on the host while their block
+      runs on GPU.
+    - A LoRA covering only SOME swapped blocks makes them structurally
+      unequal, which the coalesced H2D path asserts against, so that path is
+      disabled for the generation with `ltx2_lora_h2d_disabled` naming the
+      cost, rather than letting the assert fire mid-denoise.
   - **Training, DiT-BlockSkip** (`blockskip_enable`/`blockskip_front`/`blockskip_back`,
     LoRA and full-parameter trainers only, arXiv 2603.20755): dual-stream
     (video + audio) folded-precompute — a no-grad full pass captures the
@@ -1274,6 +1368,34 @@ Paths below are relative to `backend/core/training/`.
     Still open and not claimed: upstream keeps fp32 weights under
     `torch.autocast(float16)`, which is a different computation from casting the
     weights, and that comparison has not been run.
+  - **A SushiUI-trained MiniMax-H3 LoRA is loadable at generation for the
+    first time** (`9aed62ab`). The generation loader parsed only the ComfyUI
+    key convention and documented dropping the SushiUI one, so a LoRA trained
+    here matched ZERO targets and silently did nothing. The native convention
+    (`lora_unet_transformer_blocks_<N>_*.lora_down.weight`) now parses too,
+    with its leaf table derived from `minimax_h3_adapter`'s own `_ATTN_LEAVES`
+    / `_FF_LEAVES` constants so the two sides cannot drift. The fused-QKV
+    split, the `fc1` half swap and the ComfyUI scaling are unchanged.
+    - **Alpha resolution consults file metadata on the NATIVE path only.**
+      ComfyUI checkpoints bake their effective scale into `lora_B` as a flat
+      multiplier and drop alpha, so applying a metadata alpha ratio there
+      would attenuate them a second time. The real turbo checkpoint escapes
+      that today only because its `ss_network_alpha` reads `"Dynamic"` and
+      fails to parse.
+    - A wrong-partition LoRA was documented as a hard refusal but its error
+      was caught by a blanket handler and downgraded to a warning; the whole
+      staging phase also sat outside the `try`, so a refusal or an
+      out-of-range block-skip left the model wrapped and GPU-resident. A
+      declared `fl2va`/`ref2va` mismatch now really refuses, carrying
+      `minimax_h3_lora_variant_mismatch` (the retired
+      `minimax_h3_lora_not_found`, `minimax_h3_lora_targets_unresolved` and
+      `minimax_h3_lora_load_failed` codes are gone; the shared
+      `lora_not_found` / `lora_load_failed` / `lora_incompatible` /
+      `lora_partial` / `lora_stacking_unsupported` taxonomy replaces them).
+      A native stem missing one of its halves was dropped without a word.
+    - The existing conversion test builds a 50-block stub needing tens of
+      gigabytes, so the new behaviour is covered by a cheap 3-block file
+      (`backend/tests/minimax_h3_lora_apply_cheap_test.py`) instead.
   - **LoRA training** (`arch/minimax_h3.py` + `ops/minimax_h3_ops.py` +
     `adapters/minimax_h3_adapter.py`). Targets are the per-block attention
     projections (`to_q/to_k/to_v/to_out.0`) and the SwiGLU FFN linears
@@ -1684,9 +1806,22 @@ Paths below are relative to `backend/core/training/`.
       error**. A shortfall is now reported rather than inferred:
       `check_lora_application` cross-checks the file's module count against
       what applied AND against the `lora_targets` metadata scope, surfacing
-      `sensenova_lora_partially_applied` on the generation response. The
+      the shared `lora_partial` code on the generation response. The
       existing generation-only file is unaffected — application is
       lookup-driven, so its 294 still reach 294 and the und slots simply miss.
+    - **A LoRA that cannot be applied now refuses** (`41093c5b`). A missing
+      file (`lora_not_found`), a loader exception (`lora_load_failed`) and a
+      wrong-format file matching zero modules (`lora_incompatible`) each raise
+      before denoising; previously all three printed to the console and
+      generated the base model's image anyway. Two LoRAs over the same module
+      refuse (`lora_stacking_unsupported`) instead of silently discarding the
+      first; over disjoint modules they still stack. Alpha precedence is
+      per-key tensor, then safetensors file metadata, then rank — SenseNova's
+      own trainer writes per-key alphas, so its checkpoints are unaffected.
+      Unlike the other architectures' weakref-keyed reset, SenseNova clears
+      its wrapper map on EVERY unload and drives restore from the wrapped set
+      rather than from map membership; 588 stale entries previously survived a
+      model switch and spliced the previous model's Linears into the new tree.
   - **Resolution**: free, not bucketed; only the structural /32 token grid
     (patch 16 x merge 2) is enforced by snapping. The 11 upstream ~4 MP
     training-resolution buckets ship as UI presets (starting points, not

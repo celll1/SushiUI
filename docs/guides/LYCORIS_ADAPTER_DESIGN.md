@@ -122,16 +122,40 @@ local end-to-end measurements rather than the release headline.
 architectures. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` lists
 13 training architectures; MiniMax Music 3 is generation-only.
 
-Training shares `LoRALinearLayer` from
-`backend/core/training/adapters/sd15_adapter.py`, but does not yet share the
-rest of the mechanism:
+Training already shares more than the layer class.
+`backend/core/training/adapters/base_adapter.py:243` defines the abstract
+`BaseLoRAAdapter`, which **all 13 architecture adapters subclass**. That base
+class and its module supply:
 
-- `LoRATrainer._create_adapter` selects one of 13 adapters with an if-chain.
-- Every adapter directly assumes `lora_down` and `lora_up` when collecting
-  optimizer parameters and saving checkpoints.
-- `LoRATrainer.load_checkpoint` resumes only those two tensors.
-- `ARCH_REGISTRY` selects training ops, not adapter factories, target topology,
-  checkpoint codecs, or generation loaders.
+- injection with component tagging — `register_lora_layer` records each
+  wrapped layer against one of the `LORA_COMPONENTS` names (`unet`,
+  `text_encoder`, `text_encoder_1`, `text_encoder_2`, `vision_encoder`),
+  behind the abstract `apply_lora_to_unet` / `apply_lora_to_text_encoders`;
+- quantized-base detection and refusal — `count_quantized_linears`,
+  `reject_quantized_base`, `warn_quantized_base_without_checkpointing`;
+- branch dtype policy — `lora_branch_dtype`, and `is_lora_wrappable_linear`
+  as the wrappability predicate (`Int8Linear`/`Fp8Linear` are not `nn.Linear`
+  subclasses, so an `isinstance` test drops every quantized target silently);
+- per-component learning-rate resolution — `resolve_component_lr`.
+
+What is **not** shared is narrower than "the rest of the mechanism":
+
+- the BODIES of `setup_trainable_parameters` and `save_checkpoint`, which are
+  abstract on the base class and hardcode `lora_down` / `lora_up` in all 13
+  implementations;
+- resume: `LoRATrainer.load_checkpoint` reads only those two tensor names;
+- adapter selection: `LoRATrainer._create_adapter` is an if-chain, and
+  `ARCH_REGISTRY` selects training ops, not adapter factories, target
+  topology, checkpoint codecs, or generation loaders.
+
+A **second adapter algebra already exists**, and the extracted protocol must
+accommodate it from day one rather than assuming one forward:
+`backend/core/training/adapters/minimax_h3_adapter.py:72` defines
+`MiniMaxH3LoRALinearLayer(LoRALinearLayer)` with a different `forward`, which
+casts the branch to the ACTIVATION dtype per call because MiniMax-H3's
+training forward runs without `torch.autocast` (the vendored transformer owns
+its own mixed-precision policy). It is imported by generation, not only by
+training.
 
 Generation is split again. SD1.5/SDXL use `LoRAManager` and Diffusers/PEFT.
 Most other architectures have a custom loader in their pipeline backend and a
@@ -139,33 +163,111 @@ partially shared helper under `backend/core/models/<arch>/`. These paths do not
 implement one common strength, target-count, multiple-adapter, step-range, or
 atomic restore contract.
 
-### Existing LoRA round-trip defects
+### The measured back-edge that places the shared engine
 
-These are Phase 0 blockers, not new-variant limitations:
+Generation already imports `LoRALinearLayer`, `is_lora_wrappable_linear` and
+`lora_branch_dtype` from `core.training.adapters` in **12 modules across 11
+architectures** (`acestep.py`, `flux2.py`, `minimax_h3.py`, `zimage.py` under
+`core/pipeline_backends/`, plus `anima`, `ideogram4`, `krea2`, `lens`, `ltx2`,
+`minimax_h3`, `minit2i`, `sensenova` `_lora.py` helpers under `core/models/`).
 
-- Z-Image training writes `lora_transformer_<flattened>` keys while generation
-  searches `transformer.<dotted>` keys. Its generation debug line also reads a
-  nonexistent `scaling` attribute after replacing the first matching module.
-- Krea2 contains parser/apply/restore helpers, but its generation backend never
-  applies `params["loras"]`.
-- LTX-2.3 has a training adapter but explicitly lacks a generation loader.
-- FLUX.2 training can save Qwen text-encoder adapters, but generation applies
-  transformer tensors only.
-- Anima's default training scope includes attention, MLP, and LLM-adapter
-  targets; generation applies only its attention iterator.
-- ACE-Step can train an opt-in MLP scope; generation is attention-only.
-- `classify_lora_keys` recognizes only a subset of current architectures, so
-  several SushiUI-trained adapters appear as `unknown` in AddLoRA.
-- Several custom loaders replace an existing wrapper with a new wrapper around
-  the original base. Multiple selected adapters therefore become last-wins or
-  cause later adapters to match zero targets instead of summing branches.
-- Custom paths do not consistently honor `apply_to_text_encoder`,
-  `apply_to_unet`, per-block weights, or `step_range`.
-- Loader exceptions and zero-target applications can be logged while generation
-  still returns success.
+That import is not free. `core.training.adapters` is a subpackage of
+`core.training`, whose `__init__` imports `base_trainer`, which imports from
+`api` at module scope — so the whole API surface, including `api.routes`,
+loads, and CUDA is initialised. **Measured in a fresh process** (repo venv
+Python, cwd `backend/`, warm filesystem cache, importing
+`core.training.adapters.sd15_adapter`): **8.86 s and 9.06 s on two runs, adding
+5,803 modules to `sys.modules`**, with `api.routes in sys.modules` and
+`torch.cuda.is_initialized()` both `True` afterwards.
 
-The first implementation milestone must close the ordinary LoRA
-trainer-save-to-fresh-generation round trip for every advertised architecture.
+That measured back-edge — generation reaching into the training package and
+dragging the API and a CUDA context with it — is why the Phase 1 engine must
+live in `backend/core/adapters/`, OUTSIDE `core.training`. Without the
+measurement, "outside the training package" reads as an arbitrary preference.
+
+The existing pattern these adapters follow is documented in
+`backend/core/training/adapters/MODEL_ADAPTER_DESIGN.md`. This document
+SUPERSEDES that file's "Base Adapter Interface", "Integration with Trainers"
+and "Migration Plan" sections once Phase 1 lands, since the adapter protocol
+and the trainer's selection mechanism both move. Its per-architecture notes
+(SD1.5, SDXL and Z-Image injection specifics), its learning-rate resolution
+section and its "What a resume writes back" section remain the current
+description of behaviour and are NOT superseded.
+
+### LoRA round-trip defects found and repaired in Phase 0
+
+Phase 0 audited the generation-time LoRA path of every architecture that
+advertises LoRA. What it found, and what the repair was, in nine commits
+(`10f470d5`, `1b0a192c`, `e95b3595`, `c63ff275`, `41093c5b`, `70dad40c`,
+`a968cfa3`, `5d80c042`, `9aed62ab`):
+
+**A trained LoRA that could not be used at all.** Five architectures could not
+complete the trainer-save to fresh-generation round trip:
+
+- Z-Image training writes flattened `lora_transformer_<flattened>` key stems
+  while generation searched dotted `transformer.<dotted>` stems, so a
+  SushiUI-trained Z-Image LoRA matched none of its 136 targets. Repaired in
+  the loader, not on save: the flattened stem is also the trainer's in-memory
+  layer identity and its resume key, so renaming on save would strand resume
+  for every checkpoint already on disk.
+- Krea 2 had parser, apply and restore helpers, but its generation backend
+  never read `params["loras"]` — selecting a Krea 2 LoRA was a silent no-op.
+- LTX-2.3 had a working training adapter and no generation loader at all. Its
+  `arch_capabilities` entry declaring LoRA unimplemented produced a false
+  "ignored" warning on a correct request, and is gone.
+- MiniMax-H3's loader parsed only the ComfyUI key convention and documented
+  dropping the SushiUI one, so a LoRA trained here matched zero targets.
+- MiniT2I applied text-encoder LoRAs AFTER the prompt was already encoded and
+  removed them before the next generation: such a LoRA reported a nonzero
+  applied count and changed nothing.
+
+**A trained scope that was silently dropped.** FLUX.2 saved Qwen3
+text-encoder adapters that generation read and discarded; Anima wrapped
+attention only, dropping the other 26 of 42 default-scope modules without a
+log line; ACE-Step logged its opt-in `mlp` keys as "skipped, not an error";
+Lens applied only its default scope, so a mod-scope LoRA lost its modulation
+tensors. Each applied scope is now derived from the checkpoint's own keys and
+enumerated by the TRAINER's own iterator, so the two sides cannot drift.
+
+**Silent success on a LoRA that did nothing.** A missing file, a loader
+exception and a zero-target application returned a successful generation on
+every component-based architecture. All now refuse before denoising under the
+shared `lora_not_found` / `lora_load_failed` / `lora_incompatible` codes.
+
+**Wrappers surviving a failure.** Several loaders removed wrappers only on the
+success path, or held them as process state cleared by the NEXT request's
+gate, so a sampling or decode exception carried them into the following
+generation. Restore now runs in a `finally` in every entry point, guarded so a
+restore failure cannot replace the real error.
+
+**Alpha applied at the wrong scale.** Z-Image records rank/alpha only in
+safetensors file metadata and the loader fell back to rank, so every
+`alpha != rank` LoRA applied at the wrong scale. Precedence is now per-key
+tensor, then file metadata, then rank. MiniMax-H3's metadata tier is
+deliberately restricted to its native key path: ComfyUI checkpoints bake their
+effective scale into `lora_B` and drop alpha, so a metadata ratio would
+attenuate them twice.
+
+**Shape-mismatched branches assigned wholesale**, then failing inside the
+denoise loop or the encoder forward (Z-Image, FLUX.2). They are now skipped
+with a `lora_partial` warning.
+
+Two findings were structural rather than per-architecture and are recorded in
+the Phase 1 list below instead: the original-module bookkeeping surviving a
+model reload, and additive multi-LoRA stacking. Every architecture now refuses
+or first-wins honestly rather than silently discarding an adapter, but none of
+them sums two branches over one module.
+
+Still outstanding from the original Phase 0 list, and therefore moved into
+Phase 1: `classify_lora_keys`
+(`backend/core/extensions/lora_manager.py`) still recognises only `sensenova`,
+`minimax_h3`, `sd15`/`sdxl`, `zimage` and `flux2`, so a SushiUI-trained
+adapter for any other architecture is classified from the generic
+`lora_unet_` prefix or falls through to `unknown` in AddLoRA; and there are
+still no trainer-save to fresh-generation round-trip tests covering every
+advertised architecture (MiniMax-H3 gained a cheap 3-block apply test,
+`backend/tests/minimax_h3_lora_apply_cheap_test.py`, and LTX-2.3 extends
+`backend/tests/video_lora_threading_test.py`).
 
 ## Architecture feasibility
 
@@ -177,16 +279,16 @@ speed. LoCon/Conv targets are separate future scope.
 |---|---|---|---|
 | SD1.5 | yes | dense Linear | Preserve U-Net and optional CLIP MLP groups |
 | SDXL | yes | dense Linear | Preserve U-Net and two text-encoder LR groups |
-| Z-Image | yes | dense Linear | Repair current key codec and generation loader first |
-| FLUX.2 | yes | dense only | Apply saved Qwen targets; gate quantized bases |
-| Anima | yes | dense only | Make inference target scope equal training scope |
+| Z-Image | yes | dense Linear | Key codec and generation loader repaired (Phase 0) |
+| FLUX.2 | yes | dense only | Qwen targets now applied (Phase 0); gate quantized bases |
+| Anima | yes | dense only | Inference scope now equals training scope (Phase 0) |
 | Lens | yes | dense Linear | Retain fused-QKV path naming and frozen GPT-OSS encoder |
 | Ideogram4 | yes | deferred | Dual transformer can be FP8; start with DoRA refused |
 | MiniT2I | yes | dense Linear | Preserve transformer and optional FLAN-T5 scopes |
-| Krea2 | yes | deferred | Add generation call; INT8/FP8 bases need capability gates |
-| LTX-2.3 | yes | dense only | Add generation loader; Gemma-3 remains frozen |
+| Krea2 | yes | deferred | Generation call added (Phase 0); INT8/FP8 bases need capability gates |
+| LTX-2.3 | yes | dense only | Generation loader added (Phase 0); Gemma-3 remains frozen |
 | MiniMax-H3 | yes, later gate | deferred | Preserve custom QKV mapping and FP8/ConvRot dtype policy |
-| ACE-Step | yes | dense only | Make opt-in MLP scope round-trip through generation |
+| ACE-Step | yes | dense only | Opt-in MLP scope now round-trips through generation (Phase 0) |
 | SenseNova | yes, later gate | deferred | Preserve two MoT halves, phase eviction, and INT8/ConvRot policy |
 | MiniMax Music 3 | no training | no | Keep refused until the training input contract exists |
 
@@ -385,16 +487,16 @@ adapter fields from those documents.
 
 ## Implementation sequence
 
-### Phase 0: repair ordinary LoRA
+### Phase 0: repair ordinary LoRA — done, except as noted
 
-- Fix the Z-Image codec/runtime error.
-- Wire Krea2 generation; either wire LTX-2.3 or keep its refusal explicit.
-- Complete FLUX.2 text-encoder, Anima MLP/LLM, and ACE-Step MLP scopes.
-- Make multiple adapters additive and unify strength, step range, component
-  selection, failure, and restore behavior.
-- Classify checkpoints from every training architecture.
-- Add trainer-save to fresh-generation round-trip tests for all advertised
-  architectures.
+Done: the Z-Image codec; Krea 2, LTX-2.3 and MiniMax-H3 generation wiring;
+the FLUX.2 text-encoder, Anima MLP/LLM, ACE-Step MLP and Lens mod scopes; the
+MiniT2I text-encoder ordering; and unified failure and restore behaviour. See
+"LoRA round-trip defects found and repaired in Phase 0" above.
+
+Not done, carried into Phase 1: making multiple adapters additive; unifying
+step range and component selection; classifying checkpoints from every
+training architecture; round-trip tests for all advertised architectures.
 
 ### Phase 1: extract the shared engine
 
@@ -403,6 +505,59 @@ adapter fields from those documents.
 - Migrate ordinary LoRA without numerical changes.
 - Replace per-adapter optimizer/save assumptions with protocol methods.
 - Move topology and codec hooks into architecture descriptors.
+- Accommodate `MiniMaxH3LoRALinearLayer`'s activation-dtype forward in the
+  extracted `AdapterLayer` protocol from the start; a second algebra already
+  exists.
+
+**Findings that must be fixed once in the engine, never patched
+per-architecture:**
+
+- **Original-module bookkeeping surviving a model reload.** Each backend kept
+  a map from module key to the pre-LoRA `nn.Module`, and the map outlived the
+  model it described; the next unload then spliced the PREVIOUS model's Linear
+  modules into the new tree. FLUX.2 did it across all 252 wrapped targets, and
+  its text-encoder restore runs every generation, so it fired on the first
+  generation after a switch; SenseNova carried 588 stale entries. Eight
+  independent implementations of the same bookkeeping produced the same silent
+  defect. The uniform fix is a `weakref.ref`-keyed reset, now present in nine
+  pipeline backends (`anima`, `flux2`, `ideogram4`, `krea2`, `lens`, `ltx2`,
+  `minimax_h3`, `minit2i`, `zimage`); SenseNova instead clears its map on
+  every unload and drives restore from the wrapped set rather than from map
+  membership. `id()` is unsafe here because a freed object's id is REUSABLE,
+  and a reload allocating at the dead model's address is exactly the case the
+  key must survive. An engine-level session owns this once.
+- **Refusal warnings are write-only.** Every refusal path calls `add_warning`
+  before raising, but the routes read `get_warnings()` only on the success
+  path; the error paths call `fail_generation` and re-raise. So
+  `lora_stacking_unsupported`, `lora_incompatible` and the rest never reach a
+  client on a 400 — the client sees the message text embedded in the error and
+  no machine-readable code. Fixing it means putting a `code` on `APIError`
+  (`backend/api/error_handlers.py`, which currently carries only `message`,
+  `status_code` and `detail`) and surfacing it through the error handler. That
+  is repo-wide surface, not LoRA surface, and must not be done piecemeal.
+- **Additive multi-LoRA stacking is blocked repo-wide by the layer class.**
+  `LoRALinearLayer.__init__` reads `original_module.in_features` /
+  `out_features` into LOCALS and never exposes them on `self`, so the wrapper
+  cannot wrap a wrapper. This is why every architecture is first-wins or a
+  refusal today rather than summing branches. The composite wrapper is the
+  fix; a per-architecture re-wrap is not.
+- **`step_range`, `apply_to_unet`, `apply_to_text_encoder` and per-block
+  `unet_layer_weights` are honoured only on the SD1.5/SDXL diffusers path.**
+  FLUX.2 honours the two component flags and LTX-2.3 honours `apply_to_unet`;
+  every other component backend ignores all four, and Krea 2 and LTX-2.3 now
+  WARN that they do (`ltx2_lora_step_range_ignored`,
+  `ltx2_lora_layer_weights_ignored`). Honouring them belongs in the engine's
+  target topology and session, not in ten loaders.
+- **`GenerationWarning.code` is a free-form string with no enum in
+  `openapi.yaml`.** The taxonomy actually in use is `lora_not_found`,
+  `lora_load_failed`, `lora_incompatible`, `lora_partial`,
+  `lora_stacking_unsupported`, plus architecture-specific codes
+  (`minimax_h3_lora_variant_mismatch`, `ltx2_lora_h2d_disabled`,
+  `quantization_fallback`, and others). Enumerating it is part of making
+  refusals machine-readable.
+- Classify checkpoints from every training architecture (`classify_lora_keys`
+  covers five today) and add trainer-save to fresh-generation round-trip tests
+  for all advertised architectures.
 
 ### Phase 2: LoHa and LoKr reference paths
 

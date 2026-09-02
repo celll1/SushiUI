@@ -774,8 +774,10 @@ paths:
           and adds a `minimax_h3_lora_hybrid_unmeasured` entry: no LoRA
           metadata names an AdaLN recipe, so none can state which merge it was
           trained for, and none was measured on one. A LoRA whose
-          `base_model` names `fl2va`/`ref2va` is still refused (skipped, with
-          `minimax_h3_lora_load_failed`).
+          `base_model` metadata names `fl2va`/`ref2va` is still refused, and
+          that refusal FAILS the generation (400) rather than skipping the
+          file: the request carries a `minimax_h3_lora_variant_mismatch`
+          warning and no image is produced.
       operationId: generateTxt2Vid
       requestBody:
         required: true
@@ -10624,8 +10626,34 @@ components:
         loras:
           type: string
           default: "[]"
-          description: "JSON-encoded string (sent via multipart Form) containing an array of LoRA config objects (e.g. name/weight)."
-          example: '[{"name": "my_lora", "weight": 0.8}]'
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array
+            of LoRA config objects. Fields, as read by `LoRAConfig.from_dict`
+            (`backend/core/extensions/lora_manager.py`): `path` (string,
+            required — the identifier from `GET /loras`), `strength` (number,
+            default 1.0), `apply_to_unet` / `apply_to_text_encoder` (boolean,
+            default true), `unet_layer_weights` (object), `step_range`
+            (integer pair over 0-1000, default `[0, 1000]`).
+
+            `apply_to_unet`, `apply_to_text_encoder`, `unet_layer_weights` and
+            `step_range` are honoured only on the SD1.5/SDXL diffusers path.
+            The component-based architectures (Z-Image, FLUX.2, Anima, Lens,
+            Krea 2, Ideogram 4, MiniT2I, SenseNova) each have their own
+            loader: FLUX.2 honours `apply_to_unet`/`apply_to_text_encoder`,
+            and the rest ignore these four fields — several warn that they do
+            rather than failing.
+
+            On the component-based architectures a LoRA that cannot be
+            honoured FAILS the generation (400) instead of returning an image
+            produced without it: a missing file (`lora_not_found`), a file
+            that could not be read or applied (`lora_load_failed`), and a file
+            matching zero target modules (`lora_incompatible`). Selecting two
+            LoRAs whose targets fully overlap is refused
+            (`lora_stacking_unsupported`) — these loaders REPLACE the target
+            Linear, so they cannot sum two adapters over one module; two LoRAs
+            over disjoint modules still stack. A partial application warns
+            (`lora_partial`) and generates.
+          example: '[{"path": "my_lora.safetensors", "strength": 0.8}]'
         prompt_chunking_mode:
           type: string
           enum: [a1111, sd_scripts, nobos]
@@ -11671,14 +11699,37 @@ components:
           type: array
           default: []
           description: |
-            Optional LoRA(s) to apply for this generation. Applied by
-            `minimax_h3` (`core.models.minimax_h3.minimax_h3_lora`, forward-time
-            addition layers, never merged into weights, restored after
-            generation unless the next request reuses them). `ltx2` has no
-            LoRA loader on its video generation path at all: the field is
-            accepted-but-ignored with an `unsupported_param` warning when
-            non-empty, same contract as every other per-architecture video
-            parameter on these routes.
+            Optional LoRA(s) to apply for this generation. Applied by BOTH
+            video architectures as forward-time addition layers, never merged
+            into weights, and restored UNCONDITIONALLY in the generation's
+            `finally` — a failed or partial application does not carry
+            wrappers into the next request.
+
+            - `minimax_h3` (`core.models.minimax_h3.minimax_h3_lora`): parses
+              the ComfyUI/interchange key layout AND the SushiUI-trained one
+              (`lora_unet_transformer_blocks_<N>_*.lora_down.weight`), so a
+              LoRA trained by this repo's MiniMax-H3 trainer applies. Served
+              on all three routes this schema backs.
+            - `ltx2` (`core.models.ltx2.ltx2_lora`): applies on all three
+              routes it serves (`/generate/txt2vid`, `/generate/img2vid`,
+              `/generate/outpaint/video`). Key format is the sd-scripts
+              native `lora_unet_<module path>` written by SushiUI's LTX-2.3
+              trainer; a file declaring another architecture is refused.
+
+            A request that cannot be honoured FAILS rather than generating
+            without the LoRA: a missing file (`lora_not_found`), an unreadable
+            or unloadable one (`lora_load_failed`), and a file matching zero
+            target modules (`lora_incompatible`) all answer 400. A file whose
+            targets are ALL already wrapped by an earlier LoRA in the same
+            request is refused as `lora_stacking_unsupported` — neither
+            architecture composes two adapters over one module. Partial
+            outcomes (some targets unresolved, or some held by an earlier
+            LoRA, which then wins) apply the remainder and warn `lora_partial`.
+
+            Per-LoRA `step_range` and per-block `unet_layer_weights` are NOT
+            honoured on either architecture; LTX-2.3 warns when a request
+            sets them (`ltx2_lora_step_range_ignored`,
+            `ltx2_lora_layer_weights_ignored`).
           items:
             type: object
             properties:
@@ -12360,8 +12411,9 @@ components:
           description: |
             JSON-encoded string (sent via multipart Form) containing an array
             of LoRA config objects (e.g. path/strength). Same apply/restore
-            contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
-            -- see there for details.
+            and refusal contract as `Txt2VidRequest.loras` -- see there for
+            details. Both video architectures apply LoRAs here: this route is
+            one of the three LTX-2.3 serves.
           example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
         continuation_mode:
           type: string
@@ -12880,8 +12932,10 @@ components:
           description: |
             JSON-encoded string (sent via multipart Form) containing an array
             of LoRA config objects (e.g. path/strength). Same apply/restore
-            contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
-            -- see there for details.
+            and refusal contract as `Txt2VidRequest.loras` -- see there for
+            details. MiniMax-H3 only in practice, because LTX-2.3 does not
+            serve this route at all (temporal inpaint is implemented for
+            MiniMax-H3 alone).
           example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
 
     VideoMaskPreviewRequest:
@@ -13168,12 +13222,28 @@ components:
           description: |
             Optional LoRA(s) to apply to the ACE-Step DiT for this generation.
             Wrapped as forward-time addition layers (not merged into weights)
-            and restored after generation unless the next request reuses them.
-            Matches the ACE-Step LoRA training scope: decoder attention
-            Linears only (`decoder.layers.{i}.{self_attn,cross_attn}.{q,k,v,o}_proj}`).
-            A LoRA trained for a different architecture (mismatched keys) is
-            skipped with a server-side warning, not an error. Not applied on
-            MiniMax Music 3 requests.
+            and restored UNCONDITIONALLY at the end of every generation entry
+            point, so a failure cannot carry wrappers into the next request.
+
+            Covers the FULL ACE-Step LoRA training scope, with the applied
+            scope derived from the checkpoint's own keys: decoder attention
+            Linears (`decoder.layers.{i}.{self_attn,cross_attn}.{q,k,v,o}_proj`)
+            AND the opt-in feed-forward scope
+            (`decoder.layers.{i}.mlp.{gate,up,down}_proj`), so a LoRA trained
+            with the `mlp` scope round-trips and an attention-only file is
+            unchanged. Targets come from the training adapter's own
+            enumerator, so the two sides cannot drift. External
+            diffusers/PEFT-format LoRAs are auto-detected and key-remapped.
+
+            A LoRA that binds NOTHING — a mismatched architecture, an
+            unrecognised key format, or a dimensionally incompatible file —
+            answers 400 (`lora_incompatible`) rather than returning audio the
+            LoRA never touched; so does a missing file (`lora_not_found`). A
+            file whose targets are all already wrapped by an earlier LoRA in
+            the same request is refused as `lora_stacking_unsupported`; two
+            LoRAs with non-overlapping targets DO stack. A partial bind
+            applies the rest and warns `lora_partial`. Not applied on MiniMax
+            Music 3 requests.
           items:
             type: object
             properties:

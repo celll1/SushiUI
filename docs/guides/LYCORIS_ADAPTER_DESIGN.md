@@ -197,9 +197,8 @@ description of behaviour and are NOT superseded.
 ### LoRA round-trip defects found and repaired in Phase 0
 
 Phase 0 audited the generation-time LoRA path of every architecture that
-advertises LoRA. What it found, and what the repair was, in nine commits
-(`10f470d5`, `1b0a192c`, `e95b3595`, `c63ff275`, `41093c5b`, `70dad40c`,
-`a968cfa3`, `5d80c042`, `9aed62ab`):
+advertises LoRA, then gated it. What it found, and what the repair was, in
+sixteen commits (`10f470d5`..`2d7dc86a`):
 
 **A trained LoRA that could not be used at all.** Five architectures could not
 complete the trainer-save to fresh-generation round trip:
@@ -231,8 +230,24 @@ enumerated by the TRAINER's own iterator, so the two sides cannot drift.
 
 **Silent success on a LoRA that did nothing.** A missing file, a loader
 exception and a zero-target application returned a successful generation on
-every component-based architecture. All now refuse before denoising under the
-shared `lora_not_found` / `lora_load_failed` / `lora_incompatible` codes.
+every architecture. All thirteen now refuse before denoising under the shared
+`lora_not_found` / `lora_load_failed` / `lora_incompatible` codes — the eleven
+component backends in `backend/core/pipeline_backends/`, and SD1.5 and SDXL in
+`LoRAManager.load_loras` (`backend/core/extensions/lora_manager.py`).
+
+SD1.5 and SDXL were the last two (`2d7dc86a`) and were the hardest, because
+diffusers gives the caller nothing to check: `load_lora_into_unet` /
+`load_lora_into_text_encoder` return `None`, and after filtering the state dict
+by component prefix an empty result makes the whole load a silent no-op with a
+log line — which is exactly what a LoRA for another architecture hits. The
+count therefore comes from a read-back of what PEFT installed inside the model:
+`_count_applied_lora_targets` walks each component for a per-adapter branch
+container (`lora_A`, `lora_embedding_A`) holding `adapter_name`, with the
+adapter's presence in the component's `peft_config` as a weaker second witness
+so an unrecognised PEFT layer class costs a count rather than causing a false
+refusal. The zero-target refusal has to run before `set_adapters`, which raises
+its own generic error on an empty adapter set and would otherwise mask the
+precise one.
 
 **Wrappers surviving a failure.** Several loaders removed wrappers only on the
 success path, or held them as process state cleared by the NEXT request's
@@ -258,16 +273,77 @@ model reload, and additive multi-LoRA stacking. Every architecture now refuses
 or first-wins honestly rather than silently discarding an adapter, but none of
 them sums two branches over one module.
 
-Still outstanding from the original Phase 0 list, and therefore moved into
-Phase 1: `classify_lora_keys`
-(`backend/core/extensions/lora_manager.py`) still recognises only `sensenova`,
-`minimax_h3`, `sd15`/`sdxl`, `zimage` and `flux2`, so a SushiUI-trained
-adapter for any other architecture is classified from the generic
-`lora_unet_` prefix or falls through to `unknown` in AddLoRA; and there are
-still no trainer-save to fresh-generation round-trip tests covering every
-advertised architecture (MiniMax-H3 gained a cheap 3-block apply test,
-`backend/tests/minimax_h3_lora_apply_cheap_test.py`, and LTX-2.3 extends
-`backend/tests/video_lora_threading_test.py`).
+**Checkpoint classification collapsed onto `sd15`.** `classify_lora_keys`
+(`backend/core/extensions/lora_manager.py`) recognised five architectures and
+ended in an sd-scripts `lora_unet_` / `lora_te*` catch-all. Ten architectures
+write `lora_unet_*` stems, so the catch-all claimed them: Anima, Lens,
+Ideogram 4, MiniT2I, Krea 2, LTX-2.3, ACE-Step and every MiniMax-H3 LoRA
+trained in this repo were reported as `sd15` with a single `BASE` block — a
+confident wrong answer, not the `unknown` that would have been visible. So
+were text-encoder-only FLUX.2 and MiniT2I files. `unknown` remains a
+first-class result for a stem matching no signature.
+
+Appending branches would not have fixed it, because ORDER decides: an SD1.5
+U-Net stem literally contains the newer spellings as substrings
+(`lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_q`
+contains `transformer_blocks`), so an unanchored or late-ordered DiT check
+either is shadowed by the catch-all or steals SD files in return. Each
+architecture is now anchored on the key prefix its own training adapter
+writes and tested before the catch-all; architectures sharing a root are
+separated by leaf name (`d046b894`). Z-Image also classified correctly but
+lost its block list, because that branch tested only the dotted spelling while
+the trainer writes the flattened one.
+
+**Round-trip gates now exist per architecture.** Phase 0's evidence had lived
+in throwaway scripts that no run would execute. Each architecture now has a
+checked-in file — `backend/tests/<arch>_lora_roundtrip_cheap_test.py` for
+twelve, plus `backend/tests/minimax_h3_lora_apply_cheap_test.py` — that drives
+its real training adapter's injection and save, then its real generation
+loader on a freshly built tree, and asserts set equality against the adapter's
+own iterator rather than a non-empty count, since a partial match is as wrong
+as zero and much quieter. `lora_up` initialises to zeros, so the tests
+randomise it before comparing forwards; without that a round trip passes even
+with the two halves transposed. Alpha is deliberately unequal to rank so a
+regression to the rank fallback shows as the wrong scale, and restore is
+asserted by object identity rather than tensor equality. Eight gates were
+checked by reverting the behaviour they guard. Measured at `a4f1a919`: the
+whole suite ran 118 passed, 5 xfailed, 15 s, 1.68 GiB peak; the five xfails
+have since been fixed (`b9487812`), and the suite has not been re-measured.
+
+**What the gates found, and why earlier code audits had not.** The gates
+caught the stale-module splice still live on three architectures, each for a
+different reason: ACE-Step had no ownership key at all, so unloading
+re-resolved every stale module path against whichever DiT was live; SenseNova
+cleared its map only after restoring and keyed its compensating guard off the
+wrapped-key set being empty, which is false in exactly the dangerous ordering;
+MiniMax-H3 had a correct weakref accessor that the unload path never called.
+Two more architectures raised on a missing file without recording a warning,
+so that refusal reached neither the response nor the image metadata
+(`b9487812`).
+
+The lesson is about the harness, not the bugs. Every throwaway script written
+during the audits unloaded on the OLD model before swapping, which clears the
+map and hides precisely the ordering that bites — swapping components while
+wrappers are still live. Re-reading the code did not surface it, because each
+implementation looks correct under the sequence the reviewer imagines. A gate
+is only evidence for the sequence it actually executes, so these tests swap
+first and unload second.
+
+**Failure text carried server paths.** The per-architecture fixes had made
+every message use the file's basename, but the underlying exception was still
+interpolated whole: a corrupt-header error is path-free, a `PermissionError`
+is not and carries the absolute path the basename was there to remove. Krea 2
+and LTX-2.3 leaked by a second route (the file read sat outside any per-file
+`try`, so the raw `OSError` reached the generic handler, which returns its text
+as the response detail) and named the configured LoRA directories outright.
+Every backend now reports the exception TYPE and the basename, keeping the full
+text in the console log and traceback (`0c88406a`). This matters because a
+warning is written into a PNG text chunk, returned raw in the response's
+`warnings[]` (`get_warnings()` does not redact), and persisted — the existing
+`redact_params_for_sharing` helper covers only the chunk
+(`backend/utils/image_utils.py`). Restore-failure warnings still interpolate
+their exception: those follow an attribute assignment rather than a file read,
+so the text carries no path.
 
 ## Architecture feasibility
 
@@ -487,16 +563,25 @@ adapter fields from those documents.
 
 ## Implementation sequence
 
-### Phase 0: repair ordinary LoRA — done, except as noted
+### Phase 0: repair ordinary LoRA — done
 
-Done: the Z-Image codec; Krea 2, LTX-2.3 and MiniMax-H3 generation wiring;
+Sixteen commits, `10f470d5`..`2d7dc86a`. The ordinary LoRA round trip is
+repaired and gated on every architecture that advertises LoRA: the Z-Image key
+codec and alpha precedence; Krea 2, LTX-2.3 and MiniMax-H3 generation wiring;
 the FLUX.2 text-encoder, Anima MLP/LLM, ACE-Step MLP and Lens mod scopes; the
-MiniT2I text-encoder ordering; and unified failure and restore behaviour. See
-"LoRA round-trip defects found and repaired in Phase 0" above.
+MiniT2I text-encoder ordering; uniform refusal, warning and `finally`-restore
+behaviour, including SD1.5 and SDXL; weakref-keyed original-module bookkeeping
+in all eleven pipeline backends; path-free failure text; architecture
+classification anchored per adapter; and a checked-in trainer-save to
+fresh-generation gate per architecture. See "LoRA round-trip defects found and
+repaired in Phase 0" above for what each of those was.
 
-Not done, carried into Phase 1: making multiple adapters additive; unifying
-step range and component selection; classifying checkpoints from every
-training architecture; round-trip tests for all advertised architectures.
+Deliberately deferred to Phase 1, because each is one engine-level change
+rather than a per-architecture patch: making multiple adapters additive over
+one module (every architecture is first-wins or an honest refusal today);
+unifying `step_range`, component selection and per-block weights across
+backends; carrying a machine-readable `code` on a refusal's 400 response; and
+enumerating the `GenerationWarning.code` taxonomy in `openapi.yaml`.
 
 ### Phase 1: extract the shared engine
 
@@ -519,11 +604,12 @@ per-architecture:**
   its text-encoder restore runs every generation, so it fired on the first
   generation after a switch; SenseNova carried 588 stale entries. Eight
   independent implementations of the same bookkeeping produced the same silent
-  defect. The uniform fix is a `weakref.ref`-keyed reset, now present in nine
-  pipeline backends (`anima`, `flux2`, `ideogram4`, `krea2`, `lens`, `ltx2`,
-  `minimax_h3`, `minit2i`, `zimage`); SenseNova instead clears its map on
-  every unload and drives restore from the wrapped set rather than from map
-  membership. `id()` is unsafe here because a freed object's id is REUSABLE,
+  defect. The uniform fix is a `weakref.ref`-keyed reset, now present in all
+  eleven pipeline backends (`acestep`, `anima`, `flux2`, `ideogram4`, `krea2`,
+  `lens`, `ltx2`, `minimax_h3`, `minit2i`, `sensenova`, `zimage`), consulted on
+  both the load and the unload path and before the empty-config exit, with
+  restore discarding each key as it lands so a restore that raises part way
+  leaves only what it still owes. `id()` is unsafe here because a freed object's id is REUSABLE,
   and a reload allocating at the dead model's address is exactly the case the
   key must survive. An engine-level session owns this once.
 - **Refusal warnings are write-only.** Every refusal path calls `add_warning`
@@ -541,13 +627,33 @@ per-architecture:**
   cannot wrap a wrapper. This is why every architecture is first-wins or a
   refusal today rather than summing branches. The composite wrapper is the
   fix; a per-architecture re-wrap is not.
-- **`step_range`, `apply_to_unet`, `apply_to_text_encoder` and per-block
-  `unet_layer_weights` are honoured only on the SD1.5/SDXL diffusers path.**
-  FLUX.2 honours the two component flags and LTX-2.3 honours `apply_to_unet`;
-  every other component backend ignores all four, and Krea 2 and LTX-2.3 now
-  WARN that they do (`ltx2_lora_step_range_ignored`,
-  `ltx2_lora_layer_weights_ignored`). Honouring them belongs in the engine's
-  target topology and session, not in ten loaders.
+- **The four per-LoRA options are each honoured by a different subset of
+  architectures.** `LoRAConfig` (`backend/core/extensions/lora_manager.py`)
+  parses all four for every request, but:
+  - `step_range` is honoured only on the SD1.5/SDXL diffusers path, through
+    `LoRAConfig.is_active_at_step` driven by the step callback that
+    `load_loras_for_generation` arms when any entry is non-default. No other
+    backend reads it.
+  - `unet_layer_weights` is honoured on SD1.5/SDXL
+    (`LoRAManager._apply_layer_weights`) and on FLUX.2's transformer, where the
+    per-block weight multiplies the request strength before the branch is
+    built; FLUX.2's text-encoder half deliberately uses the plain strength.
+  - `apply_to_unet` and `apply_to_text_encoder` are honoured by FLUX.2 (both:
+    they select which component is walked, and a file whose tensors all belong
+    to a disabled component is a `lora_no_targets` warning rather than a
+    refusal) and `apply_to_unet` alone by LTX-2.3 (a disabled request applies
+    nothing and warns `ltx2_lora_unet_disabled`, since an LTX-2.3 LoRA only
+    targets the video DiT). **They are NOT honoured on the SD1.5/SDXL path**:
+    `LoRAConfig` reads them and `load_loras` prints them, and nothing else
+    consults them. Krea 2 treats `apply_to_text_encoder` as vacuously honoured
+    because it never touches the text encoder.
+  - Everything else is ignored. Krea 2 warns for `apply_to_unet=false`,
+    `unet_layer_weights` and a non-default `step_range`; LTX-2.3 warns for the
+    latter two (`ltx2_lora_step_range_ignored`,
+    `ltx2_lora_layer_weights_ignored`); the remaining backends ignore silently.
+
+  Honouring them uniformly belongs in the engine's target topology and
+  session, not in eleven loaders.
 - **`GenerationWarning.code` is a free-form string with no enum in
   `openapi.yaml`.** The taxonomy actually in use is `lora_not_found`,
   `lora_load_failed`, `lora_incompatible`, `lora_partial`,
@@ -555,9 +661,6 @@ per-architecture:**
   (`minimax_h3_lora_variant_mismatch`, `ltx2_lora_h2d_disabled`,
   `quantization_fallback`, and others). Enumerating it is part of making
   refusals machine-readable.
-- Classify checkpoints from every training architecture (`classify_lora_keys`
-  covers five today) and add trainer-save to fresh-generation round-trip tests
-  for all advertised architectures.
 
 ### Phase 2: LoHa and LoKr reference paths
 

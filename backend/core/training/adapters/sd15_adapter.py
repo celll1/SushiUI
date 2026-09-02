@@ -14,7 +14,11 @@ from typing import Dict, List, Any
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
-import math
+
+# Temporary Phase 1 shim: ``LoRALinearLayer`` moved to ``core.adapters.layers``,
+# outside the training package, and is re-exported here so existing importers
+# (twelve of them in generation) keep working. Removed at the end of Phase 1.
+from core.adapters.layers import LoRALinearLayer  # noqa: F401
 
 from .base_adapter import (
     BaseLoRAAdapter,
@@ -49,84 +53,6 @@ def sd15_modelspec_metadata(trainer) -> Dict[str, str]:
     if pt and pt != "auto":
         md["modelspec.prediction_type"] = pt
     return md
-
-
-# ============================================================
-# LoRA Linear Layer (shared by all adapters)
-# ============================================================
-
-class LoRALinearLayer(nn.Module):
-    """
-    LoRA layer for Linear modules.
-
-    Formula: output = original_output + (lora_up(lora_down(x))) * scale
-    """
-
-    def __init__(
-        self,
-        original_module: nn.Linear,
-        rank: int,
-        alpha: float,
-        lora_name: str,
-        lora_dtype: torch.dtype = torch.float32,
-    ):
-        """Initialize LoRA layer."""
-        super().__init__()
-        self.original_module = original_module
-        self.rank = rank
-        self.alpha = alpha
-        self.scale = alpha / rank
-        self.lora_name = lora_name
-        self.lora_dtype = lora_dtype
-
-        in_features = original_module.in_features
-        out_features = original_module.out_features
-
-        # Freeze original weights
-        self.original_module.requires_grad_(False)
-
-        # LoRA matrices (no bias)
-        # Use lora_dtype for LoRA weights (can be different from main model dtype)
-        self.lora_down = nn.Linear(in_features, rank, bias=False)
-        self.lora_up = nn.Linear(rank, out_features, bias=False)
-
-        # Initialize: Kaiming uniform for down, zeros for up
-        nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_up.weight)
-
-        # Move to same device as original, but use lora_dtype
-        device = original_module.weight.device
-        self.lora_down.to(device=device, dtype=lora_dtype)
-        self.lora_up.to(device=device, dtype=lora_dtype)
-
-    @property
-    def weight(self):
-        """Expose the wrapped Linear's weight so callers that introspect
-        `.weight` (e.g. T5's DenseGatedActDense dtype check) keep working when a
-        Linear is wrapped. Read-only delegate; not a trained parameter here."""
-        return self.original_module.weight
-
-    @property
-    def bias(self):
-        return getattr(self.original_module, "bias", None)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass with LoRA adaptation.
-
-        Uses autocast to automatically handle mixed precision:
-        - LoRA weights (fp32) are automatically converted to training dtype during forward
-        - Gradients flow back to fp32 master weights correctly
-        - GradScaler handles gradient scaling for fp16/bf16 training
-        """
-        org_out = self.original_module(x)
-
-        # LoRA computation (autocast will handle dtype conversion automatically)
-        # If we're in an autocast context (training_dtype), this will run in that dtype
-        # Gradients will still flow back to fp32 master weights correctly
-        lora_out = self.lora_up(self.lora_down(x))
-
-        return org_out + lora_out * self.scale
 
 
 # ============================================================

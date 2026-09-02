@@ -8,15 +8,14 @@ WHAT "the generation loader" MEANS HERE. SD1.5 and SDXL do not have a
 SushiUI-owned loader: ``LoRAManager.load_loras`` hands the file to
 ``pipeline.load_lora_weights``, whose whole body is
 ``lora_state_dict`` -> ``load_lora_into_unet`` -> ``load_lora_into_text_encoder``.
-This file calls those three directly, because constructing a
+The round-trip gates call those three directly, because constructing a
 ``StableDiffusionPipeline`` needs a tokenizer and scheduler that are not
 available offline. So the kohya-key conversion and the PEFT injection under
 test are the production ones; only the pipeline wrapper around them is not.
 
-NOT COVERED HERE: the refusal contract. ``LoRAManager.load_loras`` skips a
-missing file with a console print and wraps its whole body in
-``except Exception: print``, so no SD1.5/SDXL LoRA failure raises or reaches
-``warnings[]``. That is a defect in that file, not something to assert around.
+The refusal gates at the bottom drive the real ``load_loras`` over a facade
+that subclasses the real diffusers mixin, so its ``load_lora_weights`` is the
+production one too.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/sd15_lora_roundtrip_cheap_test.py -v
@@ -233,3 +232,168 @@ def test_sd15_a_loaded_lora_lives_inside_its_own_model(tmp_path):
     for target in unet_paths:
         assert dict(unet_b.named_modules())[target] is b_before[target], target
     assert not (module_ids(unet_b) & a_ids)
+
+
+# ---------------------------------------------------------------------------
+# The refusal contract, through the production entry point.
+#
+# The caveat at the top of this file used to end here: LoRAManager.load_loras
+# skipped a missing file and swallowed every exception, so nothing could be
+# asserted. It now refuses, and these gates drive the REAL load_loras over a
+# pipeline facade that subclasses the REAL diffusers mixin -- load_lora_weights,
+# set_adapters and unload_lora_weights are the ones a StableDiffusionPipeline
+# would run; only the tokenizer/scheduler surface is absent.
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from lora_roundtrip_common import warning_codes, warning_probe  # noqa: E402
+
+from core.extensions.lora_manager import LoRAManager  # noqa: E402
+
+
+class Pipeline(SDLoader):
+    _lora_loadable_modules = ["unet", "text_encoder"]
+    hf_device_map = None
+
+    def __init__(self, unet, text_encoder):
+        self.unet = unet
+        self.text_encoder = text_encoder
+
+    @property
+    def components(self):
+        return {"unet": self.unet, "text_encoder": self.text_encoder}
+
+
+@pytest.fixture
+def warnings_seen(monkeypatch):
+    return warning_probe(monkeypatch)
+
+
+def manager_for(directory):
+    manager = LoRAManager(lora_dir=str(directory))
+    # The repo's training/ dir is seeded at construction; drop it so resolution
+    # depends only on the fixture directory.
+    manager.seeded_dirs = []
+    return manager
+
+
+def load_through_manager(tmp_path, name, unet, text_encoder, strength=1.0, **extra):
+    pipeline = Pipeline(unet, text_encoder)
+    manager_for(tmp_path).load_loras(
+        pipeline, [{"path": name, "strength": strength, **extra}])
+    return pipeline
+
+
+def test_sd15_manager_applies_a_working_lora_and_warns_about_nothing(tmp_path,
+                                                                    warnings_seen):
+    """The false-refusal gate: the path most users exercise must stay silent."""
+    _directory, name, unet_paths, te_paths = train_and_save(tmp_path)
+
+    unet, text_encoder = build_unet(), build_text_encoder()
+    load_through_manager(tmp_path, name, unet, text_encoder, strength=STRENGTH)
+
+    assert peft_wrapped_paths(unet) == unet_paths
+    assert peft_wrapped_paths(text_encoder) == te_paths
+    assert warning_codes(warnings_seen) == []
+    modules = dict(unet.named_modules())
+    assert {round(modules[t].scaling["lora_0"], 9) for t in unet_paths} == \
+        {round(SCALE * STRENGTH, 9)}
+
+
+def test_sd15_manager_still_honours_unet_layer_weights(tmp_path, warnings_seen):
+    """``unet_layer_weights`` is honoured only on this path. The refusal work
+    must not have cost it."""
+    _directory, name, unet_paths, _te = train_and_save(tmp_path)
+
+    unet, text_encoder = build_unet(), build_text_encoder()
+    load_through_manager(tmp_path, name, unet, text_encoder, strength=STRENGTH,
+                         unet_layer_weights={"IN01": 0.25})
+
+    modules = dict(unet.named_modules())
+    scaled = {t for t in unet_paths if t.startswith("down_blocks.1.")}
+    assert scaled, "setup: the toy UNet must have a down_blocks.1 target"
+    assert {round(modules[t].scaling["lora_0"], 9) for t in scaled} == \
+        {round(SCALE * STRENGTH * 0.25, 9)}
+    assert {round(modules[t].scaling["lora_0"], 9) for t in unet_paths - scaled} == \
+        {round(SCALE * STRENGTH, 9)}
+    assert warning_codes(warnings_seen) == []
+
+
+def test_sd15_missing_file_refuses_and_warns(tmp_path, warnings_seen):
+    with pytest.raises(FileNotFoundError):
+        load_through_manager(tmp_path, "no_such_sd15_lora.safetensors",
+                             build_unet(), build_text_encoder())
+    assert "lora_not_found" in warning_codes(warnings_seen)
+
+
+def test_sd15_unreadable_file_refuses_and_names_no_path(tmp_path, warnings_seen):
+    (tmp_path / "corrupt.safetensors").write_bytes(b"not a safetensors header")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        load_through_manager(tmp_path, "corrupt.safetensors",
+                             build_unet(), build_text_encoder())
+    assert "lora_load_failed" in warning_codes(warnings_seen)
+    message = warnings_seen[-1][1]
+    assert "corrupt.safetensors" in message
+    # The warning reaches a PNG text chunk, the API response and the DB.
+    assert str(tmp_path) not in message and str(tmp_path) not in str(excinfo.value)
+
+
+def test_sd15_lora_naming_absent_unet_modules_refuses(tmp_path, warnings_seen):
+    """Kohya stems this UNet does not have. PEFT raises inside the apply, so
+    this lands on lora_load_failed rather than lora_incompatible -- both are
+    refusals, and the console log carries the PEFT message."""
+    directory, name, _unet_paths, _te = train_and_save(tmp_path)
+    ghost = {}
+    for key, value in load_file(f"{directory}/{name}").items():
+        if key.startswith("lora_unet_"):
+            ghost["lora_unet_ghost_" + key[len("lora_unet_"):]] = value
+    save_file(ghost, f"{directory}/ghost.safetensors")
+
+    unet, text_encoder = build_unet(), build_text_encoder()
+    with pytest.raises(RuntimeError):
+        load_through_manager(tmp_path, "ghost.safetensors", unet, text_encoder)
+    assert "lora_load_failed" in warning_codes(warnings_seen)
+    assert not peft_wrapped_paths(unet)
+
+
+def test_sd15_lora_for_another_architecture_refuses_and_warns(tmp_path,
+                                                              warnings_seen):
+    """The silent case: a Z-Image-style checkpoint matches neither the ``unet.``
+    nor the ``text_encoder.`` prefix, so diffusers filters it to nothing and
+    returns without raising. Only the read-back target count sees it."""
+    foreign = {}
+    for i in range(3):
+        stem = f"lora_transformer_layers_{i}_attention_to_q"
+        foreign[f"{stem}.lora_down.weight"] = torch.zeros(RANK, 8)
+        foreign[f"{stem}.lora_up.weight"] = torch.zeros(8, RANK)
+        foreign[f"{stem}.alpha"] = torch.tensor(float(ALPHA))
+    save_file(foreign, str(tmp_path / "zimage_style.safetensors"))
+
+    unet, text_encoder = build_unet(), build_text_encoder()
+    with pytest.raises(RuntimeError, match="0 of 3 down/up"):
+        load_through_manager(tmp_path, "zimage_style.safetensors", unet, text_encoder)
+    assert "lora_incompatible" in warning_codes(warnings_seen)
+    assert not peft_wrapped_paths(unet) and not peft_wrapped_paths(text_encoder)
+
+
+def test_sd15_partly_matching_lora_applies_and_warns(tmp_path, warnings_seen):
+    """Survivable: the real halves apply, the two invented stems do not."""
+    directory, name, unet_paths, te_paths = train_and_save(tmp_path)
+    partial = dict(load_file(f"{directory}/{name}"))
+    for i in range(2):
+        stem = f"lora_unet_ghost_block_{i}"
+        partial[f"{stem}.lora_down.weight"] = torch.zeros(RANK, 8)
+        partial[f"{stem}.lora_up.weight"] = torch.zeros(8, RANK)
+        partial[f"{stem}.alpha"] = torch.tensor(float(ALPHA))
+    save_file(partial, f"{directory}/partial.safetensors")
+
+    unet, text_encoder = build_unet(), build_text_encoder()
+    load_through_manager(tmp_path, "partial.safetensors", unet, text_encoder)
+
+    assert peft_wrapped_paths(unet) == unet_paths
+    assert peft_wrapped_paths(text_encoder) == te_paths
+    assert warning_codes(warnings_seen) == ["lora_partial"]
+    applied = len(unet_paths) + len(te_paths)
+    assert f"applied {applied} of {applied + 2}" in warnings_seen[-1][1]

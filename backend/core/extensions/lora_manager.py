@@ -421,6 +421,70 @@ def _sort_lora_blocks(blocks) -> List[str]:
 
     return sorted(list(blocks), key=sort_key)
 
+
+# Components a diffusers pipeline can install a LoRA into. Tokenizers,
+# schedulers and the VAE are never LoRA targets on this path, so walking
+# `pipeline.components` would only add work and None entries.
+_LORA_COMPONENT_ATTRS = ("unet", "transformer", "text_encoder",
+                         "text_encoder_2", "text_encoder_3")
+
+# Where a PEFT layer keeps its per-adapter branch: `lora_A` for Linear/Conv
+# targets, `lora_embedding_A` for Embedding ones.
+_LORA_BRANCH_ATTRS = ("lora_A", "lora_embedding_A")
+
+
+def _lora_warn(message: str, code: str) -> None:
+    """Record a user-visible generation warning (best effort)."""
+    try:
+        from api.generation_status import add_warning
+        add_warning(message, code=code)
+    except Exception:
+        pass
+
+
+def _count_applied_lora_targets(pipeline: Any, adapter_name: str) -> Tuple[int, bool]:
+    """Read back how much of ``adapter_name`` diffusers/PEFT actually installed.
+
+    ``load_lora_into_unet`` / ``load_lora_into_text_encoder`` return nothing and
+    no-op silently when the checkpoint names no module of the component, so the
+    only count available is the one left inside the model.
+
+    ``registered`` is the weaker witness that PEFT accepted the adapter at all
+    (it is in a component's ``peft_config``, which diffusers pops again when
+    injection fails). It is there so a PEFT layer class whose branch is under
+    neither name in ``_LORA_BRANCH_ATTRS`` costs a count, not a false refusal.
+    """
+    targets = 0
+    registered = False
+    for attr in _LORA_COMPONENT_ATTRS:
+        component = getattr(pipeline, attr, None)
+        if component is None or not hasattr(component, "named_modules"):
+            continue
+        peft_config = getattr(component, "peft_config", None)
+        try:
+            registered = registered or (peft_config is not None and adapter_name in peft_config)
+        except TypeError:
+            pass
+        for _name, module in component.named_modules():
+            for branch_attr in _LORA_BRANCH_ATTRS:
+                container = getattr(module, branch_attr, None)
+                if container is None:
+                    continue
+                try:
+                    if adapter_name in container:
+                        targets += 1
+                        break
+                except TypeError:
+                    continue
+    return targets, registered
+
+
+def _count_lora_branch_pairs(keys) -> int:
+    """Down/up pairs present in the checkpoint, in either naming convention."""
+    return sum(1 for key in keys
+               if key.endswith(".lora_down.weight") or key.endswith(".lora_A.weight"))
+
+
 class LoRAConfig:
     """Configuration for a single LoRA"""
     def __init__(
@@ -839,6 +903,12 @@ class LoRAManager:
 
         Returns:
             Modified pipeline with LoRAs loaded
+
+        Raises:
+            FileNotFoundError / RuntimeError when a requested LoRA cannot be
+            applied at all. A requested-but-ineffective LoRA must not produce a
+            successful generation. The caller unloads in a ``finally``, so a
+            refusal here leaves no adapter behind.
         """
         print(f"[LoRAManager] load_loras called with {len(lora_configs) if lora_configs else 0} configs")
         print(f"[LoRAManager] lora_configs: {lora_configs}")
@@ -852,29 +922,44 @@ class LoRAManager:
         print(f"[LoRAManager] Parsed {len(self.loaded_loras)} LoRA configs")
 
         # Load LoRAs using diffusers' native support
-        try:
-            for i, lora_config in enumerate(self.loaded_loras):
-                lora_path = self._resolve_lora_path(lora_config.path)
+        for i, lora_config in enumerate(self.loaded_loras):
+            # Warnings ride into the PNG metadata chunk and the API response,
+            # so they name the basename and never a path.
+            lora_file = os.path.basename(str(lora_config.path))
+            lora_path = self._resolve_lora_path(lora_config.path)
 
-                if lora_path is None:
-                    print(f"[LoRAManager] WARNING: LoRA file not found: {lora_config.path}")
-                    continue
+            if lora_path is None:
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+                print(f"[LoRAManager] ERROR: {message}")
+                print(f"[LoRAManager]   Searched in: {self.lora_dir}")
+                print(f"[LoRAManager]   Additional dirs: {self.additional_dirs}")
+                _lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
 
+            adapter_name = f"lora_{i}"
+            file_pairs = 0
+            sample_keys: List[str] = []
+            applied, registered = 0, False
+            try:
                 print(f"[LoRAManager] Attempting to load LoRA from: {lora_path}")
                 print(f"[LoRAManager] LoRA config: strength={lora_config.strength}, apply_to_text_encoder={lora_config.apply_to_text_encoder}, apply_to_unet={lora_config.apply_to_unet}")
 
                 print(f"[LoRAManager] Loading LoRA {i+1}/{len(self.loaded_loras)}: {lora_config.path}")
 
                 # Detect LoRA format and convert if needed
+                # (`os` is module-scope: a local `import os` here would make the
+                # name local to the whole method and break the basename above.)
                 from safetensors import safe_open
                 import tempfile
-                import os
-
-                adapter_name = f"lora_{i}"
 
                 # Check LoRA format
                 with safe_open(str(lora_path), framework="pt", device="cpu") as f:
-                    sample_keys = list(f.keys())[:5]
+                    file_keys = list(f.keys())
+                    file_pairs = _count_lora_branch_pairs(file_keys)
+                    sample_keys = file_keys[:5]
                     print(f"[LoRAManager] Sample keys from LoRA: {sample_keys}")
 
                     # Detect format: SD format uses underscores (lora_unet_*, lora_te1_*)
@@ -944,16 +1029,20 @@ class LoRAManager:
                     print(f"[LoRAManager] Converted LoRA saved to: {temp_lora_path}")
                     print(f"[LoRAManager] Calling pipeline.load_lora_weights with adapter_name={adapter_name}")
 
-                    # Load converted LoRA
-                    pipeline.load_lora_weights(
-                        temp_dir,
-                        weight_name=f"converted_lora_{adapter_name}.safetensors",
-                        adapter_name=adapter_name
-                    )
-
-                    # Clean up temporary file
-                    os.remove(temp_lora_path)
-                    print(f"[LoRAManager] Temporary file removed")
+                    # Load converted LoRA. The cleanup is in a finally because a
+                    # load failure now raises rather than falling through.
+                    try:
+                        pipeline.load_lora_weights(
+                            temp_dir,
+                            weight_name=f"converted_lora_{adapter_name}.safetensors",
+                            adapter_name=adapter_name
+                        )
+                    finally:
+                        try:
+                            os.remove(temp_lora_path)
+                            print(f"[LoRAManager] Temporary file removed")
+                        except OSError:
+                            pass
                 else:
                     # SD format (Kohya-ss format: lora_te1_*, lora_unet_*) - load directly
                     # diffusers' pipeline.load_lora_weights natively supports SD/Kohya-ss format
@@ -967,6 +1056,47 @@ class LoRAManager:
 
                 print(f"[LoRAManager] Successfully loaded LoRA weights")
 
+                applied, registered = _count_applied_lora_targets(pipeline, adapter_name)
+                print(f"[LoRAManager] Adapter '{adapter_name}' installed on {applied} module(s) "
+                      f"(file has {file_pairs} down/up pair(s), peft_config registered={registered})")
+
+            except Exception as e:
+                print(f"[LoRAManager] ERROR loading LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Type + basename only: this text rides into the PNG chunk and
+                # the API response, and an OSError's str() carries the absolute
+                # resolved path. PEFT also raises here when the checkpoint names
+                # no module of a component ("Target modules ... not found").
+                message = (f"LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                _lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
+
+            # Refuse BEFORE set_adapters: with zero targets installed that call
+            # raises too, and its generic failure would mask the real reason.
+            # diffusers no-ops silently when the checkpoint names no module of a
+            # component, so the read-back count is the only signal there is.
+            if applied == 0 and not registered:
+                message = (
+                    f"LoRA '{lora_file}': 0 of {file_pairs} down/up pair(s) applied to the "
+                    f"loaded model -- unrecognized key format or a LoRA for a different "
+                    f"architecture. Expected stems like 'lora_unet_*' / 'lora_te1_*' "
+                    f"(or the diffusers 'unet.*' / 'text_encoder.*' spelling). "
+                    f"Sample keys in file: {sample_keys}"
+                )
+                print(f"[LoRAManager] ERROR: {message}")
+                _lora_warn(message, code="lora_incompatible")
+                raise RuntimeError(message)
+
+            if 0 < applied < file_pairs:
+                _lora_warn(
+                    f"LoRA '{lora_file}': applied {applied} of {file_pairs} down/up pair(s); "
+                    f"the rest name modules the loaded model does not have.",
+                    code="lora_partial",
+                )
+
+            try:
                 # Set adapter with strength
                 # Note: Step ranges will be handled in callback
                 if hasattr(pipeline, 'set_adapters'):
@@ -979,16 +1109,17 @@ class LoRAManager:
                         print(f"[LoRAManager] Active adapters after set_adapters: {active_adapters}")
 
                     # Debug: Check UNet's LoRA modules
-                    print(f"[LoRAManager] Checking UNet for LoRA modules...")
-                    lora_module_count = 0
-                    for name, module in pipeline.unet.named_modules():
-                        if hasattr(module, 'lora_A') or hasattr(module, 'lora_B') or hasattr(module, 'scaling'):
-                            lora_module_count += 1
-                            if lora_module_count <= 3:  # Show first 3
-                                print(f"[LoRAManager]   LoRA module found: {name}")
-                                if hasattr(module, 'scaling'):
-                                    print(f"[LoRAManager]     scaling: {module.scaling}")
-                    print(f"[LoRAManager] Total LoRA modules in UNet: {lora_module_count}")
+                    if getattr(pipeline, "unet", None) is not None:
+                        print(f"[LoRAManager] Checking UNet for LoRA modules...")
+                        lora_module_count = 0
+                        for name, module in pipeline.unet.named_modules():
+                            if hasattr(module, 'lora_A') or hasattr(module, 'lora_B') or hasattr(module, 'scaling'):
+                                lora_module_count += 1
+                                if lora_module_count <= 3:  # Show first 3
+                                    print(f"[LoRAManager]   LoRA module found: {name}")
+                                    if hasattr(module, 'scaling'):
+                                        print(f"[LoRAManager]     scaling: {module.scaling}")
+                        print(f"[LoRAManager] Total LoRA modules in UNet: {lora_module_count}")
 
                     # Apply per-layer weights if specified
                     if lora_config.unet_layer_weights and hasattr(pipeline, 'unet'):
@@ -997,12 +1128,16 @@ class LoRAManager:
                 else:
                     print(f"[LoRAManager] WARNING: Pipeline does not have set_adapters method")
 
-            print(f"[LoRAManager] Successfully loaded {len(self.loaded_loras)} LoRA(s)")
+            except Exception as e:
+                print(f"[LoRAManager] ERROR activating LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+                message = (f"LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                _lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
 
-        except Exception as e:
-            print(f"[LoRAManager] ERROR loading LoRAs: {e}")
-            import traceback
-            traceback.print_exc()
+        print(f"[LoRAManager] Successfully loaded {len(self.loaded_loras)} LoRA(s)")
 
         return pipeline
 

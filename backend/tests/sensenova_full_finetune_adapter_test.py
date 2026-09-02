@@ -645,10 +645,12 @@ def test_train_refuses_accumulation_for_a_full_finetune_and_allows_it_for_lora()
     except Exception as error:  # it gets past the guard and fails further in
         assert "gradient_accumulation_steps=1" not in str(error)
 
-    # And the batch-size message only recommends accumulation where it works.
-    with pytest.raises(ValueError, match="requires batch_size=1") as full_batch:
-        BaseTrainer.train(full, datasets=[], batch_size=2)
+    # A batch above one is a packed batch of same-resolution images, so it
+    # needs the bucket manager on both routes; the message names that, not
+    # accumulation.
+    with pytest.raises(ValueError, match="enable_bucketing") as full_batch:
+        BaseTrainer.train(full, datasets=[], batch_size=2, enable_bucketing=False)
     assert "gradient_accumulation_steps" not in str(full_batch.value)
-    with pytest.raises(ValueError, match="requires batch_size=1") as lora_batch:
-        BaseTrainer.train(lora, datasets=[], batch_size=2)
-    assert "gradient_accumulation_steps" in str(lora_batch.value)
+    with pytest.raises(ValueError, match="enable_bucketing") as lora_batch:
+        BaseTrainer.train(lora, datasets=[], batch_size=2, enable_bucketing=False)
+    assert "gradient_accumulation_steps" not in str(lora_batch.value)

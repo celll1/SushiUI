@@ -235,6 +235,96 @@ def is_plain_causal_thw_index(index: torch.Tensor) -> bool:
     return bool(torch.all(index[1:] > index[:-1]).item())
 
 
+class PackedSegments:
+    """SushiUI: item boundaries of a PACKED (batch-dim 1) prefix sequence.
+
+    Several prompts of different token counts are laid end to end along the
+    sequence axis; ``cu_seqlens`` holds the ``n + 1`` segment offsets. Every
+    per-token computation (projections, norms, MLP, RoPE from explicit
+    ``indexes``) is unchanged by packing; only attention has to keep each
+    segment to itself, which ``forward_und``/``forward_gen`` do below.
+    """
+
+    def __init__(self, cu_seqlens: torch.Tensor):
+        cu = cu_seqlens.to(torch.int32)
+        if cu.dim() != 1 or cu.numel() < 2:
+            raise ValueError("PackedSegments needs n_segments + 1 offsets")
+        self.cu_seqlens = cu
+        self.lengths = [int(x) for x in (cu[1:] - cu[:-1]).tolist()]
+        self.max_seqlen = max(self.lengths)
+        self.total = int(cu[-1].item())
+
+    @property
+    def count(self) -> int:
+        return len(self.lengths)
+
+    def bounds(self):
+        offsets = self.cu_seqlens.tolist()
+        return [(int(offsets[i]), int(offsets[i + 1])) for i in range(len(offsets) - 1)]
+
+
+def create_packed_block_causal_mask(index: torch.Tensor, packed: PackedSegments) -> torch.Tensor:
+    """``create_block_causal_mask`` per segment, ``-inf`` across segments.
+
+    ``index``: (total,) t coordinates of the packed sequence. Returns
+    ``(1, 1, total, total)`` additive float, the same convention as the
+    single-prompt builder so the eager attention path consumes it unchanged.
+    """
+    total = index.size(0)
+    if total != packed.total:
+        raise ValueError(
+            f"packed mask: index has {total} tokens, cu_seqlens describe {packed.total}"
+        )
+    mask = torch.full((total, total), float("-inf"), device=index.device)
+    for start, end in packed.bounds():
+        mask[start:end, start:end] = create_block_causal_mask(index[start:end])[0, 0].to(mask.device)
+    return mask[None, None, :, :]
+
+
+def is_plain_causal_thw_index_packed(index: torch.Tensor, packed: PackedSegments) -> bool:
+    """``is_plain_causal_thw_index`` for every segment of a packed sequence."""
+    return all(
+        is_plain_causal_thw_index(index[start:end]) for start, end in packed.bounds()
+    )
+
+
+class PackedGenPlan:
+    """SushiUI: how packed generation tokens attend to a packed prefix.
+
+    ``batch`` images of ``cur_len`` tokens each are packed as one sequence of
+    ``batch * cur_len`` tokens; their prefixes are packed as ``prefix``
+    (``PackedSegments``). Image segment ``i`` must attend to prefix segment
+    ``i`` plus itself and nothing else. The plan precomputes, once per step,
+    the gather order that lays ``cat([prefix_packed, cur_packed])`` out as
+    ``[prefix_0, cur_0, prefix_1, cur_1, ...]`` so a varlen kernel (or the
+    per-segment SDPA fallback) sees each item's keys contiguous.
+    """
+
+    def __init__(self, prefix: PackedSegments, batch: int, cur_len: int, device):
+        if prefix.count != batch:
+            raise ValueError(
+                f"PackedGenPlan: {prefix.count} prefix segment(s) for a batch of {batch}"
+            )
+        self.prefix = prefix
+        self.batch = int(batch)
+        self.cur_len = int(cur_len)
+        order = []
+        lengths_k = []
+        for i, (start, end) in enumerate(prefix.bounds()):
+            order.append(torch.arange(start, end, device=device))
+            order.append(prefix.total + torch.arange(i * cur_len, (i + 1) * cur_len, device=device))
+            lengths_k.append((end - start) + cur_len)
+        self.k_order = torch.cat(order)
+        self.cu_seqlens_q = torch.arange(
+            0, (batch + 1) * cur_len, cur_len, device=device, dtype=torch.int32)
+        offsets_k = [0]
+        for length in lengths_k:
+            offsets_k.append(offsets_k[-1] + length)
+        self.cu_seqlens_k = torch.tensor(offsets_k, device=device, dtype=torch.int32)
+        self.max_seqlen_q = int(cur_len)
+        self.max_seqlen_k = int(max(lengths_k))
+
+
 def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12):
     """
     mask: (1,1, L, L)
@@ -529,8 +619,13 @@ class Qwen3Attention(nn.Module):
         *,
         return_kv: bool = False,
         causal_fastpath: bool = False,
+        packed: Optional[PackedSegments] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # SushiUI addition: ``packed`` (several prompts laid end to end along
+        # the sequence axis, batch dim 1). With ``causal_fastpath`` the segments
+        # go through the varlen conduit entry; without it the caller supplies
+        # ``create_packed_block_causal_mask`` and the eager path is unchanged.
         # SushiUI addition: ``causal_fastpath``. Equivalence proof and caller
         # contract live next to ``is_plain_causal_thw_index`` above. Default-off.
         #
@@ -598,7 +693,32 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
-        if causal_fastpath:
+        if causal_fastpath and packed is not None:
+            if key_states.shape[-2] != query_states.shape[-2]:
+                raise RuntimeError(
+                    "SenseNova packed causal_fastpath requires query/key sequence lengths "
+                    f"to match (got q={query_states.shape[-2]}, k={key_states.shape[-2]})"
+                )
+            if query_states.shape[0] != 1:
+                raise RuntimeError("SenseNova packed prefix attention expects batch dim 1")
+            from core.attention import dispatch_attention_varlen
+
+            attn_output = dispatch_attention_varlen(
+                query_states[0].transpose(0, 1),  # [total, H, D]
+                key_states[0].transpose(0, 1),
+                value_states[0].transpose(0, 1),
+                packed.cu_seqlens,
+                packed.cu_seqlens,
+                packed.max_seqlen,
+                packed.max_seqlen,
+                dropout_p=0.0 if not self.training else self.attention_dropout,
+                is_causal=True,
+                scale=self.scaling,
+                backend=getattr(self, "_attn_backend", "native"),
+                mode=getattr(self, "_attn_mode", AttentionMode.INFERENCE),
+            ).unsqueeze(0)  # [1, total, H, D]
+            attn_weights = None
+        elif causal_fastpath:
             if key_states.shape[-2] != query_states.shape[-2]:
                 # is_causal=True means top-left alignment on native SDPA but
                 # bottom-right on FlashAttention once K is longer than Q (KV
@@ -750,8 +870,11 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        packed_gen: Optional[PackedGenPlan] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # SushiUI addition: ``packed_gen`` -- a batch of images packed along the
+        # sequence axis against a packed prefix (training only; see PackedGenPlan).
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -792,6 +915,47 @@ class Qwen3Attention(nn.Module):
         key_states = torch.cat([key_states_t, key_states_h, key_states_w], dim=-1)
 
         update_cache = kwargs.get("update_cache", True)
+
+        if packed_gen is not None:
+            if self._style_ctx is not None:
+                raise RuntimeError(
+                    "SenseNova reference-style KV injection is not implemented for the "
+                    "packed (batched training) generation path"
+                )
+            if attention_mask is not None or update_cache or past_key_values is None:
+                raise RuntimeError(
+                    "SenseNova packed generation attention takes a prefix cache read "
+                    "through update_cache=False and no dense mask"
+                )
+            if query_states.shape[0] != 1:
+                raise RuntimeError("SenseNova packed generation attention expects batch dim 1")
+            layer = past_key_values.layers[self.layer_idx]
+            past_k, past_v = layer.keys, layer.values  # [1, H_kv, prefix_total, D]
+            if past_k is None or past_k.shape[0] != 1 or past_k.shape[2] != packed_gen.prefix.total:
+                raise RuntimeError(
+                    "SenseNova packed generation attention: the prefix cache does not "
+                    f"match the plan (cache {None if past_k is None else tuple(past_k.shape)}, "
+                    f"plan total {packed_gen.prefix.total})"
+                )
+            from core.attention import dispatch_attention_varlen
+
+            q = query_states[0].transpose(0, 1)  # [B*S, H, D]
+            k_all = torch.cat([past_k[0].transpose(0, 1), key_states[0].transpose(0, 1)], dim=0)
+            v_all = torch.cat([past_v[0].transpose(0, 1), value_states[0].transpose(0, 1)], dim=0)
+            k_all = k_all.index_select(0, packed_gen.k_order)
+            v_all = v_all.index_select(0, packed_gen.k_order)
+            attn_output = dispatch_attention_varlen(
+                q, k_all, v_all,
+                packed_gen.cu_seqlens_q, packed_gen.cu_seqlens_k,
+                packed_gen.max_seqlen_q, packed_gen.max_seqlen_k,
+                dropout_p=0.0 if not self.training else self.attention_dropout,
+                is_causal=False,
+                scale=self.scaling,
+                backend=getattr(self, "_attn_backend", "native"),
+                mode=getattr(self, "_attn_mode", AttentionMode.INFERENCE),
+            )
+            attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+            return self.o_proj_mot_gen(attn_output), None
 
         # ------------------------------------------------------------------
         # Flash path:

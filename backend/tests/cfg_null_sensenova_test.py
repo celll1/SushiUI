@@ -229,8 +229,11 @@ def test_train_step_builds_the_image_indexes_from_the_prefix_it_was_given():
     """The single channel that carries the length. `train_step` needs no CFG
     knowledge at all: the null prefix arrives carrying its own text_length."""
     assert ("indexes = transformer._build_t2i_image_indexes(\n"
-            "        token_h, token_w, prefix.text_length, device=device\n"
-            "    )") in _SENSENOVA_OPS
+            "            token_h, token_w, prefix.text_length, device=device\n"
+            "        )") in _SENSENOVA_OPS
+    # The packed (batched) form reads the same channel, one length per item.
+    assert ("_build_t2i_image_indexes(token_h, token_w, length, device=device)\n"
+            "                for length in prefix.text_lengths") in _SENSENOVA_OPS
     assert "cfg_null" not in _SENSENOVA_OPS[_SENSENOVA_OPS.index("def train_step("):]
 
 
@@ -242,8 +245,13 @@ def test_the_batch_assembly_arm_passes_the_items_own_label():
     arm = _BASE_TRAINER[_BASE_TRAINER.index("if self.is_sensenova:\n"
                                             "                            # References enter"):]
     arm = arm[:arm.index("elif text_encoding_mode")]
-    assert "cfg_null=(cfg_drop_mask is not None" in arm
+    # The item's own label travels with its caption to the batch encode.
+    assert "(cfg_drop_mask is not None" in arm
     assert "bool(cfg_drop_mask[item_index])" in arm
+    encode = _BASE_TRAINER[_BASE_TRAINER.index("def _encode_sensenova_batch_prefix("):]
+    encode = encode[:encode.index("def _sensenova_mnt_conditioning_packed(")]
+    assert "cfg_null=bool(cfg_null)" in encode
+    assert "cfg_null=labels" in encode
 
 
 def test_the_mnt_reencode_arm_passes_this_iterations_own_label():
@@ -253,9 +261,11 @@ def test_the_mnt_reencode_arm_passes_this_iterations_own_label():
     downstream consumer of the label reads (cfg_null_per_mnt_test.py)."""
     call = _BASE_TRAINER[_BASE_TRAINER.index(
         ") = self._sensenova_mnt_conditioning("):]
-    call = call[:call.index(")\n")]
-    assert "cfg_null=(mnt_cfg_drop_mask is not None" in call
+    call = call[:call.index("),\n                            )")]
+    assert "mnt_cfg_drop_mask.tolist()" in call
+    assert "(mnt_cfg_drop_mask is not None" in call
     assert "bool(mnt_cfg_drop_mask[0])" in call
+    assert "cfg_drop_mask[0]" not in call.replace("mnt_cfg_drop_mask[0]", "")
 
 
 def test_the_mnt_reencode_forwards_the_label_into_the_encode():
@@ -356,9 +366,9 @@ def test_the_label_is_drawn_before_the_prefix_encode():
     batch assembly, but SenseNova's prefix is built DURING it."""
     draw = _BASE_TRAINER.index("cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))")
     loop = _BASE_TRAINER.index("for item_index, (item, dataset) in enumerate(batch):")
-    encode = _BASE_TRAINER.index("prefix, _ = self.encode_caption(", loop)
-    assemble = _BASE_TRAINER.index("_collate_sensenova_b1_prefix(\n", loop)
-    assert draw < loop < encode < assemble
+    collect = _BASE_TRAINER.index("sensenova_prompt_items.append((", loop)
+    encode = _BASE_TRAINER.index("self._encode_sensenova_batch_prefix(\n", loop)
+    assert draw < loop < collect < encode
 
 
 def test_the_label_is_reindexed_by_the_latent_size_filter_not_redrawn():

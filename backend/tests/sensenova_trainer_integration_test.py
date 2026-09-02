@@ -126,7 +126,6 @@ def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
 @pytest.mark.parametrize(
     "train,network,message",
     [
-        ({"batch_size": 2}, "lora", "batch_size=1"),
         ({"batch_size": 1, "blocks_to_swap": 1}, "lora", "blocks_to_swap"),
         ({"batch_size": 1, "blocks_to_swap": -1}, "lora", "blocks_to_swap"),
         # full_finetune is ACCEPTED now (U-2-2 step 3); relora and controlnet
@@ -203,11 +202,11 @@ def test_process_preflight_fails_before_dataset_discovery_with_neutral_name():
             return super().get(key, default)
 
     process = _Process(
-        train={"batch_size": 2}, network={"type": "lora"}, sample={}
+        train={"batch_size": 1, "blocks_to_swap": 1}, network={"type": "lora"}, sample={}
     )
     config = {"config": {"process": [process]}}
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
-        with pytest.raises(ValueError, match="batch_size=1"):
+        with pytest.raises(ValueError, match="blocks_to_swap"):
             _prepare_training_process_config(config, "checkpoint")
 
 
@@ -519,12 +518,20 @@ def test_execute_forward_backward_uses_dedicated_prefix_field():
 
 def test_real_loop_helpers_keep_one_poison_prefix_identity_across_two_mnt_steps():
     prefix = object()
-    collected = BaseTrainer._collate_sensenova_b1_prefix([prefix])
+    calls = []
+
+    class _Owner:
+        train_text_encoder = False
+
+        def encode_caption(self, caption, requires_grad=False,
+                           reference_image_paths=None, cfg_null=False):
+            calls.append((caption, requires_grad, reference_image_paths, cfg_null))
+            return prefix, None
+
+    # One item: the single-prompt encode, unchanged, and its identity is kept.
+    collected = BaseTrainer._encode_sensenova_batch_prefix(_Owner(), [("a cat", None, False)])
     assert collected is prefix
-    with pytest.raises(ValueError, match="exactly one"):
-        BaseTrainer._collate_sensenova_b1_prefix([])
-    with pytest.raises(ValueError, match="exactly one"):
-        BaseTrainer._collate_sensenova_b1_prefix([prefix, object()])
+    assert calls == [("a cat", False, None, False)]
 
     owner = SimpleNamespace(train_text_encoder=False)
     conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, owner)
@@ -592,12 +599,14 @@ def test_relora_refuses_before_loading_with_the_capability_table_reason():
     assert "vae_decoder" not in TRAINING_UNSUPPORTED["sensenova"]
 
 
-def test_train_method_b1_guard_precedes_dataset_setup():
+def test_train_method_batch_guard_precedes_dataset_setup():
+    """batch_size > 1 is a packed batch of same-resolution images, which only
+    the bucket manager guarantees; without bucketing it is refused up front."""
     trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
     trainer.is_sensenova = True
     trainer.blocks_to_swap = 0
-    with pytest.raises(ValueError, match="batch_size=1"):
-        trainer.train(datasets=[], batch_size=2)
+    with pytest.raises(ValueError, match="enable_bucketing"):
+        trainer.train(datasets=[], batch_size=2, enable_bucketing=False)
 
 
 @pytest.mark.parametrize("blocks", [1, -1, 0.5, "0"])

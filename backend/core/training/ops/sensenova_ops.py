@@ -38,6 +38,15 @@ class SenseNovaTrainingPrefix:
     # references the prefix's t extent is shorter than its token count. Vendor
     # `_build_t2i_image_indexes` uses this as the image tokens' t coordinate.
     text_length: int
+    # Batched (packed) form: ``packed`` is the vendor ``PackedSegments`` of the
+    # prompts laid end to end, ``text_lengths`` the per-item t extents. ``None``
+    # is the single-prompt form, where ``text_length`` alone is read.
+    packed: Any = None
+    text_lengths: Optional[List[int]] = None
+
+    @property
+    def batch_size(self) -> int:
+        return 1 if self.packed is None else int(self.packed.count)
 
 
 _SENSENOVA_QUANT_LINEAR_COUNT = 588
@@ -1145,9 +1154,12 @@ class _TrainingPrefixCache:
 
     _kv_cache_streamer = None
     _kv_cache_streamer_branch = None
+    # Vendor ``PackedSegments`` when the K/V hold several prompts end to end.
+    packed = None
 
-    def __init__(self, layers: "list[_TrainingPrefixLayer]"):
+    def __init__(self, layers: "list[_TrainingPrefixLayer]", packed=None):
         self.layers = layers
+        self.packed = packed
 
     def get_seq_length(self, layer_idx: int = 0) -> int:
         return int(self.layers[layer_idx].keys.shape[-2])
@@ -1161,8 +1173,14 @@ def forward_und_prefix_layers(
     *,
     inputs_embeds: Optional[torch.Tensor] = None,
     checkpoint_layers: bool = True,
+    packed: Any = None,
 ) -> _TrainingPrefixCache:
     """Run the understanding decoder stack and return a differentiable prefix.
+
+    ``packed`` (vendor ``PackedSegments``) marks a batch of prompts laid end to
+    end along the sequence axis with batch dim 1: ``attention_mask`` must then
+    be the packed block-causal mask, and the causal fast path goes through the
+    varlen conduit entry so no segment attends into another.
 
     K/V leave each layer as explicit checkpoint OUTPUTS (the vendor ``return_kv``
     seam) rather than through ``past_key_values.update()``: that write is a
@@ -1206,9 +1224,20 @@ def forward_und_prefix_layers(
 
     # Equivalence proof: see is_plain_causal_thw_index in modeling_qwen3.py.
     # Computed ONCE for the whole stack (one host sync), not per layer.
-    from core.models.sensenova.vendor.modeling_qwen3 import is_plain_causal_thw_index
+    from core.models.sensenova.vendor.modeling_qwen3 import (
+        is_plain_causal_thw_index,
+        is_plain_causal_thw_index_packed,
+    )
 
-    causal_fastpath = is_plain_causal_thw_index(indexes[0])
+    if packed is not None:
+        if indexes.shape[-1] != packed.total:
+            raise ValueError(
+                f"SenseNova packed prefix: indexes cover {indexes.shape[-1]} tokens, "
+                f"cu_seqlens describe {packed.total}"
+            )
+        causal_fastpath = is_plain_causal_thw_index_packed(indexes[0], packed)
+    else:
+        causal_fastpath = is_plain_causal_thw_index(indexes[0])
 
     hidden_states = (
         model.embed_tokens(input_ids) if inputs_embeds is None else inputs_embeds
@@ -1232,6 +1261,7 @@ def forward_und_prefix_layers(
                 use_cache=False,
                 return_kv=True,
                 causal_fastpath=causal_fastpath,
+                packed=packed,
             )
 
         if checkpoint_layers:
@@ -1241,7 +1271,7 @@ def forward_und_prefix_layers(
         else:
             hidden_states, keys, values = layer_forward(hidden_states)
         cache_layers.append(_TrainingPrefixLayer(keys, values))
-    return _TrainingPrefixCache(cache_layers)
+    return _TrainingPrefixCache(cache_layers, packed=packed)
 
 
 class _PrefixInputs(NamedTuple):
@@ -1257,6 +1287,45 @@ class _PrefixInputs(NamedTuple):
     indexes: torch.Tensor
     attention_mask: Any
     embeds: bool = False
+    # Vendor ``PackedSegments`` for a batch of prompts packed along the
+    # sequence axis (``pack_prefix_inputs``); ``None`` for one prompt.
+    packed: Any = None
+
+
+def pack_prefix_inputs(items: "List[_PrefixInputs]") -> _PrefixInputs:
+    """Lay several prompts' prefix inputs end to end along the sequence axis.
+
+    Each item keeps its own t/h/w ``indexes`` (RoPE is applied from these, so a
+    token's position is unchanged by where it lands in the packed sequence) and
+    its own block-causal region; ``create_packed_block_causal_mask`` closes the
+    cross-item cells. Token ids and embeds cannot be mixed: with references some
+    items carry embeds and some ids, so everything is embedded by the caller
+    beforehand or all items are text-only.
+    """
+    from core.models.sensenova.vendor.modeling_qwen3 import (
+        PackedSegments,
+        create_packed_block_causal_mask,
+    )
+
+    if not items:
+        raise ValueError("pack_prefix_inputs needs at least one prefix")
+    if len({bool(item.embeds) for item in items}) != 1:
+        raise ValueError(
+            "SenseNova packed prefix cannot mix token-id and embedding items; "
+            "reference-conditioned and text-only prompts must not share a batch"
+        )
+    if any(item.packed is not None for item in items):
+        raise ValueError("pack_prefix_inputs takes single-prompt inputs")
+    lengths = [int(item.tokens.shape[1]) for item in items]
+    device = items[0].tokens.device
+    offsets = [0]
+    for length in lengths:
+        offsets.append(offsets[-1] + length)
+    packed = PackedSegments(torch.tensor(offsets, device=device, dtype=torch.int32))
+    tokens = torch.cat([item.tokens for item in items], dim=1)
+    indexes = torch.cat([item.indexes for item in items], dim=1)
+    mask = {"full_attention": create_packed_block_causal_mask(indexes[0], packed)}
+    return _PrefixInputs(tokens, indexes, mask, bool(items[0].embeds), packed)
 
 
 def assert_reference_tower_frozen(transformer: Any) -> None:
@@ -1376,6 +1445,7 @@ def _build_trainable_prefix(trainer: Any, transformer: Any, inputs) -> Any:
     """
     tokens, indexes, attention_mask = inputs[0], inputs[1], inputs[2]
     embeds = bool(inputs[3]) if len(inputs) > 3 else False
+    packed = inputs[4] if len(inputs) > 4 else None
     dtype = getattr(trainer, "training_dtype", torch.float32)
     device_type = torch.device(getattr(trainer, "device", "cpu")).type
     autocast_enabled = device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)
@@ -1387,7 +1457,121 @@ def _build_trainable_prefix(trainer: Any, transformer: Any, inputs) -> Any:
             attention_mask,
             inputs_embeds=tokens if embeds else None,
             checkpoint_layers=bool(getattr(trainer, "gradient_checkpointing", True)),
+            packed=packed,
         )
+
+
+def _prefix_text_lengths(inputs: _PrefixInputs) -> List[int]:
+    """Per-item NEXT t index of a (possibly packed) prefix."""
+    if inputs.packed is None:
+        return [int(inputs.indexes[0].max()) + 1]
+    return [
+        int(inputs.indexes[0, start:end].max()) + 1
+        for start, end in inputs.packed.bounds()
+    ]
+
+
+def encode_prompts(
+    trainer: Any,
+    prompts: List[str],
+    *,
+    requires_grad: bool = False,
+    reference_image_paths: Optional[List[Optional[List[str]]]] = None,
+    cfg_null: Optional[List[bool]] = None,
+) -> SenseNovaTrainingPrefix:
+    """``encode_prompt`` for a physical batch: one PACKED prefix for all items.
+
+    The prompts are built exactly as ``encode_prompt`` builds each of them
+    (the same query template, the same aligned null per item) and then laid end
+    to end with ``pack_prefix_inputs``; the understanding stack runs once over
+    the packed sequence, so the K/V of item ``i`` are bitwise what a single
+    encode would produce (per-token computation is position-free, and the
+    packed mask / varlen attention keep the segments apart). The three routes
+    (four-phase cut, differentiable, frozen) are the same as ``encode_prompt``'s;
+    the frozen one uses the training prefix loop under ``no_grad`` rather than
+    the vendor prefix forward, which has no packed-mask entry.
+    """
+    if not isinstance(prompts, (list, tuple)) or not prompts:
+        raise TypeError("SenseNova encode_prompts takes a non-empty list of prompts")
+    if any(not isinstance(prompt, str) for prompt in prompts):
+        raise TypeError("SenseNova encode_prompts takes str prompts")
+    batch = len(prompts)
+    refs = list(reference_image_paths) if reference_image_paths else [None] * batch
+    nulls = [bool(flag) for flag in cfg_null] if cfg_null is not None else [False] * batch
+    if len(refs) != batch or len(nulls) != batch:
+        raise ValueError(
+            "SenseNova encode_prompts: reference_image_paths and cfg_null must "
+            "have one entry per prompt"
+        )
+    for paths, is_null in zip(refs, nulls):
+        if is_null and paths:
+            raise ValueError(
+                "SenseNova's aligned CFG null is the text-only uncond prefix and "
+                "has no reference-conditioned form; the run should have been "
+                "refused before the model loaded (api/cfg_null_resolver.py)"
+            )
+
+    transformer = trainer.transformer
+    phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    four_phase = getattr(trainer, "sensenova_four_phase", None)
+    if requires_grad:
+        assert_understanding_training_supported(transformer)
+    if requires_grad and four_phase is None and phase_evictor is not None:
+        raise RuntimeError(
+            "SenseNova understanding-branch training cannot run with MoT phase "
+            "eviction: the understanding half must stay resident until backward, "
+            "but the evictor moves it to CPU for the denoise phase"
+        )
+    if phase_evictor is not None:
+        phase_evictor.enter_prefix()
+        phase_evictor.assert_understanding_resident()
+
+    items = []
+    for prompt, paths, is_null in zip(prompts, refs, nulls):
+        ref_images = _load_reference_images(paths)
+        if requires_grad and ref_images:
+            assert_reference_tower_frozen(transformer)
+        items.append(_build_prefix_inputs(trainer, transformer, prompt, ref_images, is_null))
+    inputs = pack_prefix_inputs(items)
+    text_lengths = _prefix_text_lengths(inputs)
+    expected_layers = len(transformer.language_model.model.layers)
+
+    if requires_grad and four_phase is not None:
+        with torch.no_grad():
+            cache = _build_trainable_prefix(trainer, transformer, inputs)
+        leaf_cache = four_phase.cut(cache, inputs)
+        del cache
+        _assert_immutable_prefix_cache(leaf_cache, expected_layers, boundary_leaf=True)
+        return SenseNovaTrainingPrefix(
+            cache=leaf_cache, text_length=text_lengths[0],
+            packed=inputs.packed, text_lengths=text_lengths,
+        )
+    if requires_grad:
+        cache = _build_trainable_prefix(trainer, transformer, inputs)
+        _assert_immutable_prefix_cache(cache, expected_layers, trainable=True)
+        return SenseNovaTrainingPrefix(
+            cache=cache, text_length=text_lengths[0],
+            packed=inputs.packed, text_lengths=text_lengths,
+        )
+
+    with torch.no_grad():
+        cache = forward_und_prefix_layers(
+            transformer.language_model.model,
+            None if inputs.embeds else inputs.tokens,
+            inputs.indexes,
+            inputs.attention_mask,
+            inputs_embeds=inputs.tokens if inputs.embeds else None,
+            checkpoint_layers=False,
+            packed=inputs.packed,
+        )
+    _assert_immutable_prefix_cache(cache, expected_layers)
+    if phase_evictor is not None:
+        phase_evictor.enter_denoise()
+        phase_evictor.assert_generation_resident()
+    return SenseNovaTrainingPrefix(
+        cache=cache, text_length=text_lengths[0],
+        packed=inputs.packed, text_lengths=text_lengths,
+    )
 
 
 def encode_prompt(
@@ -1526,6 +1710,7 @@ def _save_pixel_debug(
     recon_loss_value: float,
     captions: Optional[List[str]],
     reference_image_paths: Optional[List[Optional[str]]],
+    batch_size: int = 1,
 ) -> None:
     """Dump this step's pixel tensors, the pixel-space analogue of the latent
     archs' debug latents: ``target`` is their ``latents`` (the clean sample),
@@ -1546,7 +1731,7 @@ def _save_pixel_debug(
         "is_latent": False,
         "loss": loss_value,
         "recon_loss": recon_loss_value,
-        "batch_size": 1,
+        "batch_size": int(batch_size),
     }
     if captions:
         debug_data["caption"] = captions[0]
@@ -1591,8 +1776,14 @@ def train_step(
     if phase_evictor is not None:
         phase_evictor.enter_denoise()
         phase_evictor.assert_generation_resident()
-    if images.ndim != 4 or images.shape[0] != 1 or images.shape[1] != 3:
-        raise ValueError("SenseNova training currently requires batch_size=1 BCHW RGB")
+    if images.ndim != 4 or images.shape[1] != 3:
+        raise ValueError("SenseNova training requires BCHW RGB images")
+    batch = int(images.shape[0])
+    if batch != prefix.batch_size:
+        raise ValueError(
+            f"SenseNova train_step: {batch} image(s) but the prefix holds "
+            f"{prefix.batch_size} prompt(s)"
+        )
     height, width = images.shape[-2:]
     if height % 32 or width % 32:
         raise ValueError("SenseNova image height and width must be divisible by 32")
@@ -1609,7 +1800,7 @@ def train_step(
     dtype = trainer.training_dtype
     x0 = images.to(device=device, dtype=dtype)
     if timesteps is None:
-        t = trainer.timestep_sampler.sample(1, device=device)
+        t = trainer.timestep_sampler.sample(batch, device=device)
         if isinstance(t, tuple):
             t = t[0]
     else:
@@ -1618,8 +1809,12 @@ def train_step(
     # `ts` carries (linspace, sensenova_pipeline_ops.py:1068): timestep_embedder
     # embeds t's VALUE, and bf16 would quantize it to ~2e-3 in training only.
     t = torch.as_tensor(t, device=device, dtype=torch.float32).reshape(-1)
-    if t.numel() != 1:
-        raise ValueError("SenseNova training requires one timestep for batch_size=1")
+    if t.numel() == 1 and batch > 1:
+        t = t.expand(batch).contiguous()
+    if t.numel() != batch:
+        raise ValueError(
+            f"SenseNova training requires one timestep per image (got {t.numel()} for {batch})"
+        )
 
     from core.models.sensenova.sensenova_pipeline_ops import (
         _build_step_context,
@@ -1635,11 +1830,10 @@ def train_step(
     # Inference noises in the image dtype, its fp32 t demoted by 0-dim promotion
     # (sensenova_pipeline_ops.py:1122); cast explicitly so z_image stays
     # training_dtype -- _build_step_context's ViT runs outside the autocast below.
-    z_image = t.to(dtype).view(1, 1, 1, 1) * x0 + (1 - t).to(dtype).view(1, 1, 1, 1) * (
-        torch.randn_like(x0) * noise_scale
-    )
+    t_img = t.to(dtype).view(batch, 1, 1, 1)
+    z_image = t_img * x0 + (1 - t_img) * (torch.randn_like(x0) * noise_scale)
     shape = SimpleNamespace(
-        batch_size=1,
+        batch_size=batch,
         merge_size=merge_size,
         grid_h=grid_h,
         grid_w=grid_w,
@@ -1661,11 +1855,28 @@ def train_step(
         and any(p.requires_grad for p in fm_modules.parameters())
     )
     z, image_embeds, _ = _build_step_context(
-        transformer, shape, z_image, t[0], noise_scale, enable_grad=fm_trainable
+        transformer, shape, z_image, t if batch > 1 else t[0], noise_scale,
+        enable_grad=fm_trainable,
     )
-    indexes = transformer._build_t2i_image_indexes(
-        token_h, token_w, prefix.text_length, device=device
-    )
+    packed_gen = None
+    if prefix.packed is None:
+        indexes = transformer._build_t2i_image_indexes(
+            token_h, token_w, prefix.text_length, device=device
+        )
+    else:
+        from core.models.sensenova.vendor.modeling_qwen3 import PackedGenPlan
+
+        # Item i's image tokens sit at t = its own prefix's next index, exactly
+        # as the single-prompt form; packing only concatenates them.
+        indexes = torch.cat(
+            [
+                transformer._build_t2i_image_indexes(token_h, token_w, length, device=device)
+                for length in prefix.text_lengths
+            ],
+            dim=1,
+        )
+        image_embeds = image_embeds.reshape(1, batch * token_h * token_w, -1)
+        packed_gen = PackedGenPlan(prefix.packed, batch, token_h * token_w, device)
     _assert_immutable_prefix_cache(
         prefix.cache,
         len(transformer.language_model.model.layers),
@@ -1684,21 +1895,22 @@ def train_step(
             checkpoint_layers=bool(trainer.gradient_checkpointing),
             trainable_prefix=trainable_prefix and not boundary_leaf,
             boundary_leaf_prefix=boundary_leaf,
+            packed_gen=packed_gen,
         )
         decoded = transformer.fm_modules["fm_head"](
-            hidden.view(1, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
+            hidden.view(batch, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
         )
         patch = transformer.patch_size * merge_size
         x0_pred = (
-            decoded.view(1, 3, token_h, patch, token_w, patch)
+            decoded.view(batch, 3, token_h, patch, token_w, patch)
             .permute(0, 2, 4, 3, 5, 1)
             .contiguous()
-            .view(1, token_h * token_w, patch * patch * 3)
+            .view(batch, token_h * token_w, patch * patch * 3)
         )
         x0_tokens = transformer.patchify(x0, patch)
         # fp32 t here lifts v into fp32, which the MSE below wanted anyway --
         # the .float() calls become no-ops rather than extra copies.
-        denominator = (1 - t).view(1, 1, 1).clamp_min(transformer.config.t_eps)
+        denominator = (1 - t).view(batch, 1, 1).clamp_min(transformer.config.t_eps)
         v_pred = (x0_pred - z) / denominator
         v_target = (x0_tokens - z) / denominator
         loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float())
@@ -1709,14 +1921,15 @@ def train_step(
 
     if debug_save_path is not None:
         try:
+            # First item only: the dump is one preview triple per step.
             _save_pixel_debug(
                 transformer,
                 debug_save_path,
                 t_val=float(t[0].item()),
                 noise_scale=noise_scale,
-                images=x0,
-                z_image=z_image,
-                x0_pred_tokens=x0_pred,
+                images=x0[:1],
+                z_image=z_image[:1],
+                x0_pred_tokens=x0_pred[:1],
                 patch=patch,
                 height=height,
                 width=width,
@@ -1724,6 +1937,7 @@ def train_step(
                 recon_loss_value=recon_value,
                 captions=debug_captions,
                 reference_image_paths=debug_reference_image_paths,
+                batch_size=batch,
             )
         except Exception as debug_error:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
@@ -2069,8 +2283,13 @@ def forward_gen_decoder_layers(
     checkpoint_layers: bool = False,
     trainable_prefix: bool = False,
     boundary_leaf_prefix: bool = False,
+    packed_gen: Any = None,
 ) -> torch.Tensor:
     """Run the all-generation-token Qwen3 decoder against immutable prefix K/V.
+
+    ``packed_gen`` (vendor ``PackedGenPlan``) is the batched form: the image
+    tokens of every item packed along the sequence axis against a packed
+    prefix, each item confined to its own prefix by the varlen attention.
 
     Calling PyTorch's base ``Module.__call__`` bypasses Transformers'
     cache-dropping checkpoint wrapper while preserving module hooks. The cache
@@ -2089,6 +2308,14 @@ def forward_gen_decoder_layers(
         trainable=trainable_prefix,
         boundary_leaf=boundary_leaf_prefix,
     )
+    cache_packed = getattr(prefix_cache, "packed", None)
+    if (packed_gen is None) != (cache_packed is None):
+        raise ValueError(
+            "SenseNova generation training: a packed prefix needs a PackedGenPlan "
+            "and a single-prompt prefix must not get one"
+        )
+    if packed_gen is not None and packed_gen.prefix is not cache_packed:
+        raise ValueError("SenseNova generation training: plan and prefix cache disagree")
     image_gen_indicators = torch.ones(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )
@@ -2107,6 +2334,7 @@ def forward_gen_decoder_layers(
                 past_key_values=prefix_cache,
                 use_cache=False,
                 update_cache=False,
+                packed_gen=packed_gen,
             )
 
         if checkpoint_layers:

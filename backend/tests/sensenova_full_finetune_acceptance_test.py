@@ -166,7 +166,6 @@ def test_negative_control_the_fallthrough_collects_zero_of_the_294_it_paid_for()
         ({"optimizer": "adamw8bit"}, "optimizer='adamw8bit'"),
         ({"optimizer": "lion8bit_ringbuffer"}, "optimizer='lion8bit_ringbuffer'"),
         ({"sensenova_full_finetune_save_format": "fp8"}, "save_format"),
-        ({"batch_size": 2}, "batch_size=1"),
         ({"blocks_to_swap": 1}, "blocks_to_swap"),
     ],
 )

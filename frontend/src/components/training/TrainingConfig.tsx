@@ -928,8 +928,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   })();
 
   // FOURTH capability axis: config values this base model REQUIRES under the
-  // selected method (SenseNova's full-fine-tune contract fixes the optimizer;
-  // every SenseNova run is batch 1). The backend refuses a run that violates
+  // selected method (SenseNova's full-fine-tune contract fixes the optimizer
+  // and accumulation). The backend refuses a run that violates
   // one, before the model loads, so the controls below are pinned to the value
   // rather than offering a default the run would be rejected for. Derived from
   // arch + method, so switching either unpins whatever is no longer required.

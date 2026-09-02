@@ -4960,6 +4960,46 @@ class BaseTrainer(ABC):
         self._run_checkpoint_cleanup(plan.effective_keep, step, save_every_n_steps)
         self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep, current_step=step)
 
+    def _final_save_on_completion(
+        self,
+        step: int,
+        epoch: int,
+        batch_idx: int,
+        multi_noise_timesteps: int,
+        max_step_saves_to_keep: int,
+        max_optimizer_saves_to_keep: int,
+        save_every_n_steps: int,
+    ) -> None:
+        """Write a finished run's weights, unless this step already has them.
+
+        ``save_every`` is an interval, not a promise that the last step lands on
+        one. Without this, a run that trains to completion below its first
+        interval exits having written nothing: run 125 (2026-09-02) trained 222
+        steps against ``save_every: 10000``, reported "completed", and left an
+        empty output directory. Interrupts and crashes already save; only the
+        successful exits did not.
+
+        Same bundle, space preflight and retention as a periodic save, with one
+        deliberate difference: the periodic caller may swallow a transient
+        failure because the next interval saves again, and this has no next
+        interval, so a failure here is raised and fails the run.
+        """
+        if getattr(self, "_last_periodic_checkpoint_step", None) == step:
+            print(f"{self.log_prefix} Final checkpoint: step {step} was already "
+                  f"written by the periodic interval; not writing it twice")
+            return
+        print(f"{self.log_prefix} Saving final checkpoint at step {step}, epoch {epoch}...")
+        self._periodic_save_with_space_guard(
+            step=step,
+            epoch=epoch,
+            batch_idx=batch_idx,
+            multi_noise_timesteps=multi_noise_timesteps,
+            max_step_saves_to_keep=max_step_saves_to_keep,
+            max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
+            save_every_n_steps=save_every_n_steps,
+        )
+        print(f"{self.log_prefix} Final checkpoint saved at step {step}")
+
     # ============================================================
     # Optimizer Setup
     # ============================================================
@@ -16021,6 +16061,15 @@ class BaseTrainer(ABC):
                         # and would exit here rather than through the epoch-exhaustion
                         # path below.
                         self._assert_trained_something()
+                        self._final_save_on_completion(
+                            step=global_step,
+                            epoch=epoch,
+                            batch_idx=self._epoch_batch_position(batch_idx),
+                            multi_noise_timesteps=multi_noise_timesteps,
+                            max_step_saves_to_keep=max_step_saves_to_keep,
+                            max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
+                            save_every_n_steps=save_every_n_steps,
+                        )
                         return  # Exit training loop
 
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
@@ -16044,6 +16093,18 @@ class BaseTrainer(ABC):
                 pass
 
             self._assert_trained_something()
+            self._final_save_on_completion(
+                step=global_step,
+                epoch=epoch,
+                # An epoch with no batches at all cannot reach here --
+                # _assert_trained_something() raises first -- so batch_idx is
+                # bound, but read it defensively rather than rely on that.
+                batch_idx=self._epoch_batch_position(batch_idx) if 'batch_idx' in locals() else 0,
+                multi_noise_timesteps=multi_noise_timesteps,
+                max_step_saves_to_keep=max_step_saves_to_keep,
+                max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
+                save_every_n_steps=save_every_n_steps,
+            )
 
         except KeyboardInterrupt:
             # Stop cpu_prefetch worker if it was running (no-op otherwise)

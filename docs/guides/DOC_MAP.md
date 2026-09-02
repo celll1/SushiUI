@@ -66,6 +66,7 @@ machine-local working material.
 | `backend/core/memory_management/RING_BUFFER_OPTIMIZER.md` | Optimizer-state residency mechanism. |
 | `backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md` | Ring-buffer optimizer contracts. |
 | `docs/audits/BLOCK_SWAP.md` | Completed block-swap implementation audit. |
+| `docs/audits/SENSENOVA_UND_BRANCH_DISCRIMINATION.md` | Measured audit: the SenseNova understanding branch keeps detail-differing prompts apart. |
 
 ## API, tools, and subapps
 

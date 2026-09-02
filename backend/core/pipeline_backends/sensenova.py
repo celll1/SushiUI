@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import os
 import random
 
 import torch
@@ -35,10 +36,17 @@ class SenseNovaMixin:
         Both MoT branches are enumerated: application is lookup-driven, so a
         generation-only distillation file behaves exactly as before while an
         understanding-bearing one stops being silently truncated.
+
+        Every failure REFUSES here, before the prefix pass and the denoise
+        loop: a missing file, an unreadable one, and an application that
+        reaches zero modules are not survivable degradations. A partial
+        application warns. Several LoRAs may be selected but must target
+        disjoint modules -- the wrapper replaces the target Linear and cannot
+        wrap another wrapper (LYCORIS_ADAPTER_DESIGN Phase 1).
         """
         from core.models.sensenova.sensenova_lora import (
-            check_lora_application, load_lora_safetensors,
-            normalise_lora_state_dict, apply_lora_group,
+            LAYER_PREFIX, check_lora_application, load_lora_safetensors,
+            metadata_alpha, normalise_lora_state_dict, apply_lora_group,
         )
         from core.extensions.lora_manager import lora_manager
 
@@ -49,41 +57,98 @@ class SenseNovaMixin:
         if not hasattr(self, "_sensenova_lora_orig"):
             self._sensenova_lora_orig: Dict[str, torch.nn.Module] = {}
             self._sensenova_lora_keys: set = set()
+        # No wrapper is installed, so no original is owed. Without this an
+        # original recorded against a transformer that has since been unloaded
+        # survives, and `restore_originals` (which restores on map membership)
+        # writes a PREVIOUS model's module into the current one.
+        if not self._sensenova_lora_keys:
+            self._sensenova_lora_orig.clear()
 
         total = 0
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
+            # Warnings ride into the PNG metadata chunk, so never an absolute path.
+            lora_file = os.path.basename(str(lora_path))
             strength = float(cfg.get("strength", cfg.get("weight", 1.0)))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                print(f"[SenseNova LoRA] WARNING: file not found: {lora_path}")
-                continue
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+                print(f"[SenseNova LoRA] ERROR: {message}")
+                self._sensenova_lora_warn(message, "lora_not_found")
+                raise FileNotFoundError(message)
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
+                shadowed: list = []
                 applied = apply_lora_group(
                     transformer, grouped, strength,
                     self._sensenova_lora_orig, self._sensenova_lora_keys,
+                    file_alpha=metadata_alpha(metadata), shadowed=shadowed,
                 )
-                print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
-                      f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
-                shortfall = check_lora_application(grouped, applied, metadata)
-                if shortfall is not None:
-                    message = f"{shortfall} ({lora_path})"
-                    print(message)
-                    try:
-                        from api.generation_status import add_warning
-                        add_warning(message, code="sensenova_lora_partially_applied")
-                    except Exception:
-                        pass
-                total += applied
-            except Exception as e:
-                print(f"[SenseNova LoRA] ERROR loading {lora_path}: {e}")
+            except Exception as exc:
+                print(f"[SenseNova LoRA] ERROR loading {lora_file}: {exc}")
                 import traceback; traceback.print_exc()
+                message = f"LoRA '{lora_file}' could not be applied: {exc}"
+                self._sensenova_lora_warn(message, "lora_load_failed")
+                raise RuntimeError(message) from exc
+
+            print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
+                  f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
+
+            if applied == 0:
+                if shadowed:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {len(shadowed)} target modules is "
+                        f"already wrapped by an earlier LoRA in this request. SenseNova applies "
+                        f"one LoRA per target; select a single SenseNova LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {len(grouped)} module(s) applied to the loaded "
+                        f"SenseNova transformer (key format '{fmt}') -- unrecognized key format or "
+                        f"a different model. Expected verbatim module paths such as "
+                        f"'{LAYER_PREFIX}0.self_attn.q_proj_mot_gen.lora_down.weight'. "
+                        f"Sample keys in file: {list(raw.keys())[:5]}"
+                    )
+                    code = "lora_incompatible"
+                print(f"[SenseNova LoRA] ERROR: {message}")
+                self._sensenova_lora_warn(message, code)
+                raise RuntimeError(message)
+
+            shortfall = check_lora_application(grouped, applied, metadata)
+            if shortfall is not None or shadowed:
+                parts = [shortfall] if shortfall is not None else [
+                    f"[SenseNova LoRA] applied {applied} of {len(grouped)} module(s)"]
+                if shadowed:
+                    parts.append(
+                        f"{len(shadowed)} target(s) were already wrapped by an earlier LoRA")
+                message = f"{'; '.join(parts)} ({lora_file})"
+                print(message)
+                self._sensenova_lora_warn(message, "lora_partial")
+            total += applied
         return total
 
+    @staticmethod
+    def _sensenova_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
     def _unload_lora_sensenova(self) -> int:
-        """Restore every SenseNova transformer Linear to its pre-LoRA original."""
+        """Restore every SenseNova transformer Linear to its pre-LoRA original.
+
+        Drops the original-module map with the wrappers: it is per-generation
+        state, and a retained entry for a transformer that has since been
+        unloaded would be written into the NEXT model loaded (restoration is
+        by map membership, recording is by ``setdefault``).
+        """
         from core.models.sensenova.sensenova_lora import restore_originals
         if not self.sensenova_components:
             return 0
@@ -93,6 +158,8 @@ class SenseNovaMixin:
                 self.sensenova_components["transformer"],
                 self._sensenova_lora_orig, self._sensenova_lora_keys,
             )
+        if hasattr(self, "_sensenova_lora_orig"):
+            self._sensenova_lora_orig.clear()
         if restored:
             print(f"[SenseNova LoRA] Unloaded {restored} LoRA wrappers")
         return restored
@@ -449,8 +516,10 @@ class SenseNovaMixin:
                 Qwen3Attention._style_ctx = None
             except Exception:
                 pass
-            if applied_lora:
-                self._unload_lora_sensenova()
+            # Unconditional: a partial application that then raised wraps modules
+            # without returning a count, and a second unload is a no-op once
+            # `_sensenova_lora_keys` is empty.
+            self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
@@ -545,8 +614,10 @@ class SenseNovaMixin:
                 Qwen3Attention._style_ctx = None
             except Exception:
                 pass
-            if applied_lora:
-                self._unload_lora_sensenova()
+            # Unconditional: a partial application that then raised wraps modules
+            # without returning a count, and a second unload is a no-op once
+            # `_sensenova_lora_keys` is empty.
+            self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
@@ -643,8 +714,10 @@ class SenseNovaMixin:
                 Qwen3Attention._style_ctx = None
             except Exception:
                 pass
-            if applied_lora:
-                self._unload_lora_sensenova()
+            # Unconditional: a partial application that then raised wraps modules
+            # without returning a count, and a second unload is a no-op once
+            # `_sensenova_lora_keys` is empty.
+            self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)

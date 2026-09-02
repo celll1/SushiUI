@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -35,64 +36,175 @@ class AnimaMixin:
             return torch.float32
         return torch.bfloat16
 
+    @staticmethod
+    def _anima_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning. ``message`` rides into the
+        output PNG's text chunk and the API's ``warnings[]``, so it must never
+        carry an absolute path."""
+        print(f"[Anima LoRA] WARNING: {message}")
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _anima_lora_state(self, transformer):
+        """The (originals, wrapped_keys) maps for THIS transformer.
+
+        Reset when the DiT was reloaded: the maps hold the OLD transformer's
+        Linears, ``apply_lora_group`` keeps them (setdefault) and
+        ``restore_originals`` would then splice them into the new transformer.
+        Keyed by weakref rather than id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_anima_lora_transformer_ref", None)
+        if ref is None or ref() is not transformer:
+            self._anima_lora_original_modules: Dict[str, torch.nn.Module] = {}
+            self._anima_lora_wrapped_keys: set = set()
+            self._anima_lora_transformer_ref = weakref.ref(transformer)
+        return self._anima_lora_original_modules, self._anima_lora_wrapped_keys
+
     def _load_lora_anima(self, lora_configs: List[Dict]) -> int:
         """Wrap target Linear modules of the Anima DiT with LoRA adapters.
 
-        Supports stacking multiple LoRAs on the same module (each subsequent
-        wrap takes the existing wrapper's true original as its base, so
-        unload always returns to the un-LoRA'd model).
+        The wrapped scope is derived per file from its own keys, so an
+        attention-only LoRA and a full attention+mlp+llm_adapter one both apply
+        in full. Stacking is additive across DISJOINT modules only; a later file
+        whose targets are ALL already wrapped is refused, because each wrap
+        rebuilds from the true original and would discard the earlier branch
+        instead of summing it (summing needs the composite wrapper,
+        docs/guides/LYCORIS_ADAPTER_DESIGN.md Phase 1). Unload always returns to
+        the un-LoRA'd model.
+
+        Raises RuntimeError when a requested LoRA cannot be applied: a
+        generation that silently ignores a selected LoRA is not a success.
         """
         from core.models.anima.anima_lora import (
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            derive_scope_from_keys, unmatched_source_keys,
         )
         from core.extensions.lora_manager import lora_manager
 
+        # Unconditional, and BEFORE the empty-config exit: a model reload or a
+        # restore that failed in an earlier request must not leak the previous
+        # DiT's modules into this generation.
+        self._unload_lora_anima()
+
         if not lora_configs:
             return 0
+
         if not self.anima_components:
-            print("[Anima LoRA] WARNING: components not loaded")
-            return 0
+            raise RuntimeError(
+                "[Anima LoRA] cannot apply the selected LoRA(s): Anima components are not loaded"
+            )
 
         transformer = self.anima_components["transformer"]
-        if not hasattr(self, "_anima_lora_original_modules"):
-            self._anima_lora_original_modules: Dict[str, torch.nn.Linear] = {}
-            self._anima_lora_wrapped_keys: set = set()
+        originals, wrapped_keys = self._anima_lora_state(transformer)
 
         total_applied = 0
+        failures: List[str] = []
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
+            # Warnings ride into the PNG metadata chunk, so never an absolute path.
+            lora_file = os.path.basename(str(lora_path))
             strength = float(cfg.get("strength", 1.0))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                print(f"[Anima LoRA] WARNING: file not found: {lora_path}")
+                message = f"LoRA '{lora_file}': file not found"
+                self._anima_lora_warn(message, "lora_not_found")
+                failures.append(message)
                 continue
             try:
                 raw, fmt = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
+                scope = derive_scope_from_keys(grouped.keys())
+                dropped = unmatched_source_keys(raw, grouped)
                 print(f"[Anima LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
-                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} strength={strength}")
-                applied = apply_lora_group(
-                    transformer, grouped, strength,
-                    self._anima_lora_original_modules, self._anima_lora_wrapped_keys,
+                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
+                      f"scope={sorted(k for k, v in scope.items() if v)} strength={strength}")
+                if dropped:
+                    self._anima_lora_warn(
+                        f"LoRA '{lora_file}' has {len(dropped)} tensor key(s) in no "
+                        f"recognised Anima LoRA format, or missing their down/up pair "
+                        f"(first few: {dropped[:5]}) -- not applied.",
+                        "anima_lora_keys_unrecognised")
+                overlap = wrapped_keys & set(grouped)
+                applied, unmatched = apply_lora_group(
+                    transformer, grouped, strength, originals, wrapped_keys,
+                    scope=scope,
                 )
+                if unmatched:
+                    self._anima_lora_warn(
+                        f"LoRA '{lora_file}' targets {len(unmatched)} module(s) that the "
+                        f"loaded Anima DiT does not expose (first few: {unmatched[:5]}) "
+                        f"-- skipped.",
+                        "anima_lora_targets_unresolved")
+                    if applied:
+                        # A 0-applied file is incompatible, not partial; that
+                        # branch below carries its own code.
+                        self._anima_lora_warn(
+                            f"LoRA '{lora_file}': applied {applied} of the {len(grouped)} "
+                            f"module(s) the file carries.",
+                            "lora_partial")
                 print(f"[Anima LoRA]   wrapped {applied} module(s)")
+                if applied == 0:
+                    message = (
+                        f"LoRA '{lora_file}': matched 0 target(s) out of {len(raw)} key(s) "
+                        f"against the loaded Anima DiT (wrong architecture or key format?)"
+                    )
+                    self._anima_lora_warn(message, "lora_incompatible")
+                    failures.append(message)
+                elif len(overlap) == applied:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {applied} target module(s) is "
+                        f"already wrapped by an earlier LoRA in this request. Anima applies "
+                        f"one LoRA per module; select LoRAs with disjoint targets."
+                    )
+                    self._anima_lora_warn(message, "lora_stacking_unsupported")
+                    failures.append(message)
+                elif overlap:
+                    self._anima_lora_warn(
+                        f"LoRA '{lora_file}': {len(overlap)} module(s) were already wrapped by "
+                        f"an earlier LoRA in this request; the earlier branch is replaced, "
+                        f"not summed.",
+                        "lora_partial")
                 total_applied += applied
             except Exception as e:
                 print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")
                 import traceback; traceback.print_exc()
+                message = f"LoRA '{lora_file}': {type(e).__name__}: {e}"
+                self._anima_lora_warn(message, "lora_load_failed")
+                failures.append(message)
+
+        if failures:
+            # Refuse before denoising rather than generate with a silently
+            # partial LoRA set; restore the DiT first so the failure is clean.
+            self._unload_lora_anima()
+            raise RuntimeError("[Anima LoRA] " + "; ".join(failures))
         return total_applied
 
     def _unload_lora_anima(self) -> int:
-        """Restore every Anima DiT Linear to its pre-LoRA original."""
+        """Restore every Anima DiT Linear to its pre-LoRA original.
+
+        Routed through ``_anima_lora_state``, so a reloaded or dropped DiT
+        discards the previous model's modules instead of splicing them in.
+        """
         from core.models.anima.anima_lora import restore_originals
-        if not getattr(self, "_anima_lora_wrapped_keys", None):
+        transformer = (self.anima_components or {}).get("transformer")
+        if transformer is None:
+            # Model unloaded: drop the maps so a later load cannot inherit them.
+            self._anima_lora_original_modules = {}
+            self._anima_lora_wrapped_keys = set()
+            self._anima_lora_transformer_ref = None
             return 0
-        if not self.anima_components:
+        originals, wrapped_keys = self._anima_lora_state(transformer)
+        if not wrapped_keys:
             return 0
-        transformer = self.anima_components["transformer"]
-        restored = restore_originals(
-            transformer, self._anima_lora_original_modules, self._anima_lora_wrapped_keys,
-        )
+        restored, unresolved = restore_originals(transformer, originals, wrapped_keys)
+        if unresolved:
+            self._anima_lora_warn(
+                f"{len(unresolved)} Anima LoRA wrapper(s) could not be removed (first few: "
+                f"{unresolved[:5]}); the DiT may still carry LoRA weights.",
+                "lora_unload_failed")
         print(f"[Anima LoRA] Unloaded {restored} LoRA wrappers")
         return restored
 
@@ -766,6 +878,12 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
+            # A sampling/decode failure must not leave LoRA wrappers on the DiT;
+            # no-op when the success path already unwrapped.
+            try:
+                self._unload_lora_anima()
+            except Exception:
+                pass
             if not _kh_gen_succeeded:
                 clear_resident(self)
                 for _comp in ("text_encoder", "transformer", "vae"):
@@ -1043,6 +1161,12 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
+            # A sampling/decode failure must not leave LoRA wrappers on the DiT;
+            # no-op when the success path already unwrapped.
+            try:
+                self._unload_lora_anima()
+            except Exception:
+                pass
             if not _kh_gen_succeeded:
                 clear_resident(self)
                 for _comp in ("text_encoder", "transformer", "vae"):
@@ -1333,6 +1457,12 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
+            # A sampling/decode failure must not leave LoRA wrappers on the DiT;
+            # no-op when the success path already unwrapped.
+            try:
+                self._unload_lora_anima()
+            except Exception:
+                pass
             if not _kh_gen_succeeded:
                 clear_resident(self)
                 for _comp in ("text_encoder", "transformer", "vae"):

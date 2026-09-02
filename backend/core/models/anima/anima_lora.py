@@ -20,9 +20,9 @@ Two key conventions are accepted:
        diffusion_model.blocks.0.self_attn.q_proj.lora_B.weight
        diffusion_model.blocks.0.self_attn.q_proj.alpha
 
-Anima target modules per Block:
-    blocks.<N>.self_attn.{q_proj, k_proj, v_proj, output_proj}
-    blocks.<N>.cross_attn.{q_proj, k_proj, v_proj, output_proj}
+Target modules are whatever the checkpoint carries (see iter_anima_lora_targets
+for the per-scope enumeration): DiT block attention, block MLP, AdaLN modulation,
+and the LLM Adapter.
 """
 
 from typing import Dict, Tuple, List, Optional, Any
@@ -142,6 +142,22 @@ def normalise_lora_state_dict(raw_state_dict: Dict[str, torch.Tensor]) -> Dict[s
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
+def unmatched_source_keys(
+    raw_state_dict: Dict[str, torch.Tensor],
+    grouped: Dict[str, Dict[str, torch.Tensor]],
+) -> List[str]:
+    """Raw keys that carry nothing into `grouped` — unparseable, or part of a
+    module group missing its down/up pair. Callers must surface these: a dropped
+    key is a silently weaker LoRA, not a no-op.
+    """
+    dropped: List[str] = []
+    for key in raw_state_dict:
+        parsed = _parse_key(key)
+        if parsed is None or parsed[0] not in grouped:
+            dropped.append(key)
+    return sorted(dropped)
+
+
 def detect_lora_format(raw_state_dict: Dict[str, torch.Tensor]) -> str:
     """Return a label describing the dominant LoRA key format.
 
@@ -187,8 +203,9 @@ _BLOCK_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "output_proj")
 _LLM_ADAPTER_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "o_proj")  # note: o_proj
 
 
-# Default scope for training. Inference-side wrap (Phase B.3) only needs
-# `attention`; training-side defaults add MLP and the LLM Adapter.
+# Default scope for TRAINING only. Inference has no default: it derives the scope
+# from the checkpoint's own keys (see derive_scope_from_keys), so any scope the
+# trainer can save wraps in full at generation time.
 DEFAULT_TRAINING_SCOPE = {
     "attention": True,
     "mlp": True,
@@ -379,13 +396,25 @@ def _resolve_parent(root: nn.Module, dotted_name: str):
     return parent, last
 
 
-def _iter_anima_attention_targets(transformer: nn.Module):
-    """Backward-compatible alias: yields the inference-side default scope
-    (DiT Block self_attn + cross_attn only). Used by Phase B.3 inference LoRA
-    loading; kept stable so the apply_lora_group / restore_originals contract
-    is unchanged.
+def derive_scope_from_keys(module_paths) -> Dict[str, bool]:
+    """Scope flags covering exactly the module paths a checkpoint carries.
+
+    Classification order mirrors the gating in iter_anima_lora_targets (the
+    llm_adapter prefix wins over the mlp/attention shapes nested under it). A
+    path matching nothing enables no scope and therefore shows up in
+    apply_lora_group's unmatched list instead of being dropped in silence.
     """
-    yield from iter_anima_lora_targets(transformer, {"attention": True})
+    scope = {"attention": False, "mlp": False, "mod": False, "llm_adapter": False}
+    for path in module_paths:
+        if path.startswith("llm_adapter"):
+            scope["llm_adapter"] = True
+        elif ".adaln_modulation_" in path:
+            scope["mod"] = True
+        elif ".mlp." in path:
+            scope["mlp"] = True
+        elif ".self_attn." in path or ".cross_attn." in path:
+            scope["attention"] = True
+    return scope
 
 
 # --------- Apply / restore ---------
@@ -396,7 +425,8 @@ def apply_lora_group(
     strength: float,
     lora_original_modules: Dict[str, nn.Linear],
     wrapped_keys: set,
-) -> int:
+    scope: Optional[Dict[str, bool]] = None,
+) -> Tuple[int, List[str]]:
     """Wrap matching Linear modules in the transformer with LoRALinearLayer.
 
     Args:
@@ -407,14 +437,22 @@ def apply_lora_group(
             Keyed by module_path; the first wrap wins so multiple LoRAs over
             the same module always restore back to the true original.
         wrapped_keys: Set of module_paths currently wrapped (for unload).
+        scope: Target scope; defaults to the one derive_scope_from_keys reads
+            off `grouped`, i.e. exactly what the checkpoint contains.
 
     Returns:
-        Number of modules wrapped (or rewrapped with a stacked LoRA).
+        (wrapped_count, unmatched_module_paths). `unmatched` is every module
+        path the checkpoint carries that no target in the scope matched — the
+        caller reports it; this function never drops one silently.
     """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
+    if scope is None:
+        scope = derive_scope_from_keys(grouped.keys())
+
     applied = 0
-    for module_path, parent, attr, linear in _iter_anima_attention_targets(transformer):
+    matched: set = set()
+    for module_path, parent, attr, linear in iter_anima_lora_targets(transformer, scope):
         weights = grouped.get(module_path)
         if weights is None:
             continue
@@ -471,23 +509,56 @@ def apply_lora_group(
         wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
         wrapper.scale = (alpha_value / rank) * strength
 
-        setattr(parent, attr, wrapper)
+        # adaln_modulation_* and llm_adapter MLP targets sit inside an
+        # nn.Sequential, so the slot is an index; block mlp.layer1/layer2 and
+        # the attention projections are attribute-named.
+        if isinstance(attr, int):
+            parent[attr] = wrapper
+        else:
+            setattr(parent, attr, wrapper)
+        matched.add(module_path)
         wrapped_keys.add(module_path)
         applied += 1
 
-    return applied
+    return applied, sorted(set(grouped) - matched)
 
 
 def restore_originals(
     transformer: nn.Module,
     lora_original_modules: Dict[str, nn.Linear],
     wrapped_keys: set,
-) -> int:
-    """Revert every Block attention Linear to its original (pre-LoRA) module."""
+) -> Tuple[int, List[str]]:
+    """Revert every wrapped Linear to its original (pre-LoRA) module.
+
+    Driven by the wrapped paths rather than by a target scope: the wrapped set
+    spans whatever scopes the applied checkpoints carried, and unload must not
+    depend on re-deriving them.
+
+    Returns (restored_count, unresolved_paths); the caller must surface the
+    latter, since those wrappers are still installed. Both bookkeeping
+    structures are cleared, but only on a clean return -- an exception mid-loop
+    skips that, so the caller must additionally key them to the CURRENT
+    transformer (see ``AnimaMixin._anima_lora_state``) rather than rely on it.
+    """
     restored = 0
-    for module_path, parent, attr, _linear in _iter_anima_attention_targets(transformer):
-        if module_path in lora_original_modules:
-            setattr(parent, attr, lora_original_modules[module_path])
-            restored += 1
+    unresolved: List[str] = []
+    for module_path in sorted(wrapped_keys):
+        original = lora_original_modules.get(module_path)
+        parent, attr = (None, None)
+        if original is not None:
+            parent, attr = _resolve_parent(transformer, module_path)
+        if original is None or parent is None:
+            unresolved.append(module_path)
+            continue
+        if isinstance(attr, int):
+            parent[attr] = original
+        else:
+            setattr(parent, attr, original)
+        restored += 1
+    if unresolved:
+        print(f"[AnimaLoRA] WARNING: {len(unresolved)} wrapped module(s) could not be "
+              f"restored (first few: {unresolved[:5]}); the DiT may still carry LoRA "
+              f"weights.")
     wrapped_keys.clear()
-    return restored
+    lora_original_modules.clear()
+    return restored, unresolved

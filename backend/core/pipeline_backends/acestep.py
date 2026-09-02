@@ -53,6 +53,7 @@ actually declares.
 """
 
 from typing import Dict, Any, Optional, Tuple, Callable
+import functools
 import os
 import random
 import re
@@ -79,6 +80,38 @@ def _is_lora_target(module) -> bool:
     from core.training.adapters.base_adapter import is_lora_wrappable_linear
 
     return is_lora_wrappable_linear(module)
+
+
+def _restores_acestep_lora(fn):
+    """Un-wrap every LoRA-wrapped DiT module when the decorated generate method
+    leaves, successfully or not -- a wrapper surviving a failure would silently
+    affect the next request. `functools.wraps` keeps `inspect.getsource` (used
+    by the backend's tests) resolving to the wrapped method's own source.
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            if getattr(self, "_acestep_lora_wrapped_modules", None):
+                try:
+                    self._unload_lora_acestep()
+                except Exception as e:
+                    # A failed restore must not replace the caller's exception.
+                    # The next request's `_apply_or_clear_lora_acestep` retries.
+                    print(f"[AceStep LoRA] ERROR: could not restore the DiT: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            f"ACE-Step LoRA wrappers could not be removed after this generation "
+                            f"({e}); the next request retries the restore before denoising.",
+                            code="lora_unload_failed",
+                        )
+                    except Exception:
+                        pass
+    return wrapper
 
 
 class AceStepMixin:
@@ -113,15 +146,11 @@ class AceStepMixin:
 
         * AFTER the LoRA gate, not before. The converter refuses a LoRA-wrapped
           module (the wrappers hide the Linears, so the selection would differ
-          from the offline audit) -- and ACE-Step's wrappers are PERSISTENT state:
-          ``_apply_or_clear_lora_acestep`` unloads whatever the PREVIOUS
-          generation wrapped and only then loads this request's set. Running the
-          conversion first would therefore see a stale wrapper from an earlier
-          generation and refuse an INT8 request that carries no LoRAs at all --
-          the LTX-2.3 stale-offloader shape, where the refusal's own advice
-          ("remove the LoRAs") had already been followed. Running after the gate
-          means the wrappers present are exactly the ones THIS request asked for,
-          which is the only case where refusing is the right answer.
+          from the offline audit). Running after the gate means the wrappers
+          present are exactly the ones THIS request asked for, which is the only
+          case where refusing is the right answer. (Wrappers no longer outlive a
+          request -- ``_restores_acestep_lora`` un-wraps in a ``finally`` -- but
+          the within-request order is still load-bearing.)
         * BEFORE staging. The converter is device-aware, so running here (with
           the components still on CPU, which is where ``load_model`` leaves them
           and where each generate path's ``_acestep_move`` finds them) is
@@ -569,15 +598,18 @@ class AceStepMixin:
     # not weight merging, so they can be unloaded by restoring the original
     # module reference (no drift, no leak across generations).
     #
-    # Key format matches the training adapter
-    # (`core.training.adapters.acestep_adapter.AceStepLoRAAdapter`/
-    # `iter_acestep_lora_targets`) exactly: sd-scripts native
-    # `lora_unet_decoder_layers_{i}_{self_attn|cross_attn}_{q,k,v,o}_proj`,
-    # mapping onto `dit.decoder.layers[i].{self_attn,cross_attn}.{q,k,v,o}_proj`.
-    # Feed-forward (`mlp`) LoRA (opt-in on the training side) is intentionally
-    # NOT applied at inference in this phase -- only the always-on
-    # attention scope is supported here; unmatched keys (mlp scope, or an
-    # unrelated-architecture LoRA) are skipped with a warning, not a crash.
+    # Key format and target enumeration come from the training adapter itself
+    # (`core.training.adapters.acestep_adapter.iter_acestep_lora_targets` +
+    # `_flatten_to_sdscripts`), so the codec cannot drift: sd-scripts native
+    # `lora_unet_decoder_layers_{i}_{self_attn|cross_attn}_{q,k,v,o}_proj` and
+    # `lora_unet_decoder_layers_{i}_mlp_{gate,up,down}_proj`, over
+    # `dit.decoder.layers[i].{self_attn,cross_attn,mlp}.<leaf>`. The APPLIED
+    # scope is derived from the checkpoint's own keys, so the opt-in training
+    # `mlp` scope round-trips and an attention-only file is unchanged. A file
+    # that binds NOTHING refuses the request (`ValidationError`) instead of
+    # generating audio the LoRA never touched; a file that binds some of its
+    # keys applies them and warns (`lora_partial`), as every other
+    # architecture's loader does.
     #
     # EXTERNAL diffusers/PEFT-format LoRAs (e.g. community checkpoints trained
     # with `peft`/`diffusers` tooling instead of sd-scripts) use a different
@@ -608,8 +640,12 @@ class AceStepMixin:
     # rather than crashing on a matmul dimension error at generation time.
     # ------------------------------------------------------------------
 
-    _ACESTEP_LORA_ATTN_NAMES = ("self_attn", "cross_attn")
-    _ACESTEP_LORA_ATTN_LEAVES = ("q_proj", "k_proj", "v_proj", "o_proj")
+    # -- sd-scripts native key stems (the prefix before `.lora_down.weight`),
+    #    i.e. what `AceStepLoRAAdapter.save_checkpoint` writes. This backend
+    #    does not restate that vocabulary: a stem is this codec's if it carries
+    #    the prefix below, and binds if `iter_acestep_lora_targets` yields it,
+    #    so a leaf added to the trainer's scope cannot be dropped as foreign. --
+    _ACESTEP_LORA_SD_PREFIX = "lora_unet_decoder_layers_"
 
     # -- diffusers/PEFT key-format regexes (see comment block above) --
     _ACESTEP_LORA_DIFFUSERS_DIT_QKV_RE = re.compile(
@@ -654,50 +690,45 @@ class AceStepMixin:
         return obj, parts[-1]
 
     @staticmethod
-    def _acestep_lora_emit_compat_warning(
-        lora_path: str, applied_count: int, total_count: int, mismatch_note: str = "shape mismatch",
-    ) -> None:
-        """Surface a user-facing warning when a LoRA matched fewer target
-        modules than were present in the file -- i.e. it had no effect (0
-        applied) or only a partial effect (some modules skipped) on the
-        currently loaded ACE-Step model.
+    def _acestep_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort).
 
-        Mirrors the `add_warning` pattern used by every other pipeline
-        backend (e.g. `Flux2Mixin`'s attention-fallback warnings): a plain
-        module-level call into `api.generation_status`, backed by an
-        in-process, per-request store. `routes.py`'s `generate_txt2aud`/
-        `generate_aud2aud` call `start_generation()` before invoking
-        `pipeline_manager.generate_txt2aud`/`generate_aud2aud` (which is what
-        eventually calls `_load_lora_acestep` via
-        `_apply_or_clear_lora_acestep`), so this warning is already recorded
-        by the time the endpoint calls `get_warnings()` for the response --
-        no change to this method's/its callers' return values is needed.
-
-        No-op (does not call `add_warning`) when `applied_count ==
-        total_count` -- a fully-compatible LoRA must not produce a warning.
+        `routes.py`'s `generate_txt2aud`/`generate_aud2aud` call
+        `start_generation()` before the pipeline runs, so a warning recorded
+        here is in the per-request store by the time they call
+        `get_warnings()`.
         """
-        if applied_count >= total_count:
-            return
-        lora_name = os.path.basename(lora_path)
-        if applied_count == 0:
-            message = (
-                f"LoRA '{lora_name}': 0 of {total_count} modules applied -- incompatible with the "
-                f"loaded ACE-Step model (likely a different ACE-Step generation, e.g. v1 3.5B vs "
-                f"this v1.5 2B, or an unrecognized key format). It had no effect."
-            )
-        else:
-            message = (
-                f"LoRA '{lora_name}': applied {applied_count} of {total_count} modules; "
-                f"{total_count - applied_count} skipped on {mismatch_note}."
-            )
         try:
             from api.generation_status import add_warning
-            add_warning(message, code="lora_incompatible")
+            add_warning(message, code=code)
         except Exception:
             pass
 
+    @classmethod
+    def _acestep_lora_emit_compat_warning(
+        cls, lora_path: str, applied_count: int, total_count: int,
+        mismatch_note: str = "shape mismatch",
+    ) -> None:
+        """Warn that a LoRA bound only some of the modules its file names.
+
+        Both call sites refuse a file that binds nothing before reaching here,
+        so this is always a partial application.
+        """
+        if applied_count >= total_count:
+            return
+        cls._acestep_lora_warn(
+            f"LoRA '{os.path.basename(lora_path)}': applied {applied_count} of {total_count} "
+            f"modules; {total_count - applied_count} skipped on {mismatch_note}.",
+            code="lora_partial",
+        )
+
     def _load_lora_acestep(self, lora_configs: list):
-        """Load LoRAs onto the ACE-Step DiT's decoder attention Linears.
+        """Load LoRAs onto the ACE-Step DiT (decoder attention + feed-forward).
+
+        Raises `ValidationError` when a requested LoRA cannot be honored --
+        a missing file, an unrecognized key format, or a file that binds no
+        target module at all. The caller restores any already-wrapped module
+        in its `finally` (see `_restores_acestep_lora`).
 
         Args:
             lora_configs: list of {"path": str, "strength": float, ...}
@@ -706,16 +737,22 @@ class AceStepMixin:
         if not lora_configs:
             return
 
+        from api.error_handlers import APIError, GenerationError, ValidationError
+
         if not self.acestep_components:
-            print("[AceStep LoRA] WARNING: ACE-Step components not loaded")
-            return
+            raise ValidationError(
+                "Cannot apply a LoRA: ACE-Step components are not loaded",
+                detail="Load an ACE-Step model before requesting a LoRA.",
+            )
 
         dit = self.acestep_components.get("dit")
         decoder = getattr(dit, "decoder", None)
         layers = getattr(decoder, "layers", None) if decoder is not None else None
         if layers is None:
-            print("[AceStep LoRA] WARNING: DiT has no decoder.layers -- cannot apply LoRA")
-            return
+            raise ValidationError(
+                "Cannot apply a LoRA: the loaded ACE-Step DiT has no decoder.layers",
+                detail="The LoRA target scope (decoder.layers.*) does not exist on this model.",
+            )
 
         if not hasattr(self, "_acestep_lora_original_modules"):
             self._acestep_lora_original_modules = {}
@@ -732,10 +769,15 @@ class AceStepMixin:
 
             resolved_path = lora_manager._resolve_lora_path(lora_path)
             if resolved_path is None:
-                print(f"[AceStep LoRA] WARNING: LoRA file not found: {lora_path}")
+                # Server directories stay in the console; the API response
+                # names only the LoRA (mirrors ZImageMixin._load_lora).
+                print(f"[AceStep LoRA] ERROR: LoRA file not found: {lora_path}")
                 print(f"[AceStep LoRA]   Searched in: {lora_manager.lora_dir}")
                 print(f"[AceStep LoRA]   Additional dirs: {lora_manager.additional_dirs}")
-                continue
+                raise ValidationError(
+                    f"LoRA file not found: {os.path.basename(str(lora_path))}",
+                    detail="No such file exists in the registered LoRA directories.",
+                )
 
             print(f"[AceStep LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
 
@@ -749,7 +791,7 @@ class AceStepMixin:
 
                 # ---- format detection (sd-scripts native vs external diffusers/PEFT) ----
                 is_sdscripts_format = any(
-                    k.startswith("lora_unet_decoder_layers_") for k in lora_state_dict
+                    k.startswith(self._ACESTEP_LORA_SD_PREFIX) for k in lora_state_dict
                 )
                 is_diffusers_format = (not is_sdscripts_format) and any(
                     (".lora_A." in k) or (".lora_B." in k) for k in lora_state_dict
@@ -763,97 +805,165 @@ class AceStepMixin:
 
                 if not is_sdscripts_format:
                     sample_keys = list(lora_state_dict.keys())[:5]
-                    print(
-                        f"[AceStep LoRA] WARNING: unrecognized LoRA key format in {lora_path!r} -- neither "
-                        f"sd-scripts native ('lora_unet_decoder_layers_...') nor diffusers/PEFT "
-                        f"('transformer_blocks....lora_A/lora_B.weight') naming was detected; skipping this "
-                        f"file entirely (not an error). Sample keys found in file: {sample_keys}"
-                    )
-                    try:
-                        from api.generation_status import add_warning
-                        add_warning(
-                            f"LoRA '{os.path.basename(lora_path)}': unrecognized key format (neither "
-                            f"sd-scripts native nor diffusers/PEFT ACE-Step naming) -- it had no effect.",
-                            code="lora_incompatible",
-                        )
-                    except Exception:
-                        pass
-                    continue
-
-                total_pairs = sum(1 for k in lora_state_dict if k.endswith(".lora_down.weight"))
-                applied_count = 0
-
-                for layer_idx, layer in enumerate(layers):
-                    for attn_name in self._ACESTEP_LORA_ATTN_NAMES:
-                        attn = getattr(layer, attn_name, None)
-                        if attn is None:
-                            continue
-
-                        for leaf in self._ACESTEP_LORA_ATTN_LEAVES:
-                            original_linear = getattr(attn, leaf, None)
-                            if not _is_lora_target(original_linear):
-                                # Either absent, or already LoRA-wrapped (the call
-                                # site always unloads before reloading -- see
-                                # `_generate_txt2aud_acestep`/`_generate_aud2aud_acestep`).
-                                continue
-
-                            lora_key_prefix = f"lora_unet_decoder_layers_{layer_idx}_{attn_name}_{leaf}"
-                            lora_down_key = f"{lora_key_prefix}.lora_down.weight"
-                            lora_up_key = f"{lora_key_prefix}.lora_up.weight"
-
-                            if lora_down_key not in lora_state_dict or lora_up_key not in lora_state_dict:
-                                continue
-
-                            lora_down_weight = lora_state_dict[lora_down_key]
-                            lora_up_weight = lora_state_dict[lora_up_key]
-                            lora_alpha_key = f"{lora_key_prefix}.alpha"
-                            lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                            module_key = f"decoder.layers.{layer_idx}.{attn_name}.{leaf}"
-                            wrapped = self._wrap_with_lora_acestep(
-                                attn, leaf, original_linear,
-                                lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key,
-                            )
-                            if wrapped:
-                                applied_count += 1
-
-                print(f"[AceStep LoRA] Applied LoRA to {applied_count} modules "
-                      f"({total_pairs} lora_down/up pair(s) present in file)")
-                if applied_count == 0:
-                    sample_keys = list(lora_state_dict.keys())[:5]
-                    print(
-                        f"[AceStep LoRA] WARNING: 0 modules matched in {lora_path!r} -- this LoRA does not "
-                        f"target the ACE-Step decoder.layers.*.{{self_attn,cross_attn}}.* scope this backend "
-                        f"applies (skipped entirely, not an error). It was likely trained for a different "
-                        f"component/architecture entirely (e.g. a lyric/text encoder-only LoRA). Expected key "
-                        f"prefix: 'lora_unet_decoder_layers_<i>_<self_attn|cross_attn>_<q,k,v,o>_proj.lora_down.weight'. "
-                        f"Sample keys found in file: {sample_keys}"
-                    )
-                elif applied_count < total_pairs:
-                    sample_keys = list(lora_state_dict.keys())[:5]
-                    print(
-                        f"[AceStep LoRA] WARNING: {total_pairs - applied_count} LoRA tensor pair(s) in "
-                        f"{lora_path!r} did not match any ACE-Step decoder.layers.*.{{self_attn,cross_attn}}.* "
-                        f"module (skipped, not an error -- e.g. mlp-scope keys, or a different architecture's "
-                        f"LoRA entirely). Expected key prefix: "
-                        f"'lora_unet_decoder_layers_<i>_<self_attn|cross_attn>_<q,k,v,o>_proj'. "
-                        f"Sample keys found in file: {sample_keys}"
+                    raise ValidationError(
+                        f"LoRA '{os.path.basename(lora_path)}': unrecognized key format -- it targets "
+                        f"nothing on this ACE-Step model",
+                        detail=f"Neither sd-scripts native ('lora_unet_decoder_layers_...') nor "
+                               f"diffusers/PEFT ('transformer_blocks....lora_A/lora_B.weight') naming "
+                               f"was found; this is most likely another architecture's LoRA. Sample "
+                               f"keys: {sample_keys}",
                     )
 
-                if total_pairs > 0:
-                    self._acestep_lora_emit_compat_warning(
-                        lora_path, applied_count, total_pairs,
-                        mismatch_note="shape mismatch or unmatched target module",
-                    )
+                self._apply_lora_acestep_sdscripts_format(
+                    dit, lora_state_dict, lora_strength, lora_path
+                )
 
+            except APIError:
+                raise  # a deliberate refusal, not a load failure to be re-wrapped
             except Exception as e:
                 print(f"[AceStep LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
                 import traceback
                 traceback.print_exc()
+                raise GenerationError(
+                    f"Failed to load LoRA '{os.path.basename(lora_path)}'",
+                    detail=f"{type(e).__name__}: {e}",
+                ) from e
+
+    def _apply_lora_acestep_sdscripts_format(self, dit, lora_state_dict, lora_strength, lora_path):
+        """Apply an sd-scripts-native ACE-Step LoRA (this repo's own training
+        format -- `AceStepLoRAAdapter.save_checkpoint`).
+
+        Scope, stem spelling and the bound/unbound verdict all come from
+        `iter_acestep_lora_targets` / `_flatten_to_sdscripts` walked over the
+        FULL trainer scope, so a leaf the trainer's scope gains later binds
+        here as well instead of being silently dropped as a foreign key.
+        """
+        from api.error_handlers import ValidationError
+        from core.training.adapters.acestep_adapter import (
+            iter_acestep_lora_targets, _flatten_to_sdscripts,
+        )
+
+        # Both halves, so a stem missing its lora_down is still seen (and
+        # reported) rather than being invisible to the census.
+        stems = {k[: -len(".lora_down.weight")]
+                 for k in lora_state_dict if k.endswith(".lora_down.weight")}
+        stems |= {k[: -len(".lora_up.weight")]
+                  for k in lora_state_dict if k.endswith(".lora_up.weight")}
+        known_stems = {s for s in stems if s.startswith(self._ACESTEP_LORA_SD_PREFIX)}
+        foreign_stems = sorted(stems - known_stems)
+        total_stems = len(stems)
+
+        bound_stems = set()
+        scope = {"attention": False, "mlp": False}
+        skipped_wrapped, skipped_shape, skipped_partial = [], [], []
+
+        for module_path, parent, attr, current in iter_acestep_lora_targets(
+            dit, {"attention": True, "mlp": True}
+        ):
+            stem = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
+            if stem not in known_stems:
+                continue
+            scope["mlp" if ".mlp." in module_path else "attention"] = True
+            down = lora_state_dict.get(f"{stem}.lora_down.weight")
+            up = lora_state_dict.get(f"{stem}.lora_up.weight")
+            if down is None or up is None:
+                skipped_partial.append(stem)
+                continue
+            if not _is_lora_target(current):
+                # Already wrapped by an earlier LoRA in this request: this
+                # backend replaces the Linear, so a second wrap would shadow
+                # rather than compose (LYCORIS_ADAPTER_DESIGN Phase 1).
+                skipped_wrapped.append(stem)
+                continue
+            if self._wrap_with_lora_acestep(
+                parent, attr, current, down, up, lora_strength,
+                lora_state_dict.get(f"{stem}.alpha"), module_path,
+            ):
+                bound_stems.add(stem)
+            else:
+                skipped_shape.append(stem)
+
+        applied_count = len(bound_stems)
+        print(f"[AceStep LoRA] Applied LoRA to {applied_count} module(s) "
+              f"(scope={{attention: {scope['attention']}, mlp: {scope['mlp']}}}, "
+              f"{total_stems} LoRA key stem(s) in file)")
+
+        unbound = sorted(known_stems - bound_stems)
+        unmatched = [s for s in unbound
+                     if s not in set(skipped_shape) | set(skipped_wrapped) | set(skipped_partial)]
+        name = os.path.basename(lora_path)
+
+        if applied_count == 0:
+            reasons = []
+            if skipped_shape:
+                reasons.append(
+                    f"{len(skipped_shape)} on a hidden-dimension shape mismatch (trained against a "
+                    f"different-sized ACE-Step checkpoint; no key remap can bridge that)")
+            if skipped_wrapped:
+                reasons.append(
+                    f"{len(skipped_wrapped)} whose target module was already wrapped by another LoRA "
+                    f"in this request")
+            if skipped_partial:
+                reasons.append(
+                    f"{len(skipped_partial)} with an incomplete lora_down/lora_up pair")
+            if unmatched:
+                reasons.append(
+                    f"{len(unmatched)} matching no module on this model (e.g. {unmatched[:3]})")
+            if foreign_stems:
+                reasons.append(
+                    f"{len(foreign_stems)} outside the ACE-Step LoRA scope, i.e. another "
+                    f"architecture's or component's keys (e.g. {foreign_stems[:3]})")
+            if not reasons:
+                reasons.append(
+                    f"the file carries no ACE-Step LoRA key at all (sample: "
+                    f"{sorted(stems)[:3] or list(lora_state_dict.keys())[:3]})")
+
+            if skipped_wrapped and not (skipped_shape or skipped_partial or unmatched):
+                message = (
+                    f"LoRA '{name}': every one of its {len(skipped_wrapped)} target modules is "
+                    f"already wrapped by an earlier LoRA in this request. ACE-Step cannot compose "
+                    f"two LoRAs over the same module; select one LoRA per module (two LoRAs with "
+                    f"non-overlapping targets do stack)."
+                )
+                code = "lora_stacking_unsupported"
+            else:
+                message = (
+                    f"LoRA '{name}': none of the {total_stems} key stem(s) in this file could be "
+                    f"applied to the loaded ACE-Step model -- it would have no effect."
+                )
+                code = "lora_incompatible"
+            print(f"[AceStep LoRA] ERROR: {message}")
+            self._acestep_lora_warn(message, code=code)
+            raise ValidationError(message, detail="; ".join(reasons) + ".")
+
+        if unbound or foreign_stems:
+            # Bound something: a partial application is a warning, matching
+            # every other architecture's LoRA loader.
+            notes = []
+            if skipped_shape:
+                notes.append("a shape mismatch")
+            if skipped_wrapped:
+                notes.append("a module already wrapped by an earlier LoRA in this request")
+            if skipped_partial:
+                notes.append("an incomplete lora_down/lora_up pair")
+            if unmatched:
+                notes.append("no matching module on this model")
+            if foreign_stems:
+                notes.append("a key outside the ACE-Step LoRA scope (another architecture/component)")
+            print(
+                f"[AceStep LoRA] WARNING: {len(unbound)} ACE-Step key stem(s) and "
+                f"{len(foreign_stems)} foreign stem(s) in {lora_path!r} were not applied. "
+                f"Sample: {(unbound + foreign_stems)[:5]}"
+            )
+            self._acestep_lora_emit_compat_warning(
+                lora_path, applied_count, total_stems,
+                mismatch_note=" / ".join(notes) or "an unrecognized key",
+            )
 
     def _wrap_with_lora_acestep(self, parent_module, attr_name, original_linear,
                                  lora_down_weight, lora_up_weight, strength, alpha, module_key):
-        """Wrap a decoder attention Linear with a LoRA forward-addition layer.
+        """Wrap a decoder Linear (attention or feed-forward) with a LoRA
+        forward-addition layer.
 
         Mirrors `ZImageMixin._wrap_with_lora`/`FluxMixin._wrap_with_lora_flux2`.
 
@@ -952,12 +1062,14 @@ class AceStepMixin:
         no matter how its keys are renamed -- `_wrap_with_lora_acestep`
         shape-validates every module against this model's actual
         `in_features`/`out_features` and skips (with a per-module warning)
-        anything that does not match, so a mismatched file degrades to
-        "0 modules applied" rather than crashing.
+        anything that does not match, so a mismatched file is refused with a
+        readable reason rather than crashing on a matmul dimension error.
 
         Unmatched keys (e.g. an incomplete lora_A/lora_B pair, or a target
-        module this backend does not expose) are skipped with a warning, not
-        an error -- mirrors the sd-scripts-format path's contract.
+        module this backend does not expose) are skipped with a warning: this
+        is a foreign codec, so a key it does not place is not evidence of a
+        defect the way an unbound sd-scripts key is. A file that applies ZERO
+        modules is still refused.
         """
         # module_key -> {"kind": "dit_self"|"dit_cross"|"lyric", "source_prefix": str,
         #                "down": Tensor|None, "up": Tensor|None, "alpha": Tensor|None}
@@ -1092,10 +1204,17 @@ class AceStepMixin:
                 f"architecture) and were ignored entirely. Sample: {unmatched_keys[:5]}"
             )
         if applied_count == 0:
+            # Individual unmatched keys stay skips (above); a file that applies
+            # NOTHING cannot be honored, so the request is refused rather than
+            # generating audio this LoRA never touched.
+            from api.error_handlers import ValidationError
             sample_keys = list(lora_state_dict.keys())[:5]
-            print(
-                f"[AceStep LoRA] WARNING: 0 modules matched in {lora_path!r} after diffusers/PEFT key "
-                f"remap (skipped entirely, not an error). Sample keys found in file: {sample_keys}"
+            raise ValidationError(
+                f"LoRA '{os.path.basename(lora_path)}': 0 of {total_groups} diffusers/PEFT module "
+                f"group(s) applied -- it has no effect on this ACE-Step model",
+                detail=f"{skipped_shape} skipped on a shape mismatch, {skipped_missing} on a missing "
+                       f"module or incomplete lora_A/lora_B pair. Likely a LoRA for a different "
+                       f"ACE-Step generation (e.g. v1 3.5B vs this v1.5 2B). Sample keys: {sample_keys}",
             )
 
         if total_groups > 0:
@@ -1152,12 +1271,10 @@ class AceStepMixin:
         print("[AceStep LoRA] Original modules preserved for future LoRA loads")
 
     def _apply_or_clear_lora_acestep(self, lora_configs: list):
-        """Shared load/unload gate, called at the top of both txt2aud and
-        aud2aud before the DiT forward pass. Mirrors the call-site pattern in
-        `_generate_txt2img_zimage`/`_generate_txt2img_flux2`: always unload
-        any previously-wrapped modules first (so switching to a different
-        LoRA, a different strength, or no LoRA at all never leaves stale
-        wrappers around), then load the newly requested set (if any)."""
+        """Shared load/unload gate, called by every generate path before the
+        DiT forward pass. `_restores_acestep_lora` un-wraps at the end of each
+        request, so the leading unload is a belt-and-braces guard against a
+        wrapper that outlived its request rather than the normal path."""
         if lora_configs:
             if getattr(self, "_acestep_lora_wrapped_modules", None):
                 self._unload_lora_acestep()
@@ -1171,6 +1288,7 @@ class AceStepMixin:
     # Main entry points
     # ------------------------------------------------------------------
 
+    @_restores_acestep_lora
     def _generate_txt2aud_acestep(
         self,
         params: Dict[str, Any],
@@ -1402,6 +1520,7 @@ class AceStepMixin:
     # earlier NO-GO state, now superseded).
     # ------------------------------------------------------------------
 
+    @_restores_acestep_lora
     def _generate_aud2aud_acestep(
         self,
         params: Dict[str, Any],
@@ -1786,6 +1905,7 @@ class AceStepMixin:
     #   regardless of what the latent-level blend did near its edges.
     # ------------------------------------------------------------------
 
+    @_restores_acestep_lora
     def _generate_audoutpaint_acestep(
         self,
         params: Dict[str, Any],

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import os
 import random
+import weakref
 
 import torch
 
@@ -26,6 +27,22 @@ class SenseNovaMixin:
     all-or-nothing residency, the same shape MiniT2I uses.
     """
 
+    def _sensenova_lora_state(self, transformer):
+        """The (originals, wrapped_keys) maps for THIS transformer.
+
+        Reset when the model was reloaded: the maps hold the OLD transformer's
+        Linears, ``apply_lora_group`` keeps them (setdefault) and
+        ``restore_originals`` restores on map membership, so an inherited map
+        splices model A's modules into model B. Keyed by weakref rather than
+        id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_sensenova_lora_transformer_ref", None)
+        if ref is None or ref() is not transformer:
+            self._sensenova_lora_orig: Dict[str, torch.nn.Module] = {}
+            self._sensenova_lora_keys: set = set()
+            self._sensenova_lora_transformer_ref = weakref.ref(transformer)
+        return self._sensenova_lora_orig, self._sensenova_lora_keys
+
     def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
         """Wrap the SenseNova MoT Linears with runtime LoRA adapters.
 
@@ -50,19 +67,17 @@ class SenseNovaMixin:
         )
         from core.extensions.lora_manager import lora_manager
 
+        # Unconditional, and BEFORE the empty-config exit: this is what re-keys
+        # the state to the live transformer and drops originals no wrapper owes,
+        # so a map recorded against a transformer that has since been swapped
+        # can never be restored into the current one.
+        self._unload_lora_sensenova()
+
         if not lora_configs or not self.sensenova_components:
             return 0
 
         transformer = self.sensenova_components["transformer"]
-        if not hasattr(self, "_sensenova_lora_orig"):
-            self._sensenova_lora_orig: Dict[str, torch.nn.Module] = {}
-            self._sensenova_lora_keys: set = set()
-        # No wrapper is installed, so no original is owed. Without this an
-        # original recorded against a transformer that has since been unloaded
-        # survives, and `restore_originals` (which restores on map membership)
-        # writes a PREVIOUS model's module into the current one.
-        if not self._sensenova_lora_keys:
-            self._sensenova_lora_orig.clear()
+        lora_orig, lora_keys = self._sensenova_lora_state(transformer)
 
         total = 0
         for i, cfg in enumerate(lora_configs):
@@ -84,8 +99,7 @@ class SenseNovaMixin:
                 grouped = normalise_lora_state_dict(raw)
                 shadowed: list = []
                 applied = apply_lora_group(
-                    transformer, grouped, strength,
-                    self._sensenova_lora_orig, self._sensenova_lora_keys,
+                    transformer, grouped, strength, lora_orig, lora_keys,
                     file_alpha=metadata_alpha(metadata), shadowed=shadowed,
                 )
             except Exception as exc:
@@ -150,19 +164,25 @@ class SenseNovaMixin:
         Drops the original-module map with the wrappers: it is per-generation
         state, and a retained entry for a transformer that has since been
         unloaded would be written into the NEXT model loaded (restoration is
-        by map membership, recording is by ``setdefault``).
+        by map membership, recording is by ``setdefault``). Which transformer
+        the map belongs to is decided by ``_sensenova_lora_state``, not by the
+        call order: a swap with wrappers still live must not restore model A's
+        Linears into model B.
         """
         from core.models.sensenova.sensenova_lora import restore_originals
-        if not self.sensenova_components:
+        components = getattr(self, "sensenova_components", None)
+        transformer = components.get("transformer") if components else None
+        if transformer is None:
+            # Model unloaded: drop the maps so a later load cannot inherit them.
+            self._sensenova_lora_orig = {}
+            self._sensenova_lora_keys = set()
+            self._sensenova_lora_transformer_ref = None
             return 0
+        lora_orig, lora_keys = self._sensenova_lora_state(transformer)
         restored = 0
-        if getattr(self, "_sensenova_lora_keys", None):
-            restored += restore_originals(
-                self.sensenova_components["transformer"],
-                self._sensenova_lora_orig, self._sensenova_lora_keys,
-            )
-        if hasattr(self, "_sensenova_lora_orig"):
-            self._sensenova_lora_orig.clear()
+        if lora_keys:
+            restored = restore_originals(transformer, lora_orig, lora_keys)
+        lora_orig.clear()
         if restored:
             print(f"[SenseNova LoRA] Unloaded {restored} LoRA wrappers")
         return restored

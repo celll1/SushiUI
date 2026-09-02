@@ -680,6 +680,11 @@ class MiniMaxH3Mixin:
         )
         from core.extensions.lora_manager import lora_manager
 
+        # Unconditional, and BEFORE the empty-config exit: this is what re-keys
+        # the state to the live transformer, and a restore that failed in an
+        # earlier request must not leak its wrappers into this generation.
+        self._unload_lora_minimax_h3()
+
         if not lora_configs:
             return 0
         components = getattr(self, "minimax_h3_components", None)
@@ -854,24 +859,31 @@ class MiniMaxH3Mixin:
         """Restore every MiniMax-H3 transformer Linear to its pre-LoRA original.
 
         Drops the original-module map with the wrappers: it is per-generation
-        state. ``_minimax_h3_lora_state`` covers the orderings this cannot --
-        a torn-down ``components``, or a ``restore_originals`` that raised.
+        state. Which transformer that map belongs to is decided by
+        ``_minimax_h3_lora_state``, which this must consult rather than
+        restoring straight into ``components["transformer"]``: a model swap
+        with wrappers still live would otherwise install model A's Linears
+        into model B.
         """
         from core.models.minimax_h3.minimax_h3_lora import restore_originals
 
-        if not getattr(self, "_minimax_h3_lora_wrapped_keys", None):
-            return 0
         components = getattr(self, "minimax_h3_components", None)
-        if not components:
+        transformer = components.get("transformer") if components else None
+        if transformer is None:
+            # Model unloaded: drop the maps so a later load cannot inherit them.
+            self._minimax_h3_lora_original_modules = {}
+            self._minimax_h3_lora_wrapped_keys = set()
+            self._minimax_h3_lora_transformer_ref = None
             return 0
-        transformer = components["transformer"]
         from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
         if isinstance(transformer, MiniMaxH3BlockLoopWrapper):
             transformer = transformer.transformer
-        restored = restore_originals(
-            transformer, self._minimax_h3_lora_original_modules, self._minimax_h3_lora_wrapped_keys,
-        )
-        self._minimax_h3_lora_original_modules.clear()
+        originals, wrapped_keys = self._minimax_h3_lora_state(transformer)
+        if not wrapped_keys:
+            originals.clear()
+            return 0
+        restored = restore_originals(transformer, originals, wrapped_keys)
+        originals.clear()
         print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
         return restored
 

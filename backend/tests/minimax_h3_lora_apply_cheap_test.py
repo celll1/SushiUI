@@ -385,12 +385,6 @@ def test_restore_returns_the_identical_original_objects(tmp_path):
     assert lora_mod.restore_originals(transformer, originals, wrapped) == 0
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN DEFECT: _unload_lora_minimax_h3 restores into components['transformer'] "
-    "without consulting _minimax_h3_lora_state, which is the only place the weakref "
-    "ownership check lives. A model swap while wrappers are still live therefore "
-    "installs model A's Linears into model B (measured: 18 of 18). The load path is "
-    "guarded; the unload path is not. Remove this marker with the fix."))
 def test_model_reload_never_splices_model_a_into_model_b(tmp_path, monkeypatch):
     from core.extensions import lora_manager as lm
 

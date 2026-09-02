@@ -239,13 +239,6 @@ def test_sensenova_fully_shadowed_second_lora_refuses_and_warns(tmp_path, warnin
     assert "lora_stacking_unsupported" in warning_codes(warnings_seen)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "OPEN DEFECT: _unload_lora_sensenova has no transformer-identity guard. It clears "
-    "_sensenova_lora_orig AFTER restoring, so the only safe sequence is unload-then-swap; "
-    "a swap with wrappers still live restores the stale map into the NEW transformer "
-    "(measured: 588 of 588 of model A's Linears installed into model B). Every other "
-    "architecture keys this state to the live component by weakref. Remove this marker "
-    "with the fix."))
 def test_sensenova_model_reload_never_splices_model_a_into_model_b(tmp_path):
     path, gen_paths, und_paths = train_and_save(tmp_path)
 

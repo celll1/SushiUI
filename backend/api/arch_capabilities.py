@@ -560,10 +560,6 @@ _add("ltx2", "audio_conditioning",
 # runs the diffusers transformer's own attention dispatch and never consults it.
 _add("ltx2", "attention_type",
      "LTX-2.3 runs diffusers' own attention dispatch rather than SushiUI's attention conduit, so the attention backend is not selectable per generation for this architecture")
-# Generation-time LoRA: MiniMax-H3 has a loader (core.models.minimax_h3.minimax_h3_lora);
-# LTX-2.3's video path has none at all.
-_add("ltx2", "lora",
-     "LoRA loading is not implemented for the LTX-2.3 video model's generation path")
 _add("ltx2", "fuse_output_proj",
      "output-tail head fusion is a MiniMax-H3-specific chunking optimization (core.models.minimax_h3.adaln_chunking); LTX-2.3 has no equivalent output-head structure")
 

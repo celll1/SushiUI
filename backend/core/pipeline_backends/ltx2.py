@@ -19,7 +19,9 @@ where:
 """
 
 from typing import Dict, Any, Optional, Callable, List, Tuple
+import os
 import random
+import weakref
 
 import numpy as np
 import torch
@@ -78,6 +80,29 @@ def _trim_conditioning_sequence_frames(
         return 0
     num_frames = (num_frames - 1) // scale_factor * scale_factor + 1
     return max(0, num_frames)
+
+
+def _ltx2_invalidate_block_swap_caches(offloader) -> None:
+    """Drop every offloader cache that describes the PREVIOUS block tree.
+
+    LTX-2.3's offloader is persistent across generations (torn down only by a
+    change of ``blocks_to_swap``) while a LoRA wrap/unwrap changes the tree under
+    it, and BOTH swap paths cache a description of that tree: the H2D masters
+    hold module references and a flat layout, and the standard swap's staging
+    buffers are sized from the FIRST job list and then ``zip``-paired with every
+    later one -- a wrap adds two Linears per target and renames the base to
+    ``.original_module``, so a stale list mispairs a buffer with a differently
+    shaped tensor and drops every job past its end.
+
+    Cost: rebuilding the H2D masters re-pins one flat CPU buffer per swappable
+    block while the old ones are still referenced by the weights, i.e. a
+    transient ~2x pinned host footprint on the first forward afterwards.
+    """
+    for attr in ("h2d_masters", "h2d_ring", "h2d_slot_futures", "h2d_loaded_block",
+                 "staging_buffer_a", "staging_buffer_b", "pinned_buffer",
+                 "_dtype_split_paths"):
+        if hasattr(offloader, attr):
+            setattr(offloader, attr, None)
 
 
 class LTX2Mixin:
@@ -215,6 +240,304 @@ class LTX2Mixin:
                 pipe = components.get(key)
                 if pipe is not None and getattr(pipe, "transformer", None) is current:
                     pipe.transformer = model
+
+    # ------------------------------------------------------------------
+    # Generation-time LoRA
+    # ------------------------------------------------------------------
+
+    def _ltx2_lora_transformer(self):
+        """The stock ``LTX2VideoTransformer3DModel``, block-loop wrapper peeled off.
+
+        ``Ltx2BlockLoopWrapper.__getattr__`` would forward ``transformer_blocks``
+        anyway, but the target iterator REPLACES child modules and must do so on
+        the object the wrapper and the block offloader actually hold.
+        """
+        components = getattr(self, "ltx2_components", None)
+        if not components:
+            return None
+        current = components.get("transformer")
+        if current is None:
+            return None
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        return current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
+
+    def _ltx2_block_offloader(self):
+        """The block offloader driving this generation, or None (no block swap)."""
+        components = getattr(self, "ltx2_components", None)
+        if not components:
+            return None
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        current = components.get("transformer")
+        if not isinstance(current, Ltx2BlockLoopWrapper):
+            return None
+        return current._block_offloader
+
+    @staticmethod
+    def _ltx2_lora_warn(message: str, code: str) -> None:
+        print(f"[LTX-2.3 LoRA] WARNING: {message}")
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _ltx2_lora_state(self, transformer):
+        """The (originals, wrapped_keys) maps for THIS transformer.
+
+        Reset when the model was reloaded: the maps hold the OLD transformer's
+        Linears, ``apply_lora_group`` keeps them (setdefault) and
+        ``restore_originals`` would then splice them into the new transformer.
+        Keyed by weakref rather than id() because a freed object's id is
+        reusable, and a reload allocating at the dead model's address is exactly
+        the case this guards. (In-place mutations -- the INT8 conversion,
+        wrap/unwrap -- keep the same object and so keep the maps.)
+        """
+        ref = getattr(self, "_ltx2_lora_transformer_ref", None)
+        if transformer is not None and ref is not None and ref() is transformer:
+            return self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys
+        if getattr(self, "_ltx2_lora_wrapped_keys", None):
+            print("[LTX-2.3 LoRA] discarding LoRA bookkeeping from a previous transformer")
+        self._ltx2_lora_original_modules: Dict[str, Any] = {}
+        self._ltx2_lora_wrapped_keys: set = set()
+        self._ltx2_lora_transformer_ref = (
+            weakref.ref(transformer) if transformer is not None else None)
+        return self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys
+
+    def _load_lora_ltx2(self, lora_configs: Optional[List[Dict]]) -> int:
+        """Wrap the LTX-2.3 DiT's target Linears with the selected LoRAs.
+
+        SCOPE. The DiT only -- the trainer freezes Gemma-3 and the text
+        connectors, so an LTX-2.3 LoRA has no text-encoder tensors. Targets and
+        key stems come from the TRAINER's own iterator
+        (``core.models.ltx2.ltx2_lora``) so the two sides cannot drift.
+
+        FAILURE. Raises instead of warning-and-continuing: a LoRA that cannot be
+        found, parsed or matched to a single module must not yield a video that
+        looks like a successful LoRA generation. Any partial application is
+        rolled back before the exception leaves.
+
+        STACKING. One LoRA per module; a file whose targets are ALL taken is
+        refused rather than overwriting the earlier branch. Summing branches
+        needs the composite wrapper of LYCORIS_ADAPTER_DESIGN Phase 1.
+
+        ORDERING. Called as the FIRST statement of each generate path's ``try``:
+        after ``_ltx2_runtime_int8`` (which must see the unwrapped tree) and
+        after ``_ensure_ltx2_swap_and_offload`` (the offloader's caches are
+        reconciled here, in ``_ltx2_sync_block_swap_after_lora``).
+        ``_unload_lora_ltx2`` runs in that same ``try``'s ``finally``.
+
+        BLOCK SWAP. Each adapter is built on its BASE module's current device --
+        host for a swapped-out block, GPU for a resident one -- so the offloader
+        carries it with the block it lives in.
+        """
+        from api.error_handlers import ValidationError
+        from core.extensions.lora_manager import lora_manager
+        from core.models.ltx2.ltx2_lora import (
+            apply_lora_group, load_lora_safetensors, metadata_alpha,
+            normalise_lora_state_dict,
+        )
+
+        transformer = self._ltx2_lora_transformer()
+        # Unconditional, and BEFORE the empty-config exit: bookkeeping left by an
+        # evicted model must not survive into a request that installs nothing.
+        originals, wrapped_keys = self._ltx2_lora_state(transformer)
+
+        if not lora_configs:
+            return 0
+        if transformer is None:
+            raise RuntimeError(
+                "LTX-2.3 components not loaded; cannot apply the selected LoRA(s)")
+
+        print(f"[LTX-2.3 LoRA] Loading {len(lora_configs)} LoRA(s)...")
+        total_applied = 0
+        try:
+            for i, cfg in enumerate(lora_configs):
+                lora_path = str(cfg.get("path") or "").strip()
+                if not lora_path:
+                    raise ValidationError(
+                        "LoRA entry has no path",
+                        detail=f"Entry {i + 1} of {len(lora_configs)} carries an empty 'path'.")
+                # Warnings ride into the PNG metadata chunk and the response's
+                # warnings[], so never an absolute path.
+                lora_file = os.path.basename(lora_path)
+
+                if not cfg.get("apply_to_unet", True):
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}' was selected with apply_to_unet disabled; an "
+                        f"LTX-2.3 LoRA only targets the video DiT, so nothing was applied.",
+                        "ltx2_lora_unet_disabled")
+                    continue
+
+                strength = float(cfg.get("strength", 1.0))
+                resolved = lora_manager._resolve_lora_path(lora_path)
+                if resolved is None:
+                    self._ltx2_lora_warn(f"LoRA file not found: {lora_file}",
+                                         "lora_not_found")
+                    raise ValidationError(
+                        f"LoRA file not found: {lora_file}",
+                        detail=f"Searched {lora_manager.lora_dir} and additional "
+                               f"directories {lora_manager.additional_dirs}.")
+
+                raw, metadata, fmt = load_lora_safetensors(str(resolved))
+                declared = str(metadata.get("model_type")
+                               or metadata.get("modelspec.architecture") or "").strip()
+                if declared and declared != "ltx2":
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}' declares architecture '{declared}', not ltx2.",
+                        "ltx2_lora_arch_mismatch")
+                    raise ValidationError(
+                        f"LoRA '{lora_file}' was trained for '{declared}', not LTX-2.3",
+                        detail="Its tensors index a different architecture's module tree; "
+                               "applying it would either match nothing or match the wrong "
+                               "layers.")
+
+                grouped = normalise_lora_state_dict(raw)
+                if not grouped:
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}' carries no recognisable LoRA tensors "
+                        f"(key format '{fmt}').", "lora_incompatible")
+                    raise ValidationError(
+                        f"LoRA '{lora_file}' carries no recognisable LoRA tensors",
+                        detail=f"{len(raw)} tensor(s), key format '{fmt}'. Expected "
+                               f"sd-scripts native keys (lora_unet_<module path>."
+                               f"lora_down.weight / lora_up.weight / alpha) as written by "
+                               f"SushiUI's LTX-2.3 trainer.")
+
+                applied, unmatched, occupied = apply_lora_group(
+                    transformer, grouped, strength, originals, wrapped_keys,
+                    file_alpha=metadata_alpha(metadata))
+                if applied == 0:
+                    if occupied:
+                        # One LoRA per module: this backend REPLACES the target
+                        # Linear, so a second file over the same modules could
+                        # only overwrite the first. Summing branches needs the
+                        # composite wrapper (LYCORIS_ADAPTER_DESIGN Phase 1).
+                        message = (
+                            f"LoRA '{lora_file}': all {occupied} of its target modules are "
+                            f"already wrapped by an earlier LoRA in this request. LTX-2.3 "
+                            f"applies one LoRA per module; select a single LTX-2.3 LoRA.")
+                        self._ltx2_lora_warn(message, "lora_stacking_unsupported")
+                        raise RuntimeError(message)
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT.",
+                        "lora_incompatible")
+                    raise ValidationError(
+                        f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT",
+                        detail=f"{len(grouped)} adapter(s) in the file, none of whose module "
+                               f"paths exist in this transformer (first few: "
+                               f"{sorted(grouped)[:5]}).")
+                if occupied:
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}': {occupied} of its target modules are already "
+                        f"wrapped by an earlier LoRA in this request and kept that one; only "
+                        f"the remaining {applied} module(s) carry this LoRA.",
+                        "lora_partial")
+                if unmatched:
+                    self._ltx2_lora_warn(
+                        f"LoRA '{lora_file}': {len(unmatched)} adapter(s) did not resolve "
+                        f"against the loaded LTX-2.3 DiT and were skipped (first few: "
+                        f"{unmatched[:5]}).",
+                        "lora_partial")
+                if cfg.get("unet_layer_weights"):
+                    self._ltx2_lora_warn(
+                        f"per-block LoRA weights are not applied for LTX-2.3; LoRA "
+                        f"'{lora_file}' uses its plain strength ({strength}) on every block.",
+                        "ltx2_lora_layer_weights_ignored")
+                step_range = cfg.get("step_range")
+                if step_range is not None and list(step_range) != [0, 1000]:
+                    self._ltx2_lora_warn(
+                        f"LoRA step_range is not applied for LTX-2.3; LoRA '{lora_file}' is "
+                        f"active for the whole denoise loop.",
+                        "ltx2_lora_step_range_ignored")
+
+                print(f"[LTX-2.3 LoRA] {i + 1}/{len(lora_configs)}: {lora_file} "
+                      f"format={fmt} keys={len(raw)} adapters={len(grouped)} "
+                      f"wrapped={applied} occupied={occupied} strength={strength}")
+                total_applied += applied
+        except Exception:
+            self._unload_lora_ltx2()
+            raise
+
+        if total_applied:
+            self._ltx2_sync_block_swap_after_lora()
+        return total_applied
+
+    def _unload_lora_ltx2(self) -> int:
+        """Restore every wrapped DiT Linear to its pre-LoRA original.
+
+        Idempotent and device-agnostic: restoring is a parent-attribute
+        assignment of the saved original module, so a block whose weights are
+        currently on the host (swapped out) restores exactly like a resident one.
+        """
+        if not getattr(self, "_ltx2_lora_wrapped_keys", None):
+            return 0
+        transformer = self._ltx2_lora_transformer()
+        ref = getattr(self, "_ltx2_lora_transformer_ref", None)
+        if transformer is None or ref is None or ref() is not transformer:
+            print("[LTX-2.3 LoRA] transformer gone or replaced since these wrappers were "
+                  "recorded; dropping the bookkeeping instead of restoring into a different "
+                  "model")
+            self._ltx2_lora_original_modules.clear()
+            self._ltx2_lora_wrapped_keys.clear()
+            self._ltx2_lora_transformer_ref = None
+            return 0
+        from core.models.ltx2.ltx2_lora import restore_originals
+        restored = restore_originals(
+            transformer, self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys)
+        if restored:
+            # The unwrap changed the block tree exactly as the wrap did, so the
+            # offloader's caches describe a tree that no longer exists.
+            offloader = self._ltx2_block_offloader()
+            if offloader is not None and getattr(offloader, "blocks_to_swap", 0):
+                _ltx2_invalidate_block_swap_caches(offloader)
+        print(f"[LTX-2.3 LoRA] Unloaded {restored} LoRA wrapper(s)")
+        return restored
+
+    def _ltx2_sync_block_swap_after_lora(self) -> None:
+        """Reconcile the block offloader with the adapters just installed.
+
+        Both cases come from LTX-2.3's offloader being PERSISTENT state on
+        ``Ltx2BlockLoopWrapper`` -- FLUX.2's and MiniMax-H3's are rebuilt per
+        generation, so neither has to deal with this:
+
+        1. Every cache the offloader holds describes the PREVIOUS block tree, on
+           BOTH swap paths -- see ``_ltx2_invalidate_block_swap_caches``, which
+           is why the drop is unconditional rather than H2D-only.
+        2. A LoRA that does not cover every swappable block leaves those blocks
+           structurally unequal, which the coalesced path asserts against
+           (``_h2d_setup``: "H2D-only requires identically-structured swappable
+           blocks"). Fall back to the standard per-module swap, which pairs by
+           name and tolerates an unpaired module, rather than let that assert
+           fire mid-denoise.
+        """
+        offloader = self._ltx2_block_offloader()
+        if offloader is None or not getattr(offloader, "blocks_to_swap", 0):
+            return
+        _ltx2_invalidate_block_swap_caches(offloader)
+
+        if not getattr(offloader, "h2d_only", False):
+            return
+
+        from core.models.ltx2.ltx2_lora import swappable_block_weight_footprints
+        footprints = swappable_block_weight_footprints(
+            offloader.blocks, offloader.blocks_to_swap)
+        if len(set(footprints)) > 1:
+            offloader.h2d_only = False
+            self._ltx2_lora_warn(
+                "the selected LoRA(s) do not cover every swapped transformer block, so the "
+                "coalesced host-to-device block-swap path (which requires identically sized "
+                "blocks) was disabled for this generation; the standard block swap is used "
+                "instead. That path pairs an outgoing and an incoming block's Linears BY "
+                "NAME, so the modules a wrapped block has and an unwrapped one does not (the "
+                "adapter branches, and the wrapped base Linear itself) cannot pair: they are "
+                "moved onto the GPU without the outgoing block's counterpart being evicted, "
+                "and so accumulate there over the denoise loop. Applying the LoRA to every "
+                "swapped block, or lowering blocks_to_swap, avoids both.",
+                "ltx2_lora_h2d_disabled")
+            return
+
+        print("[LTX-2.3 LoRA] block-swap caches dropped; they will be rebuilt on the next "
+              "forward so the adapters stream with their blocks")
 
     def _ltx2_build_fbcache(self, params: Dict[str, Any], block_swap_on: bool):
         """Build a FirstBlockCache for LTX-2.3, or None when inactive/guarded.
@@ -903,6 +1226,9 @@ class LTX2Mixin:
               f"seed={seed} audio={audio_enable}")
 
         try:
+            # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
+            self._load_lora_ltx2(params.get("loras"))
+
             video, audio = pipeline(
                 image=input_image,
                 prompt=prompt,
@@ -921,6 +1247,7 @@ class LTX2Mixin:
                 callback_on_step_end=callback,
             )
         finally:
+            self._unload_lora_ltx2()
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
@@ -1215,6 +1542,9 @@ class LTX2Mixin:
               f"seed={seed} audio_mode={audio_mode}")
 
         try:
+            # LoRA: see _generate_txt2vid_ltx2's note (same ordering contract).
+            self._load_lora_ltx2(params.get("loras"))
+
             video, audio = cond_pipeline(
                 conditions=[condition],
                 prompt=prompt,
@@ -1233,6 +1563,7 @@ class LTX2Mixin:
                 callback_on_step_end=callback,
             )
         finally:
+            self._unload_lora_ltx2()
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 vid_outpaint summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
@@ -1500,6 +1831,12 @@ class LTX2Mixin:
               f"seed={seed} audio={audio_enable}")
 
         try:
+            # LoRA: applied here (inside the try) so a failure in _load_lora_ltx2
+            # still restores the FBCache/Spectrum/style state attached above, and
+            # unloaded in the finally below. See _load_lora_ltx2 for the ordering
+            # and block-swap contracts.
+            self._load_lora_ltx2(params.get("loras"))
+
             video, audio = pipeline(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -1517,6 +1854,7 @@ class LTX2Mixin:
                 callback_on_step_end=callback,
             )
         finally:
+            self._unload_lora_ltx2()
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)

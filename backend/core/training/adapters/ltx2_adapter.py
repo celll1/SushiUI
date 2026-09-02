@@ -118,20 +118,31 @@ def iter_ltx2_lora_targets(
         if scope.get("ff", False):
             ff = getattr(block, "ff", None)
             if ff is not None:
+                # An ALREADY-WRAPPED slot must be yielded (so re-application,
+                # LoRA stacking and the generation-side restore can find it) but
+                # never descended into: the wrapper's own lora_down/lora_up are
+                # nn.Linear children, and treating them as targets would wrap the
+                # adapter's own branches.
+                wrapped_prefixes: List[str] = []
                 for sub_name, sub in ff.named_modules():
-                    if is_lora_wrappable_linear(sub):
-                        # Resolve the parent + attr for in-place replacement.
-                        parent = ff
-                        attr: Any = sub_name
-                        if "." in sub_name:
-                            *parents, last = sub_name.split(".")
-                            p = ff
-                            for pp in parents:
-                                p = getattr(p, pp) if not pp.isdigit() else p[int(pp)]
-                            parent = p
-                            attr = int(last) if last.isdigit() else last
-                        path = f"transformer_blocks.{i}.ff.{sub_name}"
-                        yield path, parent, attr, sub
+                    if any(sub_name.startswith(p) for p in wrapped_prefixes):
+                        continue
+                    if isinstance(sub, LoRALinearLayer):
+                        wrapped_prefixes.append(f"{sub_name}.")
+                    elif not is_lora_wrappable_linear(sub):
+                        continue
+                    # Resolve the parent + attr for in-place replacement.
+                    parent = ff
+                    attr: Any = sub_name
+                    if "." in sub_name:
+                        *parents, last = sub_name.split(".")
+                        p = ff
+                        for pp in parents:
+                            p = getattr(p, pp) if not pp.isdigit() else p[int(pp)]
+                        parent = p
+                        attr = int(last) if last.isdigit() else last
+                    path = f"transformer_blocks.{i}.ff.{sub_name}"
+                    yield path, parent, attr, sub
 
 
 class Ltx2LoRAAdapter(BaseLoRAAdapter):

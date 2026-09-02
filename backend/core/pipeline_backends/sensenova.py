@@ -91,7 +91,10 @@ class SenseNovaMixin:
             except Exception as exc:
                 print(f"[SenseNova LoRA] ERROR loading {lora_file}: {exc}")
                 import traceback; traceback.print_exc()
-                message = f"LoRA '{lora_file}' could not be applied: {exc}"
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"SenseNova LoRA '{lora_file}' could not be applied "
+                           f"({type(exc).__name__}); see the server log for details")
                 self._sensenova_lora_warn(message, "lora_load_failed")
                 raise RuntimeError(message) from exc
 

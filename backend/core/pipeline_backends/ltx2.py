@@ -373,12 +373,25 @@ class LTX2Mixin:
                 if resolved is None:
                     self._ltx2_lora_warn(f"LoRA file not found: {lora_file}",
                                          "lora_not_found")
+                    print(f"[LTX-2.3 LoRA] ERROR: {lora_file} not found; searched "
+                          f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
                     raise ValidationError(
                         f"LoRA file not found: {lora_file}",
-                        detail=f"Searched {lora_manager.lora_dir} and additional "
-                               f"directories {lora_manager.additional_dirs}.")
+                        detail="No such file in the configured LoRA directory or in any "
+                               "additional directory; see the server log for the paths "
+                               "searched.")
 
-                raw, metadata, fmt = load_lora_safetensors(str(resolved))
+                try:
+                    raw, metadata, fmt = load_lora_safetensors(str(resolved))
+                except Exception as e:
+                    print(f"[LTX-2.3 LoRA] ERROR loading {lora_file}: {e}")
+                    import traceback; traceback.print_exc()
+                    # Type + basename only: this rides into the PNG text chunk and the
+                    # API response, and an OSError's str() carries the resolved path.
+                    message = (f"LTX-2.3 LoRA '{lora_file}' could not be applied "
+                               f"({type(e).__name__}); see the server log for details")
+                    self._ltx2_lora_warn(message, "lora_load_failed")
+                    raise RuntimeError(message) from e
                 declared = str(metadata.get("model_type")
                                or metadata.get("modelspec.architecture") or "").strip()
                 if declared and declared != "ltx2":

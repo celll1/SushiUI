@@ -422,9 +422,12 @@ class Flux2Mixin:
                 print(f"[FLUX.2 LoRA] ERROR: Failed to load LoRA {lora_file}: {e}")
                 import traceback
                 traceback.print_exc()
-                self._flux2_lora_warn(f"LoRA '{lora_file}' failed to load: {e}",
-                                      code="lora_load_failed")
-                raise RuntimeError(f"FLUX.2 LoRA '{lora_file}' could not be applied: {e}") from e
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"FLUX.2 LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._flux2_lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
 
             if not unet_keys_present and not te_keys_present:
                 message = (f"LoRA '{lora_file}': no FLUX.2 LoRA tensors found (expected "

@@ -215,15 +215,27 @@ class Krea2Mixin:
             strength = float(cfg.get("strength", 1.0))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
+                print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
+                      f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
                 raise RuntimeError(
-                    f"Krea 2 LoRA file not found: {lora_path!r} (searched "
-                    f"{lora_manager.lora_dir}, additional dirs: {lora_manager.additional_dirs})")
+                    f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
+                    f"registered LoRA directory.")
 
-            raw, fmt = load_lora_safetensors(str(resolved))
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+            except Exception as e:
+                print(f"[Krea2 LoRA] ERROR loading {lora_file}: {e}")
+                import traceback; traceback.print_exc()
+                # Type + basename only: this rides into the API response, and an
+                # OSError's str() carries the absolute resolved path.
+                message = (f"Krea 2 LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._krea2_lora_warn(message, "lora_load_failed")
+                raise RuntimeError(message) from e
             grouped = normalise_lora_state_dict(raw)
             if not grouped:
                 raise RuntimeError(
-                    f"Krea 2 LoRA {lora_path!r}: none of its {len(raw)} tensors form a "
+                    f"Krea 2 LoRA '{lora_file}': none of its {len(raw)} tensors form a "
                     f"'lora_unet_*' down/up pair (format={fmt}) -- not a Krea 2 LoRA.")
 
             dropped = _dropped_lora_keys(raw, grouped)

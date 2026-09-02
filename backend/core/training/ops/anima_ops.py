@@ -569,6 +569,7 @@ def generate_sample(
     guidance_scale: float = 4.0,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """Generate a sample image during training (Anima).
 
@@ -629,6 +630,11 @@ def generate_sample(
         generator.manual_seed(seed if (seed is not None and seed >= 0)
                               else _random.randint(0, 2**32 - 1))
         sample_scheduler = _copy.deepcopy(trainer.scheduler)
+
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+
+        # anima's step_callback is a reporting hook -- return value discarded.
+        _step_cb = make_denoise_progress_callback(step_progress_callback)
         # Autocast the denoise loop to the sampling compute dtype (bf16). This is
         # unconditional (NOT gated on trainer.mixed_precision): sampling always
         # runs the DiT in bf16 (compute_dtype above), while LoRA adapters default
@@ -645,6 +651,7 @@ def generate_sample(
                 guidance_scale=guidance_scale,
                 generator=generator, device=str(device), dtype=compute_dtype,
                 spectrum_params={},
+                step_callback=_step_cb,
             )
         del cond, uncond
 

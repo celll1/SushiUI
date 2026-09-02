@@ -807,6 +807,7 @@ def generate_sample(
     guidance_scale: float = 1.0,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """Generate a short validation clip during LTX-2.3 training (returns the
     first frame as a PIL image, matching the arch-handler sample contract).
@@ -846,6 +847,22 @@ def generate_sample(
         # Keep the clip tiny for a validation sample (9 frames = 1 latent block).
         num_frames = 9
 
+        # callback_on_step_end is latent-transforming (diffusers pops "latents"/
+        # "prompt_embeds" back out of the return value), so the adapter MUST
+        # return callback_kwargs unchanged -- a None return crashes the pipeline.
+        _step_cb = None
+        if step_progress_callback is not None:
+            def _step_cb(pipe, i, t, callback_kwargs):
+                try:
+                    total = len(pipe.scheduler.timesteps)
+                except Exception:
+                    total = num_inference_steps
+                try:
+                    step_progress_callback(i + 1, total)
+                except Exception as cb_e:  # noqa: BLE001
+                    print(f"{trainer.log_prefix} [Sample] step_progress_callback raised: {cb_e}")
+                return callback_kwargs
+
         with torch.no_grad():
             video, _audio = pipeline(
                 prompt=prompt,
@@ -858,6 +875,7 @@ def generate_sample(
                 generator=gen,
                 output_type="np",
                 return_dict=False,
+                callback_on_step_end=_step_cb,
             )
         frames_np = video[0]  # [T, H, W, C] float [0,1]
         first = (_np.clip(frames_np[0], 0.0, 1.0) * 255.0).round().astype("uint8")

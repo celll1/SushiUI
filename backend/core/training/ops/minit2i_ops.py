@@ -472,6 +472,7 @@ def generate_sample(
     guidance_scale: float = 6.0,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """Generate a sample during MiniT2I training (pixel-space flow matching).
 
@@ -525,6 +526,10 @@ def generate_sample(
         trainer.transformer.to(transformer_device)
         torch.cuda.empty_cache()
 
+        # Same 0-based-j progress_callback shape as sd_sdxl_ops's custom_sampling_loop, so the shared adapter fits unchanged.
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+        _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             if is_latent:
                 x = _mt_denoise(
@@ -534,6 +539,7 @@ def generate_sample(
                     neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
                     neg_mask=neg_mask,
                     channels=int(cfg.in_channels), noise_scale=noise_scale, clamp_output=False,
+                    progress_callback=_denoise_progress_callback,
                 )
             else:
                 x = _mt_denoise(
@@ -542,6 +548,7 @@ def generate_sample(
                     trainer.device, t_dtype, seed=seed if seed >= 0 else None,
                     neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
                     neg_mask=neg_mask,
+                    progress_callback=_denoise_progress_callback,
                 )
         if is_latent:
             trainer.vae.to(trainer.device)

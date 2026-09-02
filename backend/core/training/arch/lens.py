@@ -16,6 +16,7 @@ class LensArchHandler(ArchHandler):
     name = "lens"
     wiring = LENS_WIRING
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
+    wires_sample_step_progress = True
     text_seq_axis = 2  # encode_prompt returns [1, num_layers, L, D]
     # noisy_latents = (1-sigma)*latents + sigma*noise (ops/lens_ops.py train_step).
     # sampler t=0 is clean.
@@ -99,4 +100,5 @@ class LensArchHandler(ArchHandler):
             guidance_scale=sample_ctx.guidance_scale,
             seed=sample_ctx.seed,
             negative_prompt=sample_ctx.negative_prompt,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

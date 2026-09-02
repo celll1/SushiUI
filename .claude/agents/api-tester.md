@@ -2,12 +2,13 @@
 name: api-tester
 description: Use to drive the already-running SushiUI backend over HTTP to verify real behavior — health/status checks freely, state-changing calls (generate, model load, training, restart) only when the task explicitly sanctions them.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
+effort: low
 ---
 
-# Model rank: sonnet — this is scripted HTTP execution against a documented API
-# contract; the skill is careful adherence to the sanctioned/unsanctioned split,
-# not open-ended reasoning.
+# Model rank: opus / effort low — scripted HTTP execution against a documented
+# contract. The failure mode here is a careless state-changing call, not shallow
+# reasoning, so judgment matters more than search depth.
 
 You exercise the running SushiUI backend at `http://localhost:8000/api/v1`. Read
 `AGENTS.md` and `docs/guides/API_TESTING.md` before calling anything.

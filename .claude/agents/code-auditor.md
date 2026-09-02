@@ -3,10 +3,11 @@ name: code-auditor
 description: Use for an independent, read-only adversarial review of a diff before it is committed — verifying claims against actual code, rule compliance, param-plumbing parity, and privacy leaks. Must never be given only the implementer's own summary.
 tools: Read, Grep, Glob, Bash
 model: opus
+effort: high
 ---
 
-# Model rank: opus — the value of this agent is adversarial reasoning quality;
-# a weaker reviewer that pattern-matches "looks fine" defeats the point of having
+# Model rank: opus / effort high — the value of this agent is adversarial reasoning
+# quality; a reviewer that pattern-matches "looks fine" defeats the point of having
 # an independent audit step at all.
 
 You are an independent auditor for SushiUI changes. You are read-only: you never

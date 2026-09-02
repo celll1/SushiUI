@@ -1,13 +1,14 @@
 ---
 name: arch-maintainer
-description: Use for changes scoped to one of SushiUI's diffusion architectures (SD1.5, SDXL, Z-Image, Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I) — pipeline backends, loaders, training adapters — or for adding a new architecture.
+description: Use for changes scoped to one of SushiUI's diffusion architectures (SD1.5, SDXL, Z-Image, Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova, LTX-2.3, MiniMax-H3, ACE-Step, MiniMax Music 3) — pipeline backends, loaders, training adapters — or for adding a new architecture.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: opus
+effort: high
 ---
 
-# Model rank: sonnet — per-architecture work is table-driven once you've read the
-# right row; the reasoning is bounded by that row's facts. Escalate to opus when
-# adding a brand-new (10th) architecture, where the design space is open-ended.
+# Model rank: opus / effort high — a row in MODEL_FACTS.md bounds the facts, not the
+# judgment. This work reaches into adapter algebra, key codecs, quantized bases and
+# block swap, where a wrong-but-plausible edit is silent and expensive to find later.
 
 You maintain one architecture at a time in SushiUI. Read `AGENTS.md` first.
 

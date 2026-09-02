@@ -37,6 +37,12 @@ interface PersistedState {
 
 const isBandFamily = (d: MetricDescriptor) => d.family === "binary_indicator";
 
+/** A learning rate is read off a schedule, not measured: the value at a step is
+ *  exactly determined and carries no sampling noise, so smoothing it buys no
+ *  noise reduction and only lags the curve behind the rate actually in force --
+ *  which is the one number a reader checks the LR chart for. */
+const isExactFamily = (d: MetricDescriptor) => d.family === "learning_rate";
+
 /** The domain policy for one axis. A merged (`a+b`) group takes the union of
  *  its members' declared domains; a single group takes its members' declared
  *  range, falling back to an auto range with the loosest floor they agree on. */
@@ -214,9 +220,10 @@ export default function TrainingMetricsChart({
           dashed: d.dashed,
           axis: band ? undefined : assignment.byKey[d.key],
           renderMode: band ? "band" : sparse ? "markers" : "line",
-          // A 0/1 state and a periodic probe both read as their own values; an
-          // EMA of them is a lagged average of something that was never a curve.
-          noSmooth: band || sparse,
+          // A 0/1 state, a periodic probe and a scheduled learning rate all read
+          // as their own values; an EMA of them is a lagged average of something
+          // that was never a curve.
+          noSmooth: band || sparse || isExactFamily(d),
         };
       });
   }, [selectedDescs, seriesByKey, assignment]);

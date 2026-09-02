@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
 import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
@@ -10,6 +10,7 @@ import TrainingMetricsChart from "./TrainingMetricsChart";
 import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableChartRow";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import CheckpointList from "./CheckpointList";
+import ImageViewer from "../common/ImageViewer";
 
 interface TrainingMonitorProps {
   run: TrainingRun;
@@ -66,7 +67,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [sampleQueue, setSampleQueue] = useState<TrainingSampleQueueResponse | null>(null);
   const [isQueueingSample, setIsQueueingSample] = useState(false);
   const [sampleQueueError, setSampleQueueError] = useState<string | null>(null);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  // Index into the flattened sample list (see sampleImages) rather than a URL,
+  // so the enlarged view can walk across step boundaries and drag the slider
+  // with it.
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
   // Epoch lives only on the status response (there is no epoch column on the
   // run row), so it is held here rather than folded into currentRun.
@@ -230,6 +234,28 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   // PSNR / blockiness chart. Nothing ever lands in samples/, so neither the
   // initial fetch nor the 5s poll has anything to find.
   const hasSampleImages = currentRun.training_method !== "vae_decoder";
+
+  // Every sample image in listing order, carrying the step it belongs to. The
+  // backend returns steps ascending and only ever appends, so an index stays
+  // pointing at the same image across the 5s reload.
+  const sampleImages = useMemo(
+    () => samples.flatMap((s, stepIndex) => s.images.map((img) => ({ path: img.path, stepIndex }))),
+    [samples]
+  );
+  const viewerImage = viewerIndex === null ? undefined : sampleImages[viewerIndex];
+
+  const navigateSample = useCallback((direction: "prev" | "next") => {
+    setViewerIndex((prev) => {
+      if (prev === null) return prev;
+      const next = prev + (direction === "next" ? 1 : -1);
+      return next >= 0 && next < sampleImages.length ? next : prev;
+    });
+  }, [sampleImages.length]);
+
+  // Keep the step slider on whatever the enlarged view is showing.
+  useEffect(() => {
+    if (viewerImage) setSelectedStepIndex(viewerImage.stepIndex);
+  }, [viewerImage]);
 
   // Load sample images
   useEffect(() => {
@@ -1064,7 +1090,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div
                           key={img.path}
                           className="relative cursor-pointer group"
-                          onDoubleClick={() => setSelectedImage(img.path)}
+                          onDoubleClick={() =>
+                            setViewerIndex(sampleImages.findIndex((s) => s.path === img.path))
+                          }
                         >
                           <img
                             src={img.path}
@@ -1304,25 +1332,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       </div>
 
       {/* Fullscreen Image Modal */}
-      {selectedImage && (
-        <div
-          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-2 sm:p-4"
-          onClick={() => setSelectedImage(null)}
-        >
-          <div className="relative max-w-full max-h-full">
-            <img
-              src={selectedImage}
-              alt="Sample"
-              className="max-w-full max-h-full object-contain"
-            />
-            <button
-              onClick={() => setSelectedImage(null)}
-              className="absolute top-1 right-1 sm:top-2 sm:right-2 p-1.5 sm:p-2 bg-gray-900/80 hover:bg-gray-800 rounded-full transition-colors"
-            >
-              <X className="h-4 w-4 sm:h-5 sm:w-5" />
-            </button>
-          </div>
-        </div>
+      {viewerImage && viewerIndex !== null && (
+        <ImageViewer
+          imageUrl={viewerImage.path}
+          onClose={() => setViewerIndex(null)}
+          onNavigate={navigateSample}
+          hasPrev={viewerIndex > 0}
+          hasNext={viewerIndex < sampleImages.length - 1}
+          showDownload={false}
+        />
       )}
 
       {/* Config Modal */}

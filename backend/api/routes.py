@@ -322,12 +322,10 @@ class Txt2VidRequest(BaseModel):
     # ControlNet). No image-conditioning ControlNets exist for LTX-2.3 today --
     # this field exists ONLY to carry the style-transfer entry.
     controlnets: Optional[List[ControlNetConfig]] = []
-    # Generation-time LoRA. Applied by MiniMax-H3 (see
-    # core.models.minimax_h3.minimax_h3_lora / MiniMaxH3Mixin._load_lora_minimax_h3,
-    # hooked into every one of this arch's video entry points via
-    # _generate_minimax_h3). LTX-2.3 has no LoRA loader on its video path at
-    # all -- accepted and ignored, with a warning when non-empty (see
-    # api.arch_capabilities's "lora" feature).
+    # Generation-time LoRA. Both video architectures apply it: MiniMax-H3 via
+    # core.models.minimax_h3.minimax_h3_lora, LTX-2.3 via core.models.ltx2.ltx2_lora
+    # (LTX-2.3 also drops its persistent block-swap masters afterwards, since they
+    # are built over the pre-LoRA module tree).
     loras: Optional[List[LoRAConfig]] = TXT2VID_DEFAULTS["loras"]
     # Video chain provenance (design sec.13). Null on an ordinary request; a
     # chain's FIRST segment carries the whole set from the manifest it was

@@ -9987,6 +9987,7 @@ class BaseTrainer(ABC):
         condition_image_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
         negative_prompt: str = "",
+        step_progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> "Image.Image":
         """
         Generate sample image during training (SD/SDXL).
@@ -10028,6 +10029,7 @@ class BaseTrainer(ABC):
             nag_negative_prompt=nag_negative_prompt,
             condition_image_path=condition_image_path,
             reference_image_path=reference_image_path,
+            step_progress_callback=step_progress_callback,
         )
 
     # ============================================================
@@ -10065,6 +10067,7 @@ class BaseTrainer(ABC):
         sensenova_timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"],
         sensenova_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"],
         sensenova_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"],
+        step_progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[Image.Image]:
         """Route a sample request to the correct per-architecture helper.
 
@@ -10106,8 +10109,63 @@ class BaseTrainer(ABC):
             sensenova_timestep_shift=sensenova_timestep_shift,
             sensenova_img_cfg_scale=sensenova_img_cfg_scale,
             sensenova_cfg_norm=sensenova_cfg_norm,
+            step_progress_callback=step_progress_callback,
         )
         return self.arch.sample(self, sample_ctx)
+
+    def _make_sample_progress_reporter(
+        self,
+        progress_callback: Optional[Callable] = None,
+        *,
+        base_offset: int,
+        total_units: int,
+        label: str,
+        sample_steps: int,
+    ) -> Tuple[Callable[[], None], Optional[Callable[[int, int], None]]]:
+        """Builds (emit_start, step_progress_callback) for one sample dispatch.
+
+        `base_offset`/`total_units` make the reported step monotonic across a
+        whole batch of prompts/jobs (never restarts at 0 mid-batch). Every
+        invocation of `progress_callback` is guarded: a UI-side failure here
+        must not abort the sample or the training run.
+        """
+        if progress_callback is None:
+            return (lambda: None), None
+
+        def _safe_report(step: int, detail: str) -> None:
+            try:
+                progress_callback(phase="sampling", step=step, total=total_units, detail=detail)
+            except Exception as e:  # noqa: BLE001
+                print(f"{self.log_prefix} WARNING: sample progress_callback failed: {e}")
+
+        def emit_start() -> None:
+            _safe_report(base_offset, f"Generating sample: {label}")
+
+        def step_progress_callback(completed_steps: int, total_steps: int) -> None:
+            if total_steps <= 0:
+                return
+            # Some schedulers (DPM2/DPM2a) run more timesteps than the
+            # configured sample_steps -- drive finality/throttle off the
+            # loop's own total_steps, not sample_steps, or completed_steps
+            # clamps early and every remaining iteration commits to the DB.
+            completed_steps = max(0, min(completed_steps, total_steps))
+            is_final = completed_steps >= total_steps
+            # ~10 DB writes per sample regardless of step count.
+            step_throttle = max(1, total_steps // 10)
+            if not is_final and completed_steps % step_throttle != 0:
+                return
+            # Scale into this prompt's [0, sample_steps] segment so a
+            # mismatched total_steps can't overrun the units reserved for it.
+            scaled_position = min(
+                sample_steps,
+                round(completed_steps / total_steps * sample_steps),
+            )
+            _safe_report(
+                base_offset + scaled_position,
+                f"Generating sample: {label} ({completed_steps}/{total_steps})",
+            )
+
+        return emit_start, step_progress_callback
 
     @staticmethod
     def _resolve_sample_seed(configured_seed: int) -> int:
@@ -10288,6 +10346,7 @@ class BaseTrainer(ABC):
         sensenova_sample_img_cfg_scale: float,
         sensenova_sample_cfg_norm: str,
         global_step: int,
+        progress_callback: Optional[Callable] = None,
     ) -> None:
         """Step-0 base-model verification sample.
 
@@ -10315,6 +10374,23 @@ class BaseTrainer(ABC):
         actual_seed = self._resolve_sample_seed(sample_seed)
         print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
         print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
+        emit_start, step_progress_cb = self._make_sample_progress_reporter(
+            progress_callback,
+            base_offset=0,
+            total_units=sample_steps,
+            label=f"[Step 0] {step0_prompt[:40]}",
+            sample_steps=sample_steps,
+        )
+        # Some architectures' sample() is a no-op (warns, returns None); don't
+        # claim a sample is in progress for one that will never happen. And
+        # even when sample() runs, only start the bar for handlers that
+        # actually forward step_progress_callback into it -- otherwise the
+        # row freezes at its start position for the whole sample.
+        from api.arch_capabilities import training_feature_unsupported_reason
+        _arch_name = getattr(getattr(self, "arch", None), "name", None)
+        _arch_wires_progress = getattr(getattr(self, "arch", None), "wires_sample_step_progress", False)
+        if _arch_wires_progress and training_feature_unsupported_reason(_arch_name, "training_samples") is None:
+            emit_start()
         sample = self._dispatch_sample(
             step0_prompt,
             width=sample_width,
@@ -10342,6 +10418,7 @@ class BaseTrainer(ABC):
             sensenova_timestep_shift=sensenova_sample_timestep_shift,
             sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
             sensenova_cfg_norm=sensenova_sample_cfg_norm,
+            step_progress_callback=step_progress_cb,
         )
         # None => architecture can't sample yet; skip saving.
         if sample is not None:
@@ -12931,7 +13008,18 @@ class BaseTrainer(ABC):
             sensenova_sample_img_cfg_scale=sensenova_sample_img_cfg_scale,
             sensenova_sample_cfg_norm=sensenova_sample_cfg_norm,
             global_step=global_step,
+            progress_callback=progress_callback,
         )
+        # Hand the bar back to training so it doesn't sit on the step-0
+        # sample through dataloader/bucket construction below.
+        if sample_every_n_steps > 0 and global_step == 0 and progress_callback:
+            progress_callback(
+                phase="training",
+                step=global_step,
+                total=actual_total_steps,
+                epoch=start_epoch,
+                loss=None,
+            )
 
         # ------------------------------------------------------------------
         # Online Danbooru augmentation (image-generation) setup
@@ -15930,8 +16018,15 @@ class BaseTrainer(ABC):
                     if on_demand_request is not None:
                         sample_jobs.append((global_step, on_demand_request))
 
-                    for sample_step, on_demand_request in sample_jobs:
+                    # Whole-batch total so the reported step is monotonic across
+                    # every job (scheduled + on-demand) and every prompt in each,
+                    # rather than restarting at 0 per prompt/job.
+                    _sample_batch_total_units = (
+                        max(1, len(sample_jobs)) * max(1, len(self._sample_prompts)) * max(1, sample_steps)
+                    )
+                    for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):
                         import torchvision
+                        from api.arch_capabilities import training_feature_unsupported_reason
                         on_demand_id = (on_demand_request or {}).get("request_id")
                         on_demand_files: List[str] = []
                         on_demand_seeds: List[int] = []
@@ -15961,6 +16056,28 @@ class BaseTrainer(ABC):
                                         actual_seed = (actual_seed + sample_idx) % (2 ** 32)
 
                                 print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={actual_seed}")
+                                _sample_unit_offset = (
+                                    (job_idx * len(self._sample_prompts) + sample_idx) * sample_steps
+                                )
+                                emit_start, step_progress_cb = self._make_sample_progress_reporter(
+                                    progress_callback,
+                                    base_offset=_sample_unit_offset,
+                                    total_units=_sample_batch_total_units,
+                                    label=positive[:40],
+                                    sample_steps=sample_steps,
+                                )
+                                # Some architectures' sample() is a no-op (warns,
+                                # returns None); don't claim a sample is in
+                                # progress for one that will never happen. And
+                                # even when sample() runs, only start the bar
+                                # for handlers that actually forward
+                                # step_progress_callback -- otherwise the row
+                                # freezes at its start position for the whole
+                                # sample.
+                                _arch_name = getattr(getattr(self, "arch", None), "name", None)
+                                _arch_wires_progress = getattr(getattr(self, "arch", None), "wires_sample_step_progress", False)
+                                if _arch_wires_progress and training_feature_unsupported_reason(_arch_name, "training_samples") is None:
+                                    emit_start()
                                 sample = self._dispatch_sample(
                                     positive,
                                     width=sample_width,
@@ -15988,6 +16105,7 @@ class BaseTrainer(ABC):
                                     sensenova_timestep_shift=sensenova_sample_timestep_shift,
                                     sensenova_img_cfg_scale=sensenova_sample_img_cfg_scale,
                                     sensenova_cfg_norm=sensenova_sample_cfg_norm,
+                                    step_progress_callback=step_progress_cb,
                                 )
                                 # None => architecture can't sample yet; skip this prompt.
                                 if sample is None:
@@ -16065,6 +16183,19 @@ class BaseTrainer(ABC):
                         # onthefly_gpu mode: Restore text encoders to GPU after sample generation
                         if text_encoding_mode == "onthefly_gpu":
                             self.move_text_encoder_to_gpu()
+
+                    # Sampling left phase="sampling" in the DB; hand the bar back to
+                    # training with the same values the last per-iteration update used,
+                    # so it resumes exactly where it left off (also covers the
+                    # step==actual_total_steps exit below, which runs after this).
+                    if sample_jobs and progress_callback:
+                        progress_callback(
+                            phase="training",
+                            step=global_step,
+                            total=actual_total_steps,
+                            epoch=epoch,
+                            loss=mnt_loss_value,
+                        )
 
                     # Note: Progress callback is now called per-MNT-iteration (above)
                     # for real-time frontend updates during MNT training.

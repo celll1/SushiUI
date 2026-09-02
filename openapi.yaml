@@ -18294,7 +18294,7 @@ components:
         phase:
           type: string
           nullable: true
-          description: Current phase (initializing, bucketing, latent_cache, text_encoder_cache, training)
+          description: Current phase (initializing, bucketing, latent_cache, text_encoder_cache, training, sampling). "sampling" is a temporary takeover of the bar while a training sample image is being generated, and only advances (phase_progress moving within the sample) for architectures whose sample loop reports per-step progress -- currently SD1.5/SDXL; other architectures show "sampling" without phase_progress moving until the sample finishes. On success the trainer restores phase="training" once the sample batch completes (including a step-0 base-model sample and the run's final step); if sample generation raises, the run fails instead and no restore happens.
           example: training
         phase_progress:
           type: number

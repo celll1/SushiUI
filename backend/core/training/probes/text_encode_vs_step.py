@@ -632,8 +632,8 @@ def run_dit_step_arm(args: argparse.Namespace) -> dict[str, Any]:
     total_steps = args.warmup + args.steps
     marks: list[float] = []
 
-    def progress_callback(phase, step, total, epoch=0, loss=None):
-        del total, epoch, loss
+    def progress_callback(phase, step, total, epoch=0, loss=None, detail=None):
+        del total, epoch, loss, detail
         if phase != "training":
             return
         torch.cuda.synchronize()

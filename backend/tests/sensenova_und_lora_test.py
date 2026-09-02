@@ -740,7 +740,7 @@ def _run_frozen_step(**trainer_fields):
         **trainer_fields,
     )
 
-    def build_context(model, shape, image, timestep, noise_scale):
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
         return model.patchify(image, 32), torch.full((1, 1, 1), 2.0), torch.ones(1, 1, 1)
 
     with patch(
@@ -784,7 +784,7 @@ def test_train_step_refuses_a_detached_prefix_only_when_und_is_trained():
         train_text_encoder=True,
     )
 
-    def build_context(model, shape, image, timestep, noise_scale):
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
         return model.patchify(image, 32), torch.full((1, 1, 1), 2.0), torch.ones(1, 1, 1)
 
     with patch(

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 import torch
 from torch import nn
@@ -2025,6 +2025,7 @@ def generate_sample(
     negative_prompt: str = "",
     reference_image_path: Optional[str] = None,
     condition_image_path: Optional[str] = None,
+    step_progress_callback: Optional[Callable[[int, int], None]] = None,
 ):
     """Run one inference txt2img/it2i generation from inside the training loop.
 
@@ -2123,6 +2124,7 @@ def generate_sample(
                     num_inference_steps=num_inference_steps,
                     seed=seed if seed is not None and seed >= 0 else None,
                     cfg_norm=cfg_norm,
+                    progress_callback=step_progress_callback,
                 )
             _log_sample_guidance(trainer, guidance_steps)
         image = ops.tensor_to_image(image_tensor.float())

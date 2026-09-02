@@ -10,6 +10,7 @@ class SenseNovaArchHandler(ArchHandler):
     name = "sensenova"
     wiring = SENSENOVA_WIRING
     pixel_align = 32
+    wires_sample_step_progress = True
     # The inference uncond branch is a different PROMPT, not a rewrite of an
     # encoded one, and its token count also lands in every image token's t
     # coordinate (`_build_t2i_image_indexes`), so the null can only be built
@@ -135,4 +136,5 @@ class SenseNovaArchHandler(ArchHandler):
             timestep_shift=sample_ctx.sensenova_timestep_shift,
             img_cfg_scale=sample_ctx.sensenova_img_cfg_scale,
             cfg_norm=sample_ctx.sensenova_cfg_norm,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

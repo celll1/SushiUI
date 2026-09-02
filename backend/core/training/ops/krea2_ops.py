@@ -298,6 +298,7 @@ def generate_sample(
     guidance_scale: float = 4.5,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """Generate a validation sample during Krea 2 training (flow matching).
 
@@ -355,12 +356,17 @@ def generate_sample(
             seed=seed if seed is not None and seed >= 0 else None,
         )
 
+        # Same 0-based-i progress_callback shape as sd_sdxl_ops's custom_sampling_loop, so the shared adapter fits unchanged.
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+        _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             out = _k_denoise(
                 trainer.transformer, trainer.scheduler, latents,
                 prompt_embeds.to(t_dtype), prompt_mask,
                 neg_embeds.to(t_dtype) if neg_embeds is not None else None, neg_mask,
                 guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, trainer.device,
+                progress_callback=_denoise_progress_callback,
             )
 
         trainer.vae.to(trainer.device)

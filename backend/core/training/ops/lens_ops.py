@@ -400,6 +400,7 @@ def generate_sample(
     guidance_scale: float = 4.0,
     seed: int = -1,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """Generate a sample image during training (Lens).
 
@@ -458,6 +459,10 @@ def generate_sample(
         # hit the fp32 LoRA Linear weights and crash with a dtype mismatch inside
         # the forward — regardless of the mixed_precision flag. Mirrors the anima
         # fix; the training forward avoids the same crash via its own autocast.
+        # Same 0-based-i progress_callback shape as sd_sdxl_ops's custom_sampling_loop, so the shared adapter fits unchanged.
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+        _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype):
             latents = _lens_denoise_loop(
                 transformer=trainer.transformer, scheduler=sample_scheduler,
@@ -466,6 +471,7 @@ def generate_sample(
                 guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                 latent_h=latent_h, latent_w=latent_w, tokenizer=trainer.tokenizer,
                 spectrum_params={},
+                progress_callback=_denoise_progress_callback,
             )
         del encoder_features, encoder_mask
 

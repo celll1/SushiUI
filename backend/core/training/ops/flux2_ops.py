@@ -752,6 +752,7 @@ def generate_sample(
     seed: int = -1,
     reference_image_path: Optional[str] = None,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """
     Generate sample image during training (FLUX.2 Klein).
@@ -763,6 +764,7 @@ def generate_sample(
         num_inference_steps: Number of denoising steps
         guidance_scale: CFG scale
         seed: Random seed (-1 for random)
+        step_progress_callback: optional (completed_steps, total_steps) reporter
 
     Returns:
         PIL Image
@@ -928,6 +930,7 @@ def generate_sample(
         # training has no fp8-quantized base path, so autocast has no wrapper/dequant
         # interactions here — trainer.transformer.dtype is always bf16/fp16.
         sample_compute_dtype = trainer.transformer.dtype
+        total_steps = len(timesteps)
         with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=sample_compute_dtype):
             for i, t in enumerate(tqdm(timesteps, desc="Generating")):
                 # Expand timestep
@@ -981,6 +984,9 @@ def generate_sample(
                 latents = trainer.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 if latents.dtype != latents_dtype:
                     latents = latents.to(latents_dtype)
+
+                if step_progress_callback is not None:
+                    step_progress_callback(i + 1, total_steps)
 
         # Free prompt embeddings
         del prompt_embeds, text_ids

@@ -188,11 +188,14 @@ def _apply_sensenova_training_contract(
         )
     is_full_finetune = network_type == "full_finetune"
     batch_size = _normalize_sensenova_integer(train_config, "batch_size", 1)
-    if batch_size != 1:
+    if batch_size > 1 and not _normalize_sensenova_bool(train_config, "enable_bucketing", False):
+        # A physical batch is one pixel tensor at one resolution (packed
+        # prompts, SENSENOVA_TRAINING_DESIGN.md "Packed batches"); only the
+        # bucket manager guarantees that.
         raise ValueError(
-            "SenseNova training requires batch_size=1"
-            + ("" if is_full_finetune else
-               "; use gradient_accumulation_steps for a larger effective batch")
+            f"SenseNova training with batch_size={batch_size} requires "
+            "enable_bucketing so every item in a batch has the same resolution; "
+            "batch_size=1 works without bucketing"
         )
     if is_full_finetune:
         _apply_sensenova_full_finetune_contract(train_config)

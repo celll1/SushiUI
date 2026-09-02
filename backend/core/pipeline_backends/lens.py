@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -28,64 +29,157 @@ from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_
 class LensMixin:
     """LensMixin: lens backend methods extracted verbatim from pipeline.py."""
 
+    @staticmethod
+    def _lens_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _lens_quantization_with_lora(self, transformer_quantization):
+        """Drop transformer quantization for a generation that already carries LoRA wrappers.
+
+        ``move_lens_transformer_to_gpu`` -> ``_anima_quantize_fp8`` DEEP-COPIES the
+        transformer and casts every ``nn.Linear`` weight to FP8, which on a wrapped
+        module includes the adapter's own lora_down/lora_up -- and the copy also
+        strands ``_lens_lora_original_modules`` on modules no longer in the tree, so
+        unload could not put the base back. Same precedence as FLUX.2's
+        ``_flux2_te_quantization_with_lora``: the LoRA wins and the request is warned.
+        """
+        if not transformer_quantization or transformer_quantization == "none":
+            return transformer_quantization
+        transformer = (self.lens_components or {}).get("transformer")
+        if transformer is None:
+            return transformer_quantization
+        from core.models.common.int8_runtime_quantize import lora_wrapped_count
+        wrapped = lora_wrapped_count(transformer)
+        if not wrapped:
+            return transformer_quantization
+
+        msg = (f"Lens transformer quantization '{transformer_quantization}' was ignored: "
+               f"{wrapped} LoRA wrapper(s) are applied, and the quantizer would cast the "
+               f"adapter's own weights to FP8 along with the base")
+        print(f"[Lens LoRA] {msg}")
+        self._lens_lora_warn(msg, code="quantization_fallback")
+        return None
+
+    def _lens_lora_state(self, transformer):
+        """The (originals, wrapped_keys) maps for THIS transformer.
+
+        Reset when the model was reloaded (a fresh load, or the deep copy an FP8
+        quantization makes): the maps hold the OLD transformer's Linears,
+        ``restore_originals`` grafts by module path, and the shapes match, so they
+        would be spliced into the new transformer unnoticed. Keyed by weakref rather
+        than id(), which is reusable after a free.
+        """
+        ref = getattr(self, "_lens_lora_transformer_ref", None)
+        if transformer is None or ref is None or ref() is not transformer:
+            self._lens_lora_original_modules: Dict[str, torch.nn.Linear] = {}
+            self._lens_lora_wrapped_keys: set = set()
+            self._lens_lora_transformer_ref = (
+                weakref.ref(transformer) if transformer is not None else None)
+        return self._lens_lora_original_modules, self._lens_lora_wrapped_keys
+
     def _load_lora_lens(self, lora_configs: List[Dict]) -> int:
         """Wrap target Linear modules of the Lens transformer with LoRA adapters.
 
         Must be called after the transformer is on GPU (and optionally quantised).
-        Supports stacking multiple LoRAs on the same module.
+
+        A LoRA that is missing, unreadable, or matches no target module REFUSES the
+        generation rather than returning the base model's image as a success;
+        survivable degradations are reported through add_warning.
         """
+        import os
         from core.models.lens.lens_lora import (
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            alpha_from_metadata,
         )
         from core.extensions.lora_manager import lora_manager
 
+        transformer = (self.lens_components or {}).get("transformer")
+        # Unconditional, and BEFORE the empty-config exit: bookkeeping that outlived
+        # a model reload would splice the previous transformer's Linears into this one.
+        originals, wrapped_keys = self._lens_lora_state(transformer)
+
         if not lora_configs:
             return 0
-        if not self.lens_components:
+        if transformer is None:
             print("[Lens LoRA] WARNING: components not loaded")
             return 0
-
-        transformer = self.lens_components["transformer"]
-        if not hasattr(self, "_lens_lora_original_modules"):
-            self._lens_lora_original_modules: Dict[str, torch.nn.Linear] = {}
-            self._lens_lora_wrapped_keys: set = set()
 
         total_applied = 0
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
+            lora_file = os.path.basename(str(lora_path))
             strength  = float(cfg.get("strength", 1.0))
             resolved  = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                print(f"[Lens LoRA] WARNING: file not found: {lora_path}")
-                continue
+                message = f"Lens LoRA '{lora_file}' not found in any configured LoRA directory"
+                print(f"[Lens LoRA] ERROR: {message}")
+                self._lens_lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
             try:
-                raw, fmt = load_lora_safetensors(str(resolved))
+                raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped  = normalise_lora_state_dict(raw)
-                print(f"[Lens LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                print(f"[Lens LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                       f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
                       f"strength={strength}")
-                applied = apply_lora_group(
-                    transformer, grouped, strength,
-                    self._lens_lora_original_modules, self._lens_lora_wrapped_keys,
+                applied, occupied = apply_lora_group(
+                    transformer, grouped, strength, originals, wrapped_keys,
+                    default_alpha=alpha_from_metadata(metadata),
                 )
                 print(f"[Lens LoRA]   wrapped {applied} module(s)")
-                total_applied += applied
             except Exception as e:
-                print(f"[Lens LoRA] ERROR loading {lora_path}: {e}")
+                print(f"[Lens LoRA] ERROR loading {lora_file}: {e}")
                 import traceback; traceback.print_exc()
+                # Type + basename only: this rides into the PNG text chunk and the API
+                # response, and an OSError's str() carries the absolute resolved path.
+                message = (f"Lens LoRA '{lora_file}' could not be applied "
+                           f"({type(e).__name__}); see the server log for details")
+                self._lens_lora_warn(message, code="lora_load_failed")
+                raise RuntimeError(message) from e
+
+            if applied == 0:
+                if occupied:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {occupied} target modules is "
+                        f"already wrapped by an earlier LoRA in this request. Lens applies one "
+                        f"LoRA per target; select a single Lens LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
+                        f"loaded Lens transformer (format={fmt}) -- unrecognized key format or a "
+                        f"different model. Sample keys in file: {list(raw.keys())[:5]}"
+                    )
+                    code = "lora_incompatible"
+                print(f"[Lens LoRA] ERROR: {message}")
+                self._lens_lora_warn(message, code=code)
+                raise RuntimeError(message)
+
+            if applied + occupied < len(grouped) or occupied:
+                self._lens_lora_warn(
+                    f"LoRA '{lora_file}': applied {applied} of {len(grouped)} down/up pairs "
+                    f"({occupied} already wrapped by an earlier LoRA, "
+                    f"{len(grouped) - applied - occupied} matched no target module).",
+                    code="lora_partial",
+                )
+            total_applied += applied
         return total_applied
 
     def _unload_lora_lens(self) -> int:
         """Restore every Lens transformer Linear to its pre-LoRA original."""
         from core.models.lens.lens_lora import restore_originals
-        if not getattr(self, "_lens_lora_wrapped_keys", None):
+        transformer = (self.lens_components or {}).get("transformer")
+        # Same guard as the load path: maps that outlived their transformer must be
+        # dropped, not restored into whatever now sits at the same module paths.
+        originals, wrapped_keys = self._lens_lora_state(transformer)
+        if transformer is None or not wrapped_keys:
             return 0
-        if not self.lens_components:
-            return 0
-        transformer = self.lens_components["transformer"]
-        restored = restore_originals(
-            transformer, self._lens_lora_original_modules, self._lens_lora_wrapped_keys,
-        )
+        restored = restore_originals(transformer, originals, wrapped_keys)
         print(f"[Lens LoRA] Unloaded {restored} LoRA wrappers")
         return restored
 
@@ -463,6 +557,8 @@ class LensMixin:
         h2d_only = bool(params.get("block_swap_h2d_only", False))
         ring_size = int(params.get("block_swap_ring_size", 2))
 
+        transformer_quantization = self._lens_quantization_with_lora(transformer_quantization)
+
         self._lens_offloader = None
         if enable_block_swap and blocks_to_swap > 0:
             print(f"[Lens] Block swap enabled: {blocks_to_swap}/{num_layers} blocks "
@@ -647,7 +743,8 @@ class LensMixin:
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
+            if lora_configs:
+                self._load_lora_lens(lora_configs)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:
@@ -666,8 +763,12 @@ class LensMixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
-                if applied_lora_count:
+                # The outer finally restores too; this only narrows the window.
+                # Guarded so a restore failure cannot replace the denoise error.
+                try:
                     self._unload_lora_lens()
+                except Exception as _lora_err:
+                    print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask
             if torch.cuda.is_available():
@@ -697,6 +798,13 @@ class LensMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
+            # Unwrap LoRA here, not only in the denoise finally: the wrappers are
+            # installed before the attention-backend call, so an exception there
+            # would otherwise carry them into the NEXT generation.
+            try:
+                self._unload_lora_lens()
+            except Exception as _lora_err:
+                print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             # Always free text encoder CUDA buffers on exit (normal or exception).
             # Next generation will reload it lazily before encoding.
             if self.lens_components.get("text_encoder") is not None:
@@ -831,7 +939,8 @@ class LensMixin:
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
+            if lora_configs:
+                self._load_lora_lens(lora_configs)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:
@@ -851,8 +960,12 @@ class LensMixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
-                if applied_lora_count:
+                # The outer finally restores too; this only narrows the window.
+                # Guarded so a restore failure cannot replace the denoise error.
+                try:
                     self._unload_lora_lens()
+                except Exception as _lora_err:
+                    print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask, init_latents
             if torch.cuda.is_available():
@@ -882,6 +995,10 @@ class LensMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
+            try:
+                self._unload_lora_lens()
+            except Exception as _lora_err:
+                print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             if self.lens_components.get("text_encoder") is not None:
                 import gc as _gc
                 self.lens_components["text_encoder"] = None
@@ -1027,7 +1144,8 @@ class LensMixin:
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
                                                        model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
-            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
+            if lora_configs:
+                self._load_lora_lens(lora_configs)
             transformer = self.lens_components["transformer"]
             self._lens_set_attention_backend(transformer, params)
             try:
@@ -1048,8 +1166,12 @@ class LensMixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
-                if applied_lora_count:
+                # The outer finally restores too; this only narrows the window.
+                # Guarded so a restore failure cannot replace the denoise error.
+                try:
                     self._unload_lora_lens()
+                except Exception as _lora_err:
+                    print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask, init_latents, mask_latent
             if torch.cuda.is_available():
@@ -1079,6 +1201,10 @@ class LensMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
+            try:
+                self._unload_lora_lens()
+            except Exception as _lora_err:
+                print(f"[Lens LoRA] WARNING: restore failed: {_lora_err}")
             if self.lens_components.get("text_encoder") is not None:
                 import gc as _gc
                 self.lens_components["text_encoder"] = None

@@ -59,13 +59,34 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
+def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
     raw: Dict[str, torch.Tensor] = {}
     with safe_open(path, framework="pt", device="cpu") as f:
+        metadata = dict(f.metadata() or {})
         for k in f.keys():
             raw[k] = f.get_tensor(k)
     fmt = "sd-scripts" if any(k.startswith("lora_unet_") or k.startswith(TE_KEY_PREFIX) for k in raw) else "unknown"
-    return raw, fmt
+    return raw, fmt, metadata
+
+
+def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:
+    """File-level LoRA alpha, or None.
+
+    Second rung of the precedence per-key ``.alpha`` tensor -> file metadata ->
+    rank. Without it a trainer that records alpha only in metadata (kohya's
+    ``ss_network_alpha``) silently applies at scale 1.0 instead of alpha/rank.
+    """
+    if not metadata:
+        return None
+    for key in ("lora_alpha", "ss_network_alpha"):
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 DEFAULT_SCOPE: Dict[str, bool] = {"attn": True, "mlp": True, "txt_embed": True}
@@ -217,27 +238,44 @@ def _apply_group(
     strength: float,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
-) -> int:
-    """Wrap each target Linear with a LoRALinearLayer carrying the grouped weights.
+    default_alpha: Optional[float] = None,
+) -> Tuple[int, int]:
+    """Wrap each target Linear with a LoRALinearLayer -> (applied, already_wrapped).
 
     grouped keys are namespaced ("" for transformer, "te::" for the text encoder);
     `namespace` selects which entries this pass consumes so a single state dict can
     hold both transformer and TE LoRA without collision.
+
+    A target already wrapped by an earlier LoRA is counted, not re-wrapped:
+    LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The caller
+    turns the count into a refusal or a warning.
+
+    ``default_alpha`` is the file-metadata alpha used for a module with no per-key
+    ``.alpha`` tensor (see alpha_from_metadata).
     """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
     applied = 0
+    occupied = 0
     for module_path, parent, attr, linear in targets:
         key = namespace + module_path
         weights = grouped.get(key)
         if weights is None:
             continue
+        if isinstance(linear, LoRALinearLayer):
+            occupied += 1
+            continue
         down, up = weights["down"], weights["up"]
         alpha_tensor = weights.get("alpha")
-        true_original = linear.original_module if isinstance(linear, LoRALinearLayer) else linear
+        true_original = linear
         lora_original_modules.setdefault(key, true_original)
         rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
+        if alpha_tensor is not None:
+            alpha_value = float(alpha_tensor.item())
+        elif default_alpha is not None:
+            alpha_value = float(default_alpha)
+        else:
+            alpha_value = float(rank)
         wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=key)
         device = true_original.weight.device
         compute_dtype = true_original.weight.dtype if true_original.weight.dtype.is_floating_point else torch.float32
@@ -250,7 +288,7 @@ def _apply_group(
         _set_module(parent, attr, wrapper)
         wrapped_keys.add(key)
         applied += 1
-    return applied
+    return applied, occupied
 
 
 def apply_lora_group(
@@ -260,10 +298,11 @@ def apply_lora_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
-) -> int:
+    default_alpha: Optional[float] = None,
+) -> Tuple[int, int]:
     return _apply_group(
         iter_minit2i_lora_targets(transformer, scope if scope is not None else _FULL_SCOPE),
-        grouped, "", strength, lora_original_modules, wrapped_keys,
+        grouped, "", strength, lora_original_modules, wrapped_keys, default_alpha,
     )
 
 
@@ -274,10 +313,11 @@ def apply_te_lora_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
-) -> int:
+    default_alpha: Optional[float] = None,
+) -> Tuple[int, int]:
     return _apply_group(
         iter_minit2i_te_lora_targets(text_encoder, scope if scope is not None else _TE_FULL_SCOPE),
-        grouped, TE_NAMESPACE, strength, lora_original_modules, wrapped_keys,
+        grouped, TE_NAMESPACE, strength, lora_original_modules, wrapped_keys, default_alpha,
     )
 
 
@@ -287,18 +327,31 @@ def restore_originals(
     wrapped_keys: Set[str],
     text_encoder: Optional[nn.Module] = None,
 ) -> int:
+    """Revert every wrapped module to its pre-LoRA original.
+
+    Restores only keys this session actually wrapped, and drops their bookkeeping
+    afterwards: a surviving ``lora_original_modules`` entry would be written into
+    the NEXT model loaded at the same path, i.e. one model's Linear installed into
+    another. Entries whose component is absent at unload time (a text encoder
+    already freed, say) are kept, so a later unload can still recover them.
+    """
     restored = 0
+    restored_keys: Set[str] = set()
     for module_path, parent, attr, _linear in iter_minit2i_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in lora_original_modules:
+        if module_path in wrapped_keys and module_path in lora_original_modules:
             _set_module(parent, attr, lora_original_modules[module_path])
+            restored_keys.add(module_path)
             restored += 1
     if text_encoder is not None:
         for module_path, parent, attr, _linear in iter_minit2i_te_lora_targets(text_encoder, _TE_FULL_SCOPE):
             key = TE_NAMESPACE + module_path
-            if key in lora_original_modules:
+            if key in wrapped_keys and key in lora_original_modules:
                 _set_module(parent, attr, lora_original_modules[key])
+                restored_keys.add(key)
                 restored += 1
-    wrapped_keys.clear()
+    for key in restored_keys:
+        lora_original_modules.pop(key, None)
+    wrapped_keys -= restored_keys
     return restored
 
 

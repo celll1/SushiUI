@@ -343,7 +343,7 @@ def test_flow_step_matches_vendor_noising_conditioning_and_velocity_math():
 
     context_call = {}
 
-    def build_context(model, shape, image, timestep, noise_scale):
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
         context_call.update(
             image=image.detach().clone(),
             timestep=timestep.detach().clone(),
@@ -407,7 +407,7 @@ def test_flow_step_conditions_on_unquantized_timestep_under_bf16():
     )
     context_call = {}
 
-    def build_context(model, shape, image, timestep, noise_scale):
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
         context_call.update(image=image.detach().clone(), timestep=timestep.detach().clone())
         return (
             model.patchify(image, 32),
@@ -508,7 +508,7 @@ def test_pixel_debug_dump_writes_previews_and_scalar_metrics(tmp_path):
         debug_captions=["a caption"],
         debug_reference_image_paths=[None],
     )
-    def build_context(model, shape, image, timestep, noise_scale):
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
         return model.patchify(image, 32), torch.full((1, 1, 1), 2.0), torch.ones(1, 1, 1)
 
     with patch(

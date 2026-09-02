@@ -591,9 +591,9 @@ def encode_prompt(
     )
 
 
-@torch.no_grad()
 def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: torch.Tensor, t: torch.Tensor,
-                        noise_scale: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        noise_scale: float, *,
+                        enable_grad: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Per-step embed construction (patchify -> gen-branch ViT -> +timestep/
     noise-scale embeddings), computed EXACTLY ONCE per step regardless of
     whether CFG needs a cond+uncond pair.
@@ -609,26 +609,33 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
     token) every step for no numeric benefit -- see the audit note this
     function's introduction is attached to.
 
-    Returns ``(z, image_embeds, timestep_embeddings)``."""
-    batch_size = prefix.batch_size
-    patch = transformer.patch_size * prefix.merge_size
-    z = transformer.patchify(image_prediction, patch)
-    image_input = transformer.patchify(image_prediction, transformer.patch_size, channel_first=True)
-    grid_hw = torch.tensor([[prefix.grid_h, prefix.grid_w]] * batch_size, device=image_prediction.device)
-    image_embeds = transformer.extract_feature(
-        image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,
-    ).view(batch_size, prefix.token_h * prefix.token_w, -1)
+    ``enable_grad`` is for the training reuse of this function only: three of
+    the four ``fm_modules`` entries are called from here, so a no-grad default
+    would silently exclude 12 of their 16 tensors from any run that trains them.
+    Every inference caller takes the default, which is exactly the
+    ``@torch.no_grad()`` this used to carry.
 
-    t_expanded = t.expand(batch_size * prefix.token_h * prefix.token_w)
-    timestep_embeddings = transformer.fm_modules["timestep_embedder"](t_expanded).view(
-        batch_size, prefix.token_h * prefix.token_w, -1)
-    if transformer.add_noise_scale_embedding:
-        noise_scale_tensor = torch.full_like(t_expanded, noise_scale / transformer.noise_scale_max_value)
-        noise_embeddings = transformer.fm_modules["noise_scale_embedder"](noise_scale_tensor).view(
+    Returns ``(z, image_embeds, timestep_embeddings)``."""
+    with torch.set_grad_enabled(enable_grad):
+        batch_size = prefix.batch_size
+        patch = transformer.patch_size * prefix.merge_size
+        z = transformer.patchify(image_prediction, patch)
+        image_input = transformer.patchify(image_prediction, transformer.patch_size, channel_first=True)
+        grid_hw = torch.tensor([[prefix.grid_h, prefix.grid_w]] * batch_size, device=image_prediction.device)
+        image_embeds = transformer.extract_feature(
+            image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,
+        ).view(batch_size, prefix.token_h * prefix.token_w, -1)
+
+        t_expanded = t.expand(batch_size * prefix.token_h * prefix.token_w)
+        timestep_embeddings = transformer.fm_modules["timestep_embedder"](t_expanded).view(
             batch_size, prefix.token_h * prefix.token_w, -1)
-        timestep_embeddings = timestep_embeddings + noise_embeddings
-    image_embeds = image_embeds + timestep_embeddings
-    return z, image_embeds, timestep_embeddings
+        if transformer.add_noise_scale_embedding:
+            noise_scale_tensor = torch.full_like(t_expanded, noise_scale / transformer.noise_scale_max_value)
+            noise_embeddings = transformer.fm_modules["noise_scale_embedder"](noise_scale_tensor).view(
+                batch_size, prefix.token_h * prefix.token_w, -1)
+            timestep_embeddings = timestep_embeddings + noise_embeddings
+        image_embeds = image_embeds + timestep_embeddings
+        return z, image_embeds, timestep_embeddings
 
 
 @torch.no_grad()

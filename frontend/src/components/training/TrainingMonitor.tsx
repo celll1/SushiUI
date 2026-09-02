@@ -182,6 +182,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           setRecentSecondsPerIteration(
             advanced > 0 && elapsed > 0 ? elapsed / 1000 / advanced : null
           );
+        } else if (status.status === "running" && status.phase === "sampling") {
+          // A sample doesn't advance training steps — leave the window and the
+          // displayed speed as they were rather than feeding it a non-step
+          // sample or blanking the readout for the duration of the render.
         } else {
           speedWindowRef.current = [];
           setRecentSecondsPerIteration(null);
@@ -563,6 +567,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                   {currentRun.phase === "latent_cache" && "Latent Cache"}
                   {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
                   {currentRun.phase === "training" && `Iteration ${currentRun.current_step} / ${currentRun.total_steps}`}
+                  {currentRun.phase === "sampling" && "Rendering sample"}
                   {currentRun.phase === "initializing" && "Initializing..."}
                   {!currentRun.phase && `Iteration ${currentRun.current_step} / ${currentRun.total_steps}`}
                 </span>
@@ -605,7 +610,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
               <div className="w-full bg-gray-700 rounded-full h-2">
                 <div
-                  className="bg-blue-600 h-2 rounded-full transition-all"
+                  className={`h-2 rounded-full transition-all ${
+                    currentRun.phase === "sampling" ? "bg-yellow-500" : "bg-blue-600"
+                  }`}
                   style={{
                     width: currentRun.phase === "training" || !currentRun.phase
                       ? `${currentRun.progress}%`
@@ -930,6 +937,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                     )}
                     {sampleQueueError && (
                       <p className="text-xxs leading-relaxed text-red-400">{sampleQueueError}</p>
+                    )}
+                    {currentRun.phase === "sampling" && (
+                      <p className="text-xxs text-yellow-400">
+                        Rendering now{currentRun.phase_detail ? `: ${currentRun.phase_detail}` : "..."}
+                      </p>
                     )}
                     {!!sampleQueue?.pending?.length && (
                       <p className="text-xxs text-gray-300">

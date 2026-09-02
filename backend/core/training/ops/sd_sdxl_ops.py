@@ -1030,6 +1030,24 @@ def train_step(
 # ControlNet override is preserved.
 
 
+def make_denoise_progress_callback(step_progress_callback):
+    """Adapts custom_sampling_loop's progress_callback(i, total, latents,
+    cfg_metrics=None, pred_original_sample=None) to the SampleContext
+    contract step_progress_callback(completed_steps, total_steps). Shared by
+    every custom_sampling_loop() call site (plain SD/SDXL and both
+    ControlNet variants) so they report through the same shape.
+    """
+    if step_progress_callback is None:
+        return None
+
+    def _adapter(i, total, latents, cfg_metrics=None, pred_original_sample=None):
+        if i < 0:
+            return
+        step_progress_callback(i + 1, total)
+
+    return _adapter
+
+
 def generate_sample(
     trainer,
     prompt: str,
@@ -1057,6 +1075,7 @@ def generate_sample(
     condition_image_path: Optional[str] = None,
     reference_image_path: Optional[str] = None,
     negative_prompt: str = "",
+    step_progress_callback=None,
 ):
     """
     Generate sample image during training (SD/SDXL).
@@ -1298,6 +1317,8 @@ def generate_sample(
         log_verbose(f"{trainer.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
         log_verbose(f"{trainer.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
 
+        _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
         # Use autocast for sample generation (ensures LoRA dtype compatibility)
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             image = custom_sampling_loop(
@@ -1315,7 +1336,7 @@ def generate_sample(
                 ancestral_generator=None,  # Not needed for training samples
                 latents=None,
                 prompt_embeds_callback=None,  # No prompt editing for training samples
-                progress_callback=None,
+                progress_callback=_denoise_progress_callback,
                 step_callback=None,
                 developer_mode=False,
                 cfg_schedule_type=cfg_schedule_type,

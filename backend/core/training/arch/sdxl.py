@@ -15,6 +15,7 @@ from core.training.components.wiring import SDXL_WIRING
 class SDXLArchHandler(ArchHandler):
     name = "sdxl"
     wiring = SDXL_WIRING
+    wires_sample_step_progress = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the
@@ -109,4 +110,5 @@ class SDXLArchHandler(ArchHandler):
             nag_negative_prompt=sample_ctx.nag_negative_prompt,
             condition_image_path=sample_ctx.condition_image_path,
             reference_image_path=sample_ctx.reference_image_path,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

@@ -15,6 +15,7 @@ from core.training.components.wiring import SD15_WIRING
 class SD15ArchHandler(ArchHandler):
     name = "sd15"
     wiring = SD15_WIRING
+    wires_sample_step_progress = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # ops/sd_sdxl_ops.py train_step maps the sampler's [0,1] draw
@@ -111,4 +112,5 @@ class SD15ArchHandler(ArchHandler):
             nag_negative_prompt=sample_ctx.nag_negative_prompt,
             condition_image_path=sample_ctx.condition_image_path,
             reference_image_path=sample_ctx.reference_image_path,
+            step_progress_callback=sample_ctx.step_progress_callback,
         )

@@ -37,7 +37,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
@@ -151,6 +151,10 @@ class SampleContext:
     sensenova_timestep_shift: float = _TRAINING_DEFAULTS["sensenova_sample_timestep_shift"]
     sensenova_img_cfg_scale: float = _TRAINING_DEFAULTS["sensenova_sample_img_cfg_scale"]
     sensenova_cfg_norm: str = _TRAINING_DEFAULTS["sensenova_sample_cfg_norm"]
+    # Optional. If set, an arch's sample() calls it as
+    # step_progress_callback(completed_steps, total_steps) once per completed
+    # denoising step; archs that don't wire it simply never call it.
+    step_progress_callback: Optional[Callable[[int, int], None]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +294,16 @@ class ArchHandler(ABC):
     #: This is a capability declaration, not the implementation: a handler that
     #: sets it must also override the hook its stage names.
     cfg_null_stage: Optional[str] = None
+
+    #: Whether this handler's ``generate_sample`` actually forwards
+    #: ``SampleContext.step_progress_callback`` into the arch's sample loop.
+    #: The capability table (``api.arch_capabilities``) only says whether
+    #: ``sample()`` runs at all, not whether it drives this callback -- an
+    #: arch can pass the capability check and still never move the bar past
+    #: its start position. Trainer-side ``emit_start()`` gates on BOTH.
+    #: Flip this to ``True`` on a handler only once its ``generate_sample``
+    #: actually calls ``step_progress_callback``.
+    wires_sample_step_progress: bool = False
 
     def __init__(self, trainer: Any = None):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical

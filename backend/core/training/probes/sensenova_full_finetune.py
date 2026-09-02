@@ -571,8 +571,8 @@ def _run_train_arm(args: argparse.Namespace) -> dict[str, Any]:
     # the config alone.
     overlap_observed: dict[str, Any] = {}
 
-    def progress_callback(phase, step, total, epoch=0, loss=None):
-        del total, epoch
+    def progress_callback(phase, step, total, epoch=0, loss=None, detail=None):
+        del total, epoch, detail
         if phase != "training":
             return
         live = getattr(trainer, "sensenova_phase_evictor", None)
@@ -1082,8 +1082,8 @@ def _run_resume_arm(args: argparse.Namespace) -> dict[str, Any]:
     steps: list[int] = []
     step_peaks = _StepPeakRecorder()
 
-    def progress_callback(phase, step, total, epoch=0, loss=None):
-        del total, epoch
+    def progress_callback(phase, step, total, epoch=0, loss=None, detail=None):
+        del total, epoch, detail
         if phase != "training":
             return
         if loss is None or not math.isfinite(float(loss)):

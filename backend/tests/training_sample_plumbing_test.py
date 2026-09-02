@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import sys
 from pathlib import Path
@@ -425,3 +426,247 @@ def test_fixed_sample_seed_does_not_draw(monkeypatch):
     monkeypatch.setattr("core.training.base_trainer.secrets.randbelow", draw)
     assert _ConcreteTrainer._resolve_sample_seed(42) == 42
     draw.assert_not_called()
+
+
+def test_generate_sample_forwards_step_progress_callback_to_sd_sdxl_ops(monkeypatch):
+    """base_trainer.generate_sample() must hand step_progress_callback through
+    to ops.sd_sdxl_ops.generate_sample() unchanged -- the only place the real
+    denoise loop's per-step callback is wired in."""
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    from core.training.ops import sd_sdxl_ops
+
+    generate = Mock(return_value="sample")
+    monkeypatch.setattr(sd_sdxl_ops, "generate_sample", generate)
+    callback = Mock()
+    result = trainer.generate_sample("prompt", step_progress_callback=callback)
+    assert result == "sample"
+    assert generate.call_args.kwargs["step_progress_callback"] is callback
+
+
+def test_denoise_progress_adapter_maps_completed_and_skips_negative_index():
+    """The shared adapter (used by plain SD/SDXL and both ControlNet sample
+    paths) turns custom_sampling_loop's 0-based (i, total, ...) into the
+    SampleContext contract step_progress_callback(completed_steps, total_steps),
+    and drops the loop's pre-start i=-1 call."""
+    from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+
+    assert make_denoise_progress_callback(None) is None
+
+    calls = []
+    adapter = make_denoise_progress_callback(lambda completed, total: calls.append((completed, total)))
+    adapter(-1, 28, latents=None)
+    adapter(0, 28, latents=None)
+    adapter(27, 28, latents=None)
+    assert calls == [(1, 28), (28, 28)]
+
+
+def test_controlnet_sample_paths_wire_step_progress_callback():
+    """F4: both real ControlNet sample helpers (standard + LLLite) must accept
+    step_progress_callback, receive it from generate_sample()'s dispatch, and
+    build their custom_sampling_loop progress_callback through the SAME shared
+    adapter as plain SD/SDXL and the base fallback -- not a fourth copy."""
+    source = (ROOT / "backend/core/training/controlnet_trainer.py").read_text(encoding="utf-8")
+    # 2 super().generate_sample() fallbacks (already forwarded) + 2 real
+    # dispatch call sites (_generate_sample_standard/_generate_sample_lllite).
+    assert source.count("step_progress_callback=step_progress_callback") == 4
+    assert source.count("def _generate_sample_standard(") == 1
+    assert source.count("def _generate_sample_lllite(") == 1
+    assert source.count("from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback") == 2
+    assert source.count("_denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)") == 2
+    assert source.count("progress_callback=_denoise_progress_callback,") == 2
+    assert "progress_callback=None,\n                    step_callback=None," not in source
+
+
+def _find_train_method(tree: ast.AST) -> ast.FunctionDef:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "train":
+            return node
+    raise AssertionError("BaseTrainer.train() not found")
+
+
+def _stmt_lists_containing(target: ast.AST, tree: ast.AST):
+    """Every (body_list, index) pair whose list directly contains `target`."""
+    for candidate in ast.walk(tree):
+        for attr in ("body", "orelse", "finalbody"):
+            body = getattr(candidate, attr, None)
+            if isinstance(body, list) and target in body:
+                yield body, body.index(target)
+
+
+def _find_if_by_test_src(tree: ast.AST, test_src: str) -> ast.If:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and ast.unparse(node.test) == test_src:
+            return node
+    raise AssertionError(f"no `if {test_src}:` found")
+
+
+def _find_call_by_func_name(node: ast.AST, func_name: str) -> ast.Call:
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if isinstance(func, ast.Name) and func.id == func_name:
+            return child
+        if isinstance(func, ast.Attribute) and func.attr == func_name:
+            return child
+    raise AssertionError(f"no call to {func_name}() found inside {ast.dump(node)[:80]}")
+
+
+def _kwarg_src(call: ast.Call, name: str) -> str:
+    for kw in call.keywords:
+        if kw.arg == name:
+            return ast.unparse(kw.value)
+    raise AssertionError(f"call has no keyword {name!r}")
+
+
+def _assert_precedes_in_same_block(tree: ast.AST, earlier: ast.AST, later: ast.AST) -> None:
+    earlier_lists = {id(body): idx for body, idx in _stmt_lists_containing(earlier, tree)}
+    for body, idx in _stmt_lists_containing(later, tree):
+        if id(body) in earlier_lists:
+            assert earlier_lists[id(body)] < idx
+            return
+    raise AssertionError("nodes do not share an enclosing statement list")
+
+
+def test_step0_sample_restore_fires_with_bound_operands_after_dispatch():
+    """F7: the step-0 phase="sampling" takeover is followed, in the same
+    statement list and after the dispatch that produced it, by an explicit
+    phase="training" restore carrying the trainer's own in-scope step/total
+    -- not left for a callback that may never come."""
+    tree = ast.parse((ROOT / "backend/core/training/base_trainer.py").read_text(encoding="utf-8"))
+    train_method = _find_train_method(tree)
+
+    dispatch_call = _find_call_by_func_name(train_method, "_run_step0_sample_if_due")
+    dispatch_stmt = next(
+        n for n in ast.walk(train_method)
+        if isinstance(n, ast.Expr) and any(c is dispatch_call for c in ast.walk(n))
+    )
+    restore_if = _find_if_by_test_src(
+        train_method,
+        "sample_every_n_steps > 0 and global_step == 0 and progress_callback",
+    )
+    restore_call = _find_call_by_func_name(restore_if, "progress_callback")
+    assert _kwarg_src(restore_call, "phase") == "'training'"
+    assert _kwarg_src(restore_call, "step") == "global_step"
+    assert _kwarg_src(restore_call, "total") == "actual_total_steps"
+
+    _assert_precedes_in_same_block(train_method, dispatch_stmt, restore_if)
+
+
+def test_sample_batch_restore_fires_with_bound_operands_before_step_exit():
+    """F1: the post-sample-jobs phase="training" restore must carry the
+    trainer's own in-scope step/total and must lexically precede the
+    `global_step >= actual_total_steps` early exit within the same block --
+    that exit returns before the epoch-level progress update below it, so a
+    restore placed after it would never run on the run's final batch."""
+    tree = ast.parse((ROOT / "backend/core/training/base_trainer.py").read_text(encoding="utf-8"))
+    train_method = _find_train_method(tree)
+
+    restore_if = _find_if_by_test_src(train_method, "sample_jobs and progress_callback")
+    restore_call = _find_call_by_func_name(restore_if, "progress_callback")
+    assert _kwarg_src(restore_call, "phase") == "'training'"
+    assert _kwarg_src(restore_call, "step") == "global_step"
+    assert _kwarg_src(restore_call, "total") == "actual_total_steps"
+
+    early_exit_if = _find_if_by_test_src(train_method, "global_step >= actual_total_steps")
+    _assert_precedes_in_same_block(train_method, restore_if, early_exit_if)
+
+
+@pytest.mark.parametrize(
+    "arch_name,wires_progress,expect_start",
+    [
+        ("sd15", True, True),
+        ("sdxl", True, True),
+        # Unsupported for training_samples at all (sample() is a no-op) --
+        # the capability gate must suppress even if a future handler flips
+        # wires_sample_step_progress.
+        ("ideogram4", True, False),
+        ("minimax_h3", True, False),
+        ("acestep", True, False),
+        # Capability-supported but its handler never forwards
+        # step_progress_callback into generate_sample (L1): must not start
+        # the bar for it either.
+        ("flux2", False, False),
+    ],
+)
+def test_step0_sample_start_gated_on_capability_and_wiring(arch_name, wires_progress, expect_start):
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    trainer.output_dir = Path("unused")
+    trainer.run_id = 1
+    trainer.log_prefix = "[test]"
+    trainer.arch = SimpleNamespace(name=arch_name, wires_sample_step_progress=wires_progress)
+    trainer._sample_prompts = [{"positive": "one", "negative": "none"}]
+    trainer._dispatch_sample = Mock(return_value=None)
+    trainer._step0_sample_done_for_this_run = Mock(return_value=False)
+
+    calls = []
+    trainer._run_step0_sample_if_due(
+        sample_every_n_steps=10,
+        sample_width=64, sample_height=64,
+        sample_guidance_scale=4.0, sample_steps=2, sample_seed=-1,
+        sample_sampler="euler", sample_schedule_type="uniform",
+        sample_cfg_schedule_type="cosine", sample_cfg_schedule_min=1.5,
+        sample_cfg_schedule_max=6.0, sample_cfg_schedule_power=2.5,
+        sample_cfg_rescale_snr_alpha=0.2, sample_dynamic_threshold_percentile=99.5,
+        sample_dynamic_threshold_mimic_scale=6.5, sample_nag_enable=False,
+        sample_nag_scale=4.5, sample_nag_tau=3.0, sample_nag_alpha=0.3,
+        sample_nag_sigma_end=2.0, sample_nag_negative_prompt="",
+        sensenova_sample_timestep_shift=3.0, sensenova_sample_img_cfg_scale=1.0,
+        sensenova_sample_cfg_norm="global",
+        global_step=0,
+        progress_callback=lambda **kwargs: calls.append(kwargs),
+    )
+    started = any(c.get("phase") == "sampling" and c.get("step") == 0 for c in calls)
+    assert started is expect_start
+
+
+def test_sample_step_progress_scales_into_segment_when_scheduler_overruns():
+    """F3: a scheduler that runs more timesteps than sample_steps (DPM2/DPM2a,
+    ~2N-1) must not defeat the throttle or overrun the prompt's reserved
+    segment once completed_steps clamps past sample_steps."""
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    trainer.log_prefix = "[test]"
+    calls = []
+    emit_start, step_cb = trainer._make_sample_progress_reporter(
+        lambda **kwargs: calls.append(kwargs),
+        base_offset=0,
+        total_units=28,
+        label="prompt",
+        sample_steps=28,
+    )
+    total_steps = 55  # e.g. KDPM2 for a configured sample_steps=28
+    for i in range(1, total_steps + 1):
+        step_cb(i, total_steps)
+
+    # Throttle keyed off the loop's own total_steps: far fewer than one
+    # commit per iteration, even past the point sample_steps clamps.
+    assert len(calls) < total_steps
+    # Every reported step stays inside the segment reserved for this prompt.
+    for call in calls:
+        assert 0 <= call["step"] <= 28
+    # Final iteration always reports exactly the segment's end.
+    assert calls[-1]["step"] == 28
+    assert calls[-1]["total"] == 28
+
+
+def test_sample_step_progress_reaches_segment_end_when_scheduler_underruns():
+    """F3 the other direction: a scheduler that runs FEWER timesteps than the
+    configured sample_steps (e.g. a low sample_steps with a scheduler that
+    floors below it) must still land exactly on the segment's reserved end,
+    not undershoot it."""
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    trainer.log_prefix = "[test]"
+    calls = []
+    emit_start, step_cb = trainer._make_sample_progress_reporter(
+        lambda **kwargs: calls.append(kwargs),
+        base_offset=0,
+        total_units=28,
+        label="prompt",
+        sample_steps=28,
+    )
+    total_steps = 10  # fewer loop iterations than the configured sample_steps
+    for i in range(1, total_steps + 1):
+        step_cb(i, total_steps)
+
+    assert calls[-1]["step"] == 28
+    assert calls[-1]["total"] == 28

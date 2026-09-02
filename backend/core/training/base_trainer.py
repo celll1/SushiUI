@@ -5218,7 +5218,8 @@ class BaseTrainer(ABC):
     _grad_t_cos_probe = None
 
     def _maybe_build_grad_t_cos_probe(self, timestep_sampler,
-                                      multi_noise_timesteps: int) -> None:
+                                      multi_noise_timesteps: int,
+                                      batch_size: int = 1) -> None:
         """Arm the noisy-vs-clean gradient cosine probe, if the config asks for it.
 
         Answers one question the measured gradient NORMS cannot: are the two
@@ -5242,6 +5243,13 @@ class BaseTrainer(ABC):
         if multi_noise_timesteps <= 1:
             print(f"{self.log_prefix} grad_timestep_cosine_probe needs "
                   f"multi_noise_timesteps > 1 to have two buckets; disabled")
+            return
+        if int(batch_size or 1) > 1:
+            # One backward carries every item's gradient summed, and the
+            # items draw their own timesteps, so a pass has no single t to
+            # bucket by.
+            print(f"{self.log_prefix} grad_timestep_cosine_probe needs batch_size=1 "
+                  f"(a batch's items have different timesteps); disabled")
             return
         if not getattr(self, "use_fused_backward", False):
             print(f"{self.log_prefix} grad_timestep_cosine_probe needs the fused "
@@ -7794,12 +7802,93 @@ class BaseTrainer(ABC):
             return aux[lo:hi]
         return aux
 
-    @staticmethod
-    def _collate_sensenova_b1_prefix(prefixes: List[Any]) -> Any:
-        """Return the one opaque prefix allowed in a physical SenseNova batch."""
-        if len(prefixes) != 1:
-            raise ValueError("SenseNova B1 collation requires exactly one prompt prefix")
-        return prefixes[0]
+    def _encode_sensenova_batch_prefix(self, items: List[Any]) -> Any:
+        """Encode a physical batch's prompts into one prefix.
+
+        ``items`` are ``(caption, reference_image_paths_or_None, cfg_null)``
+        per surviving item. One item takes the single-prompt encode unchanged;
+        several are packed into one understanding pass (``encode_prompts``),
+        which is what lets a SenseNova batch exceed one image. Stashes what
+        ``_sensenova_mnt_conditioning`` needs to rebuild the prefix under a
+        different null label later in the MNT window.
+        """
+        requires_grad = bool(getattr(self, "train_text_encoder", False))
+        self._sensenova_alt_cfg_null_prefix = None
+        self._sensenova_alt_cfg_null_prefixes = {}
+        if len(items) == 1:
+            caption, ref_paths, cfg_null = items[0]
+            prefix, _ = self.encode_caption(
+                caption,
+                requires_grad=requires_grad,
+                reference_image_paths=ref_paths,
+                cfg_null=bool(cfg_null),
+            )
+            # Kept literal rather than a shared variable, to
+            # match cfg_null_sensenova_test.py's source check.
+            self._sensenova_prefix_cfg_null = bool(cfg_null)
+            self._sensenova_batch_ref_paths = None
+            return prefix
+        captions = [caption for caption, _, _ in items]
+        ref_paths = [paths for _, paths, _ in items]
+        labels = [bool(flag) for _, _, flag in items]
+        self._sensenova_prefix_cfg_null = labels
+        self._sensenova_batch_ref_paths = ref_paths
+        return self.arch.encode_prompts(
+            self,
+            captions,
+            requires_grad=requires_grad,
+            reference_image_paths=ref_paths,
+            cfg_null=labels,
+        )
+
+    def _sensenova_mnt_conditioning_packed(
+        self,
+        prefix: Any,
+        *,
+        captions: List[str],
+        mnt_index: int,
+        cfg_null: List[bool],
+    ):
+        """``_sensenova_mnt_conditioning`` for a packed batch (one label per item).
+
+        A trainable branch re-encodes the whole packed batch every iteration;
+        a frozen one reuses the assembly prefix while the label vector matches
+        and otherwise builds the other vector's prefix once per batch, memoized
+        by the vector (a batch of B items has at most 2^B of them, in practice
+        the one or two the per-MNT redraw produces).
+        """
+        labels = [bool(x) for x in cfg_null]
+        if len(labels) != len(captions):
+            raise ValueError(
+                f"SenseNova packed MNT conditioning: {len(labels)} label(s) for "
+                f"{len(captions)} caption(s)"
+            )
+        ref_paths = getattr(self, "_sensenova_batch_ref_paths", None)
+        if mnt_index > 0 and bool(getattr(self, "train_text_encoder", False)):
+            prefix = self.arch.encode_prompts(
+                self, captions, requires_grad=True,
+                reference_image_paths=ref_paths, cfg_null=labels,
+            )
+        elif mnt_index > 0:
+            assembly = getattr(self, "_sensenova_prefix_cfg_null", None)
+            if not isinstance(assembly, list):
+                raise RuntimeError(
+                    "_sensenova_prefix_cfg_null holds no per-item labels at "
+                    "mnt_index > 0 on a packed SenseNova batch; the assembly "
+                    "encode should have stashed them before the MNT loop started"
+                )
+            if labels != assembly:
+                memo = getattr(self, "_sensenova_alt_cfg_null_prefixes", None)
+                if memo is None:
+                    memo = self._sensenova_alt_cfg_null_prefixes = {}
+                key = tuple(labels)
+                if key not in memo:
+                    memo[key] = self.arch.encode_prompts(
+                        self, captions, requires_grad=False,
+                        reference_image_paths=ref_paths, cfg_null=labels,
+                    )
+                prefix = memo[key]
+        return None, None, None, prefix
 
     def _sensenova_mnt_conditioning(
         self,
@@ -7821,6 +7910,11 @@ class BaseTrainer(ABC):
         four_phase = getattr(self, "sensenova_four_phase", None)
         if four_phase is not None and four_phase.shared_window:
             return None, None, None, prefix
+        if isinstance(cfg_null, (list, tuple)):
+            return self._sensenova_mnt_conditioning_packed(
+                prefix, captions=list(captions or []), mnt_index=mnt_index,
+                cfg_null=list(cfg_null),
+            )
         if (
             mnt_index > 0
             and bool(getattr(self, "train_text_encoder", False))
@@ -11690,11 +11784,14 @@ class BaseTrainer(ABC):
         if self.is_sensenova:
             from core.training.ops.training_method import is_full_finetune
             _sensenova_full_ft = is_full_finetune(self)
-            if batch_size != 1:
+            if batch_size > 1 and not enable_bucketing:
+                # A physical batch is one pixel tensor [B, 3, H, W] and one
+                # noise scale, so every item must share a resolution; only
+                # the bucket manager guarantees that.
                 raise ValueError(
-                    "SenseNova training requires batch_size=1"
-                    + ("" if _sensenova_full_ft else
-                       "; use gradient_accumulation_steps for a larger effective batch")
+                    f"SenseNova training with batch_size={batch_size} requires "
+                    "enable_bucketing so every item in a batch has the same "
+                    "resolution; batch_size=1 works without bucketing"
                 )
             if self.blocks_to_swap != 0:
                 raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
@@ -12216,7 +12313,8 @@ class BaseTrainer(ABC):
         # probe needs `use_fused_backward` (set while the optimizer is built) and
         # the adapter's parameter classification, neither of which exists at the
         # point the timestep sampler is constructed.
-        self._maybe_build_grad_t_cos_probe(timestep_sampler, multi_noise_timesteps)
+        self._maybe_build_grad_t_cos_probe(timestep_sampler, multi_noise_timesteps,
+                                           batch_size)
 
         # Resolution curriculum phase-0 setup: seed the original-size map (so a later
         # warmup->target rebucket can grow dims back), and point the initial bucketing at
@@ -14035,7 +14133,7 @@ class BaseTrainer(ABC):
 
                     latents_list = []
                     text_embeddings_list = []
-                    sensenova_prefixes = []
+                    sensenova_prompt_items = []
                     # Frozen-branch per-MNT null: memoizes at most one alternate-
                     # label prefix per batch (see _sensenova_mnt_conditioning).
                     # Reset every batch so a stale value cannot be read as this
@@ -14317,32 +14415,24 @@ class BaseTrainer(ABC):
                         caption = item.get("caption", "")
 
                         if self.is_sensenova:
-                            # References enter through the PROMPT PREFIX here, not
+                            # References enter through the PROMPT PREFIX, not
                             # through encode_image: sensenova_ops owns their loading
                             # and ImageNet normalization so the trainer's bucket /
-                            # [-1,1] pipeline can never touch them.
-                            # requires_grad follows train_text_encoder: SenseNova's
-                            # prompt encoder IS the understanding branch of the same
-                            # LLM that denoises, so a trainable "text encoder" means
-                            # a differentiable prefix pass.
-                            # The aligned null replaces the prompt HERE, inside
-                            # the encode, so the null prefix's own token count
-                            # is what reaches train_step's image indexes.
-                            prefix, _ = self.encode_caption(
+                            # [-1,1] pipeline can never touch them. The encode
+                            # itself runs once per batch after the latent-size
+                            # filter (see _encode_sensenova_batch_prefix), so a
+                            # dropped item never leaves a stray prefix behind
+                            # and a batch of several prompts is packed into ONE
+                            # understanding pass. The aligned null replaces the
+                            # prompt inside that encode, so the null prefix's own
+                            # token count is what reaches train_step's indexes.
+                            sensenova_prompt_items.append((
                                 caption,
-                                requires_grad=bool(getattr(self, "train_text_encoder", False)),
-                                reference_image_paths=(
-                                    item.get("reference_images") or []
-                                ) if use_reference_images else None,
-                                cfg_null=(cfg_drop_mask is not None
-                                          and bool(cfg_drop_mask[item_index])),
-                            )
-                            sensenova_prefixes.append(prefix)
-                            # Kept literal rather than a shared variable, to
-                            # match cfg_null_sensenova_test.py's source check.
-                            self._sensenova_prefix_cfg_null = (
-                                cfg_drop_mask is not None
-                                and bool(cfg_drop_mask[item_index]))
+                                (item.get("reference_images") or [])
+                                if use_reference_images else None,
+                                (cfg_drop_mask is not None
+                                 and bool(cfg_drop_mask[item_index])),
+                            ))
                         elif text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
                             # Get from swap buffer using image_path as key (dict lookup).
                             # Both swap_onthefly and cpu_prefetch share this consumer:
@@ -14640,6 +14730,8 @@ class BaseTrainer(ABC):
                                 repa_pixels_list = [repa_pixels_list[i] for i in valid_indices]
                             if micro_cond_list:
                                 micro_cond_list = [micro_cond_list[i] for i in valid_indices]
+                            if sensenova_prompt_items:
+                                sensenova_prompt_items = [sensenova_prompt_items[i] for i in valid_indices]
                             if cfg_drop_mask is not None:
                                 # Re-indexed, never redrawn: the label was
                                 # already spent on the surviving items' encodes.
@@ -14656,8 +14748,13 @@ class BaseTrainer(ABC):
 
                     sensenova_prefix = None
                     if self.is_sensenova:
-                        sensenova_prefix = self._collate_sensenova_b1_prefix(
-                            sensenova_prefixes
+                        if len(sensenova_prompt_items) != latents.shape[0]:
+                            raise RuntimeError(
+                                f"SenseNova batch assembly: {len(sensenova_prompt_items)} "
+                                f"prompt(s) for {latents.shape[0]} image(s)"
+                            )
+                        sensenova_prefix = self._encode_sensenova_batch_prefix(
+                            sensenova_prompt_items
                         )
 
                     # onthefly_gpu latent encoding keeps the VAE on GPU per batch (see the
@@ -14805,7 +14902,7 @@ class BaseTrainer(ABC):
 
                     # Free individual item lists (no longer needed, batch tensors are created)
                     del latents_list, text_embeddings_list, auxiliary_data_list
-                    del sensenova_prefixes
+                    del sensenova_prompt_items
                     if reference_latents_list:
                         del reference_latents_list
                     if condition_images_list:
@@ -14960,8 +15057,13 @@ class BaseTrainer(ABC):
                                 captions=batch_captions,
                                 mnt_index=mnt_idx,
                                 # B1: the batch's one item is the one label.
-                                cfg_null=(mnt_cfg_drop_mask is not None
-                                          and bool(mnt_cfg_drop_mask[0])),
+                                # A packed batch passes one label per item.
+                                cfg_null=(
+                                    [bool(x) for x in mnt_cfg_drop_mask.tolist()]
+                                    if mnt_cfg_drop_mask is not None and batch_size > 1
+                                    else (mnt_cfg_drop_mask is not None
+                                          and bool(mnt_cfg_drop_mask[0]))
+                                ),
                             )
                             # Declare the window the shared boundary cut serves.
                             # No-op unless the shared route is armed.

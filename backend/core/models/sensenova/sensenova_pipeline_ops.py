@@ -626,7 +626,17 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
             image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,
         ).view(batch_size, prefix.token_h * prefix.token_w, -1)
 
-        t_expanded = t.expand(batch_size * prefix.token_h * prefix.token_w)
+        # ``t`` is a scalar at inference; training may pass one value per item
+        # (``batch_size`` of them), each repeated over that item's tokens.
+        t_flat = torch.as_tensor(t).reshape(-1)
+        if t_flat.numel() == batch_size and batch_size > 1:
+            t_expanded = t_flat.repeat_interleave(prefix.token_h * prefix.token_w)
+        elif t_flat.numel() == 1:
+            t_expanded = t_flat.expand(batch_size * prefix.token_h * prefix.token_w)
+        else:
+            raise ValueError(
+                f"_build_step_context: {t_flat.numel()} timestep(s) for batch {batch_size}"
+            )
         timestep_embeddings = transformer.fm_modules["timestep_embedder"](t_expanded).view(
             batch_size, prefix.token_h * prefix.token_w, -1)
         if transformer.add_noise_scale_embedding:

@@ -85,7 +85,7 @@ class SenseNovaFourPhaseBackward:
         self._window_backwards = 0
         self._window_aborted = False
         self._phase_three_ran = False
-        return _TrainingPrefixCache(layers)
+        return _TrainingPrefixCache(layers, packed=getattr(cache, "packed", None))
 
     # -- shared window ------------------------------------------------------
 

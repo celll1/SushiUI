@@ -22,8 +22,8 @@ combinations are refused during preflight, before model weights are loaded.
 Every full-parameter run must satisfy all of the following:
 
 - bf16 precision;
-- batch size 1;
-- gradient accumulation 1;
+- gradient accumulation 1 (a physical batch above 1 needs `enable_bucketing`,
+  see "Packed batches" below);
 - EMA disabled;
 - `blocks_to_swap: 0`;
 - optimizer `adafactor`, or a supported ring-buffer optimizer with
@@ -40,6 +40,40 @@ constructed tree; the checkpoint's metadata is required and required to agree,
 but can only narrow acceptance. A resume has actually been run for the
 `gen`/`mixed` pair; `both`/`bf16` reaching the same acceptance is an inference
 from the same write/read path, not a measured run.
+
+## Packed batches (batch_size > 1)
+
+A physical batch is one pixel tensor `[B, 3, H, W]` at one resolution (one
+noise scale), so `batch_size > 1` requires `enable_bucketing`; without it the
+run is refused before the datasets are read. Prompts of different token counts
+are not padded: `sensenova_ops.encode_prompts` builds each item's prefix inputs
+exactly as the single encode does (template, aligned null per item, reference
+splice) and lays them end to end along the sequence axis with batch dim 1
+(`pack_prefix_inputs`, vendor `PackedSegments`). RoPE reads each token's own
+t/h/w index, so packing changes no position; the understanding stack keeps the
+segments apart with `create_packed_block_causal_mask` on the eager path and the
+varlen conduit entry (`core.attention.dispatch_attention_varlen`,
+`flash_attn_varlen_func` or one SDPA call per segment) on the causal fast path.
+The generation tokens are packed the same way; `PackedGenPlan` lays item i's
+prefix K/V next to its own image K/V so the same varlen call confines each
+image to its own prompt. Item i's image tokens sit at `t = text_lengths[i]`,
+as in the single form. The frozen packed prefix goes through the training
+prefix loop under `no_grad` (the vendor prefix forward has no packed-mask
+entry); the differentiable and four-phase routes are unchanged, the cut
+carrying the segment layout with it. Per-MNT null labels are one per item;
+a frozen branch memoizes each label vector's prefix within the batch.
+
+Measured on the int8 base at 512px (probe, 2026-09-02): packed vs single
+K/V and generation hidden states differ at the bf16 kernel level only --
+the same ~3% relative Frobenius the single training loop already shows
+against the vendor eager prefix forward (layer 0 identical; the drift is 42
+layers of SDPA/flash vs eager rounding), 0.0 for the native per-segment path
+against a single SDPA, and 0.4% on the generation hidden states with a shared
+prefix. The gen ViT and timestep embedder are batch-exact at B=2 and differ
+by GEMM-shape rounding at B>=3. A B=3 step with the fm_modules trainable
+backpropagated finite gradients at a 37.7 GiB peak (int8 base). The
+`grad_timestep_cosine_probe` is disabled at batch_size > 1 (a summed backward
+has no single t to bucket by).
 
 ## Model-specific training path
 

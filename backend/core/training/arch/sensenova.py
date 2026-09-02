@@ -46,6 +46,21 @@ class SenseNovaArchHandler(ArchHandler):
             reference_image_paths=reference_image_paths,
         )
 
+    def encode_prompts(
+        self, trainer, prompts, *, requires_grad: bool = False,
+        reference_image_paths=None, cfg_null=None,
+    ):
+        """One packed prefix for a physical batch (``sensenova_ops.encode_prompts``)."""
+        from core.training.ops import sensenova_ops
+
+        return sensenova_ops.encode_prompts(
+            trainer,
+            list(prompts),
+            requires_grad=requires_grad,
+            reference_image_paths=reference_image_paths,
+            cfg_null=cfg_null,
+        )
+
     def encode_prompt_cfg_null(
         self, trainer, prompt, *, requires_grad: bool = False,
         reference_image_paths=None, **kwargs

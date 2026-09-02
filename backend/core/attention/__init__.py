@@ -28,12 +28,13 @@ from .config import (
     to_diffusers_backend,
     validate_backend,
 )
-from .dispatch import AttentionMode, dispatch_attention
+from .dispatch import AttentionMode, dispatch_attention, dispatch_attention_varlen
 from .observed import begin_generation, observed_backends
 from .registry import BACKENDS, AttentionBackend
 
 __all__ = [
     "dispatch_attention",
+    "dispatch_attention_varlen",
     "AttentionMode",
     "normalize_backend",
     "resolve_backend",

@@ -512,8 +512,11 @@ def test_gates5_and_6_stay_flux2_only_and_sensenova_is_wired_elsewhere():
     (the prompt prefix), NOT by being added to them."""
     source = _source("core/training/base_trainer.py")
     assert source.count("use_reference_images and self.is_flux2") == 2
-    assert "reference_image_paths=(" in source
     assert "item.get(\"reference_images\") or []" in source
+    # The paths ride with the caption to the per-batch prefix encode.
+    encode = source[source.index("def _encode_sensenova_batch_prefix("):]
+    encode = encode[:encode.index("def _sensenova_mnt_conditioning_packed(")]
+    assert "reference_image_paths=ref_paths" in encode
 
 
 def test_arch_capabilities_declares_all_reference_training_paths():

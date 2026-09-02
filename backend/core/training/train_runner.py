@@ -1875,6 +1875,7 @@ def update_training_progress(
     epoch: int = 0,
     loss: float = None,
     lr: float = None,
+    detail: str = None,
 ):
     """
     Update training run progress in database with phase-based progress.
@@ -1882,12 +1883,14 @@ def update_training_progress(
     Args:
         db: Database session
         run_id: Training run ID
-        phase: Current phase ("initializing", "latent_cache", "text_encoder_cache", "training")
+        phase: Current phase ("initializing", "latent_cache", "text_encoder_cache", "training", "sampling")
         step: Current step within phase
         total: Total steps in phase
         epoch: Current epoch (training phase only)
         loss: Current loss (training phase only)
         lr: Learning rate (training phase only)
+        detail: Pre-built phase_detail override (used by "sampling" to name the
+            prompt being rendered); ignored for phases with a fixed template.
     """
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if run:
@@ -1910,6 +1913,8 @@ def update_training_progress(
             run.phase_detail = f"Generating latent cache: {step}/{total} items"
         elif phase == "text_encoder_cache":
             run.phase_detail = f"Encoding captions: {step}/{total} captions"
+        elif phase == "sampling":
+            run.phase_detail = detail or f"Generating sample: {step}/{total}"
         elif phase == "training":
             run.phase_detail = f"Epoch {epoch}, Step {step}/{total}"
             run.current_step = step
@@ -2600,7 +2605,7 @@ def main():
                 num_epochs = 1
 
             # Progress callback (update DB only, no print to avoid cluttering tqdm output)
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
                 # Get current learning rate from optimizer (if available)
                 lr = None
                 if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
@@ -2609,7 +2614,7 @@ def main():
                     if phase == "training" and step % 100 == 0:
                         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
                         print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
 
             # Total steps callback (called once when actual total_steps is determined)
             def update_total_steps_callback(total_steps: int):
@@ -3044,14 +3049,14 @@ def main():
                 num_epochs = 1
 
             # Progress callback
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
                 lr = None
                 if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
                     lr = trainer.optimizer.param_groups[0]['lr']
                     if phase == "training" and step % 100 == 0:
                         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
                         print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
 
             def update_total_steps_callback(total_steps: int):
                 print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
@@ -3498,7 +3503,7 @@ def main():
                 num_epochs = 1
 
             # Progress callback
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
                 # Get current learning rate from optimizer (if available)
                 lr = None
                 if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
@@ -3507,7 +3512,7 @@ def main():
                     if phase == "training" and step % 100 == 0:
                         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
                         print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
 
             # Total steps callback
             def update_total_steps_callback(total_steps: int):
@@ -3866,14 +3871,14 @@ def main():
                 num_epochs = 1
 
             # Progress callback (update DB only)
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None):
+            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
                 lr = None
                 if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
                     lr = trainer.optimizer.param_groups[0]['lr']
                     if phase == "training" and step % 100 == 0:
                         loss_str = f"{loss:.4f}" if loss is not None else "N/A"
                         print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr)
+                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
 
             # Total steps callback
             def update_total_steps_callback(total_steps: int):

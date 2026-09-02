@@ -696,6 +696,7 @@ class ControlNetTrainer(BaseTrainer):
         condition_image_path: "Optional[str]" = None,
         reference_image_path: "Optional[str]" = None,
         negative_prompt: str = "",
+        step_progress_callback=None,
     ) -> "Image.Image":
         """
         Generate sample image during ControlNet training.
@@ -736,6 +737,7 @@ class ControlNetTrainer(BaseTrainer):
                 nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
                 nag_negative_prompt=nag_negative_prompt,
                 reference_image_path=reference_image_path,
+                step_progress_callback=step_progress_callback,
             )
 
         # Dispatch to type-specific implementation
@@ -755,6 +757,7 @@ class ControlNetTrainer(BaseTrainer):
                 nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
                 nag_negative_prompt=nag_negative_prompt,
                 condition_image=loaded_condition,
+                step_progress_callback=step_progress_callback,
             )
         elif self.controlnet_type == "lllite":
             return self._generate_sample_lllite(
@@ -772,6 +775,7 @@ class ControlNetTrainer(BaseTrainer):
                 nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
                 nag_negative_prompt=nag_negative_prompt,
                 condition_image=loaded_condition,
+                step_progress_callback=step_progress_callback,
             )
         else:
             # Unknown type: fall back to base
@@ -790,6 +794,7 @@ class ControlNetTrainer(BaseTrainer):
                 nag_alpha=nag_alpha, nag_sigma_end=nag_sigma_end,
                 nag_negative_prompt=nag_negative_prompt,
                 reference_image_path=reference_image_path,
+                step_progress_callback=step_progress_callback,
             )
 
     def _generate_sample_standard(
@@ -818,6 +823,7 @@ class ControlNetTrainer(BaseTrainer):
         nag_negative_prompt: str = _TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
+        step_progress_callback=None,
     ) -> "Image.Image":
         """
         Generate sample with Standard ControlNet (ControlNetModel).
@@ -834,6 +840,7 @@ class ControlNetTrainer(BaseTrainer):
 
         from core.inference.custom_sampling import custom_sampling_loop
         from core.inference.schedulers import get_scheduler
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
 
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
@@ -936,6 +943,8 @@ class ControlNetTrainer(BaseTrainer):
 
             log_verbose(f"{self.log_prefix} [Sample] Standard ControlNet active, condition_scale=1.0")
 
+            _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
                 image = custom_sampling_loop(
                     pipeline=pipeline,
@@ -952,7 +961,7 @@ class ControlNetTrainer(BaseTrainer):
                     ancestral_generator=None,
                     latents=None,
                     prompt_embeds_callback=None,
-                    progress_callback=None,
+                    progress_callback=_denoise_progress_callback,
                     step_callback=None,
                     developer_mode=False,
                     cfg_schedule_type=cfg_schedule_type,
@@ -1028,6 +1037,7 @@ class ControlNetTrainer(BaseTrainer):
         nag_negative_prompt: str = _TRAINING_DEFAULTS["sample_nag_negative_prompt"],
         condition_image: "Optional[Image.Image]" = None,
         negative_prompt: str = "",
+        step_progress_callback=None,
     ) -> "Image.Image":
         """
         Generate sample with LLLite ControlNet.
@@ -1045,6 +1055,7 @@ class ControlNetTrainer(BaseTrainer):
 
         from core.inference.custom_sampling import custom_sampling_loop
         from core.inference.schedulers import get_scheduler
+        from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
 
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
@@ -1174,6 +1185,8 @@ class ControlNetTrainer(BaseTrainer):
             is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
             guidance_rescale = 0.7 if is_v_prediction else 0.0
 
+            _denoise_progress_callback = make_denoise_progress_callback(step_progress_callback)
+
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
                 image = custom_sampling_loop(
                     pipeline=pipeline,
@@ -1190,7 +1203,7 @@ class ControlNetTrainer(BaseTrainer):
                     ancestral_generator=None,
                     latents=None,
                     prompt_embeds_callback=None,
-                    progress_callback=None,
+                    progress_callback=_denoise_progress_callback,
                     step_callback=None,
                     developer_mode=False,
                     cfg_schedule_type=cfg_schedule_type,

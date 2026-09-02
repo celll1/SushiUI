@@ -912,8 +912,9 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
         total: int,
         epoch: int = 0,
         loss: float | None = None,
+        detail: str | None = None,
     ) -> None:
-        del total, epoch
+        del total, epoch, detail
         if phase != "training":
             return
         if loss is None or not math.isfinite(float(loss)):
@@ -1072,8 +1073,8 @@ def _run_mixed_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
     losses: list[float] = []
     training_steps: list[int] = []
 
-    def progress_callback(phase, step, total, epoch=0, loss=None):
-        del total, epoch
+    def progress_callback(phase, step, total, epoch=0, loss=None, detail=None):
+        del total, epoch, detail
         if phase != "training":
             return
         if loss is None or not math.isfinite(float(loss)):

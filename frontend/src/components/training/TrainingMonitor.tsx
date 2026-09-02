@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason } from "@/utils/api";
+import { useStartup } from "@/contexts/StartupContext";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
 import TrainingMetricsChart from "./TrainingMetricsChart";
@@ -56,11 +57,15 @@ const PANE_DEFAULT_PRESETS = ["loss-overview", "gradient-norms", "param-update"]
 
 export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete, onEditConfig }: TrainingMonitorProps) {
   const { layout: chartLayout, setLayout: setChartLayout, setPanes: setChartPanes } = useChartLayout();
+  const { archCapabilities } = useStartup();
   const [currentRun, setCurrentRun] = useState<TrainingRun>(run);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [samples, setSamples] = useState<TrainingSampleStep[]>([]);
+  const [sampleQueue, setSampleQueue] = useState<TrainingSampleQueueResponse | null>(null);
+  const [isQueueingSample, setIsQueueingSample] = useState(false);
+  const [sampleQueueError, setSampleQueueError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
   // Epoch lives only on the status response (there is no epoch column on the
@@ -237,12 +242,47 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     }
   }, [currentRun.id, currentRun.status, hasSampleImages]);
 
+  // One tick for both: the image itself is observed through the samples
+  // listing, the queue call only reports what is pending / what failed.
   const loadSamples = async () => {
     try {
       const data = await getTrainingSamples(currentRun.id);
       setSamples(data.samples);
     } catch (err) {
       console.error("Failed to load sample images:", err);
+    }
+    try {
+      setSampleQueue(await getTrainingSampleQueue(currentRun.id));
+    } catch (err) {
+      console.error("Failed to load sample queue:", err);
+    }
+  };
+
+  const samplesUnsupportedReason =
+    trainingFeatureUnsupportedReason(
+      archCapabilities, sampleQueue?.architecture, "training_samples",
+      currentRun.training_method
+    ) ?? sampleQueue?.unsupported_reason ?? undefined;
+
+  // sampleQueue === null until the first fetch lands, and the arch gate reads
+  // its `architecture` — enabling the button before then would offer it on an
+  // architecture that cannot sample.
+  const canQueueSample =
+    hasSampleImages && sampleQueue !== null && !samplesUnsupportedReason &&
+    currentRun.status === "running";
+
+  const handleQueueSample = async () => {
+    setIsQueueingSample(true);
+    setSampleQueueError(null);
+    try {
+      await queueTrainingSample(currentRun.id);
+      setSampleQueue(await getTrainingSampleQueue(currentRun.id));
+    } catch (err: any) {
+      setSampleQueueError(
+        err?.response?.data?.detail || err?.message || "Failed to queue sample"
+      );
+    } finally {
+      setIsQueueingSample(false);
     }
   };
 
@@ -856,6 +896,58 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
           <div className="flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3">
             {viewMode === "samples" ? (
               <>
+                {hasSampleImages && (
+                  <div className="space-y-1.5 rounded border border-gray-700 bg-gray-800/60 p-2">
+                    <button
+                      onClick={handleQueueSample}
+                      disabled={!canQueueSample || isQueueingSample}
+                      title={
+                        samplesUnsupportedReason
+                          ? samplesUnsupportedReason
+                          : currentRun.status !== "running"
+                          ? "Only a running training run can render a sample."
+                          : sampleQueue === null
+                          ? "Checking whether this run can render samples..."
+                          : undefined
+                      }
+                      className="w-full px-2 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xxs sm:text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isQueueingSample ? "Queueing..." : "Sample now"}
+                    </button>
+                    <p className="text-xxs leading-relaxed text-gray-400">
+                      Renders the run&apos;s configured sample prompts without waiting for
+                      the next scheduled step. The request runs at the end of the batch
+                      the trainer is currently in, so it appears whenever that batch
+                      finishes — for a large model or batch that can be minutes.
+                    </p>
+                    {samplesUnsupportedReason && (
+                      <p className="text-xxs leading-relaxed text-yellow-400">
+                        {samplesUnsupportedReason}
+                      </p>
+                    )}
+                    {sampleQueueError && (
+                      <p className="text-xxs leading-relaxed text-red-400">{sampleQueueError}</p>
+                    )}
+                    {!!sampleQueue?.pending?.length && (
+                      <p className="text-xxs text-gray-300">
+                        {sampleQueue.pending.length} queued (max {sampleQueue.max_pending})
+                      </p>
+                    )}
+                    {sampleQueue?.results
+                      ?.filter((r) => !r.ok)
+                      .slice(0, 3)
+                      .map((r) => (
+                        <p key={r.request_id} className="text-xxs leading-relaxed text-red-400">
+                          Sample at step {r.step} failed: {r.error ?? "unknown reason"}
+                        </p>
+                      ))}
+                    {sampleQueue?.results?.[0]?.notes?.map((note, i) => (
+                      <p key={i} className="text-xxs leading-relaxed text-gray-500">
+                        {note}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 {samples.length === 0 ? (
                   <div className="text-gray-500 text-xs sm:text-sm text-center py-8">
                     {hasSampleImages ? (
@@ -964,6 +1056,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             alt={`Step ${samples[selectedStepIndex].step} Sample ${img.sample_index}`}
                             className="w-full rounded border border-gray-700 hover:border-blue-500 transition-colors"
                           />
+                          {img.on_demand && (
+                            <span className="absolute left-1 top-1 rounded bg-blue-900/80 px-1 py-0.5 text-[10px] text-blue-200">
+                              On demand
+                            </span>
+                          )}
                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded">
                             <span className="text-white text-xs">Double-click to view</span>
                           </div>

@@ -248,6 +248,18 @@ class TrainingProcess:
         except OSError as e:
             print(f"[Training] WARNING: Failed to remove stale stop flag before spawn: {e}")
 
+        # Same reason, for on-demand sample requests: they carry no TTL (one
+        # queued during a long caching phase must survive until the first
+        # batch), so a request left pending by a stopped or crashed run would
+        # otherwise be executed by the next one.
+        try:
+            from core.training.training_sample_rpc import clear_all as _clear_sample_rpc
+            removed = _clear_sample_rpc(self.output_dir)
+            if removed:
+                print(f"[Training] Removed {removed} stale sample-request/result file(s) before spawn")
+        except Exception as e:   # noqa: BLE001
+            print(f"[Training] WARNING: Failed to clear stale sample requests before spawn: {e}")
+
         # Start asyncio subprocess (non-blocking)
         # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
         self.process = await asyncio.create_subprocess_exec(

@@ -6,6 +6,7 @@ import os
 import sys
 import gc
 import random
+import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -244,8 +245,43 @@ class Flux2Mixin:
             self.flux2_components["transformer"] = model
         return model
 
+    @staticmethod
+    def _flux2_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning (best effort)."""
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    def _flux2_lora_state(self):
+        """The (originals, wrapped_keys) maps for the CURRENTLY loaded components.
+
+        Reset when the transformer or the text encoder was reloaded: the maps
+        hold the OLD model's Linears, and restoring them would splice them into
+        the new one. Keyed by weakref rather than id() because a freed object's
+        id is reusable.
+        """
+        components = self.flux2_components or {}
+        transformer = components.get("transformer")
+        text_encoder = components.get("text_encoder")
+        previous = getattr(self, "_flux2_lora_component_refs", None)
+
+        def _same(ref, obj):
+            return obj is None if ref is None else ref() is obj
+
+        if previous is None or not _same(previous[0], transformer) or not _same(previous[1], text_encoder):
+            self._flux2_lora_original_modules: Dict[str, torch.nn.Module] = {}
+            self._flux2_lora_wrapped_modules: set = set()
+            self._flux2_te_lora_wrapped: List[tuple] = []
+            self._flux2_lora_component_refs = (
+                weakref.ref(transformer) if transformer is not None else None,
+                weakref.ref(text_encoder) if text_encoder is not None else None,
+            )
+        return self._flux2_lora_original_modules, self._flux2_lora_wrapped_modules
+
     def _load_lora_flux2(self, lora_configs: List[Dict]):
-        """Load LoRAs for FLUX.2 Transformer
+        """Load LoRAs for the FLUX.2 Transformer and Qwen3 text encoder
 
         Args:
             lora_configs: List of LoRA configurations
@@ -254,12 +290,24 @@ class Flux2Mixin:
             FLUX.2 uses component-based architecture (not pipeline-based).
             LoRAs wrap original linear layers (forward-time addition, not weight merging).
             This allows LoRAs to be unloaded by restoring original modules.
-            Based on training implementation in flux2_adapter.py
+            Both key codecs come from the training adapter (flux2_adapter.py):
+            ``lora_transformer_*`` for the transformer and ``lora_te_*`` for the
+            Qwen3 encoder (written whenever a run set ``train_text_encoder``).
 
             FLUX.2 has two block types:
             1. Dual stream blocks: Flux2Attention (to_q, to_k, to_v, to_out[0], add_q_proj, add_k_proj, add_v_proj, to_add_out)
             2. Single stream blocks: Flux2ParallelSelfAttention (to_qkv_mlp_proj, to_out)
+
+            ``apply_to_unet`` / ``apply_to_text_encoder`` select the components;
+            a file whose only tensors belong to a disabled component applies zero
+            modules and is a warning, while an ENABLED component that carries
+            keys and matches nothing is an error, per component rather than on
+            the sum (a base-model image must not be returned as a LoRA one).
         """
+        # Unconditional, and BEFORE the empty-config exit: state left over from a
+        # previously loaded model must never be restored into this one.
+        self._flux2_lora_state()
+
         if not lora_configs:
             return
 
@@ -268,40 +316,40 @@ class Flux2Mixin:
             return
 
         transformer = self.flux2_components["transformer"]
-
-        # Store original modules for unloading (first time only)
-        if not hasattr(self, '_flux2_lora_original_modules'):
-            self._flux2_lora_original_modules = {}
-            self._flux2_lora_wrapped_modules = set()
+        text_encoder = self.flux2_components.get("text_encoder")
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
-        # NOT ``isinstance(x, torch.nn.Linear)`` below: after a runtime INT8
-        # conversion (unet_quantization="int8") the very layers a LoRA targets are
-        # Int8Linear / Fp8Linear, which are nn.Module but NOT nn.Linear
-        # subclasses. The naive test skips every one of them silently -- the LoRA
-        # loads, reports a small applied count and does nothing.
-        from core.training.adapters.base_adapter import is_lora_wrappable_linear
 
         print(f"[FLUX.2 LoRA] Loading {len(lora_configs)} LoRA(s)...")
 
         for i, lora_config in enumerate(lora_configs):
             lora_path = lora_config.get("path", "")
+            # Warnings ride into the PNG metadata chunk, so never an absolute path.
+            lora_file = os.path.basename(str(lora_path))
             lora_strength = lora_config.get("strength", 1.0)
             layer_weights = lora_config.get("unet_layer_weights", {})
+            apply_to_unet = lora_config.get("apply_to_unet", True)
+            apply_to_te = lora_config.get("apply_to_text_encoder", True)
 
             # Resolve path using LoRAManager
             resolved_path = lora_manager._resolve_lora_path(lora_path)
 
             if resolved_path is None:
-                print(f"[FLUX.2 LoRA] WARNING: LoRA file not found: {lora_path}")
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it.")
+                print(f"[FLUX.2 LoRA] ERROR: {message}")
                 print(f"[FLUX.2 LoRA]   Searched in: {lora_manager.lora_dir}")
                 print(f"[FLUX.2 LoRA]   Additional dirs: {lora_manager.additional_dirs}")
-                continue
+                self._flux2_lora_warn(message, code="lora_not_found")
+                raise FileNotFoundError(message)
 
             print(f"[FLUX.2 LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
             if layer_weights:
                 print(f"[FLUX.2 LoRA] Layer weights: {layer_weights}")
+            if not apply_to_unet or not apply_to_te:
+                print(f"[FLUX.2 LoRA] Components: transformer={apply_to_unet}, text_encoder={apply_to_te}")
 
             # Load LoRA weights
             from safetensors import safe_open
@@ -312,12 +360,16 @@ class Flux2Mixin:
 
                 print(f"[FLUX.2 LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
 
-                # Apply LoRA to transformer modules
-                applied_count = 0
+                # Per component, never summed: see the refusal gate below.
+                unet_counts: Dict[str, int] = {}
+                te_counts: Dict[str, int] = {}
 
                 # Debug: Print first few LoRA keys
                 lora_keys_sample = list(lora_state_dict.keys())[:5]
                 print(f"[FLUX.2 LoRA] Sample LoRA keys: {lora_keys_sample}")
+
+                unet_keys_present = any(k.startswith("lora_transformer_") for k in lora_state_dict)
+                te_keys_present = any(k.startswith("lora_te_") for k in lora_state_dict)
 
                 # Debug: Print module class names found
                 module_classes_found = set()
@@ -325,166 +377,118 @@ class Flux2Mixin:
                     module_classes_found.add(module.__class__.__name__)
                 print(f"[FLUX.2 LoRA] Module classes in transformer: {module_classes_found}")
 
-                for name, module in transformer.named_modules():
-                    # Flux2Attention (dual stream blocks)
-                    if module.__class__.__name__ == "Flux2Attention":
-                        # Get block name for layer-wise weight lookup
-                        block_name = self._get_flux2_block_name(name)
-                        block_weight = layer_weights.get(block_name, 1.0)
-                        effective_strength = lora_strength * block_weight
+                # Target sets per block class; the key stem is the module path with
+                # dots replaced, exactly as flux2_adapter writes it.
+                targets_by_class = {
+                    "Flux2Attention": ["to_q", "to_k", "to_v", "add_q_proj", "add_k_proj",
+                                       "add_v_proj", "to_add_out"],
+                    "Flux2ParallelSelfAttention": ["to_qkv_mlp_proj", "to_out"],
+                    "Flux2FeedForward": ["linear_in", "linear_out"],
+                }
 
-                        # Standard QKV projections
-                        for attr_name in ["to_q", "to_k", "to_v"]:
-                            if hasattr(module, attr_name):
-                                original_linear = getattr(module, attr_name)
-                                if is_lora_wrappable_linear(original_linear):
-                                    # Build LoRA key using training adapter's naming convention
-                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                                    lora_down_key = f"{lora_name}.lora_down.weight"
-                                    lora_up_key = f"{lora_name}.lora_up.weight"
+                walk = transformer.named_modules() if (apply_to_unet and unet_keys_present) else ()
+                for name, module in walk:
+                    attrs = targets_by_class.get(module.__class__.__name__)
+                    if attrs is None:
+                        continue
 
-                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                        lora_down_weight = lora_state_dict[lora_down_key]
-                                        lora_up_weight = lora_state_dict[lora_up_key]
-                                        lora_alpha_key = f"{lora_name}.alpha"
-                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+                    block_weight = layer_weights.get(self._get_flux2_block_name(name), 1.0)
+                    effective_strength = lora_strength * block_weight
+                    stem = f"lora_transformer_{name.replace('.', '_')}"
 
-                                        module_key = f"{name}.{attr_name}"
-                                        wrapped = self._wrap_with_lora_flux2(
-                                            module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                        )
-                                        if wrapped:
-                                            applied_count += 1
+                    for attr_name in attrs:
+                        target = getattr(module, attr_name, None)
+                        if target is None or isinstance(target, torch.nn.ModuleList):
+                            continue
+                        self._flux2_apply_lora_branch(
+                            unet_counts, module, attr_name, target, f"{name}.{attr_name}",
+                            lora_state_dict, f"{stem}_{attr_name}", effective_strength)
 
-                        # to_out (ModuleList) - uses same effective_strength computed above
-                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
-                            if len(module.to_out) > 0 and is_lora_wrappable_linear(module.to_out[0]):
-                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
-                                lora_down_key = f"{lora_name}.lora_down.weight"
-                                lora_up_key = f"{lora_name}.lora_up.weight"
+                    # to_out as a ModuleList (Flux2Attention); the parallel block's
+                    # to_out is a plain Linear and was handled above.
+                    to_out = getattr(module, "to_out", None)
+                    if isinstance(to_out, torch.nn.ModuleList) and len(to_out) > 0:
+                        self._flux2_apply_lora_branch(
+                            unet_counts, to_out, 0, to_out[0], f"{name}.to_out.0",
+                            lora_state_dict, f"{stem}_to_out_0", effective_strength)
 
-                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                    lora_down_weight = lora_state_dict[lora_down_key]
-                                    lora_up_weight = lora_state_dict[lora_up_key]
-                                    lora_alpha_key = f"{lora_name}.alpha"
-                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                    module_key = f"{name}.to_out.0"
-                                    wrapped = self._wrap_with_lora_flux2(
-                                        module.to_out, 0, module.to_out[0],
-                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                    )
-                                    if wrapped:
-                                        applied_count += 1
-
-                        # Additional projections for encoder cross attention - uses same effective_strength
-                        for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
-                            if hasattr(module, attr_name):
-                                original_linear = getattr(module, attr_name)
-                                if is_lora_wrappable_linear(original_linear):
-                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                                    lora_down_key = f"{lora_name}.lora_down.weight"
-                                    lora_up_key = f"{lora_name}.lora_up.weight"
-
-                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                        lora_down_weight = lora_state_dict[lora_down_key]
-                                        lora_up_weight = lora_state_dict[lora_up_key]
-                                        lora_alpha_key = f"{lora_name}.alpha"
-                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                        module_key = f"{name}.{attr_name}"
-                                        wrapped = self._wrap_with_lora_flux2(
-                                            module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                        )
-                                        if wrapped:
-                                            applied_count += 1
-
-                    # Flux2ParallelSelfAttention (single stream blocks)
-                    elif module.__class__.__name__ == "Flux2ParallelSelfAttention":
-                        # Get block name for layer-wise weight lookup
-                        block_name = self._get_flux2_block_name(name)
-                        block_weight = layer_weights.get(block_name, 1.0)
-                        effective_strength = lora_strength * block_weight
-
-                        # Fused QKV + MLP projection
-                        if hasattr(module, "to_qkv_mlp_proj"):
-                            original_linear = module.to_qkv_mlp_proj
-                            if is_lora_wrappable_linear(original_linear):
-                                lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
-                                lora_down_key = f"{lora_name}.lora_down.weight"
-                                lora_up_key = f"{lora_name}.lora_up.weight"
-
-                                if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                    lora_down_weight = lora_state_dict[lora_down_key]
-                                    lora_up_weight = lora_state_dict[lora_up_key]
-                                    lora_alpha_key = f"{lora_name}.alpha"
-                                    lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                    module_key = f"{name}.to_qkv_mlp_proj"
-                                    wrapped = self._wrap_with_lora_flux2(
-                                        module, "to_qkv_mlp_proj", original_linear,
-                                        lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                    )
-                                    if wrapped:
-                                        applied_count += 1
-
-                        # Output projection (fused attention + MLP) - uses same effective_strength
-                        if hasattr(module, "to_out") and is_lora_wrappable_linear(module.to_out):
-                            lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
-                            lora_down_key = f"{lora_name}.lora_down.weight"
-                            lora_up_key = f"{lora_name}.lora_up.weight"
-
-                            if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                lora_down_weight = lora_state_dict[lora_down_key]
-                                lora_up_weight = lora_state_dict[lora_up_key]
-                                lora_alpha_key = f"{lora_name}.alpha"
-                                lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                module_key = f"{name}.to_out"
-                                wrapped = self._wrap_with_lora_flux2(
-                                    module, "to_out", module.to_out,
-                                    lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                )
-                                if wrapped:
-                                    applied_count += 1
-
-                    # Flux2FeedForward (dual stream blocks)
-                    elif module.__class__.__name__ == "Flux2FeedForward":
-                        # Get block name for layer-wise weight lookup
-                        block_name = self._get_flux2_block_name(name)
-                        block_weight = layer_weights.get(block_name, 1.0)
-                        effective_strength = lora_strength * block_weight
-
-                        for attr_name in ["linear_in", "linear_out"]:
-                            if hasattr(module, attr_name):
-                                original_linear = getattr(module, attr_name)
-                                if is_lora_wrappable_linear(original_linear):
-                                    lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                                    lora_down_key = f"{lora_name}.lora_down.weight"
-                                    lora_up_key = f"{lora_name}.lora_up.weight"
-
-                                    if lora_down_key in lora_state_dict and lora_up_key in lora_state_dict:
-                                        lora_down_weight = lora_state_dict[lora_down_key]
-                                        lora_up_weight = lora_state_dict[lora_up_key]
-                                        lora_alpha_key = f"{lora_name}.alpha"
-                                        lora_alpha = lora_state_dict.get(lora_alpha_key, None)
-
-                                        module_key = f"{name}.{attr_name}"
-                                        wrapped = self._wrap_with_lora_flux2(
-                                            module, attr_name, original_linear,
-                                            lora_down_weight, lora_up_weight, effective_strength, lora_alpha, module_key
-                                        )
-                                        if wrapped:
-                                            applied_count += 1
-
-                print(f"[FLUX.2 LoRA] Applied LoRA to {applied_count} modules")
+                if te_keys_present and apply_to_te:
+                    te_counts = self._apply_lora_to_flux2_text_encoder(
+                        text_encoder, lora_state_dict, lora_strength)
+                    print(f"[FLUX.2 LoRA] Applied LoRA to {te_counts.get('applied', 0)} "
+                          f"Qwen3 text encoder modules")
 
             except Exception as e:
-                print(f"[FLUX.2 LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                print(f"[FLUX.2 LoRA] ERROR: Failed to load LoRA {lora_file}: {e}")
                 import traceback
                 traceback.print_exc()
+                self._flux2_lora_warn(f"LoRA '{lora_file}' failed to load: {e}",
+                                      code="lora_load_failed")
+                raise RuntimeError(f"FLUX.2 LoRA '{lora_file}' could not be applied: {e}") from e
+
+            if not unet_keys_present and not te_keys_present:
+                message = (f"LoRA '{lora_file}': no FLUX.2 LoRA tensors found (expected "
+                           f"SushiUI-trained 'lora_transformer_*' and/or 'lora_te_*' keys). "
+                           f"Sample keys in file: {lora_keys_sample}")
+                print(f"[FLUX.2 LoRA] ERROR: {message}")
+                self._flux2_lora_warn(message, code="lora_incompatible")
+                raise RuntimeError(message)
+
+            unet_pairs = sum(1 for k in lora_state_dict
+                             if k.startswith("lora_transformer_") and k.endswith(".lora_down.weight"))
+            te_pairs = sum(1 for k in lora_state_dict
+                           if k.startswith("lora_te_") and k.endswith(".lora_down.weight"))
+            applied_count = unet_counts.get("applied", 0) + te_counts.get("applied", 0)
+            print(f"[FLUX.2 LoRA] Applied LoRA to {applied_count} modules "
+                  f"(transformer {unet_counts.get('applied', 0)}/{unet_pairs}, "
+                  f"text encoder {te_counts.get('applied', 0)}/{te_pairs})")
+
+            components = (("transformer", apply_to_unet, unet_keys_present, unet_pairs, unet_counts),
+                          ("text encoder", apply_to_te, te_keys_present, te_pairs, te_counts))
+
+            # Per component, NOT on the sum: a file whose transformer half matches
+            # nothing must not pass because its text-encoder half applied.
+            dead = [(label, pairs, counts) for label, enabled, present, pairs, counts in components
+                    if enabled and present and not counts.get("applied", 0)]
+            if dead:
+                detail = "; ".join(
+                    f"{label}: 0 of {pairs} down/up pairs applied "
+                    f"({counts.get('already_wrapped', 0)} already wrapped, "
+                    f"{counts.get('shape_mismatch', 0)} shape mismatch)"
+                    for label, pairs, counts in dead)
+                if any(counts.get("already_wrapped", 0) for _, _, counts in dead):
+                    # This backend replaces the target Linear, so a second file could
+                    # only overwrite the first; stacking needs the composite wrapper
+                    # (LYCORIS_ADAPTER_DESIGN Phase 1).
+                    message = (f"LoRA '{lora_file}': {detail}. The targets are already wrapped "
+                               f"by an earlier LoRA in this request; FLUX.2 applies one LoRA at "
+                               f"a time, so select a single FLUX.2 LoRA.")
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (f"LoRA '{lora_file}': {detail}. Unrecognized key format or a "
+                               f"different model. Sample keys in file: {lora_keys_sample}")
+                    code = "lora_incompatible"
+                print(f"[FLUX.2 LoRA] ERROR: {message}")
+                self._flux2_lora_warn(message, code=code)
+                raise RuntimeError(message)
+
+            if applied_count == 0:
+                # Every tensor the file carries belongs to a component the request
+                # switched off: an explicit no-op, not a failure.
+                message = (f"LoRA '{lora_file}' applied 0 modules: its tensors target only the "
+                           f"component(s) disabled by apply_to_unet={apply_to_unet} / "
+                           f"apply_to_text_encoder={apply_to_te}")
+                print(f"[FLUX.2 LoRA] WARNING: {message}")
+                self._flux2_lora_warn(message, code="lora_no_targets")
+            else:
+                skipped = "; ".join(
+                    f"{label}: applied {counts.get('applied', 0)} of {pairs} down/up pairs "
+                    f"({counts.get('shape_mismatch', 0)} shape mismatch, "
+                    f"{counts.get('already_wrapped', 0)} already wrapped)"
+                    for label, enabled, present, pairs, counts in components
+                    if enabled and present and counts.get("applied", 0) < pairs)
+                if skipped:
+                    self._flux2_lora_warn(f"LoRA '{lora_file}': {skipped}.", code="lora_partial")
 
     def _get_flux2_block_name(self, module_name: str) -> str:
         """Get the block name (DUAL{XX} or SING{XX}) from module name for layer-wise weight lookup
@@ -511,6 +515,141 @@ class Flux2Mixin:
             return f"SING{block_num:02d}"
 
         return "BASE"
+
+    def _apply_lora_to_flux2_text_encoder(self, text_encoder, lora_state_dict, strength) -> Dict[str, int]:
+        """Apply one LoRA's ``lora_te_*`` tensors to the Qwen3 text encoder.
+
+        Key codec is exactly the one flux2_adapter.apply_lora_to_text_encoders
+        writes: ``lora_te_model_layers_{i}_{mlp|self_attn}_{proj}``, where ``i``
+        is the position in ``text_encoder.model.layers`` (the adapter enumerates
+        the same list, so the index is the shared identifier -- there is no
+        dotted module path in the key).
+
+        Strength is the plain request strength: unet_layer_weights is a
+        transformer-block map and has no text-encoder counterpart.
+
+        Returns the per-status counts (see ``_flux2_apply_lora_branch``).
+        """
+        counts: Dict[str, int] = {}
+        if text_encoder is None:
+            print("[FLUX.2 LoRA] WARNING: text encoder not loaded; lora_te_* tensors skipped")
+            return counts
+
+        layers = None
+        if hasattr(text_encoder, "model") and hasattr(text_encoder.model, "layers"):
+            layers = text_encoder.model.layers
+        elif hasattr(text_encoder, "layers"):
+            layers = text_encoder.layers
+        if layers is None:
+            print("[FLUX.2 LoRA] WARNING: could not find Qwen3 layers; lora_te_* tensors skipped")
+            return counts
+
+        groups = (("mlp", ("gate_proj", "up_proj", "down_proj")),
+                  ("self_attn", ("q_proj", "k_proj", "v_proj", "o_proj")))
+
+        for layer_idx, layer in enumerate(layers):
+            for group, attrs in groups:
+                parent = getattr(layer, group, None)
+                if parent is None:
+                    continue
+                for attr in attrs:
+                    original_linear = getattr(parent, attr, None)
+                    if original_linear is None:
+                        continue
+                    module_key = f"text_encoder.model.layers.{layer_idx}.{group}.{attr}"
+                    status = self._flux2_apply_lora_branch(
+                        counts, parent, attr, original_linear, module_key, lora_state_dict,
+                        f"lora_te_model_layers_{layer_idx}_{group}_{attr}", strength,
+                    )
+                    if status == "applied":
+                        self._flux2_te_lora_wrapped.append((parent, attr, module_key))
+
+        return counts
+
+    def _restore_flux2_te_lora(self) -> int:
+        """Put the Qwen3 text encoder's original Linears back. Idempotent."""
+        wrapped = getattr(self, "_flux2_te_lora_wrapped", None)
+        if not wrapped:
+            return 0
+
+        originals = getattr(self, "_flux2_lora_original_modules", {})
+        live = getattr(self, "_flux2_lora_wrapped_modules", set())
+        restored = 0
+        for parent, attr, module_key in reversed(wrapped):
+            original = originals.get(module_key)
+            if original is None:
+                continue
+            setattr(parent, attr, original)
+            live.discard(module_key)
+            restored += 1
+        wrapped.clear()
+        if restored:
+            print(f"[FLUX.2 LoRA] Restored {restored} Qwen3 text encoder modules")
+        return restored
+
+    def _flux2_te_quantization_with_lora(self, text_encoder_quantization):
+        """Drop text-encoder quantization for a run that has a text-encoder LoRA.
+
+        ``_quantize_text_encoder`` deep-copies the encoder and casts every
+        ``nn.Linear`` weight to FP8 -- which, on a wrapped encoder, includes the
+        wrapper's own lora_down/lora_up and so quantizes the ADAPTER (~2.6e-02
+        relative error on e4m3) rather than only the base.
+        """
+        if not text_encoder_quantization or text_encoder_quantization == "none":
+            return text_encoder_quantization
+        if not getattr(self, "_flux2_te_lora_wrapped", None):
+            return text_encoder_quantization
+
+        msg = (f"FLUX.2 text encoder quantization '{text_encoder_quantization}' was ignored: "
+               f"a text-encoder LoRA is applied, and the quantizer would cast the adapter's "
+               f"own weights to FP8 along with the base. The Qwen3 encoder runs at its full "
+               f"weight precision for this generation, so VRAM use is higher than requested")
+        print(f"[FLUX.2 LoRA] {msg}")
+        self._flux2_lora_warn(msg, code="quantization_fallback")
+        return None
+
+    def _flux2_apply_lora_branch(self, counts, parent_module, attr_name, original_linear,
+                                 module_key, lora_state_dict, lora_name, strength) -> str:
+        """Wrap one target with its branch from ``lora_state_dict``, tallying into
+        ``counts``. Returns "applied", "absent", "already_wrapped", "not_linear"
+        or "shape_mismatch".
+
+        A shape mismatch is skipped rather than assigned: ``.data = tensor``
+        replaces the parameter wholesale and would only fail later, inside text
+        encoding or the denoise loop.
+        """
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        # NOT ``isinstance(x, torch.nn.Linear)``: after a runtime INT8 conversion
+        # (unet_quantization="int8") the very layers a LoRA targets are Int8Linear /
+        # Fp8Linear, which are nn.Module but NOT nn.Linear subclasses.
+        from core.training.adapters.base_adapter import is_lora_wrappable_linear
+
+        def _tally(status):
+            counts[status] = counts.get(status, 0) + 1
+            return status
+
+        down = lora_state_dict.get(f"{lora_name}.lora_down.weight")
+        up = lora_state_dict.get(f"{lora_name}.lora_up.weight")
+        if down is None or up is None:
+            return _tally("absent")
+        if isinstance(original_linear, LoRALinearLayer):
+            return _tally("already_wrapped")
+        if not is_lora_wrappable_linear(original_linear):
+            return _tally("not_linear")
+
+        in_features = getattr(original_linear, "in_features", None)
+        out_features = getattr(original_linear, "out_features", None)
+        if (down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]
+                or down.shape[1] != in_features or up.shape[0] != out_features):
+            print(f"[FLUX.2 LoRA] WARNING: shape mismatch at {module_key}: "
+                  f"down{tuple(down.shape)} up{tuple(up.shape)} vs Linear"
+                  f"({in_features} -> {out_features}); skipping this module")
+            return _tally("shape_mismatch")
+
+        self._wrap_with_lora_flux2(
+            parent_module, attr_name, original_linear, down, up, strength,
+            lora_state_dict.get(f"{lora_name}.alpha"), module_key)
+        return _tally("applied")
 
     def _wrap_with_lora_flux2(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key):
         """Wrap a linear layer with LoRA for FLUX.2
@@ -580,8 +719,17 @@ class Flux2Mixin:
         return True
 
     def _unload_lora_flux2(self):
-        """Unload LoRAs from FLUX.2 Transformer"""
-        if not hasattr(self, '_flux2_lora_original_modules'):
+        """Unload LoRAs from the FLUX.2 Transformer and Qwen3 text encoder"""
+        # Unconditional and first: after a model switch these maps hold the OLD
+        # model's Linears, and restoring them here would splice them into the new one.
+        originals, _wrapped = self._flux2_lora_state()
+
+        # Text encoder first: it is normally already restored by _flux2_cleanup's
+        # finally, so this is the fallback path (and the only one for a caller
+        # that unloads outside a generation).
+        self._restore_flux2_te_lora()
+
+        if not originals:
             print("[FLUX.2 LoRA] No LoRAs loaded")
             return
 
@@ -661,6 +809,15 @@ class Flux2Mixin:
         teardown is a no-op -- the two states never coexist.
         """
         try:
+            # Text-encoder LoRA wrappers are per-generation state, restored here
+            # because this helper IS the finally of every generate entry point.
+            # The transformer's wrappers keep their existing longer lifetime
+            # (unloaded by the next generation's _unload_lora_flux2).
+            try:
+                self._restore_flux2_te_lora()
+            except Exception as e:
+                print(f"[FLUX.2] cleanup: text encoder LoRA restore failed: {e}")
+
             offloader = getattr(self, "_flux2_active_block_offloader", None)
             if offloader is not None:
                 try:
@@ -850,6 +1007,7 @@ class Flux2Mixin:
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
             text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Qwen3)
+            text_encoder_quantization = self._flux2_te_quantization_with_lora(text_encoder_quantization)
 
             # ============================================================
             # Stage 1: Text Encoding (Qwen3)
@@ -2418,7 +2576,8 @@ class Flux2Mixin:
 
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
-            text_encoder_quantization = params.get("text_encoder_quantization")
+            text_encoder_quantization = self._flux2_te_quantization_with_lora(
+                params.get("text_encoder_quantization"))
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -3271,7 +3430,8 @@ class Flux2Mixin:
 
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
-            text_encoder_quantization = params.get("text_encoder_quantization")
+            text_encoder_quantization = self._flux2_te_quantization_with_lora(
+                params.get("text_encoder_quantization"))
 
             # ============================================================
             # Stage 1: Text Encoding

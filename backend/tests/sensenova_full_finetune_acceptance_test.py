@@ -395,18 +395,19 @@ def test_a_lora_run_keeps_accumulation_and_its_own_batch_size_advice():
         )
     assert train["gradient_accumulation_steps"] == 8
 
+    # batch_size > 1 is a packed batch of same-resolution images: it needs the
+    # bucket manager on both routes, and neither message offers accumulation.
+    for network in ("lora", "full_finetune"):
+        with _sensenova():
+            with pytest.raises(ValueError, match="enable_bucketing") as excinfo:
+                _apply_sensenova_training_contract(
+                    "model", network, _train(batch_size=2), {"sample": {}}
+                )
+        assert "gradient_accumulation_steps" not in str(excinfo.value)
     with _sensenova():
-        with pytest.raises(ValueError, match="gradient_accumulation_steps"):
-            _apply_sensenova_training_contract(
-                "model", "lora", _train(batch_size=2), {"sample": {}}
-            )
-    # The full-FT message must NOT offer accumulation: it refuses it.
-    with _sensenova():
-        with pytest.raises(ValueError) as excinfo:
-            _apply_sensenova_training_contract(
-                "model", "full_finetune", _train(batch_size=2), {"sample": {}}
-            )
-    assert "gradient_accumulation_steps" not in str(excinfo.value)
+        assert _apply_sensenova_training_contract(
+            "model", "lora", _train(batch_size=2, enable_bucketing=True), {"sample": {}}
+        )
 
 
 def test_the_full_finetune_dispatch_forwards_train_unet():

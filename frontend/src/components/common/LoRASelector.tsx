@@ -12,7 +12,12 @@ import { useStartup } from "@/contexts/StartupContext";
 // Display order for LoRA architecture groups. "unknown" is a first-class
 // value (files whose key structure doesn't match any recognized signature),
 // so it always gets its own group rather than being hidden or merged.
-const LORA_ARCH_GROUP_ORDER = ["sd15", "sdxl", "zimage", "flux2", "minimax_h3", "unknown"];
+// Mirrors the architectures classify_lora_keys can return
+// (backend/core/extensions/lora_manager.py). "unknown" stays last.
+const LORA_ARCH_GROUP_ORDER = [
+  "sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4",
+  "minit2i", "krea2", "sensenova", "ltx2", "minimax_h3", "acestep", "unknown",
+];
 
 interface LoRASelectorProps {
   value: LoRAConfig[];

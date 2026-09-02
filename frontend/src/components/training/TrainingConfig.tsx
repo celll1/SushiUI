@@ -5318,7 +5318,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
             </div>
             <p className="text-xs text-gray-500">
-              Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1. This architecture has no block swap, so the Block Swap controls are not offered for it.
+              Keeps only the active understanding or generation weight half on GPU. Opt-in. This architecture has no block swap, so the Block Swap controls are not offered for it.
             </p>
 
             {params.sensenova_mot_phase_eviction && (

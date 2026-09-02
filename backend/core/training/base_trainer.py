@@ -5000,6 +5000,18 @@ class BaseTrainer(ABC):
         )
         print(f"{self.log_prefix} Final checkpoint saved at step {step}")
 
+    def _training_complete_epilogue(self) -> None:
+        """Announce success and release resources, from BOTH successful exits.
+
+        The target-step exit returns from inside the epoch loop, so it used to
+        leave the function without either: no completion line in the log, and
+        no ``cleanup()`` -- which is what tears down the offload conductors and
+        their backward hooks, and drains the metrics/DB executor. Only the
+        epoch-exhaustion exit ran it, and that is the rarer of the two.
+        """
+        print(f"{self.log_prefix} Training complete!")
+        self.cleanup()
+
     # ============================================================
     # Optimizer Setup
     # ============================================================
@@ -16070,6 +16082,7 @@ class BaseTrainer(ABC):
                             max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                             save_every_n_steps=save_every_n_steps,
                         )
+                        self._training_complete_epilogue()
                         return  # Exit training loop
 
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
@@ -16348,10 +16361,7 @@ class BaseTrainer(ABC):
             self.writer.close()
             raise  # Re-raise the original exception
 
-        print(f"{self.log_prefix} Training complete!")
-
-        # Cleanup resources
-        self.cleanup()
+        self._training_complete_epilogue()
 
     def _drop_unfittable_batches(self, batches):
         """Drop batches in buckets that OOM'd at batch size 1, refusing if none survive.

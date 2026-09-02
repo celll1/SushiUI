@@ -282,6 +282,21 @@ Paths below are relative to `backend/core/training/`.
 - **sd15** — Simplest U-Net path. Detection falls through to sd15 when nothing else
   matches; safetensors <6GB → sd15, >6GB → sdxl. v-prediction detected from
   ModelSpec metadata, a `v_pred` state-dict tensor, or legacy `prediction_type`.
+  - **Generation LoRA (shared with sdxl; `LoRAManager.load_loras`,
+    `backend/core/extensions/lora_manager.py`)**: these are the only two
+    architectures whose LoRAs go through diffusers/PEFT rather than a
+    component loader. Both honour `step_range` (via `is_active_at_step` and
+    the step callback armed in `load_loras_for_generation`) and
+    `unet_layer_weights`; both PARSE and log `apply_to_unet` /
+    `apply_to_text_encoder` and never consult them. Since `2d7dc86a` a LoRA
+    that cannot be applied refuses (`lora_not_found` / `lora_load_failed` /
+    `lora_incompatible`) instead of returning a picture generated without it —
+    diffusers' loaders return `None` and no-op silently when the checkpoint
+    names no module of a component, so the applied count comes from a
+    read-back of the per-adapter PEFT branch containers installed in the
+    model, with `peft_config` membership as a second witness. The refusal runs
+    before `set_adapters`, whose own error on an empty adapter set would mask
+    it.
 - **sdxl** — Dual text encoders concatenated to 2048-dim; TE2 uses penultimate
   hidden state + pooled output; `time_ids` = [orig_h, orig_w, crop_top, crop_left,
   target_h, target_w].

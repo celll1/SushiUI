@@ -11,13 +11,30 @@ pins a fixed timestep shift.
 
 from typing import Dict, Any, Optional, List
 from PIL import Image
+import os
 import random
+import weakref
 import torch
 
 from config.settings import settings
 
 # Latent geometry: Qwen-Image VAE 8x downscale + 2x2 patchify => 16px token grid.
 GRID_ALIGN = 16
+
+_LORA_SUFFIX_BY_TAG = {"down": ".lora_down.weight", "up": ".lora_up.weight", "alpha": ".alpha"}
+
+
+def _dropped_lora_keys(raw: Dict[str, Any], grouped: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Source keys that carry nothing into ``grouped``: unparseable, foreign
+    (``lora_te_*``), or a down without its up. Counting ``grouped`` alone hides
+    them, and a dropped key is a silently weaker LoRA rather than a no-op
+    (mirrors ``anima_lora.unmatched_source_keys``)."""
+    from core.models.krea2.krea2_lora import flatten_to_key
+    kept = set()
+    for module_path, tensors in grouped.items():
+        stem = flatten_to_key(module_path)
+        kept.update(stem + suffix for tag, suffix in _LORA_SUFFIX_BY_TAG.items() if tag in tensors)
+    return sorted(set(raw) - kept)
 
 
 def _normalize_resolution(width: int, height: int) -> tuple:
@@ -43,9 +60,11 @@ class Krea2Mixin:
     def _krea2_kh_setup(self, params: Dict[str, Any]):
         """Compute keep-models-hot eligibility for this generation (see core/keep_hot.py).
 
-        Krea 2 has no block-swap streaming and no inference-time LoRA application
-        today (grep-verified), so the only hazard gate that currently applies is
-        the LoRA one — kept for forward-compat if LoRA inference is added later.
+        Krea 2 has no block-swap streaming, so the LoRA hazard is the only gate
+        that applies: ``_load_lora_krea2`` mutates the transformer in place, so a
+        LoRA generation never leaves it resident (same rule as anima/flux2/
+        minit2i/zimage). The TE is frozen for Krea 2 training and a Krea 2 LoRA
+        can never carry TE keys, so TE residency is not gated.
         Returns (model_key, keep_te, keep_transformer, keep_vae).
         """
         from core.keep_hot import (
@@ -117,6 +136,174 @@ class Krea2Mixin:
         transformer._attn_backend = backend
         print(f"[Krea2] Attention backend: {backend} "
               f"(from attention_type={params.get('attention_type')!r})")
+
+    @staticmethod
+    def _krea2_lora_warn(message: str, code: str) -> None:
+        """Record a user-visible generation warning. ``message`` is embedded in the
+        output PNG's text chunk, so it must never carry an absolute path."""
+        print(f"[Krea2 LoRA] WARNING: {message}")
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code=code)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _krea2_lora_ignored_options(cfg: Dict) -> List[str]:
+        """LoRA knobs this backend does not implement (LYCORIS_ADAPTER_DESIGN
+        Phase 1 owns them). ``apply_to_text_encoder`` is absent on purpose: Krea 2
+        never touches the TE, so either value is honoured."""
+        ignored = []
+        if not cfg.get("apply_to_unet", True):
+            ignored.append("apply_to_unet=false")
+        if cfg.get("unet_layer_weights"):
+            ignored.append("unet_layer_weights")
+        step_range = cfg.get("step_range")
+        if step_range is not None and list(step_range) != [0, 1000]:
+            ignored.append(f"step_range={list(step_range)}")
+        return ignored
+
+    def _krea2_lora_state(self, transformer):
+        """The (originals, wrapped_keys) maps for THIS transformer.
+
+        Reset when the model was reloaded: the maps hold the OLD transformer's
+        Linears, ``apply_lora_group`` keeps them (setdefault) and
+        ``restore_originals`` would then splice them into the new transformer.
+        Keyed by weakref rather than id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_krea2_lora_transformer_ref", None)
+        if ref is None or ref() is not transformer:
+            self._krea2_lora_original_modules: Dict[str, torch.nn.Module] = {}
+            self._krea2_lora_wrapped_keys: set = set()
+            self._krea2_lora_transformer_ref = weakref.ref(transformer)
+        return self._krea2_lora_original_modules, self._krea2_lora_wrapped_keys
+
+    def _load_lora_krea2(self, lora_configs: List[Dict]) -> int:
+        """Wrap Krea 2 transformer Linears with the requested LoRA(s).
+
+        Transformer-only: this function touches nothing but
+        ``krea2_components["transformer"]`` — there is no TE apply path, and no
+        Krea 2 LoRA can carry TE keys because the Qwen3-VL encoder is frozen for
+        training.
+
+        Must run AFTER the transformer is staged on GPU and after any runtime
+        INT8 conversion: the wrappers reference the CURRENT Linear modules and
+        copy their device. Raises on a file that resolves to zero targets — a
+        LoRA that had no effect must not pass as a successful generation.
+        """
+        from core.models.krea2.krea2_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
+        # an earlier request must not leak its wrappers into this generation.
+        self._unload_lora_krea2()
+
+        if not lora_configs:
+            return 0
+        if not self.krea2_components:
+            raise RuntimeError("Krea 2 LoRA requested but no Krea 2 model is loaded.")
+
+        transformer = self.krea2_components["transformer"]
+        originals, wrapped_keys = self._krea2_lora_state(transformer)
+
+        total = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            lora_file = os.path.basename(str(lora_path))
+            strength = float(cfg.get("strength", 1.0))
+            resolved = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                raise RuntimeError(
+                    f"Krea 2 LoRA file not found: {lora_path!r} (searched "
+                    f"{lora_manager.lora_dir}, additional dirs: {lora_manager.additional_dirs})")
+
+            raw, fmt = load_lora_safetensors(str(resolved))
+            grouped = normalise_lora_state_dict(raw)
+            if not grouped:
+                raise RuntimeError(
+                    f"Krea 2 LoRA {lora_path!r}: none of its {len(raw)} tensors form a "
+                    f"'lora_unet_*' down/up pair (format={fmt}) -- not a Krea 2 LoRA.")
+
+            dropped = _dropped_lora_keys(raw, grouped)
+            if dropped:
+                self._krea2_lora_warn(
+                    f"LoRA '{lora_file}': {len(dropped)} of its {len(raw)} tensor key(s) are "
+                    f"not a Krea 2 'lora_unet_*' down/up pair and were dropped "
+                    f"(first few: {dropped[:5]}).",
+                    "krea2_lora_keys_unrecognised")
+
+            ignored = self._krea2_lora_ignored_options(cfg)
+            if ignored:
+                self._krea2_lora_warn(
+                    f"LoRA '{lora_file}': {', '.join(ignored)} is not implemented for Krea 2 "
+                    f"and was ignored; strength {strength} applies to every matched module for "
+                    f"the whole denoise loop.",
+                    "krea2_lora_options_ignored")
+
+            # apply_lora_group re-wraps the true original, so a second LoRA on the
+            # same module replaces the first instead of summing (shared-engine
+            # scope; see docs/guides/LYCORIS_ADAPTER_DESIGN.md Phase 1).
+            overlap = wrapped_keys & set(grouped)
+            applied = apply_lora_group(
+                transformer, grouped, strength, originals, wrapped_keys,
+            )
+            print(f"[Krea2 LoRA] {i+1}/{len(lora_configs)}: {lora_path} format={fmt} "
+                  f"matched={len(grouped)} wrapped={applied} strength={strength}")
+
+            if applied == 0:
+                message = (
+                    f"LoRA '{lora_file}': 0 of {len(grouped)} modules matched the loaded "
+                    f"Krea 2 transformer -- wrong architecture or an unsupported target scope.")
+                self._krea2_lora_warn(message, "lora_incompatible")
+                raise RuntimeError(f"Krea 2 {message}")
+            if len(overlap) == applied:
+                # Everything this file touched was already wrapped, so the earlier
+                # LoRA is discarded rather than summed. Refuse, as Z-Image does.
+                message = (
+                    f"LoRA '{lora_file}': every one of its {applied} target modules is already "
+                    f"wrapped by an earlier LoRA in this request. Krea 2 applies one LoRA at a "
+                    f"time; select a single Krea 2 LoRA.")
+                self._krea2_lora_warn(message, "lora_stacking_unsupported")
+                raise RuntimeError(f"Krea 2 {message}")
+            if applied < len(grouped):
+                self._krea2_lora_warn(
+                    f"LoRA '{lora_file}': applied {applied} of {len(grouped)} modules; the rest "
+                    f"have no counterpart in the loaded Krea 2 transformer.",
+                    "lora_partial")
+            if overlap:
+                self._krea2_lora_warn(
+                    f"LoRA '{lora_file}': {len(overlap)} module(s) were already wrapped by an "
+                    f"earlier LoRA in this request; the earlier branch is replaced, not summed.",
+                    "lora_partial")
+            total += applied
+        return total
+
+    def _unload_lora_krea2(self) -> int:
+        """Restore every wrapped Krea 2 Linear to its pre-LoRA original.
+
+        Also drops the original-module map: a later generation may run a
+        one-time INT8 conversion that REPLACES those Linears, and reinstating a
+        stale pre-conversion module would put a CPU bf16 Linear back into a
+        quantized GPU transformer.
+        """
+        from core.models.krea2.krea2_lora import restore_originals
+        transformer = (self.krea2_components or {}).get("transformer")
+        if transformer is None:
+            # Model unloaded: drop the map too, so a later load cannot inherit it.
+            self._krea2_lora_original_modules = {}
+            self._krea2_lora_wrapped_keys = set()
+            self._krea2_lora_transformer_ref = None
+            return 0
+        originals, wrapped_keys = self._krea2_lora_state(transformer)
+        if not wrapped_keys:
+            return 0
+        restored = restore_originals(transformer, originals, wrapped_keys)
+        originals.clear()
+        if restored:
+            print(f"[Krea2 LoRA] Unloaded {restored} LoRA wrapper(s)")
+        return restored
 
     def _krea2_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
                              transformer, device, ref_index: int = 0):
@@ -290,6 +477,20 @@ class Krea2Mixin:
         already offloaded at their own stage -- discard_resident just keeps
         the tracked set in sync (idempotent no-op otherwise)."""
         from core.keep_hot import clear_resident, discard_resident
+        # Idempotent: the denoise finally already unwrapped on the normal path.
+        # This is the net for a failure between apply and that block.
+        try:
+            self._unload_lora_krea2()
+        except Exception as e:
+            # Swallowing this is what makes a leak silent: wrappers stay installed
+            # and the next generation would denoise through them. It is retried
+            # (and raises) at the top of _load_lora_krea2, so do not fail here.
+            print(f"[Krea2 LoRA] ERROR: could not restore the transformer: {e}")
+            import traceback; traceback.print_exc()
+            self._krea2_lora_warn(
+                f"Krea 2 LoRA wrappers could not be removed after this generation ({e}); "
+                f"the next generation retries the restore before denoising.",
+                "lora_unload_failed")
         if not gen_succeeded:
             clear_resident(self)
             for _c in ("text_encoder", "transformer", "vae"):
@@ -348,6 +549,10 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # LoRA wrappers hold the current Linear modules, so this must follow
+            # both the INT8 conversion and the GPU stage above.
+            self._load_lora_krea2(params.get("loras") or [])
+
             # Training-free reference-style transfer. OFF by default
             # (style_transfer/style_transfers absent -> (None, None, None,
             # None, "stack"), no-op below). ``style_refs`` is populated (and
@@ -379,6 +584,9 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                # Unconditional: a guard here would skip the restore in exactly the
+                # cases that leak wrappers into the next generation.
+                self._unload_lora_krea2()
                 if _kh_keep_transformer:
                     mark_resident(self, "transformer", _kh_model_key)
                 else:
@@ -462,6 +670,9 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # Must follow the INT8 conversion and the GPU stage (see txt2img).
+            self._load_lora_krea2(params.get("loras") or [])
+
             # Training-free reference-style transfer (see the txt2img comment
             # above for the single-ref/multi-ref routing invariant).
             style_cfg = style_ref_x0 = style_eps_ref = None
@@ -487,6 +698,7 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                self._unload_lora_krea2()
                 if _kh_keep_transformer:
                     mark_resident(self, "transformer", _kh_model_key)
                 else:
@@ -583,6 +795,9 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # Must follow the INT8 conversion and the GPU stage (see txt2img).
+            self._load_lora_krea2(params.get("loras") or [])
+
             # Training-free reference-style transfer (see the txt2img comment
             # above for the single-ref/multi-ref routing invariant).
             style_cfg = style_ref_x0 = style_eps_ref = None
@@ -608,6 +823,7 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                self._unload_lora_krea2()
                 if _kh_keep_transformer:
                     mark_resident(self, "transformer", _kh_model_key)
                 else:

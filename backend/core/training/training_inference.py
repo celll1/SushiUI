@@ -13,7 +13,8 @@ Supported modes (Phase 2+):
     * ``mode = "inpaint"`` — uses ``custom_inpaint_sampling_loop``
 
 Optional extras:
-    * LoRA stack on top of training LoRA (best-effort via peft)
+    * LoRA stack on top of the in-training LoRA (SD1.5 / SDXL only; see
+      ``_apply_additional_loras``)
     * ControlNet conditioning (builds a real diffusers CN pipeline
       from the TempPipeline's components dict, then runs the same
       sampling loop)
@@ -86,9 +87,11 @@ class TrainingPreviewGenerator:
 
     def __init__(self, trainer: "BaseTrainer"):
         self.trainer = trainer
-        # Adapter names we attach during a preview; cleared after every
-        # request via ``_detach_additional_loras``.
-        self._added_adapter_names: List[str] = []
+        # Set while a preview holds stacked LoRAs, and holding the exact
+        # pipeline + wrapper sites the load touched, so a detach undoes what
+        # was attached even if the trainer swapped a module meanwhile.
+        # Cleared by ``_detach_additional_loras``.
+        self._lora_stack: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Public API — invoked by the trainer at batch boundaries
@@ -124,9 +127,18 @@ class TrainingPreviewGenerator:
                     image, seed = self._generate_inpaint(params)
                 else:
                     raise ValueError(f"Unsupported preview mode: {mode!r}")
+            except Exception as gen_error:
+                # A detach failure below would otherwise replace this one, and
+                # a model left mid-detach is the more urgent of the two.
+                print(f"[TrainingPreview:{request_id}] generation failed: "
+                      f"{type(gen_error).__name__}: {gen_error}")
+                raise
             finally:
-                self._detach_additional_loras()
-                self._exit_eval_mode()
+                # Train mode must come back even if the detach raises.
+                try:
+                    self._detach_additional_loras()
+                finally:
+                    self._exit_eval_mode()
 
             buf = io.BytesIO()
             image.save(buf, format="PNG")
@@ -185,51 +197,78 @@ class TrainingPreviewGenerator:
             t.text_encoder_2.train()
 
     # ------------------------------------------------------------------
-    # Phase 3: LoRA stack — attach / detach additional adapters
+    # LoRA stack: attach / detach additional adapters
     # ------------------------------------------------------------------
 
     def _apply_additional_loras(self, loras: List[Dict[str, Any]]) -> None:
         """Attach user-specified LoRAs on top of the in-training LoRA.
 
-        Best-effort: uses each module's peft ``load_adapter`` when
-        available.  Adapters are named ``preview_<i>`` so they don't
-        collide with the training adapter.  Failures raise — we don't
-        silently generate without requested LoRAs.
+        Runs the production ``lora_manager.load_loras`` against a TempPipeline
+        that subclasses the real diffusers loader mixin, with the trainer's
+        ``LoRALinearLayer`` wrappers detoured around the PEFT injection.
+        Refuses (rather than generating a picture without them) whenever the
+        stack cannot be applied or could not be undone afterwards.
         """
         if not loras:
             return
-        # We use lora_manager's heavy-lifting (format conversion etc.)
-        # via our TempPipeline's load_lora_weights shim.  Construct a
-        # transient TempPipeline that delegates to the trainer modules.
-        from .temp_pipeline import build_temp_pipeline_for_trainer
+        from .temp_pipeline import (
+            build_temp_pipeline_for_trainer,
+            collect_training_lora_sites,
+            components_with_peft_adapters,
+            training_lora_detour,
+        )
         from core.extensions.lora_manager import lora_manager
-        # We don't actually need a scheduler here; pass the trainer's
-        # original_scheduler (lora_manager doesn't touch it).
+
+        # lora_manager never touches the scheduler; the trainer's own is fine.
         sched = getattr(self.trainer, "original_scheduler", None)
         temp = build_temp_pipeline_for_trainer(self.trainer, sched)
-        try:
+        temp.assert_can_stack_loras()
+        components = temp.lora_components()
+
+        occupied = components_with_peft_adapters(components)
+        if occupied:
+            raise RuntimeError(
+                "Refusing to stack preview LoRAs: PEFT adapters are already "
+                f"installed on {occupied}. The trainer does not create those, "
+                "so detaching afterwards could not restore the model to the "
+                "state training left it in."
+            )
+
+        sites = collect_training_lora_sites(components)
+        # Recorded BEFORE the load: a load that raises half way through a stack
+        # still has adapters to detach.
+        self._lora_stack = {
+            "pipeline": temp,
+            "sites": sites,
+            "names": [f"lora_{i}" for i in range(len(loras))],
+        }
+        with training_lora_detour(sites):
             lora_manager.load_loras(temp, loras)
-        except NotImplementedError:
-            # The TempPipeline shim already prints a clear error; bubble
-            # up so the request reports a useful failure rather than
-            # silently dropping LoRAs.
-            raise
-        # Record names so we can detach them later
-        for i in range(len(loras)):
-            self._added_adapter_names.append(f"preview_lora_{i}")
 
     def _detach_additional_loras(self) -> None:
-        if not self._added_adapter_names:
+        """Remove everything the preview stacked, restoring module identity.
+
+        ``unload_lora_weights`` strips the PEFT layers and puts the original
+        module objects back (the optimizer holds their parameters), which is
+        exact only because the apply refused to run over pre-existing PEFT
+        adapters. Raises on failure: a model still carrying preview adapters
+        would train against a forward the user never asked for.
+        """
+        stack = self._lora_stack
+        self._lora_stack = None
+        if stack is None:
             return
+        from .temp_pipeline import training_lora_detour
         try:
-            from .temp_pipeline import build_temp_pipeline_for_trainer
-            sched = getattr(self.trainer, "original_scheduler", None)
-            temp = build_temp_pipeline_for_trainer(self.trainer, sched)
-            temp.delete_adapters(self._added_adapter_names)
+            with training_lora_detour(stack["sites"]):
+                stack["pipeline"].unload_lora_weights()
         except Exception as e:   # noqa: BLE001
-            print(f"[TrainingPreview] WARNING: detach LoRAs failed: {e}")
-        finally:
-            self._added_adapter_names = []
+            traceback.print_exc()
+            raise RuntimeError(
+                f"Preview LoRAs {stack['names']} could not be detached "
+                f"({type(e).__name__}: {e}); the in-training model may still "
+                "carry them. Stop the run before trusting further steps."
+            ) from e
 
     # ------------------------------------------------------------------
     # Mode dispatchers — each path decodes its mode-specific images

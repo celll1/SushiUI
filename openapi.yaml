@@ -10635,20 +10635,25 @@ components:
             default true), `unet_layer_weights` (object), `step_range`
             (integer pair over 0-1000, default `[0, 1000]`).
 
-            `apply_to_unet`, `apply_to_text_encoder`, `unet_layer_weights` and
-            `step_range` are honoured only on the SD1.5/SDXL diffusers path.
-            The component-based architectures (Z-Image, FLUX.2, Anima, Lens,
-            Krea 2, Ideogram 4, MiniT2I, SenseNova) each have their own
-            loader: FLUX.2 honours `apply_to_unet`/`apply_to_text_encoder`,
-            and the rest ignore these four fields — several warn that they do
-            rather than failing.
+            Each of the four is honoured by a different subset of
+            architectures. `step_range` is honoured only on the SD1.5/SDXL
+            diffusers path. `unet_layer_weights` is honoured on SD1.5/SDXL and
+            on FLUX.2's transformer (not its text encoder).
+            `apply_to_unet`/`apply_to_text_encoder` are honoured by FLUX.2
+            (both) and `apply_to_unet` by LTX-2.3; they are NOT honoured on the
+            SD1.5/SDXL path, where they are parsed and logged but never
+            consulted. Every other component-based architecture (Z-Image,
+            Anima, Lens, Krea 2, Ideogram 4, MiniT2I, ACE-Step, MiniMax-H3,
+            SenseNova) ignores all four — Krea 2 and LTX-2.3 warn that they do,
+            the rest ignore silently.
 
-            On the component-based architectures a LoRA that cannot be
-            honoured FAILS the generation (400) instead of returning an image
-            produced without it: a missing file (`lora_not_found`), a file
+            A LoRA that cannot be honoured FAILS the generation (400) on every
+            architecture instead of returning an image produced without it: a
+            missing file (`lora_not_found`), a file
             that could not be read or applied (`lora_load_failed`), and a file
-            matching zero target modules (`lora_incompatible`). Selecting two
-            LoRAs whose targets fully overlap is refused
+            matching zero target modules (`lora_incompatible`). On the
+            component-based architectures, selecting two LoRAs whose targets
+            fully overlap is refused
             (`lora_stacking_unsupported`) — these loaders REPLACE the target
             Linear, so they cannot sum two adapters over one module; two LoRAs
             over disjoint modules still stack. A partial application warns
@@ -11729,7 +11734,10 @@ components:
             Per-LoRA `step_range` and per-block `unet_layer_weights` are NOT
             honoured on either architecture; LTX-2.3 warns when a request
             sets them (`ltx2_lora_step_range_ignored`,
-            `ltx2_lora_layer_weights_ignored`).
+            `ltx2_lora_layer_weights_ignored`). `apply_to_unet` IS honoured on
+            LTX-2.3: `false` applies the LoRA nowhere and warns
+            (`ltx2_lora_unet_disabled`), since an LTX-2.3 LoRA only targets the
+            video DiT. MiniMax-H3 ignores it.
           items:
             type: object
             properties:

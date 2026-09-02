@@ -311,6 +311,26 @@ def iter_sensenova_lora_targets(
 # Apply / restore (inference)
 # ---------------------------------------------------------------------------
 
+def metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
+    """File-level ``lora_alpha``/``ss_network_alpha``, or ``None``.
+
+    The middle tier of the alpha precedence per-key ``.alpha`` tensor -> file
+    metadata -> rank. This repo's own trainer and the real distillation
+    checkpoint both write per-key alphas, so this only rescues a file that
+    carries the scale in its metadata alone -- which would otherwise apply at
+    1.0 instead of its trained scale.
+    """
+    for key in ("lora_alpha", "ss_network_alpha"):
+        value = (metadata or {}).get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def apply_lora_group(
     transformer: nn.Module,
     grouped: Dict[str, Dict[str, torch.Tensor]],
@@ -319,8 +339,10 @@ def apply_lora_group(
     wrapped_keys: Set[str],
     *,
     branch: str = "both",
+    file_alpha: Optional[float] = None,
+    shadowed: Optional[list] = None,
 ) -> int:
-    """Wrap matching modules with ``LoRALinearLayer`` (stackable, reversible).
+    """Wrap matching modules with ``LoRALinearLayer`` (reversible).
 
     NEVER merges into the ``Int8Linear`` base -- the wrapper computes
     ``base(x) + scale * lora_up(lora_down(x))`` at forward time, exactly the
@@ -332,6 +354,18 @@ def apply_lora_group(
     generation-only file simply misses on every understanding slot, so the
     existing distillation checkpoint keeps applying exactly 294 modules while
     a gen+und file stops being silently truncated to its generation half.
+
+    A target an EARLIER LoRA in the same request already wrapped is SKIPPED
+    and appended to ``shadowed`` when the caller supplies a list.
+    ``LoRALinearLayer`` exposes ``weight``/``bias`` but not
+    ``in_features``/``out_features``, so it cannot wrap a wrapper; re-wrapping
+    the recovered original instead silently DISCARDED the earlier LoRA.
+    Additive composition is ``CompositeAdapterLinear`` work
+    (LYCORIS_ADAPTER_DESIGN Phase 1); the caller refuses a fully shadowed
+    stack rather than faking it.
+
+    ``file_alpha`` is the middle tier of the alpha precedence (see
+    ``metadata_alpha``); it is used only for a module carrying no ``.alpha``.
     """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
@@ -344,15 +378,25 @@ def apply_lora_group(
         if weights is None:
             continue
 
+        if isinstance(linear, LoRALinearLayer):
+            if shadowed is not None:
+                shadowed.append(module_path)
+            continue
+
         down = weights["down"]
         up = weights["up"]
         alpha_tensor = weights.get("alpha")
 
-        true_original = linear.original_module if isinstance(linear, LoRALinearLayer) else linear
+        true_original = linear
         lora_original_modules.setdefault(module_path, true_original)
 
         rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
+        if alpha_tensor is not None:
+            alpha_value = float(alpha_tensor.item())
+        elif file_alpha is not None:
+            alpha_value = file_alpha
+        else:
+            alpha_value = float(rank)
 
         wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
         device = true_original.weight.device
@@ -395,6 +439,13 @@ def restore_originals(
     Defaults to ``"both"`` for the same reason ``apply_lora_group`` does:
     restoration must cover every branch application could have touched, or an
     understanding wrapper survives the generation that installed it.
+
+    Clears ``wrapped_keys`` but NOT ``lora_original_modules`` (a caller may
+    inspect what was restored). The owner of a map that outlives one
+    generation must clear it -- restoration is by map membership and
+    ``apply_lora_group`` records with ``setdefault``, so a retained entry for
+    an unloaded transformer would be written into the next model loaded.
+    ``SenseNovaMixin._unload_lora_sensenova`` is that owner.
     """
     restored = 0
     for module_path, parent, attr, _linear in iter_sensenova_lora_targets(

@@ -4106,6 +4106,92 @@ class BaseTrainer(ABC):
             cursor += count
         return remapped
 
+    @staticmethod
+    def _optimizer_state_entry_fits_param(entry: Any, param) -> bool:
+        """Whether a saved state entry was written for a parameter this size.
+
+        Positional remapping cannot recover parameter identity, so size is the
+        only check available. Every optimizer here keeps at least one
+        parameter-sized buffer (uint8 for the 8-bit ones; absmax*/step are
+        strictly smaller) except factored Adafactor, whose row/col shapes are
+        derived from the parameter's shape instead.
+        """
+        if not isinstance(entry, dict):
+            return True
+        # torch.optim.Adafactor spells the same two buffers row_var/col_var and
+        # keeps the reduced dimension as a singleton, so compare without it.
+        row = entry.get("exp_avg_sq_row", entry.get("row_var"))
+        col = entry.get("exp_avg_sq_col", entry.get("col_var"))
+        if isinstance(row, torch.Tensor) or isinstance(col, torch.Tensor):
+            shape = tuple(param.shape)
+            squeeze = lambda s: tuple(d for d in s if d != 1)
+            if isinstance(row, torch.Tensor) and squeeze(row.shape) != squeeze(shape[:-1]):
+                return False
+            if isinstance(col, torch.Tensor) and squeeze(col.shape) != squeeze(shape[:-2] + shape[-1:]):
+                return False
+            return True
+        tensors = [v for v in entry.values() if isinstance(v, torch.Tensor)]
+        if not tensors:
+            return True
+        return max(t.numel() for t in tensors) == param.numel()
+
+    def _remap_optimizer_state_by_group_prefix(
+        self, optimizer, cur_groups, saved_groups, saved_state, verify_sizes: bool
+    ) -> Tuple[Dict[int, Any], str, int]:
+        """Keep each group's leading ``min(live, saved)`` parameters' state.
+
+        ``saved_state`` is keyed by a flat parameter index in param_groups
+        order, so a group that changed SIZE shifts every later group's offsets:
+        the entries are re-keyed onto the live layout, not filtered.
+
+        Returns ``(state, report, fresh_count)``; raises when the overlap is
+        empty or a restored entry's size disagrees with the live parameter.
+        """
+        n = min(len(cur_groups), len(saved_groups))
+        if n == 0:
+            raise RuntimeError("optimizer param groups are not prefix-compatible")
+        live_groups = optimizer.param_groups
+        if len(live_groups) != len(cur_groups):
+            raise RuntimeError("optimizer param_groups disagree with its state_dict")
+
+        by_index = {int(k): v for k, v in (saved_state or {}).items()}
+        new_state: Dict[int, Any] = {}
+        per_group: List[Tuple[int, int, int, int, int]] = []
+        cur_off = 0
+        saved_off = 0
+        for i in range(len(cur_groups)):
+            cur_n = len(cur_groups[i]["params"])
+            saved_n = len(saved_groups[i]["params"]) if i < n else 0
+            kept = 0
+            for j in range(min(cur_n, saved_n)):
+                entry = by_index.get(saved_off + j)
+                if entry is None:
+                    continue
+                param = live_groups[i]["params"][j]
+                if verify_sizes and not self._optimizer_state_entry_fits_param(entry, param):
+                    raise RuntimeError(
+                        f"saved state for group {i} parameter {j} does not fit the live "
+                        f"parameter (numel {param.numel()}); the group did not grow by "
+                        f"appending, so positional matching would pair the wrong tensors")
+                new_state[cur_off + j] = entry
+                kept += 1
+            per_group.append((i, kept, cur_n - kept, saved_n, cur_n))
+            cur_off += cur_n
+            saved_off += saved_n
+
+        kept_total = sum(g[1] for g in per_group)
+        fresh_total = sum(g[2] for g in per_group)
+        if kept_total == 0:
+            # Nothing was salvaged, so this is not a partial load: report it as
+            # the plain failure it is, which re-arms the warmup on its own.
+            raise RuntimeError("no saved state overlapped the live parameters")
+        detail = "; ".join(
+            f"group {i}: {kept} kept / {fresh} fresh ({saved_n} saved -> {cur_n} live)"
+            for i, kept, fresh, saved_n, cur_n in per_group)
+        report = (f"{kept_total} of {kept_total + fresh_total} live parameter tensor(s) "
+                  f"kept their saved state, {fresh_total} start fresh [{detail}]")
+        return new_state, report, fresh_total
+
     def _load_one_optimizer_state(self, optimizer, optimizer_state, label: str) -> bool:
         """Load one saved state dict into one optimizer."""
         from .optimizers.host_state_allocator import HostStateResidencyError
@@ -4183,13 +4269,12 @@ class BaseTrainer(ABC):
                 # inside a third-party load_state_dict keeps the partial load.
                 raise
             except Exception as e:
-                # The usual cause here is a param-GROUP count change between runs —
-                # specifically adding/removing the REPA projector group (which is
-                # always appended LAST). Rather than reset the WHOLE optimizer
-                # (losing transformer/TE momentum+variance), try a prefix-preserving
-                # partial load: keep the overlapping leading groups' state and only
-                # drop/skip the projector group's state. This makes turning REPA
-                # off (or on) mid-training non-destructive for the model's optimizer.
+                # The usual causes are a param-GROUP added/removed (the REPA
+                # projector, always appended LAST) or an existing group that GREW
+                # by appending (e.g. sensenova_train_fm_modules adds 16 params to
+                # the end of the generation group). Rather than reset the WHOLE
+                # optimizer, keep each group's leading common prefix and let only
+                # the genuinely new parameters start fresh.
                 if is_cuda_oom_error(e):
                     raise_optimizer_state_load_oom(self, e, label)
                 print(f"{self.log_prefix} WARNING: Failed to load optimizer state directly: {e}")
@@ -4199,26 +4284,26 @@ class BaseTrainer(ABC):
                     saved_groups = optimizer_state.get("param_groups", [])
                     saved_state = optimizer_state.get("state", {})
                     n = min(len(cur_groups), len(saved_groups))
-                    # Only safe when the overlapping leading groups have identical
-                    # param counts (i.e. the sole difference is a trailing group
-                    # added/removed). Otherwise this is a genuine incompatibility.
+                    # Identical overlapping counts (trailing group added/removed):
+                    # the offsets coincide and the shipped path did no size check,
+                    # so keep it verification-free. Only the widened case verifies.
                     prefix_ok = n > 0 and all(
                         len(cur_groups[i]["params"]) == len(saved_groups[i]["params"])
                         for i in range(n)
                     )
-                    if not prefix_ok:
-                        raise RuntimeError("optimizer param groups are not prefix-compatible")
-                    # Number of params in the overlapping prefix (saved 'state' is keyed
-                    # by a flat param index in param_groups order; the trailing group's
-                    # params have the highest indices).
-                    overlap_params = sum(len(cur_groups[i]["params"]) for i in range(n))
-                    filtered_state = {k: v for k, v in saved_state.items() if int(k) < overlap_params}
-                    partial = {"state": filtered_state, "param_groups": cur_groups}
+                    partial_state, report, fresh_total = \
+                        self._remap_optimizer_state_by_group_prefix(
+                            optimizer, cur_groups, saved_groups, saved_state,
+                            verify_sizes=not prefix_ok)
+                    partial = {"state": partial_state, "param_groups": cur_groups}
                     optimizer.load_state_dict(partial)
                     finalize_loaded_state_devices(optimizer, self.device, host_resident)
-                    kept = "model groups preserved; REPA projector group reset" if len(cur_groups) < len(saved_groups) \
-                        else "model groups preserved; new (REPA projector) group starts fresh"
-                    print(f"{self.log_prefix} Partial optimizer state load OK ({kept})")
+                    print(f"{self.log_prefix} Partial optimizer state load OK from {label}: {report}")
+                    if fresh_total > 0:
+                        # Same hazard the warmup re-arm exists for: some params
+                        # step from zero moments while the schedule sits past its
+                        # warmup. The bool return cannot express "partly fresh".
+                        self._optimizer_state_partially_fresh = True
                     assert_loaded_state_host_resident(self, [optimizer])
                     return True
                 except HostStateResidencyError:

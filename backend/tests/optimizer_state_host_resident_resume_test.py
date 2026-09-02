@@ -129,6 +129,10 @@ class _Trainer:
     """Exactly the surface ``_load_one_optimizer_state`` reads."""
 
     _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
+    _remap_optimizer_state_by_group_prefix = (
+        BaseTrainer._remap_optimizer_state_by_group_prefix)
+    _optimizer_state_entry_fits_param = staticmethod(
+        BaseTrainer._optimizer_state_entry_fits_param)
     log_prefix = "[test]"
 
     def __init__(self, host_resident=True):
@@ -419,6 +423,10 @@ class FromAFileTest(unittest.TestCase):
     class _Probe:
         load_optimizer_state = BaseTrainer.load_optimizer_state
         _load_one_optimizer_state = BaseTrainer._load_one_optimizer_state
+        _remap_optimizer_state_by_group_prefix = (
+            BaseTrainer._remap_optimizer_state_by_group_prefix)
+        _optimizer_state_entry_fits_param = staticmethod(
+            BaseTrainer._optimizer_state_entry_fits_param)
         _split_saved_optimizer_states = staticmethod(
             BaseTrainer._split_saved_optimizer_states)
         _optimizer_state_param_count = staticmethod(

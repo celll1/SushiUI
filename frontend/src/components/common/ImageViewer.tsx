@@ -29,9 +29,20 @@ interface ImageViewerProps {
   // of whether these props are supplied.
   postEdit?: PostEditState;
   onPostEditChange?: (value: PostEditState) => void;
+  // The download button resolves the filename against the outputs directory
+  // (`/api/download/{filename}`), so callers showing images served from
+  // elsewhere (e.g. training samples) turn it off.
+  showDownload?: boolean;
 }
 
-export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange }: ImageViewerProps) {
+// Arrow keys belong to a focused text field, not to the viewer. A range input
+// is not text entry: the viewer takes the key and preventDefault below stops
+// the slider behind the overlay moving a second time.
+const isTextEntry = (target: EventTarget | null) =>
+  target instanceof HTMLTextAreaElement ||
+  (target instanceof HTMLInputElement && target.type !== "range");
+
+export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange, showDownload = true }: ImageViewerProps) {
   // Post-edit strip is collapsed by default so it never obscures the image;
   // this is purely internal UI state (not one of the optional postEdit props).
   const [postEditExpanded, setPostEditExpanded] = useState(false);
@@ -90,9 +101,13 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onClose();
+      } else if (isTextEntry(e.target)) {
+        return;
       } else if (e.key === "ArrowLeft" && hasPrev && onNavigate) {
+        e.preventDefault();
         onNavigate('prev');
       } else if (e.key === "ArrowRight" && hasNext && onNavigate) {
+        e.preventDefault();
         onNavigate('next');
       }
     };
@@ -199,7 +214,7 @@ export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClo
 
         {/* Download button: image-only (re-encodes a PNG via the metadata-aware
             download endpoint, which is not meaningful for video/audio). */}
-        {kind === "image" && (
+        {kind === "image" && showDownload && (
           <button
             onClick={handleDownload}
             className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"

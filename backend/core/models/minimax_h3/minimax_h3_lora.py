@@ -6,8 +6,9 @@ merge -- fully reversible by restoring the original module). This mirrors
 ``core.models.krea2.krea2_lora`` / ``core.models.anima.anima_lora`` in shape;
 see those modules for the general pattern this one specialises.
 
-Only ONE key convention is supported: the ComfyUI/"interchange" layout real
-MiniMax-H3 LoRAs ship in --
+TWO key conventions are supported, detected from the keys themselves.
+
+1. The ComfyUI/"interchange" layout real MiniMax-H3 LoRAs ship in --
 
     diffusion_model.blocks.<N>.attn.qkv_proj.lora_A.weight
     diffusion_model.blocks.<N>.attn.qkv_proj.lora_B.weight
@@ -15,13 +16,23 @@ MiniMax-H3 LoRAs ship in --
     diffusion_model.token_refiner.blocks.<N>.<...>
     diffusion_model.final_layer.<...>
 
-This is NOT the format ``core.training.adapters.minimax_h3_adapter`` writes
-for a LoRA trained inside this repo (sd-scripts native, already targeting
-vendored module names one-to-one, no fusion). Loading a self-trained
-checkpoint through this module is out of scope here and is a follow-up; a
-``lora_unet_*`` key is simply unmatched by ``_parse_key`` and dropped like any
-other unrecognised key, the same silent-drop convention
-``anima_lora.normalise_lora_state_dict`` documents.
+2. The sd-scripts native layout ``core.training.adapters.minimax_h3_adapter``
+   writes for a LoRA trained inside this repo --
+
+    lora_unet_transformer_blocks_<N>_attn_to_q.lora_down.weight
+    lora_unet_transformer_blocks_<N>_attn_to_q.lora_up.weight
+    lora_unet_transformer_blocks_<N>_attn_to_q.alpha
+
+   These already target vendored module names one-to-one, so NONE of the three
+   conversions below applies to them: no qkv fusion to split, no fc1 half swap.
+   The only work is un-flattening the underscored stem, which is ambiguous in
+   general and is therefore done against a table built from the training
+   adapter's own scope constants (``_native_leaf_table``) rather than guessed.
+   A stem that table cannot map, and a stem missing its down or up half, both
+   raise instead of being dropped -- a self-trained checkpoint that matched
+   nothing used to be indistinguishable from a generation with no LoRA at all,
+   and this repo writes both halves for every target it saves, so either is a
+   real defect in the file.
 
 Three conversions turn the Comfy layout into the vendored one (measured
 against two real checkpoints -- see ``minimax_h3/loader.py``'s own DiT
@@ -50,14 +61,23 @@ BASE weights and is the ground truth this module was checked against):
       split), not any individual projection's post-split rank: the ratio is
       what the original module was scaled by, and each split piece inherits
       that same ratio so the sum of the three pieces reproduces the
-      original, undivided delta. ``alpha`` absent means ``alpha = rank``
-      (scale 1.0) -- some real checkpoints drop alpha and bake a flat
-      multiplier directly into ``lora_B`` instead of relying on alpha/rank,
-      and re-applying a nonexistent alpha/rank ratio on top would silently
-      double-attenuate them.
+      original, undivided delta.
+
+      Alpha resolution differs BY CONVENTION, and deliberately so:
+
+        * Comfy: per-key ``.alpha``, else ``alpha = rank`` (scale 1.0). File
+          metadata is NOT a fallback tier here. These checkpoints drop alpha
+          and bake a flat multiplier straight into ``lora_B`` instead of
+          relying on alpha/rank (real ``lightx2v_turbo_4step``: no per-key
+          alphas, ``ss_network_alpha: 'Dynamic'``, and a ``conversion`` note
+          saying so), so honouring a numeric ``ss_network_alpha`` alongside
+          would silently double-attenuate them.
+        * Native: per-key ``.alpha``, else file
+          ``lora_alpha``/``ss_network_alpha``, else rank. The training adapter
+          writes both, and its metadata alpha means the alpha/rank ratio.
 
 Save format reference: ``core/training/adapters/minimax_h3_adapter.py``
-(sd-scripts native, the OUTPUT side -- not read by this module, see above).
+(sd-scripts native, the OUTPUT side of convention 2 above).
 """
 
 from __future__ import annotations
@@ -72,6 +92,7 @@ from safetensors import safe_open
 
 
 _PREFIX = "diffusion_model."
+_NATIVE_PREFIX = "lora_unet_"
 _QKV_SUFFIX = ".attn.qkv_proj"
 _FC1_SUFFIX = ".mlp.fc1"
 
@@ -89,6 +110,69 @@ def _parse_key(key: str) -> Optional[Tuple[str, str]]:
     for suffix, tag in ((".lora_A.weight", "down"), (".lora_B.weight", "up"), (".alpha", "alpha")):
         if rest.endswith(suffix):
             return rest[: -len(suffix)], tag
+    return None
+
+
+def _parse_native_key(key: str) -> Optional[Tuple[str, str]]:
+    """``(flattened_stem, tag)`` for an sd-scripts native key, else ``None``."""
+    if not key.startswith(_NATIVE_PREFIX):
+        return None
+    rest = key[len(_NATIVE_PREFIX):]
+    for suffix, tag in ((".lora_down.weight", "down"), (".lora_up.weight", "up"), (".alpha", "alpha")):
+        if rest.endswith(suffix):
+            return rest[: -len(suffix)], tag
+    return None
+
+
+_NATIVE_STEM_RE = re.compile(r"^transformer_blocks_(\d+)_(.+)$")
+
+
+_NATIVE_LEAF_TABLE: Optional[Dict[str, str]] = None
+
+
+def _native_leaf_table() -> Dict[str, str]:
+    """``{flattened_leaf: dotted_leaf}`` for every leaf the training adapter
+    can target, derived from ITS constants so the two cannot drift apart.
+
+    Un-flattening ``attn_to_out_0`` back to ``attn.to_out.0`` is ambiguous by
+    inspection (``to_out_0`` could be an attribute of that name); the table is
+    what makes it exact. Memoized: it is consulted once per stem, and the
+    import is deferred (training package, imported from a generation module).
+    """
+    global _NATIVE_LEAF_TABLE
+    if _NATIVE_LEAF_TABLE is None:
+        from core.training.adapters.minimax_h3_adapter import _ATTN_LEAVES, _FF_LEAVES
+
+        leaves = [f"attn.{leaf}" for leaf in _ATTN_LEAVES] + [f"ff.{leaf}" for leaf in _FF_LEAVES]
+        _NATIVE_LEAF_TABLE = {leaf.replace(".", "_"): leaf for leaf in leaves}
+    return _NATIVE_LEAF_TABLE
+
+
+def _native_stem_to_module_path(stem: str, table: Dict[str, str]) -> Optional[str]:
+    match = _NATIVE_STEM_RE.match(stem)
+    if match is None:
+        return None
+    leaf = table.get(match.group(2))
+    if leaf is None:
+        return None
+    return f"transformer_blocks.{match.group(1)}.{leaf}"
+
+
+def _metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
+    """File-level ``lora_alpha``/``ss_network_alpha``, or ``None``.
+
+    The NATIVE branch's middle alpha tier (per-key tensor -> file metadata ->
+    rank), reached only when a native checkpoint carries no per-key ``.alpha``.
+    The comfy branch must not consult this -- see the module docstring, (c).
+    """
+    for key in ("lora_alpha", "ss_network_alpha"):
+        value = (metadata or {}).get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
     return None
 
 
@@ -226,15 +310,19 @@ def _swap_fc1_halves(up: torch.Tensor) -> torch.Tensor:
 # Full conversion: comfy raw state dict -> {vendored_target_path: {down, up, scale_ratio}}
 # ---------------------------------------------------------------------------
 
-def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, Any]]:
-    """Group + convert a raw comfy LoRA state dict into vendored targets.
+def _resolve_alpha(alpha_tensor, metadata_alpha: Optional[float], rank: int) -> float:
+    """Per-key ``.alpha`` tensor -> ``metadata_alpha`` -> rank. Comfy callers
+    pass ``metadata_alpha=None`` (module docstring, (c))."""
+    if alpha_tensor is not None:
+        return float(alpha_tensor.item())
+    if metadata_alpha is not None:
+        return metadata_alpha
+    return float(rank)
 
-    Returns ``{vendored_module_path: {"down": Tensor, "up": Tensor,
-    "scale_ratio": float}}``. ``scale_ratio`` is ``alpha / rank`` (rank being
-    the FUSED rank for a qkv split's three pieces, see point (c) in the
-    module docstring); the caller multiplies by the user-supplied LoRA
-    strength.
-    """
+
+def _normalise_comfy(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, Any]]:
+    """ComfyUI/interchange layout -> vendored targets. Takes no metadata: this
+    branch's alpha is per-key or rank, never the file's (module docstring, (c))."""
     from core.models.minimax_h3.loader import _rename_dit_key
 
     grouped_raw = _group_raw(raw)
@@ -252,8 +340,7 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
 
         if stem.endswith(_QKV_SUFFIX):
             parts, rank_total = _split_qkv(stem, down, up)
-            alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank_total)
-            scale_ratio = alpha_value / rank_total
+            scale_ratio = _resolve_alpha(alpha_tensor, None, rank_total) / rank_total
             base = mapped.split(".attn.qkv_proj")[0] + ".attn."
             for name, (d, u) in parts.items():
                 target = base + name
@@ -263,8 +350,7 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
             continue
 
         rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-        scale_ratio = alpha_value / rank
+        scale_ratio = _resolve_alpha(alpha_tensor, None, rank) / rank
 
         if stem.endswith(_FC1_SUFFIX):
             up = _swap_fc1_halves(up)
@@ -274,6 +360,91 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
         targets[mapped] = {"down": down, "up": up, "scale_ratio": scale_ratio}
 
     return targets
+
+
+def _normalise_native(
+    raw: Dict[str, torch.Tensor], metadata_alpha: Optional[float],
+) -> Dict[str, Dict[str, Any]]:
+    """sd-scripts native (this repo's own trainer output) -> vendored targets.
+
+    One-to-one with the vendored module names: no qkv split, no fc1 half swap.
+    Only the underscored stem is un-flattened, against the training adapter's
+    own leaf table.
+    """
+    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
+    for key, tensor in raw.items():
+        parsed = _parse_native_key(key)
+        if parsed is None:
+            continue
+        stem, tag = parsed
+        grouped.setdefault(stem, {})[tag] = tensor
+
+    table = _native_leaf_table()
+    targets: Dict[str, Dict[str, Any]] = {}
+    unmapped: list = []
+    incomplete: list = []
+    for stem, weights in grouped.items():
+        if "down" not in weights or "up" not in weights:
+            incomplete.append(stem)
+            continue
+        module_path = _native_stem_to_module_path(stem, table)
+        if module_path is None:
+            unmapped.append(stem)
+            continue
+        down = weights["down"]
+        up = weights["up"]
+        rank = int(down.shape[0])
+        if int(up.shape[1]) != rank:
+            raise ValueError(
+                f"{stem}: lora_down rank {rank} does not match lora_up's {up.shape[1]} columns."
+            )
+        if module_path in targets:
+            raise ValueError(f"duplicate LoRA target {module_path!r} (from stem {stem!r})")
+        targets[module_path] = {
+            "down": down,
+            "up": up,
+            "scale_ratio": _resolve_alpha(weights.get("alpha"), metadata_alpha, rank) / rank,
+        }
+
+    if incomplete:
+        raise ValueError(
+            f"{len(incomplete)} sd-scripts LoRA stem(s) carry only one of lora_down/lora_up "
+            f"(first few: {sorted(incomplete)[:5]}); this repo's trainer writes both for every "
+            f"target it saves, so the file is truncated or corrupt."
+        )
+    if unmapped:
+        raise ValueError(
+            f"{len(unmapped)} sd-scripts LoRA stem(s) name no MiniMax-H3 LoRA target "
+            f"(first few: {sorted(unmapped)[:5]}); recognised leaves are "
+            f"{sorted(table)}."
+        )
+    return targets
+
+
+def normalise_lora_state_dict(
+    raw: Dict[str, torch.Tensor], metadata: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Group + convert a raw LoRA state dict into vendored targets.
+
+    Returns ``{vendored_module_path: {"down": Tensor, "up": Tensor,
+    "scale_ratio": float}}``. ``scale_ratio`` is ``alpha / rank`` (rank being
+    the FUSED rank for a qkv split's three pieces, see point (c) in the module
+    docstring); the caller multiplies by the user-supplied LoRA strength.
+
+    The convention is read off the keys. ``metadata`` supplies the middle alpha
+    tier (per-key tensor -> file metadata -> rank) on the NATIVE branch only;
+    the comfy branch never consults it (module docstring, (c)).
+    """
+    has_comfy = any(key.startswith(_PREFIX) for key in raw)
+    has_native = any(key.startswith(_NATIVE_PREFIX) for key in raw)
+    if has_comfy and has_native:
+        raise ValueError(
+            "LoRA mixes the ComfyUI (diffusion_model.*) and sd-scripts (lora_unet_*) key "
+            "conventions; they need different conversions and cannot be applied together."
+        )
+    if has_native:
+        return _normalise_native(raw, _metadata_alpha(metadata))
+    return _normalise_comfy(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -403,21 +574,29 @@ def apply_lora_group(
     strength: float,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: set,
+    shadowed: Optional[list] = None,
 ) -> Tuple[int, list]:
     """Wrap matching vendored modules with ``MiniMaxH3LoRALinearLayer``.
 
-    Stacking-safe (unwraps an existing wrapper to recover the true original
-    so a second LoRA composes rather than replaces the first) and
-    unload-safe (``lora_original_modules.setdefault`` records only the FIRST
-    original seen for a module path, so ``restore_originals`` always reaches
-    the un-LoRA'd module regardless of how many LoRAs were stacked on it).
+    Returns ``(applied_count, missing_target_paths)``. A target an EARLIER
+    LoRA in the same request already wrapped is SKIPPED and appended to
+    ``shadowed`` when the caller supplies a list: neither ``LoRALinearLayer``
+    nor its ``MiniMaxH3LoRALinearLayer`` subclass exposes
+    ``in_features``/``out_features``, so a wrapper cannot wrap a wrapper, and
+    the previous shape here (unwrap to the true original, wrap that) silently
+    discarded the earlier LoRA on every shared target. Additive composition is
+    ``CompositeAdapterLinear`` work (LYCORIS_ADAPTER_DESIGN Phase 1); until
+    then the caller refuses a fully shadowed stack rather than faking it.
 
-    Returns ``(applied_count, missing_target_paths)``; the caller decides how
-    loudly to report unmatched targets (a LoRA trained against a different
-    scope, e.g. only ``attention``, legitimately leaves ``ff``/``adaln``
-    targets unmatched by the MODEL side -- but a target this function cannot
-    even RESOLVE against the live module tree is a real problem worth
-    surfacing).
+    ``lora_original_modules.setdefault`` records only the FIRST original seen
+    for a module path, so ``restore_originals`` always reaches the un-LoRA'd
+    module.
+
+    The caller decides how loudly to report unmatched targets (a LoRA trained
+    against a different scope, e.g. only ``attention``, legitimately leaves
+    ``ff``/``adaln`` targets unmatched by the MODEL side -- but a target this
+    function cannot even RESOLVE against the live module tree is a real
+    problem worth surfacing).
     """
     from core.training.adapters.base_adapter import is_lora_wrappable_linear, lora_branch_dtype
     from core.training.adapters.minimax_h3_adapter import MiniMaxH3LoRALinearLayer, _resolve_leaf
@@ -433,8 +612,10 @@ def apply_lora_group(
         parent, attr, current = resolved
 
         if isinstance(current, LoRALinearLayer):
-            true_original = current.original_module
-        elif is_lora_wrappable_linear(current):
+            if shadowed is not None:
+                shadowed.append(module_path)
+            continue
+        if is_lora_wrappable_linear(current):
             true_original = current
         else:
             missing.append(module_path)
@@ -480,7 +661,11 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: set,
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original."""
+    """Revert every wrapped module to its pre-LoRA original.
+
+    Clears ``wrapped_keys`` but NOT ``lora_original_modules``; that map's owner
+    decides its lifetime (``MiniMaxH3Mixin._minimax_h3_lora_state``).
+    """
     from core.training.adapters.minimax_h3_adapter import _resolve_leaf
 
     restored = 0

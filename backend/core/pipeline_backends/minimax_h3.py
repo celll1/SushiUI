@@ -50,6 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import os
 import random
 import time
+import weakref
 
 import numpy as np
 import torch
@@ -639,6 +640,21 @@ class MiniMaxH3Mixin:
     # LoRA
     # ------------------------------------------------------------------
 
+    def _minimax_h3_lora_state(self, transformer):
+        """The ``(originals, wrapped_keys)`` maps for THIS transformer.
+
+        Reset when the model was reloaded: the maps hold the OLD transformer's
+        Linears, ``apply_lora_group`` keeps them (setdefault) and
+        ``restore_originals`` would then splice them into the new transformer.
+        Keyed by weakref rather than id() because a freed object's id is reusable.
+        """
+        ref = getattr(self, "_minimax_h3_lora_transformer_ref", None)
+        if ref is None or ref() is not transformer:
+            self._minimax_h3_lora_original_modules: Dict[str, torch.nn.Module] = {}
+            self._minimax_h3_lora_wrapped_keys: set = set()
+            self._minimax_h3_lora_transformer_ref = weakref.ref(transformer)
+        return self._minimax_h3_lora_original_modules, self._minimax_h3_lora_wrapped_keys
+
     def _load_lora_minimax_h3(self, lora_configs: list, params: Dict[str, Any]) -> int:
         """Wrap target Linear modules of the MiniMax-H3 DiT with LoRA adapters.
 
@@ -653,11 +669,13 @@ class MiniMaxH3Mixin:
         replaces ``minimax_h3_components["transformer"]`` with a
         ``MiniMaxH3BlockLoopWrapper``.
 
-        Supports stacking multiple LoRAs on the same module (later configs
-        wrap the module the earlier one already wrapped).
+        Several LoRAs may be selected, but they must target DISJOINT modules
+        (see ``apply_lora_group``): an overlap warns, a full shadow refuses.
+        Any refusal raises here, before the denoise loop, so a LoRA that could
+        not be applied never returns a successful generation.
         """
         from core.models.minimax_h3.minimax_h3_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            normalise_lora_state_dict, apply_lora_group,
             check_variant_compatibility, detect_rank_variation,
         )
         from core.extensions.lora_manager import lora_manager
@@ -676,9 +694,7 @@ class MiniMaxH3Mixin:
         if isinstance(transformer, MiniMaxH3BlockLoopWrapper):
             transformer = transformer.transformer
 
-        if not hasattr(self, "_minimax_h3_lora_original_modules"):
-            self._minimax_h3_lora_original_modules: Dict[str, torch.nn.Module] = {}
-            self._minimax_h3_lora_wrapped_keys: set = set()
+        originals, wrapped_keys = self._minimax_h3_lora_state(transformer)
 
         try:
             from api.generation_status import add_warning
@@ -702,16 +718,29 @@ class MiniMaxH3Mixin:
         total_applied = 0
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
+            # Warnings ride into the PNG metadata chunk, so never an absolute path.
+            lora_file = os.path.basename(str(lora_path))
             strength = float(cfg.get("strength", 1.0))
             resolved = lora_manager._resolve_lora_path(lora_path)
             if resolved is None:
-                warn(f"LoRA file not found: {lora_path}", "minimax_h3_lora_not_found")
-                continue
+                message = (
+                    f"LoRA '{lora_file}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+                warn(message, "lora_not_found")
+                raise FileNotFoundError(message)
+            raw, metadata = self._minimax_h3_read_lora_file(str(resolved), lora_file, warn)
             try:
-                raw, metadata = load_lora_safetensors(str(resolved))
-                check_variant_compatibility(metadata, lora_path, current_variant, warn)
-                targets = normalise_lora_state_dict(raw)
-                print(f"[MiniMax-H3 LoRA] {i + 1}/{len(lora_configs)}: {lora_path} "
+                check_variant_compatibility(metadata, lora_file, current_variant, warn)
+            except ValueError as exc:
+                # Declared-variant mismatch, the one refusal the guard raises
+                # itself. Surfaced through warn() too, so it reaches the
+                # generation's warnings[] like every other refusal here.
+                warn(str(exc), "minimax_h3_lora_variant_mismatch")
+                raise
+            try:
+                targets = normalise_lora_state_dict(raw, metadata)
+                print(f"[MiniMax-H3 LoRA] {i + 1}/{len(lora_configs)}: {lora_file} "
                       f"keys={len(raw)} matched_targets={len(targets)} strength={strength}")
 
                 if blocks_to_swap > 0:
@@ -719,7 +748,7 @@ class MiniMaxH3Mixin:
                     varying_leaves = [leaf for leaf, varies in rank_variation.items() if varies]
                     if varying_leaves:
                         warn(
-                            f"LoRA '{lora_path}' has a rank that varies across blocks for "
+                            f"LoRA '{lora_file}' has a rank that varies across blocks for "
                             f"{varying_leaves} while blocks_to_swap={blocks_to_swap} is active. "
                             f"TransformerBlockOffloader pairs an incoming/outgoing block's Linear "
                             f"weights by name+shape+dtype; a rank-varying LoRA's lora_down/lora_up "
@@ -740,7 +769,7 @@ class MiniMaxH3Mixin:
                         expected_steps = student_steps_int + 1
                         if num_inference_steps != expected_steps:
                             warn(
-                                f"LoRA '{lora_path}' is a {student_steps_int}-step distillation "
+                                f"LoRA '{lora_file}' is a {student_steps_int}-step distillation "
                                 f"checkpoint (num_inference_steps counts sigma grid points "
                                 f"including the terminal 0, so {expected_steps} is the matching "
                                 f"value); this generation is requesting "
@@ -749,7 +778,7 @@ class MiniMaxH3Mixin:
                             )
                         if distillation_cache_active:
                             warn(
-                                f"LoRA '{lora_path}' is a {student_steps_int}-step distillation "
+                                f"LoRA '{lora_file}' is a {student_steps_int}-step distillation "
                                 f"checkpoint and FBCache/Spectrum forecasting is also active. With "
                                 f"only ~{expected_steps} model evaluations, warmup alone can consume "
                                 f"the whole trajectory and leave nothing for the cache/forecast to "
@@ -757,29 +786,71 @@ class MiniMaxH3Mixin:
                                 "minimax_h3_lora_distillation_with_cache",
                             )
 
+                shadowed: list = []
                 applied, missing = apply_lora_group(
-                    transformer, targets, strength,
-                    self._minimax_h3_lora_original_modules, self._minimax_h3_lora_wrapped_keys,
+                    transformer, targets, strength, originals, wrapped_keys, shadowed,
                 )
-                if missing:
-                    warn(
-                        f"LoRA '{lora_path}' has {len(missing)} target(s) that could not be "
-                        f"resolved against the loaded MiniMax-H3 transformer (first few: "
-                        f"{missing[:5]}) -- skipped.",
-                        "minimax_h3_lora_targets_unresolved",
-                    )
-                print(f"[MiniMax-H3 LoRA]   wrapped {applied} module(s)")
-                total_applied += applied
-            except Exception as e:
-                print(f"[MiniMax-H3 LoRA] ERROR loading {lora_path}: {e}")
+            except Exception as exc:
+                print(f"[MiniMax-H3 LoRA] ERROR loading {lora_file}: {exc}")
                 import traceback
                 traceback.print_exc()
-                warn(f"Failed to load LoRA '{lora_path}': {e}", "minimax_h3_lora_load_failed")
+                message = f"LoRA '{lora_file}' could not be applied: {exc}"
+                warn(message, "lora_load_failed")
+                raise RuntimeError(message) from exc
+
+            print(f"[MiniMax-H3 LoRA]   wrapped {applied} module(s)")
+            if applied == 0:
+                if shadowed:
+                    message = (
+                        f"LoRA '{lora_file}': every one of its {len(shadowed)} target modules is "
+                        f"already wrapped by an earlier LoRA in this request. MiniMax-H3 applies "
+                        f"one LoRA per target; select a single MiniMax-H3 LoRA."
+                    )
+                    code = "lora_stacking_unsupported"
+                else:
+                    message = (
+                        f"LoRA '{lora_file}': 0 of {len(targets)} target(s) applied to the loaded "
+                        f"MiniMax-H3 transformer ({len(missing)} unresolved against the live module "
+                        f"tree) -- unrecognized key format or a different model. Expected either "
+                        f"'diffusion_model.*.lora_A.weight' (ComfyUI) or "
+                        f"'lora_unet_transformer_blocks_<N>_*.lora_down.weight' (SushiUI-trained). "
+                        f"Sample keys in file: {list(raw.keys())[:5]}"
+                    )
+                    code = "lora_incompatible"
+                warn(message, code)
+                raise RuntimeError(message)
+
+            if missing or shadowed:
+                warn(
+                    f"LoRA '{lora_file}': applied {applied} of {len(targets)} target(s) "
+                    f"({len(missing)} unresolved against the loaded MiniMax-H3 transformer, first "
+                    f"few: {missing[:5]}; {len(shadowed)} already wrapped by an earlier LoRA).",
+                    "lora_partial",
+                )
+            total_applied += applied
 
         return total_applied
 
+    @staticmethod
+    def _minimax_h3_read_lora_file(resolved: str, lora_file: str, warn):
+        """Read a LoRA safetensors file, or refuse the generation."""
+        from core.models.minimax_h3.minimax_h3_lora import load_lora_safetensors
+
+        try:
+            return load_lora_safetensors(resolved)
+        except Exception as exc:
+            message = f"LoRA '{lora_file}' could not be read: {exc}"
+            print(f"[MiniMax-H3 LoRA] ERROR: {message}")
+            warn(message, "lora_load_failed")
+            raise RuntimeError(message) from exc
+
     def _unload_lora_minimax_h3(self) -> int:
-        """Restore every MiniMax-H3 transformer Linear to its pre-LoRA original."""
+        """Restore every MiniMax-H3 transformer Linear to its pre-LoRA original.
+
+        Drops the original-module map with the wrappers: it is per-generation
+        state. ``_minimax_h3_lora_state`` covers the orderings this cannot --
+        a torn-down ``components``, or a ``restore_originals`` that raised.
+        """
         from core.models.minimax_h3.minimax_h3_lora import restore_originals
 
         if not getattr(self, "_minimax_h3_lora_wrapped_keys", None):
@@ -794,6 +865,7 @@ class MiniMaxH3Mixin:
         restored = restore_originals(
             transformer, self._minimax_h3_lora_original_modules, self._minimax_h3_lora_wrapped_keys,
         )
+        self._minimax_h3_lora_original_modules.clear()
         print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
         return restored
 
@@ -3083,22 +3155,30 @@ class MiniMaxH3Mixin:
         # its own phase: this is where the 21 GB DiT actually moves onto the
         # GPU (`_ensure_minimax_h3_swap_and_offload`), previously unaccounted
         # for between the `text_encode` and `denoise` phases.
-        with generation_timer.phase("stage_transformer"):
-            lora_configs = params.get("loras") or []
-            applied_lora_count = (
-                self._load_lora_minimax_h3(lora_configs, params) if lora_configs else 0)
-            # Staging owns the device move: with block swap it places the block stack
-            # itself rather than moving all 21 GB on and some of it back off.
-            transformer, offloader, probe_records = self._ensure_minimax_h3_swap_and_offload(
-                params, torch_device)
-            self._minimax_h3_apply_attention_backend(transformer, params)
-            # ~150s per step means the per-step callback alone looks like a hang, so
-            # block-level forward hooks tick progress from inside the step. Removed
-            # in the `finally` below: a surviving hook would fire on the next
-            # generation against this generation's callback.
-            substep_reporter = attach_block_substep_hooks(
-                transformer, progress_callback, label="MiniMax-H3")
+        # Staging is INSIDE the try: a raise between the LoRA wrap and the
+        # denoise loop (a refused LoRA, an out-of-range block-skip set, an OOM
+        # during the device move) otherwise left the transformer wrapped and
+        # GPU-resident for the NEXT generation.
+        transformer = None
+        offloader = None
+        probe_records = None
+        substep_reporter = None
         try:
+            with generation_timer.phase("stage_transformer"):
+                lora_configs = params.get("loras") or []
+                if lora_configs:
+                    self._load_lora_minimax_h3(lora_configs, params)
+                # Staging owns the device move: with block swap it places the block stack
+                # itself rather than moving all 21 GB on and some of it back off.
+                transformer, offloader, probe_records = self._ensure_minimax_h3_swap_and_offload(
+                    params, torch_device)
+                self._minimax_h3_apply_attention_backend(transformer, params)
+                # ~150s per step means the per-step callback alone looks like a hang, so
+                # block-level forward hooks tick progress from inside the step. Removed
+                # in the `finally` below: a surviving hook would fire on the next
+                # generation against this generation's callback.
+                substep_reporter = attach_block_substep_hooks(
+                    transformer, progress_callback, label="MiniMax-H3")
             with generation_timer.phase("denoise"):
                 video_rows, audio_rows = ops.denoise(
                     transformer,
@@ -3126,14 +3206,17 @@ class MiniMaxH3Mixin:
                     block_swap_on=int(params.get("blocks_to_swap", 0) or 0) > 0,
                 )
         finally:
-            substep_reporter.close()
+            if substep_reporter is not None:
+                substep_reporter.close()
             # Mirrors `stage_transformer` above: the DiT's round trip back to
             # the CPU is real seconds too (module docstring, "WHY THE STAGING
             # IS STRICTLY SEQUENTIAL"), previously folded silently into
             # whatever the caller's own wall-clock measurement was.
             with generation_timer.phase("unstage_transformer"):
-                if applied_lora_count:
-                    self._unload_lora_minimax_h3()
+                # Unconditional: a partial application that then raised wraps
+                # modules without returning a count, and a second unload is a
+                # no-op once `_minimax_h3_lora_wrapped_keys` is empty.
+                self._unload_lora_minimax_h3()
                 # Back to the CPU before ANY decode: the video VAE's ViT decoder is
                 # the second-largest allocation of the generation and the two do not
                 # fit together. This also unwraps the block-loop wrapper and cleans

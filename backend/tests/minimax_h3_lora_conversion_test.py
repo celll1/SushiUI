@@ -338,7 +338,7 @@ def test_f1_no_alpha_resolves_to_scale_one():
     _require(F1_PATH)
     raw, metadata = lora_mod.load_lora_safetensors(F1_PATH)
     assert not any(k.endswith(".alpha") for k in raw), "F1 is expected to carry no alpha keys"
-    targets = lora_mod.normalise_lora_state_dict(raw)
+    targets = lora_mod.normalise_lora_state_dict(raw, metadata)
     assert targets
     for module_path, weights in targets.items():
         assert weights["scale_ratio"] == pytest.approx(1.0), (module_path, weights["scale_ratio"])

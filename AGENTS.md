@@ -103,11 +103,30 @@ changes.
 ## Reusable subagents
 
 Repo-specific subagent definitions live in `.claude/agents/*.md` (tracked in
-git — see the negated `.gitignore` entries for `.claude/agents/`). Check
-there before writing a one-off agent prompt from scratch:
-`arch-maintainer`, `code-auditor`, `api-tester`, `docs-maintainer`,
-`feature-worker`, `orchestrator`, and `research-integrator` (paper/technique
-integration assessment) currently exist.
+git — see the negated `.gitignore` entries for `.claude/agents/`). Check there
+before writing a one-off agent prompt from scratch. Each definition sets both
+its model and its reasoning effort in frontmatter (`model:` accepts `opus`,
+`sonnet`, `haiku`, `fable`; `effort:` accepts `low`, `medium`, `high`, `xhigh`,
+`max`, subject to what the chosen model supports). A dispatcher may override
+`model` per call, but not `effort`.
+
+| Agent | Model / effort | Use for |
+|---|---|---|
+| `orchestrator` | opus / high | Planning and supervising multi-agent work; the only agent that commits |
+| `arch-maintainer` | opus / high | Changes scoped to one architecture's backend, loader, or training adapter |
+| `feature-worker` | opus / high | A scoped feature, parameter, or bug fix across backend/frontend layers |
+| `code-auditor` | opus / high | Independent read-only adversarial review of a diff before commit |
+| `research-integrator` | opus / high | Assessing a paper or technique before any implementation starts |
+| `consultant` | fable / low | A second opinion on a decision — a different model, read-only, judgment not edits |
+| `docs-maintainer` | opus / low | Keeping tracked docs in sync with actual code |
+| `api-tester` | opus / low | Driving the running backend over HTTP to verify real behavior |
+
+Implementation work defaults to opus at high effort: the repo's failure mode is
+a plausible-looking edit to numerically sensitive code, which a cheaper reader
+does not catch. Bounded verification-and-sync work runs at low effort. When a
+decision is contested rather than unknown, ask `consultant` before spending an
+implementation pass on it — a second opinion from the same model as the caller
+is worth little, which is why that one agent is deliberately a different model.
 
 ## About CLAUDE.md
 

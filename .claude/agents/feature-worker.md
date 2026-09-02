@@ -2,13 +2,14 @@
 name: feature-worker
 description: Use to implement a well-scoped feature, parameter, or bug fix across backend/frontend layers in SushiUI, following the repo's parameter-threading checklist.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: opus
+effort: high
 ---
 
-# Model rank: sonnet — implementation against an explicit, ordered checklist is
-# well-specified work. Escalate to opus only for numerically-sensitive math (loss
-# functions, quantization, sampling) or cross-cutting design decisions, and say so
-# in your report rather than guessing through it.
+# Model rank: opus / effort high — the checklist specifies the plumbing, not the
+# numerics. Loss functions, quantization and sampling changes still need real
+# reasoning; flag a cross-cutting design decision in your report instead of
+# guessing through it.
 
 You implement one scoped change at a time for SushiUI. Read `AGENTS.md` first.
 

@@ -61,10 +61,12 @@ def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
 
 
 def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
-    """Down/up groups by module path. ``TensorGroup`` answers to
-    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads."""
-    grouped = group_adapter_tensors(raw, _krea2_stem).groups
-    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
+    """COMPLETE factor groups by module path, whatever the algebra.
+
+    ``group_adapter_tensors`` already drops the incomplete ones; a down/up
+    filter on top would silently drop every LoHa and LoKr group.
+    """
+    return group_adapter_tensors(raw, _krea2_stem).groups
 
 
 def detect_lora_format(raw: Mapping[str, torch.Tensor]) -> str:
@@ -236,28 +238,21 @@ def iter_krea2_lora_slots(transformer: nn.Module):
         yield parent, attr, module_path
 
 
-def build_lora_branch(base: nn.Module, weights: Dict[str, torch.Tensor],
+def build_lora_branch(base: nn.Module, group: TensorGroup,
                       module_path: str) -> nn.Module:
-    """One branch over ``base``, at the file's own alpha/rank scale.
+    """One branch over ``base``, or ``SHAPE_MISMATCH``.
+
+    The algebra is the group's, not this function's: ``build_adapter_branch``
+    dispatches on the tensor names. Alpha precedence is the per-key tensor then
+    the rank -- Krea 2 checkpoints carry no file-level alpha tier.
 
     The request strength is NOT folded in here: ``add_branch(strength=)`` refolds
     it into this branch's own scale, and multiplying it onto the delta instead is
     different arithmetic that loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import LoRALinearLayer, lora_branch_dtype
+    from core.adapters import build_adapter_branch, lora_branch_dtype
 
-    down, up = weights["down"], weights["up"]
-    alpha_tensor = weights.get("alpha")
-    rank = int(down.shape[0])
-    alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
-    device = base.weight.device
     # Never the base weight's own dtype: over an int8 base that would quantize
     # the branch to 8 levels, over an e4m3 one it would round most of it away.
-    compute_dtype = lora_branch_dtype(base)
-    with torch.no_grad():
-        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-    return branch
+    return build_adapter_branch(base, group, lora_dtype=lora_branch_dtype(base),
+                                lora_name=module_path)

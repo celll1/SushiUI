@@ -285,7 +285,8 @@ class Krea2Mixin:
         if dropped:
             self._krea2_lora_warn(
                 f"LoRA '{file.name}': {len(dropped)} of its {len(file.tensors)} tensor "
-                f"key(s) are not a Krea 2 'lora_unet_*' down/up pair and were dropped "
+                f"key(s) are not part of a complete Krea 2 'lora_unet_*' factor "
+                f"group and were dropped "
                 f"(first few: {dropped[:5]}).",
                 "krea2_lora_keys_unrecognised")
 
@@ -299,15 +300,18 @@ class Krea2Mixin:
         return grouped
 
     def _krea2_build_lora_branch(self, request):
-        """The branch for one target, or ``None`` when this file names no key for
-        it. Nothing is installed here."""
-        from core.adapters import PreparedBranch
+        """The branch for one target, ``None`` when this file names no key for it,
+        or ``SHAPE_MISMATCH`` when its factors do not fit. Nothing is installed
+        here."""
+        from core.adapters import SHAPE_MISMATCH, PreparedBranch
         from core.models.krea2.krea2_lora import build_lora_branch
 
-        weights = request.prepared.get(request.module_path)
-        if weights is None:
+        group = request.prepared.get(request.module_path)
+        if group is None:
             return None
-        branch = build_lora_branch(request.base, weights, request.module_path)
+        branch = build_lora_branch(request.base, group, request.module_path)
+        if branch is SHAPE_MISMATCH:
+            return branch
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta.
         return PreparedBranch(branch, request.file.strength)
@@ -322,7 +326,7 @@ class Krea2Mixin:
 
         if file.declared_branches == 0:
             return (f"Krea 2 LoRA '{file.name}': none of its {len(file.tensors)} tensors "
-                    f"form a 'lora_unet_*' down/up pair "
+                    f"form a complete 'lora_unet_*' factor group "
                     f"(format={detect_lora_format(file.tensors)}) -- not a Krea 2 LoRA.")
         return (f"LoRA '{file.name}': 0 of {file.declared_branches} modules matched the "
                 f"loaded Krea 2 transformer -- wrong architecture or an unsupported "

@@ -96,6 +96,26 @@ class _BranchTensorProtocol:
             else:
                 weight.data.copy_(value)
 
+    def adopt_tensors(self, tensors: Mapping[str, torch.Tensor]) -> None:
+        """``load_tensors`` for a branch built FROM a file: ASSIGN the file's
+        tensor as the parameter's storage rather than copy into a fresh one.
+
+        Not interchangeable. A fresh buffer is 64-byte aligned where a
+        safetensors tensor is not, which selects a different BLAS kernel --
+        1 ULP on a measured LoRA delta. Resume keeps ``load_tensors``: there an
+        optimizer already holds the parameter. Design doc, phase 2.
+        """
+        refuse_tucker_tensors(tensors, type(self).__name__)
+        constants = self.spec_constants()
+        for name, weight in self.branch_tensors().items():
+            value = tensors.get(name)
+            if value is None:
+                continue
+            if name in constants:
+                self.load_spec_constant(name, value)
+            else:
+                weight.data = value.to(device=weight.device, dtype=weight.dtype)
+
 
 class _AlphaIsASpecConstant(_BranchTensorProtocol):
     """For the algebras whose ``branch_tensors()`` carries ``alpha``."""
@@ -212,7 +232,7 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         layer = cls(base, rank=rank,
                     alpha=_alpha_from_tensors(tensors, rank, alpha),
                     lora_name=lora_name, lora_dtype=lora_dtype)
-        layer.load_tensors(tensors)
+        layer.adopt_tensors(tensors)
         return layer
 
     @property
@@ -383,7 +403,7 @@ class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
         layer = cls(base, rank=rank,
                     alpha=_alpha_from_tensors(tensors, rank, alpha),
                     lora_name=lora_name, lora_dtype=lora_dtype, init=False)
-        layer.load_tensors(tensors)
+        layer.adopt_tensors(tensors)
         return layer
 
     @property
@@ -603,7 +623,7 @@ class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
                     lora_name=lora_name, lora_dtype=lora_dtype,
                     decompose_both=decompose_both,
                     factors=((out_l, out_k), (in_m, in_n)), init=False)
-        layer.load_tensors(tensors)
+        layer.adopt_tensors(tensors)
         return layer
 
     @property
@@ -1054,6 +1074,28 @@ def named_modules_outside_adapters(
     for name, child in root.named_children():
         yield from named_modules_outside_adapters(
             child, f"{prefix}.{name}" if prefix else name, memo)
+
+
+def branch_survives_block_swap(branch: nn.Module) -> bool:
+    """Whether a block offloader's name-based walk reaches every tensor
+    ``branch`` OWNS.
+
+    The offloaders move ``module.weight`` for modules whose class name ends in
+    "Linear", so a LoRA branch's ``lora_down``/``lora_up`` ride with their block
+    and a LoHa/LoKr layer's bare ``nn.Parameter`` factors are left behind. Asked
+    of the OBJECT, so an algebra added later is classified without a table -- and
+    so a checkpoint whose metadata MISLABELS its algebra cannot bypass it.
+
+    The wrapped base is excluded: its weight is the block's own, moved exactly as
+    it was before any adapter existed, and a Linear ``bias`` is not moved by that
+    walk either -- requiring it here would refuse every LoRA over a biased base.
+    """
+    base = getattr(branch, "original_module", None)
+    skip = {id(p) for p in base.parameters()} if isinstance(base, nn.Module) else set()
+    carried = {id(m.weight) for m in branch.modules()
+               if m.__class__.__name__.endswith("Linear")
+               and getattr(m, "weight", None) is not None}
+    return all(id(p) in carried for p in branch.parameters() if id(p) not in skip)
 
 
 def count_adapter_wrapper_roots(model: nn.Module) -> int:

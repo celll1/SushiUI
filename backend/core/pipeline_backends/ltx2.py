@@ -409,44 +409,23 @@ class LTX2Mixin:
         return grouped
 
     def _ltx2_build_lora_branch(self, request):
-        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH, lora_branch_dtype
+        """The branch for one target, ``None`` when the file names no key for it,
+        or ``SHAPE_MISMATCH``. Alpha precedence: per-key tensor, file metadata,
+        then rank."""
+        from core.adapters import (SHAPE_MISMATCH, PreparedBranch,
+                                   build_adapter_branch, lora_branch_dtype)
         from core.models.ltx2.ltx2_lora import flatten_module_path, metadata_alpha
 
-        stem = flatten_module_path(request.module_path)
-        weights = request.prepared.get(stem)
-        if weights is None:
-            return None
-
-        down = weights.get("down")
-        up = weights.get("up")
-        if down is None or up is None:
+        group = request.prepared.get(flatten_module_path(request.module_path))
+        if group is None:
             return None
 
         base = request.base
-        expected_in = getattr(base, "in_features", None)
-        expected_out = getattr(base, "out_features", None)
-        lora_in = down.shape[-1]
-        lora_out = up.shape[0]
-        if lora_in != expected_in or lora_out != expected_out or down.shape[0] != up.shape[1]:
-            return SHAPE_MISMATCH
-
-        rank = down.shape[0]
-        alpha = weights.get("alpha")
-        fallback_alpha = metadata_alpha(request.file.metadata)
-        if alpha is not None:
-            alpha_val = float(alpha.item()) if torch.is_tensor(alpha) else float(alpha)
-        elif fallback_alpha is not None:
-            alpha_val = float(fallback_alpha)
-        else:
-            alpha_val = float(rank)
-
-        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_val, lora_name=request.module_path)
-        device = base.weight.device
-        dtype = lora_branch_dtype(base)
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
-
+        branch = build_adapter_branch(
+            base, group, metadata_alpha=metadata_alpha(request.file.metadata),
+            lora_dtype=lora_branch_dtype(base), lora_name=request.module_path)
+        if branch is SHAPE_MISMATCH:
+            return branch
         return PreparedBranch(branch, request.file.strength)
 
     def _ltx2_lora_components(self):
@@ -463,7 +442,18 @@ class LTX2Mixin:
             module=transformer,
             iter_targets=iter_ltx2_targets,
             build_branch=self._ltx2_build_lora_branch,
+            block_swap_active=self._ltx2_block_swap_live,
         )]
+
+    def _ltx2_block_swap_live(self) -> bool:
+        """Is an offloader already splitting the DiT's blocks?
+
+        Always accurate here: LTX-2.3's offloader is persistent state on
+        ``Ltx2BlockLoopWrapper`` and ``_ensure_ltx2_block_swap_wrapper`` has run
+        by the time ``_load_lora_ltx2`` does.
+        """
+        offloader = self._ltx2_block_offloader()
+        return offloader is not None and bool(getattr(offloader, "blocks_to_swap", 0))
 
     @property
     def _ltx2_lora_original_modules(self):

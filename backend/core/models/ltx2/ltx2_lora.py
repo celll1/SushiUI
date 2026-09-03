@@ -75,13 +75,12 @@ def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
 ) -> Dict[str, TensorGroup]:
-    """Group raw tensors by flattened module stem, keeping complete pairs only.
+    """Group raw tensors by flattened module stem, keeping COMPLETE groups only.
 
-    ``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
-    is what the branch builder reads.
+    ``group_adapter_tensors`` already drops the incomplete ones; a down/up
+    filter on top would silently drop every LoHa and LoKr group.
     """
-    grouped = group_adapter_tensors(raw, _ltx2_stem).groups
-    return {stem: g for stem, g in grouped.items() if "down" in g and "up" in g}
+    return group_adapter_tensors(raw, _ltx2_stem).groups
 
 
 def detect_lora_format(raw: Dict[str, torch.Tensor]) -> str:

@@ -54,9 +54,13 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, NamedTuple,
 import torch
 import torch.nn as nn
 
-from .capability import ADAPTER_PAIRS, ORDINARY_LORA, adapter_refusal_reason
+from .capability import (ADAPTER_PAIRS, BLOCK_SWAP_REFUSAL_CODE,
+                         BLOCK_SWAP_WARNING_CODE, ORDINARY_LORA,
+                         adapter_refusal_reason, block_swap_refusal_reason,
+                         block_swap_strands_branches, block_swap_warning_text)
 from .codec import CodecRegistry, CodecSpec
-from .layers import CompositeAdapterLayer, get_module_slot, set_module_slot
+from .layers import (CompositeAdapterLayer, branch_survives_block_swap,
+                     get_module_slot, set_module_slot)
 from .spec import (ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN,
                    AdapterSpec)
 
@@ -235,6 +239,11 @@ class AdapterComponent:
     is_candidate: Optional[Callable[[nn.Module], bool]] = None
     enabled: bool = True
     kind: Optional[str] = None
+    #: "is a block offloader ALREADY splitting this module's blocks?" -- the
+    #: half of the block-swap policy only the backend can answer. Declared only
+    #: by an architecture whose offloader is built before adapters are
+    #: installed; see ``BLOCK_SWAP_ADAPTER_ORDER``.
+    block_swap_active: Optional[Callable[[], bool]] = None
 
     @property
     def component_kind(self) -> str:
@@ -584,6 +593,62 @@ class AdapterSession:
         self._log(f"[{self._label}] ERROR: {error.message}")
         raise self._refuse(error)
 
+    def _refuse_stranded_branches(self, file: AdapterFile,
+                                  planned: Sequence["_PlannedInstall"]) -> None:
+        """Refuse a branch a live block offloader could not carry.
+
+        Asked of the BUILT branch, never of the file's detected algorithm:
+        detection gives metadata priority over keys, so a ``hada_*`` file
+        labelled ``networks.lora`` passes a label test. Planning mutates
+        nothing, so this still precedes every install.
+        """
+        if not block_swap_strands_branches(self._architecture):
+            return
+        stranded = [item for item in planned
+                    if not branch_survives_block_swap(item.branch)]
+        if not stranded:
+            return
+        live = {item.component.name for item in stranded
+                if item.component.block_swap_active is not None
+                and item.component.block_swap_active()}
+        if not live:
+            return
+        # "LoHaLinearLayer" -> "LoHa": the family the user recognises, taken
+        # from the class actually built rather than from the file's label.
+        reason = block_swap_refusal_reason(
+            self._architecture,
+            type(stranded[0].branch).__name__.replace("LinearLayer", "") or "adapter")
+        error = AdapterIncompatible(f"{self._message_label} '{file.name}': {reason}",
+                                    code=BLOCK_SWAP_REFUSAL_CODE)
+        self._log(f"[{self._label}] ERROR: {error.message}")
+        raise self._refuse(error, BLOCK_SWAP_REFUSAL_CODE)
+
+    def warn_unoffloaded_branches(self, *component_names: str) -> int:
+        """Advise that installed branches will not be offloaded with their block.
+
+        The other ordering: an architecture whose offloader is built AFTER the
+        adapters are installed sweeps their factors to the device and never
+        returns them, so the numbers are right and only the saving is smaller.
+        Called from the offloader build site, the first moment that is knowable
+        there. Same object-level predicate as the refusal.
+        """
+        stranded = set()
+        for name in (component_names or tuple(self._states)):
+            for owned in self.state(name).owned:
+                composite = owned.composite()
+                if composite is None:
+                    continue
+                try:
+                    branch = composite.get_branch(owned.branch_name)
+                except (KeyError, ValueError):
+                    continue
+                if not branch_survives_block_swap(branch):
+                    stranded.add(owned.module_path)
+        if stranded:
+            self.warn(block_swap_warning_text(self._architecture, len(stranded)),
+                      BLOCK_SWAP_WARNING_CODE)
+        return len(stranded)
+
     def _load_failed(self, name: str, error: Exception) -> AdapterLoadFailed:
         self._log(f"[{self._label}] ERROR: could not apply {name}: {error}")
         import traceback
@@ -827,6 +892,7 @@ class AdapterSession:
                 raise
             except Exception as e:
                 raise self._load_failed(file.name, e) from e
+            self._refuse_stranded_branches(file, planned)
             self._account(file, counts)
             plan.extend(planned)
             result.files.append((file, counts))

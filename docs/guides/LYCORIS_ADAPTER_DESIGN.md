@@ -1,7 +1,9 @@
 # LyCORIS adapter integration design
 
-Status: investigation and implementation plan; no LyCORIS runtime or new adapter
-family is shipped by this document.
+Status: investigation and implementation plan. Shipped so far: the additive
+LyCORIS algebras (LoHa, LoKr) LOAD AND GENERATE on Z-Image, Krea 2, MiniT2I and
+LTX-2.3 — generation only, by file path, with no API or UI surface. Everything
+else here is plan.
 
 This guide evaluates LyCORIS 4.0.0 for SushiUI and defines the work required to
 support LoHa, LoKr, and weight-decomposed adapters (DoRA, DoHa, and DoKr) in both
@@ -759,6 +761,9 @@ recorded below. Only the per-LoRA option unification is outstanding.
 
 **Not landed.**
 
+- Foreign LoHa/LoKr on the other nine architectures (Tier 2: Anima, Lens,
+  Ideogram 4, FLUX.2; Tier 3 with its own gate: MiniMax-H3, SenseNova; Tier 4:
+  ACE-Step; and SD1.5/SDXL, which never reach `AdapterSession` at all).
 - The architecture-registry hooks that would carry generation TOPOLOGY -- target
   discovery, component policy, scope names, checkpoint-stem translation -- and
   the migration of the thirteen existing target iterators onto `AdapterTarget`.
@@ -909,8 +914,9 @@ so no non-pair key can reach a grouper there) and MiniMax-H3's `_split_qkv` /
 its counter still expands a fused `qkv_proj` stem to 3. The one widening: an
 architecture now also accepts the alternate spellings of the shared table under
 its own prefixes, so a key it used to drop (and refuse the file over) may now
-parse. The capability matrix still refuses every LoHa/LoKr/DoRA pair on all
-thirteen, and ordinary LoRA is byte-unchanged. Gates:
+parse. The capability matrix still refused every LoHa/LoKr/DoRA pair on all
+thirteen AT THIS COMMIT (four rows opened one commit later, below), and
+ordinary LoRA is byte-unchanged. Gates:
 `backend/tests/adapter_tensor_group_cheap_test.py`, 22 LyCORIS rows (11
 architectures x LoHa/LoKr) and 11 truncated-file rows in
 `adapter_key_normalization_gate_cheap_test.py`, plus new rows in
@@ -1011,7 +1017,9 @@ and `adapter_composite_layer_cheap_test.py`.
 row per architecture in the `ARCH_REGISTRY` spelling, and it is the ONLY place a
 family is enabled. `AdapterSession` gained `architecture=` (all eleven
 generation backends pass it) and refuses an unenabled algebra in `_parse`.
-Nothing was enabled: all thirteen rows are still `{("lora", False)}`.
+Nothing was enabled by that step: all thirteen rows were still
+`{("lora", False)}`. Four opened next; see "Landed: LoHa and LoKr generate"
+below.
 
 - **The table is in `core/adapters/`, and `base_arch` reads it, because the
   dependency only runs one way.** `core.adapters` may not import
@@ -1079,6 +1087,138 @@ Nothing was enabled: all thirteen rows are still `{("lora", False)}`.
   enforcement is not part of this step; the capability check reached generation
   only.
 
+**Landed: LoHa and LoKr generate, on four architectures.**
+Z-Image, Krea 2, MiniT2I and LTX-2.3 carry `("loha", False)` and
+`("lokr", False)` in `ENABLED_ADAPTER_PAIRS`. Their four branch builders route
+through `build_adapter_branch`, so the ALGEBRA is the checkpoint's rather than
+the builder's, and each keeps its own alpha precedence and branch dtype
+(MiniT2I's is the base weight's dtype, not `lora_branch_dtype`, and is now the
+named `minit2i_lora.branch_dtype`). The gate is
+`backend/tests/adapter_lycoris_roundtrip_cheap_test.py`: per architecture, a
+synthetic LoHa and LoKr file covering exactly its own target iterator's set,
+the installed delta against `reference.py`'s fp32 oracle in fp32 AND bf16 at
+`alpha = 3 x rank`, `lora_partial` on a bent group, `lora_incompatible` on a
+truncated one, and identity restore with the component swap BEFORE the unload;
+plus a mixed LoRA + LoHa stacking row, the block-swap rows below, and the
+negative rows that drive the seven unflipped sessions' refusals. Nothing else
+moved: no decomposed pair is
+enabled anywhere, no training adapter constructs a LyCORIS layer,
+`AdapterCapability.require()` still has no caller, and `GET /loras`, the
+request schema and the frontend selector are untouched.
+
+**What that leaves reachable, measured rather than assumed.** No response
+carries an adapter type and the selector has no variant control, but the
+scanner's admission test is a key-PREFIX test that says nothing about the
+algebra: `LoRAManager._is_valid_lora_file` admits any file carrying
+`lora_unet_*` or `lora_te_*`. Driving the real scanner over synthetic LoHa
+files in each architecture's own stem spelling:
+
+| stem | LoHa | plain LoRA |
+|---|---|---|
+| `lora_unet_transformer_blocks_0_attn1_to_q` | listed, `ltx2` | listed, `ltx2` |
+| `lora_unet_transformer_blocks__0__attn__to_q` | listed, `krea2` | listed, `krea2` |
+| `lora_unet_double_blocks__0__attn__to_q` | listed, `sd15` | listed, `sd15` |
+| `lora_transformer_layers_0_attn_to_q` | filtered out | listed, `zimage` |
+
+So a LoHa or LoKr in the sd-scripts spelling is LISTED AND SELECTABLE on
+LTX-2.3, Krea 2 and MiniT2I, tagged with the architecture the file's stems name
+(MiniT2I's `sd15` is the pre-existing `classify_lora_keys` result and is the
+same for its ordinary LoRAs). Z-Image's flattened `lora_transformer_*` spelling
+satisfies no arm of the admission test once the down/up keys are gone, so a
+Z-Image LyCORIS file is filtered out of the list and is reachable by path only.
+What a user still cannot do anywhere is ASSERT an adapter type or see one
+reported: `adapter_type` on a request item, and the detected type on
+`GET /loras`, are a later phase.
+
+- **`from_tensors` ADOPTS the file's tensors; resume still copies.** A branch
+  built from a checkpoint assigns `param.data = value.to(...)` (the new
+  `adopt_tensors`), which is what all thirteen generation loaders have always
+  done. Copying into a freshly allocated parameter instead is not equivalent:
+  the fresh buffer is 64-byte aligned where a safetensors tensor is not, which
+  selects a different BLAS kernel and moved an ordinary LoRA delta by 1 ULP
+  against the pre-composite reference the per-architecture gates pin with
+  `torch.equal`. `load_tensors` keeps copying, because on training resume the
+  parameter is already held by an optimizer.
+- **The per-key `.alpha` of a LoHa/LoKr file does NOT arrive through
+  `_alpha_from_tensors`.** It arrives through `spec_constants()` /
+  `load_spec_constant` during the load, so deleting the tensor tier from
+  `_alpha_from_tensors` changes nothing for those two algebras and changes
+  ordinary LoRA only. MEASURED by reverting that tier: only the mixed
+  LoRA + LoHa stacking rows failed. Anyone "unifying" the two alpha paths must
+  keep both.
+- **A LoHa/LoKr branch is INVISIBLE to the block-swap offloader, and the
+  combination is now gated.** Every offloader in
+  `core.memory_management.block_offloading` selects by
+  `__class__.__name__.endswith("Linear")`, which reaches a LoRA branch's
+  `lora_down`/`lora_up` (both `nn.Linear`) and reaches nothing inside a
+  `LoHaLinearLayer` or `LoKrLinearLayer`, whose factors are bare
+  `nn.Parameter`s. What that costs depends on WHEN the branch is installed
+  relative to `prepare_block_devices`, which does `blocks[i].to(device)` (all
+  tensors) and only then returns the swapped blocks' LINEAR weights to the
+  host. That ordering is a property of each backend's generate function, which
+  no session can observe, so it is DECLARED:
+  `capability.BLOCK_SWAP_ADAPTER_ORDER`.
+
+  - `AFTER_SPLIT` — **LTX-2.3** (offloader is persistent state on
+    `Ltx2BlockLoopWrapper`) and **MiniT2I** (`_minit2i_stage_transformer` runs
+    one line before `_load_lora_minit2i`): the branch is built on its base's
+    CURRENT device, which is the host for a swapped-out block, and nothing ever
+    moves it. **Refused** as `lora_blockswap_unsupported` (a 400 through
+    `is_lora_refusal_code`) before a single target is walked, rather than
+    raising a device mismatch mid-denoise.
+  - `BEFORE_SPLIT` — **Z-Image**: the factors are swept to the device and never
+    returned, so the numbers are right and only the block-swap saving is
+    smaller. **Advised**, not refused, as `lora_blockswap_not_offloaded`.
+  - `NO_BLOCK_SWAP` — **Krea 2** builds no generation-time offloader.
+
+  One mechanism, three questions, and the third is asked of the OBJECT.
+  `BLOCK_SWAP_ADAPTER_ORDER` says what the combination costs here;
+  `AdapterComponent.block_swap_active` — declared only by the `AFTER_SPLIT`
+  backends, since only they have a live offloader to probe at install time —
+  says whether one is running now; and
+  `layers.branch_survives_block_swap(branch)` says whether THIS branch can ride
+  with its block, by asking whether every tensor it owns is the `weight` of an
+  `nn.Linear` child. `AdapterSession` refuses when all three hold, immediately
+  after planning (which mutates nothing) and before any install;
+  `warn_unoffloaded_branches()` applies the same predicate to what is installed
+  and emits the advisory from the `BEFORE_SPLIT` offloader build site, the
+  first moment the combination is knowable there (at install time the attached
+  offloader is the PREVIOUS generation's).
+
+  **The predicate is on the built branch, never on the file's detected
+  algorithm, and that is not a stylistic preference.** `CodecRegistry.detect`
+  gives metadata priority over keys, so a file of pure `hada_*` tensors
+  carrying `ss_network_module: networks.lora` (or
+  `sushi.adapter.algorithm: lora`) DETECTS as ordinary LoRA — a label test lets
+  it through and the per-group builder then installs `LoHaLinearLayer`s anyway,
+  which is exactly the crash the gate exists to prevent, paid for after full
+  staging. A label test also mis-refuses in the other direction: every file
+  that sniffs `unknown` (a valid `lora_bias=True` PEFT export, or any file
+  whose detection raised) would be told "unknown adapters cannot be applied
+  while block swap is active", contradicting `_refuse_unsupported_algebra`'s
+  deliberate carve-out two functions above. Both directions have gate rows.
+  **Ordinary LoRA is exempt by construction** — its branch is two `nn.Linear`s
+  — and that is gated too, so LoRA + block swap keeps working unchanged. The
+  base module is excluded from the question: its weight is the block's own, and
+  a Linear `bias` is not moved by that walk either, so requiring it would
+  refuse every LoRA over a biased base. A MiniT2I transformer-pass refusal
+  cannot strand its text-encoder half: `_minit2i_cleanup`, in the generate
+  function's outer `finally`, unloads both.
+
+  Two consequences of the gate. `ltx2_lora.swappable_block_weight_footprints`
+  no longer changes when a LyCORIS adapter covers only some blocks — so
+  LTX-2.3's `h2d_only` partial-coverage fallback could not see one — but the
+  refusal makes that UNREACHABLE, so it is recorded and left rather than fixed.
+  And the underlying engine decision is still UNRESOLVED and deliberately not
+  bolted on here: teaching the offloader to carry a branch's bare parameters is
+  a feature with its own VRAM measurement and its own gate, and it is what
+  would let `AFTER_SPLIT` become `BEFORE_SPLIT` and the refusal go away.
+- **The legacy FP8 quantizers cannot reach a LyCORIS branch either**, for the
+  same naming reason: `_quantize_transformer` / `_anima_quantize_fp8` cast
+  every `isinstance(m, nn.Linear)` weight, which over a wrapped tree includes a
+  LoRA branch's factors and excludes a LoHa/LoKr layer's. Better behaviour than
+  LoRA gets, but by accident of naming rather than by a gate — do not rely on
+  it.
 ### Phase 3: dense DoRA
 
 - Start with SD1.5, SDXL, Z-Image, Lens, and dense MiniT2I targets.

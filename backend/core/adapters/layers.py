@@ -97,6 +97,12 @@ class LoRALinearLayer(nn.Module):
         """
         return self.lora_up(self.lora_down(x)) * self.scale
 
+    def compute_delta_weight(self) -> torch.Tensor:
+        """The merged delta weight, for folding into a base or for a DoRA
+        epilogue. ``set_adapter_strength`` folds the strength into ``scale``, so
+        it is already included here."""
+        return (self.lora_up.weight @ self.lora_down.weight) * self.scale
+
     def set_adapter_strength(self, strength: float) -> None:
         """Refold a request strength into the scale, exactly as the generation
         loaders do (``(alpha / rank) * strength``), so restrengthening an
@@ -335,7 +341,12 @@ class LoKrLinearLayer(nn.Module):
 
 
 class DoRALinearLayer(nn.Module):
-    """DoRA (Weight-Decomposed Low-Rank Adaptation) wrapper for an adapter branch."""
+    """DoRA (Weight-Decomposed Low-Rank Adaptation) wrapper for an adapter branch.
+
+    Strength is the interpolation contract ``W_eff(s) = W0 + s * (W_adapter - W0)``
+    over an inner branch held at unit strength; "Runtime hazards" item 2 in
+    ``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` says why upstream's order is refused.
+    """
 
     def __init__(
         self,
@@ -346,6 +357,11 @@ class DoRALinearLayer(nn.Module):
         super().__init__()
         self.original_module = original_module
         self.branch = branch
+        self.strength = 1.0
+        # A strength a loader folded into the branch (the composite's house
+        # convention) would enter v before the magnitude epilogue and again here.
+        if callable(getattr(branch, "set_adapter_strength", None)):
+            branch.set_adapter_strength(1.0)
 
         device = original_module.weight.device
         dtype = original_module.weight.dtype
@@ -366,26 +382,26 @@ class DoRALinearLayer(nn.Module):
         return getattr(self.original_module, "bias", None)
 
     def set_adapter_strength(self, strength: float) -> None:
-        if callable(getattr(self.branch, "set_adapter_strength", None)):
-            self.branch.set_adapter_strength(strength)
+        """Owned here, not delegated to the branch -- see the class docstring."""
+        self.strength = float(strength)
+
+    def branch_delta_weight(self) -> torch.Tensor:
+        """The additive branch's own delta weight, fp32."""
+        if callable(getattr(self.branch, "compute_delta_weight", None)):
+            return self.branch.compute_delta_weight().to(torch.float32)
+        w0 = self.original_module.weight
+        eye = torch.eye(w0.shape[1], device=w0.device, dtype=w0.dtype)
+        return self.branch.forward_delta(eye).T.to(torch.float32)
+
+    def compute_delta_weight(self) -> torch.Tensor:
+        w0 = self.original_module.weight.to(torch.float32)
+        v = w0 + self.branch_delta_weight()
+        v_norm = torch.norm(v, p=2, dim=1, keepdim=True).clamp_min(1e-12)
+        w_adapter = self.dora_scale.view(-1, 1).to(torch.float32) * (v / v_norm)
+        return (w_adapter - w0) * self.strength
 
     def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
-        w0 = self.original_module.weight.to(torch.float32)
-        if callable(getattr(self.branch, "compute_delta_weight", None)):
-            delta_w = self.branch.compute_delta_weight().to(torch.float32)
-        elif hasattr(self.branch, "lora_down") and hasattr(self.branch, "lora_up"):
-            delta_w = (self.branch.lora_up.weight @ self.branch.lora_down.weight).to(torch.float32) * (
-                self.branch.scale * getattr(self.branch, "strength", 1.0)
-            )
-        else:
-            eye = torch.eye(w0.shape[1], device=w0.device, dtype=x.dtype)
-            delta_w = self.branch.forward_delta(eye).T.to(torch.float32)
-
-        v = w0 + delta_w
-        v_norm = torch.norm(v, p=2, dim=1, keepdim=True).clamp_min(1e-12)
-        w_new = self.dora_scale.view(-1, 1).to(torch.float32) * (v / v_norm)
-        eff_delta = (w_new - w0).to(x.dtype)
-        return F.linear(x, eff_delta)
+        return F.linear(x, self.compute_delta_weight().to(x.dtype))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.original_module(x) + self.forward_delta(x)

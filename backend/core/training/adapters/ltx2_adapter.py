@@ -25,7 +25,10 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
+from core.adapters import (
+    LoRALinearLayer, is_adapter_covered, is_lora_wrappable_linear,
+    named_modules_outside_adapters,
+)
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter,
     reject_quantized_base, resolve_component_lr, LORA_COMPONENT_UNET,
@@ -66,8 +69,9 @@ def iter_ltx2_lora_targets(
     "succeeds" with a smaller injected count that looks like a narrower scope.
     Measured at 75% of targets dropped on Anima and at 8 sites on FLUX.2 before
     the same fix. ``is_lora_wrappable_linear`` accepts all three; the
-    ``LoRALinearLayer`` arm stays separate because an already-wrapped module must
-    be yielded (for idempotent re-application) but must not be wrapped twice.
+    ``is_adapter_covered`` arm stays separate because an already-covered slot
+    (either wrapper class) must be yielded -- for idempotent re-application and
+    for the generation-side restore -- but must not be wrapped twice.
 
     The adapter dtype is NOT taken from the base: ``LoRALinearLayer`` builds its
     two branches at ``self.lora_dtype`` (fp32 by default), so a quantized base
@@ -101,7 +105,7 @@ def iter_ltx2_lora_targets(
                     if idx >= len(holder):
                         continue
                     current = holder[idx]
-                    if not is_lora_wrappable_linear(current) and not isinstance(current, LoRALinearLayer):
+                    if not is_lora_wrappable_linear(current) and not is_adapter_covered(current):
                         continue
                     path = f"transformer_blocks.{i}.{attn_name}.{holder_name}.{idx}"
                     yield path, holder, idx, current
@@ -109,7 +113,7 @@ def iter_ltx2_lora_targets(
                     current = getattr(attn, leaf, None)
                     if current is None:
                         continue
-                    if not is_lora_wrappable_linear(current) and not isinstance(current, LoRALinearLayer):
+                    if not is_lora_wrappable_linear(current) and not is_adapter_covered(current):
                         continue
                     path = f"transformer_blocks.{i}.{attn_name}.{leaf}"
                     yield path, attn, leaf, current
@@ -118,18 +122,14 @@ def iter_ltx2_lora_targets(
         if scope.get("ff", False):
             ff = getattr(block, "ff", None)
             if ff is not None:
-                # An ALREADY-WRAPPED slot must be yielded (so re-application,
+                # An ALREADY-COVERED slot must be yielded (so re-application,
                 # LoRA stacking and the generation-side restore can find it) but
                 # never descended into: the wrapper's own lora_down/lora_up are
                 # nn.Linear children, and treating them as targets would wrap the
-                # adapter's own branches.
-                wrapped_prefixes: List[str] = []
-                for sub_name, sub in ff.named_modules():
-                    if any(sub_name.startswith(p) for p in wrapped_prefixes):
-                        continue
-                    if isinstance(sub, LoRALinearLayer):
-                        wrapped_prefixes.append(f"{sub_name}.")
-                    elif not is_lora_wrappable_linear(sub):
+                # adapter's own branches. The walker enforces the non-descent for
+                # BOTH wrapper classes.
+                for sub_name, sub in named_modules_outside_adapters(ff):
+                    if not is_adapter_covered(sub) and not is_lora_wrappable_linear(sub):
                         continue
                     # Resolve the parent + attr for in-place replacement.
                     parent = ff
@@ -166,7 +166,7 @@ class Ltx2LoRAAdapter(BaseLoRAAdapter):
 
         count = 0
         for module_path, parent, attr, current in iter_ltx2_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            if is_adapter_covered(current):
                 continue  # idempotent / stacking-safe
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"

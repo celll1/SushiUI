@@ -32,7 +32,7 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
+from core.adapters import LoRALinearLayer, is_adapter_covered, is_lora_wrappable_linear
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter,
     reject_quantized_base, resolve_component_lr, LORA_COMPONENT_UNET,
@@ -52,12 +52,15 @@ _ATTN_LEAVES = ("q_proj", "k_proj", "v_proj", "o_proj")
 def _is_target(module: Optional[nn.Module]) -> bool:
     """True for a module ``iter_acestep_lora_targets`` may yield.
 
-    "Wrappable, or already wrapped": the enumerator is used both to INJECT
-    (``apply_lora_to_unet``, which skips an existing ``LoRALinearLayer``) and to
-    re-walk a model that is already wrapped, so unlike the shared
-    ``is_lora_wrappable_linear`` this one deliberately includes
-    ``LoRALinearLayer`` -- ``core.models.krea2.krea2_lora._is_target`` is the
-    same shape for the same reason.
+    "Wrappable, or already covered by an adapter": the enumerator is used both to
+    INJECT (``apply_lora_to_unet``, which skips a covered slot) and to re-walk a
+    model that is already wrapped, so unlike the shared
+    ``is_lora_wrappable_linear`` this one deliberately includes both wrapper
+    classes -- ``core.models.krea2.krea2_lora._is_target`` is the same shape for
+    the same reason. A ``CompositeAdapterLayer`` counts: drop it and an occupied
+    target VANISHES from enumeration exactly when a second LoRA needs it, which
+    is what forced the generation side's structural pass
+    (``pipeline_backends/acestep._acestep_lora_targets``).
 
     The wrappable half is the shared helper rather than
     ``isinstance(x, nn.Linear)``, which is what these two call sites used to
@@ -68,7 +71,7 @@ def _is_target(module: Optional[nn.Module]) -> bool:
     """
     if module is None:
         return False
-    return is_lora_wrappable_linear(module) or isinstance(module, LoRALinearLayer)
+    return is_lora_wrappable_linear(module) or is_adapter_covered(module)
 
 
 def _flatten_to_sdscripts(module_path: str) -> str:
@@ -144,7 +147,7 @@ class AceStepLoRAAdapter(BaseLoRAAdapter):
 
         count = 0
         for module_path, parent, attr, current in iter_acestep_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            if is_adapter_covered(current):
                 continue  # idempotent / stacking-safe
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"

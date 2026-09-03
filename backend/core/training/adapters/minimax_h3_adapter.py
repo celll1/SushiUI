@@ -38,8 +38,11 @@ import torch
 import torch.nn as nn
 
 from core.adapters import (
-    LoRALinearLayer,
+    # Bound here for adapter_layering_test's canonical-identity check, which
+    # names this module explicitly; the injector below uses the H3 subclass.
+    LoRALinearLayer,  # noqa: F401
     MiniMaxH3LoRALinearLayer,
+    is_adapter_covered,
     is_lora_wrappable_linear,
 )
 
@@ -139,7 +142,11 @@ def iter_minimax_h3_lora_targets(
             if resolved is None:
                 continue
             parent, attr, current = resolved
-            if not is_lora_wrappable_linear(current) and not isinstance(current, LoRALinearLayer):
+            # is_adapter_covered, not isinstance(LoRALinearLayer): this arch's own
+            # branch class IS a LoRALinearLayer subclass, but a slot the
+            # generation loader already covers holds a CompositeAdapterLayer,
+            # which must still be yielded rather than vanish from enumeration.
+            if not is_lora_wrappable_linear(current) and not is_adapter_covered(current):
                 continue
             yield f"transformer_blocks.{i}.{leaf}", parent, attr, current
 
@@ -165,7 +172,7 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
         count = 0
         for module_path, parent, attr, current in iter_minimax_h3_lora_targets(
                 transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            if is_adapter_covered(current):
                 continue  # idempotent / stacking-safe
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"

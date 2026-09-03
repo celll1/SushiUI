@@ -31,7 +31,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import LoRALinearLayer, is_adapter_covered
 
 from core.models.krea2.krea2_lora import (
     iter_krea2_lora_targets, DEFAULT_SCOPE, flatten_to_key,
@@ -56,7 +56,9 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
         count = 0
         for module_path, parent, attr, current in iter_krea2_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            # A CompositeAdapterLayer is yielded too and exposes
+            # in_features/out_features, so wrapping it would NEST, not fail.
+            if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_key(module_path)  # "lora_unet_<flat>"
             lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)

@@ -25,7 +25,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import LoRALinearLayer, is_adapter_covered
 
 from core.models.minit2i.minit2i_lora import (
     iter_minit2i_lora_targets, DEFAULT_SCOPE, flatten_to_key,
@@ -65,7 +65,9 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
         count = 0
         for module_path, parent, attr, current in iter_minit2i_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            # A CompositeAdapterLayer is yielded too and exposes
+            # in_features/out_features, so wrapping it would NEST, not fail.
+            if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_key(module_path)  # "lora_unet_<flat>"
             lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)
@@ -88,7 +90,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
         count = 0
         for module_path, parent, attr, current in iter_minit2i_te_lora_targets(text_encoder, self.te_scope):
-            if isinstance(current, LoRALinearLayer):
+            if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_te_key(module_path)  # "lora_te_<flat>"
             lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)

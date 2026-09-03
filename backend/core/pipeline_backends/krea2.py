@@ -179,16 +179,20 @@ class Krea2Mixin:
         return self._krea2_lora_original_modules, self._krea2_lora_wrapped_keys
 
     def _load_lora_krea2(self, lora_configs: List[Dict]) -> int:
-        """Wrap Krea 2 transformer Linears with the requested LoRA(s).
+        """Cover Krea 2 transformer Linears with the requested LoRA(s).
+
+        Each target Linear is covered ONCE by a ``CompositeAdapterLayer`` and
+        each selected LoRA adds a NAMED branch to it, so two Krea 2 LoRAs over
+        the same module sum instead of being refused.
 
         Transformer-only: this function touches nothing but
-        ``krea2_components["transformer"]`` — there is no TE apply path, and no
+        ``krea2_components["transformer"]`` -- there is no TE apply path, and no
         Krea 2 LoRA can carry TE keys because the Qwen3-VL encoder is frozen for
         training.
 
         Must run AFTER the transformer is staged on GPU and after any runtime
         INT8 conversion: the wrappers reference the CURRENT Linear modules and
-        copy their device. Raises on a file that resolves to zero targets — a
+        copy their device. Raises on a file that resolves to zero targets -- a
         LoRA that had no effect must not pass as a successful generation.
         """
         from core.models.krea2.krea2_lora import (
@@ -255,12 +259,11 @@ class Krea2Mixin:
                     f"the whole denoise loop.",
                     "krea2_lora_options_ignored")
 
-            # apply_lora_group re-wraps the true original, so a second LoRA on the
-            # same module replaces the first instead of summing (shared-engine
-            # scope; see docs/guides/LYCORIS_ADAPTER_DESIGN.md Phase 1).
-            overlap = wrapped_keys & set(grouped)
+            # Unique within the request, so selecting the SAME file twice is two
+            # branches rather than a duplicate-name refusal.
             applied = apply_lora_group(
                 transformer, grouped, strength, originals, wrapped_keys,
+                branch_name=f"{i}:{lora_file}",
             )
             print(f"[Krea2 LoRA] {i+1}/{len(lora_configs)}: {lora_path} format={fmt} "
                   f"matched={len(grouped)} wrapped={applied} strength={strength}")
@@ -271,24 +274,10 @@ class Krea2Mixin:
                     f"Krea 2 transformer -- wrong architecture or an unsupported target scope.")
                 self._krea2_lora_warn(message, "lora_incompatible")
                 raise RuntimeError(f"Krea 2 {message}")
-            if len(overlap) == applied:
-                # Everything this file touched was already wrapped, so the earlier
-                # LoRA is discarded rather than summed. Refuse, as Z-Image does.
-                message = (
-                    f"LoRA '{lora_file}': every one of its {applied} target modules is already "
-                    f"wrapped by an earlier LoRA in this request. Krea 2 applies one LoRA at a "
-                    f"time; select a single Krea 2 LoRA.")
-                self._krea2_lora_warn(message, "lora_stacking_unsupported")
-                raise RuntimeError(f"Krea 2 {message}")
             if applied < len(grouped):
                 self._krea2_lora_warn(
                     f"LoRA '{lora_file}': applied {applied} of {len(grouped)} modules; the rest "
                     f"have no counterpart in the loaded Krea 2 transformer.",
-                    "lora_partial")
-            if overlap:
-                self._krea2_lora_warn(
-                    f"LoRA '{lora_file}': {len(overlap)} module(s) were already wrapped by an "
-                    f"earlier LoRA in this request; the earlier branch is replaced, not summed.",
                     "lora_partial")
             total += applied
         return total

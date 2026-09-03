@@ -68,12 +68,10 @@ class AnimaMixin:
 
         The wrapped scope is derived per file from its own keys, so an
         attention-only LoRA and a full attention+mlp+llm_adapter one both apply
-        in full. Stacking is additive across DISJOINT modules only; a later file
-        whose targets are ALL already wrapped is refused, because each wrap
-        rebuilds from the true original and would discard the earlier branch
-        instead of summing it (summing needs the composite wrapper,
-        docs/guides/LYCORIS_ADAPTER_DESIGN.md Phase 1). Unload always returns to
-        the un-LoRA'd model.
+        in full. Each target Linear is covered ONCE by a
+        ``CompositeAdapterLayer`` and each selected LoRA adds a NAMED branch to
+        it, so two Anima LoRAs over the same module SUM instead of being
+        refused. Unload always returns to the un-LoRA'd model.
 
         Raises RuntimeError when a requested LoRA cannot be applied: a
         generation that silently ignores a selected LoRA is not a success.
@@ -127,10 +125,12 @@ class AnimaMixin:
                         f"recognised Anima LoRA format, or missing their down/up pair "
                         f"(first few: {dropped[:5]}) -- not applied.",
                         "anima_lora_keys_unrecognised")
-                overlap = wrapped_keys & set(grouped)
                 applied, unmatched = apply_lora_group(
                     transformer, grouped, strength, originals, wrapped_keys,
                     scope=scope,
+                    # Unique within the request, so selecting the SAME file
+                    # twice is two branches, not a duplicate-name refusal.
+                    branch_name=f"{i}:{lora_file}",
                 )
                 if unmatched:
                     self._anima_lora_warn(
@@ -153,20 +153,6 @@ class AnimaMixin:
                     )
                     self._anima_lora_warn(message, "lora_incompatible")
                     failures.append(message)
-                elif len(overlap) == applied:
-                    message = (
-                        f"LoRA '{lora_file}': every one of its {applied} target module(s) is "
-                        f"already wrapped by an earlier LoRA in this request. Anima applies "
-                        f"one LoRA per module; select LoRAs with disjoint targets."
-                    )
-                    self._anima_lora_warn(message, "lora_stacking_unsupported")
-                    failures.append(message)
-                elif overlap:
-                    self._anima_lora_warn(
-                        f"LoRA '{lora_file}': {len(overlap)} module(s) were already wrapped by "
-                        f"an earlier LoRA in this request; the earlier branch is replaced, "
-                        f"not summed.",
-                        "lora_partial")
                 total_applied += applied
             except Exception as e:
                 print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")

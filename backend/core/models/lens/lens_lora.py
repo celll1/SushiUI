@@ -202,24 +202,21 @@ def parse_scope_csv(scope_csv: Optional[str]) -> Dict[str, bool]:
     return scope
 
 
-def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
-    """Assign module to parent.attr (str) or parent[attr] (int ModuleList index)."""
-    if isinstance(attr, int):
-        parent[attr] = module
-    else:
-        setattr(parent, attr, module)
-
-
 def iter_lens_lora_targets(
     transformer: nn.Module,
     scope: Optional[Dict[str, bool]] = None,
 ) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
     """Yield (module_path, parent, attr_or_idx, current_module) per LoRA target.
 
-    attr_or_idx is a str for normal attributes or an int for ModuleList children
-    (e.g. to_out[0] and img_mod[1]).  Use _set_module() for assignment.
+    ONE enumerator for both load and unload, so the two cannot disagree about a
+    slot once a target can hold more than one branch.
+
+    attr_or_idx is a str for normal attributes or an int for ModuleList/Sequential
+    children (`attn.to_out[0]`, `img_mod[1]`, `txt_mod[1]`) -- address it with
+    ``core.adapters.get_module_slot`` / ``set_module_slot``, which take either;
+    ``setattr(parent, 1, module)`` raises TypeError.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_img_attn = bool(scope.get("img_attn", False))
@@ -228,7 +225,10 @@ def iter_lens_lora_targets(
     want_txt_mlp  = bool(scope.get("txt_mlp",  False))
     want_mod      = bool(scope.get("mod",       False))
 
-    is_target = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+    # CompositeAdapterLayer is a target too: drop it and a second selected LoRA
+    # skips every occupied slot and reports zero matches as if its keys were wrong.
+    is_target = lambda m: isinstance(
+        m, (nn.Linear, LoRALinearLayer, CompositeAdapterLayer))
 
     blocks = getattr(transformer, "transformer_blocks", None)
     if blocks is None:
@@ -296,12 +296,13 @@ def apply_lora_group(
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
     default_alpha: Optional[float] = None,
-) -> Tuple[int, int]:
-    """Wrap matching Linear modules with LoRALinearLayer -> (applied, already_wrapped).
+    branch_name: str = "lora",
+) -> int:
+    """Add one named branch per matching module to the composite covering it.
 
-    A target already wrapped by an earlier LoRA is counted, not re-wrapped:
-    LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The
-    caller turns the count into a refusal or a warning.
+    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
+    over the same module adds a branch beside the first rather than replacing
+    it. ``branch_name`` must be unique within the request.
 
     Args:
         transformer:           Lens transformer instance (on GPU).
@@ -316,23 +317,22 @@ def apply_lora_group(
                                training can opt into.
         default_alpha:         File-metadata alpha, used when a module has no per-key
                                `.alpha` tensor (see alpha_from_metadata).
+        branch_name:           Unique per selected LoRA within the request.
 
     Returns:
-        (modules wrapped, modules skipped because an earlier LoRA holds them).
+        The number of modules this file bound a branch to.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0
-    occupied = 0
 
-    for module_path, parent, attr, linear in iter_lens_lora_targets(transformer, effective_scope):
+    # Materialised: the slots are replaced as we go, and a live traversal would
+    # start descending into the wrappers it just installed.
+    for module_path, parent, attr, linear in list(
+            iter_lens_lora_targets(transformer, effective_scope)):
         weights = grouped.get(module_path)
         if weights is None:
-            continue
-
-        if isinstance(linear, LoRALinearLayer):
-            occupied += 1
             continue
 
         down = weights["down"]
@@ -340,7 +340,8 @@ def apply_lora_group(
         alpha_tensor = weights.get("alpha")
 
         # Record the genuine original before the first wrap so unload can restore it.
-        true_original = linear
+        true_original = (linear.original_module
+                         if isinstance(linear, CompositeAdapterLayer) else linear)
         lora_original_modules.setdefault(module_path, true_original)
 
         rank        = int(down.shape[0])
@@ -369,13 +370,16 @@ def apply_lora_group(
             wrapper.lora_up.weight.data   = up.to(device=device, dtype=compute_dtype)
         wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
         wrapper.lora_up   = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale     = (alpha_value / rank) * strength
 
-        _set_module(parent, attr, wrapper)
+        # add_branch refolds the strength into the branch's own scale. Never
+        # multiply it onto the delta instead: same LoRA mathematically, but it
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, wrapper, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
 
-    return applied, occupied
+    return applied
 
 
 def restore_originals(
@@ -383,19 +387,24 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Linear],
     wrapped_keys: Set[str],
 ) -> int:
-    """Revert every wrapped Lens Linear to its pre-LoRA original.
+    """Revert every composite-covered Lens Linear to its pre-LoRA original.
 
-    Restores only paths this session actually wrapped, and drops their
-    bookkeeping afterwards: a surviving `lora_original_modules` entry would be
-    written into the NEXT model loaded at the same path, i.e. one model's
-    Linear installed into another.
+    Driven by what is INSTALLED, through the enumerator the load path uses, so
+    the two cannot disagree about a slot's address. Bookkeeping for the restored
+    paths is dropped: a surviving `lora_original_modules` entry would be written
+    into the NEXT model loaded at the same path, i.e. one model's Linear
+    installed into another.
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
     restored_keys: Set[str] = set()
-    # Iterate over the full scope so we catch modules from any apply scope.
-    for module_path, parent, attr, _linear in iter_lens_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in wrapped_keys and module_path in lora_original_modules:
-            _set_module(parent, attr, lora_original_modules[module_path])
+    # Full scope, so a composite from any apply scope is caught.
+    for module_path, parent, attr, current in list(
+            iter_lens_lora_targets(transformer, _FULL_SCOPE)):
+        if isinstance(current, CompositeAdapterLayer):
+            set_module_slot(parent, attr, lora_original_modules.get(
+                module_path, current.original_module))
             restored_keys.add(module_path)
             restored += 1
     for key in restored_keys:

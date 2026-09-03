@@ -1,8 +1,10 @@
 """LoRA support for the SenseNova-U1.5-8B-MoT distillation LoRA.
 
-This is a RUNTIME-ONLY LoRA (forward-time addition via ``LoRALinearLayer``,
-never merged into the base weights). The base checkpoint stays canonical for
-a later training phase, so this module never writes into the base's
+This is a RUNTIME-ONLY LoRA (forward-time addition, never merged into the base
+weights). Each target Linear is covered ONCE by a ``CompositeAdapterLayer``
+holding one named ``LoRALinearLayer`` branch per selected LoRA, so two
+SenseNova LoRAs over the same module SUM. The base checkpoint stays canonical
+for a later training phase, so this module never writes into the base's
 ``state_dict`` -- see ``apply_lora_group``/``restore_originals`` below.
 Mirrors ``core.models.ideogram4.ideogram4_lora`` (the exact precedent: its
 published checkpoints are quantized too, so LoRA-over-quantized is its
@@ -68,6 +70,22 @@ other architectures in this repo. ``_is_lora_target`` below is
 MODULE-LEVEL (not a closure) so ``quantized_capability_parity_test`` can
 find it by convention and check it against ``Int8Linear``/``Fp8Linear`` the
 same way it checks Ideogram 4's.
+
+MoT ROUTING UNDER A COMPOSITE
+-----------------------------
+``mot_weight_selector`` splits the two halves by ``"_mot_gen" in path`` and
+tells a base apart from an adapter by ``".lora_down"``/``".lora_up"``, so the
+composite's own paths decide which half its tensors travel with under phase
+eviction. Measured on the toy tree, two branches deep: the base is yielded at
+``<target>.original_module`` ONLY -- ``named_modules`` de-duplicates the
+branch's alias of the same object, and ``CompositeAdapterLayer.__init__``
+assigns ``original_module`` before ``branches``, so it is the first path
+reached -- and every branch weight lands at
+``<target>.branches.<i>.lora_{down,up}``. Both keep the ``_mot_gen`` marker of
+the target they sit under, and neither the composite nor its ``branches``
+list owns a tensor of its own, so nothing new is classified. Nothing here is
+reachable from the TRAINING selector (``require_exact_symmetry``), which never
+sees a generation-side wrapper.
 """
 
 from __future__ import annotations
@@ -233,26 +251,24 @@ def und_gradient_unreachable_paths(num_layers: int = 42) -> Set[str]:
     }
 
 
-def _set_module(parent: Any, attr: str, module: nn.Module) -> None:
-    setattr(parent, attr, module)
-
-
 def _is_lora_target(m: Any) -> bool:
-    """True for a module a LoRA can wrap or re-wrap on the SenseNova gen branch.
+    """True for a module a LoRA can wrap or re-wrap on a SenseNova MoT branch.
 
     A plain ``nn.Linear``, EITHER weight-only quantized Linear (only
     ``Int8Linear`` is ever produced by this arch's loader, but ``Fp8Linear``
     is accepted identically -- the parity test checks both, and a predicate
     that only recognised the one class this checkpoint happens to use would
     still be the exact isinstance(x, nn.Linear)-shaped trap for the other),
-    or an already-wrapped ``LoRALinearLayer`` (yielded so re-application and
-    stacking find the slot). See the module docstring's QUANTIZED BASE
-    section for why ``Int8Linear``/``Fp8Linear`` cannot be reached through a
-    bare ``isinstance(m, nn.Linear)``.
+    or an adapter wrapper already sitting in the slot. Without that last case
+    a second selected LoRA would skip every occupied target and report zero
+    matches as if its keys were wrong. See the module docstring's QUANTIZED
+    BASE section for why ``Int8Linear``/``Fp8Linear`` cannot be reached
+    through a bare ``isinstance(m, nn.Linear)``.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
-    return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
+    return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer,
+                          CompositeAdapterLayer))
 
 
 def iter_sensenova_lora_targets(
@@ -272,7 +288,9 @@ def iter_sensenova_lora_targets(
     ``branch`` selects the MoT half: ``"gen"`` (default, the distillation
     LoRA's scope), ``"und"``, or ``"both"`` (every generation target, then
     every understanding one). This is the ONLY target enumerator -- training
-    injection and inference application both drive it.
+    injection, inference application and inference restore all drive it, so
+    they cannot disagree about a slot once a target can hold more than one
+    branch. Inference callers materialise it before mutating.
     """
     if branch not in LORA_BRANCHES:
         raise ValueError(
@@ -340,54 +358,48 @@ def apply_lora_group(
     *,
     branch: str = "both",
     file_alpha: Optional[float] = None,
-    shadowed: Optional[list] = None,
+    branch_name: str = "lora",
 ) -> int:
-    """Wrap matching modules with ``LoRALinearLayer`` (reversible).
+    """Add one named branch per matching module to the composite covering it.
 
-    NEVER merges into the ``Int8Linear`` base -- the wrapper computes
-    ``base(x) + scale * lora_up(lora_down(x))`` at forward time, exactly the
-    ``ideogram4_lora.apply_lora_group`` shape, so the quantized base tensors
-    are never touched and ``restore_originals`` can always recover the
-    pre-LoRA module by reference.
+    NEVER merges into the ``Int8Linear`` base -- the composite computes
+    ``base(x) + sum(scale_i * lora_up_i(lora_down_i(x)))`` at forward time,
+    exactly the ``ideogram4_lora.apply_lora_group`` shape, so the quantized
+    base tensors are never touched and ``restore_originals`` can always
+    recover the pre-LoRA module by reference. A second LoRA over the same
+    module adds a branch beside the first instead of replacing it;
+    ``branch_name`` must be unique within the request.
 
     ``branch`` defaults to ``"both"`` because application is LOOKUP-driven: a
     generation-only file simply misses on every understanding slot, so the
     existing distillation checkpoint keeps applying exactly 294 modules while
-    a gen+und file stops being silently truncated to its generation half.
-
-    A target an EARLIER LoRA in the same request already wrapped is SKIPPED
-    and appended to ``shadowed`` when the caller supplies a list.
-    ``LoRALinearLayer`` exposes ``weight``/``bias`` but not
-    ``in_features``/``out_features``, so it cannot wrap a wrapper; re-wrapping
-    the recovered original instead silently DISCARDED the earlier LoRA.
-    Additive composition is ``CompositeAdapterLinear`` work
-    (LYCORIS_ADAPTER_DESIGN Phase 1); the caller refuses a fully shadowed
-    stack rather than faking it.
+    a gen+und file stops being silently truncated to its generation half. The
+    two MoT halves hold SEPARATE composites reached by disjoint key
+    namespaces, so a stack on one half cannot reach the other.
 
     ``file_alpha`` is the middle tier of the alpha precedence (see
     ``metadata_alpha``); it is used only for a module carrying no ``.alpha``.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     applied = 0
 
-    for module_path, parent, attr, linear in iter_sensenova_lora_targets(
+    # Materialised: the slots are replaced as we go.
+    for module_path, parent, attr, linear in list(iter_sensenova_lora_targets(
         transformer, branch=branch
-    ):
+    )):
         weights = grouped.get(module_path)
         if weights is None:
-            continue
-
-        if isinstance(linear, LoRALinearLayer):
-            if shadowed is not None:
-                shadowed.append(module_path)
             continue
 
         down = weights["down"]
         up = weights["up"]
         alpha_tensor = weights.get("alpha")
 
-        true_original = linear
+        # add_branch refuses a branch built against a different base object, so
+        # the base is resolved through the composite rather than re-wrapped.
+        true_original = (linear.original_module
+                         if isinstance(linear, CompositeAdapterLayer) else linear)
         lora_original_modules.setdefault(module_path, true_original)
 
         rank = int(down.shape[0])
@@ -398,7 +410,8 @@ def apply_lora_group(
         else:
             alpha_value = float(rank)
 
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
+        branch_layer = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
+                                       lora_name=module_path)
         device = true_original.weight.device
 
         # Match the base compute dtype (int8 base -> bf16 compute), same
@@ -414,13 +427,17 @@ def apply_lora_group(
             compute_dtype = torch.bfloat16
 
         with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = (alpha_value / rank) * strength
+            branch_layer.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            branch_layer.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+        branch_layer.lora_down = branch_layer.lora_down.to(dtype=compute_dtype)
+        branch_layer.lora_up = branch_layer.lora_up.to(dtype=compute_dtype)
 
-        _set_module(parent, attr, wrapper)
+        # attach() is idempotent: a second LoRA over this slot gets the SAME
+        # composite. add_branch refolds the strength into the branch's own
+        # scale; multiplying it onto the delta instead is different arithmetic
+        # and loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, branch_layer, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
 
@@ -434,26 +451,34 @@ def restore_originals(
     *,
     branch: str = "both",
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original.
+    """Revert every composite-covered module to its pre-LoRA original.
 
     Defaults to ``"both"`` for the same reason ``apply_lora_group`` does:
     restoration must cover every branch application could have touched, or an
     understanding wrapper survives the generation that installed it.
 
+    Driven by what is INSTALLED, through the enumerator the load path uses, so
+    a wrapper the map has no entry for is still removed (its base comes off
+    the composite) rather than being left behind.
+
     Clears ``wrapped_keys`` but NOT ``lora_original_modules`` (a caller may
     inspect what was restored). The owner of a map that outlives one
-    generation must clear it -- restoration is by map membership and
-    ``apply_lora_group`` records with ``setdefault``, so a retained entry for
-    an unloaded transformer would be written into the next model loaded.
+    generation must clear it -- ``apply_lora_group`` records with
+    ``setdefault``, so a retained entry for an unloaded transformer would be
+    written into the next model loaded.
     ``SenseNovaMixin._unload_lora_sensenova`` is that owner.
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
-    for module_path, parent, attr, _linear in iter_sensenova_lora_targets(
+    for module_path, parent, attr, current in list(iter_sensenova_lora_targets(
         transformer, branch=branch
-    ):
-        if module_path in lora_original_modules:
-            _set_module(parent, attr, lora_original_modules[module_path])
-            restored += 1
+    )):
+        if not isinstance(current, CompositeAdapterLayer):
+            continue
+        set_module_slot(parent, attr, lora_original_modules.get(
+            module_path, current.original_module))
+        restored += 1
     wrapped_keys.clear()
     return restored
 

@@ -35,7 +35,7 @@ from core.training.adapters.base_adapter import (
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_UNET,
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 from core.training.ops import sensenova_ops
 
@@ -211,10 +211,10 @@ def test_inference_now_applies_understanding_keys_instead_of_dropping_them():
     assert check_lora_application(grouped, 588, {"lora_targets": "generation+understanding"}) is None
     live = dict(transformer.named_modules())
     und_path = "language_model.model.layers.7.self_attn.q_proj"
-    assert isinstance(live[und_path], LoRALinearLayer)
+    assert isinstance(live[und_path], CompositeAdapterLayer)
     assert und_path in wrapped
     assert restore_originals(transformer, originals, wrapped) == 588
-    assert not isinstance(dict(transformer.named_modules())[und_path], LoRALinearLayer)
+    assert not isinstance(dict(transformer.named_modules())[und_path], CompositeAdapterLayer)
 
 
 def test_understanding_wrapper_changes_the_forward_and_strength_zero_does_not():
@@ -253,7 +253,7 @@ def test_existing_generation_only_lora_still_applies_294_of_294():
     assert check_lora_application(grouped, 294, {"lora_targets": "generation"}) is None
     assert all("mot_gen" in path for path in wrapped)
     und_path = "language_model.model.layers.0.self_attn.q_proj"
-    assert not isinstance(dict(transformer.named_modules())[und_path], LoRALinearLayer)
+    assert not isinstance(dict(transformer.named_modules())[und_path], CompositeAdapterLayer)
     assert restore_originals(transformer, originals, wrapped) == 294
 
     # And on the Phase 1 tree shape, where the und attributes do not exist.

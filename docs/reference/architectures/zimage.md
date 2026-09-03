@@ -233,8 +233,8 @@ Default trainable set:
 
 LoRA targets: every module whose class name is `ZImageAttention` — attributes `to_q`, `to_k`, `to_v`
 and `to_out[0]`. Wrappability is tested with `is_lora_wrappable_linear` (not `isinstance(nn.Linear)`),
-so `Int8Linear` / `Fp8Linear` bases are still wrapped. The layer type is `LoRALinearLayer` reused from
-`sd15_adapter`.
+so `Int8Linear` / `Fp8Linear` bases are still wrapped. The layer type is `LoRALinearLayer` from
+`core.adapters`.
 
 Saved LoRA key format (`ZImageLoRAAdapter.save_checkpoint`):
 `lora_transformer_{module_path_with_dots_replaced_by_underscores}_{attr}.lora_down.weight` / `.lora_up.weight`,

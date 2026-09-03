@@ -32,7 +32,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from .sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 
 from core.models.krea2.krea2_lora import (
     iter_krea2_lora_targets, DEFAULT_SCOPE, flatten_to_key,

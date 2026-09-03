@@ -50,7 +50,8 @@ from core.training.adapters.base_adapter import (  # noqa: E402
     LORA_COMPONENT_UNET,
     LORA_COMPONENT_VISION_ENCODER,
 )
-from core.training.adapters.sd15_adapter import LoRALinearLayer, SD15LoRAAdapter  # noqa: E402
+from core.adapters import LoRALinearLayer  # noqa: E402
+from core.training.adapters.sd15_adapter import SD15LoRAAdapter  # noqa: E402
 from core.training import base_trainer as bt  # noqa: E402
 from core.training.base_trainer import BaseTrainer  # noqa: E402
 import core.training.optimizers.fused_grad_norm as fgn  # noqa: E402

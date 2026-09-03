@@ -89,7 +89,7 @@ class ReLoRATrainer(LoRATrainer):
         # Initialize parent (LoRATrainer -> BaseTrainer)
         super().__init__(**kwargs)
 
-        from .adapters.base_adapter import count_quantized_linears
+        from core.adapters import count_quantized_linears
 
         quantized_targets = sum(
             count_quantized_linears(getattr(layer, "original_module", None))

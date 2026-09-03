@@ -45,7 +45,7 @@ def _is_lora_target(module) -> bool:
     ``Int8Linear``/``Fp8Linear``/``nn.Linear`` instances, which an inline test
     cannot be checked through.
     """
-    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+    from core.adapters import is_lora_wrappable_linear
 
     return is_lora_wrappable_linear(module)
 
@@ -57,7 +57,7 @@ def _zimage_lora_candidate(module) -> bool:
     second case a second selected LoRA would skip every occupied target and
     report zero matches as if its keys were wrong.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     return _is_lora_target(module) or isinstance(module, LoRALinearLayer)
 
@@ -439,7 +439,7 @@ class ZImageMixin:
         replace the parameter wholesale and only fail later, inside the denoise
         loop.
         """
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         found = _zimage_lora_branch(lora_state_dict, module_path)
         if found is None:
@@ -481,7 +481,7 @@ class ZImageMixin:
             Wrapped LoRA module or None if failed
         """
         # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         # Get true original module (unwrap if it's already a LoRA wrapper)
         LoRALinearLayerClass = LoRALinearLayer  # Same class, just alias for clarity
@@ -522,7 +522,7 @@ class ZImageMixin:
         # live -- and ``lora_branch_dtype`` returns the base's real dtype for an
         # ordinary bf16/fp16 nn.Linear, so this is byte-identical on an
         # unquantized checkpoint.
-        from core.training.adapters.base_adapter import lora_branch_dtype
+        from core.adapters import lora_branch_dtype
 
         device = true_original.weight.device
         dtype = lora_branch_dtype(true_original)
@@ -554,7 +554,7 @@ class ZImageMixin:
 
         Restores original linear layers by removing LoRA wrappers.
         """
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         components = getattr(self, "zimage_components", None)
         transformer = components.get("transformer") if components else None

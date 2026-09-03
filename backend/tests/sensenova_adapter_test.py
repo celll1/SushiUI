@@ -18,7 +18,7 @@ from core.models.sensenova.sensenova_lora import (
     normalise_lora_state_dict,
     restore_originals,
 )
-from core.training.adapters.sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 
 

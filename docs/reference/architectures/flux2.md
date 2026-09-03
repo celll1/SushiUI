@@ -260,7 +260,7 @@ LoRA target modules, by owning class:
 | Qwen3 layer `mlp` / `self_attn` (opt-in) | `gate_proj`, `up_proj`, `down_proj`; `q_proj`, `k_proj`, `v_proj`, `o_proj` |
 
 Wrappability is tested with `is_lora_wrappable_linear`, so `Int8Linear` / `Fp8Linear` bases are still
-wrapped. Layer type is `LoRALinearLayer` reused from `sd15_adapter`.
+wrapped. Layer type is `LoRALinearLayer` from `core.adapters`.
 
 Saved LoRA key format (`FLUX2LoRAAdapter.save_checkpoint`):
 `lora_transformer_{module_path_with_dots_replaced_by_underscores}_{attr}` and

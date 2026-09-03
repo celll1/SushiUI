@@ -6,8 +6,8 @@ under ``core.models.*``, and hoisting them to module scope would give this
 package an import-time edge into the model loaders -- the same shape of back-edge
 that put this package outside ``core.training`` in the first place.
 
-Moved verbatim from ``core.training.adapters.base_adapter`` in Phase 1 step 1;
-the old path re-exports these names.
+Moved verbatim from ``core.training.adapters.base_adapter``, which now imports
+``count_quantized_linears`` from here like every other caller.
 """
 
 from typing import Optional

@@ -32,11 +32,11 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
+from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
 from .base_adapter import (
-    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    BaseLoRAAdapter, BaseFullParameterAdapter,
     reject_quantized_base, resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from .sd15_adapter import LoRALinearLayer
 
 
 # Default LoRA scope for ACE-Step audio training.

@@ -159,7 +159,7 @@ def _wrap_training_lora(transformer: torch.nn.Module):
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
     from core.models.ideogram4.vendor.int8_linear import Int8Linear
     from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     targets = list(iter_sensenova_lora_targets(transformer))
     attention_count = sum(".self_attn." in path for path, *_ in targets)

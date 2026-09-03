@@ -33,7 +33,7 @@ from safetensors.torch import save_file
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, resolve_component_lr, LORA_COMPONENT_UNET
 )
-from .sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 
 from core.models.ideogram4.ideogram4_lora import (
     iter_ideogram4_lora_targets, DEFAULT_SCOPE, _flatten_to_sdscripts,

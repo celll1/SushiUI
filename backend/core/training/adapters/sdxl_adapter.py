@@ -32,7 +32,7 @@ from .base_adapter import (
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_TEXT_ENCODER_2,
 )
-from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
+from core.adapters import LoRALinearLayer
 
 
 def sushi_modelspec_metadata(trainer) -> Dict[str, str]:

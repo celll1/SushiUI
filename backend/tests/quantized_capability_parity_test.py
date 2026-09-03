@@ -480,7 +480,7 @@ class LoraAdapterDtypeTest(unittest.TestCase):
     """
 
     def test_lora_branch_dtype_ignores_a_quantized_base(self):
-        from core.training.adapters.base_adapter import lora_branch_dtype
+        from core.adapters import lora_branch_dtype
 
         modules = _quantized_linears()
         self.assertIs(lora_branch_dtype(modules["nn.Linear"]), torch.bfloat16)
@@ -490,7 +490,7 @@ class LoraAdapterDtypeTest(unittest.TestCase):
             self.assertNotIn(dtype, (torch.int8, torch.float8_e4m3fn), name)
 
     def test_an_adapter_over_a_quantized_base_holds_no_quantized_parameter(self):
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         modules = _quantized_linears(in_features=16, out_features=16)
         for name, base in modules.items():
@@ -1170,7 +1170,7 @@ def _acestep_case(quantization):
     RUNTIME_INT8_ARCHS.
     """
     from core.pipeline_backends.acestep import AceStepMixin
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     inner = nn.Linear(8, 8, dtype=torch.bfloat16)
     wrapped = LoRALinearLayer(inner, rank=4, alpha=4, lora_name="stale")

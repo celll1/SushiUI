@@ -250,7 +250,7 @@ def _is_lora_target(m: Any) -> bool:
     section for why ``Int8Linear``/``Fp8Linear`` cannot be reached through a
     bare ``isinstance(m, nn.Linear)``.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
 
@@ -367,7 +367,7 @@ def apply_lora_group(
     ``file_alpha`` is the middle tier of the alpha precedence (see
     ``metadata_alpha``); it is used only for a module carrying no ``.alpha``.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     applied = 0
 

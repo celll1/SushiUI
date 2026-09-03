@@ -32,7 +32,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from .sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 
 from core.models.lens.lens_lora import (
     iter_lens_lora_targets, DEFAULT_SCOPE, _flatten_to_sdscripts,

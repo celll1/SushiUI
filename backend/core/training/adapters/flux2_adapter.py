@@ -29,11 +29,11 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
+from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
 from .base_adapter import (
-    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    BaseLoRAAdapter, BaseFullParameterAdapter,
     reject_quantized_base, LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
 )
-from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
 # ============================================================

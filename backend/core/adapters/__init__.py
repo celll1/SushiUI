@@ -14,6 +14,9 @@ see ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 
 from .layers import (
     CompositeAdapterLayer,
+    DoRALinearLayer,
+    LoHaLinearLayer,
+    LoKrLinearLayer,
     LoRALinearLayer,
     MiniMaxH3LoRALinearLayer,
     count_adapter_wrapper_roots,
@@ -57,6 +60,9 @@ __all__ = [
     "BranchRequest",
     "PreparedBranch",
     "CompositeAdapterLayer",
+    "DoRALinearLayer",
+    "LoHaLinearLayer",
+    "LoKrLinearLayer",
     "LoRALinearLayer",
     "MiniMaxH3LoRALinearLayer",
     "count_adapter_wrapper_roots",

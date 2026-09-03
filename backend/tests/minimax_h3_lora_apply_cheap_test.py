@@ -165,8 +165,9 @@ def test_native_lora_applies_to_every_target_and_restores(tmp_path):
     originals, wrapped = {}, set()
     applied, missing = lora_mod.apply_lora_group(transformer, targets, 1.0, originals, wrapped)
     assert (applied, missing) == (_N_TARGETS, [])
-    # scale is scale_ratio * strength.
-    assert transformer.transformer_blocks[0].attn.to_q.scale == pytest.approx(2.0)
+    # scale is scale_ratio * strength, on the composite's sole branch.
+    composite = transformer.transformer_blocks[0].attn.to_q
+    assert composite.get_branch(composite.branch_names[0]).scale == pytest.approx(2.0)
 
     restored = lora_mod.restore_originals(transformer, originals, wrapped)
     assert restored == _N_TARGETS
@@ -209,18 +210,24 @@ def test_zero_matched_targets_refuses_and_warns(tmp_path, captured_warnings, mon
     assert "lora_incompatible" in _codes(captured_warnings)
 
 
-def test_stacking_two_loras_on_the_same_targets_refuses(tmp_path, captured_warnings,
-                                                        monkeypatch):
+def test_stacking_two_loras_on_the_same_targets_now_sums(tmp_path, captured_warnings,
+                                                         monkeypatch):
+    """MiniMax-H3 is on ``CompositeAdapterLayer``; the refusal this asserted is
+    gone. The numerics of the stack live in
+    ``minimax_h3_lora_roundtrip_cheap_test.py``."""
     from core.extensions import lora_manager as lm
 
     path, _count = _save_native_lora(tmp_path)
     monkeypatch.setattr(lm.lora_manager, "_resolve_lora_path", lambda p: path)
 
-    backend = _StubBackend(_StubTransformer())
-    with pytest.raises(RuntimeError, match="already wrapped"):
-        backend._load_lora_minimax_h3(
-            [{"path": path, "strength": 1.0}, {"path": path, "strength": 1.0}], {})
-    assert "lora_stacking_unsupported" in _codes(captured_warnings)
+    transformer = _StubTransformer()
+    backend = _StubBackend(transformer)
+    applied = backend._load_lora_minimax_h3(
+        [{"path": path, "strength": 1.0}, {"path": path, "strength": 1.0}], {})
+    assert applied == 2 * _N_TARGETS
+    assert transformer.transformer_blocks[0].attn.to_q.branch_names == (
+        f"0:{os.path.basename(path)}", f"1:{os.path.basename(path)}")
+    assert "lora_stacking_unsupported" not in _codes(captured_warnings)
 
 
 def test_variant_mismatch_refusal_reaches_warnings(tmp_path, captured_warnings, monkeypatch):

@@ -661,16 +661,17 @@ class MiniMaxH3Mixin:
         Applied PER GENERATION, immediately before
         ``_ensure_minimax_h3_swap_and_offload`` -- never at model load time.
         ``TransformerBlockOffloader``/``swap_linears_to_w4a8`` raise on a
-        non-``nn.Linear`` child, so a load-time LoRA application (which wraps a
-        Linear in a ``MiniMaxH3LoRALinearLayer``, an ``nn.Module`` that is not
+        non-``nn.Linear`` child, so a load-time LoRA application (which hides a
+        Linear behind a ``CompositeAdapterLayer``, an ``nn.Module`` that is not
         an ``nn.Linear`` subclass) would break the block-swap staging path.
         The transformer must already be the raw (un-wrapped-by-block-loop)
         module -- call this before ``_ensure_minimax_h3_swap_and_offload``
         replaces ``minimax_h3_components["transformer"]`` with a
         ``MiniMaxH3BlockLoopWrapper``.
 
-        Several LoRAs may be selected, but they must target DISJOINT modules
-        (see ``apply_lora_group``): an overlap warns, a full shadow refuses.
+        Several LoRAs may be selected and they may overlap: each target Linear
+        is covered once by a ``CompositeAdapterLayer`` and every selected LoRA
+        adds its own NAMED branch, so two MiniMax-H3 LoRAs over one module sum.
         Any refusal raises here, before the denoise loop, so a LoRA that could
         not be applied never returns a successful generation.
         """
@@ -791,9 +792,11 @@ class MiniMaxH3Mixin:
                                 "minimax_h3_lora_distillation_with_cache",
                             )
 
-                shadowed: list = []
+                # Unique within the request, so two selections of the SAME file
+                # are two branches rather than a duplicate-name refusal.
                 applied, missing = apply_lora_group(
-                    transformer, targets, strength, originals, wrapped_keys, shadowed,
+                    transformer, targets, strength, originals, wrapped_keys,
+                    f"{i}:{lora_file}",
                 )
             except Exception as exc:
                 print(f"[MiniMax-H3 LoRA] ERROR loading {lora_file}: {exc}")
@@ -807,32 +810,25 @@ class MiniMaxH3Mixin:
                 raise RuntimeError(message) from exc
 
             print(f"[MiniMax-H3 LoRA]   wrapped {applied} module(s)")
+            # An occupied target is no longer one of the ways to get here: the
+            # composite adds a branch beside the earlier LoRA's.
             if applied == 0:
-                if shadowed:
-                    message = (
-                        f"LoRA '{lora_file}': every one of its {len(shadowed)} target modules is "
-                        f"already wrapped by an earlier LoRA in this request. MiniMax-H3 applies "
-                        f"one LoRA per target; select a single MiniMax-H3 LoRA."
-                    )
-                    code = "lora_stacking_unsupported"
-                else:
-                    message = (
-                        f"LoRA '{lora_file}': 0 of {len(targets)} target(s) applied to the loaded "
-                        f"MiniMax-H3 transformer ({len(missing)} unresolved against the live module "
-                        f"tree) -- unrecognized key format or a different model. Expected either "
-                        f"'diffusion_model.*.lora_A.weight' (ComfyUI) or "
-                        f"'lora_unet_transformer_blocks_<N>_*.lora_down.weight' (SushiUI-trained). "
-                        f"Sample keys in file: {list(raw.keys())[:5]}"
-                    )
-                    code = "lora_incompatible"
-                warn(message, code)
+                message = (
+                    f"LoRA '{lora_file}': 0 of {len(targets)} target(s) applied to the loaded "
+                    f"MiniMax-H3 transformer ({len(missing)} unresolved against the live module "
+                    f"tree) -- unrecognized key format or a different model. Expected either "
+                    f"'diffusion_model.*.lora_A.weight' (ComfyUI) or "
+                    f"'lora_unet_transformer_blocks_<N>_*.lora_down.weight' (SushiUI-trained). "
+                    f"Sample keys in file: {list(raw.keys())[:5]}"
+                )
+                warn(message, "lora_incompatible")
                 raise RuntimeError(message)
 
-            if missing or shadowed:
+            if missing:
                 warn(
                     f"LoRA '{lora_file}': applied {applied} of {len(targets)} target(s) "
                     f"({len(missing)} unresolved against the loaded MiniMax-H3 transformer, first "
-                    f"few: {missing[:5]}; {len(shadowed)} already wrapped by an earlier LoRA).",
+                    f"few: {missing[:5]}).",
                     "lora_partial",
                 )
             total_applied += applied

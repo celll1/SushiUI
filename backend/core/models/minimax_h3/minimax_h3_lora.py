@@ -1,10 +1,13 @@
 """Inference-time LoRA support for the MiniMax-H3 DiT.
 
-Loads a LoRA safetensors file and wraps the matching vendored Linear modules
-with ``MiniMaxH3LoRALinearLayer`` (forward-time addition, never a weight
-merge -- fully reversible by restoring the original module). This mirrors
-``core.models.krea2.krea2_lora`` / ``core.models.anima.anima_lora`` in shape;
-see those modules for the general pattern this one specialises.
+Loads a LoRA safetensors file and covers each matching vendored Linear with a
+``CompositeAdapterLayer`` holding one ``MiniMaxH3LoRALinearLayer`` branch per
+selected LoRA (forward-time addition, never a weight merge -- fully reversible
+by restoring the original module), so two MiniMax-H3 LoRAs over one module sum.
+The branch class is this architecture's own because its forward runs without
+``torch.autocast``. This mirrors ``core.models.krea2.krea2_lora`` /
+``core.models.anima.anima_lora`` in shape; see those modules for the general
+pattern this one specialises.
 
 TWO key conventions are supported, detected from the keys themselves.
 
@@ -340,24 +343,28 @@ def _normalise_comfy(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, Any]]:
 
         if stem.endswith(_QKV_SUFFIX):
             parts, rank_total = _split_qkv(stem, down, up)
-            scale_ratio = _resolve_alpha(alpha_tensor, None, rank_total) / rank_total
+            alpha_value = _resolve_alpha(alpha_tensor, None, rank_total)
+            scale_ratio = alpha_value / rank_total
             base = mapped.split(".attn.qkv_proj")[0] + ".attn."
             for name, (d, u) in parts.items():
                 target = base + name
                 if target in targets:
                     raise ValueError(f"duplicate LoRA target {target!r} (from stem {stem!r})")
-                targets[target] = {"down": d, "up": u, "scale_ratio": scale_ratio}
+                targets[target] = {"down": d, "up": u, "scale_ratio": scale_ratio,
+                                   "alpha": alpha_value, "scale_rank": rank_total}
             continue
 
         rank = int(down.shape[0])
-        scale_ratio = _resolve_alpha(alpha_tensor, None, rank) / rank
+        alpha_value = _resolve_alpha(alpha_tensor, None, rank)
+        scale_ratio = alpha_value / rank
 
         if stem.endswith(_FC1_SUFFIX):
             up = _swap_fc1_halves(up)
 
         if mapped in targets:
             raise ValueError(f"duplicate LoRA target {mapped!r} (from stem {stem!r})")
-        targets[mapped] = {"down": down, "up": up, "scale_ratio": scale_ratio}
+        targets[mapped] = {"down": down, "up": up, "scale_ratio": scale_ratio,
+                           "alpha": alpha_value, "scale_rank": rank}
 
     return targets
 
@@ -400,10 +407,13 @@ def _normalise_native(
             )
         if module_path in targets:
             raise ValueError(f"duplicate LoRA target {module_path!r} (from stem {stem!r})")
+        alpha_value = _resolve_alpha(weights.get("alpha"), metadata_alpha, rank)
         targets[module_path] = {
             "down": down,
             "up": up,
-            "scale_ratio": _resolve_alpha(weights.get("alpha"), metadata_alpha, rank) / rank,
+            "scale_ratio": alpha_value / rank,
+            "alpha": alpha_value,
+            "scale_rank": rank,
         }
 
     if incomplete:
@@ -427,9 +437,13 @@ def normalise_lora_state_dict(
     """Group + convert a raw LoRA state dict into vendored targets.
 
     Returns ``{vendored_module_path: {"down": Tensor, "up": Tensor,
-    "scale_ratio": float}}``. ``scale_ratio`` is ``alpha / rank`` (rank being
-    the FUSED rank for a qkv split's three pieces, see point (c) in the module
-    docstring); the caller multiplies by the user-supplied LoRA strength.
+    "scale_ratio": float, "alpha": float, "scale_rank": int}}``.
+    ``scale_ratio`` is ``alpha / scale_rank`` (``scale_rank`` being the FUSED
+    rank for a qkv split's three pieces, see point (c) in the module docstring);
+    the caller multiplies by the user-supplied LoRA strength. The pair is
+    carried alongside the ratio because after a compact qkv split it is NOT this
+    branch's own tensor rank, and a branch that only knows the ratio cannot be
+    restrengthened later without recomputing it from the wrong pair.
 
     The convention is read off the keys. ``metadata`` supplies the middle alpha
     tier (per-key tensor -> file metadata -> rank) on the NATIVE branch only;
@@ -574,19 +588,22 @@ def apply_lora_group(
     strength: float,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: set,
-    shadowed: Optional[list] = None,
+    branch_name: str = "lora",
 ) -> Tuple[int, list]:
-    """Wrap matching vendored modules with ``MiniMaxH3LoRALinearLayer``.
+    """Add one named branch per target to the covering ``CompositeAdapterLayer``.
 
-    Returns ``(applied_count, missing_target_paths)``. A target an EARLIER
-    LoRA in the same request already wrapped is SKIPPED and appended to
-    ``shadowed`` when the caller supplies a list: neither ``LoRALinearLayer``
-    nor its ``MiniMaxH3LoRALinearLayer`` subclass exposes
-    ``in_features``/``out_features``, so a wrapper cannot wrap a wrapper, and
-    the previous shape here (unwrap to the true original, wrap that) silently
-    discarded the earlier LoRA on every shared target. Additive composition is
-    ``CompositeAdapterLinear`` work (LYCORIS_ADAPTER_DESIGN Phase 1); until
-    then the caller refuses a fully shadowed stack rather than faking it.
+    Returns ``(applied_count, missing_target_paths)``. Each target Linear is
+    covered ONCE by a composite and each selected LoRA adds a NAMED branch, so
+    two LoRAs over the same module SUM instead of the second being dropped;
+    ``branch_name`` must be unique within the request (``add_branch`` refuses a
+    duplicate). The branch itself stays a ``MiniMaxH3LoRALinearLayer`` -- this
+    architecture's forward runs without ``torch.autocast`` and needs that
+    class's per-call activation cast -- and the composite drives it through
+    ``forward_delta``, never through its class.
+
+    Target resolution is KEY-DRIVEN (``_resolve_leaf`` over the checkpoint's own
+    module paths), which is also what restore walks, so load and unload cannot
+    disagree about which slot a target lives in.
 
     ``lora_original_modules.setdefault`` records only the FIRST original seen
     for a module path, so ``restore_originals`` always reaches the un-LoRA'd
@@ -599,7 +616,7 @@ def apply_lora_group(
     problem worth surfacing).
     """
     from core.adapters import (
-        LoRALinearLayer,
+        CompositeAdapterLayer,
         MiniMaxH3LoRALinearLayer,
         is_lora_wrappable_linear,
         lora_branch_dtype,
@@ -615,13 +632,9 @@ def apply_lora_group(
             continue
         parent, attr, current = resolved
 
-        if isinstance(current, LoRALinearLayer):
-            if shadowed is not None:
-                shadowed.append(module_path)
-            continue
-        if is_lora_wrappable_linear(current):
-            true_original = current
-        else:
+        true_original = (current.original_module
+                         if isinstance(current, CompositeAdapterLayer) else current)
+        if not is_lora_wrappable_linear(true_original):
             missing.append(module_path)
             continue
 
@@ -630,11 +643,8 @@ def apply_lora_group(
         down = weights["down"]
         up = weights["up"]
         rank = int(down.shape[0])
-        scale = float(weights["scale_ratio"]) * strength
 
-        # `rank`/`alpha` passed to the constructor only size lora_down/lora_up;
-        # the ratio they'd imply (alpha/rank == 1.0 here) is discarded below in
-        # favour of the FUSED stem's own scale_ratio (module docstring, (c)).
+        # `rank`/`alpha` passed to the constructor only size lora_down/lora_up.
         wrapper = MiniMaxH3LoRALinearLayer(true_original, rank=rank, alpha=rank, lora_name=module_path)
         device = true_original.weight.device
         # MIXED PRECISION: the block stack's attn/ff Linears are Fp8Linear
@@ -648,12 +658,16 @@ def apply_lora_group(
             wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
         wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
         wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = scale
+        # The scale-defining pair, NOT the branch's own tensor rank: after a
+        # compact qkv split the ratio belongs to the FUSED stem (module
+        # docstring, (c)). Written onto the branch so `set_adapter_strength`
+        # recomputes `alpha / scale_rank * strength`, which is bit-identical to
+        # the `scale_ratio * strength` this replaces.
+        wrapper.alpha = float(weights.get("alpha", weights["scale_ratio"]))
+        wrapper.rank = weights.get("scale_rank", 1)
 
-        if isinstance(attr, int):
-            parent[attr] = wrapper
-        else:
-            setattr(parent, attr, wrapper)
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, wrapper, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
 
@@ -665,26 +679,26 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: set,
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original.
+    """Revert every composite-covered module to its pre-LoRA original.
 
-    Clears ``wrapped_keys`` but NOT ``lora_original_modules``; that map's owner
-    decides its lifetime (``MiniMaxH3Mixin._minimax_h3_lora_state``).
+    Driven by what is INSTALLED at each recorded path, so a second call is a
+    no-op rather than a re-splice. Clears ``wrapped_keys`` but NOT
+    ``lora_original_modules``; that map's owner decides its lifetime
+    (``MiniMaxH3Mixin._minimax_h3_lora_state``).
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
     from core.training.adapters.minimax_h3_adapter import _resolve_leaf
 
     restored = 0
     for module_path in list(wrapped_keys):
-        if module_path not in lora_original_modules:
-            continue
         resolved = _resolve_leaf(transformer, module_path)
         if resolved is None:
             continue
-        parent, attr, _current = resolved
-        original = lora_original_modules[module_path]
-        if isinstance(attr, int):
-            parent[attr] = original
-        else:
-            setattr(parent, attr, original)
+        parent, attr, current = resolved
+        if not isinstance(current, CompositeAdapterLayer):
+            continue
+        set_module_slot(parent, attr,
+                        lora_original_modules.get(module_path, current.original_module))
         restored += 1
     wrapped_keys.clear()
     return restored

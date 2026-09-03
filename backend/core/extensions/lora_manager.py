@@ -356,6 +356,185 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
     return classified("unknown")
 
 
+# ---------------------------------------------------------------------------
+# Adapter (LoRA family) detection for the LISTING path
+# ---------------------------------------------------------------------------
+# One detector, shared with generation: core.adapters.codec.CodecRegistry.
+# What is reported here has to PREDICT what AdapterSession does with the same
+# file, so this mirrors its rule rather than inventing a second one -- ordinary
+# LoRA and an unnamed algebra are not validated there, so neither can be
+# reported invalid here.
+
+ADAPTER_STATE_OK = "ok"
+ADAPTER_STATE_UNKNOWN = "unknown"
+ADAPTER_STATE_INVALID = "invalid"
+
+_UNNAMED_ALGEBRA = ("no metadata key and no tensor-key signature names this "
+                    "file's adapter algebra")
+
+
+class _HeaderTensor:
+    """Shape-only stand-in for one safetensors entry.
+
+    Detection reads SHAPES; materializing the tensors of every file in a LoRA
+    directory to read them would read the whole directory off disk. ``item()``
+    fetches the one tensor it is asked for -- only a scalar ``.alpha`` reaches
+    it -- and is valid only while the owning ``safe_open`` handle is open.
+    """
+
+    __slots__ = ("shape", "_key", "_handle")
+
+    def __init__(self, shape, key: str, handle):
+        self.shape = tuple(int(d) for d in shape)
+        self._key = key
+        self._handle = handle
+
+    def numel(self) -> int:
+        count = 1
+        for dim in self.shape:
+            count *= dim
+        return count
+
+    def item(self):
+        return self._handle.get_tensor(self._key).item()
+
+
+def _header_shape(handle, key: str):
+    """A key's shape, or ``()`` if this file's header will not give one -- a
+    shape read must degrade the DETECTION, never drop the file from the list.
+    """
+    try:
+        return handle.get_slice(key).get_shape()
+    except Exception:
+        return ()
+
+
+def _unknown_adapter_fields(reason: str) -> Dict[str, Any]:
+    return {
+        "adapter_type": "unknown",
+        "adapter_algorithm": "unknown",
+        "weight_decompose": False,
+        "adapter_format": "unknown",
+        "adapter_state": ADAPTER_STATE_UNKNOWN,
+        "adapter_state_reason": reason,
+        "adapter_rank": None,
+        "adapter_alpha": None,
+    }
+
+
+def detect_adapter_fields(tensors, metadata,
+                          architecture: Optional[str] = None) -> Dict[str, Any]:
+    """The adapter description `GET /loras` reports for one checkpoint.
+
+    ``tensors`` may be shape-only views (`_HeaderTensor`). ``architecture`` is
+    the one classify_lora_keys() read off the KEYS, used only to keep a bogus
+    "unknown" out of the spec; the ARCHITECTURE axis of ``validate()`` is
+    neutralised below, and only the ALGEBRA axes decide `adapter_state`.
+    """
+    from core.adapters.codec import CodecRegistry
+    from core.adapters.session import AdapterRefusal
+    from core.adapters.spec import (ALGORITHM_UNKNOWN, AdapterSpec,
+                                    KNOWN_ARCHITECTURES)
+
+    try:
+        codec = CodecRegistry.detect(tensors, dict(metadata or {}))
+    except Exception as e:
+        # The same carve-out AdapterSession._canonicalize makes: detection
+        # indexes shapes it has not validated, and a valid `lora_bias=True`
+        # PEFT export's 1-D `.lora_A.bias` used to raise here. Unknown is a
+        # report, never a refusal.
+        return _unknown_adapter_fields(
+            f"adapter detection failed ({type(e).__name__})")
+
+    fields = {
+        "adapter_algorithm": codec.algorithm,
+        "weight_decompose": bool(codec.weight_decompose),
+        "adapter_format": codec.format,
+        "adapter_rank": None if codec.rank is None else int(codec.rank),
+        "adapter_alpha": None if codec.alpha is None else float(codec.alpha),
+    }
+
+    if architecture not in KNOWN_ARCHITECTURES:
+        architecture = None
+    spec = AdapterSpec.from_codec(codec, architecture=architecture)
+    fields["adapter_type"] = spec.family
+
+    state, reason = ADAPTER_STATE_OK, None
+    if codec.algorithm == ALGORITHM_UNKNOWN:
+        state, reason = ADAPTER_STATE_UNKNOWN, _UNNAMED_ALGEBRA
+    elif (codec.algorithm, bool(codec.weight_decompose)) != ("lora", False):
+        try:
+            # `known_architectures={spec.architecture}` makes that one check
+            # pass by construction. It is not answerable here: the listing has
+            # no loaded model, and `from_codec` falls back to the file's own
+            # `model_type` when the caller passes none -- so a kohya file
+            # declaring `sdxl_base_v1-0` would be reported broken while
+            # generating fine on every enabled architecture. AdapterSession
+            # never reaches that arm (it always passes the loaded arch, so the
+            # fallback never fires), which is why the axis is a listing-only
+            # false positive.
+            spec.validate(known_architectures={spec.architecture})
+        except AdapterRefusal as error:
+            state = ADAPTER_STATE_INVALID
+            reason = getattr(error, "message", None) or str(error)
+    fields["adapter_state"] = state
+    fields["adapter_state_reason"] = reason
+    return fields
+
+
+def _has_adapter_keys(keys, adapter: Dict[str, Any]) -> bool:
+    """Whether this file is an ADAPTER checkpoint rather than a full fine-tune.
+
+    The four historical key-prefix arms are unchanged. The fifth admits a
+    LyCORIS file whose stems satisfy none of them: Z-Image's flattened
+    ``lora_transformer_layers_0_attn_to_q.hada_w1_a`` was filtered out of the
+    list entirely on an architecture that loads and generates it.
+    """
+    has_lora_down = any('lora_down' in key for key in keys)
+    has_lora_up = any('lora_up' in key for key in keys)
+    has_lora_A = any('.lora_A.' in key for key in keys)
+    has_lora_B = any('.lora_B.' in key for key in keys)
+    has_lora_unet = any('lora_unet' in key for key in keys)
+    has_lora_te = any('lora_te' in key for key in keys)
+    # Z-Image LoRA format: transformer.layers.0.attn1.to_q.lora_down.weight
+    has_lora_transformer = any(
+        'transformer.' in key and ('lora_down' in key or 'lora_up' in key)
+        for key in keys)
+
+    return ((has_lora_down and has_lora_up)
+            or (has_lora_A and has_lora_B)
+            or has_lora_unet or has_lora_te
+            or has_lora_transformer
+            or adapter.get("adapter_algorithm") in ("loha", "lokr"))
+
+
+def _recommended_from_metadata(name: str,
+                               metadata: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    """A step-distillation recommendation the file itself declares, or None.
+
+    Only `student_steps` is recognized. `num_inference_steps` counts sigma grid
+    points INCLUDING the terminal 0, one more than the model evaluations the
+    file names, hence `+ 1`. FBCache/Spectrum are recommended off because both
+    amortize bookkeeping across dozens of steps.
+    """
+    student_steps_raw = (metadata or {}).get("student_steps")
+    if student_steps_raw is None:
+        return None
+
+    try:
+        student_steps = int(float(student_steps_raw))
+    except (TypeError, ValueError):
+        print(f"[LoRAManager] {name}: unparseable student_steps={student_steps_raw!r}")
+        return None
+
+    return {
+        "num_inference_steps": student_steps + 1,
+        "fbcache_enable": False,
+        "spectrum_enable": False,
+        "source": "student_steps",
+    }
+
+
 def _sort_lora_blocks(blocks) -> List[str]:
     """Sort block labels: BASE, IN00-IN.., MID, OUT00-.. (SD/SDXL); NRef/CRef/
     FDiT (Z-Image); FDiT/UDiT (Ideogram 4 cond/uncond twins); DUAL/SING (FLUX.2),
@@ -555,9 +734,15 @@ class LoRAManager:
         self.loaded_loras: List[LoRAConfig] = []
 
         # Cache for validated LoRA files (to avoid re-validation on every API call)
-        # Each entry: {"path": identifier, "name": str, "arch": str}
+        # Each entry: {"path": identifier, "name": str, "arch": str, adapter fields}
         self._lora_cache: Optional[List[Dict[str, Any]]] = None
         self._cache_timestamp: float = 0.0
+
+        # Per-FILE header probe, keyed by path -> ((mtime_ns, size), record).
+        # Survives invalidate_cache()/force_rescan: a rescan exists to notice
+        # added, removed or edited files, and re-reading the unchanged ones is
+        # what made it linear in the whole directory.
+        self._probe_cache: Dict[str, Tuple[Tuple[int, int], Optional[Dict[str, Any]]]] = {}
 
         # Add training directory to search paths (for trained LoRAs)
         training_dir = Path(settings.root_dir) / "training"
@@ -723,20 +908,75 @@ class LoRAManager:
             raise LoRAAmbiguousIdentifierError(lora_path, matches)
         return matches[0]
 
-    def _is_valid_lora_file(self, file_path: Path) -> Optional[str]:
+    def _read_lora_header(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """One HEADER read of one file: keys, shapes, metadata -- never tensor
+        data. ``None`` when the file cannot be read at all.
+
+        Everything the list, the details endpoint and the block graph report
+        comes from here, so a file is opened once rather than three times.
         """
-        Validate if a file is a valid LoRA model file and, if so, detect its
-        architecture via classify_lora_keys() (the single signature table
-        shared with get_lora_layers()).
+        try:
+            from safetensors import safe_open
+
+            with safe_open(file_path, framework="pt", device="cpu") as f:
+                keys = list(f.keys())
+                metadata = f.metadata() or {}
+                header = {k: _HeaderTensor(_header_shape(f, k), k, f)
+                          for k in keys}
+                classification = classify_lora_keys(keys)
+                arch = classification.get("arch", "unknown")
+                adapter = detect_adapter_fields(header, metadata, arch)
+        except Exception as e:
+            print(f"[LoRAManager] Could not read {file_path.name}: {e}")
+            return None
+
+        return {
+            "arch": arch,
+            "blocks": classification.get("blocks", []),
+            "adapter": adapter,
+            "is_adapter": _has_adapter_keys(keys, adapter),
+            "recommended": _recommended_from_metadata(file_path.name, metadata),
+        }
+
+    @staticmethod
+    def _probe_key(file_path: Path) -> str:
+        return os.path.normcase(str(file_path))
+
+    def _probe_lora_file(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """`_read_lora_header`, cached on (path, mtime, size).
+
+        A rescan exists to notice added, removed and edited files; re-reading
+        the unchanged ones is what made it cost the whole directory every time.
+        A ``None`` record (unreadable file) is cached too.
+        """
+        try:
+            stat = file_path.stat()
+        except OSError:
+            return None
+        key = self._probe_key(file_path)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = self._probe_cache.get(key)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        record = self._read_lora_header(file_path)
+        self._probe_cache[key] = (stamp, record)
+        return record
+
+    def _is_valid_lora_file(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """
+        Validate if a file is an adapter (LoRA-family) checkpoint and, if so,
+        describe it: architecture via classify_lora_keys() (the single signature
+        table shared with get_lora_layers()) and adapter family via the one
+        detector the generation path uses.
 
         Checks:
         1. File extension (.safetensors only - .pt/.bin excluded to avoid debug latents)
-        2. File contains LoRA-specific keys (lora_down, lora_up, etc.)
+        2. File contains adapter tensor keys (lora_down/lora_up, hada_*, lokr_*, ...)
         3. Excludes training artifacts (optimizer states, debug latents, etc.)
 
         Returns:
-            The detected arch string -- any ARCH_REGISTRY key or "unknown", see
-            classify_lora_keys() -- if this is a valid LoRA file, else None.
+            The probe record (see `_read_lora_header`) if this is an adapter
+            file, else None.
         """
         # Exclude known training artifacts by filename patterns
         filename = file_path.name.lower()
@@ -756,51 +996,14 @@ class LoRAManager:
         if file_path.suffix not in ['.safetensors']:
             return None
 
-        # Verify .safetensors files contain LoRA keys
-        try:
-            from safetensors import safe_open
-
-            with safe_open(file_path, framework="pt", device="cpu") as f:
-                keys = list(f.keys())
-
-                # LoRA architecture detection:
-                # LoRA files have lora_down AND lora_up weights (rank decomposition)
-                # Full parameter fine-tune has only full weights (unet.*.weight without lora)
-
-                has_lora_down = any('lora_down' in key for key in keys)
-                has_lora_up = any('lora_up' in key for key in keys)
-
-                # Alternative LoRA formats (diffusers, kohya-ss variants)
-                has_lora_A = any('.lora_A.' in key for key in keys)
-                has_lora_B = any('.lora_B.' in key for key in keys)
-                has_lora_unet = any('lora_unet' in key for key in keys)
-                has_lora_te = any('lora_te' in key for key in keys)
-
-                # Z-Image LoRA format (transformer-based)
-                # Keys: transformer.layers.0.attn1.to_q.lora_down.weight
-                has_lora_transformer = any('transformer.' in key and ('lora_down' in key or 'lora_up' in key) for key in keys)
-
-                # Valid LoRA must have BOTH lora_down AND lora_up (or lora_A AND lora_B)
-                is_lora = (has_lora_down and has_lora_up) or \
-                          (has_lora_A and has_lora_B) or \
-                          (has_lora_unet or has_lora_te) or \
-                          has_lora_transformer
-
-                if not is_lora:
-                    print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
-                    if len(keys) > 0:
-                        print(f"[LoRAManager]   Sample keys: {keys[:5]}")
-                        print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                    return None
-
-                arch = classify_lora_keys(keys).get("arch", "unknown")
-
-        except Exception as e:
-            print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
+        record = self._probe_lora_file(file_path)
+        if record is None:
             # If we can't read it, exclude it to be safe
             return None
-
-        return arch
+        if not record["is_adapter"]:
+            print(f"[LoRAManager] Excluding non-LoRA file (full parameter fine-tune): {file_path.name}")
+            return None
+        return record
 
     def get_available_loras(self, force_rescan: bool = False) -> List[Dict[str, Any]]:
         """
@@ -813,7 +1016,8 @@ class LoRAManager:
             force_rescan: Force re-scanning and validation (ignores cache)
 
         Returns:
-            List of {"path": identifier, "name": str, "arch": str} dicts.
+            List of {"path": identifier, "name": str, "arch": str, plus the
+            detected adapter fields of `detect_adapter_fields()`} dicts.
             "path" is a bare relative path for the common (non-colliding)
             case -- unchanged from before, so existing stored identifiers
             keep working -- or a disambiguated "tag::relative/path" identifier
@@ -834,8 +1038,12 @@ class LoRAManager:
         # pre-existing _resolve_lora_path priority).
         all_dirs = [self.lora_dir] + self._effective_extra_dirs()
 
-        # rel_path -> list of (dir, abs_path, arch), in scan (= priority) order
-        records_by_rel: Dict[str, List[Tuple[Path, Path, str]]] = {}
+        # rel_path -> list of (dir, abs_path, probe record), in scan
+        # (= priority) order
+        records_by_rel: Dict[str, List[Tuple[Path, Path, Dict[str, Any]]]] = {}
+        # Every candidate this scan saw, probed or not, for the cache prune
+        # below.
+        seen: set = set()
 
         for lora_dir in all_dirs:
             print(f"[LoRAManager] Checking directory: {lora_dir}")
@@ -855,14 +1063,15 @@ class LoRAManager:
                 print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
 
                 for f in found:
-                    arch = self._is_valid_lora_file(f)
-                    if arch is not None:
+                    seen.add(self._probe_key(f))
+                    record = self._is_valid_lora_file(f)
+                    if record is not None:
                         rel = str(f.relative_to(lora_dir))
-                        records_by_rel.setdefault(rel, []).append((lora_dir, f, arch))
+                        records_by_rel.setdefault(rel, []).append((lora_dir, f, record))
 
         result: List[Dict[str, Any]] = []
         for rel, recs in records_by_rel.items():
-            for idx, (lora_dir, abs_path, arch) in enumerate(recs):
+            for idx, (lora_dir, abs_path, record) in enumerate(recs):
                 if len(recs) > 1 and idx > 0:
                     # Real collision: this root's copy is NOT the highest-
                     # priority owner of the bare identifier -- disambiguate
@@ -873,8 +1082,15 @@ class LoRAManager:
                 result.append({
                     "path": identifier,
                     "name": os.path.basename(rel),
-                    "arch": arch,
+                    "arch": record["arch"],
+                    **record["adapter"],
                 })
+
+        # Drop probe entries for files this scan did not find. The training
+        # output directory is a search path, so a long run writing checkpoints
+        # would otherwise grow the cache for the life of the process.
+        self._probe_cache = {k: v for k, v in self._probe_cache.items()
+                             if k in seen}
 
         result.sort(key=lambda e: e["path"].lower())
         scan_duration = time.time() - scan_start
@@ -1323,19 +1539,35 @@ class LoRAManager:
         if lora_path is None:
             return None
 
-        # Get layer + arch information (single read of the file's keys)
-        arch, layers = self._read_lora_keys_info(lora_path)
-        recommended = self._parse_recommended_metadata(lora_path)
+        # arch, blocks, adapter family and the file's own recommendation all
+        # come from ONE cached header read.
+        record = self._probe_lora_file(lora_path) or {}
 
         return {
             "name": lora_name,
             "path": str(lora_path),
             "size": lora_path.stat().st_size,
             "exists": True,
-            "arch": arch,
-            "layers": layers,
-            "recommended": recommended,
+            "arch": record.get("arch", "unknown"),
+            "layers": record.get("blocks", []),
+            "recommended": record.get("recommended"),
+            **(record.get("adapter")
+               or _unknown_adapter_fields("file could not be read")),
         }
+
+    def adapter_report(self, lora_name: str) -> Optional[Dict[str, Any]]:
+        """The detected adapter fields for a LoRA IDENTIFIER (the same ones
+        `GET /loras` reports), or None when it does not resolve unambiguously
+        or cannot be read -- those are the generation path's own refusals.
+        """
+        try:
+            lora_path = self._resolve_lora_path(lora_name)
+        except LoRAAmbiguousIdentifierError:
+            return None
+        if lora_path is None:
+            return None
+        record = self._probe_lora_file(lora_path)
+        return None if record is None else record["adapter"]
 
     def get_lora_layers(self, lora_name: str) -> List[str]:
         """
@@ -1354,65 +1586,19 @@ class LoRAManager:
         return blocks
 
     def _read_lora_keys_info(self, lora_path: Path) -> Tuple[str, List[str]]:
-        """Read a LoRA file's keys once and classify arch + blocks via the
-        shared classify_lora_keys() signature table."""
-        try:
-            from safetensors import safe_open
-
-            with safe_open(lora_path, framework="pt", device="cpu") as f:
-                keys = list(f.keys())
-
-            classification = classify_lora_keys(keys)
-            arch = classification["arch"]
-            blocks = classification["blocks"]
-            print(f"[LoRAManager] {lora_path.name}: arch={arch}, {len(blocks)} blocks: {blocks}")
-            return arch, blocks
-
-        except Exception as e:
-            print(f"[LoRAManager] Error reading LoRA keys: {e}")
-            import traceback
-            traceback.print_exc()
+        """A file's (arch, block labels), from the cached header probe."""
+        record = self._probe_lora_file(lora_path)
+        if record is None:
             return "unknown", []
+        arch, blocks = record["arch"], record["blocks"]
+        print(f"[LoRAManager] {lora_path.name}: arch={arch}, {len(blocks)} blocks: {blocks}")
+        return arch, blocks
 
     def _parse_recommended_metadata(self, lora_path: Path) -> Optional[Dict[str, Any]]:
-        """Parse a step-distillation recommendation from the LoRA's safetensors
-        `__metadata__`, when present. Only recognizes fields the file itself
-        declares -- never invents a recommendation.
-
-        Currently recognized: `student_steps` (a step-distillation LoRA's
-        student evaluation count). The repo's `num_inference_steps` counts
-        sigma grid points INCLUDING the terminal 0 (one more than the number
-        of model evaluations -- see
-        core/models/minimax_h3/h3_pipeline_ops.py:1202-1203), so
-        num_inference_steps = student_steps + 1. Cache-across-steps features
-        (FBCache/Spectrum forecasting) are recommended off: they assume dozens
-        of evaluations to amortize their own bookkeeping, meaningless at ~4-8.
-        """
-        try:
-            from safetensors import safe_open
-
-            with safe_open(lora_path, framework="pt", device="cpu") as f:
-                metadata = f.metadata() or {}
-        except Exception as e:
-            print(f"[LoRAManager] Could not read metadata from {lora_path.name}: {e}")
-            return None
-
-        student_steps_raw = metadata.get("student_steps")
-        if student_steps_raw is None:
-            return None
-
-        try:
-            student_steps = int(float(student_steps_raw))
-        except (TypeError, ValueError):
-            print(f"[LoRAManager] {lora_path.name}: unparseable student_steps={student_steps_raw!r}")
-            return None
-
-        return {
-            "num_inference_steps": student_steps + 1,
-            "fbcache_enable": False,
-            "spectrum_enable": False,
-            "source": "student_steps",
-        }
+        """The file's own step-distillation recommendation, or None.
+        See `_recommended_from_metadata` for what is recognized."""
+        record = self._probe_lora_file(lora_path)
+        return None if record is None else record["recommended"]
 
 
 # Global instance

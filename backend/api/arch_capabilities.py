@@ -1582,6 +1582,53 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
 }
 
 
+def adapter_families_payload() -> Dict[str, Dict[str, Any]]:
+    """The `adapter_families` block of GET /schema/arch-capabilities.
+
+    Read from `core.adapters.capability` -- `ENABLED_ADAPTER_PAIRS` is the ONE
+    place a family is enabled, and both the refusal text and the block-swap
+    verdict come from the functions the generation path refuses with, so this
+    cannot advertise a family the engine would refuse. There is no mirrored
+    table here to drift.
+    """
+    from core.adapters.capability import (ADAPTER_PAIRS, AFTER_SPLIT,
+                                          BEFORE_SPLIT,
+                                          BLOCK_SWAP_ADAPTER_ORDER,
+                                          BLOCK_SWAP_REFUSAL_CODE,
+                                          BLOCK_SWAP_WARNING_CODE,
+                                          ENABLED_ADAPTER_PAIRS,
+                                          adapter_refusal_reason)
+    from core.adapters.spec import FAMILY_NAMES
+
+    # A LyCORIS branch's factors are bare parameters, which no offloader moves;
+    # what that costs depends on when the branch is installed relative to the
+    # block split, which is why the order is declared per architecture.
+    # This dict is POLICY, not a read: it restates the consequence
+    # `AdapterSession` draws from each order (refuse vs advise). Pinned by
+    # `adapter_type_api_cheap_test.test_block_swap_effect_follows_the_declared_install_order`.
+    block_swap_effect = {
+        AFTER_SPLIT: ("refused", BLOCK_SWAP_REFUSAL_CODE),
+        BEFORE_SPLIT: ("not_offloaded", BLOCK_SWAP_WARNING_CODE),
+    }
+
+    payload: Dict[str, Dict[str, Any]] = {}
+    for arch, supported in ENABLED_ADAPTER_PAIRS.items():
+        entry: Dict[str, Any] = {
+            "supported": [FAMILY_NAMES[pair] for pair in ADAPTER_PAIRS
+                          if pair in supported],
+            "unsupported": {
+                FAMILY_NAMES[pair]: adapter_refusal_reason(arch, *pair)
+                for pair in ADAPTER_PAIRS if pair not in supported
+            },
+        }
+        order = BLOCK_SWAP_ADAPTER_ORDER.get(arch)
+        if order is not None:
+            effect, code = block_swap_effect.get(order, ("not_applicable", None))
+            entry["block_swap"] = {"order": order, "effect": effect, "code": code}
+        payload[arch] = entry
+    return payload
+
+
 def chain_context_payload() -> Dict[str, Dict[str, Any]]:
     """The `chain_context` block of GET /schema/arch-capabilities.
 

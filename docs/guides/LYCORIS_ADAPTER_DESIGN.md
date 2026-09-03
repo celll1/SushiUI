@@ -1,9 +1,9 @@
 # LyCORIS adapter integration design
 
 Status: investigation and implementation plan. Shipped so far: the additive
-LyCORIS algebras (LoHa, LoKr) LOAD AND GENERATE on Z-Image, Krea 2, MiniT2I and
-LTX-2.3 — generation only, by file path, with no API or UI surface. Everything
-else here is plan.
+LyCORIS algebras (LoHa, LoKr) LOAD AND GENERATE on Z-Image, Krea 2, MiniT2I,
+LTX-2.3, Anima, Lens, Ideogram 4, FLUX.2 and ACE-Step (sd-scripts codec only)
+— generation only, by file path. Everything else here is plan.
 
 This guide evaluates LyCORIS 4.0.0 for SushiUI and defines the work required to
 support LoHa, LoKr, and weight-decomposed adapters (DoRA, DoHa, and DoKr) in both
@@ -575,6 +575,69 @@ Existing generation panels already carry the `loras` objects through queue and
 loop generation. Tests must ensure the new fields survive that transport rather
 than adding architecture-specific panel controls.
 
+**Landed: the generation-side API and frontend surface.** `GET /loras` and
+`GET /loras/{id}` report `adapter_type`, `adapter_algorithm`,
+`weight_decompose`, `adapter_format`, `adapter_state`, `adapter_state_reason`,
+`adapter_rank` and `adapter_alpha`, detected by `CodecRegistry.detect` --
+the same detector the generation path uses, not a second one. Each `loras[]`
+item accepts `adapter_type` (default `"auto"`, from
+`param_defaults.LORA_ITEM_DEFAULTS`), parsed for JSON and multipart alike by
+`api/adapter_types.py::parse_lora_items`, which every one of the thirteen
+`loras` sites in `routes.py` now calls. `GET /schema/arch-capabilities` gains
+`adapter_families`, built by reading `ENABLED_ADAPTER_PAIRS` and
+`adapter_refusal_reason` rather than mirroring them. Gate:
+`backend/tests/adapter_type_api_cheap_test.py`.
+
+- **The admission test was the dishonest part, in both directions.**
+  `_is_valid_lora_file` admitted on a key PREFIX (`has_lora_unet or
+  has_lora_te`), so an sd-scripts-spelled LoHa was listed as an ordinary LoRA,
+  and Z-Image's flattened `lora_transformer_*` spelling satisfied no arm at all
+  and was filtered OUT -- on one of the four architectures where LoHa
+  generates. The four historical arms are unchanged; a fifth admits a file the
+  detector names `loha`/`lokr`.
+- **The listing predicts the engine rather than judging the file, on the
+  ALGEBRA axes only.** It mirrors `AdapterSession._refuse_unsupported_algebra`:
+  ordinary LoRA is not validated (its rank sniff covers three spellings only)
+  and an `unknown` algebra is not either, so neither can be reported `invalid`.
+  `unknown` is a report, never a refusal, on the listing path. `invalid` is
+  reserved for a named LyCORIS algebra whose own declaration is inconsistent,
+  and carries `validate()`'s sentence.
+- **`validate()`'s ARCHITECTURE axis is neutralised here, and half-neutralising
+  it was a live false positive.** `from_codec(codec, architecture=None)` does
+  not ignore the file's `model_type` -- it FALLS BACK to it -- so a kohya LoHa
+  whose stems `classify_lora_keys` cannot place and whose metadata says
+  `model_type: sdxl_base_v1-0` was reported `invalid` ("declares architecture
+  ... which is not a known training architecture") while generating fine on
+  every enabled architecture, with the UI rendering that as an amber line under
+  a working entry. `AdapterSession` cannot hit the arm at all (it always passes
+  the loaded arch, so the fallback never fires), which is exactly why a listing
+  that copied the call without the loaded arch inherited a check that is not
+  answerable without one. `spec.validate(known_architectures={spec.architecture})`
+  passes that one check by construction; the algebra axes are untouched, and a
+  Tucker file carrying the same foreign `model_type` is still `invalid`.
+- **An explicit `adapter_type` is an assertion, checked at the route.** A
+  mismatch answers 400 with `lora_adapter_type_mismatch` before anything loads;
+  a file detected `unknown` satisfies no assertion (and `auto` still applies
+  it); an unresolvable path is left to the generation path's own
+  `lora_not_found`, which names the real cause.
+- **Detection is header-only and cached per (path, mtime, size).** `safe_open`
+  gives keys, `get_slice(k).get_shape()` gives shapes and only a scalar
+  `.alpha` is ever materialized, so no tensor data is read. MEASURED on 200
+  synthetic files x 200 keys, OS cache warm, fresh manager per arm: first scan
+  194 -> 244 ms, and 119 -> 190 ms on an independent re-run of the same shape,
+  so the first scan costs roughly 25-60% more; a subsequent `force_rescan`
+  142.9 -> 8.0 ms (independently 119 -> 6.4 ms), ~20x cheaper, because the
+  probe cache survives it. Quote this synthetic shape rather than a real LoRA
+  directory: the ones configured on the development machine hold too few files
+  to measure. The same probe now also backs `get_lora_info`, which used to open
+  each file twice more; `_probe_cache` is pruned to the files the latest scan
+  saw, so a training run writing checkpoints into a search path cannot grow it
+  without bound.
+- **Not done here, deliberately:** the SD1.5/SDXL diffusers path still has no
+  `lora_incompatible` refusal of its own (the design doc's separate step); the
+  selector now WARNS from the capability table instead. Training-side
+  `network.adapter_algorithm` and `TrainingConfig.tsx` are untouched.
+
 No database migration is required for the first implementation: runs persist
 YAML and presets persist JSON. Derived API responses can expose normalized
 adapter fields from those documents.
@@ -761,9 +824,9 @@ recorded below. Only the per-LoRA option unification is outstanding.
 
 **Not landed.**
 
-- Foreign LoHa/LoKr on the other nine architectures (Tier 2: Anima, Lens,
-  Ideogram 4, FLUX.2; Tier 3 with its own gate: MiniMax-H3, SenseNova; Tier 4:
-  ACE-Step; and SD1.5/SDXL, which never reach `AdapterSession` at all).
+- Foreign LoHa/LoKr on the four architectures still refusing them: Tier 3 with
+  its own gate (MiniMax-H3, SenseNova), ACE-Step's diffusers/PEFT branch, and
+  SD1.5/SDXL, which never reach `AdapterSession` at all.
 - The architecture-registry hooks that would carry generation TOPOLOGY -- target
   discovery, component policy, scope names, checkpoint-stem translation -- and
   the migration of the thirteen existing target iterators onto `AdapterTarget`.
@@ -1219,6 +1282,69 @@ reported: `adapter_type` on a request item, and the detected type on
   LoRA branch's factors and excludes a LoHa/LoKr layer's. Better behaviour than
   LoRA gets, but by accident of naming rather than by a gate — do not rely on
   it.
+**Landed: LoHa and LoKr generate, on five more architectures.**
+Anima, Lens, Ideogram 4, FLUX.2 and ACE-Step carry `("loha", False)` and
+`("lokr", False)` in `ENABLED_ADAPTER_PAIRS`, on the same five pieces of
+evidence per row and in the same file. Each builder routes through
+`build_adapter_branch` and keeps its OWN alpha precedence and branch dtype;
+three of the five needed a named `branch_dtype()` because
+`core.adapters.lora_branch_dtype` has no bias tier and would send every biased
+fp8 target to bfloat16 (`anima_lora.branch_dtype` additionally consults a
+declared `compute_dtype` first). FLUX.2 and ACE-Step keep
+`lora_branch_dtype`. `NOT_ENABLED` in the gate shrank to the two Tier-3 rows
+and the sibling that makes it discriminating grew to nine.
+
+- **ACE-Step is enabled for its sd-scripts codec ALONE, and its other branch
+  refuses rather than mis-applies.** `_acestep_prepare_lora_file` classifies a
+  file as `sdscripts` (a `lora_unet_decoder_layers_` prefix) or `diffusers` (a
+  `.lora_A.`/`.lora_B.` key) and raises `lora_incompatible`
+  ("unrecognized key format") for neither. A LyCORIS file in the diffusers
+  spelling carries no pair key, so it is neither, and is refused before any
+  target is walked — not silently applied at zero targets, and not with the
+  capability gate's "not enabled" text, which would be a lie now that the row
+  IS enabled. Gate row: `test_acestep_refuses_a_lycoris_file_in_the_diffusers_spelling`.
+- **The block-swap classification is the ORDERING in each generate function,
+  read rather than assumed.** `AFTER_SPLIT` (refuse): Anima
+  (`_anima_stage_transformer` 837 → `_load_lora_anima` 845, and 1126/1134,
+  1422/1430), Lens (813/817, 1009/1013, 1214/1218) and Ideogram 4
+  (1038/1052, 1227/1237, 1424/1434) each stage — which builds the offloader and
+  calls `prepare_block_devices_before_forward` — a handful of lines before the
+  LoRA load, on all three generate entry points. `BEFORE_SPLIT` (advise):
+  FLUX.2 loads its LoRAs in stage 1 (848, 2415, 3266) and builds
+  `create_flux_block_offloader` in stage 3 of the SAME function (1085, 2685,
+  3563), so its factors are swept to the device and never returned; the
+  advisory is called from all three offloader sites. `NO_BLOCK_SWAP`:
+  ACE-Step has no `blocks_to_swap` path in its backend at all.
+- **Ideogram 4's probe is not per-component.**
+  `_ideogram4_stage_transformers` builds an offloader for BOTH halves or
+  neither, so one `block_swap_active` reads `_ideogram4_offloaders` (a list of
+  `(component name, offloader)`) and both components declare it. Its two
+  transformers carry identical module paths and are told apart by the key
+  namespace (`lora_unet_` vs `lora_uncond_`), which is why the branch builder
+  keys on `request.component`.
+- **FLUX.2's two components keep two different strength rules.**
+  `unet_layer_weights` multiplies the request strength for a transformer
+  target; the Qwen3 text-encoder half deliberately takes the plain strength.
+  Routing the builder through the engine did not change that, because the
+  strength is folded by `add_branch(strength=)` after the branch is built.
+  `test_flux2_covers_both_components_at_their_own_strength_rules` reads it back
+  off the composite.
+- **Anima's builder had no shape check at all**, like Krea 2's before
+  `aaefb6f4`: a wrong-shape group was assigned wholesale and failed inside the
+  denoise loop. It now refuses `lora_partial` before anything is installed.
+- **Lens's fused QKV needs no row split.** `img_qkv` / `txt_qkv` are ordinary
+  `nn.Linear` targets, so one factor group covers the whole fused stem;
+  `split_group_on_out_rows` is MiniMax-H3's problem, not Lens's. The GPT-OSS
+  text encoder stays frozen and is not a component.
+- **ACE-Step can report `applied > declared`, and always could.**
+  `_acestep_count_declared_branches` counts only stems under
+  `lora_unet_decoder_layers_`, while `_acestep_lora_slots` also yields the
+  lyric-encoder targets the diffusers codec reaches. A hand-written file naming
+  lyric stems in the sd-scripts spelling applies more branches than it
+  declares. `_account` only refuses on `applied < declared`, so this is silent
+  — pre-existing, unreachable from anything this repo saves (the trainer's
+  scope is decoder-only), and recorded rather than changed.
+
 ### Phase 3: dense DoRA
 
 - Start with SD1.5, SDXL, Z-Image, Lens, and dense MiniT2I targets.

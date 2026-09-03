@@ -19,6 +19,8 @@ _LORA_REFUSAL_CODES = frozenset({
     "ltx2_lora_arch_mismatch",
     "minimax_h3_lora_variant_mismatch",
     "lora_blockswap_unsupported",
+    # An explicit loras[].adapter_type that the file contradicts (api/adapter_types.py).
+    "lora_adapter_type_mismatch",
 })
 
 

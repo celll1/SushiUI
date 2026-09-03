@@ -12,7 +12,7 @@ those modules now import these classes from here like everyone else.
 """
 
 import math
-from typing import Dict, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -406,6 +406,45 @@ def is_adapter_wrapper(module: nn.Module) -> bool:
     wrapper root becomes a ``CompositeAdapterLayer`` and is covered then.
     """
     return type(module).__name__ in _ADAPTER_WRAPPER_CLASS_NAMES
+
+
+def is_adapter_covered(module: Optional[nn.Module]) -> bool:
+    """True for a slot an adapter already covers -- either wrapper class.
+
+    The predicate the INJECTION sites want: "leave this alone / do not wrap it a
+    second time / do not descend into it". ``is_adapter_wrapper`` above answers a
+    different question for the INT8 gates -- it matches by class NAME and so
+    deliberately excludes ``MiniMaxH3LoRALinearLayer``, whose slots those gates
+    have never counted. Here the subclass must match, because MiniMax-H3's
+    injector skips a slot it has already wrapped.
+    """
+    return isinstance(module, (LoRALinearLayer, CompositeAdapterLayer))
+
+
+def named_modules_outside_adapters(
+    root: nn.Module,
+    prefix: str = "",
+    memo: Optional[Set[nn.Module]] = None,
+) -> Iterator[Tuple[str, nn.Module]]:
+    """``named_modules()`` that yields an adapter-covered slot but not its inside.
+
+    A wrapper's branches are ``nn.Linear`` children and its base is another, so a
+    walk that selects Linears by class would otherwise offer the adapter's own
+    ``lora_down``/``lora_up`` -- and the hidden base -- as fresh targets. Same
+    order and same duplicate suppression as ``nn.Module.named_modules``, so on a
+    tree that holds no adapter the two are indistinguishable.
+    """
+    if memo is None:
+        memo = set()
+    if root in memo:
+        return
+    memo.add(root)
+    yield prefix, root
+    if is_adapter_covered(root):
+        return
+    for name, child in root.named_children():
+        yield from named_modules_outside_adapters(
+            child, f"{prefix}.{name}" if prefix else name, memo)
 
 
 def count_adapter_wrapper_roots(model: nn.Module) -> int:

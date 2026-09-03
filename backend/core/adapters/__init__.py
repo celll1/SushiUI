@@ -18,7 +18,9 @@ from .layers import (
     MiniMaxH3LoRALinearLayer,
     count_adapter_wrapper_roots,
     get_module_slot,
+    is_adapter_covered,
     is_adapter_wrapper,
+    named_modules_outside_adapters,
     set_module_slot,
 )
 from .targets import (
@@ -33,7 +35,9 @@ __all__ = [
     "MiniMaxH3LoRALinearLayer",
     "count_adapter_wrapper_roots",
     "get_module_slot",
+    "is_adapter_covered",
     "is_adapter_wrapper",
+    "named_modules_outside_adapters",
     "set_module_slot",
     "count_quantized_linears",
     "is_lora_wrappable_linear",

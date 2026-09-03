@@ -10,7 +10,9 @@ from core.models.sensenova.sensenova_lora import (
     iter_sensenova_lora_targets,
 )
 
-from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
+from core.adapters import (
+    CompositeAdapterLayer, LoRALinearLayer, is_lora_wrappable_linear,
+)
 from .base_adapter import (
     BaseFullParameterAdapter,
     BaseLoRAAdapter,
@@ -73,6 +75,18 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
 
         unwrapped = [target for target in targets if is_lora_wrappable_linear(target[3])]
         wrapped = [target for target in targets if isinstance(target[3], LoRALinearLayer)]
+        # A composite is neither: it holds branches this adapter did not build,
+        # so it can be neither wrapped (that would nest) nor registered as this
+        # run's trainable layer. Refused by name rather than falling into the
+        # "mixed or unsupported" count below, which would not say why.
+        composites = [path for path, _, _, layer in targets
+                      if isinstance(layer, CompositeAdapterLayer)]
+        if composites:
+            raise RuntimeError(
+                f"SenseNova {label} LoRA cannot inject into {len(composites)} target(s) "
+                f"already covered by a generation-side composite adapter "
+                f"(first: {composites[0]}); unload those LoRAs first"
+            )
         if len(wrapped) == _TARGETS_PER_BRANCH:
             mismatched_names = [
                 path for path, _, _, layer in wrapped if layer.lora_name != path
@@ -284,6 +298,18 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             raise RuntimeError(
                 f"SenseNova full fine-tuning expects {expected} decoder Linear(s) "
                 f"on the {branch} branch, found {len(targets)}"
+            )
+
+        # A composite delegates .weight to its base, so it would pass the
+        # materialization check below and then hand requires_grad_(True) and
+        # module.parameters() the generation LoRA's branches as well.
+        covered = [path for path, _, _, module in targets
+                   if isinstance(module, CompositeAdapterLayer)]
+        if covered:
+            raise RuntimeError(
+                f"SenseNova full fine-tuning cannot train {len(covered)} decoder "
+                f"Linear(s) covered by a generation-side composite adapter "
+                f"(first: {covered[0]}); unload those LoRAs first"
             )
 
         unmaterialized = [

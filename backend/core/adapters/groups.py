@@ -315,7 +315,9 @@ def split_group_on_out_rows(
     out_rows = n * inner
 
     def pieces(sliced_names: Tuple[str, ...], block: int) -> Dict[int, TensorGroup]:
-        """Everything not row-sliced is shared by reference."""
+        """Everything not row-sliced is shared by reference -- so the pieces of
+        one fused stem alias one storage, which a caller that adopts rather than
+        copies (``adopt_tensors``) turns into shared branch parameters."""
         out = {}
         for index in range(n):
             tensors = dict(group.tensors)
@@ -369,7 +371,9 @@ def build_adapter_branch(
     factor, a 0-D weight or a two-element ``.alpha`` raises from a shape index
     or ``Tensor.item()``, not from a validated check. ``AttributeError`` is
     deliberately NOT caught -- a missing attribute is an engine bug, not a file
-    defect, and swallowing it would silently apply nothing.
+    defect, and swallowing it would silently apply nothing. ``RuntimeError``
+    is caught broadly, so a CUDA OOM here reports as ``lora_partial`` rather
+    than as itself.
     """
     if group.missing() or group.use_tucker:
         return SHAPE_MISMATCH

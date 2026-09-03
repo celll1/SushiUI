@@ -35,6 +35,14 @@ from core.adapters.capability import (  # noqa: E402
     ADAPTER_PAIRS, ENABLED_ADAPTER_PAIRS, ORDINARY_LORA, supported_pairs)
 from core.training.arch import ARCH_REGISTRY, resolve_arch_name  # noqa: E402
 
+#: The Tier-1 four: their generation branch builders run on
+#: ``build_adapter_branch`` and they are gated by
+#: ``adapter_lycoris_roundtrip_cheap_test.py``. Everything else stays on
+#: ordinary LoRA, and SD1.5/SDXL cannot be flipped from this table at all --
+#: they load through diffusers and never reach ``AdapterSession``.
+LYCORIS_ENABLED = {"zimage", "krea2", "minit2i", "ltx2"}
+ADDITIVE_LYCORIS = frozenset({ORDINARY_LORA, ("loha", False), ("lokr", False)})
+
 RANK, ALPHA = 16, 8
 DTYPE = torch.float32
 
@@ -287,11 +295,18 @@ class AdapterCapabilityTableTest(unittest.TestCase):
     def test_the_table_has_a_row_for_every_registered_architecture(self):
         self.assertEqual(set(ENABLED_ADAPTER_PAIRS), set(ARCH_REGISTRY))
 
-    def test_this_phase_enables_nothing_beyond_ordinary_lora(self):
+    def test_only_the_tier_one_four_enable_the_additive_lycoris_algebras(self):
         for name in ARCH_REGISTRY:
             with self.subTest(arch=name):
-                self.assertEqual(ENABLED_ADAPTER_PAIRS[name],
-                                 frozenset({ORDINARY_LORA}))
+                expected = (ADDITIVE_LYCORIS if name in LYCORIS_ENABLED
+                            else frozenset({ORDINARY_LORA}))
+                self.assertEqual(ENABLED_ADAPTER_PAIRS[name], expected)
+
+    def test_no_architecture_enables_a_weight_decomposed_pair(self):
+        """DoRA/DoHa/DoKr are Phase 3, on every architecture."""
+        for name, pairs in ENABLED_ADAPTER_PAIRS.items():
+            with self.subTest(arch=name):
+                self.assertEqual([p for p in pairs if p[1]], [])
 
     def test_every_handler_matrix_is_the_table_row(self):
         for name, handler in ARCH_REGISTRY.items():

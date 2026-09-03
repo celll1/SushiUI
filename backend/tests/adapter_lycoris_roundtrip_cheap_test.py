@@ -1,0 +1,871 @@
+"""LoHa and LoKr, loaded and applied by the four architectures that enable them.
+
+The evidence for the ``core/adapters/capability.py`` flip. One row per Tier-1
+architecture -- Z-Image, Krea 2, MiniT2I, LTX-2.3 -- each driving that
+architecture's REAL generation loader over a synthetic LyCORIS checkpoint
+written in its own key spelling, on CPU in a couple of seconds. A flip is legal
+only when its architecture passes all five:
+
+1. the file's stems are EXACTLY the set the architecture's own target iterator
+   yields, and every one of them is covered -- set equality, since a count
+   matches while the sets differ (the Phase 0 lesson);
+2. the installed branch's ``compute_delta_weight()`` matches the fp32 oracle in
+   ``core/adapters/reference.py`` at the architecture's own branch dtype, with
+   ``alpha != rank`` so a regression to the rank fallback shows as a 3x scale;
+3. a wrong-shape group refuses ``lora_partial`` and a partial (truncated) group
+   refuses ``lora_incompatible``, on the architecture's real session;
+4. ``unload`` restores the pre-adapter module BY OBJECT IDENTITY after a
+   component swap performed BEFORE the unload -- the only ordering that catches
+   the stale-module splice, which is why it is not reordered here;
+5. plus, run separately: that architecture's own
+   ``<arch>_lora_roundtrip_cheap_test.py`` still passes unchanged.
+
+The stub trees come from those sibling files rather than being copied, so the
+two cannot describe different models. Z-Image's is the production transformer.
+
+The last row is the stacking property nothing had exercised with MIXED
+algebras: one LoRA and one LoHa over the same module, summed at their own
+strengths, in either selection order.
+
+Run with:
+    venv/Scripts/python.exe -m pytest backend/tests/adapter_lycoris_roundtrip_cheap_test.py -v
+"""
+
+import os
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Callable, List, Optional, Tuple
+
+import pytest
+import torch
+from torch import nn
+from safetensors.torch import save_file
+
+from lora_roundtrip_common import module_ids, warning_codes, warning_probe
+
+from core.adapters import (  # noqa: E402
+    AdapterIncompatible, CompositeAdapterLayer, get_module_slot,
+)
+from core.adapters import reference  # noqa: E402
+from core.adapters.layers import factorization  # noqa: E402
+
+RANK = 2
+ALPHA = 6.0  # alpha/rank == 3, so a fall back to the rank default is a 3x error
+STRENGTH = 0.75
+STRENGTH_B = 0.4
+
+
+# --------------------------------------------------------------------------
+# Architecture rows
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Arch:
+    name: str
+    build: Callable[[], nn.Module]
+    backend: Callable[[nn.Module], object]
+    components: Callable[[object], list]
+    stem: Callable[[str], str]
+    load: Callable[[object, List[dict]], object]
+    unload: Callable[[object], object]
+    swap: Callable[[object, nn.Module], None]
+    #: The architecture's own branch-dtype policy, which is what row 2 pins.
+    branch_dtype: Callable[[nn.Module], torch.dtype]
+    session: Callable[[object], object]
+    #: The attribute name of the session's ``build_branch`` hook, so a row can
+    #: record whether any target was walked.
+    branch_hook: str
+    #: Put a live block offloader where this backend's own probe looks, or
+    #: ``None`` for an architecture that builds one only AFTER adapters install
+    #: (or has none at all).
+    fake_offloader: Optional[Callable[[object], None]] = None
+
+
+def _live_offloader():
+    """What both probes read: an object with a non-zero ``blocks_to_swap``.
+
+    Building a real one needs a real model on a real device; what the mechanism
+    depends on is only the two attributes the backends' own probes touch.
+    """
+    return SimpleNamespace(blocks_to_swap=4)
+
+
+def _stage_minit2i_offloader(backend) -> None:
+    """Exactly what ``_minit2i_stage_transformer`` sets, one line earlier than
+    ``_load_lora_minit2i`` -- which is the whole problem."""
+    backend._minit2i_offloader = _live_offloader()
+
+
+def _stage_ltx2_offloader(backend) -> None:
+    offloader = _live_offloader()
+    backend._ltx2_block_offloader = lambda: offloader
+
+
+def _zimage() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.pipeline_backends.zimage import ZImageMixin
+    import zimage_lora_roundtrip_cheap_test as gate
+
+    class _B(ZImageMixin):
+        def __init__(self, model):
+            self.zimage_components = {"transformer": model}
+
+    return Arch(
+        name="zimage",
+        build=gate.build_model,
+        backend=_B,
+        components=lambda b: b._zimage_lora_components(),
+        stem=lambda p: "lora_transformer_" + p.replace(".", "_"),
+        load=lambda b, c: b._load_lora_zimage(c),
+        unload=lambda b: b._unload_lora_zimage(),
+        swap=lambda b, m: b.zimage_components.__setitem__("transformer", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._zimage_lora_session,
+        branch_hook="_zimage_build_lora_branch",
+    )
+
+
+def _krea2() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.models.krea2.krea2_lora import flatten_to_key
+    from core.pipeline_backends.krea2 import Krea2Mixin
+    import krea2_lora_roundtrip_cheap_test as gate
+
+    class _B(Krea2Mixin):
+        def __init__(self, model):
+            self.krea2_components = {"transformer": model}
+
+    return Arch(
+        name="krea2",
+        build=gate.build_model,
+        backend=_B,
+        components=lambda b: b._krea2_lora_components(),
+        stem=flatten_to_key,
+        load=lambda b, c: b._load_lora_krea2(c),
+        unload=lambda b: b._unload_lora_krea2(),
+        swap=lambda b, m: b.krea2_components.__setitem__("transformer", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._krea2_lora_session,
+        branch_hook="_krea2_build_lora_branch",
+    )
+
+
+def _minit2i() -> Arch:
+    from core.models.minit2i.minit2i_lora import branch_dtype, flatten_to_key
+    from core.pipeline_backends.minit2i import MiniT2IMixin
+    import minit2i_lora_roundtrip_cheap_test as gate
+
+    class _B(MiniT2IMixin):
+        def __init__(self, model):
+            self.minit2i_components = {"transformer": model}
+
+    def load(backend, configs):
+        # The generate path's own order; the TE pass is a no-op with no
+        # text encoder loaded, and running it anyway keeps this the real
+        # sequence rather than a shortcut through it.
+        files = backend._minit2i_prepare_loras(configs)
+        backend._apply_te_lora_minit2i(files)
+        return backend._load_lora_minit2i(files)
+
+    return Arch(
+        name="minit2i",
+        build=gate._Transformer,
+        backend=_B,
+        components=lambda b: b._minit2i_lora_components(),
+        stem=flatten_to_key,
+        load=load,
+        unload=lambda b: b._unload_lora_minit2i(),
+        swap=lambda b, m: b.minit2i_components.__setitem__("transformer", m),
+        branch_dtype=branch_dtype,
+        session=lambda b: b._minit2i_lora_session,
+        branch_hook="_minit2i_build_lora_branch",
+        fake_offloader=_stage_minit2i_offloader,
+    )
+
+
+def _ltx2() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.models.ltx2.ltx2_lora import flatten_module_path
+    from core.pipeline_backends.ltx2 import LTX2Mixin
+    import ltx2_lora_roundtrip_cheap_test as gate
+
+    class _B(LTX2Mixin):
+        def __init__(self, model):
+            self.ltx2_components = {"transformer": model}
+
+    return Arch(
+        name="ltx2",
+        build=gate.build_dit,
+        backend=_B,
+        components=lambda b: b._ltx2_lora_components(),
+        stem=lambda p: "lora_unet_" + flatten_module_path(p),
+        load=lambda b, c: b._load_lora_ltx2(c),
+        unload=lambda b: b._unload_lora_ltx2(),
+        swap=lambda b, m: b.ltx2_components.__setitem__("transformer", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._ltx2_lora_session,
+        branch_hook="_ltx2_build_lora_branch",
+        fake_offloader=_stage_ltx2_offloader,
+    )
+
+
+ARCHES = {a.name: a for a in (_zimage(), _krea2(), _minit2i(), _ltx2())}
+NAMES = sorted(ARCHES)
+ALGEBRAS = ("loha", "lokr")
+
+
+# --------------------------------------------------------------------------
+# Fixtures and helpers
+# --------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def resolve_verbatim(monkeypatch):
+    """All four resolve through ``LoRAManager``; these files live in tmp_path."""
+    from core.extensions import lora_manager as lm
+
+    monkeypatch.setattr(lm.lora_manager, "_resolve_lora_path",
+                        lambda p: str(p) if os.path.exists(str(p)) else None)
+
+
+@pytest.fixture
+def warnings_seen(monkeypatch):
+    return warning_probe(monkeypatch)
+
+
+def live_targets(arch: Arch, backend) -> List[Tuple[str, nn.Module]]:
+    """``(module path, base module)`` from the architecture's OWN iterator --
+    the same one ``AdapterSession`` plans over."""
+    out = []
+    for component in arch.components(backend):
+        if component.module is None:
+            continue
+        for parent, slot, module_path in component.iter_targets(component.module):
+            out.append((module_path, get_module_slot(parent, slot)))
+    return out
+
+
+def backend_model(arch: Arch, backend):
+    return arch.components(backend)[0].module
+
+
+def composites(model) -> set:
+    return {name for name, module in model.named_modules()
+            if isinstance(module, CompositeAdapterLayer)}
+
+
+def sole_branch(composite):
+    assert len(composite) == 1, composite.branch_names
+    return composite.get_branch(composite.branch_names[0])
+
+
+def _randn(shape, generator, std=0.2):
+    return torch.randn(*shape, generator=generator) * std
+
+
+def factor_tensors(algorithm: str, out_features: int, in_features: int,
+                   generator) -> dict:
+    """One target's LyCORIS factor set, at the canonical tensor names."""
+    if algorithm == "loha":
+        return {
+            "hada_w1_a": _randn((out_features, RANK), generator),
+            "hada_w1_b": _randn((RANK, in_features), generator),
+            "hada_w2_a": _randn((out_features, RANK), generator),
+            "hada_w2_b": _randn((RANK, in_features), generator),
+            "alpha": torch.tensor(ALPHA),
+        }
+    if algorithm == "lokr":
+        # w1 full, w2 factored: the one form whose scale is alpha/rank rather
+        # than 1, so ALPHA != RANK is visible at all. The split is read off the
+        # tensors by the loader (no file stores ``factor``), so any valid
+        # factorization is a legal file.
+        (out_l, out_k) = factorization(out_features)
+        (in_m, in_n) = factorization(in_features)
+        return {
+            "lokr_w1": _randn((out_l, in_m), generator),
+            "lokr_w2_a": _randn((out_k, RANK), generator),
+            "lokr_w2_b": _randn((RANK, in_n), generator),
+            "alpha": torch.tensor(ALPHA),
+        }
+    if algorithm == "lora":
+        return {
+            "lora_down.weight": _randn((RANK, in_features), generator),
+            "lora_up.weight": _randn((out_features, RANK), generator),
+            "alpha": torch.tensor(ALPHA),
+        }
+    raise AssertionError(algorithm)
+
+
+_SUFFIX = {"lora_down.weight": ".lora_down.weight",
+           "lora_up.weight": ".lora_up.weight",
+           "alpha": ".alpha"}
+
+
+def write_checkpoint(arch: Arch, backend, tmp_path, algorithm, name=None, seed=7):
+    """A file covering EXACTLY the live target set, in this architecture's own
+    key spelling. Returns ``(path, {module_path: canonical tensor dict})``."""
+    generator = torch.Generator().manual_seed(seed)
+    raw, per_target = {}, {}
+    for module_path, base in live_targets(arch, backend):
+        tensors = factor_tensors(algorithm, base.out_features, base.in_features,
+                                 generator)
+        per_target[module_path] = tensors
+        stem = arch.stem(module_path)
+        for key, value in tensors.items():
+            raw[stem + _SUFFIX.get(key, "." + key)] = value
+    path = tmp_path / (name or f"{arch.name}_{algorithm}.safetensors")
+    save_file(raw, str(path), metadata={"model_type": arch.name})
+    return str(path), per_target
+
+
+def load_one(arch: Arch, backend, path, strength=STRENGTH):
+    return arch.load(backend, [{"path": str(path), "strength": strength}])
+
+
+# --------------------------------------------------------------------------
+# 1. set equality against the architecture's own target iterator
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_lycoris_file_covers_exactly_the_iterators_target_set(
+        name, algorithm, tmp_path, warnings_seen):
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    expected = {p for p, _base in live_targets(arch, backend)}
+    assert expected, f"{name}: the stub yields no targets"
+
+    fresh = arch.backend(arch.build())
+    path, _tensors = write_checkpoint(arch, fresh, tmp_path, algorithm)
+    load_one(arch, backend, path)
+
+    assert composites(backend_model(arch, backend)) == expected
+    assert not warning_codes(warnings_seen)
+
+
+# --------------------------------------------------------------------------
+# 2. the delta against the fp32 oracle, at the architecture's branch dtype
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_the_installed_delta_matches_the_fp32_oracle(name, algorithm, dtype,
+                                                     tmp_path, warnings_seen):
+    """``compute_delta_weight()`` against ``core/adapters/reference.py``.
+
+    The oracle shares no code with the layer: it sums outer products and
+    assembles Kronecker blocks by hand. ``alpha`` is 3x the rank, so a branch
+    that fell back to the rank default is off by 3 rather than by a ULP.
+    """
+    arch = ARCHES[name]
+    model = arch.build().to(dtype)
+    backend = arch.backend(model)
+    path, per_target = write_checkpoint(arch, arch.backend(arch.build().to(dtype)),
+                                        tmp_path, algorithm)
+    load_one(arch, backend, path)
+
+    modules = dict(model.named_modules())
+    rel = 1e-5 if dtype is torch.float32 else 3e-2
+    checked = 0
+    for module_path, tensors in per_target.items():
+        branch = sole_branch(modules[module_path])
+        base = modules[module_path].original_module
+        want_dtype = arch.branch_dtype(base)
+        # Non-vacuous: the bf16 row really is bf16, so the two rows are not the
+        # same comparison run twice.
+        assert want_dtype == dtype, (name, want_dtype)
+        factor = next(t for n, t in branch.branch_tensors().items() if n != "alpha")
+        assert factor.dtype == want_dtype, (name, module_path)
+
+        expected = reference.adapter_delta_weight(
+            algorithm, tensors, rank=RANK, alpha=ALPHA, strength=STRENGTH)
+        actual = branch.compute_delta_weight().float()
+        assert actual.shape == expected.shape, (name, module_path)
+        tol = max(1e-6, float(expected.abs().max()) * rel)
+        assert torch.allclose(actual, expected, rtol=rel, atol=tol), (
+            name, algorithm, dtype, module_path,
+            float((actual - expected).abs().max()))
+        # Non-vacuity: the alpha/rank scale really moved the delta.
+        assert float(expected.abs().max()) > 0
+        checked += 1
+    assert checked == len(per_target)
+    assert not warning_codes(warnings_seen)
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_dropping_the_alpha_tensor_changes_the_scale(name, algorithm, tmp_path,
+                                                     warnings_seen):
+    """The other half of ``alpha != rank``: strip ``.alpha`` and the same file
+    applies at a different scale, so row 2 is not passing on a coincidence."""
+    arch = ARCHES[name]
+    with_alpha = arch.backend(arch.build())
+    path, per_target = write_checkpoint(arch, with_alpha, tmp_path, algorithm)
+    load_one(arch, with_alpha, path)
+
+    from safetensors.torch import load_file
+    stripped = tmp_path / f"{arch.name}_{algorithm}_noalpha.safetensors"
+    save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
+              str(stripped), metadata={"model_type": arch.name})
+    without = arch.backend(arch.build())
+    load_one(arch, without, str(stripped))
+
+    a = dict(backend_model(arch, with_alpha).named_modules())
+    b = dict(backend_model(arch, without).named_modules())
+    target = sorted(per_target)[0]
+    assert sole_branch(a[target]).scale != sole_branch(b[target]).scale
+
+
+# --------------------------------------------------------------------------
+# 3. malformed files, on the architecture's real session
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_wrong_shape_group_refuses_lora_partial(name, algorithm, tmp_path,
+                                                  warnings_seen):
+    """One bad target out of many: the branch is skipped as ``SHAPE_MISMATCH``,
+    which makes ``applied < declared`` and refuses the whole request."""
+    from safetensors.torch import load_file
+
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    path, per_target = write_checkpoint(arch, arch.backend(arch.build()),
+                                        tmp_path, algorithm)
+    raw = load_file(path)
+    victim = arch.stem(sorted(per_target)[0])
+    bent = "hada_w1_b" if algorithm == "loha" else "lokr_w2_b"
+    original = raw[f"{victim}.{bent}"]
+    raw[f"{victim}.{bent}"] = torch.zeros(original.shape[0], original.shape[1] + 1)
+    broken = tmp_path / f"{arch.name}_{algorithm}_bent.safetensors"
+    save_file(raw, str(broken), metadata={"model_type": arch.name})
+
+    model = backend_model(arch, backend)
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, str(broken))
+    assert excinfo.value.code == "lora_partial"
+    assert "lora_partial" in warning_codes(warnings_seen)
+    assert not composites(model), "a partial application was installed anyway"
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_partial_tensor_group_refuses_lora_incompatible(name, algorithm,
+                                                          tmp_path, warnings_seen):
+    """A truncated group is DECLARED (its algebra is recognised) and applicable
+    by nobody, so the file applies nothing and is refused."""
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    module_path, base = live_targets(arch, backend)[0]
+    generator = torch.Generator().manual_seed(3)
+    full = factor_tensors(algorithm, base.out_features, base.in_features, generator)
+    keep = ("hada_w1_a", "hada_w1_b") if algorithm == "loha" else ("lokr_w1",)
+    stem = arch.stem(module_path)
+    path = tmp_path / f"{arch.name}_{algorithm}_half.safetensors"
+    save_file({f"{stem}.{k}": full[k] for k in keep}, str(path),
+              metadata={"model_type": arch.name})
+
+    model = backend_model(arch, backend)
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, str(path))
+    assert excinfo.value.code == "lora_incompatible"
+    # The zero-target verdict, NOT the capability gate: with the row reverted
+    # this file would be refused for the wrong reason and the row would pass.
+    assert "not enabled" not in str(excinfo.value)
+    assert "lora_incompatible" in warning_codes(warnings_seen)
+    assert not composites(model)
+
+
+# --------------------------------------------------------------------------
+# 4. unload restores by identity, with the swap FIRST
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_unload_after_a_component_swap_restores_by_object_identity(
+        name, algorithm, tmp_path, warnings_seen):
+    """Swap first, unload second. The reverse order clears the bookkeeping and
+    hides exactly the splice this guards: an unload driven by a map that
+    outlived the model it described puts model A's Linears into model B.
+    """
+    arch = ARCHES[name]
+    model_a = arch.build()
+    backend = arch.backend(model_a)
+    path, per_target = write_checkpoint(arch, arch.backend(arch.build()),
+                                        tmp_path, algorithm)
+    load_one(arch, backend, path)
+    assert composites(model_a) == set(per_target)
+    a_ids = module_ids(model_a)
+
+    model_b = arch.build()
+    b_before = dict(model_b.named_modules())
+    assert not (a_ids & module_ids(model_b)), "setup: A and B must not share modules"
+
+    arch.swap(backend, model_b)
+    arch.unload(backend)
+    assert dict(model_b.named_modules()) == b_before, "model B's graph was modified"
+
+    load_one(arch, backend, path)
+    assert composites(model_b) == set(per_target)
+    arch.unload(backend)
+    after = dict(model_b.named_modules())
+    for module_path in per_target:
+        assert after[module_path] is b_before[module_path], (name, module_path)
+    assert not composites(model_b)
+    assert not (module_ids(model_b) & a_ids)
+
+
+# --------------------------------------------------------------------------
+# The stacking row: one LoRA and one LoHa over the same module
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_lora_and_a_loha_stack_over_one_module(name, tmp_path, warnings_seen):
+    """``CompositeAdapterLayer``'s reason to exist, with MIXED algebras.
+
+    Two branches of different classes over one base, each at its own strength,
+    summed before the base is added -- and the same in either selection order,
+    which for two branches is EXACT (fp addition commutes; three would only
+    hold up to associativity).
+    """
+    arch = ARCHES[name]
+    fresh = arch.backend(arch.build())
+    lora_path, lora_t = write_checkpoint(arch, fresh, tmp_path, "lora",
+                                         name="stack_lora.safetensors", seed=11)
+    loha_path, loha_t = write_checkpoint(arch, fresh, tmp_path, "loha",
+                                         name="stack_loha.safetensors", seed=13)
+    assert set(lora_t) == set(loha_t)
+
+    forward = arch.backend(arch.build())
+    applied = arch.load(forward, [{"path": lora_path, "strength": STRENGTH},
+                                  {"path": loha_path, "strength": STRENGTH_B}])
+    reverse = arch.backend(arch.build())
+    arch.load(reverse, [{"path": loha_path, "strength": STRENGTH_B},
+                        {"path": lora_path, "strength": STRENGTH}])
+    if applied is not None:
+        assert applied == 2 * len(lora_t)
+
+    one = dict(backend_model(arch, forward).named_modules())
+    two = dict(backend_model(arch, reverse).named_modules())
+    for module_path in sorted(lora_t):
+        composite = one[module_path]
+        assert len(composite) == 2, (name, module_path, composite.branch_names)
+        base = composite.original_module
+        x = torch.randn(3, base.in_features)
+
+        delta = (reference.lora_delta_weight(lora_t[module_path], rank=RANK,
+                                             alpha=ALPHA, strength=STRENGTH)
+                 + reference.loha_delta_weight(loha_t[module_path], rank=RANK,
+                                               alpha=ALPHA, strength=STRENGTH_B))
+        expected = base(x) + x @ delta.T
+        assert torch.allclose(composite(x), expected, atol=1e-5), (name, module_path)
+        # Both branches really contribute.
+        lora_only = base(x) + x @ reference.lora_delta_weight(
+            lora_t[module_path], rank=RANK, alpha=ALPHA, strength=STRENGTH).T
+        assert not torch.allclose(composite(x), lora_only, atol=1e-5), (
+            name, module_path, "the LoHa branch is inert")
+
+        assert torch.equal(composite(x), two[module_path](x)), (name, module_path)
+    assert not warning_codes(warnings_seen)
+
+
+# --------------------------------------------------------------------------
+# The other side of the boundary: the architectures this phase did NOT flip
+# --------------------------------------------------------------------------
+
+#: Every session-managed architecture whose row is still ordinary LoRA. SD1.5
+#: and SDXL are absent because they build no ``AdapterSession`` at all -- they
+#: load through diffusers, so a kohya LoHa is listed in the UI and reaches
+#: diffusers' loader with no ``lora_incompatible`` refusal anywhere. That is a
+#: known gap, recorded in docs/guides/LYCORIS_ADAPTER_DESIGN.md, not something
+#: this table can express.
+NOT_ENABLED = ("acestep", "anima", "flux2", "ideogram4", "lens", "minimax_h3",
+               "sensenova")
+
+
+@pytest.mark.parametrize("arch", NOT_ENABLED)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_an_unflipped_architecture_still_refuses_both_families(arch, algorithm):
+    """Driven through each backend's REAL session object, not read off the
+    table: seven rows unchanged is a claim about behaviour."""
+    import adapter_key_normalization_gate_cheap_test as keys
+
+    session = keys._session(arch)
+    raw, _declared = keys.ARCHES[arch].variants[algorithm]
+    handed, codec = session._canonicalize(raw, {})
+    assert codec.algorithm == algorithm, (arch, codec.algorithm)
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session._refuse_unsupported_algebra(f"{arch}.safetensors", codec)
+    assert f"{algorithm} adapters are not enabled" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_flipped_architectures_session_does_not_refuse(name, algorithm):
+    """The sibling that makes the row above discriminating rather than a
+    tautology about seven names."""
+    import adapter_key_normalization_gate_cheap_test as keys
+
+    session = keys._session(name)
+    raw, _declared = keys.ARCHES[name].variants[algorithm]
+    _handed, codec = session._canonicalize(raw, {})
+    assert session._refuse_unsupported_algebra(f"{name}.safetensors", codec) is None
+
+
+def test_every_session_architecture_is_on_exactly_one_side_of_the_boundary():
+    from core.adapters.capability import ENABLED_ADAPTER_PAIRS
+    import adapter_key_normalization_gate_cheap_test as keys
+
+    assert set(keys.ARCHES) == set(NAMES) | set(NOT_ENABLED)
+    assert set(ENABLED_ADAPTER_PAIRS) - set(keys.ARCHES) == {"sd15", "sdxl"}
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_flipped_architecture_still_refuses_the_decomposition_axis(name):
+    """DoRA is Phase 3. Enabling the additive algebras must not open the second
+    axis, and the refusal must name the decomposition ALONE -- telling a
+    Z-Image user that LoHa is unimplemented is now false."""
+    import adapter_key_normalization_gate_cheap_test as keys
+
+    session = keys._session(name)
+    stem = "lora_unet_probe"
+    raw = {f"{stem}.lora_down.weight": torch.zeros(RANK, 8),
+           f"{stem}.lora_up.weight": torch.zeros(8, RANK),
+           f"{stem}.dora_scale": torch.ones(8)}
+    _handed, codec = session._canonicalize(raw, {})
+    assert codec.weight_decompose is True
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session._refuse_unsupported_algebra("dora.safetensors", codec)
+    assert "dora adapters are not enabled" in str(excinfo.value)
+    assert "Phase 2" not in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# Block swap: a refusal where it would crash, an advisory where it costs VRAM
+# --------------------------------------------------------------------------
+
+#: Split by ``BLOCK_SWAP_ADAPTER_ORDER``, which records an ORDERING fact about
+#: each backend's generate function: does it install adapters before or after
+#: the offloader splits the blocks?
+STRANDS = ("ltx2", "minit2i")   # AFTER_SPLIT  -> refuse
+SWEPT = ("zimage",)             # BEFORE_SPLIT -> advise
+
+
+def _recording_backend(arch: Arch, monkeypatch, visited):
+    """A backend whose session-level branch builder records every target it is
+    asked about, so a row can assert the tree was never walked."""
+    backend = arch.backend(arch.build())
+    original = getattr(backend, arch.branch_hook)
+
+    def record(request):
+        visited.append(request.module_path)
+        return original(request)
+
+    monkeypatch.setattr(backend, arch.branch_hook, record)
+    return backend
+
+
+@pytest.mark.parametrize("name", STRANDS)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_lycoris_file_is_refused_while_block_swap_is_live(
+        name, algorithm, tmp_path, monkeypatch, warnings_seen):
+    """LTX-2.3 and MiniT2I install adapters after their offloader has split the
+    blocks, so a LyCORIS branch is built on the HOST for every swapped-out
+    block and nothing ever moves it -- a device mismatch mid-denoise. Refused
+    instead, before anything is installed.
+
+    The verdict is taken on the BUILT branches, so the tree IS walked first:
+    planning mutates nothing, and asking the object is what makes a file whose
+    metadata mislabels its algebra refusable (see the bypass row below).
+
+    MiniT2I's text-encoder pass runs earlier and is not block-swapped; a
+    transformer-pass refusal reaches ``_minit2i_cleanup`` in the generate
+    function's outer ``finally``, which unloads both halves.
+    """
+    arch = ARCHES[name]
+    visited = []
+    backend = _recording_backend(arch, monkeypatch, visited)
+    model = backend_model(arch, backend)
+    path, tensors = write_checkpoint(arch, arch.backend(arch.build()), tmp_path,
+                                     algorithm)
+    arch.fake_offloader(backend)
+
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, path)
+
+    assert excinfo.value.code == "lora_blockswap_unsupported"
+    assert "lora_blockswap_unsupported" in warning_codes(warnings_seen)
+    assert "block swap is active" in str(excinfo.value)
+    # Named from the class that was built, not from the file's label.
+    assert ("LoHa" if algorithm == "loha" else "LoKr") in str(excinfo.value)
+    assert set(visited) >= set(tensors), "planning did not reach the targets"
+    assert not composites(model), "a branch was installed before the refusal"
+    assert not arch.session(backend).state("transformer").wrapped
+
+
+@pytest.mark.parametrize("name", STRANDS)
+def test_ordinary_lora_still_loads_while_block_swap_is_live(
+        name, tmp_path, monkeypatch, warnings_seen):
+    """The combination that works TODAY must keep working: a LoRA branch is two
+    ``nn.Linear``s, which every offloader moves. Without this row the refusal
+    above could be written as "no adapters under block swap" and still pass."""
+    arch = ARCHES[name]
+    visited = []
+    backend = _recording_backend(arch, monkeypatch, visited)
+    model = backend_model(arch, backend)
+    path, tensors = write_checkpoint(arch, arch.backend(arch.build()), tmp_path,
+                                     "lora")
+    arch.fake_offloader(backend)
+
+    load_one(arch, backend, path)
+    assert composites(model) == set(tensors)
+    assert visited, "the walk never happened"
+    assert "lora_blockswap_unsupported" not in warning_codes(warnings_seen)
+
+
+@pytest.mark.parametrize("name", SWEPT)
+@pytest.mark.parametrize("algorithm", ALGEBRAS + ("lora",))
+def test_a_swept_architecture_advises_instead_of_refusing(
+        name, algorithm, tmp_path, warnings_seen):
+    """Z-Image installs adapters BEFORE ``prepare_block_devices``, whose
+    ``blocks[i].to(device)`` sweeps every tensor -- bare factors included -- to
+    the device and returns only the Linear weights to the host. Correct numbers,
+    a permanently resident adapter, so: an advisory from the offloader build
+    site, and the generation proceeds."""
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    model = backend_model(arch, backend)
+    path, tensors = write_checkpoint(arch, arch.backend(arch.build()), tmp_path,
+                                     algorithm)
+
+    load_one(arch, backend, path)
+    assert composites(model) == set(tensors), "the file was refused"
+
+    stranded = arch.session(backend).warn_unoffloaded_branches("transformer")
+    codes = warning_codes(warnings_seen)
+    if algorithm == "lora":
+        assert stranded == 0
+        assert codes == []
+    else:
+        assert stranded == len(tensors)
+        assert codes == ["lora_blockswap_not_offloaded"]
+
+
+def test_the_block_swap_order_table_covers_every_lycoris_architecture():
+    from core.adapters.capability import (BLOCK_SWAP_ADAPTER_ORDER,
+                                          ENABLED_ADAPTER_PAIRS, ORDINARY_LORA)
+
+    lycoris = {name for name, pairs in ENABLED_ADAPTER_PAIRS.items()
+               if pairs != frozenset({ORDINARY_LORA})}
+    assert lycoris == set(NAMES)
+    assert lycoris - set(BLOCK_SWAP_ADAPTER_ORDER) == set()
+    assert set(STRANDS) | set(SWEPT) | {"krea2"} == lycoris
+
+
+def test_exactly_the_stranding_backends_declare_a_block_swap_probe():
+    """AST-only, so it costs no import. The table above is the readable policy;
+    this is what keeps it from drifting from the code that enforces it."""
+    import ast
+    from pathlib import Path
+
+    from core.adapters.capability import AFTER_SPLIT, BLOCK_SWAP_ADAPTER_ORDER
+
+    backends = Path(__file__).resolve().parents[1] / "core" / "pipeline_backends"
+    declared = set()
+    for path in sorted(backends.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", None) == "AdapterComponent"
+                    and any(kw.arg == "block_swap_active" for kw in node.keywords)):
+                declared.add(path.stem)
+    expected = {name for name, order in BLOCK_SWAP_ADAPTER_ORDER.items()
+                if order == AFTER_SPLIT}
+    assert declared == expected
+
+
+def test_every_swept_offloader_site_asks_for_the_advisory():
+    """The advisory is only true where it is CALLED, and its call site is the
+    offloader build -- one per generate entry point. Source-level, because
+    driving it needs a real offloader on a real device."""
+    import re
+    from pathlib import Path
+
+    backends = Path(__file__).resolve().parents[1] / "core" / "pipeline_backends"
+    for name in SWEPT:
+        source = (backends / f"{name}.py").read_text(encoding="utf-8")
+        sites = len(re.findall(r"prepare_block_devices_before_forward\(\)", source))
+        asked = len(re.findall(r"warn_unoffloaded_branches\(", source))
+        assert sites and asked == sites, (name, sites, asked)
+
+
+@pytest.mark.parametrize("name", STRANDS)
+@pytest.mark.parametrize("label", ["ss_network_module", "sushi.adapter.algorithm"])
+def test_a_loha_file_that_claims_to_be_lora_is_still_refused(
+        name, label, tmp_path, monkeypatch, warnings_seen):
+    """The bypass a label test cannot close.
+
+    ``CodecRegistry.detect`` gives metadata priority over keys, so a file of
+    pure ``hada_*`` tensors carrying ``networks.lora`` DETECTS as ordinary LoRA.
+    A predicate keyed on that string lets it through, and the per-group builder
+    then constructs ``LoHaLinearLayer``s no offloader can move. Asking the built
+    object instead is what makes the metadata irrelevant.
+    """
+    from safetensors.torch import load_file
+
+    arch = ARCHES[name]
+    visited = []
+    backend = _recording_backend(arch, monkeypatch, visited)
+    model = backend_model(arch, backend)
+    honest, _tensors = write_checkpoint(arch, arch.backend(arch.build()), tmp_path,
+                                        "loha")
+    claim = {label: "networks.lora" if label == "ss_network_module" else "lora"}
+    liar = tmp_path / f"{arch.name}_liar_{label.replace('.', '_')}.safetensors"
+    save_file(load_file(honest), str(liar), metadata=claim)
+    arch.fake_offloader(backend)
+
+    # Non-vacuity: the codec really does read this file as ordinary LoRA.
+    session = arch.session(backend)
+    _handed, codec = session._canonicalize(load_file(liar), claim)
+    assert codec.algorithm == "lora", (name, label, codec.algorithm)
+
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, str(liar))
+    assert excinfo.value.code == "lora_blockswap_unsupported"
+    assert "LoHa" in str(excinfo.value)
+    assert not composites(model)
+
+
+@pytest.mark.parametrize("name", STRANDS)
+def test_an_undetectable_file_is_not_refused_by_the_block_swap_gate(
+        name, tmp_path, monkeypatch, warnings_seen):
+    """The false refusal a label test causes.
+
+    A valid ``lora_bias=True`` PEFT export sniffs as ``unknown``; the sibling
+    policy in ``_refuse_unsupported_algebra`` deliberately leaves an
+    unrecognised algebra to the architecture's own zero-target verdict, and this
+    gate must agree rather than tell the user "unknown adapters cannot be
+    applied while block swap is active".
+    """
+    from core.adapters import codec as codec_module
+
+    arch = ARCHES[name]
+    visited = []
+    backend = _recording_backend(arch, monkeypatch, visited)
+    path, tensors = write_checkpoint(arch, arch.backend(arch.build()), tmp_path,
+                                     "lora", name="undetectable.safetensors")
+    arch.fake_offloader(backend)
+
+    # How ``unknown`` is really reached: ``_canonicalize`` fabricates it whenever
+    # detection RAISES, which it does on shapes it has not validated.
+    def boom(*_a, **_k):
+        raise IndexError("tuple index out of range")
+
+    monkeypatch.setattr(codec_module.CodecRegistry, "detect", staticmethod(boom))
+    session = arch.session(backend)
+    _handed, codec = session._canonicalize({}, {})
+    assert codec.algorithm == "unknown", (name, codec.algorithm)
+
+    load_one(arch, backend, path)
+    assert "lora_blockswap_unsupported" not in warning_codes(warnings_seen)
+    assert composites(backend_model(arch, backend)) == set(tensors)

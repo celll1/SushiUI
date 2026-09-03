@@ -515,9 +515,33 @@ def _watched_component(model, visited):
     return component(model, build_branch=build)
 
 
+def _engine_component(model, visited):
+    """A component whose builder is the ENGINE's dispatcher rather than this
+    file's down/up stub, so an enabled architecture really installs a LoHa."""
+    from core.adapters import build_adapter_branch, group_adapter_tensors
+
+    def build(request):
+        visited.append(request.module_path)
+        group = group_adapter_tensors(request.file.tensors).groups.get(
+            request.module_path)
+        if group is None:
+            return None
+        branch = build_adapter_branch(request.base, group,
+                                      lora_name=request.module_path)
+        if branch is SHAPE_MISMATCH:
+            return branch
+        return PreparedBranch(branch, request.file.strength)
+
+    return component(model, build_branch=build)
+
+
 def test_a_loha_file_is_refused_before_any_target_is_walked(tmp_path, warned):
     """The whole point of the gate: the refusal arrives during ``_parse``, so
     no target was walked, no branch built and no slot touched.
+
+    ``anima`` rather than ``zimage``: the Tier-1 four now ENABLE the additive
+    LyCORIS algebras (``core/adapters/capability.py``), so only an architecture
+    that has not been flipped exercises the refusal at all.
 
     REVERT THAT PROVES THIS BITES: drop the ``_refuse_unsupported_algebra``
     call from ``_parse``. The file then reaches the architecture's builder and
@@ -528,19 +552,36 @@ def test_a_loha_file_is_refused_before_any_target_is_walked(tmp_path, warned):
     before = slots(model)
     visited = []
 
-    session = make_session(warned, architecture="zimage")
+    session = make_session(warned, architecture="anima")
     with pytest.raises(AdapterIncompatible) as excinfo:
         session.load([{"path": write_loha(tmp_path), "strength": STRENGTH}],
-                     [_watched_component(model, visited)])
+                     [_engine_component(model, visited)])
 
     assert excinfo.value.code == "lora_incompatible"
     assert [code for code, _m in warned] == ["lora_incompatible"]
-    assert "loha" in warned[0][1] and "zimage" in warned[0][1]
+    assert "loha" in warned[0][1] and "anima" in warned[0][1]
     assert visited == [], "a target was walked before the refusal"
     assert slots(model) == before
     assert not composites(model)
     state = session.state("transformer")
     assert not state.wrapped and not state.originals and not state.owned
+
+
+def test_an_enabled_architecture_installs_the_same_loha_file(tmp_path, warned):
+    """The sibling that gives the row above its discriminating power: the SAME
+    file, the same builder, an architecture whose row carries
+    ``("loha", False)`` -- walked, built and installed."""
+    model = _Stub()
+    visited = []
+
+    session = make_session(warned, architecture="zimage")
+    result = session.load([{"path": write_loha(tmp_path), "strength": STRENGTH}],
+                          [_engine_component(model, visited)])
+
+    assert visited == list(TARGETS)
+    assert result.applied == len(TARGETS)
+    assert composites(model) == set(TARGETS)
+    assert not warned
 
 
 def test_a_dora_file_is_refused_on_the_decomposition_axis(tmp_path, warned):
@@ -588,7 +629,7 @@ def test_both_lokr_forms_name_the_capability_reason_not_a_malformed_file(tmp_pat
         save_file({**tensors, "a.alpha": torch.tensor(ALPHA)}, str(path))
 
         del warned[:]
-        session = make_session(warned, architecture="zimage")
+        session = make_session(warned, architecture="anima")
         with pytest.raises(AdapterIncompatible) as excinfo:
             session.load([{"path": str(path)}], [component(model)])
 

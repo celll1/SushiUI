@@ -66,10 +66,12 @@ def declared_group_stems(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]
 
 
 def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
-    """Down/up groups by namespaced module path. ``TensorGroup`` answers to
-    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads."""
-    grouped = group_adapter_tensors(raw, _minit2i_stem).groups
-    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
+    """COMPLETE factor groups by namespaced module path, whatever the algebra.
+
+    ``group_adapter_tensors`` already drops the incomplete ones; a down/up
+    filter on top would silently drop every LoHa and LoKr group.
+    """
+    return group_adapter_tensors(raw, _minit2i_stem).groups
 
 
 def detect_lora_format(keys: Iterable[str]) -> str:
@@ -264,41 +266,32 @@ def iter_minit2i_te_lora_slots(text_encoder: nn.Module):
         yield parent, attr, TE_NAMESPACE + module_path
 
 
+def branch_dtype(base: nn.Module) -> torch.dtype:
+    """MiniT2I's own branch dtype: every target is a plain ``nn.Linear``, so the
+    base weight's dtype IS the compute dtype. Deliberately not
+    ``core.adapters.lora_branch_dtype``, whose non-float fallback is bf16."""
+    dtype = base.weight.dtype
+    return dtype if dtype.is_floating_point else torch.float32
+
+
 def build_lora_branch(
     base: nn.Module,
-    weights: Dict[str, torch.Tensor],
+    group: TensorGroup,
     key: str,
     default_alpha: Optional[float] = None,
 ) -> nn.Module:
-    """One branch for one target, built and not installed.
+    """One branch for one target, built and not installed, or ``SHAPE_MISMATCH``.
 
-    Alpha precedence: per-key ``.alpha`` tensor, then file metadata
+    The algebra is the group's: ``build_adapter_branch`` dispatches on the tensor
+    names. Alpha precedence: per-key ``.alpha`` tensor, then file metadata
     (``default_alpha``), then rank. The strength is NOT folded here --
     ``CompositeAdapterLayer.add_branch(strength=)`` does it, and multiplying it
     onto the delta instead loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import build_adapter_branch
 
-    down, up = weights["down"], weights["up"]
-    alpha_tensor = weights.get("alpha")
-    rank = int(down.shape[0])
-    if alpha_tensor is not None:
-        alpha_value = float(alpha_tensor.item())
-    elif default_alpha is not None:
-        alpha_value = float(default_alpha)
-    else:
-        alpha_value = float(rank)
-
-    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=key)
-    device = base.weight.device
-    compute_dtype = (base.weight.dtype if base.weight.dtype.is_floating_point
-                     else torch.float32)
-    with torch.no_grad():
-        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-    return branch
+    return build_adapter_branch(base, group, metadata_alpha=default_alpha,
+                                lora_dtype=branch_dtype(base), lora_name=key)
 
 
 def flatten_to_key(module_path: str) -> str:

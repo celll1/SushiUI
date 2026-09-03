@@ -322,12 +322,11 @@ def test_a_lycoris_file_is_counted_by_the_same_declared_branch_counter(arch, lab
     -- the fused ``qkv_proj`` stem included, which is 3 for LyCORIS exactly as
     it is for LoRA.
 
-    What this is NOT: the live refusal path. ``_refuse_unsupported_algebra``
-    fires in ``_parse``, strictly before the counter runs, so in production a
-    LoHa/LoKr file is refused by the capability matrix and never reaches here.
-    These rows call the counter directly, and what they pin is that the count
-    does not silently rot behind that refusal -- the number the session would
-    compare ``applied`` against if the matrix ever opened.
+    On the four architectures whose capability row now carries LoHa and LoKr
+    (``core/adapters/capability.py``) this IS the live count. On the other
+    seven ``_refuse_unsupported_algebra`` fires first, in ``_parse``, and these
+    rows pin that the count does not silently rot behind that refusal -- the
+    number the session would compare ``applied`` against when the matrix opens.
     """
     spec = ARCHES[arch]
     session = _session(arch)

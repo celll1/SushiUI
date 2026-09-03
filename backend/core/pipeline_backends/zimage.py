@@ -124,7 +124,7 @@ def _zimage_declared_branches(tensors, _components) -> int:
 
 
 def _zimage_lora_group(state_dict: Dict[str, Any], module_path: str):
-    """The first candidate stem's down/up group, or None.
+    """The first candidate stem's COMPLETE factor group, or None.
 
     Probes the table per stem instead of grouping the file once because the call
     site has a per-target signature and Z-Image passes no ``prepare_file`` hook
@@ -143,17 +143,9 @@ def _zimage_lora_group(state_dict: Dict[str, Any], module_path: str):
             tensor = state_dict.get(f"{stem}{suffix}")
             if tensor is not None:
                 group.tensors[name] = tensor
-        if "down" in group and "up" in group:
+        if not group.missing():
             return group
     return None
-
-
-def _zimage_lora_branch(state_dict: Dict[str, Any], module_path: str):
-    """``(down, up, alpha_or_None)`` for ``module_path``, or None if absent."""
-    group = _zimage_lora_group(state_dict, module_path)
-    if group is None:
-        return None
-    return group["down"], group["up"], group.get("alpha")
 
 
 def _zimage_lora_metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
@@ -449,53 +441,35 @@ class ZImageMixin:
         would replace the parameter wholesale and only fail later, inside the
         denoise loop), or the branch itself. Nothing is installed here.
         """
-        from core.adapters import (SHAPE_MISMATCH, LoRALinearLayer,
-                                   PreparedBranch, lora_branch_dtype)
+        from core.adapters import (SHAPE_MISMATCH, PreparedBranch,
+                                   build_adapter_branch, lora_branch_dtype)
 
-        found = _zimage_lora_branch(request.file.tensors, request.module_path)
-        if found is None:
+        group = _zimage_lora_group(request.file.tensors, request.module_path)
+        if group is None:
             return None
 
         base = request.base
-        down, up, alpha = found
-        in_features = getattr(base, "in_features", None)
-        out_features = getattr(base, "out_features", None)
-        if (down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]
-                or down.shape[1] != in_features or up.shape[0] != out_features):
-            print(f"[Z-Image LoRA] WARNING: shape mismatch at {request.module_path}: "
-                  f"down{tuple(down.shape)} up{tuple(up.shape)} vs Linear"
-                  f"({in_features} -> {out_features}); skipping this module")
+        # The dtype must NOT be taken from the base weight. Over an Int8Linear
+        # base ``base.weight.dtype`` is torch.int8, so the branch would be
+        # quantized to 8 uniform levels; over an Fp8Linear base it would be
+        # rounded to e4m3. ``lora_branch_dtype`` returns the base's real dtype
+        # for an ordinary bf16/fp16 nn.Linear, so this is byte-identical on an
+        # unquantized checkpoint.
+        branch = build_adapter_branch(
+            base, group,
+            metadata_alpha=_zimage_lora_metadata_alpha(request.file.metadata),
+            lora_dtype=lora_branch_dtype(base),
+            lora_name=request.module_path)
+        if branch is SHAPE_MISMATCH:
+            print(f"[Z-Image LoRA] WARNING: {group.algorithm} factors at "
+                  f"{request.module_path} do not fit Linear("
+                  f"{getattr(base, 'in_features', None)} -> "
+                  f"{getattr(base, 'out_features', None)}); skipping this module")
             return SHAPE_MISMATCH
 
-        # Per-key tensor wins, then file metadata, then rank (alpha == rank).
-        rank = down.shape[0]
-        fallback_alpha = _zimage_lora_metadata_alpha(request.file.metadata)
-        if alpha is not None:
-            alpha_value = float(alpha.item()) if torch.is_tensor(alpha) else float(alpha)
-        elif fallback_alpha is not None:
-            alpha_value = float(fallback_alpha)
-        else:
-            alpha_value = float(rank)
-
-        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value,
-                                 lora_name=request.module_path)
-
-        # The dtype must NOT be taken from the base weight. Over an Int8Linear
-        # base ``base.weight.dtype`` is torch.int8, so this cast would quantize
-        # the LoRA branch itself to 8 uniform levels; over an Fp8Linear base it
-        # would round it to e4m3 and lose most of its precision. The device is
-        # still the base's, and ``lora_branch_dtype`` returns the base's real
-        # dtype for an ordinary bf16/fp16 nn.Linear, so this is byte-identical on
-        # an unquantized checkpoint.
-        device = base.weight.device
-        dtype = lora_branch_dtype(base)
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
-
         print(f"[Z-Image LoRA DEBUG] Branch '{request.file.branch_name}' on "
-              f"{request.module_path}: alpha={alpha_value:.1f}, rank={rank}, "
-              f"strength={request.file.strength:.2f}")
+              f"{request.module_path}: {group.algorithm} alpha={branch.alpha}, "
+              f"rank={branch.rank}, strength={request.file.strength:.2f}")
 
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta -- a post-multiply is different arithmetic and
@@ -873,6 +847,10 @@ class ZImageMixin:
 
                 # Prepare block devices (this moves blocks to GPU/CPU according to strategy)
                 block_offloader.prepare_block_devices_before_forward()
+                # Adapters are already installed here, and the sweep above put a
+                # LyCORIS branch's bare parameters on the device for good; see
+                # ``warn_unoffloaded_branches``.
+                self._zimage_lora_session.warn_unoffloaded_branches("transformer")
 
                 log_device_status("Ready for Z-Image denoising loop (Block Swap enabled)", None, zimage_components={
                     "text_encoder": text_encoder,
@@ -1332,6 +1310,7 @@ class ZImageMixin:
                 )
                 transformer._block_offloader = block_offloader
                 block_offloader.prepare_block_devices_before_forward()
+                self._zimage_lora_session.warn_unoffloaded_branches("transformer")
                 log_device_status("Ready for Z-Image denoising loop (Block Swap enabled, img2img)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,
@@ -1783,6 +1762,7 @@ class ZImageMixin:
                 )
                 transformer._block_offloader = block_offloader
                 block_offloader.prepare_block_devices_before_forward()
+                self._zimage_lora_session.warn_unoffloaded_branches("transformer")
                 log_device_status("Ready for Z-Image denoising loop (Block Swap enabled, inpaint)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,

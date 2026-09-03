@@ -18,6 +18,7 @@ _LORA_REFUSAL_CODES = frozenset({
     "lora_uncond_unavailable",
     "ltx2_lora_arch_mismatch",
     "minimax_h3_lora_variant_mismatch",
+    "lora_blockswap_unsupported",
 })
 
 

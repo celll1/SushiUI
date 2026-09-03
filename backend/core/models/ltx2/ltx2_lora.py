@@ -160,8 +160,7 @@ def apply_lora_group(
     Alpha precedence per adapter: per-key ``.alpha`` tensor, then the file's
     metadata alpha, then the rank (i.e. scale 1.0).
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
-    from core.training.adapters.base_adapter import lora_branch_dtype
+    from core.adapters import LoRALinearLayer, lora_branch_dtype
 
     applied = 0
     occupied = 0
@@ -190,7 +189,7 @@ def apply_lora_group(
 
         # LoRALinearLayer escapes the offloader's movers only because its class
         # name ends in "Layer": ending in "Linear" would enrol the base weight a
-        # SECOND time through its `.weight` property (sd15_adapter.py:102-107),
+        # SECOND time through its `.weight` property (core/adapters/layers.py),
         # a double-swap that silently restores the outgoing block's weights.
         wrapper = LoRALinearLayer(current, rank=rank, alpha=alpha_value,
                                   lora_name=module_path)

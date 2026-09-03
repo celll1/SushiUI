@@ -266,7 +266,7 @@ def _text_inputs(transformer, tokenizer, caption: str):
 
 def _attach_lora(transformer, *, gen: bool, und: bool):
     from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     branches: dict[str, dict[str, LoRALinearLayer]] = {"gen": {}, "und": {}}
     sources = []

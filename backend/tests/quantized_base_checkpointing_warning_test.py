@@ -52,8 +52,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from core.models.ideogram4.vendor.fp8_linear import Fp8Linear, quantize_weight_to_fp8  # noqa: E402
 from core.models.ideogram4.vendor.int8_linear import Int8Linear, quantize_weight_to_int8  # noqa: E402
+from core.adapters import count_quantized_linears  # noqa: E402
 from core.training.adapters.base_adapter import (  # noqa: E402
-    count_quantized_linears,
     warn_quantized_base_without_checkpointing,
 )
 

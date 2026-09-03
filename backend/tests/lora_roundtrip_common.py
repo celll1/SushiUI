@@ -23,7 +23,7 @@ for _p in (_REPO, _BACKEND):
 
 import torch  # noqa: E402
 
-from core.training.adapters.sd15_adapter import LoRALinearLayer  # noqa: E402
+from core.adapters import LoRALinearLayer  # noqa: E402
 
 __all__ = [
     "LoRALinearLayer",  # re-exported: every architecture's wrapper class

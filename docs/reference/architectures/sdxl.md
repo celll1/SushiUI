@@ -298,7 +298,7 @@ reports `prediction_type == "v_prediction"`), `calculate_dynamic_cfg`,
 | Encode / VAE / step / sample | `sd_sdxl_ops.encode_prompt_simple`, `encode_prompt_chunked`, `encode_prompt_custom_te`, `vae_encode`, `train_step`; sampling routes back through `trainer.generate_sample` |
 | LoRA adapter | `core.training.adapters.sdxl_adapter.SDXLLoRAAdapter` |
 | Full fine-tune adapter | `core.training.adapters.sdxl_adapter.SDXLFullParameterAdapter` |
-| LoRA layer | `core.training.adapters.sd15_adapter.LoRALinearLayer` (imported by `sdxl_adapter`) |
+| LoRA layer | `core.adapters.layers.LoRALinearLayer` (imported by `sdxl_adapter`) |
 | ControlNet adapter | `core.training.adapters.controlnet_sdxl_adapter.ControlNetSDXLAdapter`, selected by `ControlNetTrainer._create_adapter` |
 
 **Trainable by default.** `SDXLFullParameterAdapter.prepare_models_for_training`:

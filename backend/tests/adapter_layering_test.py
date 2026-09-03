@@ -1,4 +1,4 @@
-"""``core.adapters`` layering gate and Phase 1 re-export identity.
+"""``core.adapters`` layering gate and canonical-object identity.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/adapter_layering_test.py -v -s
@@ -7,7 +7,8 @@ WHY THIS FILE EXISTS. ``core.training.adapters`` is a subpackage of
 ``core.training``, whose ``__init__`` reaches ``api.param_defaults`` and
 transitively ``api.routes`` -- a ``core -> api`` back-edge. Twelve generation
 modules across eleven architectures imported the leaf LoRA layer class from
-there, so each inherited the whole API surface and a CUDA context. Measured in a
+there, so each inherited the whole API surface and a CUDA context. They now
+import ``core.adapters``; ``ShimRemovalTest`` keeps it that way. Measured in a
 fresh process on this machine (repo venv, cwd ``backend/``, warm cache):
 
     core.adapters                          1.26 s   1020 modules  CUDA False
@@ -22,8 +23,10 @@ machine that may have a training run in flight.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import unittest
@@ -111,40 +114,34 @@ class AdapterPackageLayeringTest(unittest.TestCase):
                          "importing core.adapters must not initialise CUDA")
 
 
-class ReexportIdentityTest(unittest.TestCase):
-    """Old path and new path must yield THE SAME object, not an equal one.
+class CanonicalObjectIdentityTest(unittest.TestCase):
+    """Every module-scope binding of a moved name must be THE SAME object.
 
     ``isinstance`` checks in the loaders and
     ``type(m).__name__ == "LoRALinearLayer"`` gates in
     ``core.models.common.int8_runtime_quantize`` /
-    ``core.vram_optimization`` all break silently if a shim ever rebinds a
+    ``core.vram_optimization`` all break silently if some module ever rebinds a
     second class object under the same name.
     """
 
-    def test_moved_symbols_are_the_same_object_on_both_paths(self):
-        import core.adapters as new
-        from core.adapters import layers as new_layers
-        from core.adapters import targets as new_targets
-        from core.training.adapters import base_adapter as old_base
-        from core.training.adapters import sd15_adapter as old_sd15
-        from core.training.adapters import minimax_h3_adapter as old_h3
+    BINDINGS = [
+        ("LoRALinearLayer", "core.training.adapters.sd15_adapter"),
+        ("LoRALinearLayer", "core.training.adapters.minimax_h3_adapter"),
+        ("MiniMaxH3LoRALinearLayer", "core.training.adapters.minimax_h3_adapter"),
+        ("is_lora_wrappable_linear", "core.training.adapters.zimage_adapter"),
+        ("count_quantized_linears", "core.training.adapters.base_adapter"),
+        ("lora_branch_dtype", "core.adapters.targets"),
+    ]
 
-        pairs = [
-            ("LoRALinearLayer", old_sd15.LoRALinearLayer, new_layers.LoRALinearLayer),
-            ("LoRALinearLayer", old_h3.LoRALinearLayer, new_layers.LoRALinearLayer),
-            ("MiniMaxH3LoRALinearLayer", old_h3.MiniMaxH3LoRALinearLayer,
-             new_layers.MiniMaxH3LoRALinearLayer),
-            ("is_lora_wrappable_linear", old_base.is_lora_wrappable_linear,
-             new_targets.is_lora_wrappable_linear),
-            ("lora_branch_dtype", old_base.lora_branch_dtype,
-             new_targets.lora_branch_dtype),
-            ("count_quantized_linears", old_base.count_quantized_linears,
-             new_targets.count_quantized_linears),
-        ]
-        for name, old_obj, new_obj in pairs:
-            with self.subTest(symbol=name):
-                self.assertIs(old_obj, new_obj)
-                self.assertIs(getattr(new, name), new_obj)
+    def test_every_module_scope_binding_is_the_canonical_object(self):
+        import importlib
+
+        import core.adapters as canonical
+
+        for name, module_name in self.BINDINGS:
+            with self.subTest(symbol=name, module=module_name):
+                module = importlib.import_module(module_name)
+                self.assertIs(getattr(module, name), getattr(canonical, name))
 
     def test_minimax_subclass_relationship_survives_the_move(self):
         from core.adapters import LoRALinearLayer, MiniMaxH3LoRALinearLayer
@@ -152,6 +149,66 @@ class ReexportIdentityTest(unittest.TestCase):
         self.assertTrue(issubclass(MiniMaxH3LoRALinearLayer, LoRALinearLayer))
         self.assertEqual(LoRALinearLayer.__name__, "LoRALinearLayer")
         self.assertEqual(MiniMaxH3LoRALinearLayer.__name__, "MiniMaxH3LoRALinearLayer")
+
+
+MOVED_NAMES = frozenset({
+    "LoRALinearLayer",
+    "MiniMaxH3LoRALinearLayer",
+    "count_quantized_linears",
+    "is_lora_wrappable_linear",
+    "lora_branch_dtype",
+})
+
+_LEAF_MODULES = frozenset({
+    "core.training.adapters.base_adapter",
+    "core.training.adapters.sd15_adapter",
+    "core.training.adapters.minimax_h3_adapter",
+})
+
+
+def _resolved_module(node: ast.ImportFrom, path: str) -> str:
+    """The absolute module an ``ImportFrom`` names, relative imports included."""
+    if not node.level:
+        return node.module or ""
+    package = os.path.relpath(path, _BACKEND).replace("\\", "/").split("/")[:-1]
+    base = package[: len(package) - (node.level - 1)]
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
+class ShimRemovalTest(unittest.TestCase):
+    """No module may reach the moved names through ``core.training.adapters``.
+
+    The re-export shims are gone; this asserts nobody grows a new path back to
+    them, which is what would quietly reintroduce the back-edge measured above
+    for whichever generation module did it.
+    """
+
+    def test_no_module_imports_a_moved_name_from_the_training_package(self):
+        offenders = []
+        for path in sorted(pathlib.Path(_BACKEND).rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if _resolved_module(node, str(path)) not in _LEAF_MODULES:
+                    continue
+                hits = sorted({a.name for a in node.names} & MOVED_NAMES)
+                if hits:
+                    rel = os.path.relpath(path, _REPO)
+                    offenders.append(f"{rel}:{node.lineno}: {', '.join(hits)}")
+        self.assertEqual(
+            offenders, [],
+            "import these from core.adapters instead: " + "; ".join(offenders))
+
+    def test_base_adapter_no_longer_re_exports_the_target_helpers(self):
+        from core.training.adapters import base_adapter
+
+        for name in ("is_lora_wrappable_linear", "lora_branch_dtype"):
+            self.assertFalse(hasattr(base_adapter, name),
+                             f"{name} moved to core.adapters.targets")
 
 
 if __name__ == "__main__":

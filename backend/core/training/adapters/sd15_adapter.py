@@ -15,10 +15,7 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-# Temporary Phase 1 shim: ``LoRALinearLayer`` moved to ``core.adapters.layers``,
-# outside the training package, and is re-exported here so existing importers
-# (twelve of them in generation) keep working. Removed at the end of Phase 1.
-from core.adapters.layers import LoRALinearLayer  # noqa: F401
+from core.adapters import LoRALinearLayer
 
 from .base_adapter import (
     BaseLoRAAdapter,

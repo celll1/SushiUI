@@ -26,7 +26,8 @@ from core.training.adapters.base_adapter import (
     LORA_COMPONENT_UNET,
 )
 from core.training.adapters.flux2_adapter import FLUX2LoRAAdapter
-from core.training.adapters.sd15_adapter import LoRALinearLayer, SD15LoRAAdapter
+from core.adapters import LoRALinearLayer
+from core.training.adapters.sd15_adapter import SD15LoRAAdapter
 from core.training.adapters.sdxl_adapter import SDXLLoRAAdapter
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 from core.training.base_trainer import BaseTrainer

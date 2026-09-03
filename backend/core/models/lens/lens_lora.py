@@ -219,7 +219,7 @@ def iter_lens_lora_targets(
     attr_or_idx is a str for normal attributes or an int for ModuleList children
     (e.g. to_out[0] and img_mod[1]).  Use _set_module() for assignment.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_img_attn = bool(scope.get("img_attn", False))
@@ -320,7 +320,7 @@ def apply_lora_group(
     Returns:
         (modules wrapped, modules skipped because an earlier LoRA holds them).
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0

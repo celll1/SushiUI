@@ -719,7 +719,7 @@ def run_sensenova_arm(args: argparse.Namespace) -> dict[str, Any]:
     from core.models.sensenova.sensenova_pipeline_ops import (
         _build_step_context, compute_noise_scale, set_attention_backend,
     )
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
     from core.training.ops import sensenova_ops
     from core.training.ops.sensenova_ops import forward_gen_decoder_layers
 
@@ -924,7 +924,7 @@ def run_sensenova_four_phase_arm(args: argparse.Namespace) -> dict[str, Any]:
     from core.models.sensenova.sensenova_pipeline_ops import (
         _build_step_context, compute_noise_scale, set_attention_backend,
     )
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
     from core.training.ops import sensenova_ops
     from core.training.ops.sensenova_ops import forward_gen_decoder_layers
     from core.training.sensenova_phase_eviction import _move_modules_to_device

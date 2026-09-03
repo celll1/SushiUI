@@ -35,7 +35,7 @@ from core.training.adapters.base_adapter import (
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_UNET,
 )
-from core.training.adapters.sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 from core.training.ops import sensenova_ops
 

@@ -26,7 +26,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
 )
-from .sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 
 from core.models.minit2i.minit2i_lora import (
     iter_minit2i_lora_targets, DEFAULT_SCOPE, flatten_to_key,

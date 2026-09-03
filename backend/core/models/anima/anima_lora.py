@@ -220,12 +220,10 @@ _LORA_TARGET_TYPES: Optional[tuple] = None
 def _lora_target_types() -> tuple:
     """The ``isinstance`` tuple used by ``_is_lora_target``, resolved ONCE.
 
-    Resolved lazily rather than at module import because ``LoRALinearLayer``
-    lives in ``core.training.adapters.sd15_adapter`` and that package's
-    ``anima_adapter`` imports THIS module at its own import time; a module-scope
-    import here would close that cycle and hand back a partially-initialised
-    module depending on which side is imported first. Lazy + cached gets the
-    same result as hoisting for the cost that matters: the imports run once per
+    Resolved lazily rather than at module import because the quantized Linear
+    classes live under ``core.models.*``: hoisting them would give this module
+    an import-time edge into the model loaders. Lazy + cached gets the same
+    result as hoisting for the cost that matters: the imports run once per
     process instead of once per module on a 515-module walk, twice per
     iteration.
 
@@ -238,7 +236,7 @@ def _lora_target_types() -> tuple:
     global _LORA_TARGET_TYPES
     if _LORA_TARGET_TYPES is not None:
         return _LORA_TARGET_TYPES
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
     try:
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
@@ -297,7 +295,7 @@ def iter_anima_lora_targets(
                      + llm_adapter.blocks.<N>.mlp.{0,2}
                      + llm_adapter.in_proj (if Linear) + llm_adapter.out_proj
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     scope = scope or {}
     want_attn = bool(scope.get("attention", False))
@@ -445,7 +443,7 @@ def apply_lora_group(
         path the checkpoint carries that no target in the scope matched — the
         caller reports it; this function never drops one silently.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     if scope is None:
         scope = derive_scope_from_keys(grouped.keys())

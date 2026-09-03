@@ -155,7 +155,10 @@ def test_sensenova_adapter_checkpoint_round_trips_through_runtime_loader(tmp_pat
         lora_original_modules=originals,
         wrapped_keys=wrapped_keys,
     ) == 294
-    runtime_layer = dict(inference_transformer.named_modules())[last_name]
+    # One composite per target, carrying this file as its only named branch.
+    composite = dict(inference_transformer.named_modules())[last_name]
+    assert composite.branch_names == ("lora",)
+    runtime_layer = composite.get_branch("lora")
     torch.testing.assert_close(
         runtime_layer.lora_down.weight,
         layers[last_name].lora_down.weight,
@@ -167,7 +170,7 @@ def test_sensenova_adapter_checkpoint_round_trips_through_runtime_loader(tmp_pat
     assert grouped[last_name]["alpha"].item() == 4
     assert runtime_layer.scale == 2
     sample = torch.tensor([[1.0, -2.0]])
-    assert not torch.equal(runtime_layer(sample), original(sample))
+    assert not torch.equal(composite(sample), original(sample))
     assert restore_originals(inference_transformer, originals, wrapped_keys) == 294
     assert dict(inference_transformer.named_modules())[last_name] is original
 

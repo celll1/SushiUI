@@ -31,10 +31,9 @@ class SenseNovaMixin:
         """The (originals, wrapped_keys) maps for THIS transformer.
 
         Reset when the model was reloaded: the maps hold the OLD transformer's
-        Linears, ``apply_lora_group`` keeps them (setdefault) and
-        ``restore_originals`` restores on map membership, so an inherited map
-        splices model A's modules into model B. Keyed by weakref rather than
-        id() because a freed object's id is reusable.
+        Linears and ``apply_lora_group`` keeps them (setdefault), so an
+        inherited map splices model A's modules into model B. Keyed by weakref
+        rather than id() because a freed object's id is reusable.
         """
         ref = getattr(self, "_sensenova_lora_transformer_ref", None)
         if ref is None or ref() is not transformer:
@@ -44,7 +43,7 @@ class SenseNovaMixin:
         return self._sensenova_lora_orig, self._sensenova_lora_keys
 
     def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
-        """Wrap the SenseNova MoT Linears with runtime LoRA adapters.
+        """Cover the SenseNova MoT Linears with runtime LoRA adapters.
 
         Never merges into the base (see sensenova_lora.py's module docstring)
         -- restore_originals must always be called in a finally, mirroring
@@ -52,14 +51,16 @@ class SenseNovaMixin:
 
         Both MoT branches are enumerated: application is lookup-driven, so a
         generation-only distillation file behaves exactly as before while an
-        understanding-bearing one stops being silently truncated.
+        understanding-bearing one stops being silently truncated. Each target
+        Linear is covered ONCE by a ``CompositeAdapterLayer`` and each selected
+        LoRA adds a NAMED branch to it, so two SenseNova LoRAs over the same
+        module SUM instead of the second being refused. The two halves hold
+        separate composites, so a stack on one leaves the other alone.
 
         Every failure REFUSES here, before the prefix pass and the denoise
         loop: a missing file, an unreadable one, and an application that
         reaches zero modules are not survivable degradations. A partial
-        application warns. Several LoRAs may be selected but must target
-        disjoint modules -- the wrapper replaces the target Linear and cannot
-        wrap another wrapper (LYCORIS_ADAPTER_DESIGN Phase 1).
+        application warns.
         """
         from core.models.sensenova.sensenova_lora import (
             LAYER_PREFIX, check_lora_application, load_lora_safetensors,
@@ -97,10 +98,12 @@ class SenseNovaMixin:
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
-                shadowed: list = []
+                # Unique within the request, so selecting the SAME file twice is
+                # two branches, not a duplicate-name refusal.
                 applied = apply_lora_group(
                     transformer, grouped, strength, lora_orig, lora_keys,
-                    file_alpha=metadata_alpha(metadata), shadowed=shadowed,
+                    file_alpha=metadata_alpha(metadata),
+                    branch_name=f"{i}:{lora_file}",
                 )
             except Exception as exc:
                 print(f"[SenseNova LoRA] ERROR loading {lora_file}: {exc}")
@@ -115,35 +118,23 @@ class SenseNovaMixin:
             print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                   f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
 
+            # An occupied target is no longer one of the ways to get here: the
+            # composite adds a branch beside the earlier LoRA's.
             if applied == 0:
-                if shadowed:
-                    message = (
-                        f"LoRA '{lora_file}': every one of its {len(shadowed)} target modules is "
-                        f"already wrapped by an earlier LoRA in this request. SenseNova applies "
-                        f"one LoRA per target; select a single SenseNova LoRA."
-                    )
-                    code = "lora_stacking_unsupported"
-                else:
-                    message = (
-                        f"LoRA '{lora_file}': 0 of {len(grouped)} module(s) applied to the loaded "
-                        f"SenseNova transformer (key format '{fmt}') -- unrecognized key format or "
-                        f"a different model. Expected verbatim module paths such as "
-                        f"'{LAYER_PREFIX}0.self_attn.q_proj_mot_gen.lora_down.weight'. "
-                        f"Sample keys in file: {list(raw.keys())[:5]}"
-                    )
-                    code = "lora_incompatible"
+                message = (
+                    f"LoRA '{lora_file}': 0 of {len(grouped)} module(s) applied to the loaded "
+                    f"SenseNova transformer (key format '{fmt}') -- unrecognized key format or "
+                    f"a different model. Expected verbatim module paths such as "
+                    f"'{LAYER_PREFIX}0.self_attn.q_proj_mot_gen.lora_down.weight'. "
+                    f"Sample keys in file: {list(raw.keys())[:5]}"
+                )
                 print(f"[SenseNova LoRA] ERROR: {message}")
-                self._sensenova_lora_warn(message, code)
+                self._sensenova_lora_warn(message, "lora_incompatible")
                 raise RuntimeError(message)
 
             shortfall = check_lora_application(grouped, applied, metadata)
-            if shortfall is not None or shadowed:
-                parts = [shortfall] if shortfall is not None else [
-                    f"[SenseNova LoRA] applied {applied} of {len(grouped)} module(s)"]
-                if shadowed:
-                    parts.append(
-                        f"{len(shadowed)} target(s) were already wrapped by an earlier LoRA")
-                message = f"{'; '.join(parts)} ({lora_file})"
+            if shortfall is not None:
+                message = f"{shortfall} ({lora_file})"
                 print(message)
                 self._sensenova_lora_warn(message, "lora_partial")
             total += applied
@@ -163,11 +154,14 @@ class SenseNovaMixin:
 
         Drops the original-module map with the wrappers: it is per-generation
         state, and a retained entry for a transformer that has since been
-        unloaded would be written into the NEXT model loaded (restoration is
-        by map membership, recording is by ``setdefault``). Which transformer
-        the map belongs to is decided by ``_sensenova_lora_state``, not by the
-        call order: a swap with wrappers still live must not restore model A's
-        Linears into model B.
+        unloaded would be written into the NEXT model loaded (recording is by
+        ``setdefault``). Which transformer the map belongs to is decided by
+        ``_sensenova_lora_state``, not by the call order: a swap with wrappers
+        still live must not restore model A's Linears into model B.
+
+        Restore is driven by the composites actually installed on THIS
+        transformer, not by map membership, so a freshly re-keyed state cannot
+        write a stale entry anywhere.
         """
         from core.models.sensenova.sensenova_lora import restore_originals
         components = getattr(self, "sensenova_components", None)
@@ -179,9 +173,7 @@ class SenseNovaMixin:
             self._sensenova_lora_transformer_ref = None
             return 0
         lora_orig, lora_keys = self._sensenova_lora_state(transformer)
-        restored = 0
-        if lora_keys:
-            restored = restore_originals(transformer, lora_orig, lora_keys)
+        restored = restore_originals(transformer, lora_orig, lora_keys)
         lora_orig.clear()
         if restored:
             print(f"[SenseNova LoRA] Unloaded {restored} LoRA wrappers")

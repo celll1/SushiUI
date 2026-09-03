@@ -23,6 +23,20 @@ from .layers import (
     named_modules_outside_adapters,
     set_module_slot,
 )
+from .session import (
+    SHAPE_MISMATCH,
+    AdapterComponent,
+    AdapterFile,
+    AdapterFileMissing,
+    AdapterIncompatible,
+    AdapterLoadFailed,
+    AdapterLoadResult,
+    AdapterRefusal,
+    AdapterSession,
+    ApplyCounts,
+    BranchRequest,
+    PreparedBranch,
+)
 from .targets import (
     count_quantized_linears,
     is_lora_wrappable_linear,
@@ -30,6 +44,18 @@ from .targets import (
 )
 
 __all__ = [
+    "SHAPE_MISMATCH",
+    "AdapterComponent",
+    "AdapterFile",
+    "AdapterFileMissing",
+    "AdapterIncompatible",
+    "AdapterLoadFailed",
+    "AdapterLoadResult",
+    "AdapterRefusal",
+    "AdapterSession",
+    "ApplyCounts",
+    "BranchRequest",
+    "PreparedBranch",
     "CompositeAdapterLayer",
     "LoRALinearLayer",
     "MiniMaxH3LoRALinearLayer",

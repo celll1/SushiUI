@@ -672,6 +672,55 @@ recorded below. Only the per-LoRA option unification is outstanding.
   `LoKrLinearLayer` (Kronecker-product), and `DoRALinearLayer` (weight decomposition
   with exact strength-zero identity and magnitude vector scaling). All satisfy
   the composite branch protocol and can be combined additively over shared modules.
+  Their conventions were then checked against upstream v4.0.0
+  (`03270a38`) and five silent, shape-compatible mismatches corrected: LoKr's
+  scale is derived from WHICH operands are factored (`rank_scale`) and is
+  exactly 1 for the full/full form rather than the stored `alpha`; `dora_scale`
+  picks its norm axis from its own shape, so a `wd_on_out=False` `(1, in)`
+  vector is no longer read as row magnitudes on a square projection (measured
+  47.6% off on the delta weight, and 45-68% off on the layer output depending
+  on the probe input); `factorization()` matches
+  upstream for both the default and an explicit `factor`, which applies to both
+  dimensions; `lokr_w1_a`/`lokr_w1_b` (`decompose_both`) is implemented; and the
+  trained `scalar` of `use_scalar` layers is modelled. LoHa needed no change,
+  and upstream's doubled scale in `get_diff_weight` is deliberately NOT
+  reproduced: a checkpoint is trained under `forward`/`_rebuild_forward`, which
+  applies it once. `backend/tests/adapter_oracle_gate_cheap_test.py` is the
+  gate; its `ALGEBRAS` table now carries eleven rows.
+
+  Three constraints on the loader and exporter that this work fixed the algebra
+  for but did NOT make live, since no LyCORIS load or save path exists yet:
+
+  - **Export must FOLD `scalar`, not emit it.** `scalar` is a training-side
+    tensor. Upstream's `LohaModule`/`LokrModule.custom_state_dict` multiply it
+    into the saved `hada_w1_a` / `lokr_w1` (or `lokr_w1_a`) and write no
+    `scalar` key, and `load_weight_hook` forces `scalar := 1` after any load --
+    so no real file carries one, and our read path is right to treat its
+    absence as 1. `branch_tensors()` DOES emit it, because it is the live
+    optimizer/resume view; a serializer built on it must fold and drop the key,
+    or every other reader gets an adapter `1/scalar` too strong.
+  - **Tucker refusal is groundwork, not an operative gate.** `hada_t1` /
+    `hada_t2` / `lokr_t2` are detected by `CodecRegistry.detect` and refused by
+    `AdapterSpec.validate()` and by a branch's `load_tensors`, but neither
+    refusal is on a live path today: `AdapterSpec` has no production caller and
+    `load_tensors` only ever sees a `LoRALinearLayer` on training resume. It
+    becomes live when a LyCORIS load path lands. A real conv Tucker file is
+    still refused today, by the per-architecture zero-target message.
+  - **One of the four LoKr stored forms is unrepresentable here.**
+    `compute_delta_weight` keys the form on `rank`/`decompose_both` while
+    `scale` keys it on tensor presence, and `decompose_both` requires
+    `rank > 0`, so **w1-factored + w2-full** cannot be built --- upstream
+    reaches it via `decompose_both=True` with `lora_dim >= max(...)/2`, or
+    `full_matrix`. Relatedly, upstream's `use_w1`/`use_w2` auto-fallbacks mean
+    the same YAML config can select a DIFFERENT stored form there than here.
+    Training-side only; no LoKr training path exists yet.
+
+  One convention was deliberately aligned without a behaviour change: the LoKr
+  scale consults `w1_a` before `w2_a`, as upstream's `rank_scale` does. No
+  representable checkpoint can tell the orders apart (one `lora_dim` serves
+  both operands, and upstream's own `make_module_from_state_dict` would fail to
+  load an asymmetric pair), but a future asymmetric writer would diverge
+  silently.
 - **Checkpoint codec registry and foreign format normalization.**
   `core.adapters.codec` provides `CodecRegistry`, `detect_adapter_codec()`, and
   `normalize_adapter_keys()`. It identifies algorithm (`lora`, `loha`, `lokr`),

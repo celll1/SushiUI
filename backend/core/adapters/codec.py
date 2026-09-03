@@ -16,6 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, Tuple
 
 import torch
 
+from .layers import TUCKER_TENSOR_NAMES
 from .spec import (ALGORITHM_UNKNOWN, ALGORITHMS, FORMAT_LYCORIS, FORMAT_PEFT,
                    FORMAT_SUSHIUI, FORMAT_UNKNOWN, FORMATS,
                    METADATA_ALGORITHM, METADATA_ALPHA, METADATA_FORMAT,
@@ -32,6 +33,9 @@ class CodecSpec:
     format: str  # "sushiui_canonical", "lycoris_kohya", "diffusers_peft", "unknown"
     rank: Optional[int] = None
     alpha: Optional[float] = None
+    #: Tucker form: hada_t1/hada_t2/lokr_t2. Detected here so
+    #: ``AdapterSpec.validate`` can refuse it -- a Linear cannot honour it.
+    use_tucker: bool = False
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
@@ -52,6 +56,8 @@ class CodecRegistry:
         meta_dora = (parse_metadata_bool(meta.get(METADATA_WEIGHT_DECOMPOSE))
                      or parse_metadata_bool(meta.get("dora")))
         weight_decompose = has_dora_scale or meta_dora
+
+        use_tucker = any(k.rpartition(".")[2] in TUCKER_TENSOR_NAMES for k in keys)
 
         # 2. Algorithm detection: Priority 1 Metadata
         meta_algo = meta.get(METADATA_ALGORITHM, "").lower()
@@ -129,6 +135,7 @@ class CodecRegistry:
             format=format_name,
             rank=rank,
             alpha=alpha,
+            use_tucker=use_tucker,
             metadata=meta,
         )
 

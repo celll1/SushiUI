@@ -148,14 +148,14 @@ def test_metadata_round_trip_is_exact():
     assert AdapterSpec.from_metadata(metadata) == spec
     assert spec.family == "dokr"
     assert spec.lokr_factor == 8
-    assert spec.loha_use_tucker is False
+    assert spec.use_tucker is False
 
 
 def test_metadata_round_trip_of_a_bare_spec():
     spec = AdapterSpec(algorithm="loha", rank=4, alpha=4.0,
                        options={OPTION_USE_TUCKER: True})
     assert AdapterSpec.from_metadata(spec.to_metadata()) == spec
-    assert spec.loha_use_tucker is True
+    assert spec.use_tucker is True
     assert spec.lokr_factor is None
 
 
@@ -184,6 +184,26 @@ def test_validate_accepts_the_lokr_full_form_at_rank_zero():
     # LoKr's unfactored form has no rank, unlike LoRA/LoHa whose scale is
     # alpha/rank (LoKrLinearLayer takes the lokr_w2 branch at rank 0).
     AdapterSpec(algorithm="lokr", rank=0, options={OPTION_FACTOR: -1}).validate()
+
+
+@pytest.mark.parametrize("name", ["hada_t1", "hada_t2", "lokr_t2"])
+def test_a_tucker_checkpoint_is_detected_and_refused(name):
+    """Tucker factors exist only for a target with kernel dims, and this engine
+    wraps Linear only -- so the tensor set has to be REFUSED where it is first
+    inspected, not quietly dropped down to the two-factor form."""
+    tensors = {
+        "lora_unet_blocks_0_attn_to_q.hada_w1_a": torch.randn(8, 4),
+        "lora_unet_blocks_0_attn_to_q.hada_w1_b": torch.randn(4, 8),
+        "lora_unet_blocks_0_attn_to_q.hada_w2_a": torch.randn(8, 4),
+        "lora_unet_blocks_0_attn_to_q.hada_w2_b": torch.randn(4, 8),
+        f"lora_unet_blocks_0_attn_to_q.{name}": torch.randn(4, 4, 3, 3),
+    }
+    codec = detect_adapter_codec(tensors)
+    assert codec.use_tucker is True
+    spec = AdapterSpec.from_codec(codec)
+    assert spec.use_tucker is True
+    with pytest.raises(AdapterIncompatible):
+        spec.validate()
 
 
 def test_validate_takes_a_caller_supplied_architecture_list():

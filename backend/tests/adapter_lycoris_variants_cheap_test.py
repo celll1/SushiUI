@@ -69,6 +69,25 @@ def test_lokr_linear_layer_forward_and_strength():
     assert "lokr_w2_b" in tensors
 
 
+def test_lokr_decompose_both_stores_w1_low_rank():
+    """``lokr_w1_a``/``lokr_w1_b`` is a real upstream form; the two factors must
+    multiply back to the same ``(out_l, in_m)`` block the full ``lokr_w1`` is."""
+    torch.manual_seed(42)
+    base = nn.Linear(8, 6)
+    plain = LoKrLinearLayer(base, rank=2, alpha=2.0, lora_name="plain")
+    both = LoKrLinearLayer(base, rank=2, alpha=2.0, lora_name="both",
+                           decompose_both=True)
+
+    assert set(both.branch_tensors()) == {
+        "lokr_w1_a", "lokr_w1_b", "lokr_w2_a", "lokr_w2_b", "alpha"}
+    assert both.lokr_w1_a.shape[0] == plain.lokr_w1.shape[0]
+    assert both.lokr_w1_b.shape[1] == plain.lokr_w1.shape[1]
+    assert both.compute_delta_weight().shape == (6, 8)
+
+    with pytest.raises(ValueError):
+        LoKrLinearLayer(base, rank=0, alpha=2.0, lora_name="x", decompose_both=True)
+
+
 def test_dora_linear_layer_strength_zero_identity():
     """DoRA must satisfy exact strength-zero identity: W_eff = W0 when delta = 0."""
     torch.manual_seed(42)

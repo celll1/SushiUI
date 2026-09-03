@@ -662,13 +662,17 @@ recorded below. Only the per-LoRA option unification is outstanding.
   encoder before prompt encoding and the transformer after staging. SD1.5/SDXL
   remain on the Diffusers/PEFT runtime rather than the component session. MiniMax
   Music 3 does not load adapters.
+- **Session-level component options and step_range contract unification.**
+  `AdapterSession` now uniformly enforces `apply_to_unet` and `apply_to_text_encoder`
+  component kind filtering, warns `lora_no_targets` without refusal when all
+  components are user-disabled, and drives dynamic branch activation over
+  `step_range` [0, 1000] via `set_step()` across all session-managed backends.
 
 **Not landed.**
 
 - `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
   carry generation topology and a capability matrix.
 - The checkpoint codec registry for foreign formats.
-- Session-level component-option and `step_range` contract unification.
 - LoHa, LoKr, DoRA and the optional fused backend; `AdapterSession` currently
   installs ordinary LoRA branches only.
 - The generation `AdapterSpec` API, codec-derived adapter metadata, and the

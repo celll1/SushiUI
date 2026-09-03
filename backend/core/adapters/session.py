@@ -141,6 +141,10 @@ class AdapterFile:
     metadata: Dict[str, str]
     branch_name: str
     declared_branches: int
+    apply_to_unet: bool = True
+    apply_to_text_encoder: bool = True
+    unet_layer_weights: Dict[str, float] = field(default_factory=dict)
+    step_range: Optional[Sequence[int]] = None
     # Whatever ``prepare_file`` returned, memoised HERE rather than in the
     # session: a file handed to two passes must be parsed once.
     prepared: Any = UNPREPARED
@@ -225,6 +229,16 @@ class AdapterComponent:
     build_branch: Callable[[BranchRequest], Any]
     is_candidate: Optional[Callable[[nn.Module], bool]] = None
     enabled: bool = True
+    kind: Optional[str] = None
+
+    @property
+    def component_kind(self) -> str:
+        if self.kind is not None:
+            return self.kind
+        name = self.name.lower()
+        if any(token in name for token in ("text_encoder", "te", "clip", "qwen", "prompt")):
+            return "text_encoder"
+        return "unet"
 
 
 @dataclass
@@ -234,6 +248,7 @@ class _OwnedBranch:
     slot: Slot
     module_path: str
     branch_name: str
+    file: AdapterFile
 
 
 class _ComponentState:
@@ -449,6 +464,12 @@ class AdapterSession:
         except Exception as e:
             raise self._load_failed(name, e) from e
 
+        apply_to_unet = bool(config.get("apply_to_unet", True))
+        apply_to_text_encoder = bool(config.get("apply_to_text_encoder", True))
+        unet_layer_weights = dict(config.get("unet_layer_weights") or {})
+        raw_range = config.get("step_range")
+        step_range = tuple(int(x) for x in raw_range) if raw_range is not None else None
+
         self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
         return AdapterFile(
             index=index,
@@ -462,6 +483,10 @@ class AdapterSession:
             # branches rather than a duplicate-name refusal.
             branch_name=f"{index}:{name}",
             declared_branches=0,
+            apply_to_unet=apply_to_unet,
+            apply_to_text_encoder=apply_to_text_encoder,
+            unet_layer_weights=unet_layer_weights,
+            step_range=step_range,
         )
 
     def _load_failed(self, name: str, error: Exception) -> AdapterLoadFailed:
@@ -485,6 +510,13 @@ class AdapterSession:
                 # Accounted anyway: "this pass covered that component and
                 # matched nothing" is what tells a zero-target hook which pass
                 # it is being asked about.
+                counts.record(component.name, 0, 0)
+                continue
+            kind = component.component_kind
+            if kind == "unet" and not file.apply_to_unet:
+                counts.record(component.name, 0, 0)
+                continue
+            if kind == "text_encoder" and not file.apply_to_text_encoder:
                 counts.record(component.name, 0, 0)
                 continue
             # Materialised: the walk reads named_modules(), and the install phase
@@ -554,6 +586,10 @@ class AdapterSession:
         """The refusal and warning decisions, taken BEFORE anything is mutated."""
         self._log(f"[{self._label}] Applied LoRA to {counts.applied} modules")
         if counts.applied == 0:
+            if not file.apply_to_unet and not file.apply_to_text_encoder:
+                self.warn(f"LoRA '{file.name}' was disabled for both UNet and text encoder",
+                          "lora_no_targets")
+                return
             error = self._zero_target_refusal(file, counts)
             if error is None:
                 return
@@ -610,6 +646,7 @@ class AdapterSession:
                     slot=item.slot,
                     module_path=item.module_path,
                     branch_name=item.file.branch_name,
+                    file=item.file,
                 )
                 state.owned.append(owned)
                 done.append((item, composite, created, new_original, new_wrapped,
@@ -680,8 +717,14 @@ class AdapterSession:
                 file = config
             elif (file := self._parse(index, config)) is None:
                 continue
+            file_enabled = [
+                c for c in enabled
+                if (c.component_kind != "unet" or file.apply_to_unet)
+                and (c.component_kind != "text_encoder" or file.apply_to_text_encoder)
+            ]
             file.declared_branches = self._count_declared_branches(
-                file.tensors, names)
+                file.tensors, tuple(c.name for c in file_enabled)
+            )
             try:
                 self.prepare(file)
                 planned, counts = self._plan_file(file, enabled)
@@ -731,3 +774,30 @@ class AdapterSession:
             yield result
         finally:
             self.unload(components)
+
+    @property
+    def has_step_range(self) -> bool:
+        """Whether any currently owned branch has a non-default step_range."""
+        for state in self._states.values():
+            for owned in state.owned:
+                sr = owned.file.step_range
+                if sr is not None and tuple(sr) != (0, 1000):
+                    return True
+        return False
+
+    def set_step(self, current_step: int, total_steps: int) -> None:
+        """Dynamically activate/deactivate branches based on step_range [0, 1000]."""
+        if total_steps <= 0:
+            return
+        for state in self._states.values():
+            for owned in state.owned:
+                composite = owned.composite()
+                if composite is None:
+                    continue
+                step_range = owned.file.step_range
+                if step_range is not None and len(step_range) == 2:
+                    start_step = int((step_range[0] / 1000) * total_steps)
+                    end_step = int((step_range[1] / 1000) * total_steps)
+                    is_active = (start_step <= current_step <= end_step)
+                    if composite.has_branch(owned.branch_name):
+                        composite.set_active(owned.branch_name, is_active)

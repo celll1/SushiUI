@@ -108,12 +108,18 @@ class Ideogram4Mixin:
                 self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond)
 
     def _load_lora_ideogram4(self, lora_configs: List[Dict]) -> int:
-        """Wrap Ideogram 4 transformer Linear/Fp8Linear modules with LoRA adapters.
+        """Cover Ideogram 4 transformer Linear/Fp8Linear modules with LoRA adapters.
 
         Applies the conditional-branch LoRA to `transformer`; if the checkpoint
         also carries unconditional-branch keys (lora_uncond_*) and the
         unconditional transformer is loaded, those are applied to it too.
         Must be called after the transformer(s) are staged on GPU.
+
+        Each target Linear is covered ONCE by a ``CompositeAdapterLayer`` and each
+        selected LoRA adds a NAMED branch to it, so two Ideogram 4 LoRAs over the
+        same module SUM instead of being refused. The two transformers hold
+        SEPARATE composites, driven by separate key namespaces and separate
+        bookkeeping, so a stack on one branch cannot reach the other.
 
         A LoRA that is missing, unreadable, or matches no target module REFUSES
         the generation rather than returning the base model's image as a success;
@@ -126,11 +132,17 @@ class Ideogram4Mixin:
         )
         from core.extensions.lora_manager import lora_manager
 
+        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
+        # an earlier request must not leak wrappers into this one. `_ideogram4_cleanup`
+        # swallows restore failures, and now that a second branch SUMS rather than
+        # being refused, a leaked wrapper would silently double-apply.
+        self._unload_lora_ideogram4()
+
         components = self.ideogram4_components or {}
         transformer = components.get("transformer")
         uncond = components.get("unconditional_transformer")
-        # Unconditional, and BEFORE the empty-config exit: bookkeeping that outlived
-        # a model reload would splice the previous model's Linears into this one.
+        # Bookkeeping that outlived a model reload would splice the previous model's
+        # Linears into this one; the state call drops each branch's half separately.
         originals, keys, originals_u, keys_u = self._ideogram4_lora_state(transformer, uncond)
 
         if not lora_configs or transformer is None:
@@ -152,18 +164,21 @@ class Ideogram4Mixin:
                 default_alpha = alpha_from_metadata(metadata)
                 grouped = normalise_lora_state_dict(raw, branch="cond")
                 grouped_u = normalise_lora_state_dict(raw, branch="uncond")
-                applied, occupied = apply_lora_group(
+                # Unique within the request, so selecting the SAME file twice is
+                # two branches, not a duplicate-name refusal.
+                branch_name = f"{i}:{lora_file}"
+                applied = apply_lora_group(
                     transformer, grouped, strength, originals, keys,
-                    default_alpha=default_alpha,
+                    default_alpha=default_alpha, branch_name=branch_name,
                 )
                 print(f"[Ideogram4 LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                       f"format={fmt} cond_modules={len(grouped)} wrapped={applied} strength={strength}")
 
-                applied_u = occupied_u = 0
+                applied_u = 0
                 if grouped_u and uncond is not None:
-                    applied_u, occupied_u = apply_lora_group(
+                    applied_u = apply_lora_group(
                         uncond, grouped_u, strength, originals_u, keys_u,
-                        default_alpha=default_alpha,
+                        default_alpha=default_alpha, branch_name=branch_name,
                     )
                     print(f"[Ideogram4 LoRA]   uncond wrapped {applied_u} module(s)")
                 elif grouped_u:
@@ -182,16 +197,10 @@ class Ideogram4Mixin:
 
             pairs = len(grouped) + len(grouped_u)
             applied_all = applied + applied_u
-            occupied_all = occupied + occupied_u
+            # An occupied target is no longer one of the ways to get here: the
+            # composite adds a branch beside the earlier LoRA's.
             if applied_all == 0:
-                if occupied_all:
-                    message = (
-                        f"LoRA '{lora_file}': every one of its {occupied_all} target modules is "
-                        f"already wrapped by an earlier LoRA in this request. Ideogram 4 applies "
-                        f"one LoRA per target; select a single Ideogram 4 LoRA."
-                    )
-                    code = "lora_stacking_unsupported"
-                elif grouped_u and not grouped and uncond is None:
+                if grouped_u and not grouped and uncond is None:
                     # Every pair it carries is unconditional-branch, and this model has
                     # no unconditional transformer: the keys were recognized, so the
                     # generic "different model" wording would be wrong.
@@ -212,18 +221,22 @@ class Ideogram4Mixin:
                 self._ideogram4_lora_warn(message, code=code)
                 raise RuntimeError(message)
 
-            if applied_all + occupied_all < pairs or occupied_all:
+            if applied_all < pairs:
                 self._ideogram4_lora_warn(
                     f"LoRA '{lora_file}': applied {applied_all} of {pairs} down/up pairs "
-                    f"({occupied_all} already wrapped by an earlier LoRA, "
-                    f"{pairs - applied_all - occupied_all} matched no target module).",
+                    f"({pairs - applied_all} matched no target module).",
                     code="lora_partial",
                 )
             total += applied_all
         return total
 
     def _unload_lora_ideogram4(self) -> int:
-        """Restore every Ideogram 4 transformer Linear to its pre-LoRA original."""
+        """Restore every Ideogram 4 transformer Linear to its pre-LoRA original.
+
+        PER BRANCH: each transformer is restored through its own maps, so a
+        reload of one branch (whose half `_ideogram4_lora_state` has just
+        dropped) leaves the other branch's wrappers installed and restorable.
+        """
         from core.models.ideogram4.ideogram4_lora import restore_originals
         components = self.ideogram4_components or {}
         transformer = components.get("transformer")

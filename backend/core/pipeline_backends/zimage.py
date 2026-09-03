@@ -51,15 +51,38 @@ def _is_lora_target(module) -> bool:
 
 
 def _zimage_lora_candidate(module) -> bool:
-    """A wrappable Linear, OR one an earlier LoRA in this request already wrapped.
+    """A wrappable Linear, OR the composite an earlier LoRA already installed.
 
-    ``_is_lora_target`` deliberately excludes ``LoRALinearLayer``; without this
+    ``_is_lora_target`` deliberately excludes adapter wrappers; without this
     second case a second selected LoRA would skip every occupied target and
     report zero matches as if its keys were wrong.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer
 
-    return _is_lora_target(module) or isinstance(module, LoRALinearLayer)
+    return _is_lora_target(module) or isinstance(module, CompositeAdapterLayer)
+
+
+def _zimage_lora_targets(transformer):
+    """``(parent, slot, module_path)`` for every LoRA target under ``transformer``.
+
+    ONE enumerator for both load and unload. Restore has to iterate what is
+    actually installed, and a second traversal written out by hand is how a
+    Phase 0 audit got "unloaded 28" out of 27 wrapped modules. ``slot`` is an
+    attribute name except for ``to_out``, whose only address is the index 0.
+
+    Callers materialise this before mutating: the walk reads ``named_modules``,
+    and replacing slots underneath it is how a traversal starts descending into
+    wrappers it just installed.
+    """
+    for attn_name, attn_module in transformer.named_modules():
+        if "ZImageAttention" not in attn_module.__class__.__name__:
+            continue
+        for attr_name in ("to_q", "to_k", "to_v"):
+            if hasattr(attn_module, attr_name):
+                yield attn_module, attr_name, f"{attn_name}.{attr_name}"
+        to_out = getattr(attn_module, "to_out", None)
+        if isinstance(to_out, torch.nn.ModuleList) and len(to_out) > 0:
+            yield to_out, 0, f"{attn_name}.to_out.0"
 
 
 def _zimage_lora_key_stems(module_path: str) -> List[str]:
@@ -271,8 +294,10 @@ class ZImageMixin:
 
         Note:
             Z-Image uses component-based architecture (not pipeline-based).
-            LoRAs wrap original linear layers (forward-time addition, not weight merging).
-            This allows LoRAs to be unloaded by restoring original modules.
+            Each target Linear is covered ONCE by a ``CompositeAdapterLayer``
+            (forward-time addition, never a weight merge) and each selected LoRA
+            adds a NAMED BRANCH to it, so two LoRAs over the same module sum
+            instead of being refused. Unload puts the original module back.
 
         Raises:
             FileNotFoundError / RuntimeError when a requested LoRA cannot be
@@ -291,6 +316,7 @@ class ZImageMixin:
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
+        from core.adapters import get_module_slot
 
         print(f"[Z-Image LoRA] Loading {len(lora_configs)} LoRA(s)...")
 
@@ -333,38 +359,21 @@ class ZImageMixin:
                 # Target modules: to_q, to_k, to_v, to_out.0 in ZImageAttention
                 applied_count = 0
                 mismatch_count = 0
-                occupied_count = 0
 
-                # Find all attention modules
-                for attn_name, attn_module in transformer.named_modules():
-                    if "ZImageAttention" not in attn_module.__class__.__name__:
+                # Unique within the request, so two selections of the SAME file
+                # are two branches rather than a duplicate-name refusal.
+                branch_name = f"{i}:{lora_file}"
+
+                for parent, slot, module_path in list(_zimage_lora_targets(transformer)):
+                    current = get_module_slot(parent, slot)
+                    if not _zimage_lora_candidate(current):
                         continue
-
-                    # Apply to to_q, to_k, to_v
-                    for attr_name in ["to_q", "to_k", "to_v"]:
-                        original_linear = getattr(attn_module, attr_name, None)
-                        if not _zimage_lora_candidate(original_linear):
-                            continue
-                        status = self._zimage_apply_lora_branch(
-                            attn_module, attr_name, original_linear,
-                            f"{attn_name}.{attr_name}", lora_state_dict,
-                            lora_strength, fallback_alpha,
-                        )
-                        applied_count += status == "applied"
-                        mismatch_count += status == "shape_mismatch"
-                        occupied_count += status == "already_wrapped"
-
-                    # Apply to to_out.0 (ModuleList)
-                    if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
-                        if len(attn_module.to_out) > 0 and _zimage_lora_candidate(attn_module.to_out[0]):
-                            status = self._zimage_apply_lora_branch(
-                                attn_module.to_out, 0, attn_module.to_out[0],
-                                f"{attn_name}.to_out.0", lora_state_dict,
-                                lora_strength, fallback_alpha,
-                            )
-                            applied_count += status == "applied"
-                            mismatch_count += status == "shape_mismatch"
-                            occupied_count += status == "already_wrapped"
+                    status = self._zimage_apply_lora_branch(
+                        parent, slot, current, module_path, lora_state_dict,
+                        lora_strength, fallback_alpha, branch_name,
+                    )
+                    applied_count += status == "applied"
+                    mismatch_count += status == "shape_mismatch"
 
                 print(f"[Z-Image LoRA] Applied LoRA to {applied_count} modules")
 
@@ -380,42 +389,25 @@ class ZImageMixin:
                 raise RuntimeError(message) from e
 
             # A requested LoRA that matched nothing is not a successful generation.
+            # An occupied target is no longer one of the ways to get here: the
+            # composite adds a branch beside the earlier LoRA's.
             if applied_count == 0:
-                if occupied_count:
-                    # This backend replaces the target Linear, so a second file
-                    # can only overwrite the first (last-wins) -- refuse instead.
-                    # Stacking needs the composite wrapper (LYCORIS_ADAPTER_DESIGN
-                    # Phase 1), not a re-wrap here.
-                    mismatch_note = (
-                        f" ({mismatch_count} more skipped on shape mismatch)"
-                        if mismatch_count else ""
-                    )
-                    message = (
-                        f"LoRA '{lora_file}': 0 of {file_pairs} down/up pairs applied - "
-                        f"{occupied_count} target module(s) are already wrapped by an earlier "
-                        f"LoRA in this request{mismatch_note}. Z-Image applies one LoRA at a "
-                        f"time; select a single Z-Image LoRA."
-                    )
-                    code = "lora_stacking_unsupported"
-                else:
-                    message = (
-                        f"LoRA '{lora_file}': 0 of {file_pairs} down/up pairs applied to the loaded "
-                        f"Z-Image transformer ({mismatch_count} skipped on shape mismatch) -- "
-                        f"unrecognized key format or a different model. Expected key stems like "
-                        f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[0]}' or "
-                        f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[1]}'. "
-                        f"Sample keys in file: {list(lora_state_dict.keys())[:5]}"
-                    )
-                    code = "lora_incompatible"
+                message = (
+                    f"LoRA '{lora_file}': 0 of {file_pairs} down/up pairs applied to the loaded "
+                    f"Z-Image transformer ({mismatch_count} skipped on shape mismatch) -- "
+                    f"unrecognized key format or a different model. Expected key stems like "
+                    f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[0]}' or "
+                    f"'{_zimage_lora_key_stems('layers.0.attention.to_q')[1]}'. "
+                    f"Sample keys in file: {list(lora_state_dict.keys())[:5]}"
+                )
                 print(f"[Z-Image LoRA] ERROR: {message}")
-                self._zimage_lora_warn(message, code=code)
+                self._zimage_lora_warn(message, code="lora_incompatible")
                 raise RuntimeError(message)
 
-            if mismatch_count or occupied_count or applied_count < file_pairs:
+            if mismatch_count or applied_count < file_pairs:
                 self._zimage_lora_warn(
                     f"LoRA '{lora_file}': applied {applied_count} of {file_pairs} down/up pairs "
-                    f"({mismatch_count} skipped on shape mismatch, {occupied_count} already wrapped "
-                    f"by an earlier LoRA).",
+                    f"({mismatch_count} skipped on shape mismatch).",
                     code="lora_partial",
                 )
 
@@ -429,27 +421,28 @@ class ZImageMixin:
             pass
 
     def _zimage_apply_lora_branch(
-        self, parent_module, attr_name, original_linear, module_path,
-        lora_state_dict, strength, fallback_alpha,
+        self, parent_module, slot, current_module, module_path,
+        lora_state_dict, strength, fallback_alpha, branch_name,
     ) -> str:
-        """Wrap one target module with its branch from ``lora_state_dict``.
+        """Add one named branch to the composite covering ``parent_module[slot]``.
 
-        Returns "applied", "absent", "already_wrapped" or "shape_mismatch". A
-        shape mismatch is skipped rather than assigned: ``.data = tensor`` would
-        replace the parameter wholesale and only fail later, inside the denoise
-        loop.
+        Returns "applied", "absent" or "shape_mismatch". A shape mismatch is
+        skipped rather than assigned: ``.data = tensor`` would replace the
+        parameter wholesale and only fail later, inside the denoise loop. The
+        check runs BEFORE anything is installed, so a skipped target keeps its
+        bare Linear rather than gaining an empty composite.
         """
-        from core.adapters import LoRALinearLayer
+        from core.adapters import CompositeAdapterLayer
 
         found = _zimage_lora_branch(lora_state_dict, module_path)
         if found is None:
             return "absent"
-        if isinstance(original_linear, LoRALinearLayer):
-            return "already_wrapped"
 
+        base = (current_module.original_module
+                if isinstance(current_module, CompositeAdapterLayer) else current_module)
         down, up, alpha = found
-        in_features = getattr(original_linear, "in_features", None)
-        out_features = getattr(original_linear, "out_features", None)
+        in_features = getattr(base, "in_features", None)
+        out_features = getattr(base, "out_features", None)
         if (down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]
                 or down.shape[1] != in_features or up.shape[0] != out_features):
             print(f"[Z-Image LoRA] WARNING: shape mismatch at {module_path}: "
@@ -458,44 +451,36 @@ class ZImageMixin:
             return "shape_mismatch"
 
         self._wrap_with_lora(
-            parent_module, attr_name, original_linear, down, up,
-            strength, alpha, module_path, fallback_alpha,
+            parent_module, slot, base, down, up,
+            strength, alpha, module_path, fallback_alpha, branch_name,
         )
         return "applied"
 
-    def _wrap_with_lora(self, parent_module, attr_name, original_linear, lora_down_weight, lora_up_weight, strength, alpha, module_key, fallback_alpha=None):
-        """Wrap a linear layer with LoRA
+    def _wrap_with_lora(self, parent_module, slot, base_linear, lora_down_weight,
+                        lora_up_weight, strength, alpha, module_key,
+                        fallback_alpha=None, branch_name="lora"):
+        """Add one named LoRA branch to the composite covering ``parent[slot]``.
 
         Args:
-            parent_module: Parent module containing the linear layer
-            attr_name: Attribute name or index (for ModuleList)
-            original_linear: Original linear layer
+            parent_module: Parent module (or ModuleList) holding the target
+            slot: Attribute name, or the index for a ModuleList
+            base_linear: The UNWRAPPED Linear the branch is built against
             lora_down_weight: LoRA down projection weight [rank, in_features]
             lora_up_weight: LoRA up projection weight [out_features, rank]
             strength: LoRA strength multiplier
             alpha: per-key alpha tensor, or None
-            module_key: Unique key for this module (for tracking)
+            module_key: Dotted module path; the tracking key and the lora_name
             fallback_alpha: alpha from file metadata, used when no per-key tensor
+            branch_name: Unique per selected LoRA within this request
 
         Returns:
-            Wrapped LoRA module or None if failed
+            The installed branch
         """
-        # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
-        from core.adapters import LoRALinearLayer
-
-        # Get true original module (unwrap if it's already a LoRA wrapper)
-        LoRALinearLayerClass = LoRALinearLayer  # Same class, just alias for clarity
-
-        if isinstance(original_linear, LoRALinearLayerClass):
-            # Already wrapped - extract the original module
-            true_original = original_linear.original_module
-            print(f"[Z-Image LoRA DEBUG] Detected existing LoRA wrapper, extracting original module")
-        else:
-            true_original = original_linear
+        from core.adapters import CompositeAdapterLayer, LoRALinearLayer, lora_branch_dtype
 
         # Save original module (first time only)
         if module_key not in self._zimage_lora_original_modules:
-            self._zimage_lora_original_modules[module_key] = true_original
+            self._zimage_lora_original_modules[module_key] = base_linear
 
         # Per-key tensor wins, then file metadata, then rank (alpha == rank).
         rank = lora_down_weight.shape[0]
@@ -506,55 +491,51 @@ class ZImageMixin:
         else:
             alpha_value = float(rank)
 
-        # Create LoRA wrapper using the true original module
-        # lora_name is required parameter, use module_key for identification
-        lora_wrapper = LoRALinearLayer(
-            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        branch = LoRALinearLayer(
+            base_linear, rank=rank, alpha=alpha_value, lora_name=module_key
         )
 
         # Load pretrained LoRA weights.
         #
         # The dtype must NOT be taken from the base weight. Over an Int8Linear
-        # base ``true_original.weight.dtype`` is torch.int8, so this cast would
+        # base ``base_linear.weight.dtype`` is torch.int8, so this cast would
         # quantize the LoRA branch itself to 8 uniform levels; over an Fp8Linear
         # base it would round it to e4m3 and lose most of its precision. The
         # device is still the base's -- that is exactly where the branch has to
         # live -- and ``lora_branch_dtype`` returns the base's real dtype for an
         # ordinary bf16/fp16 nn.Linear, so this is byte-identical on an
         # unquantized checkpoint.
-        from core.adapters import lora_branch_dtype
-
-        device = true_original.weight.device
-        dtype = lora_branch_dtype(true_original)
+        device = base_linear.weight.device
+        dtype = lora_branch_dtype(base_linear)
 
         with torch.no_grad():
-            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
-            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
+            branch.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            branch.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
 
-        # Apply strength by adjusting scaling (override the default scale)
-        lora_wrapper.scale = (alpha_value / rank) * strength
-
-        # Replace in parent module
-        if isinstance(attr_name, int):
-            # ModuleList index
-            parent_module[attr_name] = lora_wrapper
-        else:
-            # Attribute name
-            setattr(parent_module, attr_name, lora_wrapper)
+        # attach() is idempotent: the second LoRA over this slot gets the SAME
+        # composite and adds a branch beside the first. Strength is refolded into
+        # the branch's own scale by add_branch, never multiplied onto its delta --
+        # a post-multiply is different arithmetic and loses bit-identity with the
+        # single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent_module, slot)
+        composite.add_branch(branch_name, branch, strength=strength)
 
         # Track wrapped modules
         self._zimage_lora_wrapped_modules.add(module_key)
 
-        print(f"[Z-Image LoRA DEBUG] Wrapped {module_key}: alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, scale={lora_wrapper.scale:.4f}")
+        print(f"[Z-Image LoRA DEBUG] Branch '{branch_name}' on {module_key}: "
+              f"alpha={alpha_value:.1f}, rank={rank}, strength={strength:.2f}, "
+              f"scale={branch.scale:.4f} ({len(composite)} branch(es))")
 
-        return lora_wrapper
+        return branch
 
     def _unload_lora_zimage(self):
         """Unload LoRAs from Z-Image Transformer
 
-        Restores original linear layers by removing LoRA wrappers.
+        Restores original linear layers by removing the composite wrappers,
+        branches and all.
         """
-        from core.adapters import LoRALinearLayer
+        from core.adapters import CompositeAdapterLayer, get_module_slot, set_module_slot
 
         components = getattr(self, "zimage_components", None)
         transformer = components.get("transformer") if components else None
@@ -574,25 +555,13 @@ class ZImageMixin:
 
         # Driven by what is actually wrapped, not by map membership: the originals
         # map outlives an unload (kept for the next load) and would overcount.
-        for attn_name, attn_module in transformer.named_modules():
-            if "ZImageAttention" not in attn_module.__class__.__name__:
+        for parent, slot, module_path in list(_zimage_lora_targets(transformer)):
+            current = get_module_slot(parent, slot)
+            if not isinstance(current, CompositeAdapterLayer):
                 continue
-
-            for attr_name in ["to_q", "to_k", "to_v"]:
-                current = getattr(attn_module, attr_name, None)
-                if not isinstance(current, LoRALinearLayer):
-                    continue
-                key = f"{attn_name}.{attr_name}"
-                setattr(attn_module, attr_name, originals.get(key, current.original_module))
-                unloaded_count += 1
-
-            to_out = getattr(attn_module, "to_out", None)
-            if isinstance(to_out, torch.nn.ModuleList) and len(to_out) > 0:
-                current = to_out[0]
-                if isinstance(current, LoRALinearLayer):
-                    key = f"{attn_name}.to_out.0"
-                    to_out[0] = originals.get(key, current.original_module)
-                    unloaded_count += 1
+            set_module_slot(parent, slot,
+                            originals.get(module_path, current.original_module))
+            unloaded_count += 1
 
         wrapped.clear()
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")

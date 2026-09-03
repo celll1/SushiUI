@@ -693,17 +693,26 @@ def float8_weight_linear_count(model: nn.Module) -> int:
 
 
 def lora_wrapped_count(model: nn.Module) -> int:
-    """Count LoRA wrappers under ``model`` (by class name, no import needed).
+    """Count adapter-wrapped Linear slots under ``model``.
 
     A wrapped Linear is no longer an ``nn.Linear``, so converting a LoRA'd module
     would silently skip every wrapped layer and select a DIFFERENT set than the
     offline audit. The converter refuses instead.
 
+    Delegated to ``core.adapters`` rather than testing
+    ``type(m).__name__ == "LoRALinearLayer"`` here: a ``CompositeAdapterLayer``
+    holding a non-LoRA branch hides the base just as thoroughly while matching
+    no such name, and an unrecognised wrapper is exactly the case where the
+    quantizer casts the adapter's own branches.
+
     Public because a multi-component caller must be able to ask BEFORE it starts:
     ``quantize_linears_in_place`` refuses per module, and discovering the refusal
     on the second transformer would already have converted the first.
     """
-    return sum(1 for m in model.modules() if type(m).__name__ == "LoRALinearLayer")
+    # Local: ``core.adapters`` reaches back into ``core.models`` (lazily, for the
+    # quantized Linear classes), so this edge stays off both modules' import path.
+    from core.adapters import count_adapter_wrapper_roots
+    return count_adapter_wrapper_roots(model)
 
 
 # Historical private spelling, kept because it is the name the refusal below

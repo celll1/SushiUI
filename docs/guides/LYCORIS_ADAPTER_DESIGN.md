@@ -267,11 +267,10 @@ attenuate them twice.
 denoise loop or the encoder forward (Z-Image, FLUX.2). They are now skipped
 with a `lora_partial` warning.
 
-Two findings were structural rather than per-architecture and are recorded in
-the Phase 1 list below instead: the original-module bookkeeping surviving a
-model reload, and additive multi-LoRA stacking. Every architecture now refuses
-or first-wins honestly rather than silently discarding an adapter, but none of
-them sums two branches over one module.
+Two findings were structural rather than per-architecture and were deferred to
+Phase 1: the original-module bookkeeping surviving a model reload, and additive
+multi-LoRA stacking. Both have since landed — all thirteen architectures now sum
+two adapters over one module (see Phase 1 below).
 
 **Checkpoint classification collapsed onto `sd15`.** `classify_lora_keys`
 (`backend/core/extensions/lora_manager.py`) recognised five architectures and
@@ -399,9 +398,10 @@ Each algebra implementation provides:
 - merge support and exact strength semantics;
 - an unfused reference path and optional fused backend.
 
-Replace the single-branch wrapper with `CompositeAdapterLayer`
-(`backend/core/adapters/layers.py`, shipped; no architecture has adopted it
-yet). It owns the base once and holds multiple named branches, allowing AddLoRA
+The single-branch wrapper is replaced by `CompositeAdapterLayer`
+(`backend/core/adapters/layers.py`, shipped and adopted by the eleven
+component-loader architectures; SD1.5 and SDXL stay on diffusers/PEFT). It owns
+the base once and holds multiple named branches, allowing AddLoRA
 to change strength or step activation without rewrapping. Its output is the base
 result plus every active additive branch. DoRA uses the full-difference
 interpolation contract rather than being treated as an ordinary additive factor.
@@ -593,23 +593,71 @@ classification anchored per adapter; and a checked-in trainer-save to
 fresh-generation gate per architecture. See "LoRA round-trip defects found and
 repaired in Phase 0" above for what each of those was.
 
-Deliberately deferred to Phase 1, because each is one engine-level change
-rather than a per-architecture patch: making multiple adapters additive over
-one module (every architecture is first-wins or an honest refusal today);
+Deferred to Phase 1, because each is one engine-level change rather than a
+per-architecture patch: making multiple adapters additive over one module;
 unifying `step_range`, component selection and per-block weights across
 backends; carrying a machine-readable `code` on a refusal's 400 response; and
-enumerating the `GenerationWarning.code` taxonomy in `openapi.yaml`.
+enumerating the `GenerationWarning.code` taxonomy in `openapi.yaml`. The first
+of those has landed; the other three have not.
 
-### Phase 1: extract the shared engine
+### Phase 1: extract the shared engine — partly landed
 
-- Introduce `AdapterSpec`, `AdapterLayer`, `AdapterTarget`, codec registry,
-  composite wrapper, and atomic session.
-- Migrate ordinary LoRA without numerical changes.
-- Replace per-adapter optimizer/save assumptions with protocol methods.
-- Move topology and codec hooks into architecture descriptors.
-- Accommodate `MiniMaxH3LoRALinearLayer`'s activation-dtype forward in the
-  extracted `AdapterLayer` protocol from the start; a second algebra already
-  exists.
+**Landed.**
+
+- **The adapter leaf mechanism lives outside the training package**
+  (`dbcc3047`, `b864934e`). `backend/core/adapters/` holds the
+  architecture-neutral leaf names and every importer reads them from there; the
+  re-exports at the old paths are gone, and a test scans every backend module
+  and fails if a leaf module is imported again. Measured in a fresh process:
+  importing `core.adapters` costs 1.22 s and 1,015 modules against 9.22 s and
+  5,801 for the old `core.training.adapters` route, and leaves `core.training`,
+  `api` and the CUDA context untouched. A Krea 2 LoRA target check that used to
+  pull `core.training`, `api.routes` and `api.param_defaults` on first call
+  (3.09 s, 876 modules) now adds three modules and no measurable time.
+  MiniMax-H3, LTX-2.3 and ACE-Step still reach into `core.training` for OTHER
+  names on their native key paths, so they keep paying the edge until their
+  codecs move. `core/models/krea2/__init__.py` remains expensive on its own
+  (about 5 s, initialises CUDA) — a package-init problem, not a
+  training-package edge.
+- **The layer answers for its own tensors, and the shared training bodies are
+  lifted** (`d82fa1d1`). `branch_tensors` is the single extension point and the
+  other four tensor methods derive from it; `alpha` is deliberately not among
+  them, being a spec constant the saving adapter owns. All thirteen adapters'
+  `setup_trainable_parameters` and `save_checkpoint` bodies are lifted onto the
+  base, with the learning-rate policy staying per-architecture as a thunk called
+  only for a component that received layers. Checkpoints are byte-identical
+  against a pristine HEAD tree — header, tensor table, dtypes, offsets and data
+  blob deterministic and identical, and the whole file identical once metadata
+  keys are sorted (safetensors randomises metadata key ORDER per process, so two
+  runs of unchanged code already differ in raw bytes). Parameter groups match by
+  count, order, rate and per-parameter checksum. Resume slices by the layer's own
+  tensor names. Left deliberately: SD1.5, SDXL, FLUX.2 and Z-Image read the
+  trainer's learning-rate attributes directly where nine others use the resolver;
+  converging them changes what reaches the optimizer when a component rate is
+  unset, which is a numerics decision.
+- **`CompositeAdapterLayer`** (`4d6e9824`) — see "Adapter layer protocol" above
+  for its contract.
+- **Adoption across all thirteen architectures** (`7bc6baf3`, `326d41fc`,
+  `50f66562`, `ed15cba2`, `7f727107`, `baf04fd5`, `2de43ee5`). The eleven
+  component-loader architectures cover each target Linear with one composite and
+  add one named branch (`"<request index>:<file basename>"`) per selected LoRA,
+  so two LoRAs over the same module sum, each at its own strength, in either
+  selection order; a single LoRA is bit-identical to the pre-composite loader
+  (`torch.equal`) on each. SD1.5 and SDXL are additive through diffusers/PEFT
+  instead and are deliberately NOT on the composite: putting them there would
+  replace the production diffusers path with a reimplementation. `2de43ee5` also
+  fixed the defect that made only the LAST selected SD1.5/SDXL LoRA active
+  (`set_adapters` REPLACES the active set) and the block-weight loss that hid
+  behind it. Per-architecture detail is in `docs/guides/MODEL_FACTS.md`.
+
+**Not landed.**
+
+- `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
+  carry topology and a capability matrix; the adapter factory in
+  `LoRATrainer._create_adapter` is still an if-chain.
+- The checkpoint codec registry for foreign formats.
+- `AdapterSession` — the atomic runtime session that would own original-module
+  bookkeeping, strength, step activation and restore once.
 
 **Findings that must be fixed once in the engine, never patched
 per-architecture:**
@@ -632,20 +680,34 @@ per-architecture:**
 - **Refusal warnings are write-only.** Every refusal path calls `add_warning`
   before raising, but the routes read `get_warnings()` only on the success
   path; the error paths call `fail_generation` and re-raise. So
-  `lora_stacking_unsupported`, `lora_incompatible` and the rest never reach a
+  `lora_incompatible`, `lora_not_found` and the rest never reach a
   client on a 400 — the client sees the message text embedded in the error and
   no machine-readable code. Fixing it means putting a `code` on `APIError`
   (`backend/api/error_handlers.py`, which currently carries only `message`,
   `status_code` and `detail`) and surfacing it through the error handler. That
   is repo-wide surface, not LoRA surface, and must not be done piecemeal.
-- **Additive multi-LoRA stacking is blocked repo-wide by the layer class.**
-  `LoRALinearLayer.__init__` reads `original_module.in_features` /
+- **Additive multi-LoRA stacking was blocked repo-wide by the layer class —
+  fixed.** `LoRALinearLayer.__init__` reads `original_module.in_features` /
   `out_features` into LOCALS and never exposes them on `self`, so the wrapper
-  cannot wrap a wrapper. This is why every architecture is first-wins or a
-  refusal today rather than summing branches. The composite wrapper is the
-  fix; a per-architecture re-wrap is not. `CompositeAdapterLayer` now exists
-  and is gated (see boundary 2); no architecture has adopted it, so every
-  refusal still stands until each loader is migrated in its own commit.
+  cannot wrap a wrapper. That is why every architecture was first-wins or a
+  refusal rather than summing branches. `CompositeAdapterLayer` is the fix (a
+  per-architecture re-wrap was not), and every loader has migrated:
+  `lora_stacking_unsupported` is emitted nowhere in `backend/core`,
+  `backend/api` or the frontend.
+- **A legacy FP8 generation path can cast the adapter's own branches.** Four
+  architectures deep-copy a component and cast every `isinstance(m, nn.Linear)`
+  weight to FP8, which over a wrapped tree includes each branch's `lora_down` /
+  `lora_up`: Z-Image and FLUX.2 through `vram_optimization._quantize_transformer`
+  (and `_quantize_text_encoder` on FLUX.2), Anima and Lens through
+  `vram_optimization._anima_quantize_fp8`. Only two gates exist, and neither
+  covers all of it — `_lens_quantization_with_lora` drops the Lens TRANSFORMER's
+  quantization while wrappers are live, and `_flux2_te_quantization_with_lora`
+  drops the FLUX.2 TEXT ENCODER's; both warn `quantization_fallback` and let the
+  LoRA win. Z-Image's transformer, Anima's transformer and FLUX.2's transformer
+  have no equivalent. Both gates read `lora_wrapped_count` →
+  `count_adapter_wrapper_roots`, which counts a composite as ONE root, so
+  adoption did not change what they see. The in-place runtime INT8 conversion is
+  gated everywhere it runs by the same function.
 - **The four per-LoRA options are each honoured by a different subset of
   architectures.** `LoRAConfig` (`backend/core/extensions/lora_manager.py`)
   parses all four for every request, but:
@@ -675,8 +737,8 @@ per-architecture:**
   session, not in eleven loaders.
 - **`GenerationWarning.code` is a free-form string with no enum in
   `openapi.yaml`.** The taxonomy actually in use is `lora_not_found`,
-  `lora_load_failed`, `lora_incompatible`, `lora_partial`,
-  `lora_stacking_unsupported`, plus architecture-specific codes
+  `lora_load_failed`, `lora_incompatible`, `lora_partial`, plus
+  architecture-specific codes
   (`minimax_h3_lora_variant_mismatch`, `ltx2_lora_h2d_disabled`,
   `quantization_fallback`, and others). Enumerating it is part of making
   refusals machine-readable.

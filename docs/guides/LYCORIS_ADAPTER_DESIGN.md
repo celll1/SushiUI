@@ -654,22 +654,21 @@ recorded below. Only the per-LoRA option unification is outstanding.
   `ArchHandler` now declares its LoRA adapter class and constructor arguments;
   `LoRATrainer._create_adapter` builds that plan rather than maintaining a
   second architecture if-chain.
-- **`AdapterSession` has begun landing on generation backends.** It owns
+- **`AdapterSession` has landed across eleven generation backends.** It owns
   resolve/parse, pre-mutation accounting, atomic install/rollback, per-component
   original-module bookkeeping, and restore for Z-Image, Anima, Lens, Krea 2,
-  Ideogram 4, and MiniT2I. MiniT2I uses its split-session contract so one parsed
-  file can cover the text encoder before prompt encoding and the transformer
-  after staging.
+  Ideogram 4, MiniT2I, FLUX.2, SenseNova, ACE-Step, LTX-2.3, and MiniMax-H3.
+  MiniT2I uses its split-session contract so one parsed file can cover the text
+  encoder before prompt encoding and the transformer after staging. SD1.5/SDXL
+  remain on the Diffusers/PEFT runtime rather than the component session. MiniMax
+  Music 3 does not load adapters.
 
 **Not landed.**
 
 - `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
   carry generation topology and a capability matrix.
 - The checkpoint codec registry for foreign formats.
-- `AdapterSession` adoption on FLUX.2, SenseNova, ACE-Step, LTX-2.3 and
-  MiniMax-H3, plus the session-level component-option and `step_range` contract.
-  SD1.5/SDXL remain on the Diffusers/PEFT runtime rather than the component
-  session.
+- Session-level component-option and `step_range` contract unification.
 - LoHa, LoKr, DoRA and the optional fused backend; `AdapterSession` currently
   installs ordinary LoRA branches only.
 - The generation `AdapterSpec` API, codec-derived adapter metadata, and the

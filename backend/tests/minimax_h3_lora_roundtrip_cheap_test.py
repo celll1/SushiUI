@@ -469,13 +469,13 @@ def test_minimax_h3_a_leaked_wrapper_is_restored_before_the_next_load(
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    real_restore = lora_mod.restore_originals
-    lora_mod.restore_originals = _boom
+    real_unload = backend._minimax_h3_lora_session.unload
+    backend._minimax_h3_lora_session.unload = _boom
     try:
         with pytest.raises(RuntimeError, match="boom"):
             backend._unload_lora_minimax_h3()
     finally:
-        lora_mod.restore_originals = real_restore
+        backend._minimax_h3_lora_session.unload = real_unload
     check(backend, failed_restore)
 
 
@@ -488,6 +488,7 @@ def test_minimax_h3_model_reload_never_splices_model_a_into_model_b(
     backend._load_lora_minimax_h3([{"path": path, "strength": STRENGTH}], {})
     a_ids = (module_ids(model_a)
              | {id(m) for m in backend._minimax_h3_lora_original_modules.values()})
+    _keep_a = list(model_a.modules()) + list(backend._minimax_h3_lora_original_modules.values())
 
     model_b = _Stub(seed=21)
     b_ids_before = module_ids(model_b)
@@ -519,8 +520,10 @@ def test_minimax_h3_two_loras_over_one_module_are_no_longer_refused(
     assert "lora_stacking_unsupported" not in warning_codes(warnings_seen)
 
 
-def test_minimax_h3_unmatched_target_still_warns_partial(tmp_path, resolve_by_path,
+def test_minimax_h3_unmatched_target_is_refused_atomically(tmp_path, resolve_by_path,
                                                          warnings_seen):
+    from core.adapters import AdapterIncompatible
+
     path = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "lora_unet_transformer_blocks_40_attn_to_q"
@@ -530,10 +533,11 @@ def test_minimax_h3_unmatched_target_still_warns_partial(tmp_path, resolve_by_pa
     save_file(saved, str(extended), metadata={"model_type": "minimax_h3"})
 
     model = _Stub()
-    applied = _Backend(model)._load_lora_minimax_h3(
-        [{"path": str(extended), "strength": STRENGTH}], {})
-    assert applied == _N_TARGETS
-    assert wrapped_paths(model) == target_paths()
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_minimax_h3(
+            [{"path": str(extended), "strength": STRENGTH}], {})
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

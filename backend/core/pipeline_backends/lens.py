@@ -83,9 +83,13 @@ class LensMixin:
         return self._lens_lora_original_modules, self._lens_lora_wrapped_keys
 
     def _load_lora_lens(self, lora_configs: List[Dict]) -> int:
-        """Wrap target Linear modules of the Lens transformer with LoRA adapters.
+        """Cover target Linear modules of the Lens transformer with LoRA adapters.
 
         Must be called after the transformer is on GPU (and optionally quantised).
+
+        Each target Linear is covered ONCE by a ``CompositeAdapterLayer`` and each
+        selected LoRA adds a NAMED branch to it, so two Lens LoRAs over the same
+        module SUM instead of being refused.
 
         A LoRA that is missing, unreadable, or matches no target module REFUSES the
         generation rather than returning the base model's image as a success;
@@ -98,9 +102,15 @@ class LensMixin:
         )
         from core.extensions.lora_manager import lora_manager
 
+        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
+        # an earlier request must not leak wrappers into this one. It used to be
+        # merely redundant with the outer finally; now that a second branch SUMS
+        # rather than being refused, a leaked wrapper would silently double-apply.
+        self._unload_lora_lens()
+
         transformer = (self.lens_components or {}).get("transformer")
-        # Unconditional, and BEFORE the empty-config exit: bookkeeping that outlived
-        # a model reload would splice the previous transformer's Linears into this one.
+        # Bookkeeping that outlived a model reload would splice the previous
+        # transformer's Linears into this one.
         originals, wrapped_keys = self._lens_lora_state(transformer)
 
         if not lora_configs:
@@ -126,9 +136,12 @@ class LensMixin:
                 print(f"[Lens LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                       f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
                       f"strength={strength}")
-                applied, occupied = apply_lora_group(
+                applied = apply_lora_group(
                     transformer, grouped, strength, originals, wrapped_keys,
                     default_alpha=alpha_from_metadata(metadata),
+                    # Unique within the request, so selecting the SAME file
+                    # twice is two branches, not a duplicate-name refusal.
+                    branch_name=f"{i}:{lora_file}",
                 )
                 print(f"[Lens LoRA]   wrapped {applied} module(s)")
             except Exception as e:
@@ -142,29 +155,19 @@ class LensMixin:
                 raise RuntimeError(message) from e
 
             if applied == 0:
-                if occupied:
-                    message = (
-                        f"LoRA '{lora_file}': every one of its {occupied} target modules is "
-                        f"already wrapped by an earlier LoRA in this request. Lens applies one "
-                        f"LoRA per target; select a single Lens LoRA."
-                    )
-                    code = "lora_stacking_unsupported"
-                else:
-                    message = (
-                        f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
-                        f"loaded Lens transformer (format={fmt}) -- unrecognized key format or a "
-                        f"different model. Sample keys in file: {list(raw.keys())[:5]}"
-                    )
-                    code = "lora_incompatible"
+                message = (
+                    f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
+                    f"loaded Lens transformer (format={fmt}) -- unrecognized key format or a "
+                    f"different model. Sample keys in file: {list(raw.keys())[:5]}"
+                )
                 print(f"[Lens LoRA] ERROR: {message}")
-                self._lens_lora_warn(message, code=code)
+                self._lens_lora_warn(message, code="lora_incompatible")
                 raise RuntimeError(message)
 
-            if applied + occupied < len(grouped) or occupied:
+            if applied < len(grouped):
                 self._lens_lora_warn(
                     f"LoRA '{lora_file}': applied {applied} of {len(grouped)} down/up pairs "
-                    f"({occupied} already wrapped by an earlier LoRA, "
-                    f"{len(grouped) - applied - occupied} matched no target module).",
+                    f"({len(grouped) - applied} matched no target module).",
                     code="lora_partial",
                 )
             total_applied += applied

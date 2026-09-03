@@ -672,12 +672,17 @@ recorded below. Only the per-LoRA option unification is outstanding.
   `LoKrLinearLayer` (Kronecker-product), and `DoRALinearLayer` (weight decomposition
   with exact strength-zero identity and magnitude vector scaling). All satisfy
   the composite branch protocol and can be combined additively over shared modules.
+- **Checkpoint codec registry and foreign format normalization.**
+  `core.adapters.codec` provides `CodecRegistry`, `detect_adapter_codec()`, and
+  `normalize_adapter_keys()`. It identifies algorithm (`lora`, `loha`, `lokr`),
+  weight decomposition (`dora`), and container format (`sushiui_canonical`,
+  `lycoris_kohya`, `diffusers_peft`), normalizing Hugging Face PEFT keys into
+  canonical down/up stems seamlessly during `AdapterSession` parsing.
 
 **Not landed.**
 
 - `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
   carry generation topology and a capability matrix.
-- The checkpoint codec registry for foreign formats.
 - Checkpoint codec parsing and training adapter integration for foreign LoHa/LoKr/DoRA.
 - The generation `AdapterSpec` API, codec-derived adapter metadata, and the
   corresponding frontend selector/training controls.

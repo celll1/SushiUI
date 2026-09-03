@@ -96,23 +96,8 @@ def _acestep_lora_candidate(module) -> bool:
     return _is_lora_target(module) or isinstance(module, CompositeAdapterLayer)
 
 
-def _acestep_lora_targets(dit):
-    """``(module_path, parent, slot)`` for every slot a LoRA may cover on ``dit``.
-
-    ONE enumerator for both the sd-scripts apply pass and the restore, so they
-    cannot disagree once a target holds more than one branch.
-
-    Two halves, because neither alone is the whole scope. The TRAINER's own
-    iterator supplies the codec (a leaf added to its scope binds here without
-    this file restating the vocabulary), but it yields only bare or
-    ``LoRALinearLayer``-wrapped slots -- a ``CompositeAdapterLayer`` fails its
-    predicate, so an occupied target would vanish exactly when a second LoRA
-    needs it. The second half finds every installed composite structurally,
-    which also covers the lyric-encoder leaves the diffusers/PEFT remap can
-    reach and the trainer's scope never names.
-
-    Callers materialise this before mutating: it reads the live tree.
-    """
+def _acestep_lora_slots(dit):
+    """(parent, slot, module_path) for every slot a LoRA may cover on dit."""
     from core.adapters import CompositeAdapterLayer
     from core.training.adapters.acestep_adapter import iter_acestep_lora_targets
 
@@ -121,10 +106,22 @@ def _acestep_lora_targets(dit):
         dit, {"attention": True, "mlp": True}
     ):
         seen.add(module_path)
-        yield module_path, parent, attr
+        yield parent, attr, module_path
 
-    # isinstance, never a path shape: a composite's own branches are never
-    # composites, so this cannot descend into what it just enumerated.
+    # Lyric encoder targets (for diffusers/PEFT format LoRAs)
+    lyric_encoder = getattr(getattr(dit, "encoder", None), "lyric_encoder", None)
+    lyric_layers = getattr(lyric_encoder, "layers", None) if lyric_encoder is not None else None
+    if lyric_layers is not None:
+        for i, layer in enumerate(lyric_layers):
+            attn = getattr(layer, "self_attn", None)
+            if attn is not None:
+                for leaf in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    if hasattr(attn, leaf):
+                        path = f"encoder.lyric_encoder.layers.{i}.self_attn.{leaf}"
+                        if path not in seen:
+                            seen.add(path)
+                            yield attn, leaf, path
+
     for parent_path, parent in dit.named_modules():
         for slot, child in parent.named_children():
             if not isinstance(child, CompositeAdapterLayer):
@@ -132,7 +129,13 @@ def _acestep_lora_targets(dit):
             path = f"{parent_path}.{slot}" if parent_path else slot
             if path not in seen:
                 seen.add(path)
-                yield path, parent, slot
+                yield parent, slot, path
+
+
+def _acestep_lora_targets(dit):
+    """(module_path, parent, slot) for backward compatibility."""
+    for parent, slot, module_path in _acestep_lora_slots(dit):
+        yield module_path, parent, slot
 
 
 def _restores_acestep_lora(fn):
@@ -776,49 +779,238 @@ class AceStepMixin:
             code="lora_partial",
         )
 
-    def _acestep_lora_state(self, dit):
-        """The (originals, wrapped) maps for THIS DiT.
+    @property
+    def _acestep_lora_session(self):
+        session = getattr(self, "_acestep_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+            session = AdapterSession(
+                resolve_path=self._acestep_resolve_lora_path,
+                warn=self._acestep_lora_warn,
+                label="AceStep LoRA",
+                message_label="ACE-Step LoRA",
+                count_declared_branches=self._acestep_count_declared_branches,
+                missing_file=self._acestep_missing_lora,
+                prepare_file=self._acestep_prepare_lora_file,
+                describe_zero_targets=self._acestep_zero_target_message,
+            )
+            self._acestep_lora_session_instance = session
+        return session
 
-        Reset when the model was reloaded: the maps hold the OLD DiT's Linears,
-        and `_unload_lora_acestep` re-resolves each stale path against the LIVE
-        DiT, so an inherited map installs model A's modules into model B. Keyed
-        by weakref rather than id() because a freed object's id is reusable.
-        """
-        ref = getattr(self, "_acestep_lora_dit_ref", None)
-        if ref is None or ref() is not dit:
-            self._acestep_lora_original_modules: Dict[str, torch.nn.Module] = {}
-            self._acestep_lora_wrapped_modules: set = set()
-            self._acestep_lora_dit_ref = weakref.ref(dit)
-        return self._acestep_lora_original_modules, self._acestep_lora_wrapped_modules
+    @staticmethod
+    def _acestep_resolve_lora_path(raw_path: Any):
+        from core.extensions.lora_manager import lora_manager
+        return lora_manager._resolve_lora_path(raw_path)
+
+    @staticmethod
+    def _acestep_missing_lora(lora_file: str, raw_path: Any):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterFileMissing
+
+        class AceStepFileMissing(AdapterFileMissing, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_not_found"
+                AdapterFileMissing.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        return AceStepFileMissing(
+            f"LoRA file not found: {lora_file}",
+            detail="No such file exists in the registered LoRA directories.",
+            code="lora_not_found",
+        )
+
+    @classmethod
+    def _acestep_count_declared_branches(cls, tensors, _components) -> int:
+        sd_count = sum(1 for k in tensors if k.startswith(cls._ACESTEP_LORA_SD_PREFIX) and k.endswith(".lora_down.weight"))
+        if sd_count > 0:
+            return sd_count
+        peft_count = sum(1 for k in tensors if ".lora_A." in k)
+        if peft_count > 0:
+            return peft_count
+        return sum(1 for k in tensors if k.endswith(".lora_down.weight"))
+
+    @staticmethod
+    def _acestep_zero_target_message(file, counts):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterIncompatible
+
+        class AceStepIncompatible(AdapterIncompatible, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_incompatible"
+                AdapterIncompatible.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        return AceStepIncompatible(
+            f"LoRA '{file.name}': none of the {file.declared_branches} key stem(s) in this file "
+            f"could be applied to the loaded ACE-Step model -- it would have no effect.",
+            detail=f"None of the {file.declared_branches} down/up pairs matched the loaded ACE-Step model.",
+            code="lora_incompatible",
+        )
+
+    @classmethod
+    def _acestep_prepare_lora_file(cls, file):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterIncompatible
+
+        class AceStepIncompatible(AdapterIncompatible, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_incompatible"
+                AdapterIncompatible.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        is_sdscripts = any(k.startswith(cls._ACESTEP_LORA_SD_PREFIX) for k in file.tensors)
+        is_diffusers = (not is_sdscripts) and any(
+            (".lora_A." in k) or (".lora_B." in k) for k in file.tensors
+        )
+        if not is_sdscripts and not is_diffusers:
+            sample_keys = list(file.tensors.keys())[:5]
+            raise AceStepIncompatible(
+                f"LoRA '{file.name}': unrecognized key format -- it targets nothing on this ACE-Step model",
+                detail=f"Neither sd-scripts native ('lora_unet_decoder_layers_...') nor "
+                       f"diffusers/PEFT ('transformer_blocks....lora_A/lora_B.weight') naming "
+                       f"was found; this is most likely another architecture's LoRA. Sample keys: {sample_keys}",
+                code="lora_incompatible",
+            )
+        if is_sdscripts:
+            stems: Dict[str, Dict[str, Any]] = {}
+            for k, v in file.tensors.items():
+                if k.endswith(".lora_down.weight"):
+                    stem = k[:-len(".lora_down.weight")]
+                    stems.setdefault(stem, {})["down"] = v
+                elif k.endswith(".lora_up.weight"):
+                    stem = k[:-len(".lora_up.weight")]
+                    stems.setdefault(stem, {})["up"] = v
+                elif k.endswith(".alpha"):
+                    stem = k[:-len(".alpha")]
+                    stems.setdefault(stem, {})["alpha"] = v
+            fallback_alpha = None
+            for a_key in ("lora_alpha", "alpha"):
+                if a_key in file.metadata:
+                    try:
+                        fallback_alpha = float(file.metadata[a_key])
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            return {"format": "sdscripts", "stems": stems, "fallback_alpha": fallback_alpha}
+        else:
+            groups: Dict[str, Dict[str, Any]] = {}
+            for key, tensor in file.tensors.items():
+                m = cls._ACESTEP_LORA_DIFFUSERS_DIT_QKV_RE.match(key)
+                if m:
+                    idx, scope_raw, qkv, ab = m.groups()
+                    scope = cls._ACESTEP_LORA_DIFFUSERS_DIT_SCOPE[scope_raw]
+                    leaf = cls._ACESTEP_LORA_DIFFUSERS_LEAF[qkv]
+                    module_key = f"decoder.layers.{idx}.{scope}.{leaf}"
+                    source_prefix = key.rsplit(".", 2)[0]
+                    g = groups.setdefault(module_key, {"source_prefix": source_prefix, "down": None, "up": None, "alpha": None})
+                    g["down" if ab == "lora_A" else "up"] = tensor
+                    continue
+                m = cls._ACESTEP_LORA_DIFFUSERS_DIT_OUT_RE.match(key)
+                if m:
+                    idx, scope_raw, ab = m.groups()
+                    scope = cls._ACESTEP_LORA_DIFFUSERS_DIT_SCOPE[scope_raw]
+                    module_key = f"decoder.layers.{idx}.{scope}.o_proj"
+                    source_prefix = key.rsplit(".", 2)[0]
+                    g = groups.setdefault(module_key, {"source_prefix": source_prefix, "down": None, "up": None, "alpha": None})
+                    g["down" if ab == "lora_A" else "up"] = tensor
+                    continue
+                m = cls._ACESTEP_LORA_DIFFUSERS_LYRIC_RE.match(key)
+                if m:
+                    idx, qkv, ab = m.groups()
+                    leaf = cls._ACESTEP_LORA_DIFFUSERS_LEAF[qkv]
+                    module_key = f"encoder.lyric_encoder.layers.{idx}.self_attn.{leaf}"
+                    source_prefix = key.rsplit(".", 2)[0]
+                    g = groups.setdefault(module_key, {"source_prefix": source_prefix, "down": None, "up": None, "alpha": None})
+                    g["down" if ab == "lora_A" else "up"] = tensor
+                    continue
+            for module_key, info in groups.items():
+                alpha_key = f"{info['source_prefix']}.alpha"
+                if alpha_key in file.tensors:
+                    info["alpha"] = file.tensors[alpha_key]
+            return {"format": "diffusers", "groups": groups}
+
+    def _acestep_build_lora_branch(self, request):
+        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH, lora_branch_dtype
+        prep = request.prepared
+        if prep["format"] == "sdscripts":
+            from core.training.adapters.acestep_adapter import _flatten_to_sdscripts
+            stem = f"lora_unet_{_flatten_to_sdscripts(request.module_path)}"
+            weights = prep["stems"].get(stem)
+            if weights is None:
+                return None
+            down = weights.get("down")
+            up = weights.get("up")
+            if down is None or up is None:
+                return None
+            alpha = weights.get("alpha")
+            fallback_alpha = prep["fallback_alpha"]
+        else:
+            info = prep["groups"].get(request.module_path)
+            if info is None:
+                return None
+            down = info.get("down")
+            up = info.get("up")
+            if down is None or up is None:
+                return None
+            alpha = info.get("alpha")
+            fallback_alpha = None
+
+        base = request.base
+        expected_in = getattr(base, "in_features", None)
+        expected_out = getattr(base, "out_features", None)
+        lora_in = down.shape[-1]
+        lora_out = up.shape[0]
+        if lora_in != expected_in or lora_out != expected_out or down.shape[0] != up.shape[1]:
+            print(f"[AceStep LoRA] WARNING: shape mismatch for {request.module_path!r} -- "
+                  f"LoRA in/out=({lora_in}, {lora_out}) vs module in/out=({expected_in}, {expected_out})")
+            return SHAPE_MISMATCH
+
+        rank = down.shape[0]
+        if alpha is not None:
+            alpha_val = float(alpha.item()) if torch.is_tensor(alpha) else float(alpha)
+        elif fallback_alpha is not None:
+            alpha_val = float(fallback_alpha)
+        else:
+            alpha_val = float(rank)
+
+        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_val, lora_name=request.module_path)
+        device = base.weight.device
+        dtype = lora_branch_dtype(base)
+        with torch.no_grad():
+            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
+
+        return PreparedBranch(branch, request.file.strength)
+
+    def _acestep_lora_components(self):
+        from core.adapters import AdapterComponent
+        components = getattr(self, "acestep_components", None) or {}
+        return [AdapterComponent(
+            name="dit",
+            module=components.get("dit"),
+            iter_targets=_acestep_lora_slots,
+            is_candidate=_acestep_lora_candidate,
+            build_branch=self._acestep_build_lora_branch,
+        )]
+
+    @property
+    def _acestep_lora_original_modules(self):
+        return self._acestep_lora_session.state("dit").originals
+
+    @property
+    def _acestep_lora_wrapped_modules(self):
+        return self._acestep_lora_session.state("dit").wrapped
 
     def _load_lora_acestep(self, lora_configs: list):
-        """Load LoRAs onto the ACE-Step DiT (decoder attention + feed-forward).
-
-        Raises `ValidationError` when a requested LoRA cannot be honored --
-        a missing file, an unrecognized key format, or a file that binds no
-        target module at all. The caller restores any already-wrapped module
-        in its `finally` (see `_restores_acestep_lora`).
-
-        Args:
-            lora_configs: list of {"path": str, "strength": float, ...}
-                (same shape as every other arch's `params["loras"]`).
-        """
-        # Unconditional, and BEFORE the empty-config exit: this is what re-keys
-        # the state to the live DiT, and a restore that failed in an earlier
-        # request must not leak its wrappers into this generation.
         self._unload_lora_acestep()
-
         if not lora_configs:
-            return
-
-        from api.error_handlers import APIError, GenerationError, ValidationError
-
+            return 0
+        from api.error_handlers import ValidationError
         if not self.acestep_components:
             raise ValidationError(
                 "Cannot apply a LoRA: ACE-Step components are not loaded",
                 detail="Load an ACE-Step model before requesting a LoRA.",
             )
-
         dit = self.acestep_components.get("dit")
         decoder = getattr(dit, "decoder", None)
         layers = getattr(decoder, "layers", None) if decoder is not None else None
@@ -827,526 +1019,11 @@ class AceStepMixin:
                 "Cannot apply a LoRA: the loaded ACE-Step DiT has no decoder.layers",
                 detail="The LoRA target scope (decoder.layers.*) does not exist on this model.",
             )
-
-        self._acestep_lora_state(dit)
-
-        # Use global lora_manager instance (has user-configured additional_dirs)
-        from core.extensions.lora_manager import lora_manager
-
         print(f"[AceStep LoRA] Loading {len(lora_configs)} LoRA(s)...")
+        return self._acestep_lora_session.load(lora_configs, self._acestep_lora_components()).applied
 
-        for i, lora_config in enumerate(lora_configs):
-            lora_path = lora_config.get("path", "")
-            lora_strength = lora_config.get("strength", 1.0)
-
-            resolved_path = lora_manager._resolve_lora_path(lora_path)
-            if resolved_path is None:
-                # Server directories stay in the console; the API response
-                # names only the LoRA (mirrors ZImageMixin._load_lora).
-                print(f"[AceStep LoRA] ERROR: LoRA file not found: {lora_path}")
-                print(f"[AceStep LoRA]   Searched in: {lora_manager.lora_dir}")
-                print(f"[AceStep LoRA]   Additional dirs: {lora_manager.additional_dirs}")
-                lora_file = os.path.basename(str(lora_path))
-                message = (
-                    f"LoRA '{lora_file}' was requested but no such file exists in the "
-                    f"registered LoRA directories -- refusing to generate without it."
-                )
-                self._acestep_lora_warn(message, code="lora_not_found")
-                raise ValidationError(
-                    f"LoRA file not found: {lora_file}",
-                    detail="No such file exists in the registered LoRA directories.",
-                    code="lora_not_found",
-                )
-
-            print(f"[AceStep LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
-
-            from safetensors import safe_open
-
-            try:
-                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
-                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
-
-                print(f"[AceStep LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
-
-                # ---- format detection (sd-scripts native vs external diffusers/PEFT) ----
-                is_sdscripts_format = any(
-                    k.startswith(self._ACESTEP_LORA_SD_PREFIX) for k in lora_state_dict
-                )
-                is_diffusers_format = (not is_sdscripts_format) and any(
-                    (".lora_A." in k) or (".lora_B." in k) for k in lora_state_dict
-                )
-
-                # Unique within the request, so two selections of the SAME file
-                # are two branches rather than a duplicate-name refusal.
-                branch_name = f"{i}:{os.path.basename(lora_path)}"
-
-                if is_diffusers_format:
-                    self._load_lora_acestep_diffusers_format(
-                        dit, lora_state_dict, lora_strength, lora_path, branch_name
-                    )
-                    continue
-
-                if not is_sdscripts_format:
-                    sample_keys = list(lora_state_dict.keys())[:5]
-                    raise ValidationError(
-                        f"LoRA '{os.path.basename(lora_path)}': unrecognized key format -- it targets "
-                        f"nothing on this ACE-Step model",
-                        detail=f"Neither sd-scripts native ('lora_unet_decoder_layers_...') nor "
-                               f"diffusers/PEFT ('transformer_blocks....lora_A/lora_B.weight') naming "
-                               f"was found; this is most likely another architecture's LoRA. Sample "
-                               f"keys: {sample_keys}",
-                    )
-
-                self._apply_lora_acestep_sdscripts_format(
-                    dit, lora_state_dict, lora_strength, lora_path, branch_name
-                )
-
-            except APIError:
-                raise  # a deliberate refusal, not a load failure to be re-wrapped
-            except Exception as e:
-                print(f"[AceStep LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Type + basename only: this rides into the PNG text chunk and the API
-                # response, and an OSError's str() carries the absolute resolved path.
-                message = (f"ACE-Step LoRA '{os.path.basename(lora_path)}' could not be "
-                           f"applied ({type(e).__name__}); see the server log for details")
-                raise GenerationError(message) from e
-
-    def _apply_lora_acestep_sdscripts_format(self, dit, lora_state_dict, lora_strength,
-                                             lora_path, branch_name="lora"):
-        """Apply an sd-scripts-native ACE-Step LoRA (this repo's own training
-        format -- `AceStepLoRAAdapter.save_checkpoint`).
-
-        Scope, stem spelling and the bound/unbound verdict all come from
-        `_acestep_lora_targets` (the trainer's own iterator plus the composites
-        already installed) / `_flatten_to_sdscripts`, so a leaf the trainer's
-        scope gains later binds here as well instead of being silently dropped
-        as a foreign key.
-        """
-        from api.error_handlers import ValidationError
-        from core.adapters import get_module_slot
-        from core.training.adapters.acestep_adapter import _flatten_to_sdscripts
-
-        # Both halves, so a stem missing its lora_down is still seen (and
-        # reported) rather than being invisible to the census.
-        stems = {k[: -len(".lora_down.weight")]
-                 for k in lora_state_dict if k.endswith(".lora_down.weight")}
-        stems |= {k[: -len(".lora_up.weight")]
-                  for k in lora_state_dict if k.endswith(".lora_up.weight")}
-        known_stems = {s for s in stems if s.startswith(self._ACESTEP_LORA_SD_PREFIX)}
-        foreign_stems = sorted(stems - known_stems)
-        total_stems = len(stems)
-
-        bound_stems = set()
-        scope = {"attention": False, "mlp": False}
-        skipped_shape, skipped_partial = [], []
-
-        for module_path, parent, attr in list(_acestep_lora_targets(dit)):
-            stem = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
-            if stem not in known_stems:
-                continue
-            scope["mlp" if ".mlp." in module_path else "attention"] = True
-            current = get_module_slot(parent, attr)
-            if not _acestep_lora_candidate(current):
-                continue
-            down = lora_state_dict.get(f"{stem}.lora_down.weight")
-            up = lora_state_dict.get(f"{stem}.lora_up.weight")
-            if down is None or up is None:
-                skipped_partial.append(stem)
-                continue
-            if self._wrap_with_lora_acestep(
-                parent, attr, current, down, up, lora_strength,
-                lora_state_dict.get(f"{stem}.alpha"), module_path, branch_name,
-            ):
-                bound_stems.add(stem)
-            else:
-                skipped_shape.append(stem)
-
-        applied_count = len(bound_stems)
-        print(f"[AceStep LoRA] Applied LoRA to {applied_count} module(s) "
-              f"(scope={{attention: {scope['attention']}, mlp: {scope['mlp']}}}, "
-              f"{total_stems} LoRA key stem(s) in file)")
-
-        unbound = sorted(known_stems - bound_stems)
-        unmatched = [s for s in unbound
-                     if s not in set(skipped_shape) | set(skipped_partial)]
-        name = os.path.basename(lora_path)
-
-        if applied_count == 0:
-            reasons = []
-            if skipped_shape:
-                reasons.append(
-                    f"{len(skipped_shape)} on a hidden-dimension shape mismatch (trained against a "
-                    f"different-sized ACE-Step checkpoint; no key remap can bridge that)")
-            if skipped_partial:
-                reasons.append(
-                    f"{len(skipped_partial)} with an incomplete lora_down/lora_up pair")
-            if unmatched:
-                reasons.append(
-                    f"{len(unmatched)} matching no module on this model (e.g. {unmatched[:3]})")
-            if foreign_stems:
-                reasons.append(
-                    f"{len(foreign_stems)} outside the ACE-Step LoRA scope, i.e. another "
-                    f"architecture's or component's keys (e.g. {foreign_stems[:3]})")
-            if not reasons:
-                reasons.append(
-                    f"the file carries no ACE-Step LoRA key at all (sample: "
-                    f"{sorted(stems)[:3] or list(lora_state_dict.keys())[:3]})")
-
-            message = (
-                f"LoRA '{name}': none of the {total_stems} key stem(s) in this file could be "
-                f"applied to the loaded ACE-Step model -- it would have no effect."
-            )
-            print(f"[AceStep LoRA] ERROR: {message}")
-            self._acestep_lora_warn(message, code="lora_incompatible")
-            raise ValidationError(message, detail="; ".join(reasons) + ".",
-                                  code="lora_incompatible")
-
-        if unbound or foreign_stems:
-            # Bound something: a partial application is a warning, matching
-            # every other architecture's LoRA loader.
-            notes = []
-            if skipped_shape:
-                notes.append("a shape mismatch")
-            if skipped_partial:
-                notes.append("an incomplete lora_down/lora_up pair")
-            if unmatched:
-                notes.append("no matching module on this model")
-            if foreign_stems:
-                notes.append("a key outside the ACE-Step LoRA scope (another architecture/component)")
-            print(
-                f"[AceStep LoRA] WARNING: {len(unbound)} ACE-Step key stem(s) and "
-                f"{len(foreign_stems)} foreign stem(s) in {lora_path!r} were not applied. "
-                f"Sample: {(unbound + foreign_stems)[:5]}"
-            )
-            self._acestep_lora_emit_compat_warning(
-                lora_path, applied_count, total_stems,
-                mismatch_note=" / ".join(notes) or "an unrecognized key",
-            )
-
-    def _wrap_with_lora_acestep(self, parent_module, attr_name, current_module,
-                                 lora_down_weight, lora_up_weight, strength, alpha,
-                                 module_key, branch_name="lora"):
-        """Add one named LoRA branch to the composite covering
-        `parent_module[attr_name]` (a decoder attention/feed-forward Linear, or
-        a lyric-encoder attention Linear on the diffusers/PEFT path).
-
-        Mirrors `ZImageMixin._wrap_with_lora`/`FluxMixin._wrap_with_lora_flux2`.
-
-        Shape-validates the LoRA tensors against the BASE Linear's
-        `in_features`/`out_features` and returns False (skipped, not applied) on
-        a mismatch instead of crashing later at a matmul inside the wrapped
-        forward pass. The check runs BEFORE anything is installed, since
-        attaching the composite is part of resolving the base and a later check
-        would leave an empty one on a target that should have stayed bare. This
-        guard is a no-op for this repo's own sd-scripts-trained LoRAs (their
-        shapes always match, since they were trained against this exact model);
-        it matters for externally-sourced diffusers/PEFT-format LoRAs that may
-        have been trained against a different-sized ACE-Step variant (see the
-        `_load_lora_acestep_diffusers_format` docstring).
-        """
-        from core.adapters import CompositeAdapterLayer, LoRALinearLayer
-
-        true_original = (current_module.original_module
-                         if isinstance(current_module, CompositeAdapterLayer)
-                         else current_module)
-
-        expected_in = true_original.in_features
-        expected_out = true_original.out_features
-        lora_in = lora_down_weight.shape[-1]
-        lora_out = lora_up_weight.shape[0]
-        if lora_in != expected_in or lora_out != expected_out:
-            print(
-                f"[AceStep LoRA] WARNING: shape mismatch for {module_key!r} -- LoRA tensor "
-                f"in/out=({lora_in}, {lora_out}) vs this model's module in/out="
-                f"({expected_in}, {expected_out}); skipping this module (not an error -- the "
-                f"LoRA was very likely trained against a different-sized ACE-Step checkpoint "
-                f"variant, which no key-name remap can bridge)."
-            )
-            return False
-
-        if module_key not in self._acestep_lora_original_modules:
-            self._acestep_lora_original_modules[module_key] = true_original
-
-        rank = lora_down_weight.shape[0]
-        alpha_value = alpha.item() if alpha is not None else rank
-
-        branch = LoRALinearLayer(
-            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
-        )
-
-        # The BRANCH's dtype must never be taken from the base weight: over an
-        # Int8Linear that would store the LoRA at 8 uniform levels, and over an
-        # Fp8Linear at e4m3 precision. `lora_branch_dtype` returns the base's
-        # dtype only when it is a real floating-point one and falls back to
-        # bfloat16 otherwise. The DEVICE is still the base's -- that is a
-        # placement, not a precision.
-        from core.adapters import lora_branch_dtype
-
-        device = true_original.weight.device
-        dtype = lora_branch_dtype(true_original)
-
-        with torch.no_grad():
-            branch.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
-            branch.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
-
-        # attach() is idempotent: a second LoRA over this slot gets the SAME
-        # composite and adds a branch beside the first. add_branch refolds the
-        # strength into the branch's own scale; multiplying it onto the delta
-        # afterwards is different arithmetic and loses bit-identity with the
-        # single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent_module, attr_name)
-        composite.add_branch(branch_name, branch, strength=strength)
-
-        self._acestep_lora_wrapped_modules.add(module_key)
-        return True
-
-    def _load_lora_acestep_diffusers_format(self, dit, lora_state_dict, lora_strength,
-                                            lora_path, branch_name="lora"):
-        """Load an EXTERNAL diffusers/PEFT-format ACE-Step LoRA (e.g. community
-        checkpoints exported from `peft`/`diffusers` training tooling, as
-        opposed to this repo's own sd-scripts-native training format).
-
-        Key convention (see the class-level "LoRA" comment block for the full
-        citation/rationale) -- remapped onto this repo's vendored module
-        attribute paths:
-
-            transformer_blocks.{i}.attn.to_{q,k,v}            -> decoder.layers.{i}.self_attn.{q,k,v}_proj
-            transformer_blocks.{i}.attn.to_out.0               -> decoder.layers.{i}.self_attn.o_proj
-            transformer_blocks.{i}.cross_attn.to_{q,k,v}       -> decoder.layers.{i}.cross_attn.{q,k,v}_proj
-            transformer_blocks.{i}.cross_attn.to_out.0         -> decoder.layers.{i}.cross_attn.o_proj
-            lyric_encoder.encoders.{i}.self_attn.linear_{q,k,v} -> encoder.lyric_encoder.layers.{i}.self_attn.{q,k,v}_proj
-            lyric_encoder.encoders.{i}.self_attn.linear_out    -> encoder.lyric_encoder.layers.{i}.self_attn.o_proj
-                                                                   (mapped defensively; no LoRA in the wild has been
-                                                                   observed to actually target this leaf)
-
-        `.lora_A.weight` is the down-projection ([rank, in]), `.lora_B.weight`
-        is the up-projection ([out, rank]) -- diffusers/PEFT naming, vs this
-        repo's own `.lora_down.weight`/`.lora_up.weight`. A per-tensor
-        `<source_prefix>.alpha` is honored if present; otherwise alpha
-        defaults to rank (PEFT LoRAs typically carry alpha in a sidecar
-        `adapter_config.json` that a bare safetensors dump does not include).
-
-        IMPORTANT: this only bridges a NAMING-convention difference. A
-        diffusers/PEFT LoRA trained against a different ACE-Step generation
-        (different hidden_size / layer counts) is dimensionally incompatible
-        no matter how its keys are renamed -- `_wrap_with_lora_acestep`
-        shape-validates every module against this model's actual
-        `in_features`/`out_features` and skips (with a per-module warning)
-        anything that does not match, so a mismatched file is refused with a
-        readable reason rather than crashing on a matmul dimension error.
-
-        Unmatched keys (e.g. an incomplete lora_A/lora_B pair, or a target
-        module this backend does not expose) are skipped with a warning: this
-        is a foreign codec, so a key it does not place is not evidence of a
-        defect the way an unbound sd-scripts key is. A file that applies ZERO
-        modules is still refused.
-        """
-        # module_key -> {"kind": "dit_self"|"dit_cross"|"lyric", "source_prefix": str,
-        #                "down": Tensor|None, "up": Tensor|None, "alpha": Tensor|None}
-        groups: Dict[str, Dict[str, Any]] = {}
-        matched_source_keys = set()
-
-        def _bucket(module_key, kind, source_prefix, slot, tensor):
-            g = groups.setdefault(
-                module_key, {"kind": kind, "source_prefix": source_prefix, "down": None, "up": None, "alpha": None}
-            )
-            g[slot] = tensor
-
-        for key, tensor in lora_state_dict.items():
-            m = self._ACESTEP_LORA_DIFFUSERS_DIT_QKV_RE.match(key)
-            if m:
-                idx, scope_raw, qkv, ab = m.groups()
-                scope = self._ACESTEP_LORA_DIFFUSERS_DIT_SCOPE[scope_raw]
-                leaf = self._ACESTEP_LORA_DIFFUSERS_LEAF[qkv]
-                module_key = f"decoder.layers.{idx}.{scope}.{leaf}"
-                source_prefix = key.rsplit(".", 2)[0]  # strip ".lora_A.weight" / ".lora_B.weight"
-                kind = "dit_self" if scope == "self_attn" else "dit_cross"
-                _bucket(module_key, kind, source_prefix, "down" if ab == "lora_A" else "up", tensor)
-                matched_source_keys.add(key)
-                continue
-
-            m = self._ACESTEP_LORA_DIFFUSERS_DIT_OUT_RE.match(key)
-            if m:
-                idx, scope_raw, ab = m.groups()
-                scope = self._ACESTEP_LORA_DIFFUSERS_DIT_SCOPE[scope_raw]
-                module_key = f"decoder.layers.{idx}.{scope}.o_proj"
-                source_prefix = key.rsplit(".", 2)[0]
-                kind = "dit_self" if scope == "self_attn" else "dit_cross"
-                _bucket(module_key, kind, source_prefix, "down" if ab == "lora_A" else "up", tensor)
-                matched_source_keys.add(key)
-                continue
-
-            m = self._ACESTEP_LORA_DIFFUSERS_LYRIC_RE.match(key)
-            if m:
-                idx, qkv, ab = m.groups()
-                leaf = self._ACESTEP_LORA_DIFFUSERS_LEAF[qkv]
-                module_key = f"encoder.lyric_encoder.layers.{idx}.self_attn.{leaf}"
-                source_prefix = key.rsplit(".", 2)[0]
-                _bucket(module_key, "lyric", source_prefix, "down" if ab == "lora_A" else "up", tensor)
-                matched_source_keys.add(key)
-                continue
-
-        # Second pass: pick up an optional per-tensor alpha alongside each
-        # matched group's source prefix (rare for bare PEFT safetensors dumps,
-        # but honored if present).
-        for module_key, info in groups.items():
-            alpha_key = f"{info['source_prefix']}.alpha"
-            if alpha_key in lora_state_dict:
-                info["alpha"] = lora_state_dict[alpha_key]
-                matched_source_keys.add(alpha_key)
-
-        total_groups = len(groups)
-        applied_count = 0
-        dit_self_applied = 0
-        dit_cross_applied = 0
-        lyric_applied = 0
-        skipped_shape = 0
-        skipped_missing = 0
-
-        for module_key, info in groups.items():
-            down = info["down"]
-            up = info["up"]
-            if down is None or up is None:
-                print(
-                    f"[AceStep LoRA] WARNING: incomplete lora_A/lora_B pair for {module_key!r} "
-                    f"(source prefix {info['source_prefix']!r}) -- skipping."
-                )
-                skipped_missing += 1
-                continue
-
-            parent, leaf = self._acestep_walk_module_path(dit, module_key)
-            if parent is None or leaf is None:
-                print(
-                    f"[AceStep LoRA] WARNING: no module at {module_key!r} on this ACE-Step model "
-                    f"(remapped from {info['source_prefix']!r}) -- skipping."
-                )
-                skipped_missing += 1
-                continue
-
-            current = getattr(parent, leaf, None)
-            if not _acestep_lora_candidate(current):
-                skipped_missing += 1
-                continue
-
-            wrapped = self._wrap_with_lora_acestep(
-                parent, leaf, current, down, up, lora_strength, info["alpha"],
-                module_key, branch_name,
-            )
-            if wrapped:
-                applied_count += 1
-                if info["kind"] == "dit_self":
-                    dit_self_applied += 1
-                elif info["kind"] == "dit_cross":
-                    dit_cross_applied += 1
-                elif info["kind"] == "lyric":
-                    lyric_applied += 1
-            else:
-                skipped_shape += 1
-
-        unmatched_keys = [k for k in lora_state_dict if k not in matched_source_keys]
-
-        print(
-            f"[AceStep LoRA] Loading (diffusers/PEFT format detected) {lora_path!r} -- "
-            f"{total_groups} module group(s) parsed from key names"
-        )
-        print(
-            f"[AceStep LoRA] Applied LoRA to {applied_count} modules "
-            f"(DiT self_attn={dit_self_applied}, DiT cross_attn={dit_cross_applied}, "
-            f"lyric_encoder self_attn={lyric_applied})"
-        )
-        if skipped_shape:
-            print(
-                f"[AceStep LoRA] WARNING: {skipped_shape} module(s) skipped due to a hidden-dimension "
-                f"shape mismatch against the currently loaded ACE-Step model (see per-module warnings "
-                f"above) -- this LoRA was very likely trained against a different-sized ACE-Step "
-                f"checkpoint variant; renaming keys cannot bridge a real architecture/dimension mismatch."
-            )
-        if skipped_missing:
-            print(
-                f"[AceStep LoRA] WARNING: {skipped_missing} module group(s) skipped -- either an "
-                f"incomplete lora_A/lora_B pair, or no matching module on this model (e.g. "
-                f"lyric_encoder self-attn output-projection LoRA, which this backend's lyric encoder "
-                f"does not expose as a separately-trained-target in the wild)."
-            )
-        if unmatched_keys:
-            print(
-                f"[AceStep LoRA] {len(unmatched_keys)} key(s) in {lora_path!r} did not match any known "
-                f"diffusers/PEFT ACE-Step key pattern (e.g. FF/mlp-scope LoRA, or an unrelated "
-                f"architecture) and were ignored entirely. Sample: {unmatched_keys[:5]}"
-            )
-        if applied_count == 0:
-            # Individual unmatched keys stay skips (above); a file that applies
-            # NOTHING cannot be honored, so the request is refused rather than
-            # generating audio this LoRA never touched.
-            from api.error_handlers import ValidationError
-            sample_keys = list(lora_state_dict.keys())[:5]
-            raise ValidationError(
-                f"LoRA '{os.path.basename(lora_path)}': 0 of {total_groups} diffusers/PEFT module "
-                f"group(s) applied -- it has no effect on this ACE-Step model",
-                detail=f"{skipped_shape} skipped on a shape mismatch, {skipped_missing} on a missing "
-                       f"module or incomplete lora_A/lora_B pair. Likely a LoRA for a different "
-                       f"ACE-Step generation (e.g. v1 3.5B vs this v1.5 2B). Sample keys: {sample_keys}",
-            )
-
-        if total_groups > 0:
-            if skipped_shape and skipped_missing:
-                mismatch_note = "shape mismatch or unmatched target module"
-            elif skipped_shape:
-                mismatch_note = "shape mismatch"
-            else:
-                mismatch_note = "unmatched target module"
-            self._acestep_lora_emit_compat_warning(
-                lora_path, applied_count, total_groups, mismatch_note=mismatch_note,
-            )
-
-    def _unload_lora_acestep(self):
-        """Restore original (un-wrapped) Linear modules on the ACE-Step DiT.
-
-        Driven by `_acestep_lora_targets` -- what is actually INSTALLED -- not by
-        wrapped-set membership, so it cannot disagree with the apply pass now
-        that a target can hold more than one branch. The enumerator's structural
-        half finds a composite wherever it sits, which is what keeps the
-        diffusers/PEFT path's `encoder.lyric_encoder.layers.*` wrappers in scope
-        without this method re-deriving a second traversal for them.
-
-        Which DiT is restored into is decided by `_acestep_lora_state`, not by
-        the call order."""
-        from core.adapters import CompositeAdapterLayer, get_module_slot, set_module_slot
-
-        dit = (getattr(self, "acestep_components", None) or {}).get("dit")
-        if dit is None:
-            # Model unloaded: drop the maps so a later load cannot inherit them.
-            self._acestep_lora_original_modules = {}
-            self._acestep_lora_wrapped_modules = set()
-            self._acestep_lora_dit_ref = None
-            return 0
-
-        originals, wrapped = self._acestep_lora_state(dit)
-        if not wrapped:
-            return 0
-
-        unloaded_count = 0
-        print(f"[AceStep LoRA] Unloading LoRAs ({len(wrapped)} modules)...")
-
-        for module_key, parent, slot in list(_acestep_lora_targets(dit)):
-            current = get_module_slot(parent, slot)
-            if not isinstance(current, CompositeAdapterLayer):
-                continue
-            set_module_slot(parent, slot,
-                            originals.get(module_key, current.original_module))
-            # Discarded as each one lands, so a raise part way through leaves
-            # only the modules still wrapped for the next attempt to restore.
-            wrapped.discard(module_key)
-            unloaded_count += 1
-
-        # Only reached on a clean pass: what is left named nothing installed.
-        wrapped.clear()
-
-        print(f"[AceStep LoRA] Unloaded {unloaded_count} LoRA modules")
-        print("[AceStep LoRA] Original modules preserved for future LoRA loads")
-        return unloaded_count
+    def _unload_lora_acestep(self) -> int:
+        return self._acestep_lora_session.unload(self._acestep_lora_components())
 
     def _apply_or_clear_lora_acestep(self, lora_configs: list):
         """Shared load/unload gate, called by every generate path before the

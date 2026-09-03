@@ -281,72 +281,200 @@ class LTX2Mixin:
         except Exception:
             pass
 
-    def _ltx2_lora_state(self, transformer):
-        """The (originals, wrapped_keys) maps for THIS transformer.
+    @property
+    def _ltx2_lora_session(self):
+        session = getattr(self, "_ltx2_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+            session = AdapterSession(
+                resolve_path=self._ltx2_resolve_lora_path,
+                warn=self._ltx2_lora_warn,
+                label="LTX-2.3 LoRA",
+                message_label="LTX-2.3 LoRA",
+                count_declared_branches=self._ltx2_count_declared_branches,
+                missing_file=self._ltx2_missing_lora,
+                prepare_file=self._ltx2_prepare_lora_file,
+                describe_zero_targets=self._ltx2_zero_target_message,
+            )
+            self._ltx2_lora_session_instance = session
+        return session
 
-        Reset when the model was reloaded: the maps hold the OLD transformer's
-        Linears, ``apply_lora_group`` keeps them (setdefault) and
-        ``restore_originals`` would then splice them into the new transformer.
-        Keyed by weakref rather than id() because a freed object's id is
-        reusable, and a reload allocating at the dead model's address is exactly
-        the case this guards. (In-place mutations -- the INT8 conversion,
-        wrap/unwrap -- keep the same object and so keep the maps.)
-        """
-        ref = getattr(self, "_ltx2_lora_transformer_ref", None)
-        if transformer is not None and ref is not None and ref() is transformer:
-            return self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys
-        if getattr(self, "_ltx2_lora_wrapped_keys", None):
-            print("[LTX-2.3 LoRA] discarding LoRA bookkeeping from a previous transformer")
-        self._ltx2_lora_original_modules: Dict[str, Any] = {}
-        self._ltx2_lora_wrapped_keys: set = set()
-        self._ltx2_lora_transformer_ref = (
-            weakref.ref(transformer) if transformer is not None else None)
-        return self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys
-
-    def _load_lora_ltx2(self, lora_configs: Optional[List[Dict]]) -> int:
-        """Wrap the LTX-2.3 DiT's target Linears with the selected LoRAs.
-
-        SCOPE. The DiT only -- the trainer freezes Gemma-3 and the text
-        connectors, so an LTX-2.3 LoRA has no text-encoder tensors. Targets and
-        key stems come from the TRAINER's own iterator
-        (``core.models.ltx2.ltx2_lora``) so the two sides cannot drift.
-
-        FAILURE. Raises instead of warning-and-continuing: a LoRA that cannot be
-        found, parsed or matched to a single module must not yield a video that
-        looks like a successful LoRA generation. Any partial application is
-        rolled back before the exception leaves.
-
-        STACKING. Each target Linear is covered ONCE by a
-        ``CompositeAdapterLayer`` and each selected LoRA adds a NAMED branch to
-        it, so two LoRAs over the same module SUM instead of the second being
-        refused. Branch names carry the request index, so selecting the same
-        file twice is two branches rather than a duplicate-name error.
-
-        ORDERING. Called as the FIRST statement of each generate path's ``try``:
-        after ``_ltx2_runtime_int8`` (which must see the unwrapped tree) and
-        after ``_ensure_ltx2_swap_and_offload`` (the offloader's caches are
-        reconciled here, in ``_ltx2_sync_block_swap_after_lora``).
-        ``_unload_lora_ltx2`` runs in that same ``try``'s ``finally``.
-
-        BLOCK SWAP. Each adapter is built on its BASE module's current device --
-        host for a swapped-out block, GPU for a resident one -- so the offloader
-        carries it with the block it lives in.
-        """
-        from api.error_handlers import ValidationError, with_error_code
+    @staticmethod
+    def _ltx2_resolve_lora_path(raw_path: Any):
         from core.extensions.lora_manager import lora_manager
-        from core.models.ltx2.ltx2_lora import (
-            apply_lora_group, load_lora_safetensors, metadata_alpha,
-            normalise_lora_state_dict,
+        return lora_manager._resolve_lora_path(raw_path)
+
+    @staticmethod
+    def _ltx2_missing_lora(lora_file: str, raw_path: Any):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterFileMissing
+
+        class Ltx2FileMissing(AdapterFileMissing, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_not_found"
+                AdapterFileMissing.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        print(f"[LTX-2.3 LoRA] ERROR: {lora_file} not found")
+        return Ltx2FileMissing(
+            f"LoRA file not found: {lora_file}",
+            detail="No such file in the configured LoRA directory or in any additional directory.",
+            code="lora_not_found",
         )
 
+    @classmethod
+    def _ltx2_count_declared_branches(cls, tensors, _components) -> int:
+        from core.models.ltx2.ltx2_lora import normalise_lora_state_dict
+        return len(normalise_lora_state_dict(tensors))
+
+    @staticmethod
+    def _ltx2_zero_target_message(file, counts):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterIncompatible
+
+        class Ltx2Incompatible(AdapterIncompatible, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_incompatible"
+                AdapterIncompatible.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        return Ltx2Incompatible(
+            f"LoRA '{file.name}' matched 0 target modules in the LTX-2.3 DiT",
+            detail=f"{len(file.prepared)} adapter(s) in the file, none of whose module paths exist in this transformer.",
+            code="lora_incompatible",
+        )
+
+    def _ltx2_prepare_lora_file(self, file):
+        from api.error_handlers import ValidationError
+        from core.adapters import AdapterIncompatible
+        from core.models.ltx2.ltx2_lora import normalise_lora_state_dict, detect_lora_format
+
+        class Ltx2ArchMismatch(AdapterIncompatible, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "ltx2_lora_arch_mismatch"
+                AdapterIncompatible.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        class Ltx2Incompatible(AdapterIncompatible, ValidationError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_incompatible"
+                AdapterIncompatible.__init__(self, message, code=code)
+                ValidationError.__init__(self, message, detail=detail, code=code)
+
+        if not file.config.get("apply_to_unet", True):
+            self._ltx2_lora_warn(
+                f"LoRA '{file.name}' was selected with apply_to_unet disabled; an "
+                f"LTX-2.3 LoRA only targets the video DiT, so nothing was applied.",
+                "ltx2_lora_unet_disabled")
+            return {}
+
+        declared = str(file.metadata.get("model_type")
+                       or file.metadata.get("modelspec.architecture") or "").strip()
+        if declared and declared != "ltx2":
+            self._ltx2_lora_warn(
+                f"LoRA '{file.name}' declares architecture '{declared}', not ltx2.",
+                "ltx2_lora_arch_mismatch")
+            raise Ltx2ArchMismatch(
+                f"LoRA '{file.name}' was trained for '{declared}', not LTX-2.3",
+                detail="Its tensors index a different architecture's module tree; "
+                       "applying it would either match nothing or match the wrong layers.",
+                code="ltx2_lora_arch_mismatch")
+
+        grouped = normalise_lora_state_dict(file.tensors)
+        fmt = detect_lora_format(file.tensors)
+        if not grouped:
+            self._ltx2_lora_warn(
+                f"LoRA '{file.name}' carries no recognisable LoRA tensors (key format '{fmt}').",
+                "lora_incompatible")
+            raise Ltx2Incompatible(
+                f"LoRA '{file.name}' carries no recognisable LoRA tensors",
+                detail=f"{len(file.tensors)} tensor(s), key format '{fmt}'. Expected "
+                       f"sd-scripts native keys (lora_unet_<module path>.lora_down.weight / "
+                       f"lora_up.weight / alpha) as written by SushiUI's LTX-2.3 trainer.",
+                code="lora_incompatible")
+
+        if file.config.get("unet_layer_weights"):
+            self._ltx2_lora_warn(
+                f"per-block LoRA weights are not applied for LTX-2.3; LoRA "
+                f"'{file.name}' uses its plain strength ({file.strength}) on every block.",
+                "ltx2_lora_layer_weights_ignored")
+        step_range = file.config.get("step_range")
+        if step_range is not None and list(step_range) != [0, 1000]:
+            self._ltx2_lora_warn(
+                f"LoRA step_range is not applied for LTX-2.3; LoRA '{file.name}' is "
+                f"active for the whole denoise loop.",
+                "ltx2_lora_step_range_ignored")
+
+        return grouped
+
+    def _ltx2_build_lora_branch(self, request):
+        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH, lora_branch_dtype
+        from core.models.ltx2.ltx2_lora import flatten_module_path, metadata_alpha
+
+        stem = flatten_module_path(request.module_path)
+        weights = request.prepared.get(stem)
+        if weights is None:
+            return None
+
+        down = weights.get("down")
+        up = weights.get("up")
+        if down is None or up is None:
+            return None
+
+        base = request.base
+        expected_in = getattr(base, "in_features", None)
+        expected_out = getattr(base, "out_features", None)
+        lora_in = down.shape[-1]
+        lora_out = up.shape[0]
+        if lora_in != expected_in or lora_out != expected_out or down.shape[0] != up.shape[1]:
+            return SHAPE_MISMATCH
+
+        rank = down.shape[0]
+        alpha = weights.get("alpha")
+        fallback_alpha = metadata_alpha(request.file.metadata)
+        if alpha is not None:
+            alpha_val = float(alpha.item()) if torch.is_tensor(alpha) else float(alpha)
+        elif fallback_alpha is not None:
+            alpha_val = float(fallback_alpha)
+        else:
+            alpha_val = float(rank)
+
+        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_val, lora_name=request.module_path)
+        device = base.weight.device
+        dtype = lora_branch_dtype(base)
+        with torch.no_grad():
+            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
+
+        return PreparedBranch(branch, request.file.strength)
+
+    def _ltx2_lora_components(self):
+        from core.adapters import AdapterComponent
+        from core.models.ltx2.ltx2_lora import iter_lora_slots
+
+        def iter_ltx2_targets(transformer):
+            for module_path, parent, slot in iter_lora_slots(transformer):
+                yield parent, slot, module_path
+
         transformer = self._ltx2_lora_transformer()
-        # Unconditional, and BEFORE the empty-config exit: a wrapper that
-        # outlived its request must not be summed into by this one -- the
-        # stacking refusal used to be the accidental backstop for that -- and
-        # bookkeeping left by an evicted model must not survive into a request
-        # that installs nothing.
+        return [AdapterComponent(
+            name="transformer",
+            module=transformer,
+            iter_targets=iter_ltx2_targets,
+            build_branch=self._ltx2_build_lora_branch,
+        )]
+
+    @property
+    def _ltx2_lora_original_modules(self):
+        return self._ltx2_lora_session.state("transformer").originals
+
+    @property
+    def _ltx2_lora_wrapped_keys(self):
+        return self._ltx2_lora_session.state("transformer").wrapped
+
+    def _load_lora_ltx2(self, lora_configs: Optional[List[Dict]]) -> int:
+        transformer = self._ltx2_lora_transformer()
         self._unload_lora_ltx2()
-        originals, wrapped_keys = self._ltx2_lora_state(transformer)
 
         if not lora_configs:
             return 0
@@ -355,154 +483,18 @@ class LTX2Mixin:
                 "LTX-2.3 components not loaded; cannot apply the selected LoRA(s)")
 
         print(f"[LTX-2.3 LoRA] Loading {len(lora_configs)} LoRA(s)...")
-        total_applied = 0
-        try:
-            for i, cfg in enumerate(lora_configs):
-                lora_path = str(cfg.get("path") or "").strip()
-                if not lora_path:
-                    raise ValidationError(
-                        "LoRA entry has no path",
-                        detail=f"Entry {i + 1} of {len(lora_configs)} carries an empty 'path'.")
-                # Warnings ride into the PNG metadata chunk and the response's
-                # warnings[], so never an absolute path.
-                lora_file = os.path.basename(lora_path)
-
-                if not cfg.get("apply_to_unet", True):
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}' was selected with apply_to_unet disabled; an "
-                        f"LTX-2.3 LoRA only targets the video DiT, so nothing was applied.",
-                        "ltx2_lora_unet_disabled")
-                    continue
-
-                strength = float(cfg.get("strength", 1.0))
-                resolved = lora_manager._resolve_lora_path(lora_path)
-                if resolved is None:
-                    self._ltx2_lora_warn(f"LoRA file not found: {lora_file}",
-                                         "lora_not_found")
-                    print(f"[LTX-2.3 LoRA] ERROR: {lora_file} not found; searched "
-                          f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
-                    raise ValidationError(
-                        f"LoRA file not found: {lora_file}",
-                        detail="No such file in the configured LoRA directory or in any "
-                               "additional directory; see the server log for the paths "
-                               "searched.",
-                        code="lora_not_found")
-
-                try:
-                    raw, metadata, fmt = load_lora_safetensors(str(resolved))
-                except Exception as e:
-                    print(f"[LTX-2.3 LoRA] ERROR loading {lora_file}: {e}")
-                    import traceback; traceback.print_exc()
-                    # Type + basename only: this rides into the PNG text chunk and the
-                    # API response, and an OSError's str() carries the resolved path.
-                    message = (f"LTX-2.3 LoRA '{lora_file}' could not be applied "
-                               f"({type(e).__name__}); see the server log for details")
-                    self._ltx2_lora_warn(message, "lora_load_failed")
-                    raise with_error_code(RuntimeError(message), "lora_load_failed") from e
-                declared = str(metadata.get("model_type")
-                               or metadata.get("modelspec.architecture") or "").strip()
-                if declared and declared != "ltx2":
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}' declares architecture '{declared}', not ltx2.",
-                        "ltx2_lora_arch_mismatch")
-                    raise ValidationError(
-                        f"LoRA '{lora_file}' was trained for '{declared}', not LTX-2.3",
-                        detail="Its tensors index a different architecture's module tree; "
-                               "applying it would either match nothing or match the wrong "
-                               "layers.",
-                        code="ltx2_lora_arch_mismatch")
-
-                # Unique within the request, so two selections of the SAME file
-                # are two branches rather than a duplicate-name refusal.
-                branch_name = f"{i}:{lora_file}"
-
-                grouped = normalise_lora_state_dict(raw)
-                if not grouped:
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}' carries no recognisable LoRA tensors "
-                        f"(key format '{fmt}').", "lora_incompatible")
-                    raise ValidationError(
-                        f"LoRA '{lora_file}' carries no recognisable LoRA tensors",
-                        detail=f"{len(raw)} tensor(s), key format '{fmt}'. Expected "
-                               f"sd-scripts native keys (lora_unet_<module path>."
-                               f"lora_down.weight / lora_up.weight / alpha) as written by "
-                               f"SushiUI's LTX-2.3 trainer.",
-                        code="lora_incompatible")
-
-                applied, unmatched = apply_lora_group(
-                    transformer, grouped, strength, originals, wrapped_keys,
-                    file_alpha=metadata_alpha(metadata), branch_name=branch_name)
-                if applied == 0:
-                    # An occupied target is no longer one of the ways to get
-                    # here: the composite adds a branch beside the earlier one.
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT.",
-                        "lora_incompatible")
-                    raise ValidationError(
-                        f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT",
-                        detail=f"{len(grouped)} adapter(s) in the file, none of whose module "
-                               f"paths exist in this transformer (first few: "
-                               f"{sorted(grouped)[:5]}).",
-                        code="lora_incompatible")
-                if unmatched:
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}': {len(unmatched)} adapter(s) did not resolve "
-                        f"against the loaded LTX-2.3 DiT and were skipped (first few: "
-                        f"{unmatched[:5]}).",
-                        "lora_partial")
-                if cfg.get("unet_layer_weights"):
-                    self._ltx2_lora_warn(
-                        f"per-block LoRA weights are not applied for LTX-2.3; LoRA "
-                        f"'{lora_file}' uses its plain strength ({strength}) on every block.",
-                        "ltx2_lora_layer_weights_ignored")
-                step_range = cfg.get("step_range")
-                if step_range is not None and list(step_range) != [0, 1000]:
-                    self._ltx2_lora_warn(
-                        f"LoRA step_range is not applied for LTX-2.3; LoRA '{lora_file}' is "
-                        f"active for the whole denoise loop.",
-                        "ltx2_lora_step_range_ignored")
-
-                print(f"[LTX-2.3 LoRA] {i + 1}/{len(lora_configs)}: {lora_file} "
-                      f"format={fmt} keys={len(raw)} adapters={len(grouped)} "
-                      f"branches={applied} strength={strength}")
-                total_applied += applied
-        except Exception:
-            self._unload_lora_ltx2()
-            raise
-
-        if total_applied:
+        applied = self._ltx2_lora_session.load(lora_configs, self._ltx2_lora_components()).applied
+        if applied:
             self._ltx2_sync_block_swap_after_lora()
-        return total_applied
+        return applied
 
     def _unload_lora_ltx2(self) -> int:
-        """Restore every composite-covered DiT Linear to its pre-LoRA original.
-
-        Idempotent and device-agnostic: restoring is a parent-attribute
-        assignment of the saved original module, so a block whose weights are
-        currently on the host (swapped out) restores exactly like a resident one.
-        """
-        if not getattr(self, "_ltx2_lora_wrapped_keys", None):
-            return 0
-        transformer = self._ltx2_lora_transformer()
-        ref = getattr(self, "_ltx2_lora_transformer_ref", None)
-        if transformer is None or ref is None or ref() is not transformer:
-            print("[LTX-2.3 LoRA] transformer gone or replaced since these wrappers were "
-                  "recorded; dropping the bookkeeping instead of restoring into a different "
-                  "model")
-            self._ltx2_lora_original_modules.clear()
-            self._ltx2_lora_wrapped_keys.clear()
-            self._ltx2_lora_transformer_ref = None
-            return 0
-        from core.models.ltx2.ltx2_lora import restore_originals
-        restored = restore_originals(
-            transformer, self._ltx2_lora_original_modules, self._ltx2_lora_wrapped_keys)
+        restored = self._ltx2_lora_session.unload(self._ltx2_lora_components())
         if restored:
-            # The unwrap changed the block tree exactly as the wrap did, so the
-            # offloader's caches describe a tree that no longer exists.
             offloader = self._ltx2_block_offloader()
             if offloader is not None and getattr(offloader, "blocks_to_swap", 0):
                 _ltx2_invalidate_block_swap_caches(offloader)
-        print(f"[LTX-2.3 LoRA] Unloaded {restored} LoRA wrapper(s)")
+            print(f"[LTX-2.3 LoRA] Unloaded {restored} LoRA wrapper(s)")
         return restored
 
     def _ltx2_sync_block_swap_after_lora(self) -> None:

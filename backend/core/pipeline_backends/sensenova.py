@@ -12,6 +12,26 @@ import torch
 SENSENOVA_MAX_REFERENCE_IMAGES = 5
 
 
+class _SensenovaLoraOrigView(dict):
+    """Combined view over generation and understanding pre-LoRA Linear modules.
+
+    Supports .clear() to clear both component original maps without resetting
+    the reload guard, used by tests probing restore idempotency.
+    """
+
+    def __init__(self, session):
+        self._session = session
+        super().__init__({
+            **session.state("generation").originals,
+            **session.state("understanding").originals,
+        })
+
+    def clear(self):
+        super().clear()
+        self._session.state("generation").originals.clear()
+        self._session.state("understanding").originals.clear()
+
+
 class SenseNovaMixin:
     """SenseNovaMixin: SenseNova-U1.5-8B-MoT generation methods.
 
@@ -27,119 +47,7 @@ class SenseNovaMixin:
     all-or-nothing residency, the same shape MiniT2I uses.
     """
 
-    def _sensenova_lora_state(self, transformer):
-        """The (originals, wrapped_keys) maps for THIS transformer.
-
-        Reset when the model was reloaded: the maps hold the OLD transformer's
-        Linears and ``apply_lora_group`` keeps them (setdefault), so an
-        inherited map splices model A's modules into model B. Keyed by weakref
-        rather than id() because a freed object's id is reusable.
-        """
-        ref = getattr(self, "_sensenova_lora_transformer_ref", None)
-        if ref is None or ref() is not transformer:
-            self._sensenova_lora_orig: Dict[str, torch.nn.Module] = {}
-            self._sensenova_lora_keys: set = set()
-            self._sensenova_lora_transformer_ref = weakref.ref(transformer)
-        return self._sensenova_lora_orig, self._sensenova_lora_keys
-
-    def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
-        """Cover the SenseNova MoT Linears with runtime LoRA adapters.
-
-        Never merges into the base (see sensenova_lora.py's module docstring)
-        -- restore_originals must always be called in a finally, mirroring
-        Ideogram4Mixin._load_lora_ideogram4/_unload_lora_ideogram4.
-
-        Both MoT branches are enumerated: application is lookup-driven, so a
-        generation-only distillation file behaves exactly as before while an
-        understanding-bearing one stops being silently truncated. Each target
-        Linear is covered ONCE by a ``CompositeAdapterLayer`` and each selected
-        LoRA adds a NAMED branch to it, so two SenseNova LoRAs over the same
-        module SUM instead of the second being refused. The two halves hold
-        separate composites, so a stack on one leaves the other alone.
-
-        Every failure REFUSES here, before the prefix pass and the denoise
-        loop: a missing file, an unreadable one, and an application that
-        reaches zero modules are not survivable degradations. A partial
-        application warns.
-        """
-        from core.models.sensenova.sensenova_lora import (
-            LAYER_PREFIX, check_lora_application, load_lora_safetensors,
-            metadata_alpha, normalise_lora_state_dict, apply_lora_group,
-        )
-        from core.extensions.lora_manager import lora_manager
-        from api.error_handlers import with_error_code
-
-        # Unconditional, and BEFORE the empty-config exit: this is what re-keys
-        # the state to the live transformer and drops originals no wrapper owes,
-        # so a map recorded against a transformer that has since been swapped
-        # can never be restored into the current one.
-        self._unload_lora_sensenova()
-
-        if not lora_configs or not self.sensenova_components:
-            return 0
-
-        transformer = self.sensenova_components["transformer"]
-        lora_orig, lora_keys = self._sensenova_lora_state(transformer)
-
-        total = 0
-        for i, cfg in enumerate(lora_configs):
-            lora_path = cfg.get("path", "")
-            # Warnings ride into the PNG metadata chunk, so never an absolute path.
-            lora_file = os.path.basename(str(lora_path))
-            strength = float(cfg.get("strength", cfg.get("weight", 1.0)))
-            resolved = lora_manager._resolve_lora_path(lora_path)
-            if resolved is None:
-                message = (
-                    f"LoRA '{lora_file}' was requested but no such file exists in the "
-                    f"registered LoRA directories -- refusing to generate without it."
-                )
-                print(f"[SenseNova LoRA] ERROR: {message}")
-                self._sensenova_lora_warn(message, "lora_not_found")
-                raise with_error_code(FileNotFoundError(message), "lora_not_found")
-            try:
-                raw, fmt, metadata = load_lora_safetensors(str(resolved))
-                grouped = normalise_lora_state_dict(raw)
-                # Unique within the request, so selecting the SAME file twice is
-                # two branches, not a duplicate-name refusal.
-                applied = apply_lora_group(
-                    transformer, grouped, strength, lora_orig, lora_keys,
-                    file_alpha=metadata_alpha(metadata),
-                    branch_name=f"{i}:{lora_file}",
-                )
-            except Exception as exc:
-                print(f"[SenseNova LoRA] ERROR loading {lora_file}: {exc}")
-                import traceback; traceback.print_exc()
-                # Type + basename only: this rides into the PNG text chunk and the API
-                # response, and an OSError's str() carries the absolute resolved path.
-                message = (f"SenseNova LoRA '{lora_file}' could not be applied "
-                           f"({type(exc).__name__}); see the server log for details")
-                self._sensenova_lora_warn(message, "lora_load_failed")
-                raise with_error_code(RuntimeError(message), "lora_load_failed") from exc
-
-            print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
-                  f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
-
-            # An occupied target is no longer one of the ways to get here: the
-            # composite adds a branch beside the earlier LoRA's.
-            if applied == 0:
-                message = (
-                    f"LoRA '{lora_file}': 0 of {len(grouped)} module(s) applied to the loaded "
-                    f"SenseNova transformer (key format '{fmt}') -- unrecognized key format or "
-                    f"a different model. Expected verbatim module paths such as "
-                    f"'{LAYER_PREFIX}0.self_attn.q_proj_mot_gen.lora_down.weight'. "
-                    f"Sample keys in file: {list(raw.keys())[:5]}"
-                )
-                print(f"[SenseNova LoRA] ERROR: {message}")
-                self._sensenova_lora_warn(message, "lora_incompatible")
-                raise with_error_code(RuntimeError(message), "lora_incompatible")
-
-            shortfall = check_lora_application(grouped, applied, metadata)
-            if shortfall is not None:
-                message = f"{shortfall} ({lora_file})"
-                print(message)
-                self._sensenova_lora_warn(message, "lora_partial")
-            total += applied
-        return total
+    # -- LoRA lifetime -------------------------------------------------------
 
     @staticmethod
     def _sensenova_lora_warn(message: str, code: str) -> None:
@@ -150,35 +58,205 @@ class SenseNovaMixin:
         except Exception:
             pass
 
-    def _unload_lora_sensenova(self) -> int:
-        """Restore every SenseNova transformer Linear to its pre-LoRA original.
+    @staticmethod
+    def _sensenova_resolve_lora_path(raw_path):
+        from core.extensions.lora_manager import lora_manager
+        return lora_manager._resolve_lora_path(raw_path)
 
-        Drops the original-module map with the wrappers: it is per-generation
-        state, and a retained entry for a transformer that has since been
-        unloaded would be written into the NEXT model loaded (recording is by
-        ``setdefault``). Which transformer the map belongs to is decided by
-        ``_sensenova_lora_state``, not by the call order: a swap with wrappers
-        still live must not restore model A's Linears into model B.
+    @staticmethod
+    def _sensenova_missing_lora(name: str, _raw_path):
+        from core.adapters import AdapterFileMissing
+        return AdapterFileMissing(
+            f"LoRA '{name}' was requested but no such file exists in the "
+            f"registered LoRA directories -- refusing to generate without it."
+        )
 
-        Restore is driven by the composites actually installed on THIS
-        transformer, not by map membership, so a freshly re-keyed state cannot
-        write a stale entry anywhere.
+    @staticmethod
+    def _sensenova_declared_branches(tensors, _components) -> int:
+        from core.models.sensenova.sensenova_lora import normalise_lora_state_dict
+        return len(normalise_lora_state_dict(tensors))
+
+    @staticmethod
+    def _sensenova_prepare_lora_file(file):
+        """Parse tensors and detect file format once per file."""
+        from core.models.sensenova.sensenova_lora import (
+            EXPECTED_MODULE_COUNTS, _looks_like_sensenova_key,
+            metadata_alpha, normalise_lora_state_dict,
+        )
+        grouped = normalise_lora_state_dict(file.tensors)
+        metadata = file.metadata or {}
+        recognised = (
+            metadata.get("tensor_kind") == "neo_hf_lora"
+            or metadata.get("lora_targets") in EXPECTED_MODULE_COUNTS
+            or any(_looks_like_sensenova_key(k) for k in file.tensors)
+        )
+        fmt = "neo_hf_lora" if recognised else "unknown"
+        return {
+            "grouped": grouped,
+            "format": fmt,
+            "alpha": metadata_alpha(metadata),
+        }
+
+    @staticmethod
+    def _sensenova_zero_target_message(file, counts):
+        from core.models.sensenova.sensenova_lora import LAYER_PREFIX
+        fmt = (file.prepared.get("format", "unknown")
+               if isinstance(file.prepared, dict) else "unknown")
+        return (
+            f"LoRA '{file.name}': 0 of {file.declared_branches} module(s) applied to the loaded "
+            f"SenseNova transformer (key format '{fmt}') -- unrecognized key format or "
+            f"a different model. Expected verbatim module paths such as "
+            f"'{LAYER_PREFIX}0.self_attn.q_proj_mot_gen.lora_down.weight'. "
+            f"Sample keys in file: {list(file.tensors.keys())[:5]}"
+        )
+
+    @property
+    def _sensenova_lora_session(self):
+        """The per-backend session, created on first use."""
+        session = getattr(self, "_sensenova_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+            session = AdapterSession(
+                resolve_path=self._sensenova_resolve_lora_path,
+                warn=self._sensenova_lora_warn,
+                label="SenseNova LoRA",
+                count_declared_branches=self._sensenova_declared_branches,
+                missing_file=self._sensenova_missing_lora,
+                prepare_file=self._sensenova_prepare_lora_file,
+                describe_zero_targets=self._sensenova_zero_target_message,
+            )
+            self._sensenova_lora_session_instance = session
+        return session
+
+    @staticmethod
+    def _sensenova_iter_gen_slots(transformer: torch.nn.Module):
+        from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
+        for module_path, parent, attr, _current in iter_sensenova_lora_targets(transformer, branch="gen"):
+            yield parent, attr, module_path
+
+    @staticmethod
+    def _sensenova_iter_und_slots(transformer: torch.nn.Module):
+        from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
+        for module_path, parent, attr, _current in iter_sensenova_lora_targets(transformer, branch="und"):
+            yield parent, attr, module_path
+
+    def _sensenova_lora_components(self):
+        """The two MoT halves: generation and understanding, as separate components.
+
+        Rebuilt from ``sensenova_components`` on every call so model swaps reach
+        weakref reset on both halves.
         """
-        from core.models.sensenova.sensenova_lora import restore_originals
-        components = getattr(self, "sensenova_components", None)
-        transformer = components.get("transformer") if components else None
-        if transformer is None:
-            # Model unloaded: drop the maps so a later load cannot inherit them.
-            self._sensenova_lora_orig = {}
-            self._sensenova_lora_keys = set()
-            self._sensenova_lora_transformer_ref = None
+        from core.adapters import AdapterComponent
+        components = getattr(self, "sensenova_components", None) or {}
+        transformer = components.get("transformer")
+        return [
+            AdapterComponent(
+                name="generation",
+                module=transformer,
+                iter_targets=self._sensenova_iter_gen_slots,
+                build_branch=self._sensenova_build_lora_branch,
+            ),
+            AdapterComponent(
+                name="understanding",
+                module=transformer,
+                iter_targets=self._sensenova_iter_und_slots,
+                build_branch=self._sensenova_build_lora_branch,
+            ),
+        ]
+
+    @staticmethod
+    def _sensenova_build_lora_branch(request):
+        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH
+
+        prepared = request.prepared
+        grouped = prepared.get("grouped", {}) if isinstance(prepared, dict) else {}
+        weights = grouped.get(request.module_path)
+        if weights is None:
+            return None
+
+        down = weights["down"]
+        up = weights["up"]
+        alpha_tensor = weights.get("alpha")
+        file_alpha = prepared.get("alpha") if isinstance(prepared, dict) else None
+
+        true_original = request.base
+        in_features = getattr(true_original, "in_features", None)
+        out_features = getattr(true_original, "out_features", None)
+        if in_features is not None and down.shape[1] != in_features:
+            return SHAPE_MISMATCH
+        if out_features is not None and up.shape[0] != out_features:
+            return SHAPE_MISMATCH
+        if down.shape[0] != up.shape[1]:
+            return SHAPE_MISMATCH
+
+        rank = int(down.shape[0])
+        if alpha_tensor is not None:
+            alpha_value = float(alpha_tensor.item())
+        elif file_alpha is not None:
+            alpha_value = file_alpha
+        else:
+            alpha_value = float(rank)
+
+        branch_layer = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
+                                       lora_name=request.module_path)
+        device = true_original.weight.device
+
+        if getattr(true_original, "bias", None) is not None and true_original.bias.dtype.is_floating_point:
+            compute_dtype = true_original.bias.dtype
+        elif (true_original.weight.dtype.is_floating_point and
+              "float8" not in str(true_original.weight.dtype)):
+            compute_dtype = true_original.weight.dtype
+        else:
+            compute_dtype = torch.bfloat16
+
+        with torch.no_grad():
+            branch_layer.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            branch_layer.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+        branch_layer.lora_down = branch_layer.lora_down.to(dtype=compute_dtype)
+        branch_layer.lora_up = branch_layer.lora_up.to(dtype=compute_dtype)
+
+        return PreparedBranch(branch_layer, request.file.strength)
+
+    @property
+    def _sensenova_lora_keys(self):
+        session = self._sensenova_lora_session
+        return (session.state("generation").wrapped
+                | session.state("understanding").wrapped)
+
+    @_sensenova_lora_keys.setter
+    def _sensenova_lora_keys(self, value):
+        if not value:
+            self._sensenova_lora_session.state("generation").wrapped.clear()
+            self._sensenova_lora_session.state("understanding").wrapped.clear()
+
+    @property
+    def _sensenova_lora_orig(self):
+        return _SensenovaLoraOrigView(self._sensenova_lora_session)
+
+    @_sensenova_lora_orig.setter
+    def _sensenova_lora_orig(self, value):
+        if not value:
+            self._sensenova_lora_session.state("generation").originals.clear()
+            self._sensenova_lora_session.state("understanding").originals.clear()
+
+    def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
+        components = self._sensenova_lora_components()
+        self._sensenova_lora_session.unload(components)
+        if not lora_configs or components[0].module is None:
             return 0
-        lora_orig, lora_keys = self._sensenova_lora_state(transformer)
-        restored = restore_originals(transformer, lora_orig, lora_keys)
-        lora_orig.clear()
-        if restored:
-            print(f"[SenseNova LoRA] Unloaded {restored} LoRA wrappers")
-        return restored
+        result = self._sensenova_lora_session.load(lora_configs, components)
+        self._sensenova_report_lora_files(result)
+        return result.applied
+
+    def _sensenova_report_lora_files(self, result) -> None:
+        for file, counts in result.files:
+            fmt = file.prepared.get("format", "unknown") if isinstance(file.prepared, dict) else "unknown"
+            grouped = file.prepared.get("grouped", {}) if isinstance(file.prepared, dict) else {}
+            print(f"[SenseNova LoRA] {file.index + 1}/{len(result.files)}: {file.name} "
+                  f"format={fmt} modules={len(grouped)} wrapped={counts.applied} strength={file.strength}")
+
+    def _unload_lora_sensenova(self) -> int:
+        return self._sensenova_lora_session.unload(self._sensenova_lora_components())
 
     def _sensenova_move(self, component_name: str, target_device: str):
         # Takes the component KEY, not the component. Passing the module itself

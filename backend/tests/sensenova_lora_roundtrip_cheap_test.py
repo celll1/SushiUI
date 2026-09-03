@@ -36,7 +36,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.sensenova import sensenova_lora as sn_lora  # noqa: E402
 from core.pipeline_backends.sensenova import SenseNovaMixin  # noqa: E402
 from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter  # noqa: E402
@@ -568,7 +568,7 @@ def test_sensenova_zero_matched_targets_refuses_and_warns(tmp_path, warnings_see
     assert not composite_paths(model)
 
 
-def test_sensenova_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings_seen):
+def test_sensenova_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen):
     path, gen_paths, und_paths = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "language_model.model.layers.0.self_attn.no_such_proj"
@@ -578,8 +578,10 @@ def test_sensenova_partly_matching_file_warns_and_applies_the_rest(tmp_path, war
     save_file(saved, str(partial), metadata={"model_type": "sensenova"})
 
     model = build_model()
-    assert _Backend(model)._load_lora_sensenova([{"path": str(partial)}]) == 2 * PER_BRANCH
-    assert composite_paths(model) == gen_paths | und_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_sensenova([{"path": str(partial)}])
+    assert excinfo.value.code == "lora_partial"
+    assert not composite_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

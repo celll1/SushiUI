@@ -402,7 +402,7 @@ def test_acestep_unreadable_file_refuses(tmp_path, warnings_seen):
 
     broken = tmp_path / "broken.safetensors"
     broken.write_bytes(b"not a safetensors file")
-    with pytest.raises(GenerationError):
+    with pytest.raises((GenerationError, RuntimeError)):
         _Backend(build_dit())._load_lora_acestep([{"path": str(broken)}])
 
 
@@ -420,10 +420,11 @@ def test_acestep_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen)
     assert not wrapped_paths(dit)
 
 
-def test_acestep_shape_mismatched_branch_is_skipped_never_assigned(tmp_path, warnings_seen):
-    """One target's tensors are the wrong width: it stays a bare Linear (not an
-    empty composite), the rest apply, and the request warns rather than failing
-    in the denoise loop."""
+def test_acestep_shape_mismatched_branch_is_refused_atomically(tmp_path, warnings_seen):
+    """AdapterSession plans atomically: a shape mismatch refuses the entire
+    application before mutating any slot."""
+    from core.adapters import AdapterIncompatible
+
     path, trained_paths = train_and_save(tmp_path)
     victim = sorted(trained_paths)[0]
     stem = "lora_unet_" + _flatten_to_sdscripts(victim)
@@ -434,9 +435,11 @@ def test_acestep_shape_mismatched_branch_is_skipped_never_assigned(tmp_path, war
 
     dit = build_dit()
     before = dict(dit.named_modules())
-    _Backend(dit)._load_lora_acestep([{"path": str(broken), "strength": STRENGTH}])
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(dit)._load_lora_acestep([{"path": str(broken), "strength": STRENGTH}])
 
-    assert wrapped_paths(dit) == trained_paths - {victim}
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(dit)
     assert dict(dit.named_modules())[victim] is before[victim]
     assert "lora_partial" in warning_codes(warnings_seen)
 

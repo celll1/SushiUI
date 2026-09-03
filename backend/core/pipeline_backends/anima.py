@@ -6,7 +6,6 @@ import os
 import sys
 import gc
 import random
-import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -48,42 +47,176 @@ class AnimaMixin:
         except Exception:
             pass
 
-    def _anima_lora_state(self, transformer):
-        """The (originals, wrapped_keys) maps for THIS transformer.
+    # -- LoRA lifetime -------------------------------------------------------
+    #
+    # Owned by ``core.adapters.AdapterSession``: it resolves, parses and plans
+    # every selected file against the live DiT BEFORE mutating a slot, then
+    # installs the whole request or none of it, and holds the weakref-keyed
+    # bookkeeping and its reset. What stays here is Anima's -- the target
+    # enumeration, the two key codecs, this backend's own per-file warnings and
+    # one branch.
 
-        Reset when the DiT was reloaded: the maps hold the OLD transformer's
-        Linears, ``apply_lora_group`` keeps them (setdefault) and
-        ``restore_originals`` would then splice them into the new transformer.
-        Keyed by weakref rather than id() because a freed object's id is reusable.
+    @staticmethod
+    def _anima_resolve_lora_path(raw_path):
+        """LoRAManager resolution, or ``None``.
+
+        ``_load_lora_anima`` resolves every selected file up front and hands the
+        session only the ones that exist, so the session's own miss branch (a
+        ``FileNotFoundError`` with a different sentence) is not reachable from
+        here.
         """
-        ref = getattr(self, "_anima_lora_transformer_ref", None)
-        if ref is None or ref() is not transformer:
-            self._anima_lora_original_modules: Dict[str, torch.nn.Module] = {}
-            self._anima_lora_wrapped_keys: set = set()
-            self._anima_lora_transformer_ref = weakref.ref(transformer)
-        return self._anima_lora_original_modules, self._anima_lora_wrapped_keys
+        from core.extensions.lora_manager import lora_manager
+
+        return lora_manager._resolve_lora_path(raw_path)
+
+    @property
+    def _anima_lora_session(self):
+        """The per-backend session, created on first use.
+
+        The mixin has no ``__init__`` of its own, so this cannot be a
+        constructor assignment.
+        """
+        session = getattr(self, "_anima_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+
+            session = AdapterSession(
+                resolve_path=self._anima_resolve_lora_path,
+                warn=self._anima_lora_warn,
+                label="Anima LoRA",
+                count_declared_branches=self._anima_declared_branches,
+                describe_zero_targets=self._anima_zero_target_message,
+            )
+            self._anima_lora_session_instance = session
+        return session
+
+    def _anima_lora_components(self):
+        """The one component Anima LoRAs touch.
+
+        Rebuilt from ``anima_components`` on every call, so a DiT swap reaches
+        the session's weakref reset instead of being remembered here.
+        """
+        from core.adapters import AdapterComponent
+        from core.models.anima.anima_lora import iter_anima_lora_slots
+
+        components = getattr(self, "anima_components", None) or {}
+        return [AdapterComponent(
+            name="transformer",
+            module=components.get("transformer"),
+            iter_targets=iter_anima_lora_slots,
+            build_branch=self._anima_build_lora_branch,
+        )]
+
+    @property
+    def _anima_lora_original_modules(self):
+        """Module path -> the pre-LoRA Linear of the DiT in hand.
+
+        Read WITHOUT the reload check on purpose: the reload gate has to observe
+        a stale map, not one that resets itself on being looked at.
+        ``AdapterSession.bind`` does the reset, on the load and unload paths.
+        """
+        return self._anima_lora_session.state("transformer").originals
+
+    @property
+    def _anima_lora_wrapped_keys(self):
+        return self._anima_lora_session.state("transformer").wrapped
+
+    @staticmethod
+    def _anima_declared_branches(tensors) -> int:
+        """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
+        spells its halves ``lora_A``/``lora_B``, so the session's default count
+        would be zero for every such file and never report a partial one.
+        """
+        from core.models.anima.anima_lora import normalise_lora_state_dict
+
+        return len(normalise_lora_state_dict(tensors))
+
+    def _anima_lora_file_state(self, file):
+        """This file's grouped tensors, parsed and reported ONCE.
+
+        The session has no hook between parsing a file and accounting for it.
+        Reached from the branch builder AND from the zero-target message, so a
+        file that matches nothing still reports its dropped and unresolvable
+        keys first.
+        """
+        cache = self._anima_lora_files
+        grouped = cache.get(file.branch_name)
+        if grouped is not None:
+            return grouped
+
+        from core.models.anima.anima_lora import (FULL_SCOPE, detect_lora_format,
+                                                  iter_anima_lora_targets,
+                                                  normalise_lora_state_dict,
+                                                  unmatched_source_keys)
+
+        grouped = normalise_lora_state_dict(file.tensors)
+        cache[file.branch_name] = grouped
+        print(f"[Anima LoRA] {file.name} format={detect_lora_format(file.tensors)} "
+              f"keys={len(file.tensors)} matched_modules={len(grouped)} "
+              f"strength={file.strength}")
+
+        dropped = unmatched_source_keys(file.tensors, grouped)
+        if dropped:
+            self._anima_lora_warn(
+                f"LoRA '{file.name}' has {len(dropped)} tensor key(s) in no "
+                f"recognised Anima LoRA format, or missing their down/up pair "
+                f"(first few: {dropped[:5]}) -- not applied.",
+                "anima_lora_keys_unrecognised")
+
+        transformer = (getattr(self, "anima_components", None) or {}).get("transformer")
+        exposed = set() if transformer is None else {
+            path for path, _parent, _attr, _current
+            in iter_anima_lora_targets(transformer, FULL_SCOPE)}
+        unmatched = sorted(set(grouped) - exposed)
+        if unmatched:
+            self._anima_lora_warn(
+                f"LoRA '{file.name}' targets {len(unmatched)} module(s) that the "
+                f"loaded Anima DiT does not expose (first few: {unmatched[:5]}) "
+                f"-- skipped.",
+                "anima_lora_targets_unresolved")
+        return grouped
+
+    def _anima_build_lora_branch(self, request):
+        """The branch for one target, or ``None`` when this file names no key for
+        it. Nothing is installed here."""
+        from core.adapters import PreparedBranch
+        from core.models.anima.anima_lora import build_lora_branch
+
+        weights = self._anima_lora_file_state(request.file).get(request.module_path)
+        if weights is None:
+            return None
+        branch = build_lora_branch(request.base, weights, request.module_path)
+        # Strength is folded into the branch's own scale by ``add_branch``, never
+        # multiplied onto its delta.
+        return PreparedBranch(branch, request.file.strength)
+
+    def _anima_zero_target_message(self, file, counts) -> str:
+        """The zero-target refusal text. The session owns the DECISION to refuse;
+        the sentence is Anima's."""
+        # This file's own warnings first, as they were emitted before the
+        # session owned the ordering.
+        self._anima_lora_file_state(file)
+        return (f"LoRA '{file.name}': matched 0 target(s) out of {len(file.tensors)} "
+                f"key(s) against the loaded Anima DiT (wrong architecture or key "
+                f"format?)")
 
     def _load_lora_anima(self, lora_configs: List[Dict]) -> int:
         """Wrap target Linear modules of the Anima DiT with LoRA adapters.
 
-        The wrapped scope is derived per file from its own keys, so an
+        The wrapped set is derived per file from its own keys, so an
         attention-only LoRA and a full attention+mlp+llm_adapter one both apply
         in full. Each target Linear is covered ONCE by a
         ``CompositeAdapterLayer`` and each selected LoRA adds a NAMED branch to
         it, so two Anima LoRAs over the same module SUM instead of being
-        refused. Unload always returns to the un-LoRA'd model.
+        refused. Nothing is installed until every file has been resolved, parsed
+        and validated.
 
         Raises RuntimeError when a requested LoRA cannot be applied: a
         generation that silently ignores a selected LoRA is not a success.
         """
-        from core.models.anima.anima_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
-            derive_scope_from_keys, unmatched_source_keys,
-        )
-        from core.extensions.lora_manager import lora_manager
         from api.error_handlers import with_error_code
 
-        # Unconditional, and BEFORE the empty-config exit: a model reload or a
+        # Unconditional, and BEFORE the empty-config exit: a DiT reload or a
         # restore that failed in an earlier request must not leak the previous
         # DiT's modules into this generation.
         self._unload_lora_anima()
@@ -96,113 +229,55 @@ class AnimaMixin:
                 "[Anima LoRA] cannot apply the selected LoRA(s): Anima components are not loaded"
             )
 
-        transformer = self.anima_components["transformer"]
-        originals, wrapped_keys = self._anima_lora_state(transformer)
-
-        total_applied = 0
-        failures: List[str] = []
-        failure_codes: List[str] = []
-        for i, cfg in enumerate(lora_configs):
-            lora_path = cfg.get("path", "")
-            # Warnings ride into the PNG metadata chunk, so never an absolute path.
-            lora_file = os.path.basename(str(lora_path))
-            strength = float(cfg.get("strength", 1.0))
-            resolved = lora_manager._resolve_lora_path(lora_path)
-            if resolved is None:
-                message = f"LoRA '{lora_file}': file not found"
-                self._anima_lora_warn(message, "lora_not_found")
-                failures.append(message)
-                failure_codes.append("lora_not_found")
+        self._anima_lora_files = {}
+        # Resolution runs AHEAD of the session, and does not stop at the first
+        # miss: Anima's contract is that ``warnings[]`` carries every failure's
+        # code while the response names one (refusal_error_code_cheap_test). The
+        # session refuses the rest of the request at its first bad file.
+        selected: List[Dict] = []
+        missing: List[str] = []
+        for cfg in lora_configs:
+            if self._anima_resolve_lora_path(cfg.get("path", "")) is not None:
+                selected.append(cfg)
                 continue
-            try:
-                raw, fmt = load_lora_safetensors(str(resolved))
-                grouped = normalise_lora_state_dict(raw)
-                scope = derive_scope_from_keys(grouped.keys())
-                dropped = unmatched_source_keys(raw, grouped)
-                print(f"[Anima LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
-                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
-                      f"scope={sorted(k for k, v in scope.items() if v)} strength={strength}")
-                if dropped:
-                    self._anima_lora_warn(
-                        f"LoRA '{lora_file}' has {len(dropped)} tensor key(s) in no "
-                        f"recognised Anima LoRA format, or missing their down/up pair "
-                        f"(first few: {dropped[:5]}) -- not applied.",
-                        "anima_lora_keys_unrecognised")
-                applied, unmatched = apply_lora_group(
-                    transformer, grouped, strength, originals, wrapped_keys,
-                    scope=scope,
-                    # Unique within the request, so selecting the SAME file
-                    # twice is two branches, not a duplicate-name refusal.
-                    branch_name=f"{i}:{lora_file}",
-                )
-                if unmatched:
-                    self._anima_lora_warn(
-                        f"LoRA '{lora_file}' targets {len(unmatched)} module(s) that the "
-                        f"loaded Anima DiT does not expose (first few: {unmatched[:5]}) "
-                        f"-- skipped.",
-                        "anima_lora_targets_unresolved")
-                    if applied:
-                        # A 0-applied file is incompatible, not partial; that
-                        # branch below carries its own code.
-                        self._anima_lora_warn(
-                            f"LoRA '{lora_file}': applied {applied} of the {len(grouped)} "
-                            f"module(s) the file carries.",
-                            "lora_partial")
-                print(f"[Anima LoRA]   wrapped {applied} module(s)")
-                if applied == 0:
-                    message = (
-                        f"LoRA '{lora_file}': matched 0 target(s) out of {len(raw)} key(s) "
-                        f"against the loaded Anima DiT (wrong architecture or key format?)"
-                    )
-                    self._anima_lora_warn(message, "lora_incompatible")
-                    failures.append(message)
-                    failure_codes.append("lora_incompatible")
-                total_applied += applied
-            except Exception as e:
-                print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")
-                import traceback; traceback.print_exc()
-                # Type + basename only: this rides into the PNG text chunk and the API
-                # response, and an OSError's str() carries the absolute resolved path.
-                message = (f"Anima LoRA '{lora_file}' could not be applied "
-                           f"({type(e).__name__}); see the server log for details")
-                self._anima_lora_warn(message, "lora_load_failed")
-                failures.append(message)
-                failure_codes.append("lora_load_failed")
+            message = f"LoRA '{os.path.basename(str(cfg.get('path', '')))}': file not found"
+            self._anima_lora_warn(message, "lora_not_found")
+            missing.append(message)
 
-        if failures:
-            # Refuse before denoising rather than generate with a silently
-            # partial LoRA set; restore the DiT first so the failure is clean.
+        applied = 0
+        if selected:
+            applied = self._anima_lora_session.load(
+                selected, self._anima_lora_components()).applied
+        if missing:
+            # Restore first, so the failure leaves a clean DiT.
             self._unload_lora_anima()
-            # The response reports the FIRST failure's code; warnings[] carries
-            # every one of them.
             raise with_error_code(
-                RuntimeError("[Anima LoRA] " + "; ".join(failures)), failure_codes[0])
-        return total_applied
+                RuntimeError("[Anima LoRA] " + "; ".join(missing)), "lora_not_found")
+        return applied
 
     def _unload_lora_anima(self) -> int:
         """Restore every Anima DiT Linear to its pre-LoRA original.
 
-        Routed through ``_anima_lora_state``, so a reloaded or dropped DiT
-        discards the previous model's modules instead of splicing them in.
+        The wrapped set is snapshotted after the session's reload check, so a
+        wrapped path the DiT no longer exposes is still reported: its composite
+        is still installed and the DiT still carries LoRA weights.
         """
-        from core.models.anima.anima_lora import restore_originals
-        transformer = (self.anima_components or {}).get("transformer")
-        if transformer is None:
-            # Model unloaded: drop the maps so a later load cannot inherit them.
-            self._anima_lora_original_modules = {}
-            self._anima_lora_wrapped_keys = set()
-            self._anima_lora_transformer_ref = None
-            return 0
-        originals, wrapped_keys = self._anima_lora_state(transformer)
-        if not wrapped_keys:
-            return 0
-        restored, unresolved = restore_originals(transformer, originals, wrapped_keys)
-        if unresolved:
-            self._anima_lora_warn(
-                f"{len(unresolved)} Anima LoRA wrapper(s) could not be removed (first few: "
-                f"{unresolved[:5]}); the DiT may still carry LoRA weights.",
-                "lora_unload_failed")
-        print(f"[Anima LoRA] Unloaded {restored} LoRA wrappers")
+        from core.models.anima.anima_lora import FULL_SCOPE, iter_anima_lora_targets
+
+        components = self._anima_lora_components()
+        wrapped = set(self._anima_lora_session.bind(components[0]).wrapped)
+        restored = self._anima_lora_session.unload(components)
+
+        transformer = components[0].module
+        if wrapped and transformer is not None:
+            exposed = {path for path, _parent, _attr, _current
+                       in iter_anima_lora_targets(transformer, FULL_SCOPE)}
+            unresolved = sorted(wrapped - exposed)
+            if unresolved:
+                self._anima_lora_warn(
+                    f"{len(unresolved)} Anima LoRA wrapper(s) could not be removed (first few: "
+                    f"{unresolved[:5]}); the DiT may still carry LoRA weights.",
+                    "lora_unload_failed")
         return restored
 
     @staticmethod

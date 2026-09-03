@@ -498,3 +498,33 @@ def test_lens_quantization_is_dropped_while_wrappers_are_live(tmp_path, warnings
     backend._unload_lora_lens()
     assert lora_wrapped_count(model) == 0
     assert backend._lens_quantization_with_lora("fp8_e4m3fn") == "fp8_e4m3fn"
+
+
+def test_lens_a_refused_file_leaves_the_ones_before_it_uninstalled(tmp_path,
+                                                                  warnings_seen):
+    """``AdapterSession`` plans the WHOLE request before mutating a slot.
+
+    Lens used to wrap file by file, so a second file that matched nothing left
+    the first one installed and refused the generation anyway -- and the FP8 gate
+    would then have seen wrappers on a request that never ran.
+    """
+    path, _trained_paths = train_and_save(tmp_path)
+    ghost_stem = "lora_unet_" + _flatten_to_sdscripts("transformer_blocks.9.attn.img_qkv")
+    ghost = tmp_path / "ghost.safetensors"
+    save_file({f"{ghost_stem}.lora_down.weight": torch.zeros(RANK, D),
+               f"{ghost_stem}.lora_up.weight": torch.zeros(D, RANK)},
+              str(ghost), metadata={"model_type": "lens"})
+
+    model = build_model()
+    before = dict(model.named_modules())
+    backend = _Backend(model)
+    with pytest.raises(RuntimeError, match="0 of 1 down/up pairs"):
+        backend._load_lora_lens([{"path": path, "strength": STRENGTH},
+                                 {"path": str(ghost), "strength": 1.0}])
+
+    assert not wrapped_paths(model)
+    assert dict(model.named_modules()) == before
+    assert not backend._lens_lora_wrapped_keys
+    assert not backend._lens_lora_original_modules
+    from core.models.common.int8_runtime_quantize import lora_wrapped_count
+    assert lora_wrapped_count(model) == 0

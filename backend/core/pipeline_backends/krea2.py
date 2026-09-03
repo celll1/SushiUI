@@ -13,7 +13,6 @@ from typing import Dict, Any, Optional, List
 from PIL import Image
 import os
 import random
-import weakref
 import torch
 
 from config.settings import settings
@@ -163,46 +162,187 @@ class Krea2Mixin:
             ignored.append(f"step_range={list(step_range)}")
         return ignored
 
-    def _krea2_lora_state(self, transformer):
-        """The (originals, wrapped_keys) maps for THIS transformer.
+    # -- LoRA lifetime -------------------------------------------------------
+    #
+    # Owned by ``core.adapters.AdapterSession``: it resolves, parses and plans
+    # every selected file against the live transformer BEFORE mutating a slot,
+    # then installs the whole request or none of it, and holds the weakref-keyed
+    # bookkeeping and its reset. What stays here is Krea 2's -- the target scope,
+    # the key codec, this backend's own per-file warnings and one branch.
 
-        Reset when the model was reloaded: the maps hold the OLD transformer's
-        Linears, ``apply_lora_group`` keeps them (setdefault) and
-        ``restore_originals`` would then splice them into the new transformer.
-        Keyed by weakref rather than id() because a freed object's id is reusable.
+    def _krea2_resolve_lora_path(self, raw_path):
+        """LoRAManager resolution; a miss is Krea 2's OWN refusal.
+
+        The session's ``lora_not_found`` message and exception type are fixed
+        and both differ from the ones this backend's gate pins, so the miss is
+        refused here instead. The searched directories stay on the console: the
+        refusal rides into the PNG text chunk.
         """
-        ref = getattr(self, "_krea2_lora_transformer_ref", None)
-        if ref is None or ref() is not transformer:
-            self._krea2_lora_original_modules: Dict[str, torch.nn.Module] = {}
-            self._krea2_lora_wrapped_keys: set = set()
-            self._krea2_lora_transformer_ref = weakref.ref(transformer)
-        return self._krea2_lora_original_modules, self._krea2_lora_wrapped_keys
+        from api.error_handlers import with_error_code
+        from core.extensions.lora_manager import lora_manager
+
+        resolved = lora_manager._resolve_lora_path(raw_path)
+        if resolved is None:
+            lora_file = os.path.basename(str(raw_path))
+            print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
+                  f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
+            message = (f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
+                       f"registered LoRA directory.")
+            self._krea2_lora_warn(message, "lora_not_found")
+            raise with_error_code(RuntimeError(message), "lora_not_found")
+        return resolved
+
+    @property
+    def _krea2_lora_session(self):
+        """The per-backend session, created on first use.
+
+        The mixin has no ``__init__`` of its own, so this cannot be a
+        constructor assignment.
+        """
+        session = getattr(self, "_krea2_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+
+            session = AdapterSession(
+                resolve_path=self._krea2_resolve_lora_path,
+                warn=self._krea2_lora_warn,
+                label="Krea 2 LoRA",
+                count_declared_branches=self._krea2_declared_branches,
+                describe_zero_targets=self._krea2_zero_target_message,
+            )
+            self._krea2_lora_session_instance = session
+        return session
+
+    def _krea2_lora_components(self):
+        """The one component Krea 2 LoRAs touch.
+
+        Transformer-only: there is no TE apply path, and no Krea 2 LoRA can
+        carry TE keys because the Qwen3-VL encoder is frozen for training.
+        Rebuilt from ``krea2_components`` on every call, so a model swap reaches
+        the session's weakref reset instead of being remembered here.
+        """
+        from core.adapters import AdapterComponent
+        from core.models.krea2.krea2_lora import iter_krea2_lora_slots
+
+        components = getattr(self, "krea2_components", None) or {}
+        return [AdapterComponent(
+            name="transformer",
+            module=components.get("transformer"),
+            iter_targets=iter_krea2_lora_slots,
+            build_branch=self._krea2_build_lora_branch,
+        )]
+
+    @property
+    def _krea2_lora_original_modules(self):
+        """Module path -> the pre-LoRA Linear of the transformer in hand.
+
+        Read WITHOUT the reload check on purpose: the reload gate has to observe
+        a stale map, not one that resets itself on being looked at.
+        ``AdapterSession.bind`` does the reset, on the load and unload paths.
+        """
+        return self._krea2_lora_session.state("transformer").originals
+
+    @property
+    def _krea2_lora_wrapped_keys(self):
+        return self._krea2_lora_session.state("transformer").wrapped
+
+    @staticmethod
+    def _krea2_declared_branches(tensors) -> int:
+        """Down/up PAIRS, not ``.lora_down.weight`` keys: a foreign
+        (``lora_te_*``) or unpaired key would inflate the count the session
+        compares against and warn ``lora_partial`` on a file that applied in full.
+        """
+        from core.models.krea2.krea2_lora import normalise_lora_state_dict
+
+        return len(normalise_lora_state_dict(tensors))
+
+    def _krea2_lora_file_state(self, file):
+        """This file's grouped tensors, parsed and reported ONCE.
+
+        The session has no hook between parsing a file and accounting for it.
+        Reached from the branch builder AND from the zero-target message, so a
+        file that matches nothing still reports its dropped keys first.
+        """
+        cache = self._krea2_lora_files
+        grouped = cache.get(file.branch_name)
+        if grouped is not None:
+            return grouped
+
+        from core.models.krea2.krea2_lora import (detect_lora_format,
+                                                  normalise_lora_state_dict)
+
+        grouped = normalise_lora_state_dict(file.tensors)
+        cache[file.branch_name] = grouped
+        print(f"[Krea2 LoRA] {file.name} format={detect_lora_format(file.tensors)} "
+              f"keys={len(file.tensors)} matched_modules={len(grouped)} "
+              f"strength={file.strength}")
+
+        dropped = _dropped_lora_keys(file.tensors, grouped)
+        if dropped:
+            self._krea2_lora_warn(
+                f"LoRA '{file.name}': {len(dropped)} of its {len(file.tensors)} tensor "
+                f"key(s) are not a Krea 2 'lora_unet_*' down/up pair and were dropped "
+                f"(first few: {dropped[:5]}).",
+                "krea2_lora_keys_unrecognised")
+
+        ignored = self._krea2_lora_ignored_options(file.config)
+        if ignored:
+            self._krea2_lora_warn(
+                f"LoRA '{file.name}': {', '.join(ignored)} is not implemented for Krea 2 "
+                f"and was ignored; strength {file.strength} applies to every matched "
+                f"module for the whole denoise loop.",
+                "krea2_lora_options_ignored")
+        return grouped
+
+    def _krea2_build_lora_branch(self, request):
+        """The branch for one target, or ``None`` when this file names no key for
+        it. Nothing is installed here."""
+        from core.adapters import PreparedBranch
+        from core.models.krea2.krea2_lora import build_lora_branch
+
+        weights = self._krea2_lora_file_state(request.file).get(request.module_path)
+        if weights is None:
+            return None
+        branch = build_lora_branch(request.base, weights, request.module_path)
+        # Strength is folded into the branch's own scale by ``add_branch``, never
+        # multiplied onto its delta.
+        return PreparedBranch(branch, request.file.strength)
+
+    def _krea2_zero_target_message(self, file, counts) -> str:
+        """The zero-target refusal text: it names Krea 2's own key convention.
+
+        The session owns the DECISION to refuse; the text is Krea 2's because
+        the only actionable part of it is the key format this loader expects.
+        """
+        from core.models.krea2.krea2_lora import detect_lora_format
+
+        # This file's own warnings first, as they were emitted before the
+        # session owned the ordering.
+        self._krea2_lora_file_state(file)
+        if file.declared_branches == 0:
+            return (f"Krea 2 LoRA '{file.name}': none of its {len(file.tensors)} tensors "
+                    f"form a 'lora_unet_*' down/up pair "
+                    f"(format={detect_lora_format(file.tensors)}) -- not a Krea 2 LoRA.")
+        return (f"LoRA '{file.name}': 0 of {file.declared_branches} modules matched the "
+                f"loaded Krea 2 transformer -- wrong architecture or an unsupported "
+                f"target scope.")
 
     def _load_lora_krea2(self, lora_configs: List[Dict]) -> int:
         """Cover Krea 2 transformer Linears with the requested LoRA(s).
 
         Each target Linear is covered ONCE by a ``CompositeAdapterLayer`` and
         each selected LoRA adds a NAMED branch to it, so two Krea 2 LoRAs over
-        the same module sum instead of being refused.
-
-        Transformer-only: this function touches nothing but
-        ``krea2_components["transformer"]`` -- there is no TE apply path, and no
-        Krea 2 LoRA can carry TE keys because the Qwen3-VL encoder is frozen for
-        training.
+        the same module sum instead of being refused. Nothing is installed until
+        every file has been resolved, parsed and validated.
 
         Must run AFTER the transformer is staged on GPU and after any runtime
-        INT8 conversion: the wrappers reference the CURRENT Linear modules and
+        INT8 conversion: the branches reference the CURRENT Linear modules and
         copy their device. Raises on a file that resolves to zero targets -- a
         LoRA that had no effect must not pass as a successful generation.
         """
-        from core.models.krea2.krea2_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
-        )
-        from core.extensions.lora_manager import lora_manager
-        from api.error_handlers import with_error_code
-
-        # Unconditional, and BEFORE the empty-config exit: a restore that failed in
-        # an earlier request must not leak its wrappers into this generation.
+        # Unconditional, and BEFORE the empty-config exit: a restore that failed
+        # in an earlier request must not leak its wrappers into this generation,
+        # and this is also what resets bookkeeping a model reload invalidated.
         self._unload_lora_krea2()
 
         if not lora_configs:
@@ -210,103 +350,17 @@ class Krea2Mixin:
         if not self.krea2_components:
             raise RuntimeError("Krea 2 LoRA requested but no Krea 2 model is loaded.")
 
-        transformer = self.krea2_components["transformer"]
-        originals, wrapped_keys = self._krea2_lora_state(transformer)
-
-        total = 0
-        for i, cfg in enumerate(lora_configs):
-            lora_path = cfg.get("path", "")
-            lora_file = os.path.basename(str(lora_path))
-            strength = float(cfg.get("strength", 1.0))
-            resolved = lora_manager._resolve_lora_path(lora_path)
-            if resolved is None:
-                print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
-                      f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
-                message = (f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
-                           f"registered LoRA directory.")
-                self._krea2_lora_warn(message, "lora_not_found")
-                raise with_error_code(RuntimeError(message), "lora_not_found")
-
-            try:
-                raw, fmt = load_lora_safetensors(str(resolved))
-            except Exception as e:
-                print(f"[Krea2 LoRA] ERROR loading {lora_file}: {e}")
-                import traceback; traceback.print_exc()
-                # Type + basename only: this rides into the API response, and an
-                # OSError's str() carries the absolute resolved path.
-                message = (f"Krea 2 LoRA '{lora_file}' could not be applied "
-                           f"({type(e).__name__}); see the server log for details")
-                self._krea2_lora_warn(message, "lora_load_failed")
-                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
-            grouped = normalise_lora_state_dict(raw)
-            if not grouped:
-                raise RuntimeError(
-                    f"Krea 2 LoRA '{lora_file}': none of its {len(raw)} tensors form a "
-                    f"'lora_unet_*' down/up pair (format={fmt}) -- not a Krea 2 LoRA.")
-
-            dropped = _dropped_lora_keys(raw, grouped)
-            if dropped:
-                self._krea2_lora_warn(
-                    f"LoRA '{lora_file}': {len(dropped)} of its {len(raw)} tensor key(s) are "
-                    f"not a Krea 2 'lora_unet_*' down/up pair and were dropped "
-                    f"(first few: {dropped[:5]}).",
-                    "krea2_lora_keys_unrecognised")
-
-            ignored = self._krea2_lora_ignored_options(cfg)
-            if ignored:
-                self._krea2_lora_warn(
-                    f"LoRA '{lora_file}': {', '.join(ignored)} is not implemented for Krea 2 "
-                    f"and was ignored; strength {strength} applies to every matched module for "
-                    f"the whole denoise loop.",
-                    "krea2_lora_options_ignored")
-
-            # Unique within the request, so selecting the SAME file twice is two
-            # branches rather than a duplicate-name refusal.
-            applied = apply_lora_group(
-                transformer, grouped, strength, originals, wrapped_keys,
-                branch_name=f"{i}:{lora_file}",
-            )
-            print(f"[Krea2 LoRA] {i+1}/{len(lora_configs)}: {lora_path} format={fmt} "
-                  f"matched={len(grouped)} wrapped={applied} strength={strength}")
-
-            if applied == 0:
-                message = (
-                    f"LoRA '{lora_file}': 0 of {len(grouped)} modules matched the loaded "
-                    f"Krea 2 transformer -- wrong architecture or an unsupported target scope.")
-                self._krea2_lora_warn(message, "lora_incompatible")
-                raise with_error_code(RuntimeError(f"Krea 2 {message}"), "lora_incompatible")
-            if applied < len(grouped):
-                self._krea2_lora_warn(
-                    f"LoRA '{lora_file}': applied {applied} of {len(grouped)} modules; the rest "
-                    f"have no counterpart in the loaded Krea 2 transformer.",
-                    "lora_partial")
-            total += applied
-        return total
+        self._krea2_lora_files = {}
+        return self._krea2_lora_session.load(
+            lora_configs, self._krea2_lora_components()).applied
 
     def _unload_lora_krea2(self) -> int:
         """Restore every wrapped Krea 2 Linear to its pre-LoRA original.
 
-        Also drops the original-module map: a later generation may run a
-        one-time INT8 conversion that REPLACES those Linears, and reinstating a
-        stale pre-conversion module would put a CPU bf16 Linear back into a
-        quantized GPU transformer.
+        The session drops each original as restore lands it, so a later one-time
+        INT8 conversion cannot reinstate a stale pre-conversion module.
         """
-        from core.models.krea2.krea2_lora import restore_originals
-        transformer = (self.krea2_components or {}).get("transformer")
-        if transformer is None:
-            # Model unloaded: drop the map too, so a later load cannot inherit it.
-            self._krea2_lora_original_modules = {}
-            self._krea2_lora_wrapped_keys = set()
-            self._krea2_lora_transformer_ref = None
-            return 0
-        originals, wrapped_keys = self._krea2_lora_state(transformer)
-        if not wrapped_keys:
-            return 0
-        restored = restore_originals(transformer, originals, wrapped_keys)
-        originals.clear()
-        if restored:
-            print(f"[Krea2 LoRA] Unloaded {restored} LoRA wrapper(s)")
-        return restored
+        return self._krea2_lora_session.unload(self._krea2_lora_components())
 
     def _krea2_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
                              transformer, device, ref_index: int = 0):

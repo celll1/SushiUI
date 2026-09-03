@@ -25,11 +25,10 @@ for the per-scope enumeration): DiT block attention, block MLP, AdaLN modulation
 and the LLM Adapter.
 """
 
-from typing import Dict, Tuple, List, Optional, Any
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
-from safetensors import safe_open
 
 
 # Module-path tokens that the underscore-flattened native format may map back to.
@@ -186,15 +185,6 @@ def detect_lora_format(raw_state_dict: Dict[str, torch.Tensor]) -> str:
     return "unknown"
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
-    """Load a LoRA safetensors file and return (raw_state_dict, format_label)."""
-    raw: Dict[str, torch.Tensor] = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
-    return raw, detect_lora_format(raw)
-
-
 # --------- Target enumeration ---------
 
 _ANIMA_ATTENTION_CLASS_NAME = "Attention"            # DiT Block attention class
@@ -203,9 +193,9 @@ _BLOCK_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "output_proj")
 _LLM_ADAPTER_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "o_proj")  # note: o_proj
 
 
-# Default scope for TRAINING only. Inference has no default: it derives the scope
-# from the checkpoint's own keys (see derive_scope_from_keys), so any scope the
-# trainer can save wraps in full at generation time.
+# Default scope for TRAINING only. Inference has no scope of its own: it
+# enumerates FULL_SCOPE and looks each target up in the checkpoint, so any scope
+# the trainer can save wraps in full at generation time.
 DEFAULT_TRAINING_SCOPE = {
     "attention": True,
     "mlp": True,
@@ -262,11 +252,11 @@ def _is_lora_target(m) -> bool:
 
     ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
     subclasses, so both must be named explicitly. Omitting them is SILENT: on a
-    quantized DiT the iterator simply yields no targets for those layers,
-    ``apply_lora_group`` returns a small ``applied`` count without raising, and
-    the generation proceeds looking exactly as if no LoRA had been selected.
-    Same fix, same reasoning as ``krea2_lora._is_target`` and
-    ``ideogram4_lora``'s ``is_target``.
+    quantized DiT the iterator simply yields no targets for those layers, the
+    session reports a small ``applied`` count without raising, and the
+    generation proceeds looking exactly as if no LoRA had been selected. Same
+    fix, same reasoning as ``krea2_lora._is_target`` and ``ideogram4_lora``'s
+    ``is_target``.
 
     ``LoRALinearLayer`` reads only ``in_features`` / ``out_features`` /
     ``weight.device`` off the module it wraps, and calls it as a callable, all of
@@ -298,8 +288,8 @@ def iter_anima_lora_targets(
     `current_module` is whatever currently sits at `getattr(parent, attr)`
     (or `parent[attr]` for ModuleList children) -- typically an nn.Linear on
     the un-LoRA'd model, or a CompositeAdapterLayer once wrapped. Including
-    wrapped modules here lets restore_originals() and LoRA stacking find the
-    slots after a previous load. Callers MATERIALISE this before mutating: the
+    wrapped modules here lets restore and LoRA stacking find the slots after a
+    previous load. Callers MATERIALISE this before mutating: the
     walk reads `named_modules()`, and replacing slots underneath it makes the
     traversal descend into the wrappers it just installed.
 
@@ -412,175 +402,67 @@ def _resolve_parent(root: nn.Module, dotted_name: str):
     return parent, last
 
 
-def derive_scope_from_keys(module_paths) -> Dict[str, bool]:
-    """Scope flags covering exactly the module paths a checkpoint carries.
+# --------- Apply (inference) ---------
+#
+# The LIFETIME -- resolve, parse, refuse, install, restore -- belongs to
+# ``core.adapters.AdapterSession``. What is Anima's is the target enumeration,
+# the two key codecs and one branch.
 
-    Classification order mirrors the gating in iter_anima_lora_targets (the
-    llm_adapter prefix wins over the mlp/attention shapes nested under it). A
-    path matching nothing enables no scope and therefore shows up in
-    apply_lora_group's unmatched list instead of being dropped in silence.
+
+def iter_anima_lora_slots(transformer: nn.Module):
+    """``(parent, slot, module_path)`` over FULL_SCOPE, for ``AdapterSession``.
+
+    ONE enumerator for load and unload, and deliberately the full scope on both.
+    Application is lookup-driven -- a target the file names no key for gets no
+    branch -- so enumerating every scope wraps exactly what deriving the scope
+    from the checkpoint's own keys wrapped, and restore reaches a composite
+    installed from any of them.
     """
-    scope = {"attention": False, "mlp": False, "mod": False, "llm_adapter": False}
-    for path in module_paths:
-        if path.startswith("llm_adapter"):
-            scope["llm_adapter"] = True
-        elif ".adaln_modulation_" in path:
-            scope["mod"] = True
-        elif ".mlp." in path:
-            scope["mlp"] = True
-        elif ".self_attn." in path or ".cross_attn." in path:
-            scope["attention"] = True
-    return scope
+    for module_path, parent, attr, _current in iter_anima_lora_targets(
+            transformer, FULL_SCOPE):
+        yield parent, attr, module_path
 
 
-# --------- Apply / restore ---------
+def build_lora_branch(base: nn.Module, weights: Dict[str, torch.Tensor],
+                      module_path: str) -> nn.Module:
+    """One branch over ``base``, at the file's own alpha/rank scale.
 
-def apply_lora_group(
-    transformer: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Linear],
-    wrapped_keys: set,
-    scope: Optional[Dict[str, bool]] = None,
-    branch_name: str = "lora",
-) -> Tuple[int, List[str]]:
-    """Add one named branch per matching module to the composite covering it.
-
-    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
-    over the same module adds a branch beside the first rather than rebuilding
-    from the base and discarding it.
-
-    Args:
-        transformer: Anima DiT instance.
-        grouped: Output of normalise_lora_state_dict().
-        strength: User-supplied scalar; multiplies the (alpha/rank) scaling.
-        lora_original_modules: Dict to record original modules for unload.
-            Keyed by module_path; the first wrap wins so multiple LoRAs over
-            the same module always restore back to the true original.
-        wrapped_keys: Set of module_paths currently wrapped (for unload).
-        scope: Target scope; defaults to the one derive_scope_from_keys reads
-            off `grouped`, i.e. exactly what the checkpoint contains.
-        branch_name: Unique per selected LoRA within the request.
-
-    Returns:
-        (wrapped_count, unmatched_module_paths). `unmatched` is every module
-        path the checkpoint carries that no target in the scope matched -- the
-        caller reports it; this function never drops one silently.
+    The request strength is NOT folded in here: ``add_branch(strength=)`` refolds
+    it into this branch's own scale, and multiplying it onto the delta instead is
+    different arithmetic that loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
-    if scope is None:
-        scope = derive_scope_from_keys(grouped.keys())
+    down = weights["down"]
+    up = weights["up"]
+    alpha_tensor = weights.get("alpha")
+    rank = int(down.shape[0])
+    alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
 
-    applied = 0
-    matched: set = set()
-    # Materialised: the slots are replaced as we go, and this walk reads
-    # named_modules(), so a live traversal would descend into what it installed.
-    for module_path, parent, attr, linear in list(
-            iter_anima_lora_targets(transformer, scope)):
-        weights = grouped.get(module_path)
-        if weights is None:
-            continue
+    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
+    device = base.weight.device
+    # The LoRA matrices must match the base's COMPUTE dtype, not the file's
+    # stored one. Fp8Linear / Int8Linear state theirs outright, so ask them: an
+    # int8 weight is not floating point at all, and a bias-less quantized layer
+    # would otherwise fall through to the bfloat16 default, which is right today
+    # only by coincidence.
+    declared = getattr(base, "compute_dtype", None)
+    if isinstance(declared, torch.dtype) and declared.is_floating_point:
+        compute_dtype = declared
+    elif base.bias is not None and base.bias.dtype.is_floating_point:
+        compute_dtype = base.bias.dtype
+    elif base.weight.dtype.is_floating_point and not (
+        'float8' in str(base.weight.dtype)
+    ):
+        compute_dtype = base.weight.dtype
+    else:
+        compute_dtype = torch.bfloat16
 
-        down = weights["down"]
-        up = weights["up"]
-        alpha_tensor = weights.get("alpha")
-
-        true_original = (linear.original_module
-                         if isinstance(linear, CompositeAdapterLayer) else linear)
-
-        # First time we touch this slot — preserve the genuine original for unload.
-        lora_original_modules.setdefault(module_path, true_original)
-
-        rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
-                                   lora_name=module_path)
-        device = true_original.weight.device
-        # LoRA matrices must match the base model's *compute* dtype, not the
-        # LoRA file's stored dtype. The base may carry FP8 weights with an
-        # on-the-fly dequant patch (Phase B.1-d), in which case the actual
-        # compute happens at the bias dtype or — when bias is absent — falls
-        # back to bfloat16.
-        #
-        # Fp8Linear / Int8Linear state their compute dtype outright, so ask them
-        # rather than inferring it: an int8 weight is not floating point at all
-        # and a bias-less quantized layer would otherwise fall through to the
-        # bfloat16 default, which is right today only by coincidence.
-        declared = getattr(true_original, "compute_dtype", None)
-        if isinstance(declared, torch.dtype) and declared.is_floating_point:
-            compute_dtype = declared
-        elif true_original.bias is not None and true_original.bias.dtype.is_floating_point:
-            compute_dtype = true_original.bias.dtype
-        elif true_original.weight.dtype.is_floating_point and not (
-            'float8' in str(true_original.weight.dtype)
-        ):
-            compute_dtype = true_original.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-
-        with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        # Also cast the wrapper's children explicitly (LoRALinearLayer init
-        # creates float32 weights and we just overwrote the .data, but the
-        # Parameter object's dtype tracking still says float32 in some torch
-        # builds — re-create as the right dtype).
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-
-        # adaln_modulation_* and llm_adapter MLP targets sit inside an
-        # nn.Sequential, so the slot is an index; attach() takes either, where
-        # setattr(parent, 1, module) raises TypeError.
-        # add_branch refolds the strength into the branch's own scale. Never
-        # multiply it onto the delta instead: same LoRA mathematically, but it
-        # loses bit-identity with the single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent, attr)
-        composite.add_branch(branch_name, wrapper, strength=strength)
-        matched.add(module_path)
-        wrapped_keys.add(module_path)
-        applied += 1
-
-    return applied, sorted(set(grouped) - matched)
-
-
-def restore_originals(
-    transformer: nn.Module,
-    lora_original_modules: Dict[str, nn.Linear],
-    wrapped_keys: set,
-) -> Tuple[int, List[str]]:
-    """Revert every composite-covered Linear to its original (pre-LoRA) module.
-
-    Driven by what is INSTALLED, through the enumerator the load path uses, so
-    the two cannot disagree about a slot's address. Enumerated over FULL_SCOPE
-    because the installed set spans whatever scopes the applied checkpoints
-    derived; `unresolved` is then whatever the wrapped set claims but the DiT
-    does not actually carry.
-
-    Returns (restored_count, unresolved_paths); the caller must surface the
-    latter, since those wrappers may still be installed. Both bookkeeping
-    structures are cleared, but only on a clean return -- an exception mid-loop
-    skips that, so the caller must additionally key them to the CURRENT
-    transformer (see ``AnimaMixin._anima_lora_state``) rather than rely on it.
-    """
-    from core.adapters import CompositeAdapterLayer, set_module_slot
-
-    restored = 0
-    found: set = set()
-    for module_path, parent, attr, current in list(
-            iter_anima_lora_targets(transformer, FULL_SCOPE)):
-        if not isinstance(current, CompositeAdapterLayer):
-            continue
-        set_module_slot(parent, attr,
-                        lora_original_modules.get(module_path, current.original_module))
-        found.add(module_path)
-        restored += 1
-    unresolved: List[str] = sorted(set(wrapped_keys) - found)
-    if unresolved:
-        print(f"[AnimaLoRA] WARNING: {len(unresolved)} wrapped module(s) could not be "
-              f"restored (first few: {unresolved[:5]}); the DiT may still carry LoRA "
-              f"weights.")
-    wrapped_keys.clear()
-    lora_original_modules.clear()
-    return restored, unresolved
+    with torch.no_grad():
+        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+    # LoRALinearLayer builds float32 weights and we overwrote .data; some torch
+    # builds still track the Parameter's dtype as float32, so re-create them.
+    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+    return branch

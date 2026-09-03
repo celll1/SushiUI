@@ -6,7 +6,6 @@ import os
 import sys
 import gc
 import random
-import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -65,22 +64,147 @@ class LensMixin:
         self._lens_lora_warn(msg, code="quantization_fallback")
         return None
 
-    def _lens_lora_state(self, transformer):
-        """The (originals, wrapped_keys) maps for THIS transformer.
+    # -- LoRA lifetime -------------------------------------------------------
+    #
+    # Owned by ``core.adapters.AdapterSession``: it resolves, parses and plans
+    # every selected file against the live transformer BEFORE mutating a slot,
+    # then installs the whole request or none of it, and holds the weakref-keyed
+    # bookkeeping and its reset. What stays here is Lens's -- the target scope,
+    # the two key codecs, the alpha precedence and one branch.
 
-        Reset when the model was reloaded (a fresh load, or the deep copy an FP8
-        quantization makes): the maps hold the OLD transformer's Linears,
-        ``restore_originals`` grafts by module path, and the shapes match, so they
-        would be spliced into the new transformer unnoticed. Keyed by weakref rather
-        than id(), which is reusable after a free.
+    def _lens_resolve_lora_path(self, raw_path):
+        """LoRAManager resolution; a miss is Lens's OWN refusal.
+
+        The session's ``lora_not_found`` message and exception type are fixed
+        and both differ from the ones this backend's gate pins, so the miss is
+        refused here instead.
         """
-        ref = getattr(self, "_lens_lora_transformer_ref", None)
-        if transformer is None or ref is None or ref() is not transformer:
-            self._lens_lora_original_modules: Dict[str, torch.nn.Linear] = {}
-            self._lens_lora_wrapped_keys: set = set()
-            self._lens_lora_transformer_ref = (
-                weakref.ref(transformer) if transformer is not None else None)
-        return self._lens_lora_original_modules, self._lens_lora_wrapped_keys
+        from api.error_handlers import with_error_code
+        from core.extensions.lora_manager import lora_manager
+
+        resolved = lora_manager._resolve_lora_path(raw_path)
+        if resolved is None:
+            lora_file = os.path.basename(str(raw_path))
+            message = f"Lens LoRA '{lora_file}' not found in any configured LoRA directory"
+            print(f"[Lens LoRA] ERROR: {message}")
+            self._lens_lora_warn(message, code="lora_not_found")
+            raise with_error_code(FileNotFoundError(message), "lora_not_found")
+        return resolved
+
+    @property
+    def _lens_lora_session(self):
+        """The per-backend session, created on first use.
+
+        The mixin has no ``__init__`` of its own, so this cannot be a
+        constructor assignment.
+        """
+        session = getattr(self, "_lens_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+
+            session = AdapterSession(
+                resolve_path=self._lens_resolve_lora_path,
+                warn=self._lens_lora_warn,
+                label="Lens LoRA",
+                count_declared_branches=self._lens_declared_branches,
+                describe_zero_targets=self._lens_zero_target_message,
+            )
+            self._lens_lora_session_instance = session
+        return session
+
+    def _lens_lora_components(self):
+        """The one component Lens LoRAs touch.
+
+        Rebuilt from ``lens_components`` on every call, so a model swap -- a
+        fresh load, or the deep copy an FP8 quantization makes -- reaches the
+        session's weakref reset instead of being remembered here.
+        """
+        from core.adapters import AdapterComponent
+        from core.models.lens.lens_lora import iter_lens_lora_slots
+
+        components = getattr(self, "lens_components", None) or {}
+        return [AdapterComponent(
+            name="transformer",
+            module=components.get("transformer"),
+            iter_targets=iter_lens_lora_slots,
+            build_branch=self._lens_build_lora_branch,
+        )]
+
+    @property
+    def _lens_lora_original_modules(self):
+        """Module path -> the pre-LoRA Linear of the transformer in hand.
+
+        Read WITHOUT the reload check on purpose: the reload gate has to observe
+        a stale map, not one that resets itself on being looked at.
+        ``AdapterSession.bind`` does the reset, on the load and unload paths.
+        """
+        return self._lens_lora_session.state("transformer").originals
+
+    @property
+    def _lens_lora_wrapped_keys(self):
+        return self._lens_lora_session.state("transformer").wrapped
+
+    @staticmethod
+    def _lens_declared_branches(tensors) -> int:
+        """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
+        spells its halves ``lora_A``/``lora_B``, so the session's default count
+        would be zero for every such file and never report a partial one.
+        """
+        from core.models.lens.lens_lora import normalise_lora_state_dict
+
+        return len(normalise_lora_state_dict(tensors))
+
+    def _lens_lora_file_state(self, file):
+        """``(grouped, fmt, metadata_alpha)`` for one file, computed ONCE.
+
+        Per-file work every target lookup would otherwise repeat. Reached from
+        the branch builder AND from the zero-target message, which names the
+        format.
+        """
+        cache = self._lens_lora_files
+        state = cache.get(file.branch_name)
+        if state is not None:
+            return state
+
+        from core.models.lens.lens_lora import (alpha_from_metadata, detect_lora_format,
+                                                mixed_format_note,
+                                                normalise_lora_state_dict)
+
+        note = mixed_format_note(file.tensors)
+        if note:
+            print(note)
+        grouped = normalise_lora_state_dict(file.tensors)
+        state = (grouped, detect_lora_format(file.tensors),
+                 alpha_from_metadata(file.metadata))
+        cache[file.branch_name] = state
+        print(f"[Lens LoRA] {file.name} format={state[1]} keys={len(file.tensors)} "
+              f"matched_modules={len(grouped)} strength={file.strength}")
+        return state
+
+    def _lens_build_lora_branch(self, request):
+        """The branch for one target, or ``None`` when this file names no key for
+        it. Nothing is installed here."""
+        from core.adapters import PreparedBranch
+        from core.models.lens.lens_lora import build_lora_branch
+
+        grouped, _fmt, default_alpha = self._lens_lora_file_state(request.file)
+        weights = grouped.get(request.module_path)
+        if weights is None:
+            return None
+        branch = build_lora_branch(request.base, weights, request.module_path,
+                                   default_alpha=default_alpha)
+        # Strength is folded into the branch's own scale by ``add_branch``, never
+        # multiplied onto its delta.
+        return PreparedBranch(branch, request.file.strength)
+
+    def _lens_zero_target_message(self, file, counts) -> str:
+        """The zero-target refusal text. The session owns the DECISION to refuse;
+        the sentence is Lens's, because the actionable part is the key format."""
+        _grouped, fmt, _alpha = self._lens_lora_file_state(file)
+        return (f"LoRA '{file.name}': 0 of {file.declared_branches} down/up pairs "
+                f"applied to the loaded Lens transformer (format={fmt}) -- "
+                f"unrecognized key format or a different model. Sample keys in file: "
+                f"{list(file.tensors.keys())[:5]}")
 
     def _load_lora_lens(self, lora_configs: List[Dict]) -> int:
         """Cover target Linear modules of the Lens transformer with LoRA adapters.
@@ -89,103 +213,37 @@ class LensMixin:
 
         Each target Linear is covered ONCE by a ``CompositeAdapterLayer`` and each
         selected LoRA adds a NAMED branch to it, so two Lens LoRAs over the same
-        module SUM instead of being refused.
+        module SUM instead of being refused. Nothing is installed until every file
+        has been resolved, parsed and validated.
 
         A LoRA that is missing, unreadable, or matches no target module REFUSES the
         generation rather than returning the base model's image as a success;
         survivable degradations are reported through add_warning.
         """
-        import os
-        from core.models.lens.lens_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
-            alpha_from_metadata,
-        )
-        from core.extensions.lora_manager import lora_manager
-        from api.error_handlers import with_error_code
-
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak wrappers into this one. It used to be
         # merely redundant with the outer finally; now that a second branch SUMS
         # rather than being refused, a leaked wrapper would silently double-apply.
+        # It is also what resets bookkeeping a model reload invalidated.
         self._unload_lora_lens()
 
-        transformer = (self.lens_components or {}).get("transformer")
-        # Bookkeeping that outlived a model reload would splice the previous
-        # transformer's Linears into this one.
-        originals, wrapped_keys = self._lens_lora_state(transformer)
-
+        components = self._lens_lora_components()
         if not lora_configs:
             return 0
-        if transformer is None:
+        if components[0].module is None:
             print("[Lens LoRA] WARNING: components not loaded")
             return 0
 
-        total_applied = 0
-        for i, cfg in enumerate(lora_configs):
-            lora_path = cfg.get("path", "")
-            lora_file = os.path.basename(str(lora_path))
-            strength  = float(cfg.get("strength", 1.0))
-            resolved  = lora_manager._resolve_lora_path(lora_path)
-            if resolved is None:
-                message = f"Lens LoRA '{lora_file}' not found in any configured LoRA directory"
-                print(f"[Lens LoRA] ERROR: {message}")
-                self._lens_lora_warn(message, code="lora_not_found")
-                raise with_error_code(FileNotFoundError(message), "lora_not_found")
-            try:
-                raw, fmt, metadata = load_lora_safetensors(str(resolved))
-                grouped  = normalise_lora_state_dict(raw)
-                print(f"[Lens LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
-                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
-                      f"strength={strength}")
-                applied = apply_lora_group(
-                    transformer, grouped, strength, originals, wrapped_keys,
-                    default_alpha=alpha_from_metadata(metadata),
-                    # Unique within the request, so selecting the SAME file
-                    # twice is two branches, not a duplicate-name refusal.
-                    branch_name=f"{i}:{lora_file}",
-                )
-                print(f"[Lens LoRA]   wrapped {applied} module(s)")
-            except Exception as e:
-                print(f"[Lens LoRA] ERROR loading {lora_file}: {e}")
-                import traceback; traceback.print_exc()
-                # Type + basename only: this rides into the PNG text chunk and the API
-                # response, and an OSError's str() carries the absolute resolved path.
-                message = (f"Lens LoRA '{lora_file}' could not be applied "
-                           f"({type(e).__name__}); see the server log for details")
-                self._lens_lora_warn(message, code="lora_load_failed")
-                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
-
-            if applied == 0:
-                message = (
-                    f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
-                    f"loaded Lens transformer (format={fmt}) -- unrecognized key format or a "
-                    f"different model. Sample keys in file: {list(raw.keys())[:5]}"
-                )
-                print(f"[Lens LoRA] ERROR: {message}")
-                self._lens_lora_warn(message, code="lora_incompatible")
-                raise with_error_code(RuntimeError(message), "lora_incompatible")
-
-            if applied < len(grouped):
-                self._lens_lora_warn(
-                    f"LoRA '{lora_file}': applied {applied} of {len(grouped)} down/up pairs "
-                    f"({len(grouped) - applied} matched no target module).",
-                    code="lora_partial",
-                )
-            total_applied += applied
-        return total_applied
+        self._lens_lora_files = {}
+        return self._lens_lora_session.load(lora_configs, components).applied
 
     def _unload_lora_lens(self) -> int:
-        """Restore every Lens transformer Linear to its pre-LoRA original."""
-        from core.models.lens.lens_lora import restore_originals
-        transformer = (self.lens_components or {}).get("transformer")
-        # Same guard as the load path: maps that outlived their transformer must be
-        # dropped, not restored into whatever now sits at the same module paths.
-        originals, wrapped_keys = self._lens_lora_state(transformer)
-        if transformer is None or not wrapped_keys:
-            return 0
-        restored = restore_originals(transformer, originals, wrapped_keys)
-        print(f"[Lens LoRA] Unloaded {restored} LoRA wrappers")
-        return restored
+        """Restore every Lens transformer Linear to its pre-LoRA original.
+
+        The session drops each original as restore lands it: a surviving entry
+        would be written into the NEXT model loaded at the same path.
+        """
+        return self._lens_lora_session.unload(self._lens_lora_components())
 
     @staticmethod
     def _lens_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:

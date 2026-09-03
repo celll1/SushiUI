@@ -797,3 +797,76 @@ def test_the_console_label_and_the_message_label_are_separate(tmp_path, warned):
     assert excinfo.value.message.startswith(
         "Stub Model LoRA 'broken.safetensors' could not be applied")
     assert logged and all(line.startswith("[Stub]") for line in logged)
+
+
+def test_component_kind_filtering_and_all_disabled_warning(tmp_path, warned):
+    """apply_to_unet and apply_to_text_encoder select components, and both False warns without refusal."""
+    transformer, encoder = _Stub(), _Stub()
+    t_comp = component(transformer)
+    e_comp = encoder_component(encoder)
+
+    def count_branches(tensors, components):
+        has_t = "transformer" in components
+        has_e = "text_encoder" in components
+        if has_t and has_e:
+            return sum(1 for k in tensors if k.endswith(".lora_down.weight"))
+        if has_t:
+            return sum(1 for k in tensors if k.endswith(".lora_down.weight") and not k.startswith(TE))
+        if has_e:
+            return sum(1 for k in tensors if k.endswith(".lora_down.weight") and k.startswith(TE))
+        return 0
+
+    path = write_two_namespace_lora(tmp_path)
+    session = make_session(warned, count_declared_branches=count_branches)
+
+    # 1. apply_to_unet=False: only encoder gets branches
+    session.load([{"path": path, "apply_to_unet": False, "apply_to_text_encoder": True}],
+                 [t_comp, e_comp])
+    assert not hasattr(transformer.a, "branch_names")
+    assert getattr(encoder.a, "branch_names", ()) == ("0:both.safetensors",)
+    session.unload([t_comp, e_comp])
+
+    # 2. apply_to_text_encoder=False: only transformer gets branches
+    session.load([{"path": path, "apply_to_unet": True, "apply_to_text_encoder": False}],
+                 [t_comp, e_comp])
+    assert getattr(transformer.a, "branch_names", ()) == ("0:both.safetensors",)
+    assert not hasattr(encoder.a, "branch_names")
+    session.unload([t_comp, e_comp])
+
+    # 3. Both disabled: warns lora_no_targets and does not refuse
+    session.load([{"path": path, "apply_to_unet": False, "apply_to_text_encoder": False}],
+                 [t_comp, e_comp])
+    assert not hasattr(transformer.a, "branch_names")
+    assert not hasattr(encoder.a, "branch_names")
+    assert any(code == "lora_no_targets" for code, _ in warned)
+
+
+def test_step_range_dynamic_activation(tmp_path, warned):
+    """step_range controls branch activation dynamically via session.set_step."""
+    model = _Stub()
+    comp = component(model)
+    path = write_lora(tmp_path)
+    session = make_session(warned)
+
+    assert not session.has_step_range
+    session.load([{"path": path, "step_range": [200, 800]}], [comp])
+    assert session.has_step_range
+
+    composite = model.a
+    branch_name = "0:a.safetensors"
+    assert composite.has_branch(branch_name)
+
+    # Step 100 of 1000 (10%): below 20% -> inactive
+    session.set_step(100, 1000)
+    assert not composite.is_active(branch_name)
+
+    # Step 500 of 1000 (50%): between 20% and 80% -> active
+    session.set_step(500, 1000)
+    assert composite.is_active(branch_name)
+
+    # Step 900 of 1000 (90%): above 80% -> inactive
+    session.set_step(900, 1000)
+    assert not composite.is_active(branch_name)
+
+    session.unload([comp])
+    assert not session.has_step_range

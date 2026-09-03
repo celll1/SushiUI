@@ -878,8 +878,8 @@ class AceStepMixin:
                 code="lora_incompatible",
             )
         if is_sdscripts:
-            # Complete groups only; an unpaired stem was already dropped by the
-            # builder's ``down is None`` check, so this is the same set.
+            # COMPLETE groups, whatever the algebra: the builder dispatches on
+            # the tensor names, so a down/up filter here would drop LoHa/LoKr.
             from core.adapters import group_adapter_tensors
 
             stems = group_adapter_tensors(file.tensors).groups
@@ -935,32 +935,48 @@ class AceStepMixin:
             return {"format": "diffusers", "groups": groups}
 
     def _acestep_build_lora_branch(self, request):
-        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH, lora_branch_dtype
+        """The branch for one target, ``None`` when this file names no key for it,
+        or ``SHAPE_MISMATCH``.
+
+        The sd-scripts codec dispatches on the tensor names through
+        ``build_adapter_branch``, so its algebra is the checkpoint's. The
+        diffusers/PEFT codec below stays down/up by construction: its regexes
+        bake ``(lora_A|lora_B)`` into the key match, so no non-pair key can
+        reach it and a LyCORIS file in that spelling falls out unmatched.
+        """
+        from core.adapters import (SHAPE_MISMATCH, LoRALinearLayer,
+                                   PreparedBranch, build_adapter_branch,
+                                   lora_branch_dtype)
         prep = request.prepared
+        base = request.base
         if prep["format"] == "sdscripts":
             from core.training.adapters.acestep_adapter import _flatten_to_sdscripts
             stem = f"lora_unet_{_flatten_to_sdscripts(request.module_path)}"
-            weights = prep["stems"].get(stem)
-            if weights is None:
+            group = prep["stems"].get(stem)
+            if group is None:
                 return None
-            down = weights.get("down")
-            up = weights.get("up")
-            if down is None or up is None:
-                return None
-            alpha = weights.get("alpha")
-            fallback_alpha = prep["fallback_alpha"]
-        else:
-            info = prep["groups"].get(request.module_path)
-            if info is None:
-                return None
-            down = info.get("down")
-            up = info.get("up")
-            if down is None or up is None:
-                return None
-            alpha = info.get("alpha")
-            fallback_alpha = None
+            branch = build_adapter_branch(
+                base, group, metadata_alpha=prep["fallback_alpha"],
+                lora_dtype=lora_branch_dtype(base),
+                lora_name=request.module_path)
+            if branch is SHAPE_MISMATCH:
+                print(f"[AceStep LoRA] WARNING: {group.algorithm} factors at "
+                      f"{request.module_path!r} do not fit module in/out="
+                      f"({getattr(base, 'in_features', None)}, "
+                      f"{getattr(base, 'out_features', None)})")
+                return SHAPE_MISMATCH
+            return PreparedBranch(branch, request.file.strength)
 
-        base = request.base
+        info = prep["groups"].get(request.module_path)
+        if info is None:
+            return None
+        down = info.get("down")
+        up = info.get("up")
+        if down is None or up is None:
+            return None
+        alpha = info.get("alpha")
+        fallback_alpha = None
+
         expected_in = getattr(base, "in_features", None)
         expected_out = getattr(base, "out_features", None)
         lora_in = down.shape[-1]

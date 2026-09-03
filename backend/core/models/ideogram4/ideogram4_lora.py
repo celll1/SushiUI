@@ -105,16 +105,13 @@ def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
     branch: str = "cond",
 ) -> Dict[str, TensorGroup]:
-    """Group raw LoRA tensors for one branch → {module_path: TensorGroup}.
+    """One branch's COMPLETE factor groups, whatever the algebra.
 
     branch="cond" reads "lora_unet_" / interchange keys; branch="uncond" reads
-    "lora_uncond_" keys. Only down/up groups are returned -- any other algebra
-    is counted (``count_declared_pairs``) and refused unapplied rather than
-    handed to a builder that cannot express it. ``TensorGroup`` answers to
-    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads.
+    "lora_uncond_" keys. ``group_adapter_tensors`` already drops the incomplete
+    groups; a down/up filter on top would silently drop every LoHa and LoKr one.
     """
-    grouped = group_adapter_tensors(raw, _branch_stem(branch)).groups
-    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
+    return group_adapter_tensors(raw, _branch_stem(branch)).groups
 
 
 def detect_lora_format(raw: Mapping[str, Any]) -> str:
@@ -275,45 +272,38 @@ def iter_ideogram4_lora_slots(transformer: nn.Module):
         yield parent, attr, module_path
 
 
+def branch_dtype(base: nn.Module) -> torch.dtype:
+    """Ideogram 4's own branch dtype: the base compute dtype (fp8 base -> bf16).
+
+    Deliberately not ``core.adapters.lora_branch_dtype``, which has no bias
+    tier -- and Ideogram 4's published checkpoints are quantized, so a biased
+    fp8 target is the normal case here rather than an edge one.
+    """
+    bias = getattr(base, "bias", None)
+    if bias is not None and bias.dtype.is_floating_point:
+        return bias.dtype
+    weight_dtype = base.weight.dtype
+    if weight_dtype.is_floating_point and "float8" not in str(weight_dtype):
+        return weight_dtype
+    return torch.bfloat16
+
+
 def build_lora_branch(
     base: nn.Module,
-    weights: Dict[str, torch.Tensor],
+    group: TensorGroup,
     module_path: str,
     default_alpha: Optional[float] = None,
 ) -> nn.Module:
-    """One branch for one target, built and not installed.
+    """One branch for one target, built and not installed, or ``SHAPE_MISMATCH``.
 
-    Alpha precedence: per-key ``.alpha`` tensor, then file metadata
+    The algebra is the group's: ``build_adapter_branch`` dispatches on the tensor
+    names. Alpha precedence: per-key ``.alpha`` tensor, then file metadata
     (``default_alpha``), then rank. The strength is NOT folded here --
     ``CompositeAdapterLayer.add_branch(strength=)`` does it, and multiplying it
     onto the delta instead loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import build_adapter_branch
 
-    down, up = weights["down"], weights["up"]
-    alpha_tensor = weights.get("alpha")
-    rank = int(down.shape[0])
-    if alpha_tensor is not None:
-        alpha_value = float(alpha_tensor.item())
-    elif default_alpha is not None:
-        alpha_value = float(default_alpha)
-    else:
-        alpha_value = float(rank)
-
-    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
-    device = base.weight.device
-
-    # Match the base compute dtype (fp8 base -> bf16 compute).
-    if getattr(base, "bias", None) is not None and base.bias.dtype.is_floating_point:
-        compute_dtype = base.bias.dtype
-    elif base.weight.dtype.is_floating_point and "float8" not in str(base.weight.dtype):
-        compute_dtype = base.weight.dtype
-    else:
-        compute_dtype = torch.bfloat16
-
-    with torch.no_grad():
-        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-    return branch
+    return build_adapter_branch(base, group, metadata_alpha=default_alpha,
+                                lora_dtype=branch_dtype(base),
+                                lora_name=module_path)

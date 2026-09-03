@@ -35,12 +35,14 @@ from core.adapters.capability import (  # noqa: E402
     ADAPTER_PAIRS, ENABLED_ADAPTER_PAIRS, ORDINARY_LORA, supported_pairs)
 from core.training.arch import ARCH_REGISTRY, resolve_arch_name  # noqa: E402
 
-#: The Tier-1 four: their generation branch builders run on
-#: ``build_adapter_branch`` and they are gated by
-#: ``adapter_lycoris_roundtrip_cheap_test.py``. Everything else stays on
-#: ordinary LoRA, and SD1.5/SDXL cannot be flipped from this table at all --
-#: they load through diffusers and never reach ``AdapterSession``.
-LYCORIS_ENABLED = {"zimage", "krea2", "minit2i", "ltx2"}
+#: Every architecture whose generation branch builder runs on
+#: ``build_adapter_branch``, each gated by
+#: ``adapter_lycoris_roundtrip_cheap_test.py``. MiniMax-H3 and SenseNova stay
+#: on ordinary LoRA behind their own gate, and SD1.5/SDXL cannot be flipped
+#: from this table at all -- they load through diffusers and never reach
+#: ``AdapterSession``.
+LYCORIS_ENABLED = {"zimage", "krea2", "minit2i", "ltx2",
+                   "anima", "lens", "ideogram4", "flux2", "acestep"}
 ADDITIVE_LYCORIS = frozenset({ORDINARY_LORA, ("loha", False), ("lokr", False)})
 
 RANK, ALPHA = 16, 8
@@ -295,7 +297,7 @@ class AdapterCapabilityTableTest(unittest.TestCase):
     def test_the_table_has_a_row_for_every_registered_architecture(self):
         self.assertEqual(set(ENABLED_ADAPTER_PAIRS), set(ARCH_REGISTRY))
 
-    def test_only_the_tier_one_four_enable_the_additive_lycoris_algebras(self):
+    def test_only_the_gated_architectures_enable_the_additive_algebras(self):
         for name in ARCH_REGISTRY:
             with self.subTest(arch=name):
                 expected = (ADDITIVE_LYCORIS if name in LYCORIS_ENABLED

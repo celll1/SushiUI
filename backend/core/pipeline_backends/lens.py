@@ -128,7 +128,18 @@ class LensMixin:
             module=components.get("transformer"),
             iter_targets=iter_lens_lora_slots,
             build_branch=self._lens_build_lora_branch,
+            block_swap_active=self._lens_block_swap_live,
         )]
+
+    def _lens_block_swap_live(self) -> bool:
+        """Is an offloader already splitting the transformer's blocks?
+
+        Accurate here: ``_lens_stage_transformer`` sets ``_lens_offloader`` (to
+        None or an offloader) on every path and runs immediately before
+        ``_load_lora_lens``.
+        """
+        offloader = getattr(self, "_lens_offloader", None)
+        return offloader is not None and bool(getattr(offloader, "blocks_to_swap", 0))
 
     @property
     def _lens_lora_original_modules(self):
@@ -177,17 +188,20 @@ class LensMixin:
         return state
 
     def _lens_build_lora_branch(self, request):
-        """The branch for one target, or ``None`` when this file names no key for
-        it. Nothing is installed here."""
-        from core.adapters import PreparedBranch
+        """The branch for one target, ``None`` when this file names no key for it,
+        or ``SHAPE_MISMATCH`` when its factors do not fit. Nothing is installed
+        here."""
+        from core.adapters import SHAPE_MISMATCH, PreparedBranch
         from core.models.lens.lens_lora import build_lora_branch
 
         grouped, _fmt, default_alpha = request.prepared
-        weights = grouped.get(request.module_path)
-        if weights is None:
+        group = grouped.get(request.module_path)
+        if group is None:
             return None
-        branch = build_lora_branch(request.base, weights, request.module_path,
+        branch = build_lora_branch(request.base, group, request.module_path,
                                    default_alpha=default_alpha)
+        if branch is SHAPE_MISMATCH:
+            return branch
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta.
         return PreparedBranch(branch, request.file.strength)

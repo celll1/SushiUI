@@ -114,7 +114,18 @@ class AnimaMixin:
             module=components.get("transformer"),
             iter_targets=iter_anima_lora_slots,
             build_branch=self._anima_build_lora_branch,
+            block_swap_active=self._anima_block_swap_live,
         )]
+
+    def _anima_block_swap_live(self) -> bool:
+        """Is an offloader already splitting the DiT's blocks?
+
+        Accurate here: every generate path sets ``_anima_offloader`` -- through
+        ``_anima_stage_transformer``, or to None on the keep-hot resident branch
+        -- immediately before ``_load_lora_anima``.
+        """
+        offloader = getattr(self, "_anima_offloader", None)
+        return offloader is not None and bool(getattr(offloader, "blocks_to_swap", 0))
 
     @property
     def _anima_lora_original_modules(self):
@@ -162,8 +173,8 @@ class AnimaMixin:
         if dropped:
             self._anima_lora_warn(
                 f"LoRA '{file.name}' has {len(dropped)} tensor key(s) in no "
-                f"recognised Anima LoRA format, or missing their down/up pair "
-                f"(first few: {dropped[:5]}) -- not applied.",
+                f"recognised Anima LoRA format, or not part of a complete "
+                f"factor group (first few: {dropped[:5]}) -- not applied.",
                 "anima_lora_keys_unrecognised")
 
         transformer = (getattr(self, "anima_components", None) or {}).get("transformer")
@@ -180,15 +191,18 @@ class AnimaMixin:
         return grouped
 
     def _anima_build_lora_branch(self, request):
-        """The branch for one target, or ``None`` when this file names no key for
-        it. Nothing is installed here."""
-        from core.adapters import PreparedBranch
+        """The branch for one target, ``None`` when this file names no key for it,
+        or ``SHAPE_MISMATCH`` when its factors do not fit. Nothing is installed
+        here."""
+        from core.adapters import SHAPE_MISMATCH, PreparedBranch
         from core.models.anima.anima_lora import build_lora_branch
 
-        weights = request.prepared.get(request.module_path)
-        if weights is None:
+        group = request.prepared.get(request.module_path)
+        if group is None:
             return None
-        branch = build_lora_branch(request.base, weights, request.module_path)
+        branch = build_lora_branch(request.base, group, request.module_path)
+        if branch is SHAPE_MISMATCH:
+            return branch
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta.
         return PreparedBranch(branch, request.file.strength)

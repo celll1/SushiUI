@@ -179,6 +179,225 @@ class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
         return up * self.scale
 
 
+class LoHaLinearLayer(nn.Module):
+    """LoHa (Low-rank Hadamard Product) layer for Linear modules."""
+
+    def __init__(
+        self,
+        original_module: nn.Linear,
+        rank: int,
+        alpha: float,
+        lora_name: str,
+        lora_dtype: torch.dtype = torch.float32,
+    ):
+        super().__init__()
+        self.original_module = original_module
+        self.rank = rank
+        self.alpha = alpha
+        self.scale = alpha / rank if rank > 0 else alpha
+        self.lora_name = lora_name
+        self.lora_dtype = lora_dtype
+        self.strength = 1.0
+
+        in_features = original_module.in_features
+        out_features = original_module.out_features
+        device = original_module.weight.device
+
+        self.hada_w1_a = nn.Parameter(torch.empty((out_features, rank), device=device, dtype=lora_dtype))
+        self.hada_w1_b = nn.Parameter(torch.empty((rank, in_features), device=device, dtype=lora_dtype))
+        self.hada_w2_a = nn.Parameter(torch.empty((out_features, rank), device=device, dtype=lora_dtype))
+        self.hada_w2_b = nn.Parameter(torch.empty((rank, in_features), device=device, dtype=lora_dtype))
+
+        nn.init.kaiming_uniform_(self.hada_w1_a, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.hada_w1_b, a=math.sqrt(5))
+        nn.init.zeros_(self.hada_w2_a)
+        nn.init.kaiming_uniform_(self.hada_w2_b, a=math.sqrt(5))
+
+    @property
+    def weight(self):
+        return self.original_module.weight
+
+    @property
+    def bias(self):
+        return getattr(self.original_module, "bias", None)
+
+    def set_adapter_strength(self, strength: float) -> None:
+        self.strength = float(strength)
+
+    def compute_delta_weight(self) -> torch.Tensor:
+        w1 = self.hada_w1_a @ self.hada_w1_b
+        w2 = self.hada_w2_a @ self.hada_w2_b
+        return (w1 * w2) * (self.scale * self.strength)
+
+    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+        delta_w = self.compute_delta_weight().to(x.dtype)
+        return F.linear(x, delta_w)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.original_module(x) + self.forward_delta(x)
+
+    def branch_tensors(self) -> Dict[str, torch.Tensor]:
+        return {
+            "hada_w1_a": self.hada_w1_a,
+            "hada_w1_b": self.hada_w1_b,
+            "hada_w2_a": self.hada_w2_a,
+            "hada_w2_b": self.hada_w2_b,
+            "alpha": torch.tensor(self.alpha, dtype=torch.float32),
+        }
+
+
+class LoKrLinearLayer(nn.Module):
+    """LoKr (Low-rank Kronecker Product) layer for Linear modules."""
+
+    def __init__(
+        self,
+        original_module: nn.Linear,
+        rank: int,
+        alpha: float,
+        lora_name: str,
+        lora_dtype: torch.dtype = torch.float32,
+        factor: int = -1,
+    ):
+        super().__init__()
+        self.original_module = original_module
+        self.rank = rank
+        self.alpha = alpha
+        self.scale = alpha / rank if rank > 0 else alpha
+        self.lora_name = lora_name
+        self.lora_dtype = lora_dtype
+        self.strength = 1.0
+
+        out_features = original_module.out_features
+        in_features = original_module.in_features
+        device = original_module.weight.device
+
+        def get_factors(n: int) -> Tuple[int, int]:
+            for i in range(int(math.isqrt(n)), 0, -1):
+                if n % i == 0:
+                    return i, n // i
+            return 1, n
+
+        if factor > 0 and out_features % factor == 0:
+            m1 = factor
+            m2 = out_features // factor
+        else:
+            m1, m2 = get_factors(out_features)
+
+        n1, n2 = get_factors(in_features)
+        self.factors = ((m1, m2), (n1, n2))
+
+        self.lokr_w1 = nn.Parameter(torch.empty((m1, n1), device=device, dtype=lora_dtype))
+        if rank > 0:
+            self.lokr_w2_a = nn.Parameter(torch.empty((m2, rank), device=device, dtype=lora_dtype))
+            self.lokr_w2_b = nn.Parameter(torch.empty((rank, n2), device=device, dtype=lora_dtype))
+            nn.init.zeros_(self.lokr_w2_a)
+            nn.init.kaiming_uniform_(self.lokr_w2_b, a=math.sqrt(5))
+        else:
+            self.lokr_w2 = nn.Parameter(torch.empty((m2, n2), device=device, dtype=lora_dtype))
+            nn.init.zeros_(self.lokr_w2)
+
+        nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+
+    @property
+    def weight(self):
+        return self.original_module.weight
+
+    @property
+    def bias(self):
+        return getattr(self.original_module, "bias", None)
+
+    def set_adapter_strength(self, strength: float) -> None:
+        self.strength = float(strength)
+
+    def compute_delta_weight(self) -> torch.Tensor:
+        if self.rank > 0:
+            w2 = self.lokr_w2_a @ self.lokr_w2_b
+        else:
+            w2 = self.lokr_w2
+        delta_w = torch.kron(self.lokr_w1, w2)
+        return delta_w * (self.scale * self.strength)
+
+    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+        delta_w = self.compute_delta_weight().to(x.dtype)
+        return F.linear(x, delta_w)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.original_module(x) + self.forward_delta(x)
+
+    def branch_tensors(self) -> Dict[str, torch.Tensor]:
+        tensors = {"lokr_w1": self.lokr_w1, "alpha": torch.tensor(self.alpha, dtype=torch.float32)}
+        if self.rank > 0:
+            tensors["lokr_w2_a"] = self.lokr_w2_a
+            tensors["lokr_w2_b"] = self.lokr_w2_b
+        else:
+            tensors["lokr_w2"] = self.lokr_w2
+        return tensors
+
+
+class DoRALinearLayer(nn.Module):
+    """DoRA (Weight-Decomposed Low-Rank Adaptation) wrapper for an adapter branch."""
+
+    def __init__(
+        self,
+        original_module: nn.Linear,
+        branch: nn.Module,
+        dora_scale: Optional[torch.Tensor] = None,
+    ):
+        super().__init__()
+        self.original_module = original_module
+        self.branch = branch
+
+        device = original_module.weight.device
+        dtype = original_module.weight.dtype
+
+        if dora_scale is not None:
+            self.dora_scale = nn.Parameter(dora_scale.detach().clone().to(device=device, dtype=dtype))
+        else:
+            with torch.no_grad():
+                init_scale = torch.norm(original_module.weight.detach().to(torch.float32), p=2, dim=1)
+            self.dora_scale = nn.Parameter(init_scale.to(device=device, dtype=dtype))
+
+    @property
+    def weight(self):
+        return self.original_module.weight
+
+    @property
+    def bias(self):
+        return getattr(self.original_module, "bias", None)
+
+    def set_adapter_strength(self, strength: float) -> None:
+        if callable(getattr(self.branch, "set_adapter_strength", None)):
+            self.branch.set_adapter_strength(strength)
+
+    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+        w0 = self.original_module.weight.to(torch.float32)
+        if callable(getattr(self.branch, "compute_delta_weight", None)):
+            delta_w = self.branch.compute_delta_weight().to(torch.float32)
+        elif hasattr(self.branch, "lora_down") and hasattr(self.branch, "lora_up"):
+            delta_w = (self.branch.lora_up.weight @ self.branch.lora_down.weight).to(torch.float32) * (
+                self.branch.scale * getattr(self.branch, "strength", 1.0)
+            )
+        else:
+            eye = torch.eye(w0.shape[1], device=w0.device, dtype=x.dtype)
+            delta_w = self.branch.forward_delta(eye).T.to(torch.float32)
+
+        v = w0 + delta_w
+        v_norm = torch.norm(v, p=2, dim=1, keepdim=True).clamp_min(1e-12)
+        w_new = self.dora_scale.view(-1, 1).to(torch.float32) * (v / v_norm)
+        eff_delta = (w_new - w0).to(x.dtype)
+        return F.linear(x, eff_delta)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.original_module(x) + self.forward_delta(x)
+
+    def branch_tensors(self) -> Dict[str, torch.Tensor]:
+        tensors = {}
+        if callable(getattr(self.branch, "branch_tensors", None)):
+            tensors.update(self.branch.branch_tensors())
+        tensors["dora_scale"] = self.dora_scale
+        return tensors
+
+
 def get_module_slot(parent: nn.Module, slot: Union[str, int]) -> nn.Module:
     """Read a child module from an attribute name or a container index.
 
@@ -390,6 +609,9 @@ class CompositeAdapterLayer(nn.Module):
 
 _ADAPTER_WRAPPER_CLASS_NAMES = frozenset({
     "LoRALinearLayer",
+    "LoHaLinearLayer",
+    "LoKrLinearLayer",
+    "DoRALinearLayer",
     "CompositeAdapterLayer",
 })
 
@@ -418,7 +640,7 @@ def is_adapter_covered(module: Optional[nn.Module]) -> bool:
     have never counted. Here the subclass must match, because MiniMax-H3's
     injector skips a slot it has already wrapped.
     """
-    return isinstance(module, (LoRALinearLayer, CompositeAdapterLayer))
+    return isinstance(module, (LoRALinearLayer, LoHaLinearLayer, LoKrLinearLayer, DoRALinearLayer, CompositeAdapterLayer))
 
 
 def named_modules_outside_adapters(

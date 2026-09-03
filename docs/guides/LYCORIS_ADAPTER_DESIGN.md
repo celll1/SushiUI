@@ -667,14 +667,18 @@ recorded below. Only the per-LoRA option unification is outstanding.
   component kind filtering, warns `lora_no_targets` without refusal when all
   components are user-disabled, and drives dynamic branch activation over
   `step_range` [0, 1000] via `set_step()` across all session-managed backends.
+- **LyCORIS adapter layer variants: LoHa, LoKr, and DoRA.**
+  `core.adapters` now provides reference `LoHaLinearLayer` (Hadamard-product),
+  `LoKrLinearLayer` (Kronecker-product), and `DoRALinearLayer` (weight decomposition
+  with exact strength-zero identity and magnitude vector scaling). All satisfy
+  the composite branch protocol and can be combined additively over shared modules.
 
 **Not landed.**
 
 - `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
   carry generation topology and a capability matrix.
 - The checkpoint codec registry for foreign formats.
-- LoHa, LoKr, DoRA and the optional fused backend; `AdapterSession` currently
-  installs ordinary LoRA branches only.
+- Checkpoint codec parsing and training adapter integration for foreign LoHa/LoKr/DoRA.
 - The generation `AdapterSpec` API, codec-derived adapter metadata, and the
   corresponding frontend selector/training controls.
 

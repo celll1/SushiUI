@@ -22,11 +22,10 @@ apply to both (the inference loader uses distinct sub-prefixes per branch).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Optional, Set, Tuple
+from typing import Any, Dict, Generator, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
-from safetensors import safe_open
 
 from .vendor.fp8_linear import Fp8Linear
 from .vendor.int8_linear import Int8Linear
@@ -120,19 +119,24 @@ def normalise_lora_state_dict(
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
-    """Load a LoRA safetensors file → (raw_state_dict, format_label, metadata)."""
-    raw: Dict[str, torch.Tensor] = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        metadata = dict(f.metadata() or {})
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
+def detect_lora_format(raw: Mapping[str, Any]) -> str:
+    """"sd-scripts" / "interchange" / "unknown", from the key names alone."""
     n_sd = sum(1 for k in raw if k.startswith("lora_unet_") or k.startswith("lora_uncond_"))
     n_ix = sum(1 for k in raw if k.startswith(INTERCHANGE_DIT_PREFIX))
-    fmt = "sd-scripts" if n_sd >= n_ix else "interchange"
     if n_sd == 0 and n_ix == 0:
-        fmt = "unknown"
-    return raw, fmt, metadata
+        return "unknown"
+    return "sd-scripts" if n_sd >= n_ix else "interchange"
+
+
+def count_declared_pairs(raw: Mapping[str, torch.Tensor]) -> int:
+    """Down/up pairs across BOTH branches.
+
+    ``AdapterSession``'s default counts ``.lora_down.weight``, which misses the
+    interchange codec's ``.lora_A.weight`` entirely and would stop the
+    ``lora_partial`` warning firing on those files.
+    """
+    return (len(normalise_lora_state_dict(raw, branch="cond"))
+            + len(normalise_lora_state_dict(raw, branch="uncond")))
 
 
 def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:
@@ -263,116 +267,60 @@ def iter_ideogram4_lora_targets(
 
 
 # ---------------------------------------------------------------------------
-# Apply / restore (inference)
+# Inference: the two callables AdapterSession needs
 # ---------------------------------------------------------------------------
 
-def apply_lora_group(
-    transformer: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    scope: Optional[Dict[str, bool]] = None,
+def iter_ideogram4_lora_slots(transformer: nn.Module):
+    """``(parent, slot, module_path)`` over the FULL scope, for ``AdapterSession``.
+
+    Same traversal as ``iter_ideogram4_lora_targets``, re-shaped to the session's
+    tuple order; the generation loader has never scoped its apply, so load and
+    unload both see every target.
+    """
+    for module_path, parent, attr, _current in iter_ideogram4_lora_targets(
+            transformer, _FULL_SCOPE):
+        yield parent, attr, module_path
+
+
+def build_lora_branch(
+    base: nn.Module,
+    weights: Dict[str, torch.Tensor],
+    module_path: str,
     default_alpha: Optional[float] = None,
-    branch_name: str = "lora",
-) -> int:
-    """Add one named branch per matching module to the composite covering it.
+) -> nn.Module:
+    """One branch for one target, built and not installed.
 
-    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
-    over the same module adds a branch beside the first rather than replacing
-    it. ``branch_name`` must be unique within the request.
-
-    Called once per BRANCH of the dual transformer, with that branch's own
-    ``grouped`` slice and its own bookkeeping maps, so a stack on the
-    conditional half cannot reach the unconditional one.
-
-    ``default_alpha`` is the file-metadata alpha used for a module with no
-    per-key ``.alpha`` tensor (see alpha_from_metadata).
+    Alpha precedence: per-key ``.alpha`` tensor, then file metadata
+    (``default_alpha``), then rank. The strength is NOT folded here --
+    ``CompositeAdapterLayer.add_branch(strength=)`` does it, and multiplying it
+    onto the delta instead loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
-    effective_scope = scope if scope is not None else _FULL_SCOPE
-    applied = 0
+    down, up = weights["down"], weights["up"]
+    alpha_tensor = weights.get("alpha")
+    rank = int(down.shape[0])
+    if alpha_tensor is not None:
+        alpha_value = float(alpha_tensor.item())
+    elif default_alpha is not None:
+        alpha_value = float(default_alpha)
+    else:
+        alpha_value = float(rank)
 
-    # Materialised: the slots are replaced as we go.
-    for module_path, parent, attr, linear in list(
-            iter_ideogram4_lora_targets(transformer, effective_scope)):
-        weights = grouped.get(module_path)
-        if weights is None:
-            continue
+    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
+    device = base.weight.device
 
-        down = weights["down"]
-        up = weights["up"]
-        alpha_tensor = weights.get("alpha")
+    # Match the base compute dtype (fp8 base -> bf16 compute).
+    if getattr(base, "bias", None) is not None and base.bias.dtype.is_floating_point:
+        compute_dtype = base.bias.dtype
+    elif base.weight.dtype.is_floating_point and "float8" not in str(base.weight.dtype):
+        compute_dtype = base.weight.dtype
+    else:
+        compute_dtype = torch.bfloat16
 
-        true_original = (linear.original_module
-                         if isinstance(linear, CompositeAdapterLayer) else linear)
-        lora_original_modules.setdefault(module_path, true_original)
-
-        rank = int(down.shape[0])
-        if alpha_tensor is not None:
-            alpha_value = float(alpha_tensor.item())
-        elif default_alpha is not None:
-            alpha_value = float(default_alpha)
-        else:
-            alpha_value = float(rank)
-
-        branch = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
-                                 lora_name=module_path)
-        device = true_original.weight.device
-
-        # Match the base compute dtype (fp8 base -> bf16 compute).
-        if getattr(true_original, "bias", None) is not None and true_original.bias.dtype.is_floating_point:
-            compute_dtype = true_original.bias.dtype
-        elif (true_original.weight.dtype.is_floating_point and
-              "float8" not in str(true_original.weight.dtype)):
-            compute_dtype = true_original.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-
-        # add_branch refolds the strength into the branch's own scale. Never
-        # multiply it onto the delta instead: same LoRA mathematically, but it
-        # loses bit-identity with the single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent, attr)
-        composite.add_branch(branch_name, branch, strength=strength)
-        wrapped_keys.add(module_path)
-        applied += 1
-
-    return applied
-
-
-def restore_originals(
-    transformer: nn.Module,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-) -> int:
-    """Revert every composite-covered module of ONE transformer to its original.
-
-    Driven by what is INSTALLED, through the enumerator the load path uses, so
-    the two cannot disagree about a slot's address. Bookkeeping for the restored
-    paths is dropped: a surviving ``lora_original_modules`` entry would be
-    written into the NEXT model loaded at the same path, i.e. one model's Linear
-    installed into another. The caller passes one branch's maps, so restoring
-    the conditional transformer leaves the unconditional one untouched.
-    """
-    from core.adapters import CompositeAdapterLayer, set_module_slot
-
-    restored = 0
-    restored_keys: Set[str] = set()
-    for module_path, parent, attr, current in list(
-            iter_ideogram4_lora_targets(transformer, _FULL_SCOPE)):
-        if isinstance(current, CompositeAdapterLayer):
-            set_module_slot(parent, attr, lora_original_modules.get(
-                module_path, current.original_module))
-            restored_keys.add(module_path)
-            restored += 1
-    for key in restored_keys:
-        lora_original_modules.pop(key, None)
-    wrapped_keys -= restored_keys
-    return restored
+    with torch.no_grad():
+        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+    return branch

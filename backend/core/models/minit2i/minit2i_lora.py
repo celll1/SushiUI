@@ -17,7 +17,7 @@ addition, fully reversible), so two LoRAs over one module SUM.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Optional, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, List, Optional, Set, Tuple
 
 import torch
 from torch import nn
@@ -61,14 +61,39 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
-    raw: Dict[str, torch.Tensor] = {}
+def read_lora_keys(path: str) -> List[str]:
+    """The key NAMES in a LoRA safetensors, without loading a tensor.
+
+    ``_minit2i_prepare_loras`` has to decide which of the two components a file
+    can bind -- and refuse an unreadable one -- before ``AdapterSession`` reads
+    it for real.
+    """
     with safe_open(path, framework="pt", device="cpu") as f:
-        metadata = dict(f.metadata() or {})
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
-    fmt = "sd-scripts" if any(k.startswith("lora_unet_") or k.startswith(TE_KEY_PREFIX) for k in raw) else "unknown"
-    return raw, fmt, metadata
+        return list(f.keys())
+
+
+def detect_lora_format(keys: Iterable[str]) -> str:
+    """"sd-scripts" / "unknown", from the key names alone."""
+    return "sd-scripts" if any(
+        k.startswith("lora_unet_") or k.startswith(TE_KEY_PREFIX) for k in keys
+    ) else "unknown"
+
+
+def declared_module_paths(keys: Iterable[str]) -> Set[str]:
+    """Namespaced module paths carrying a complete down/up pair, from key names.
+
+    The same predicate ``normalise_lora_state_dict`` applies, minus the tensors,
+    so a header-only pre-pass and the session's plan can never disagree about
+    which modules a file names.
+    """
+    seen: Dict[str, Set[str]] = {}
+    for key in keys:
+        parsed = _parse_key(key)
+        if parsed is None:
+            continue
+        module_path, suffix = parsed
+        seen.setdefault(module_path, set()).add(suffix)
+    return {m for m, s in seen.items() if "down" in s and "up" in s}
 
 
 def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:
@@ -235,144 +260,62 @@ def iter_minit2i_lora_targets(
                 yield f"model.net.{attr}", net, attr, m
 
 
-def _apply_group(
-    targets,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    namespace: str,
-    strength: float,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    default_alpha: Optional[float] = None,
-    branch_name: str = "lora",
-) -> int:
-    """Add one named branch per matching module to the composite covering it.
+def iter_minit2i_lora_slots(transformer: nn.Module):
+    """``(parent, slot, module_path)`` over the FULL transformer scope, for
+    ``AdapterSession``. Module paths are bare, so they cannot collide with the
+    namespaced text-encoder ones."""
+    for module_path, parent, attr, _current in iter_minit2i_lora_targets(
+            transformer, _FULL_SCOPE):
+        yield parent, attr, module_path
 
-    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA over
-    the same module adds a branch beside the first rather than replacing it.
-    ``branch_name`` must be unique within the request.
 
-    grouped keys are namespaced ("" for transformer, "te::" for the text encoder);
-    `namespace` selects which entries this pass consumes so a single state dict can
-    hold both transformer and TE LoRA without collision. The same namespace keys
-    the shared bookkeeping, which is what lets one component be unloaded or
-    reloaded without disturbing the other.
+def iter_minit2i_te_lora_slots(text_encoder: nn.Module):
+    """``(parent, slot, TE_NAMESPACE + module_path)`` over the FULL FLAN-T5 scope.
 
-    ``default_alpha`` is the file-metadata alpha used for a module with no per-key
-    ``.alpha`` tensor (see alpha_from_metadata).
+    The namespace is carried in the module path itself, so the session's
+    per-component originals maps read exactly as the single map they replace and
+    a text-encoder path can never be mistaken for a transformer one.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
-
-    applied = 0
-    # Materialised: the slots are replaced as we go.
-    for module_path, parent, attr, linear in list(targets):
-        key = namespace + module_path
-        weights = grouped.get(key)
-        if weights is None:
-            continue
-        down, up = weights["down"], weights["up"]
-        alpha_tensor = weights.get("alpha")
-        true_original = (linear.original_module
-                         if isinstance(linear, CompositeAdapterLayer) else linear)
-        lora_original_modules.setdefault(key, true_original)
-        rank = int(down.shape[0])
-        if alpha_tensor is not None:
-            alpha_value = float(alpha_tensor.item())
-        elif default_alpha is not None:
-            alpha_value = float(default_alpha)
-        else:
-            alpha_value = float(rank)
-        branch = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=key)
-        device = true_original.weight.device
-        compute_dtype = true_original.weight.dtype if true_original.weight.dtype.is_floating_point else torch.float32
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-        # add_branch refolds the strength into the branch's own scale. Never
-        # multiply it onto the delta instead: same LoRA mathematically, but it
-        # loses bit-identity with the single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent, attr)
-        composite.add_branch(branch_name, branch, strength=strength)
-        wrapped_keys.add(key)
-        applied += 1
-    return applied
+    for module_path, parent, attr, _current in iter_minit2i_te_lora_targets(
+            text_encoder, _TE_FULL_SCOPE):
+        yield parent, attr, TE_NAMESPACE + module_path
 
 
-def apply_lora_group(
-    transformer: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    scope: Optional[Dict[str, bool]] = None,
+def build_lora_branch(
+    base: nn.Module,
+    weights: Dict[str, torch.Tensor],
+    key: str,
     default_alpha: Optional[float] = None,
-    branch_name: str = "lora",
-) -> int:
-    return _apply_group(
-        iter_minit2i_lora_targets(transformer, scope if scope is not None else _FULL_SCOPE),
-        grouped, "", strength, lora_original_modules, wrapped_keys, default_alpha,
-        branch_name,
-    )
+) -> nn.Module:
+    """One branch for one target, built and not installed.
 
-
-def apply_te_lora_group(
-    text_encoder: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    scope: Optional[Dict[str, bool]] = None,
-    default_alpha: Optional[float] = None,
-    branch_name: str = "lora",
-) -> int:
-    return _apply_group(
-        iter_minit2i_te_lora_targets(text_encoder, scope if scope is not None else _TE_FULL_SCOPE),
-        grouped, TE_NAMESPACE, strength, lora_original_modules, wrapped_keys, default_alpha,
-        branch_name,
-    )
-
-
-def restore_originals(
-    transformer: nn.Module,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    text_encoder: Optional[nn.Module] = None,
-) -> int:
-    """Revert every composite-covered module to its pre-LoRA original.
-
-    Driven by what is INSTALLED, per component, through the enumerators the load
-    path uses, so the two cannot disagree about a slot's address. Bookkeeping for
-    the restored keys is dropped: a surviving ``lora_original_modules`` entry
-    would be written into the NEXT model loaded at the same path, i.e. one
-    model's Linear installed into another. A component that is absent here (a
-    text encoder already freed, say) keeps its half of the map, so a later unload
-    can still recover it -- that is what the ``te::`` namespace buys.
+    Alpha precedence: per-key ``.alpha`` tensor, then file metadata
+    (``default_alpha``), then rank. The strength is NOT folded here --
+    ``CompositeAdapterLayer.add_branch(strength=)`` does it, and multiplying it
+    onto the delta instead loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import CompositeAdapterLayer, set_module_slot
+    from core.adapters import LoRALinearLayer
 
-    restored = 0
-    restored_keys: Set[str] = set()
-    for module_path, parent, attr, current in list(
-            iter_minit2i_lora_targets(transformer, _FULL_SCOPE)):
-        if isinstance(current, CompositeAdapterLayer):
-            set_module_slot(parent, attr, lora_original_modules.get(
-                module_path, current.original_module))
-            restored_keys.add(module_path)
-            restored += 1
-    if text_encoder is not None:
-        for module_path, parent, attr, current in list(
-                iter_minit2i_te_lora_targets(text_encoder, _TE_FULL_SCOPE)):
-            if isinstance(current, CompositeAdapterLayer):
-                key = TE_NAMESPACE + module_path
-                set_module_slot(parent, attr, lora_original_modules.get(
-                    key, current.original_module))
-                restored_keys.add(key)
-                restored += 1
-    for key in restored_keys:
-        lora_original_modules.pop(key, None)
-    wrapped_keys -= restored_keys
-    return restored
+    down, up = weights["down"], weights["up"]
+    alpha_tensor = weights.get("alpha")
+    rank = int(down.shape[0])
+    if alpha_tensor is not None:
+        alpha_value = float(alpha_tensor.item())
+    elif default_alpha is not None:
+        alpha_value = float(default_alpha)
+    else:
+        alpha_value = float(rank)
+
+    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=key)
+    device = base.weight.device
+    compute_dtype = (base.weight.dtype if base.weight.dtype.is_floating_point
+                     else torch.float32)
+    with torch.no_grad():
+        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+    return branch
 
 
 def flatten_to_key(module_path: str) -> str:

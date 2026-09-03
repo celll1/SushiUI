@@ -6,7 +6,6 @@ import os
 import sys
 import gc
 import random
-import weakref
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -527,92 +526,240 @@ class MiniT2IMixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # -- LoRA lifetime -------------------------------------------------------
+    #
+    # Owned by ``core.adapters.AdapterSession``, in TWO passes rather than one:
+    # the text-encoder half must be installed before ``_minit2i_encode``, which
+    # produces the embeddings once, and the transformer half must wait until it
+    # is staged. So each pass is its own atomic ``session.load``, over its own
+    # component, and the per-file "this file binds nothing" verdict is taken in
+    # ``_minit2i_prepare_loras`` -- across BOTH halves, before either pass runs
+    # and before anything is wrapped.
+
     @staticmethod
     def _minit2i_lora_warn(message: str, code: str) -> None:
-        """Record a user-visible generation warning (best effort)."""
+        """Record a user-visible generation warning (best effort).
+
+        The session cannot do this itself: ``core.adapters`` may not import
+        ``api`` (``adapter_layering_test``), so the backend passes this in as the
+        warning callback.
+        """
         try:
             from api.generation_status import add_warning
             add_warning(message, code=code)
         except Exception:
             pass
 
-    def _minit2i_lora_state(self, transformer, text_encoder):
-        """The shared (originals, wrapped_keys) maps, minus any reloaded component's
-        entries.
+    def _minit2i_resolve_lora_path(self, raw_path):
+        """LoRAManager resolution, refusing in MiniT2I's own words.
 
-        Transformer keys are bare module paths and text-encoder keys carry
-        TE_NAMESPACE, so each component's half is dropped independently -- a module
-        path can never contain "::", so the partition is total and ONE map pair
-        expresses two component lifecycles. Keyed by weakref rather than id(), which
-        is reusable after a free: a map that outlived its model would have
-        restore_originals graft the old model's Linears into the new one,
-        undetectably, since the shapes match.
+        The session's generic ``lora_not_found`` text is Z-Image's; this one is
+        pinned by this architecture's gate, so the refusal is raised here.
         """
-        from core.models.minit2i.minit2i_lora import TE_NAMESPACE
-        if not hasattr(self, "_minit2i_lora_orig"):
-            self._minit2i_lora_orig: Dict[str, torch.nn.Module] = {}
-            self._minit2i_lora_keys: set = set()
+        from core.adapters import AdapterFileMissing
+        from core.extensions.lora_manager import lora_manager
 
-        def reloaded(attr, module):
-            ref = getattr(self, attr, None)
-            if module is not None and ref is not None and ref() is module:
-                return False
-            setattr(self, attr, weakref.ref(module) if module is not None else None)
-            return True
+        resolved = lora_manager._resolve_lora_path(raw_path)
+        if resolved is not None:
+            return resolved
+        message = (f"MiniT2I LoRA '{os.path.basename(str(raw_path))}' not found in any "
+                   f"configured LoRA directory")
+        print(f"[MiniT2I LoRA] ERROR: {message}")
+        self._minit2i_lora_warn(message, code="lora_not_found")
+        raise AdapterFileMissing(message)
 
-        drop_tf = reloaded("_minit2i_lora_transformer_ref", transformer)
-        drop_te = reloaded("_minit2i_lora_te_ref", text_encoder)
-        if drop_tf or drop_te:
-            stale = {k for k in (self._minit2i_lora_keys | set(self._minit2i_lora_orig))
-                     if (drop_te if k.startswith(TE_NAMESPACE) else drop_tf)}
-            self._minit2i_lora_keys -= stale
-            for key in stale:
-                self._minit2i_lora_orig.pop(key, None)
-        return self._minit2i_lora_orig, self._minit2i_lora_keys
+    def _minit2i_declared_pairs(self, tensors) -> int:
+        """Down/up pairs the CURRENT pass could have applied.
+
+        ``lora_partial`` compares applied against declared; a pass that can only
+        reach one component must not be told the other component's pairs were
+        declared to it, or every mixed file would warn.
+        """
+        from core.models.minit2i.minit2i_lora import (
+            TE_NAMESPACE, normalise_lora_state_dict,
+        )
+
+        want_te = getattr(self, "_minit2i_lora_pass", None) == "text_encoder"
+        return sum(1 for key in normalise_lora_state_dict(tensors)
+                   if key.startswith(TE_NAMESPACE) is want_te)
+
+    @property
+    def _minit2i_lora_session(self):
+        """The per-backend session, created on first use.
+
+        The mixin has no ``__init__`` of its own, so this cannot be a constructor
+        assignment.
+        """
+        session = getattr(self, "_minit2i_lora_session_instance", None)
+        if session is None:
+            from core.adapters import AdapterSession
+
+            session = AdapterSession(
+                resolve_path=self._minit2i_resolve_lora_path,
+                warn=self._minit2i_lora_warn,
+                label="MiniT2I LoRA",
+                count_declared_branches=self._minit2i_declared_pairs,
+                describe_zero_targets=self._minit2i_zero_target_message,
+            )
+            self._minit2i_lora_session_instance = session
+        return session
+
+    def _minit2i_lora_components(self):
+        """The transformer and the text encoder, as separate components.
+
+        TWO components, not one: they are reloaded and staged independently, and
+        a per-component weakref is what expresses "this half was replaced, the
+        other was not". Their bookkeeping still reads as ONE map pair, because
+        the text-encoder component's module paths carry ``TE_NAMESPACE`` -- a
+        module path cannot contain "::", so the partition is total.
+        """
+        from core.adapters import AdapterComponent
+        from core.models.minit2i.minit2i_lora import (
+            iter_minit2i_lora_slots, iter_minit2i_te_lora_slots,
+        )
+
+        components = self.minit2i_components or {}
+        return [
+            AdapterComponent(name="transformer", module=components.get("transformer"),
+                             iter_targets=iter_minit2i_lora_slots,
+                             build_branch=self._minit2i_build_lora_branch),
+            AdapterComponent(name="text_encoder", module=components.get("text_encoder"),
+                             iter_targets=iter_minit2i_te_lora_slots,
+                             build_branch=self._minit2i_build_lora_branch),
+        ]
+
+    @property
+    def _minit2i_lora_orig(self):
+        """Namespaced key -> the pre-LoRA Linear, both components in one view.
+
+        Deliberately read WITHOUT the reload check: the model-reload gate has to
+        be able to observe a stale map rather than one that resets itself on
+        being looked at. ``AdapterSession.bind`` performs the reset on the load
+        and unload paths instead.
+        """
+        session = self._minit2i_lora_session
+        return {**session.state("transformer").originals,
+                **session.state("text_encoder").originals}
+
+    @property
+    def _minit2i_lora_keys(self):
+        session = self._minit2i_lora_session
+        return (session.state("transformer").wrapped
+                | session.state("text_encoder").wrapped)
+
+    def _minit2i_lora_file_groups(self, file):
+        """One file's grouped tensors and metadata alpha, cached per pass.
+
+        Without it the codec would re-group every tensor once per target. Keyed
+        by branch name, which is unique within a pass; ``_minit2i_session_load``
+        clears it between passes, because the two passes index filtered lists and
+        the same name can then mean two different files.
+        """
+        cache = getattr(self, "_minit2i_lora_file_cache", None)
+        if cache is None:
+            cache = self._minit2i_lora_file_cache = {}
+        groups = cache.get(file.branch_name)
+        if groups is None:
+            from core.models.minit2i.minit2i_lora import (
+                alpha_from_metadata, normalise_lora_state_dict,
+            )
+            groups = cache[file.branch_name] = {
+                "grouped": normalise_lora_state_dict(file.tensors),
+                "alpha": alpha_from_metadata(file.metadata),
+            }
+        return groups
+
+    def _minit2i_build_lora_branch(self, request):
+        """Build the branch for one target, or say this file carries none.
+
+        One builder for both components: ``request.module_path`` is already the
+        namespaced key the checkpoint uses, so the transformer and text-encoder
+        halves route themselves.
+        """
+        from core.adapters import PreparedBranch
+        from core.models.minit2i.minit2i_lora import build_lora_branch
+
+        groups = self._minit2i_lora_file_groups(request.file)
+        weights = groups["grouped"].get(request.module_path)
+        if weights is None:
+            return None
+        branch = build_lora_branch(request.base, weights, request.module_path,
+                                   default_alpha=groups["alpha"])
+        # Strength is folded into the branch's own scale by ``add_branch``, never
+        # multiplied onto its delta -- a post-multiply is different arithmetic and
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        return PreparedBranch(branch, request.file.strength)
+
+    def _minit2i_zero_target_message(self, file, counts) -> str:
+        """MiniT2I's zero-target text.
+
+        Unreachable in practice: ``_minit2i_prepare_loras`` refuses a file that
+        binds neither component, and each pass is handed only the files that bind
+        the component it covers. Kept so a pass that somehow applies nothing
+        still refuses in this architecture's words rather than Z-Image's.
+        """
+        from core.models.minit2i.minit2i_lora import (
+            detect_lora_format, normalise_lora_state_dict,
+        )
+
+        keys = list(file.tensors.keys())
+        return (
+            f"LoRA '{file.name}': 0 of {len(normalise_lora_state_dict(file.tensors))} "
+            f"down/up pairs applied to the loaded MiniT2I model "
+            f"(format={detect_lora_format(keys)}) -- unrecognized key format or a "
+            f"different model. Sample keys in file: {keys[:5]}"
+        )
+
+    def _minit2i_session_load(self, pass_name, configs, components):
+        """One pass of the split install, with the declared-pair count scoped to it."""
+        self._minit2i_lora_pass = pass_name
+        self._minit2i_lora_file_cache = {}
+        try:
+            return self._minit2i_lora_session.load(configs, components)
+        finally:
+            self._minit2i_lora_pass = None
+            self._minit2i_lora_file_cache = {}
 
     def _minit2i_prepare_loras(self, lora_configs: List[Dict]) -> List[Dict]:
-        """Resolve and parse every requested LoRA, before any of it is applied.
+        """Resolve every requested LoRA and decide which halves it binds, before
+        any of it is applied.
 
-        MiniT2I wraps in two places at two different times -- the text encoder BEFORE
-        _minit2i_encode, the transformer after it is staged -- so each file is read
-        once here and the parsed groups are carried across both passes, including the
-        branch name, which must be the same in both. A missing or unreadable file
-        refuses the generation here, with nothing yet wrapped.
+        MiniT2I wraps in two places at two different times -- the text encoder
+        BEFORE _minit2i_encode, the transformer after it is staged -- so this
+        header-only pre-pass owns everything that must happen once and up front:
+        a missing or unreadable file refuses here with nothing yet wrapped, and
+        so does a file that binds NEITHER component. That last verdict cannot be
+        the session's, because each pass sees only one half and would refuse a
+        file that binds the other.
         """
-        import os
+        from core.adapters import AdapterIncompatible, AdapterLoadFailed
         from core.models.minit2i.minit2i_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, alpha_from_metadata,
-            TE_NAMESPACE,
+            declared_module_paths, detect_lora_format, read_lora_keys, TE_NAMESPACE,
         )
-        from core.extensions.lora_manager import lora_manager
-        from api.error_handlers import with_error_code
 
+        components = self._minit2i_lora_components()
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak wrappers into this one. `_minit2i_cleanup`
         # swallows restore failures, and now that a second branch SUMS rather than
-        # being refused, a leaked wrapper would silently double-apply.
-        self._unload_lora_minit2i()
-
-        components = self.minit2i_components or {}
-        # Bookkeeping that outlived a model reload would splice the previous model's
-        # Linears into this one; each component's half is dropped separately.
-        self._minit2i_lora_state(components.get("transformer"), components.get("text_encoder"))
-        if not lora_configs or not components:
+        # being refused, a leaked wrapper would silently double-apply. This also
+        # performs the weakref reset both components need.
+        self._minit2i_lora_session.unload(components)
+        if not lora_configs or not self.minit2i_components:
             return []
 
+        # Through each component's OWN enumerator, so this pre-pass and the
+        # session's plan cannot disagree about which modules a file can bind.
+        live = {c.name: {path for _p, _s, path in c.iter_targets(c.module)}
+                for c in components if c.module is not None}
+        tf_paths = live.get("transformer", set())
+        te_paths = live.get("text_encoder", set())
+
         prepared: List[Dict] = []
-        for i, cfg in enumerate(lora_configs):
-            lora_path = cfg.get("path", "")
-            lora_file = os.path.basename(str(lora_path))
-            resolved = lora_manager._resolve_lora_path(lora_path)
-            if resolved is None:
-                message = f"MiniT2I LoRA '{lora_file}' not found in any configured LoRA directory"
-                print(f"[MiniT2I LoRA] ERROR: {message}")
-                self._minit2i_lora_warn(message, code="lora_not_found")
-                raise with_error_code(FileNotFoundError(message), "lora_not_found")
+        for cfg in lora_configs:
+            resolved = self._minit2i_resolve_lora_path(cfg.get("path", ""))
+            lora_file = os.path.basename(str(cfg.get("path", "")))
             try:
-                raw, fmt, metadata = load_lora_safetensors(str(resolved))
-                grouped = normalise_lora_state_dict(raw)
+                keys = read_lora_keys(str(resolved))
             except Exception as e:
                 print(f"[MiniT2I LoRA] ERROR loading {lora_file}: {e}")
                 import traceback; traceback.print_exc()
@@ -621,134 +768,98 @@ class MiniT2IMixin:
                 message = (f"MiniT2I LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._minit2i_lora_warn(message, code="lora_load_failed")
-                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
-            prepared.append({
+                raise AdapterLoadFailed(message) from e
+
+            declared = declared_module_paths(keys)
+            entry = {
+                "config": cfg,
                 "file": lora_file,
-                # Unique within the request, so selecting the SAME file twice is two
-                # branches, not a duplicate-name refusal; shared by both passes so a
-                # file's transformer and TE branches carry one name.
-                "branch": f"{i}:{lora_file}",
-                "strength": float(cfg.get("strength", 1.0)),
-                "fmt": fmt,
-                "grouped": grouped,
-                "alpha": alpha_from_metadata(metadata),
-                "sample_keys": list(raw.keys())[:5],
-                "te_pairs": sum(1 for k in grouped if k.startswith(TE_NAMESPACE)),
+                "fmt": detect_lora_format(keys),
+                "pairs": len(declared),
+                "te_pairs": sum(1 for k in declared if k.startswith(TE_NAMESPACE)),
+                "te_hits": len(declared & te_paths),
+                "unet_hits": len(declared & tf_paths),
                 "applied_te": 0,
-            })
+            }
+            if not entry["te_hits"] and not entry["unet_hits"]:
+                message = (
+                    f"LoRA '{lora_file}': 0 of {entry['pairs']} down/up pairs applied to the "
+                    f"loaded MiniT2I model (format={entry['fmt']}) -- unrecognized key format "
+                    f"or a different model. Sample keys in file: {keys[:5]}"
+                )
+                print(f"[MiniT2I LoRA] ERROR: {message}")
+                self._minit2i_lora_warn(message, code="lora_incompatible")
+                raise AdapterIncompatible(message)
+            prepared.append(entry)
         return prepared
 
     def _apply_te_lora_minit2i(self, prepared: List[Dict]) -> int:
-        """Cover the text encoder for every prepared LoRA carrying lora_te_ keys.
+        """Cover the text encoder for every prepared LoRA that binds it.
 
         MUST run BEFORE _minit2i_encode: the embeddings are produced there and never
         recomputed, so a TE wrapper installed after it would report a count and change
-        nothing. The per-file verdict is deferred to _load_lora_minit2i, which sees
-        both halves.
-
-        The text encoder's composites are separate objects from the transformer's,
-        and their bookkeeping is separate by key namespace, so stacking on one
-        component leaves the other alone.
+        nothing. The two components hold separate composites and separate
+        bookkeeping, so this pass leaves the transformer alone.
         """
-        from core.models.minit2i.minit2i_lora import apply_te_lora_group
-        components = self.minit2i_components or {}
-        text_encoder = components.get("text_encoder")
-        originals, keys = self._minit2i_lora_state(
-            components.get("transformer"), text_encoder)
-        total = 0
+        text_encoder = (self.minit2i_components or {}).get("text_encoder")
         for entry in prepared:
-            if not entry["te_pairs"]:
-                continue
-            if text_encoder is None:
+            if entry["te_pairs"] and not entry["te_hits"] and text_encoder is None:
                 print(f"[MiniT2I LoRA] WARNING: {entry['file']} has TE-LoRA keys but no text "
                       f"encoder is loaded; TE-LoRA skipped")
-                continue
-            applied = apply_te_lora_group(
-                text_encoder, entry["grouped"], entry["strength"], originals, keys,
-                default_alpha=entry["alpha"], branch_name=entry["branch"])
-            entry["applied_te"] = applied
-            print(f"[MiniT2I LoRA] {entry['file']}: wrapped(te)={applied} of "
+
+        binding = [e for e in prepared if e["te_hits"]]
+        if not binding:
+            return 0
+        components = self._minit2i_lora_components()
+        result = self._minit2i_session_load(
+            "text_encoder", [e["config"] for e in binding], components[1:])
+        for entry, (_file, counts) in zip(binding, result.files):
+            entry["applied_te"] = counts.applied
+            print(f"[MiniT2I LoRA] {entry['file']}: wrapped(te)={counts.applied} of "
                   f"{entry['te_pairs']} TE pair(s)")
-            total += applied
-        return total
+        return result.applied
 
     def _load_lora_minit2i(self, prepared: List[Dict]) -> int:
-        """Cover the transformer, then pass the per-file verdict on BOTH halves.
+        """Cover the transformer, and report the total over BOTH halves.
 
         Takes _minit2i_prepare_loras' output, whose text-encoder half
         _apply_te_lora_minit2i has already applied. Each target is covered ONCE by a
         ``CompositeAdapterLayer`` and each selected LoRA adds a NAMED branch, so two
-        MiniT2I LoRAs over the same module SUM instead of being refused. A LoRA that
-        matches no target module in EITHER component must not produce a successful
-        generation of the base model's image, so that raises; a file that binds only
-        some of its modules is reported through add_warning.
+        MiniT2I LoRAs over the same module SUM instead of being refused.
         """
-        from core.models.minit2i.minit2i_lora import apply_lora_group
-        from api.error_handlers import with_error_code
-        components = self.minit2i_components or {}
-        transformer = components.get("transformer")
-        originals, keys = self._minit2i_lora_state(
-            transformer, components.get("text_encoder"))
         if not prepared:
             return 0
-        if transformer is None:
+        components = self._minit2i_lora_components()
+        if components[0].module is None:
             raise RuntimeError("MiniT2I LoRA requested but no transformer is loaded.")
+
+        binding = [e for e in prepared if e["unet_hits"]]
+        if binding:
+            result = self._minit2i_session_load(
+                "transformer", [e["config"] for e in binding], components[:1])
+            for entry, (_file, counts) in zip(binding, result.files):
+                entry["applied_unet"] = counts.applied
+
         total = 0
         for i, entry in enumerate(prepared):
-            lora_file = entry["file"]
-            grouped = entry["grouped"]
-            fmt = entry["fmt"]
-            applied = apply_lora_group(
-                transformer, grouped, entry["strength"], originals, keys,
-                default_alpha=entry["alpha"], branch_name=entry["branch"])
-            print(f"[MiniT2I LoRA] {i+1}/{len(prepared)}: {lora_file} fmt={fmt} "
-                  f"matched={len(grouped)} wrapped(transformer)={applied} "
-                  f"wrapped(te)={entry['applied_te']} strength={entry['strength']}")
-
-            applied_all = applied + entry["applied_te"]
-            # An occupied target is no longer one of the ways to get here: the
-            # composite adds a branch beside the earlier LoRA's.
-            if applied_all == 0:
-                message = (
-                    f"LoRA '{lora_file}': 0 of {len(grouped)} down/up pairs applied to the "
-                    f"loaded MiniT2I model (format={fmt}) -- unrecognized key format or a "
-                    f"different model. Sample keys in file: {entry['sample_keys']}"
-                )
-                print(f"[MiniT2I LoRA] ERROR: {message}")
-                self._minit2i_lora_warn(message, code="lora_incompatible")
-                raise with_error_code(RuntimeError(message), "lora_incompatible")
-
-            if applied_all < len(grouped):
-                self._minit2i_lora_warn(
-                    f"LoRA '{lora_file}': applied {applied_all} of {len(grouped)} down/up pairs "
-                    f"({len(grouped) - applied_all} matched no target module).",
-                    code="lora_partial",
-                )
-            total += applied_all
+            applied = entry.get("applied_unet", 0)
+            print(f"[MiniT2I LoRA] {i+1}/{len(prepared)}: {entry['file']} fmt={entry['fmt']} "
+                  f"matched={entry['pairs']} wrapped(transformer)={applied} "
+                  f"wrapped(te)={entry['applied_te']} "
+                  f"strength={float(entry['config'].get('strength', 1.0))}")
+            total += applied + entry["applied_te"]
         return total
 
     def _unload_lora_minit2i(self) -> int:
-        """Restore both components, each through its own half of the bookkeeping.
+        """Restore both components, each through its own bookkeeping.
 
-        A component whose model was reloaded has already had its keys dropped by
-        `_minit2i_lora_state`, and the new one carries no composites, so it
-        restores nothing while the other component's wrappers survive.
+        A component whose model was reloaded has had its state reset by
+        ``AdapterSession.bind``, and the new model carries no composites, so it
+        restores nothing while the other component's wrappers survive. A
+        component that is not loaded at all is the same case, which is why an
+        unload with only the text encoder present still restores it.
         """
-        from core.models.minit2i.minit2i_lora import restore_originals
-        components = self.minit2i_components or {}
-        transformer = components.get("transformer")
-        text_encoder = components.get("text_encoder")
-        # Same guard as the load path: maps that outlived their component must be
-        # dropped, not restored into whatever now sits at the same module paths.
-        originals, keys = self._minit2i_lora_state(transformer, text_encoder)
-        if not keys:
-            return 0
-        restored = restore_originals(
-            transformer, originals, keys, text_encoder=text_encoder,
-        )
-        if restored:
-            print(f"[MiniT2I LoRA] Unloaded {restored} LoRA wrappers")
-        return restored
+        return self._minit2i_lora_session.unload(self._minit2i_lora_components())
 
     def _minit2i_cleanup(self, model_key: Optional[str] = None,
                         keep_te: bool = False, keep_transformer: bool = False,

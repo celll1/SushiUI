@@ -112,6 +112,44 @@ def _iter_targets(transformer: nn.Module):
     return iter_ltx2_lora_targets(transformer, FULL_SCOPE)
 
 
+def iter_lora_slots(transformer: nn.Module):
+    """``(module_path, parent, slot)`` for every slot a LoRA may cover.
+
+    ONE enumerator for both ``apply_lora_group`` and ``restore_originals``, so
+    they cannot disagree once a target holds more than one branch.
+
+    Two halves, because the trainer's iterator alone is not the whole set once a
+    composite exists. It supplies the codec (a stem matches iff the trainer
+    would have written it), but it selects by a predicate that a
+    ``CompositeAdapterLayer`` fails, so an occupied target VANISHES from it --
+    and its feed-forward branch, which walks ``ff.named_modules()`` and only
+    skips past a ``LoRALinearLayer`` subtree, then descends INTO the composite
+    and offers the adapter's own ``lora_down``/``lora_up`` as targets. Composite
+    roots are found structurally instead, and everything underneath one is
+    dropped by path prefix against those roots -- real paths, not a path shape,
+    because ``branches.<i>`` collides with the index slots this architecture
+    genuinely has (``to_out.0``, ``ff.net.2``).
+
+    Callers materialise this before mutating: it reads the live tree.
+    """
+    from core.adapters import CompositeAdapterLayer
+
+    composites: Dict[str, Tuple[nn.Module, Any]] = {}
+    for parent_path, parent in transformer.named_modules():
+        for slot, child in parent.named_children():
+            if isinstance(child, CompositeAdapterLayer):
+                path = f"{parent_path}.{slot}" if parent_path else slot
+                composites[path] = (parent, slot)
+
+    inside = tuple(f"{path}." for path in composites)
+    for module_path, parent, attr, _current in _iter_targets(transformer):
+        if module_path in composites or module_path.startswith(inside):
+            continue
+        yield module_path, parent, attr
+    for path, (parent, slot) in composites.items():
+        yield path, parent, slot
+
+
 def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
     if isinstance(attr, int):
         parent[attr] = module
@@ -146,35 +184,36 @@ def apply_lora_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     file_alpha: Optional[float] = None,
-) -> Tuple[int, list, int]:
-    """Wrap every matching DiT Linear with ``LoRALinearLayer``.
+    branch_name: str = "lora",
+) -> Tuple[int, list]:
+    """Add one named branch per matching DiT Linear.
 
-    Returns ``(applied, unmatched_stems, occupied)``. ``occupied`` counts
-    targets this file matched that an EARLIER LoRA in the same request already
-    wraps; those are LEFT ALONE and the caller refuses or warns. Re-wrapping
-    would silently drop the earlier branch (last-wins), and nesting is not
-    available because ``LoRALinearLayer`` reads ``in_features``/``out_features``
-    off what it is handed and so cannot wrap a wrapper. Summing branches is the
-    shared composite wrapper's job (LYCORIS_ADAPTER_DESIGN Phase 1).
+    Each target is covered ONCE by a ``CompositeAdapterLayer`` and each selected
+    LoRA adds a named branch to it, so two LoRAs over the same module sum
+    instead of the second being refused. ``branch_name`` must be unique within
+    the request; ``add_branch`` refuses a duplicate.
+
+    Returns ``(applied, unmatched_stems)``.
 
     Alpha precedence per adapter: per-key ``.alpha`` tensor, then the file's
     metadata alpha, then the rank (i.e. scale 1.0).
     """
-    from core.adapters import LoRALinearLayer, lora_branch_dtype
+    from core.adapters import (
+        CompositeAdapterLayer, LoRALinearLayer, get_module_slot, lora_branch_dtype,
+    )
 
     applied = 0
-    occupied = 0
     matched: Set[str] = set()
-    for module_path, parent, attr, current in _iter_targets(transformer):
+    for module_path, parent, attr in list(iter_lora_slots(transformer)):
         stem = flatten_module_path(module_path)
         weights = grouped.get(stem)
         if weights is None:
             continue
         matched.add(stem)
-        if isinstance(current, LoRALinearLayer):
-            occupied += 1
-            continue
 
+        installed = get_module_slot(parent, attr)
+        current = (installed.original_module
+                   if isinstance(installed, CompositeAdapterLayer) else installed)
         down, up = weights["down"], weights["up"]
         alpha_tensor = weights.get("alpha")
         lora_original_modules.setdefault(module_path, current)
@@ -187,12 +226,13 @@ def apply_lora_group(
         else:
             alpha_value = float(rank)
 
-        # LoRALinearLayer escapes the offloader's movers only because its class
-        # name ends in "Layer": ending in "Linear" would enrol the base weight a
-        # SECOND time through its `.weight` property (core/adapters/layers.py),
-        # a double-swap that silently restores the outgoing block's weights.
-        wrapper = LoRALinearLayer(current, rank=rank, alpha=alpha_value,
-                                  lora_name=module_path)
+        # Neither the composite nor LoRALinearLayer ends in "Linear", which is
+        # what keeps them out of the offloader's movers: a Linear-named wrapper
+        # would enrol the base weight a SECOND time through its `.weight`
+        # property (core/adapters/layers.py), a double-swap that silently
+        # restores the outgoing block's weights.
+        branch = LoRALinearLayer(current, rank=rank, alpha=alpha_value,
+                                 lora_name=module_path)
         # Adapter follows its BASE MODULE's current device, which under block
         # swap differs per block (resident blocks on GPU, swapped-out blocks on
         # CPU). That is what lets the offloader carry the adapter with the block
@@ -200,17 +240,21 @@ def apply_lora_group(
         device = current.weight.device
         dtype = lora_branch_dtype(current)
         with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=dtype)
-        wrapper.scale = (alpha_value / rank) * strength
+            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
+        branch.lora_down = branch.lora_down.to(dtype=dtype)
+        branch.lora_up = branch.lora_up.to(dtype=dtype)
 
-        _set_module(parent, attr, wrapper)
+        # attach() is idempotent, and add_branch refolds the strength into the
+        # branch's own scale -- multiplying it onto the delta afterwards is
+        # different arithmetic and loses bit-identity with the single-LoRA
+        # numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, branch, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
 
-    return applied, sorted(set(grouped) - matched), occupied
+    return applied, sorted(set(grouped) - matched)
 
 
 def restore_originals(
@@ -218,19 +262,26 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
 ) -> int:
-    """Revert every wrapped DiT Linear to its pre-LoRA original module.
+    """Revert every composite-covered DiT Linear to its pre-LoRA original module.
+
+    Driven by what is INSTALLED (``iter_lora_slots``), not by map membership, so
+    it removes exactly the wrappers this request put there, branches and all.
 
     Device-agnostic by construction: the saved object is the original module,
     and putting it back is a parent-attribute assignment, so a block whose
     weights are currently on the host (swapped out) restores exactly like a
     resident one.
     """
+    from core.adapters import CompositeAdapterLayer, get_module_slot
+
     restored = 0
-    for module_path, parent, attr, _current in _iter_targets(transformer):
-        original = lora_original_modules.get(module_path)
-        if original is not None:
-            _set_module(parent, attr, original)
-            restored += 1
+    for module_path, parent, attr in list(iter_lora_slots(transformer)):
+        current = get_module_slot(parent, attr)
+        if not isinstance(current, CompositeAdapterLayer):
+            continue
+        _set_module(parent, attr,
+                    lora_original_modules.get(module_path, current.original_module))
+        restored += 1
     lora_original_modules.clear()
     wrapped_keys.clear()
     return restored

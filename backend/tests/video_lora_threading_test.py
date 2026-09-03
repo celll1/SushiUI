@@ -343,10 +343,12 @@ class Ltx2BackendLoraApplicationTest(unittest.TestCase):
         source = inspect.getsource(self.mixin._load_lora_ltx2)
         self.assertIn("os.path.basename(lora_path)", source)
         self.assertNotIn("{lora_path}", source)
-        for code in ("lora_not_found", "lora_incompatible", "lora_partial",
-                     "lora_stacking_unsupported"):
+        for code in ("lora_not_found", "lora_incompatible", "lora_partial"):
             with self.subTest(code=code):
                 self.assertIn(f'"{code}"', source)
+        # LTX-2.3 is on CompositeAdapterLayer: two LoRAs over one module sum, so
+        # the refusal this used to require is gone rather than merely unreached.
+        self.assertNotIn('"lora_stacking_unsupported"', source)
         for arch_prefixed in ("ltx2_lora_not_found", "ltx2_lora_incompatible",
                               "ltx2_lora_targets_unresolved"):
             with self.subTest(code=arch_prefixed):

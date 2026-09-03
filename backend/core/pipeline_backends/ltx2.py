@@ -316,9 +316,11 @@ class LTX2Mixin:
         looks like a successful LoRA generation. Any partial application is
         rolled back before the exception leaves.
 
-        STACKING. One LoRA per module; a file whose targets are ALL taken is
-        refused rather than overwriting the earlier branch. Summing branches
-        needs the composite wrapper of LYCORIS_ADAPTER_DESIGN Phase 1.
+        STACKING. Each target Linear is covered ONCE by a
+        ``CompositeAdapterLayer`` and each selected LoRA adds a NAMED branch to
+        it, so two LoRAs over the same module SUM instead of the second being
+        refused. Branch names carry the request index, so selecting the same
+        file twice is two branches rather than a duplicate-name error.
 
         ORDERING. Called as the FIRST statement of each generate path's ``try``:
         after ``_ltx2_runtime_int8`` (which must see the unwrapped tree) and
@@ -338,8 +340,12 @@ class LTX2Mixin:
         )
 
         transformer = self._ltx2_lora_transformer()
-        # Unconditional, and BEFORE the empty-config exit: bookkeeping left by an
-        # evicted model must not survive into a request that installs nothing.
+        # Unconditional, and BEFORE the empty-config exit: a wrapper that
+        # outlived its request must not be summed into by this one -- the
+        # stacking refusal used to be the accidental backstop for that -- and
+        # bookkeeping left by an evicted model must not survive into a request
+        # that installs nothing.
+        self._unload_lora_ltx2()
         originals, wrapped_keys = self._ltx2_lora_state(transformer)
 
         if not lora_configs:
@@ -404,6 +410,10 @@ class LTX2Mixin:
                                "applying it would either match nothing or match the wrong "
                                "layers.")
 
+                # Unique within the request, so two selections of the SAME file
+                # are two branches rather than a duplicate-name refusal.
+                branch_name = f"{i}:{lora_file}"
+
                 grouped = normalise_lora_state_dict(raw)
                 if not grouped:
                     self._ltx2_lora_warn(
@@ -416,21 +426,12 @@ class LTX2Mixin:
                                f"lora_down.weight / lora_up.weight / alpha) as written by "
                                f"SushiUI's LTX-2.3 trainer.")
 
-                applied, unmatched, occupied = apply_lora_group(
+                applied, unmatched = apply_lora_group(
                     transformer, grouped, strength, originals, wrapped_keys,
-                    file_alpha=metadata_alpha(metadata))
+                    file_alpha=metadata_alpha(metadata), branch_name=branch_name)
                 if applied == 0:
-                    if occupied:
-                        # One LoRA per module: this backend REPLACES the target
-                        # Linear, so a second file over the same modules could
-                        # only overwrite the first. Summing branches needs the
-                        # composite wrapper (LYCORIS_ADAPTER_DESIGN Phase 1).
-                        message = (
-                            f"LoRA '{lora_file}': all {occupied} of its target modules are "
-                            f"already wrapped by an earlier LoRA in this request. LTX-2.3 "
-                            f"applies one LoRA per module; select a single LTX-2.3 LoRA.")
-                        self._ltx2_lora_warn(message, "lora_stacking_unsupported")
-                        raise RuntimeError(message)
+                    # An occupied target is no longer one of the ways to get
+                    # here: the composite adds a branch beside the earlier one.
                     self._ltx2_lora_warn(
                         f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT.",
                         "lora_incompatible")
@@ -439,12 +440,6 @@ class LTX2Mixin:
                         detail=f"{len(grouped)} adapter(s) in the file, none of whose module "
                                f"paths exist in this transformer (first few: "
                                f"{sorted(grouped)[:5]}).")
-                if occupied:
-                    self._ltx2_lora_warn(
-                        f"LoRA '{lora_file}': {occupied} of its target modules are already "
-                        f"wrapped by an earlier LoRA in this request and kept that one; only "
-                        f"the remaining {applied} module(s) carry this LoRA.",
-                        "lora_partial")
                 if unmatched:
                     self._ltx2_lora_warn(
                         f"LoRA '{lora_file}': {len(unmatched)} adapter(s) did not resolve "
@@ -465,7 +460,7 @@ class LTX2Mixin:
 
                 print(f"[LTX-2.3 LoRA] {i + 1}/{len(lora_configs)}: {lora_file} "
                       f"format={fmt} keys={len(raw)} adapters={len(grouped)} "
-                      f"wrapped={applied} occupied={occupied} strength={strength}")
+                      f"branches={applied} strength={strength}")
                 total_applied += applied
         except Exception:
             self._unload_lora_ltx2()
@@ -476,7 +471,7 @@ class LTX2Mixin:
         return total_applied
 
     def _unload_lora_ltx2(self) -> int:
-        """Restore every wrapped DiT Linear to its pre-LoRA original.
+        """Restore every composite-covered DiT Linear to its pre-LoRA original.
 
         Idempotent and device-agnostic: restoring is a parent-attribute
         assignment of the saved original module, so a block whose weights are

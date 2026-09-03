@@ -341,8 +341,8 @@ Paths below are relative to `backend/core/training/`.
     shape-mismatched targets are skipped with `lora_partial` instead of being
     assigned and failing inside the denoise loop.
   - **Z-Image is the FIRST architecture on `CompositeAdapterLayer`**; Krea 2,
-    Anima and Lens have since adopted it (see their rows). FLUX.2, Ideogram 4,
-    MiniT2I, SenseNova, ACE-Step, LTX-2.3 and MiniMax-H3 still refuse a fully
+    Anima, Lens, Ideogram 4, MiniT2I, ACE-Step and LTX-2.3 have since adopted it
+    (see their rows). FLUX.2, SenseNova and MiniMax-H3 still refuse a fully
     shadowed second LoRA with `lora_stacking_unsupported`. Each target Linear is covered
     once by a composite and each selected LoRA adds a NAMED branch
     (`"<request index>:<file basename>"`), so two Z-Image LoRAs over the same
@@ -493,6 +493,47 @@ Paths below are relative to `backend/core/training/`.
     shape class Anima measured as a net loss — for 3.52% of the parameters. That
     is Anima's measurement applied to a matching shape class plus Ideogram 4's own
     census, NOT a timing run on Ideogram 4.
+  - **Ideogram 4 is on `CompositeAdapterLayer`, PER BRANCH.** Each target
+    Linear is covered once by a composite and each selected LoRA adds a NAMED
+    branch (`"<request index>:<file basename>"`), so two Ideogram 4 LoRAs over
+    the same module SUM instead of being refused, in either selection order,
+    each at its own strength; `lora_stacking_unsupported` is gone and
+    `ideogram4_lora.apply_lora_group` returns a plain applied count instead of
+    `(applied, occupied)`. A single LoRA is bit-identical to the pre-composite
+    loader (`torch.equal`, not a tolerance), asserted for BOTH transformers
+    separately. `iter_ideogram4_lora_targets` is the single enumerator for load
+    and unload, so restore iterates what is installed; its one int slot
+    (`attention.to_out.0`) goes through `set_module_slot`.
+    **The two transformers are two independent composite lifecycles.**
+    `apply_lora_group` is called once per branch with that branch's own key
+    namespace (`lora_unet_*` / `lora_uncond_*`), its own originals map and its
+    own wrapped-key set, so a stack on the conditional half never reaches the
+    unconditional one, and `5d80c042`'s per-branch reload gate still drops
+    exactly one branch's bookkeeping. `lora_uncond_unavailable` (a file carrying
+    only unconditional keys with no unconditional transformer loaded) survives
+    unchanged. **`_load_lora_ideogram4` now restores unconditionally at its
+    top**, like the other composite archs: `_ideogram4_cleanup` swallows restore
+    failures, and a leaked wrapper that used to be caught by the stacking
+    refusal would now silently double-apply.
+    The INT8 refusal still fires: `lora_wrapped_count` ->
+    `count_adapter_wrapper_roots` counts a composite as ONE root, so a two-LoRA
+    stack over a 16-target stub reports 16 roots per transformer (not 16
+    composites plus 32 branches) and `apply_runtime_int8_quantization_multi`
+    refuses the whole set before either branch is converted.
+    Block swap is unaffected -- measured on `transformer.layers`, the list the
+    offloader swaps: the base sits at `<target>.original_module` under a
+    composite exactly as under the old wrapper, the per-block
+    `endswith("Linear")` weight-module count is 8 bare / 24 with one branch
+    (identical to the old wrapper) / 40 with two, the per-block relative path
+    set is IDENTICAL ACROSS BLOCKS in every layout (which is what
+    `_build_weight_swap_jobs` needs, since it pairs the two blocks' Linears BY
+    NAME -- zero unpaired names on a two-branch stack), and nothing is enrolled
+    twice. The branch weights move one level deeper than under the old wrapper
+    (`<target>.branches.<i>.lora_{down,up}` rather than
+    `<target>.lora_{down,up}`); that changes the names uniformly across blocks,
+    so the pairing is unaffected. Ideogram 4 has **no FP8 deep-copy generation
+    path** to gate (its FP8 is checkpoint-format driven, loaded as `Fp8Linear`),
+    so the Z-Image/Anima gap does not exist here.
   - **Loader**: `_swap_ideogram4_quantized_linears` now detects int8 and e4m3
     independently and runs both swaps (it used to call only the FP8 half, which
     would have mis-loaded an int8 file), after the nf4 branch — a bitsandbytes
@@ -595,6 +636,40 @@ Paths below are relative to `backend/core/training/`.
     where the block-swap offloader captures its Linears. The per-file verdict
     is deferred to the transformer pass so it can judge both halves together —
     a file binding nothing in EITHER component refuses.
+  - **MiniT2I is on `CompositeAdapterLayer`, PER COMPONENT.** Each target
+    Linear is covered once by a composite and each selected LoRA adds a NAMED
+    branch (`"<request index>:<file basename>"`, computed in
+    `_minit2i_prepare_loras` so both passes of one file carry the same name), so
+    two MiniT2I LoRAs over the same module SUM instead of being refused, in
+    either selection order, each at its own strength;
+    `lora_stacking_unsupported` is gone and `_apply_group` returns a plain
+    applied count instead of `(applied, occupied)`. A single LoRA is
+    bit-identical to the pre-composite loader (`torch.equal`, not a tolerance),
+    asserted for the transformer and the text encoder separately. The pass
+    ordering above is unchanged: the TE composites are installed by
+    `_apply_te_lora_minit2i`, BEFORE `_minit2i_encode`.
+    **One bookkeeping map pair still serves both components, deliberately.**
+    Transformer keys are bare module paths and text-encoder keys carry
+    `TE_NAMESPACE` (`te::`), which no module path can contain, so the partition
+    is total: `_minit2i_lora_state` drops exactly one component's half on a
+    reload, and `restore_originals` restores each component from what is
+    installed there. Splitting the map in two would rename state without
+    changing any observable behaviour. `_unload_lora_minit2i` no longer
+    early-returns when the transformer is absent, so text-encoder composites are
+    still restorable when only the TE is loaded.
+    **`_minit2i_prepare_loras` now restores unconditionally at its top**:
+    `_minit2i_cleanup` swallows restore failures, and a leaked wrapper that used
+    to be caught by the stacking refusal would now silently double-apply.
+    Block swap is unaffected -- measured on `model.net.double_blocks`, the only
+    list the offloader swaps (`block_list=` in `_minit2i_setup_block_swap`): the
+    base sits at `<target>.original_module`, the per-block
+    `endswith("Linear")` weight-module count is 10 bare / 30 with one branch
+    (identical to the old wrapper) / 50 with two, the per-block relative path
+    set is IDENTICAL ACROSS BLOCKS in every layout (zero unpaired names between
+    two blocks on a two-branch stack), and nothing is enrolled twice.
+    MiniT2I is in neither `RUNTIME_INT8_ARCHS` nor `QUANTIZED_LINEAR_ARCHS` and
+    its generation path has no FP8 deep-copy either, so it has no quantizer gate
+    to keep and no ungated cast to record.
 - **anima** — Cosmos-Predict2-style DiT with AdaLN-LoRA; Qwen3-0.6B TE plus a
   6-layer LLM Adapter (T5 tokenizer produces the adapter's target input ids).
   Training can be restricted to the LLM Adapter only; TE and Qwen-Image VAE frozen.
@@ -1040,6 +1115,28 @@ Paths below are relative to `backend/core/training/`.
     predicate that EXCLUDES the wrapper class, so a wrapped slot vanished from
     the iterator — restore missed those targets and a second application would
     have wrapped the adapter's own branches.
+  - **LTX-2.3 is on `CompositeAdapterLayer`.** Each target Linear is covered
+    once by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two LTX-2.3 LoRAs over the same
+    module SUM instead of the second being refused, in either selection order,
+    each at its own strength; `lora_stacking_unsupported` is gone and
+    `apply_lora_group` returns `(applied, unmatched)` rather than
+    `(applied, unmatched, occupied)`. A single LoRA is bit-identical to the
+    pre-composite loader (`torch.equal`, not a tolerance).
+    `ltx2_lora.iter_lora_slots` is the single enumerator for load and unload,
+    so restore iterates what is INSTALLED: the trainer's iterator, plus the
+    installed composite roots found by `isinstance`, minus everything
+    underneath one. That subtraction is load-bearing here rather than defensive
+    — the trainer's feed-forward branch walks `ff.named_modules()` and only
+    skips past a `LoRALinearLayer` subtree, so over a composite it descends and
+    offers the adapter's own `lora_down`/`lora_up` as targets (measured, and
+    pinned by a test). The exclusion is a prefix match against real composite
+    paths, not a path shape, because `branches.<i>` collides with the index
+    slots this architecture genuinely has (`to_out.0`, `ff.net.2`).
+    **`_load_lora_ltx2` now restores unconditionally at its top**: the stacking
+    refusal had been the accidental backstop for a wrapper that outlived its
+    request, and this loader (unlike ACE-Step's) did not restore first, so
+    without it a leak would silently sum into the next generation.
   - **LTX-2.3's block-swap offloader persists across generations** (it is
     torn down only by a change of `blocks_to_swap`), unlike FLUX.2's and
     MiniMax-H3's which are rebuilt per generation. That makes three
@@ -1061,6 +1158,19 @@ Paths below are relative to `backend/core/training/`.
       unequal, which the coalesced H2D path asserts against, so that path is
       disabled for the generation with `ltx2_lora_h2d_disabled` naming the
       cost, rather than letting the assert fire mid-denoise.
+    - **Under the composite the module set changes once per LoRA ADDED, not
+      once per request.** Measured on the 2-block stub with the offloader's own
+      selector (`linear_weight_dtypes`): 10 Linears per block bare, 30 with one
+      branch, 50 with two; per-block relative path sets uniform at every stage,
+      no weight enrolled twice, and the base at `<target>.original_module`
+      exactly as under the old wrapper (so the swap's pairing key is unchanged).
+      The reconciliation stays correct because it runs after the LAST file of
+      the load loop and no forward runs in between, so per-file invalidation
+      would buy nothing; what it must not become is per-request-and-cached.
+      A second LoRA covering only SOME blocks is newly REACHABLE (it used to be
+      refused as fully shadowed) and is exactly what the H2D uniformity check
+      catches: measured footprints `[1920, 1280]` against `[1920, 1920]` for
+      full coverage.
   - **Training, DiT-BlockSkip** (`blockskip_enable`/`blockskip_front`/`blockskip_back`,
     LoRA and full-parameter trainers only, arXiv 2603.20755): dual-stream
     (video + audio) folded-precompute — a no-grad full pass captures the
@@ -2814,6 +2924,43 @@ Paths below are relative to `backend/core/training/`.
     reachable by direct API calls; there is no UI path to reach them today.
     The `text_encoder_file` selection has no frontend surface either, for the
     same reason — it is reachable today only via `POST /models/load`.
+
+- **acestep** — ACE-Step 1.5 (2B audio DiT + Oobleck VAE + Qwen3-Embedding TE);
+  no row in the facts table above, which covers the image and video
+  architectures. Generation-time LoRA facts:
+  - **On `CompositeAdapterLayer`.** Each target Linear is covered once by a
+    composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two ACE-Step LoRAs over the same
+    module SUM instead of the second being refused, in either selection order,
+    each at its own strength; `lora_stacking_unsupported` is gone. A single
+    LoRA is bit-identical to the pre-composite loader (`torch.equal`, not a
+    tolerance). The shape-mismatch skip runs BEFORE anything is installed, so a
+    skipped target keeps its bare Linear rather than gaining an empty composite.
+  - **One enumerator, `_acestep_lora_targets`, for both the sd-scripts apply
+    pass and the restore**, and it is deliberately TWO halves. The trainer's
+    own `iter_acestep_lora_targets` supplies the codec (imported from the
+    training adapter since `e95b3595` so the key spelling cannot drift), but
+    its predicate rejects a `CompositeAdapterLayer`, so an occupied target
+    would vanish from it exactly when a second LoRA needs it. The second half
+    finds every installed composite structurally (`isinstance` over
+    `named_children`, never a path shape), which also covers the
+    `encoder.lyric_encoder.layers.*` leaves the diffusers/PEFT remap can reach
+    and the trainer's scope never names — that is what lets restore find them
+    without a second hand-written traversal.
+  - The diffusers/PEFT path stays key-driven (it is a foreign codec, so it
+    resolves its own remapped paths through `_acestep_walk_module_path`), but
+    it installs through the same `_wrap_with_lora_acestep` and its composites
+    are discovered structurally at restore, so load and unload cannot disagree.
+  - **No block swap exists on this backend at all** (`blocks_to_swap` has no
+    path here), so the composite's effect on a swap job list is moot — the
+    opposite of LTX-2.3. The runtime-INT8 conversion still refuses a LoRA'd
+    DiT: `count_adapter_wrapper_roots` counts a composite as ONE root
+    (verified: 1 root over 2 branches), and `_acestep_runtime_int8` still runs
+    after the LoRA gate.
+  - `_restores_acestep_lora` (the `functools.wraps` decorator each generate
+    entry point carries, which keeps `inspect.getsource` resolving to the
+    wrapped method) is unchanged, as are `lora_not_found`, `lora_incompatible`,
+    `lora_partial` and the weakref-keyed bookkeeping.
 
 ## Anchors used
 

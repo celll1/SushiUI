@@ -8,7 +8,9 @@ handler shape). Stills train as degenerate 1-frame clips (T=1) through the SAME
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
 
@@ -29,6 +31,21 @@ class Ltx2ArchHandler(ArchHandler):
     # x_t = (1-sigma)*x_0 + sigma*noise (ops/ltx2_ops.py train_step comment).
     # sampler t=0 is clean.
     timestep_convention = "t0"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import Ltx2LoRAAdapter
+        return Ltx2LoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        # Default: attention-only (video LoRA).
+        scope_csv = resolve_scope_csv(trainer, "ltx2_lora_scope", "attention")
+        wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
+        return {"scope": {
+            "attention": wanted.get("attention", True),
+            "ff": wanted.get("ff", False),
+            "audio": wanted.get("audio", False),
+            "av_cross": wanted.get("av_cross", False),
+        }}
 
     def load_components(self, trainer) -> None:
         from core.training.ops import ltx2_ops

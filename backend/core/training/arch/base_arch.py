@@ -158,6 +158,44 @@ class SampleContext:
 
 
 # ---------------------------------------------------------------------------
+# Adapter selection (LyCORIS design boundary 3: the registry, not the trainer,
+# says which adapter an architecture uses)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LoRAAdapterPlan:
+    """The adapter class an architecture uses plus the arguments it takes beyond
+    the four every adapter takes (``trainer, rank, alpha, dtype``).
+
+    Class and kwargs stay separable so a caller can compare a plan without
+    constructing an adapter, which is what lets the registry gate run on CPU
+    with no model.
+    """
+
+    adapter_cls: type
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def build(self, trainer, lora_rank: int, lora_alpha: int, lora_dtype):
+        return self.adapter_cls(trainer, lora_rank, lora_alpha, lora_dtype,
+                                **self.kwargs)
+
+    @property
+    def log_detail(self) -> str:
+        if not self.kwargs:
+            return ""
+        return " (" + ", ".join(f"{k}={v}" for k, v in self.kwargs.items()) + ")"
+
+
+def resolve_scope_csv(trainer, key: str, default: str) -> str:
+    """An arch's LoRA scope string: trainer attribute, then run config, then the
+    architecture's own default. Empty string means "unset" at every tier."""
+    return (getattr(trainer, key, "")
+            or trainer.config.get(key, "")
+            or default)
+
+
+# ---------------------------------------------------------------------------
 # ArchHandler ABC — canonical method set (plan A.3)
 # ---------------------------------------------------------------------------
 
@@ -309,6 +347,31 @@ class ArchHandler(ABC):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical
         # methods still take ``trainer`` explicitly; this is a convenience only.
         self.trainer = trainer
+
+    # ---- adapter selection (mode x arch) ----
+    def lora_adapter_class(self) -> type:
+        """This architecture's ``BaseLoRAAdapter`` subclass.
+
+        Overrides import it inside the method, not at module scope: this
+        package is imported from ``base_trainer``, i.e. while
+        ``core.training`` is still initialising.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} (arch '{self.name}') declares no LoRA "
+            f"adapter class, so LoRA training cannot be dispatched for it."
+        )
+
+    def lora_adapter_kwargs(self, trainer) -> Dict[str, Any]:
+        """Constructor arguments beyond ``(trainer, rank, alpha, dtype)``.
+
+        Where an architecture resolves its scope strings from the run config.
+        Insertion order is also the order the trainer logs them in.
+        """
+        return {}
+
+    def lora_adapter_plan(self, trainer) -> LoRAAdapterPlan:
+        return LoRAAdapterPlan(self.lora_adapter_class(),
+                               self.lora_adapter_kwargs(trainer))
 
     # ---- loading / setup ----
     @abstractmethod

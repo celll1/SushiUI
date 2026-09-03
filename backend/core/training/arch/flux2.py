@@ -8,13 +8,27 @@ Nothing calls these until a later phase flips the corresponding dispatcher.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, PHASE2_PENDING,
+    PHASE3_PENDING_DENSE_ONLY, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
+)
 from core.training.components.wiring import FLUX2_WIRING
 
 
 class Flux2ArchHandler(ArchHandler):
     name = "flux2"
     wiring = FLUX2_WIRING
+    adapter_capability = declare_adapter_capability(
+        "flux2",
+        additive_family=True,
+        initial_dora="dense_only",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING_DENSE_ONLY,
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; the FP8 transformer and Qwen3 "
+            f"text-encoder paths need per-component capability gates first"),
+    )
     wires_sample_step_progress = True
     pixel_align = 16  # vae_scale(8) * patch(2)
     # noisy = (1-t)*latents + t*noise via add_noise_unified(noise_process="flow")

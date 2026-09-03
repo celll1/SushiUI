@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, PHASE3_PENDING, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
 )
 from core.training.components.wiring import LENS_WIRING
 
@@ -17,6 +19,17 @@ from core.training.components.wiring import LENS_WIRING
 class LensArchHandler(ArchHandler):
     name = "lens"
     wiring = LENS_WIRING
+    adapter_capability = declare_adapter_capability(
+        "lens",
+        additive_family=True,
+        initial_dora="dense",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING,
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; the FP8 gate drops the "
+            f"transformer's quantization while wrappers are live rather than "
+            f"carrying branches over a quantized base"),
+    )
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
     wires_sample_step_progress = True
     text_seq_axis = 2  # encode_prompt returns [1, num_layers, L, D]

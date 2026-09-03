@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
 )
 from core.training.components.wiring import MINIMAX_H3_TEMPORAL, MINIMAX_H3_WIRING
 from core.training.ops.minimax_h3_ops import (
@@ -34,6 +35,22 @@ from core.training.ops.minimax_h3_ops import (
 class MiniMaxH3ArchHandler(ArchHandler):
     name = "minimax_h3"
     wiring = MINIMAX_H3_WIRING
+    adapter_capability = declare_adapter_capability(
+        "minimax_h3",
+        additive_family=True,
+        additive_gated=True,
+        initial_dora="deferred",
+        additive_reason=(
+            "LoHa/LoKr need a gate of their own: the ConvRot training forward "
+            "and the activation dtype policy (this forward runs without "
+            "torch.autocast) dominate more of the step"),
+        dora_reason=(
+            "DoRA is deferred behind the FP8/ConvRot dtype policy and the "
+            "custom QKV row mapping"),
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; the FP8/ConvRot dtype policy "
+            f"governs it here"),
+    )
     # 16x VAE spatial compression x the transformer's own 2x2 patchify => every
     # training canvas dimension must be a multiple of 32.
     pixel_align = 32

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, PHASE3_PENDING_DENSE_ONLY, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
 )
 from core.training.components.wiring import ACESTEP_WIRING
 
@@ -17,6 +19,14 @@ from core.training.components.wiring import ACESTEP_WIRING
 class AceStepArchHandler(ArchHandler):
     name = "acestep"
     wiring = ACESTEP_WIRING
+    adapter_capability = declare_adapter_capability(
+        "acestep",
+        additive_family=True,
+        initial_dora="dense_only",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING_DENSE_ONLY,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
+    )
     # No spatial axis to align (audio latents are [B, T, 64]); keep the base
     # default (8) — it is never consulted for this arch (no still-image items).
     pixel_align = 8

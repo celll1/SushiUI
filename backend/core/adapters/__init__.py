@@ -46,10 +46,20 @@ from .codec import (
     detect_adapter_codec,
     normalize_adapter_keys,
 )
+from .spec import (
+    ADAPTER_SCHEMA_VERSION,
+    ALGORITHMS,
+    FORMATS,
+    KNOWN_ARCHITECTURES,
+    AdapterSpec,
+)
 from .targets import (
+    AdapterTarget,
     count_quantized_linears,
+    enumerate_adapter_targets,
     is_lora_wrappable_linear,
     lora_branch_dtype,
+    quantization_kind,
 )
 
 __all__ = [
@@ -77,9 +87,17 @@ __all__ = [
     "is_adapter_wrapper",
     "named_modules_outside_adapters",
     "set_module_slot",
+    "AdapterTarget",
     "count_quantized_linears",
+    "enumerate_adapter_targets",
     "is_lora_wrappable_linear",
     "lora_branch_dtype",
+    "quantization_kind",
+    "ADAPTER_SCHEMA_VERSION",
+    "ALGORITHMS",
+    "FORMATS",
+    "KNOWN_ARCHITECTURES",
+    "AdapterSpec",
     "CodecRegistry",
     "CodecSpec",
     "detect_adapter_codec",

@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
+)
 from core.training.components.wiring import SENSENOVA_WIRING
 
 
 class SenseNovaArchHandler(ArchHandler):
     name = "sensenova"
     wiring = SENSENOVA_WIRING
+    adapter_capability = declare_adapter_capability(
+        "sensenova",
+        additive_family=True,
+        additive_gated=True,
+        initial_dora="deferred",
+        additive_reason=(
+            "LoHa/LoKr need a gate of their own: the two MoT halves, phase "
+            "eviction and the INT8/ConvRot policy"),
+        dora_reason=(
+            "DoRA is deferred behind the two MoT halves, phase eviction and "
+            "the INT8/ConvRot policy"),
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; the INT8/ConvRot policy governs it "
+            f"here"),
+    )
     pixel_align = 32
     wires_sample_step_progress = True
     # The inference uncond branch is a different PROMPT, not a rewrite of an

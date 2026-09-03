@@ -17,11 +17,10 @@ addition, fully reversible), so two LoRAs over one module SUM.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Generator, Iterable, Optional, Tuple
 
 import torch
 from torch import nn
-from safetensors import safe_open
 
 
 def _flatten(module_path: str) -> str:
@@ -61,39 +60,11 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def read_lora_keys(path: str) -> List[str]:
-    """The key NAMES in a LoRA safetensors, without loading a tensor.
-
-    ``_minit2i_prepare_loras`` has to decide which of the two components a file
-    can bind -- and refuse an unreadable one -- before ``AdapterSession`` reads
-    it for real.
-    """
-    with safe_open(path, framework="pt", device="cpu") as f:
-        return list(f.keys())
-
-
 def detect_lora_format(keys: Iterable[str]) -> str:
     """"sd-scripts" / "unknown", from the key names alone."""
     return "sd-scripts" if any(
         k.startswith("lora_unet_") or k.startswith(TE_KEY_PREFIX) for k in keys
     ) else "unknown"
-
-
-def declared_module_paths(keys: Iterable[str]) -> Set[str]:
-    """Namespaced module paths carrying a complete down/up pair, from key names.
-
-    The same predicate ``normalise_lora_state_dict`` applies, minus the tensors,
-    so a header-only pre-pass and the session's plan can never disagree about
-    which modules a file names.
-    """
-    seen: Dict[str, Set[str]] = {}
-    for key in keys:
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        seen.setdefault(module_path, set()).add(suffix)
-    return {m for m, s in seen.items() if "down" in s and "up" in s}
 
 
 def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:

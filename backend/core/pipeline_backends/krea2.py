@@ -11,7 +11,6 @@ pins a fixed timestep shift.
 
 from typing import Dict, Any, Optional, List
 from PIL import Image
-import os
 import random
 import torch
 
@@ -170,27 +169,28 @@ class Krea2Mixin:
     # bookkeeping and its reset. What stays here is Krea 2's -- the target scope,
     # the key codec, this backend's own per-file warnings and one branch.
 
-    def _krea2_resolve_lora_path(self, raw_path):
-        """LoRAManager resolution; a miss is Krea 2's OWN refusal.
+    @staticmethod
+    def _krea2_resolve_lora_path(raw_path):
+        from core.extensions.lora_manager import lora_manager
 
-        The session's ``lora_not_found`` message and exception type are fixed
-        and both differ from the ones this backend's gate pins, so the miss is
-        refused here instead. The searched directories stay on the console: the
-        refusal rides into the PNG text chunk.
+        return lora_manager._resolve_lora_path(raw_path)
+
+    @staticmethod
+    def _krea2_missing_lora(lora_file, _raw_path):
+        """Krea 2's own refusal for an unresolvable path.
+
+        A ``RuntimeError``, not the session's ``FileNotFoundError``: this
+        backend's callers and its gate catch that type. The searched directories
+        stay on the console -- the refusal rides into the PNG text chunk.
         """
         from api.error_handlers import with_error_code
         from core.extensions.lora_manager import lora_manager
 
-        resolved = lora_manager._resolve_lora_path(raw_path)
-        if resolved is None:
-            lora_file = os.path.basename(str(raw_path))
-            print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
-                  f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
-            message = (f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
-                       f"registered LoRA directory.")
-            self._krea2_lora_warn(message, "lora_not_found")
-            raise with_error_code(RuntimeError(message), "lora_not_found")
-        return resolved
+        print(f"[Krea2 LoRA] ERROR: {lora_file} not found; searched "
+              f"{lora_manager.lora_dir} and {lora_manager.additional_dirs}")
+        return with_error_code(RuntimeError(
+            f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
+            f"registered LoRA directory."), "lora_not_found")
 
     @property
     def _krea2_lora_session(self):
@@ -206,8 +206,13 @@ class Krea2Mixin:
             session = AdapterSession(
                 resolve_path=self._krea2_resolve_lora_path,
                 warn=self._krea2_lora_warn,
-                label="Krea 2 LoRA",
+                # The console prefix this backend has always used, and the
+                # noun its user-visible failure text spells with a space.
+                label="Krea2 LoRA",
+                message_label="Krea 2 LoRA",
                 count_declared_branches=self._krea2_declared_branches,
+                missing_file=self._krea2_missing_lora,
+                prepare_file=self._krea2_prepare_lora_file,
                 describe_zero_targets=self._krea2_zero_target_message,
             )
             self._krea2_lora_session_instance = session
@@ -247,7 +252,7 @@ class Krea2Mixin:
         return self._krea2_lora_session.state("transformer").wrapped
 
     @staticmethod
-    def _krea2_declared_branches(tensors) -> int:
+    def _krea2_declared_branches(tensors, _components) -> int:
         """Down/up PAIRS, not ``.lora_down.weight`` keys: a foreign
         (``lora_te_*``) or unpaired key would inflate the count the session
         compares against and warn ``lora_partial`` on a file that applied in full.
@@ -256,23 +261,16 @@ class Krea2Mixin:
 
         return len(normalise_lora_state_dict(tensors))
 
-    def _krea2_lora_file_state(self, file):
-        """This file's grouped tensors, parsed and reported ONCE.
+    def _krea2_prepare_lora_file(self, file):
+        """This file's grouped tensors, parsed and reported once.
 
-        The session has no hook between parsing a file and accounting for it.
-        Reached from the branch builder AND from the zero-target message, so a
-        file that matches nothing still reports its dropped keys first.
+        The session runs this before the file is planned, so a file that matches
+        nothing still reports its dropped keys before its refusal.
         """
-        cache = self._krea2_lora_files
-        grouped = cache.get(file.branch_name)
-        if grouped is not None:
-            return grouped
-
         from core.models.krea2.krea2_lora import (detect_lora_format,
                                                   normalise_lora_state_dict)
 
         grouped = normalise_lora_state_dict(file.tensors)
-        cache[file.branch_name] = grouped
         print(f"[Krea2 LoRA] {file.name} format={detect_lora_format(file.tensors)} "
               f"keys={len(file.tensors)} matched_modules={len(grouped)} "
               f"strength={file.strength}")
@@ -300,7 +298,7 @@ class Krea2Mixin:
         from core.adapters import PreparedBranch
         from core.models.krea2.krea2_lora import build_lora_branch
 
-        weights = self._krea2_lora_file_state(request.file).get(request.module_path)
+        weights = request.prepared.get(request.module_path)
         if weights is None:
             return None
         branch = build_lora_branch(request.base, weights, request.module_path)
@@ -316,9 +314,6 @@ class Krea2Mixin:
         """
         from core.models.krea2.krea2_lora import detect_lora_format
 
-        # This file's own warnings first, as they were emitted before the
-        # session owned the ordering.
-        self._krea2_lora_file_state(file)
         if file.declared_branches == 0:
             return (f"Krea 2 LoRA '{file.name}': none of its {len(file.tensors)} tensors "
                     f"form a 'lora_unet_*' down/up pair "
@@ -350,7 +345,6 @@ class Krea2Mixin:
         if not self.krea2_components:
             raise RuntimeError("Krea 2 LoRA requested but no Krea 2 model is loaded.")
 
-        self._krea2_lora_files = {}
         return self._krea2_lora_session.load(
             lora_configs, self._krea2_lora_components()).applied
 

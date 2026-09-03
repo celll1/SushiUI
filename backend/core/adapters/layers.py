@@ -46,9 +46,6 @@ class LoRALinearLayer(nn.Module):
         in_features = original_module.in_features
         out_features = original_module.out_features
 
-        # Freeze original weights
-        self.original_module.requires_grad_(False)
-
         # LoRA matrices (no bias)
         # Use lora_dtype for LoRA weights (can be different from main model dtype)
         self.lora_down = nn.Linear(in_features, rank, bias=False)
@@ -130,8 +127,11 @@ class LoRALinearLayer(nn.Module):
 
     def trainable_parameters(self) -> Iterator[nn.Parameter]:
         """The branch's own parameters. The wrapped base is frozen and excluded."""
-        yield from self.lora_down.parameters()
-        yield from self.lora_up.parameters()
+        seen = set()
+        for tensor in self.branch_tensors().values():
+            if isinstance(tensor, nn.Parameter) and id(tensor) not in seen:
+                seen.add(id(tensor))
+                yield tensor
 
     def export_tensors(self) -> Dict[str, torch.Tensor]:
         """Detached CPU copies, ready to hand to ``save_file``."""

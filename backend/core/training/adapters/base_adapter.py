@@ -221,6 +221,9 @@ class BaseLoRAAdapter(ABC):
             raise ValueError(
                 f"Unknown LoRA component {component!r} (expected one of {sorted(LORA_COMPONENTS)})"
             )
+        base = getattr(layer, "original_module", None)
+        if isinstance(base, nn.Module):
+            base.requires_grad_(False)
         lora_layers[name] = layer
         self.lora_components[name] = component
 

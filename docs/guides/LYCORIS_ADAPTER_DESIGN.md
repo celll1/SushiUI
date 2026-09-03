@@ -138,15 +138,13 @@ class and its module supply:
   subclasses, so an `isinstance` test drops every quantized target silently);
 - per-component learning-rate resolution — `resolve_component_lr`.
 
-What is **not** shared is narrower than "the rest of the mechanism":
-
-- the BODIES of `setup_trainable_parameters` and `save_checkpoint`, which are
-  abstract on the base class and hardcode `lora_down` / `lora_up` in all 13
-  implementations;
-- resume: `LoRATrainer.load_checkpoint` reads only those two tensor names;
-- adapter selection: `LoRATrainer._create_adapter` is an if-chain, and
-  `ARCH_REGISTRY` selects training ops, not adapter factories, target
-  topology, checkpoint codecs, or generation loaders.
+The shared base now owns the bodies of `setup_trainable_parameters` and
+`save_checkpoint`, with resume tensor discovery delegated to each adapter leaf.
+Training adapter selection has also moved into `ARCH_REGISTRY`:
+`ArchHandler.lora_adapter_plan()` supplies the adapter class and
+architecture-specific constructor arguments to `LoRATrainer._create_adapter`.
+The registry still does not describe generation target topology, checkpoint
+codecs, or generation loaders.
 
 A **second adapter algebra already exists**, and the extracted protocol must
 accommodate it from day one rather than assuming one forward:
@@ -264,8 +262,9 @@ effective scale into `lora_B` and drop alpha, so a metadata ratio would
 attenuate them twice.
 
 **Shape-mismatched branches assigned wholesale**, then failing inside the
-denoise loop or the encoder forward (Z-Image, FLUX.2). They are now skipped
-with a `lora_partial` warning.
+denoise loop or the encoder forward (Z-Image, FLUX.2). Partial application now
+refuses before denoising under `lora_partial`; it never installs the compatible
+subset and continues.
 
 Two findings were structural rather than per-architecture and were deferred to
 Phase 1: the original-module bookkeeping surviving a model reload, and additive
@@ -651,15 +650,30 @@ recorded below. Only the per-LoRA option unification is outstanding.
   fixed the defect that made only the LAST selected SD1.5/SDXL LoRA active
   (`set_adapters` REPLACES the active set) and the block-weight loss that hid
   behind it. Per-architecture detail is in `docs/guides/MODEL_FACTS.md`.
+- **Training adapter resolution through the architecture registry.** Every
+  `ArchHandler` now declares its LoRA adapter class and constructor arguments;
+  `LoRATrainer._create_adapter` builds that plan rather than maintaining a
+  second architecture if-chain.
+- **`AdapterSession` has begun landing on generation backends.** It owns
+  resolve/parse, pre-mutation accounting, atomic install/rollback, per-component
+  original-module bookkeeping, and restore for Z-Image, Anima, Lens, Krea 2,
+  Ideogram 4, and MiniT2I. MiniT2I uses its split-session contract so one parsed
+  file can cover the text encoder before prompt encoding and the transformer
+  after staging.
 
 **Not landed.**
 
 - `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
-  carry topology and a capability matrix; the adapter factory in
-  `LoRATrainer._create_adapter` is still an if-chain.
+  carry generation topology and a capability matrix.
 - The checkpoint codec registry for foreign formats.
-- `AdapterSession` — the atomic runtime session that would own original-module
-  bookkeeping, strength, step activation and restore once.
+- `AdapterSession` adoption on FLUX.2, SenseNova, ACE-Step, LTX-2.3 and
+  MiniMax-H3, plus the session-level component-option and `step_range` contract.
+  SD1.5/SDXL remain on the Diffusers/PEFT runtime rather than the component
+  session.
+- LoHa, LoKr, DoRA and the optional fused backend; `AdapterSession` currently
+  installs ordinary LoRA branches only.
+- The generation `AdapterSpec` API, codec-derived adapter metadata, and the
+  corresponding frontend selector/training controls.
 
 **Findings that must be fixed once in the engine, never patched
 per-architecture:**
@@ -694,13 +708,14 @@ per-architecture:**
   (`core.adapters.session`) carries one as a class attribute. Inference from the
   bucket was rejected on evidence: ACE-Step and LTX-2.3 deliberately raise a
   shorter sentence than they warn, so message matching reports no code for them,
-  and last-warning-wins would pin a bystander code on an unrelated failure —
-  Anima can record `lora_partial` for a later file AFTER the refusal it raises
-  for. Converting the raised types to `APIError` instead would have moved nine
-  architectures' refusals from 500 to 400 and changed which `except` clause in
-  `routes.py` catches them, so it is a separate decision (worth taking: the split
-  today is accidental, ACE-Step and LTX-2.3 answer 400 while the other eleven
-  answer 500 for the same class of user error).
+  and last-warning-wins would pin a bystander advisory code on an unrelated
+  later failure. The HTTP split has now been removed without changing raised types:
+  `error_handlers.is_lora_refusal_code` names the refusal subset, a wrapped
+  `GenerationError` selects 400 from that code, and `attach_error_context`
+  normalizes an already-raised `APIError` the same way. Missing, unreadable,
+  incompatible, partial, and architecture-specific compatibility refusals
+  therefore answer 400 on every generation route; untagged exceptions remain
+  500 and warning-only degradations remain successful.
   `backend/tests/refusal_error_code_cheap_test.py` is the gate.
 - **Additive multi-LoRA stacking was blocked repo-wide by the layer class —
   fixed.** `LoRALinearLayer.__init__` reads `original_module.in_features` /

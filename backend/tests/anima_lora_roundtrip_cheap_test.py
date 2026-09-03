@@ -33,7 +33,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.anima import anima_lora as anima_mod  # noqa: E402
 from core.pipeline_backends.anima import AnimaMixin  # noqa: E402
 from core.training.adapters.anima_adapter import AnimaLoRAAdapter  # noqa: E402
@@ -408,7 +408,7 @@ def test_anima_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen):
     assert not wrapped_paths(model)
 
 
-def test_anima_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings_seen):
+def test_anima_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen):
     path, trained_paths = train_and_save(tmp_path, scope=ATTENTION_ONLY)
     saved = load_file(path)
     saved["lora_unet_blocks_9_self_attn_q_proj.lora_down.weight"] = torch.zeros(RANK, D)
@@ -417,8 +417,10 @@ def test_anima_partly_matching_file_warns_and_applies_the_rest(tmp_path, warning
     save_file(saved, str(partial), metadata={"model_type": "anima"})
 
     model = build_model()
-    assert _Backend(model)._load_lora_anima([{"path": str(partial)}]) == len(trained_paths)
-    assert wrapped_paths(model) == trained_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_anima([{"path": str(partial)}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

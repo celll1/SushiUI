@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, PHASE3_PENDING_DENSE_ONLY, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
 )
 from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
@@ -17,6 +19,14 @@ from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 class Ltx2ArchHandler(ArchHandler):
     name = "ltx2"
     wiring = LTX2_WIRING
+    adapter_capability = declare_adapter_capability(
+        "ltx2",
+        additive_family=True,
+        initial_dora="dense_only",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING_DENSE_ONLY,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
+    )
     wires_sample_step_progress = True
     pixel_align = 32  # LTX spatial VAE downscale (÷32); dims must be a multiple of 32.
     # Temporal contract: 8*k+1 clip lengths, (L-1)//8+1 latent frames, NO fixed

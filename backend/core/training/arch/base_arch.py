@@ -37,10 +37,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import (Any, Callable, Dict, FrozenSet, List, Mapping, Optional,
+                    Tuple)
 
 import torch
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+from core.adapters.spec import ALGORITHM_LORA
+from core.adapters.spec import ALGORITHMS as ADAPTER_ALGORITHMS
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +189,150 @@ class LoRAAdapterPlan:
         if not self.kwargs:
             return ""
         return " (" + ", ".join(f"{k}={v}" for k, v in self.kwargs.items()) + ")"
+
+
+#: "Initial DoRA" column of the design doc's architecture-feasibility table
+#: (``docs/guides/LYCORIS_ADAPTER_DESIGN.md``), verbatim.
+DORA_VERDICTS = ("dense", "dense_only", "deferred", "refused")
+
+_ADAPTER_PAIRS: Tuple[Tuple[str, bool], ...] = tuple(
+    (algorithm, decompose)
+    for algorithm in ADAPTER_ALGORITHMS
+    for decompose in (False, True)
+)
+
+_ORDINARY_LORA = (ALGORITHM_LORA, False)
+
+
+@dataclass(frozen=True)
+class AdapterCapability:
+    """Which ``(algorithm, weight_decompose)`` pairs ONE architecture supports.
+
+    A declaration WITH GATES, deliberately in two halves: ``additive_family``
+    and ``initial_dora`` record the design-doc verdict, while ``supported``
+    records what round-trips today -- ordinary LoRA alone, until the Phase 2/3
+    codec and training integration land.
+    """
+
+    additive_family: bool
+    initial_dora: str
+    supported: FrozenSet[Tuple[str, bool]]
+    refusals: Mapping[Tuple[str, bool], str]
+    #: LoHa/LoKr/DoRA over a weight-only quantized base. Says nothing about
+    #: ordinary LoRA, which IS allowed over one in both generation and training
+    #: (``core.adapters.is_lora_wrappable_linear``; ``reject_quantized_base``
+    #: gates full fine-tuning and exempts LoRA on purpose).
+    quantized_base_additive_family: bool
+    quantized_base_reason: str = ""
+    #: The table's third value on the additive axis, "yes, later gate": the
+    #: family is feasible here but needs its own gate rather than riding on the
+    #: general Phase 2 enablement (MiniMax-H3, SenseNova).
+    additive_gated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.initial_dora not in DORA_VERDICTS:
+            raise ValueError(
+                f"initial_dora={self.initial_dora!r} is not one of {DORA_VERDICTS}")
+        object.__setattr__(self, "supported", frozenset(self.supported))
+        object.__setattr__(self, "refusals",
+                           MappingProxyType(dict(self.refusals)))
+        missing = [p for p in _ADAPTER_PAIRS
+                   if p not in self.supported and not self.refusals.get(p)]
+        if missing:
+            raise ValueError(
+                f"adapter pairs {missing} are neither supported nor given a "
+                f"refusal reason")
+        overlap = sorted(self.supported & set(self.refusals))
+        if overlap:
+            raise ValueError(f"adapter pairs {overlap} are both supported and refused")
+        if not self.quantized_base_additive_family and not self.quantized_base_reason:
+            raise ValueError("quantized_base_additive_family=False needs a reason")
+
+    def supports(self, algorithm: str, weight_decompose: bool = False) -> bool:
+        return (algorithm, bool(weight_decompose)) in self.supported
+
+    def refusal_reason(self, algorithm: str,
+                       weight_decompose: bool = False) -> Optional[str]:
+        """Why the pair is refused, or ``None`` when it is supported."""
+        pair = (algorithm, bool(weight_decompose))
+        if pair in self.supported:
+            return None
+        return self.refusals.get(
+            pair, f"adapter algorithm {algorithm!r} is not recognized")
+
+    def require(self, algorithm: str, weight_decompose: bool = False) -> None:
+        """Raise unless the pair is supported. No caller yet (Phase 2/3)."""
+        reason = self.refusal_reason(algorithm, weight_decompose)
+        if reason is not None:
+            raise ValueError(reason)
+
+
+def declare_adapter_capability(
+    arch: str,
+    *,
+    additive_family: bool,
+    initial_dora: str,
+    additive_reason: str,
+    dora_reason: str,
+    quantized_base_reason: str,
+    quantized_base_additive_family: bool = False,
+    additive_gated: bool = False,
+) -> AdapterCapability:
+    """Build one architecture's matrix from its design-doc verdict.
+
+    The Phase gate lives HERE and nowhere else: LoHa, LoKr and every
+    weight-decomposed pair are refused for every architecture regardless of
+    verdict, because the layer classes exist but the codec and training
+    integration do not. Enabling a family means adding its pair to ``supported``
+    below AND skipping it in the refusal loop -- dropping the refusal alone
+    makes ``AdapterCapability.__post_init__`` raise.
+    """
+    refusals: Dict[Tuple[str, bool], str] = {}
+    for algorithm, decompose in _ADAPTER_PAIRS:
+        if (algorithm, decompose) == _ORDINARY_LORA:
+            continue
+        # DoHa/DoKr are blocked twice over: by the decomposition AND by the
+        # additive algebra underneath it.
+        if decompose and algorithm != ALGORITHM_LORA:
+            reason = f"{dora_reason}; and {additive_reason}"
+        else:
+            reason = dora_reason if decompose else additive_reason
+        refusals[(algorithm, decompose)] = f"{arch}: {reason}"
+    return AdapterCapability(
+        additive_family=additive_family,
+        initial_dora=initial_dora,
+        supported=frozenset({_ORDINARY_LORA}),
+        refusals=refusals,
+        quantized_base_additive_family=quantized_base_additive_family,
+        quantized_base_reason=f"{arch}: {quantized_base_reason}",
+        additive_gated=additive_gated,
+    )
+
+
+#: Reasons shared by the architectures the design-doc table treats alike.
+PHASE2_PENDING = ("LoHa and LoKr reference paths are designed but not "
+                  "implemented (Phase 2), so no checkpoint of either can be "
+                  "written, resumed or applied")
+PHASE3_PENDING = ("DoRA is planned for dense Linear targets but the dense-DoRA "
+                  "phase (Phase 3) has not landed")
+PHASE3_PENDING_DENSE_ONLY = (
+    "DoRA is planned for dense Linear targets ONLY because this architecture's "
+    "base may be weight-only quantized, and Phase 3 has not landed")
+QUANTIZED_ADDITIVE_PENDING = (
+    "additive branches over an INT8/FP8/W4A8 base are the second half of "
+    "Phase 2 and are not enabled")
+
+#: ``ArchHandler``'s default: an architecture that declares no matrix supports
+#: nothing, matching ``lora_adapter_class()``, which also refuses by default.
+NO_ADAPTER_CAPABILITY = AdapterCapability(
+    additive_family=False,
+    initial_dora="refused",
+    supported=frozenset(),
+    refusals={pair: "this architecture declares no adapter capability matrix"
+              for pair in _ADAPTER_PAIRS},
+    quantized_base_additive_family=False,
+    quantized_base_reason="this architecture declares no adapter capability matrix",
+)
 
 
 def resolve_scope_csv(trainer, key: str, default: str) -> str:
@@ -347,6 +495,10 @@ class ArchHandler(ABC):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical
         # methods still take ``trainer`` explicitly; this is a convenience only.
         self.trainer = trainer
+
+    #: Which ``(algorithm, weight_decompose)`` pairs this architecture supports.
+    #: Every registered handler overrides it; no caller yet (Phase 2/3).
+    adapter_capability: AdapterCapability = NO_ADAPTER_CAPABILITY
 
     # ---- adapter selection (mode x arch) ----
     def lora_adapter_class(self) -> type:

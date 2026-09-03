@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
 )
 from core.training.components.wiring import IDEOGRAM4_WIRING
 
@@ -17,6 +18,17 @@ from core.training.components.wiring import IDEOGRAM4_WIRING
 class Ideogram4ArchHandler(ArchHandler):
     name = "ideogram4"
     wiring = IDEOGRAM4_WIRING
+    adapter_capability = declare_adapter_capability(
+        "ideogram4",
+        additive_family=True,
+        initial_dora="deferred",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=(
+            "DoRA starts refused here: the dual transformer can be loaded FP8 "
+            "and DoRA needs the base weight's direction and norm"),
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; either transformer can be FP8"),
+    )
     pixel_align = 16  # vae_scale(8) * patch(2) (ideogram4_resolution)
     text_seq_axis = 2  # encode_prompt returns [1, 13, L, 4096]
     # noisy = (1-sigma)*latents + sigma*noise (ops/ideogram4_ops.py, "sigma=1 ->

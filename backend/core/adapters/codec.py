@@ -16,6 +16,12 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, Tuple
 
 import torch
 
+from .spec import (ALGORITHM_UNKNOWN, ALGORITHMS, FORMAT_LYCORIS, FORMAT_PEFT,
+                   FORMAT_SUSHIUI, FORMAT_UNKNOWN, FORMATS,
+                   METADATA_ALGORITHM, METADATA_ALPHA, METADATA_FORMAT,
+                   METADATA_RANK, METADATA_WEIGHT_DECOMPOSE,
+                   parse_metadata_bool)
+
 
 @dataclass(frozen=True)
 class CodecSpec:
@@ -43,14 +49,15 @@ class CodecRegistry:
 
         # 1. Weight decomposition check (DoRA)
         has_dora_scale = any(k.endswith(".dora_scale") or k.endswith(".dora_scale.weight") or "dora_scale" in k for k in keys)
-        meta_dora = meta.get("sushi.adapter.weight_decompose", "").lower() in ("true", "1") or meta.get("dora", "").lower() == "true"
+        meta_dora = (parse_metadata_bool(meta.get(METADATA_WEIGHT_DECOMPOSE))
+                     or parse_metadata_bool(meta.get("dora")))
         weight_decompose = has_dora_scale or meta_dora
 
         # 2. Algorithm detection: Priority 1 Metadata
-        meta_algo = meta.get("sushi.adapter.algorithm", "").lower()
+        meta_algo = meta.get(METADATA_ALGORITHM, "").lower()
         ss_module = meta.get("ss_network_module", "").lower()
 
-        if meta_algo in ("lora", "loha", "lokr"):
+        if meta_algo in ALGORITHMS:
             algorithm = meta_algo
         elif "loha" in ss_module:
             algorithm = "loha"
@@ -68,33 +75,33 @@ class CodecRegistry:
                      or ".lora_A." in k or ".lora_B." in k for k in keys):
                 algorithm = "lora"
             else:
-                algorithm = "unknown"
+                algorithm = ALGORITHM_UNKNOWN
 
         # 3. Format detection
-        meta_format = meta.get("sushi.adapter.format", "").lower()
-        if meta_format in ("sushiui_canonical", "lycoris_kohya", "diffusers_peft"):
+        meta_format = meta.get(METADATA_FORMAT, "").lower()
+        if meta_format in FORMATS:
             format_name = meta_format
         elif any(".lora_A." in k or ".lora_B." in k or k.startswith("base_model.model.") for k in keys):
-            format_name = "diffusers_peft"
+            format_name = FORMAT_PEFT
         elif ss_module or any(k.startswith("lora_unet_") or k.startswith("lora_te_") for k in keys):
-            format_name = "lycoris_kohya"
-        elif algorithm != "unknown":
-            format_name = "sushiui_canonical"
+            format_name = FORMAT_LYCORIS
+        elif algorithm != ALGORITHM_UNKNOWN:
+            format_name = FORMAT_SUSHIUI
         else:
-            format_name = "unknown"
+            format_name = FORMAT_UNKNOWN
 
         # 4. Rank and Alpha extraction
         rank = None
         alpha = None
 
-        if "lora_rank" in meta:
+        if METADATA_RANK in meta:
             try:
-                rank = int(meta["lora_rank"])
+                rank = int(meta[METADATA_RANK])
             except ValueError:
                 pass
-        if "lora_alpha" in meta:
+        if METADATA_ALPHA in meta:
             try:
-                alpha = float(meta["lora_alpha"])
+                alpha = float(meta[METADATA_ALPHA])
             except ValueError:
                 pass
         elif "alpha" in meta:

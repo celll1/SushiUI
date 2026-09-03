@@ -8,13 +8,24 @@ Nothing calls these until a later phase flips the corresponding dispatcher.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, PHASE2_PENDING,
+    PHASE3_PENDING, QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
+)
 from core.training.components.wiring import SDXL_WIRING
 
 
 class SDXLArchHandler(ArchHandler):
     name = "sdxl"
     wiring = SDXL_WIRING
+    adapter_capability = declare_adapter_capability(
+        "sdxl",
+        additive_family=True,
+        initial_dora="dense",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
+    )
     wires_sample_step_progress = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:

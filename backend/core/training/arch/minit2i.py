@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, PHASE3_PENDING, QUANTIZED_ADDITIVE_PENDING,
+    declare_adapter_capability,
 )
 from core.training.components.wiring import MINIT2I_WIRING
 
@@ -17,6 +19,14 @@ from core.training.components.wiring import MINIT2I_WIRING
 class MiniT2IArchHandler(ArchHandler):
     name = "minit2i"
     wiring = MINIT2I_WIRING
+    adapter_capability = declare_adapter_capability(
+        "minit2i",
+        additive_family=True,
+        initial_dora="dense",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=PHASE3_PENDING,
+        quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
+    )
     pixel_align = 16  # GRID_ALIGN = patch_size(16); pixel-space patchify unit
     wires_sample_step_progress = True
     # The inference uncond branch reuses the SAME text tensor with a zeroed mask

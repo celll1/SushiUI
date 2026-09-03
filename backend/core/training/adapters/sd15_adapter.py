@@ -14,7 +14,9 @@ from typing import Dict, List, Any
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from core.adapters import LoRALinearLayer
+from core.adapters import (
+    LoRALinearLayer, is_adapter_covered, named_modules_outside_adapters,
+)
 
 from .base_adapter import (
     BaseLoRAAdapter,
@@ -83,8 +85,12 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
             if block_module.__class__.__name__ != "Transformer2DModel":
                 continue
 
-            # Iterate ALL child Linear modules within this Transformer2DModel (sd-scripts approach)
-            for child_name, child_module in block_module.named_modules():
+            # Iterate ALL child Linear modules within this Transformer2DModel
+            # (sd-scripts approach). NOT named_modules(): a slot an adapter
+            # already covers must not be descended into, or the wrapper's own
+            # lora_down/lora_up -- and the base it hides -- are offered as
+            # targets. The class-name test then skips the wrapper itself.
+            for child_name, child_module in named_modules_outside_adapters(block_module):
                 if child_module.__class__.__name__ == "Linear":
                     # Build LoRA name: lora_unet_{block_name}_{child_name}
                     # Replace '.' with '_' for diffusers style naming
@@ -142,22 +148,18 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
 
         # Text Encoder 1: All layers
         for layer_idx, layer in enumerate(text_encoder.text_model.encoder.layers):
-            # mlp.fc1
-            # Use sd-scripts compatible naming: lora_te1_text_model_encoder_layers_{N}_mlp_fc1
-            lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc1"
-            lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
-            , self.lora_dtype)
-            layer.mlp.fc1 = lora_layer
-            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
-            count += 1
-
-            # mlp.fc2
-            lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_fc2"
-            lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
-            , self.lora_dtype)
-            layer.mlp.fc2 = lora_layer
-            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
-            count += 1
+            # sd-scripts compatible naming: lora_te1_text_model_encoder_layers_{N}_mlp_{fc1,fc2}
+            for leaf in ("fc1", "fc2"):
+                current = getattr(layer.mlp, leaf)
+                if is_adapter_covered(current):
+                    continue
+                lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_{leaf}"
+                lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha,
+                                             lora_name, self.lora_dtype)
+                setattr(layer.mlp, leaf, lora_layer)
+                self.register_lora_layer(lora_layers, lora_name, lora_layer,
+                                         LORA_COMPONENT_TEXT_ENCODER_1)
+                count += 1
 
         return count
 

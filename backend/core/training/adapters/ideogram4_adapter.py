@@ -32,7 +32,7 @@ import torch.nn as nn
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, resolve_component_lr, LORA_COMPONENT_UNET
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import LoRALinearLayer, is_adapter_covered
 
 from core.models.ideogram4.ideogram4_lora import (
     iter_ideogram4_lora_targets, DEFAULT_SCOPE, _flatten_to_sdscripts,
@@ -52,7 +52,9 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
                           key_prefix: str) -> int:
         count = 0
         for module_path, parent, attr, current in iter_ideogram4_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            # A CompositeAdapterLayer is yielded too and exposes
+            # in_features/out_features, so wrapping it would NEST, not fail.
+            if is_adapter_covered(current):
                 continue
             lora_name = f"{key_prefix}{_flatten_to_sdscripts(module_path)}"
             lora_layer = LoRALinearLayer(

@@ -35,7 +35,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import LoRALinearLayer, is_adapter_covered
 
 # Reuse Phase B.3 iteration + flatten helpers.
 from core.models.anima.anima_lora import (
@@ -98,8 +98,11 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         count = 0
         skipped_blockskip = 0
         for module_path, parent, attr, current in iter_anima_lora_targets(transformer, self.scope):
-            # Skip if this slot was already wrapped (idempotent / stacking-safe).
-            if isinstance(current, LoRALinearLayer):
+            # Skip if an adapter already covers this slot (idempotent /
+            # stacking-safe). The enumerator yields a CompositeAdapterLayer too,
+            # and that one exposes in_features/out_features, so wrapping it would
+            # NEST rather than fail.
+            if is_adapter_covered(current):
                 continue
 
             # BlockSkip: gate top-level DiT block targets to the middle range.

@@ -176,16 +176,22 @@ def _set_child(parent: Any, attr: Any, module: Any) -> None:
 
 
 def collect_training_lora_sites(components: List[Any]) -> List[TrainingLoraSite]:
-    """Every ``LoRALinearLayer`` the trainer installed, with its parent."""
-    from core.adapters.layers import LoRALinearLayer
+    """Every adapter wrapper root in the tree, with its parent.
+
+    Roots only: the walk stops at a wrapper, so a composite's own branches are
+    never collected as sites of their own. Splicing a branch out would put the
+    shared base into the branch slot -- the stale-module splice the composite
+    exists to make impossible.
+    """
+    from core.adapters import is_adapter_covered, named_modules_outside_adapters
 
     sites: List[TrainingLoraSite] = []
     for component in components:
         if component is None or not hasattr(component, "named_modules"):
             continue
-        for _name, parent in component.named_modules():
+        for _name, parent in named_modules_outside_adapters(component):
             for attr, child in list(getattr(parent, "_modules", {}).items()):
-                if isinstance(child, LoRALinearLayer):
+                if is_adapter_covered(child):
                     sites.append((parent, int(attr) if attr.isdigit() else attr, child))
     return sites
 

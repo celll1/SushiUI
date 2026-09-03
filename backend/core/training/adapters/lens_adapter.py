@@ -31,7 +31,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from core.adapters import LoRALinearLayer
+from core.adapters import LoRALinearLayer, is_adapter_covered
 
 from core.models.lens.lens_lora import (
     iter_lens_lora_targets, DEFAULT_SCOPE, _flatten_to_sdscripts,
@@ -63,7 +63,9 @@ class LensLoRAAdapter(BaseLoRAAdapter):
 
         count = 0
         for module_path, parent, attr, current in iter_lens_lora_targets(transformer, self.scope):
-            if isinstance(current, LoRALinearLayer):
+            # A CompositeAdapterLayer is yielded too and exposes
+            # in_features/out_features, so wrapping it would NEST, not fail.
+            if is_adapter_covered(current):
                 continue
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"

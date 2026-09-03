@@ -178,8 +178,7 @@ def test_ltx2_opt_in_feed_forward_scope_reaches_generation(tmp_path):
 
 
 def test_ltx2_the_enumerator_never_offers_a_branch_as_a_target(tmp_path):
-    """The trainer's ff walk descends into anything that is not a
-    ``LoRALinearLayer``; over a composite that would offer the adapter's own
+    """Over a composite, neither walk may offer the adapter's own
     ``lora_down``/``lora_up`` as targets on the NEXT load."""
     path, trained_paths = train_and_save(tmp_path, scope=ATTENTION_AND_FF,
                                          name="ff.safetensors")
@@ -189,9 +188,13 @@ def test_ltx2_the_enumerator_never_offers_a_branch_as_a_target(tmp_path):
     slots = {p for p, _parent, _slot in iter_lora_slots(dit)}
     assert slots == trained_paths
     assert not any(".branches." in p for p in slots)
-    # The raw trainer iterator is the counterexample this guard exists for.
+    # The trainer's ff walk used to descend into anything that was not a
+    # LoRALinearLayer, which made a composite's branches targets and is why the
+    # guard above exists. It is composite-aware now, so it offers the composite
+    # root and nothing under it -- the stronger claim.
     raw = {p for p, _parent, _attr, _cur in iter_ltx2_lora_targets(dit, ATTENTION_AND_FF)}
-    assert any(".branches." in p for p in raw)
+    assert not any(".branches." in p for p in raw)
+    assert raw == trained_paths
 
 
 def test_ltx2_wrapped_forward_is_base_plus_scaled_branch(tmp_path):

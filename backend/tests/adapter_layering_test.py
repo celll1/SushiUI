@@ -159,6 +159,9 @@ MOVED_NAMES = frozenset({
     "lora_branch_dtype",
 })
 
+#: The fp32 adapter oracle (``backend/tests/adapter_oracle_gate_cheap_test.py``).
+_ORACLE_MODULE = "core.adapters.reference"
+
 _LEAF_MODULES = frozenset({
     "core.training.adapters.base_adapter",
     "core.training.adapters.sd15_adapter",
@@ -202,6 +205,35 @@ class ShimRemovalTest(unittest.TestCase):
         self.assertEqual(
             offenders, [],
             "import these from core.adapters instead: " + "; ".join(offenders))
+
+    def test_no_runtime_module_imports_the_test_only_oracle(self):
+        """``core.adapters.reference`` is the fp32 oracle the adapter gates
+        compare against. It is test-only by contract but ships inside the
+        production package, and an oracle that a runtime path can reach stops
+        being an independent check of that path."""
+        offenders = []
+        for path in sorted(pathlib.Path(_BACKEND).rglob("*.py")):
+            if path.parent.name == "tests":
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    hit = any(a.name == _ORACLE_MODULE for a in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    module = _resolved_module(node, str(path))
+                    hit = (module == _ORACLE_MODULE
+                           or (module == "core.adapters"
+                               and any(a.name == "reference" for a in node.names)))
+                else:
+                    continue
+                if hit:
+                    offenders.append(f"{os.path.relpath(path, _REPO)}:{node.lineno}")
+        self.assertEqual(
+            offenders, [],
+            f"{_ORACLE_MODULE} is test-only: " + "; ".join(offenders))
 
     def test_base_adapter_no_longer_re_exports_the_target_helpers(self):
         from core.training.adapters import base_adapter

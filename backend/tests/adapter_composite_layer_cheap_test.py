@@ -464,5 +464,54 @@ def test_the_vram_preflight_refuses_a_composite_wrapped_model(monkeypatch):
     assert type(model[1]) is nn.Linear  # the unwrapped sibling was not converted
 
 
+# ------------------------------------------------------------ FP8 walk
+
+
+def _cast_every_linear_weight(root, dtype=torch.float16):
+    """The walk ``core.vram_optimization`` performs when it quantizes a
+    transformer (``_quantize_transformer`` / ``_anima_quantize_fp8``), with a
+    dtype a CPU test can carry."""
+    cast = []
+    for name, module in root.named_modules():
+        if isinstance(module, nn.Linear) and getattr(module, "weight", None) is not None:
+            module.weight.data = module.weight.data.to(dtype)
+            cast.append(name)
+    return cast
+
+
+def test_the_fp8_walk_cannot_reach_a_loha_or_lokr_factor():
+    """Pins the reasoning, not just today's outcome: LoHa/LoKr hold bare
+    ``nn.Parameter`` factors, so ``isinstance(m, nn.Linear)`` cannot select
+    them, while a LoRA branch's ``lora_down``/``lora_up`` ARE Linears and are
+    cast -- the legacy hazard the design doc records. A future refactor of the
+    LyCORIS factors into ``nn.Linear`` children would reopen it silently, and
+    fails here instead."""
+    from core.adapters import (LoHaLinearLayer, LoKrLinearLayer,
+                               count_adapter_wrapper_roots)
+
+    model = nn.Sequential(_base())
+    composite = CompositeAdapterLayer.attach(model, 0)
+    base = composite.base_module
+    loha = composite.add_branch("loha", LoHaLinearLayer(base, rank=RANK, alpha=ALPHA,
+                                                        lora_name="loha"))
+    lokr = composite.add_branch("lokr", LoKrLinearLayer(base, rank=RANK, alpha=ALPHA,
+                                                        lora_name="lokr"))
+    lora = composite.add_branch("lora", _lora(base, seed=161))
+
+    factors = [t for layer in (loha, lokr) for t in layer.branch_tensors().values()
+               if isinstance(t, nn.Parameter)]
+    assert factors and all(t.dtype == torch.float32 for t in factors)
+
+    cast = _cast_every_linear_weight(model)
+
+    assert all(t.dtype == torch.float32 for t in factors), (
+        "an isinstance(nn.Linear) walk reached a LoHa/LoKr factor")
+    assert lora.lora_down.weight.dtype == torch.float16  # the documented hazard
+    assert base.weight.dtype == torch.float16            # and its intended target
+    assert sorted(cast) == ["0.branches.2.lora_down", "0.branches.2.lora_up",
+                            "0.original_module"]
+    assert count_adapter_wrapper_roots(model) == 1
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

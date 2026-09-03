@@ -54,6 +54,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, NamedTuple,
 import torch
 import torch.nn as nn
 
+from .codec import CodecRegistry, CodecSpec
 from .layers import CompositeAdapterLayer, get_module_slot, set_module_slot
 
 Slot = Union[str, int]
@@ -145,6 +146,7 @@ class AdapterFile:
     apply_to_text_encoder: bool = True
     unet_layer_weights: Dict[str, float] = field(default_factory=dict)
     step_range: Optional[Sequence[int]] = None
+    codec: Optional[CodecSpec] = None
     # Whatever ``prepare_file`` returned, memoised HERE rather than in the
     # session: a file handed to two passes must be parsed once.
     prepared: Any = UNPREPARED
@@ -470,6 +472,10 @@ class AdapterSession:
         raw_range = config.get("step_range")
         step_range = tuple(int(x) for x in raw_range) if raw_range is not None else None
 
+        codec = CodecRegistry.detect(tensors, metadata)
+        if codec.format == "diffusers_peft":
+            tensors = CodecRegistry.normalize_keys(tensors, codec)
+
         self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
         return AdapterFile(
             index=index,
@@ -487,6 +493,7 @@ class AdapterSession:
             apply_to_text_encoder=apply_to_text_encoder,
             unet_layer_weights=unet_layer_weights,
             step_range=step_range,
+            codec=codec,
         )
 
     def _load_failed(self, name: str, error: Exception) -> AdapterLoadFailed:

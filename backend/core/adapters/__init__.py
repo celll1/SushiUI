@@ -40,6 +40,12 @@ from .session import (
     BranchRequest,
     PreparedBranch,
 )
+from .codec import (
+    CodecRegistry,
+    CodecSpec,
+    detect_adapter_codec,
+    normalize_adapter_keys,
+)
 from .targets import (
     count_quantized_linears,
     is_lora_wrappable_linear,
@@ -74,4 +80,8 @@ __all__ = [
     "count_quantized_linears",
     "is_lora_wrappable_linear",
     "lora_branch_dtype",
+    "CodecRegistry",
+    "CodecSpec",
+    "detect_adapter_codec",
+    "normalize_adapter_keys",
 ]

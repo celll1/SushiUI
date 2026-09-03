@@ -46,7 +46,7 @@ METADATA_RANK = "lora_rank"
 METADATA_ALPHA = "lora_alpha"
 
 OPTION_FACTOR = "factor"           # LoKr Kronecker factorization; -1 = auto
-OPTION_USE_TUCKER = "use_tucker"   # LoHa hada_t1/hada_t2 present
+OPTION_USE_TUCKER = "use_tucker"   # hada_t1/hada_t2/lokr_t2 present
 
 #: Algorithms whose scale is ``alpha / rank``, so a rank is mandatory. LoKr's
 #: full (unfactored) form is rank 0, which is why it is absent here.
@@ -161,7 +161,8 @@ class AdapterSpec:
         return None if value is None else int(value)
 
     @property
-    def loha_use_tucker(self) -> bool:
+    def use_tucker(self) -> bool:
+        """The checkpoint carries ``hada_t1``/``hada_t2``/``lokr_t2``."""
         return bool(self.options.get(OPTION_USE_TUCKER, False))
 
     @property
@@ -184,6 +185,10 @@ class AdapterSpec:
         """Normalize a detection result. Detection itself stays in ``codec``."""
         metadata = dict(getattr(spec, "metadata", None) or {})
         merged: Dict[str, Any] = _options_from_metadata(metadata)
+        if getattr(spec, "use_tucker", False):
+            merged[OPTION_USE_TUCKER] = True
+        # Caller-supplied options win over detection on purpose, so an explicit
+        # use_tucker=False is an override, not an oversight.
         merged.update(dict(options or {}))
         return cls(
             algorithm=spec.algorithm,
@@ -284,6 +289,11 @@ class AdapterSpec:
         if self.architecture is not None and self.architecture not in architectures:
             _refuse(f"Adapter declares architecture {self.architecture!r}, "
                     f"which is not a known training architecture.")
+        if self.use_tucker:
+            # Only a target with kernel dims has these, and this engine wraps
+            # Linear only; dropping them would change the algebra silently.
+            _refuse("Adapter checkpoint is in Tucker form (hada_t1/hada_t2/"
+                    "lokr_t2), which only a convolution target can honour.")
         factor = self.options.get(OPTION_FACTOR)
         if factor is not None and (not isinstance(factor, int)
                                    or isinstance(factor, bool)

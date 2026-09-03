@@ -15,12 +15,19 @@ Strength is the design doc's contract, ``W_eff(s) = W_base + s * (W_adapter -
 W_base)``, not upstream's; see ``dora_effective_weight`` and "Runtime hazards"
 item 2 in ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 
-KNOWN BLIND SPOTS -- two conventions this file MIRRORS from ``layers.py``
-rather than deriving, so no comparison against it can catch them: the LoKr
-operand order (``kron(w1, w2)``; the swap has the SAME output shape), and the
-``dora_scale`` reshape to ``(out, 1)``, which reads a ``wd_on_out=False``
-``(1, in)`` vector as row magnitudes on a square weight. Both are open
-questions for the upstream LyCORIS check.
+KNOWN BLIND SPOTS -- conventions this file SHARES with ``layers.py`` rather
+than deriving, so no comparison between the two can catch them. Each was
+checked by hand against upstream at
+``03270a3839102e63b48578c80e7c024036de74d7``:
+
+1. the LoKr operand order (``kron(w1, w2)``; the swap has the SAME output
+   shape) -- agrees with ``make_kron``;
+2. LoKr's scale derivation, including which operand's rank is the divisor --
+   agrees with ``rank_scale`` in ``kernels/autograd/lokr.py``.
+
+The ``dora_scale`` axis is written from the definition here rather than copied,
+but that too is only evidence once read against upstream ``_weight_decompose``,
+which a test cannot do.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ __all__ = [
     "dora_effective_weight",
     "loha_delta_weight",
     "lokr_delta_weight",
+    "lokr_scale",
     "lora_delta_weight",
 ]
 
@@ -63,6 +71,18 @@ def _low_rank_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.stack(terms, dim=0).sum(dim=0)
 
 
+def _apply_scalar(delta: torch.Tensor,
+                  tensors: Mapping[str, torch.Tensor]) -> torch.Tensor:
+    """A trained ``scalar`` (``use_scalar=True``), folded in BEFORE the strength
+    multiplier.
+
+    Absent from any real file -- upstream's ``custom_state_dict`` folds it into
+    the saved ``w1``/``hada_w1_a`` and emits no key -- so this arm exists for
+    live layer state, not for a checkpoint."""
+    scalar = tensors.get("scalar")
+    return delta if scalar is None else delta * _f32(scalar)
+
+
 def _kronecker_product(w1: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
     """``kron(w1, w2)`` assembled block by block, so it shares nothing with
     ``torch.kron`` -- which is what the layer under test calls."""
@@ -74,18 +94,36 @@ def _kronecker_product(w1: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
 
 
 def adapter_scale(algorithm: str, rank: Optional[int], alpha: Optional[float]) -> float:
-    """``alpha / rank``, mirroring ``layers.py``.
+    """``alpha / rank`` for the algebras whose scale is a declared constant.
 
-    CONVENTION, pending the upstream LyCORIS check: LoKr's unfactored form is
-    rank 0 and the layer then uses ``alpha`` bare rather than 1.0.
+    LoKr is NOT one of them: its divisor comes from the tensor set, so it has
+    ``lokr_scale`` below instead.
     """
     if alpha is None:
         return 1.0
     if rank:
         return float(alpha) / float(rank)
-    if algorithm == "lokr":
-        return float(alpha)
     raise ValueError(f"{algorithm} scales by alpha/rank, so rank {rank!r} is unusable")
+
+
+def lokr_scale(alpha: Optional[float], w1_a: Optional[torch.Tensor],
+               w2_a: Optional[torch.Tensor]) -> float:
+    """LoKr's scale, from WHICH OPERANDS ARE FACTORED rather than from a
+    declared rank -- upstream's ``rank_scale`` in ``kernels/autograd/lokr.py``.
+
+    With both operands stored full there is no rank, upstream sets
+    ``alpha = lora_dim`` so ``alpha/rank`` is 1, and it writes that ``lora_dim``
+    into the file's ``alpha``. Dividing by nothing and using the stored value
+    would scale the adapter by ``lora_dim`` (4, 8, 32...).
+
+    w1 first, as upstream does; no representable checkpoint distinguishes the
+    two orders.
+    """
+    if w1_a is not None:
+        return 1.0 if alpha is None else float(alpha) / float(w1_a.shape[1])
+    if w2_a is not None:
+        return 1.0 if alpha is None else float(alpha) / float(w2_a.shape[1])
+    return 1.0
 
 
 def lora_delta_weight(
@@ -114,26 +152,34 @@ def loha_delta_weight(
                            _get(tensors, "hada_w1_b", "loha"))
     w2 = _low_rank_product(_get(tensors, "hada_w2_a", "loha"),
                            _get(tensors, "hada_w2_b", "loha"))
-    scale = adapter_scale("loha", rank, alpha)
-    return (w1 * w2) * (scale * float(strength))
+    delta = (w1 * w2) * adapter_scale("loha", rank, alpha)
+    return _apply_scalar(delta, tensors) * float(strength)
 
 
 def lokr_delta_weight(
     tensors: Mapping[str, torch.Tensor],
     *,
-    rank: Optional[int],
+    rank: Optional[int] = None,
     alpha: Optional[float],
     strength: float = 1.0,
 ) -> torch.Tensor:
-    """``strength * (alpha/rank) * kron(w1, w2)``, ``w2`` factored when rank > 0."""
-    w1 = _get(tensors, "lokr_w1", "lokr")
-    if "lokr_w2" in tensors:
-        w2 = _get(tensors, "lokr_w2", "lokr")
+    """``strength * scale * kron(w1, w2)``, either operand full or factored.
+
+    ``rank`` is accepted for signature uniformity and IGNORED: see
+    ``lokr_scale``.
+    """
+    if "lokr_w1" in tensors:
+        w1, w1_a = _get(tensors, "lokr_w1", "lokr"), None
     else:
-        w2 = _low_rank_product(_get(tensors, "lokr_w2_a", "lokr"),
-                               _get(tensors, "lokr_w2_b", "lokr"))
-    scale = adapter_scale("lokr", rank, alpha)
-    return _kronecker_product(w1, w2) * (scale * float(strength))
+        w1_a = _get(tensors, "lokr_w1_a", "lokr")
+        w1 = _low_rank_product(w1_a, _get(tensors, "lokr_w1_b", "lokr"))
+    if "lokr_w2" in tensors:
+        w2, w2_a = _get(tensors, "lokr_w2", "lokr"), None
+    else:
+        w2_a = _get(tensors, "lokr_w2_a", "lokr")
+        w2 = _low_rank_product(w2_a, _get(tensors, "lokr_w2_b", "lokr"))
+    delta = _kronecker_product(w1, w2) * lokr_scale(alpha, w1_a, w2_a)
+    return _apply_scalar(delta, tensors) * float(strength)
 
 
 _DELTA_BY_ALGORITHM = {
@@ -169,17 +215,32 @@ def dora_effective_weight(
 ) -> torch.Tensor:
     """``W_base + s * (W_adapter - W_base)`` for the weight-decomposed families.
 
-    ``W_adapter`` renormalizes each output row of ``W_base + delta`` and rescales
-    it by that row's ``dora_scale``. ``delta_weight`` must therefore be the
-    additive branch at UNIT strength: the strength rides on the interpolation,
-    not on the delta.
+    ``W_adapter`` renormalizes each row (or column -- see below) of
+    ``W_base + delta`` and rescales it by that row's ``dora_scale``.
+    ``delta_weight`` must therefore be the additive branch at UNIT strength: the
+    strength rides on the interpolation, not on the delta.
     """
     w0 = _f32(base_weight)
     v = w0 + _f32(delta_weight)
-    # Rows of a real weight are never all-zero; the clamp only keeps a
+    out_features, in_features = w0.shape
+    magnitudes = _f32(dora_scale)
+    shape = tuple(magnitudes.shape)
+    # The axis IS the shape: wd_on_out=True (upstream's default) stores one
+    # magnitude per output row, wd_on_out=False one per input column, and
+    # nothing else records which. Written from that definition, not from
+    # ``layers.py`` -- on a square weight a mirrored reshape proves nothing.
+    if shape in ((out_features,), (out_features, 1)):
+        axis, view = 1, (out_features, 1)
+    elif shape == (1, in_features):
+        axis, view = 0, (1, in_features)
+    else:
+        raise ValueError(
+            f"dora_scale shape {shape} is neither ({out_features}, 1) nor "
+            f"(1, {in_features}) for a [{out_features}, {in_features}] weight")
+    # A real weight has no all-zero row or column; the clamp only keeps a
     # degenerate test fixture from producing NaN.
-    v_norm = torch.linalg.vector_norm(v, ord=2, dim=1, keepdim=True).clamp_min(1e-12)
-    w_adapter = _f32(dora_scale).reshape(-1, 1) * (v / v_norm)
+    v_norm = torch.linalg.vector_norm(v, ord=2, dim=axis, keepdim=True).clamp_min(1e-12)
+    w_adapter = magnitudes.reshape(view) * (v / v_norm)
     return w0 + (w_adapter - w0) * float(strength)
 
 

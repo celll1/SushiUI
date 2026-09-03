@@ -25,6 +25,17 @@ DATA. The callback is the push half and the exception attribute is the pull
 half; a caller that wants the code on a 400 response reads ``exc.code`` and
 needs no warning channel at all.
 
+WHAT AN ARCHITECTURE MAY OWN. Four decisions differ per architecture and are
+hooks rather than session policy: how a missing file is refused (the wording,
+the exception type, and whether it is refused at all -- Anima reports every
+missing file before refusing), what one file's keys mean (``prepare_file``, run
+once per file and BEFORE accounting, so a file that matches nothing still
+reports its dropped keys first), how many branches a file declares TO THIS PASS,
+and what a zero-target file means. ``parse()`` splits reading from installing
+for an architecture whose install is split in time (MiniT2I wraps its text
+encoder before the prompt is encoded and its transformer after staging), so a
+file handed to two passes is read once and keeps one branch name.
+
 MESSAGES CARRY A BASENAME AND AN EXCEPTION TYPE, NEVER A PATH. A warning is
 written into a PNG text chunk and returned raw in the response's ``warnings[]``;
 ``PermissionError.__str__`` carries the absolute path the basename was there to
@@ -110,6 +121,13 @@ branch anyway only fails later, inside the denoise loop.
 """
 
 
+UNPREPARED = _Sentinel("UNPREPARED")
+"""``AdapterFile.prepared`` before the architecture's ``prepare_file`` has run.
+
+Distinct from ``None``, which is what a session with no such hook prepares.
+"""
+
+
 @dataclass
 class AdapterFile:
     """One parsed request item. ``name`` is the only spelling a message may use."""
@@ -123,6 +141,9 @@ class AdapterFile:
     metadata: Dict[str, str]
     branch_name: str
     declared_branches: int
+    # Whatever ``prepare_file`` returned, memoised HERE rather than in the
+    # session: a file handed to two passes must be parsed once.
+    prepared: Any = UNPREPARED
 
 
 @dataclass
@@ -141,6 +162,11 @@ class BranchRequest:
     module_path: str
     base: nn.Module
     current: nn.Module
+
+    @property
+    def prepared(self) -> Any:
+        """This file's ``prepare_file`` result, already computed."""
+        return self.file.prepared
 
 
 class PreparedBranch(NamedTuple):
@@ -201,6 +227,15 @@ class AdapterComponent:
     enabled: bool = True
 
 
+@dataclass
+class _OwnedBranch:
+    parent: weakref.ref
+    composite: weakref.ref
+    slot: Slot
+    module_path: str
+    branch_name: str
+
+
 class _ComponentState:
     """Weakref-keyed bookkeeping for one component.
 
@@ -209,16 +244,18 @@ class _ComponentState:
     survive.
     """
 
-    __slots__ = ("ref", "originals", "wrapped")
+    __slots__ = ("ref", "originals", "wrapped", "owned")
 
     def __init__(self) -> None:
         self.ref: Optional[weakref.ref] = None
         self.originals: Dict[str, nn.Module] = {}
         self.wrapped: set = set()
+        self.owned: List[_OwnedBranch] = []
 
     def reset(self, module: Optional[nn.Module]) -> None:
         self.originals.clear()
         self.wrapped.clear()
+        self.owned.clear()
         self.ref = weakref.ref(module) if module is not None else None
 
 
@@ -233,7 +270,8 @@ class _PlannedInstall(NamedTuple):
     strength: Optional[float]
 
 
-def _default_declared_branches(tensors: Mapping[str, torch.Tensor]) -> int:
+def _default_declared_branches(tensors: Mapping[str, torch.Tensor],
+                               components: Tuple[str, ...]) -> int:
     return sum(1 for key in tensors if key.endswith(".lora_down.weight"))
 
 
@@ -251,16 +289,45 @@ class AdapterSession:
         resolve_path: Callable[[Any], Optional[str]],
         warn: Optional[Callable[[str, str], None]] = None,
         label: str = "LoRA",
+        message_label: Optional[str] = None,
         log: Callable[[str], None] = print,
-        count_declared_branches: Callable[[Mapping[str, torch.Tensor]], int] =
+        count_declared_branches: Callable[
+            [Mapping[str, torch.Tensor], Tuple[str, ...]], int] =
         _default_declared_branches,
-        describe_zero_targets: Optional[Callable[["AdapterFile", "ApplyCounts"], str]] = None,
+        missing_file: Optional[
+            Callable[[str, Any], Optional[BaseException]]] = None,
+        prepare_file: Optional[Callable[["AdapterFile"], Any]] = None,
+        describe_zero_targets: Optional[
+            Callable[["AdapterFile", "ApplyCounts"],
+                     Union[str, BaseException, None]]] = None,
     ):
+        """``label`` prefixes the console; ``message_label`` names the adapter in
+        a user-visible message and defaults to it. They are separate because one
+        architecture spells itself differently in the two places, and collapsing
+        them changes text a gate pins.
+
+        ``missing_file(name, raw_path)`` returns the refusal for an unresolvable
+        path -- the session logs, warns and raises it -- or ``None`` to SKIP the
+        file, for an architecture that reports every miss before refusing.
+
+        ``prepare_file(file)`` runs once per file, before it is planned and
+        therefore before any refusal, and its result is on ``BranchRequest``.
+
+        ``count_declared_branches(tensors, components)`` is asked per LOAD, so a
+        pass covering one component can declare only its own pairs.
+
+        ``describe_zero_targets(file, counts)`` returns the refusal text, an
+        exception to refuse with (a second zero-target code), or ``None``: not a
+        refusal, because this pass covers no part of this file.
+        """
         self._resolve_path = resolve_path
         self._warn_callback = warn
         self._label = label
+        self._message_label = message_label or label
         self._log = log
         self._count_declared_branches = count_declared_branches
+        self._missing_file = missing_file
+        self._prepare_file = prepare_file
         self._describe_zero_targets = describe_zero_targets
         self._states: Dict[str, _ComponentState] = {}
 
@@ -289,10 +356,36 @@ class AdapterSession:
         current = state.ref() if state.ref is not None else None
         if module is None:
             if state.ref is not None or state.originals or state.wrapped:
+                self._restore_state(state)
                 state.reset(None)
         elif current is not module:
+            self._restore_state(state)
             state.reset(module)
         return state
+
+    def _restore_state(self, state: _ComponentState) -> int:
+        """Remove only branches installed by this session."""
+        restored = 0
+        for owned in reversed(state.owned):
+            parent = owned.parent()
+            composite = owned.composite()
+            if parent is None or composite is None:
+                continue
+            try:
+                current = get_module_slot(parent, owned.slot)
+                if current is not composite or not composite.has_branch(owned.branch_name):
+                    continue
+                composite.remove_branch(owned.branch_name)
+                if len(composite) == 0:
+                    composite.detach(parent, owned.slot)
+                    restored += 1
+            except Exception as e:
+                self._log(f"[{self._label}] unload failed at {owned.module_path} "
+                          f"({type(e).__name__})")
+        state.owned.clear()
+        state.originals.clear()
+        state.wrapped.clear()
+        return restored
 
     # -- reporting ---------------------------------------------------------
 
@@ -308,25 +401,42 @@ class AdapterSession:
         except Exception as e:
             self._log(f"[{self._label}] warning channel failed ({type(e).__name__})")
 
-    def _refuse(self, error: AdapterRefusal) -> AdapterRefusal:
-        self.warn(error.message, error.code)
+    @staticmethod
+    def _refusal_text(error: BaseException) -> str:
+        """An architecture's refusal may be any exception: ``AdapterRefusal``,
+        a builtin tagged by ``api.error_handlers.with_error_code``, or an
+        ``APIError`` whose status the route must keep."""
+        return getattr(error, "message", None) or str(error)
+
+    def _refuse(self, error: BaseException,
+                default_code: str = AdapterIncompatible.code) -> BaseException:
+        self.warn(self._refusal_text(error),
+                  getattr(error, "code", None) or default_code)
         return error
 
     # -- parsing -----------------------------------------------------------
 
-    def _parse(self, index: int, config: Mapping[str, Any]) -> AdapterFile:
+    def _parse(self, index: int,
+               config: Mapping[str, Any]) -> Optional[AdapterFile]:
+        """One file, read and described. ``None`` when the architecture's
+        ``missing_file`` hook skipped it."""
         raw_path = config.get("path", "")
         name = os.path.basename(str(raw_path))
         strength = float(config.get("strength", 1.0))
 
         resolved = self._resolve_path(raw_path)
         if resolved is None:
-            message = (
-                f"LoRA '{name}' was requested but no such file exists in the "
-                f"registered LoRA directories -- refusing to generate without it."
-            )
-            self._log(f"[{self._label}] ERROR: {message}")
-            raise self._refuse(AdapterFileMissing(message))
+            if self._missing_file is not None:
+                error = self._missing_file(name, raw_path)
+                if error is None:
+                    return None
+            else:
+                error = AdapterFileMissing(
+                    f"LoRA '{name}' was requested but no such file exists in the "
+                    f"registered LoRA directories -- refusing to generate without it."
+                )
+            self._log(f"[{self._label}] ERROR: {self._refusal_text(error)}")
+            raise self._refuse(error, AdapterFileMissing.code)
 
         self._log(f"[{self._label}] Loading LoRA {index + 1}: {raw_path} "
                   f"(strength={strength})")
@@ -339,9 +449,7 @@ class AdapterSession:
         except Exception as e:
             raise self._load_failed(name, e) from e
 
-        declared = self._count_declared_branches(tensors)
-        self._log(f"[{self._label}] Loaded {len(tensors)} tensors "
-                  f"({declared} down/up pairs) from {raw_path}")
+        self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
         return AdapterFile(
             index=index,
             name=name,
@@ -353,7 +461,7 @@ class AdapterSession:
             # Unique within the request, so selecting the SAME file twice is two
             # branches rather than a duplicate-name refusal.
             branch_name=f"{index}:{name}",
-            declared_branches=declared,
+            declared_branches=0,
         )
 
     def _load_failed(self, name: str, error: Exception) -> AdapterLoadFailed:
@@ -361,7 +469,7 @@ class AdapterSession:
         import traceback
 
         traceback.print_exc()
-        message = (f"{self._label} '{name}' could not be applied "
+        message = (f"{self._message_label} '{name}' could not be applied "
                    f"({type(error).__name__}); see the server log for details")
         return self._refuse(AdapterLoadFailed(message))
 
@@ -373,6 +481,12 @@ class AdapterSession:
         counts = ApplyCounts()
         for component in components:
             applied = mismatched = 0
+            if component.module is None:
+                # Accounted anyway: "this pass covered that component and
+                # matched nothing" is what tells a zero-target hook which pass
+                # it is being asked about.
+                counts.record(component.name, 0, 0)
+                continue
             # Materialised: the walk reads named_modules(), and the install phase
             # replaces slots underneath it.
             for parent, slot, module_path in list(component.iter_targets(component.module)):
@@ -402,28 +516,60 @@ class AdapterSession:
             counts.record(component.name, applied, mismatched)
         return planned, counts
 
+    def prepare(self, file: AdapterFile) -> Any:
+        """The architecture's per-file parse, run once and before accounting.
+
+        Memoised on the file rather than in the session, so the two passes of a
+        split install share one result. Public because a split install needs the
+        result before its first pass, to report and to take a verdict no single
+        pass can take.
+        """
+        if file.prepared is UNPREPARED:
+            file.prepared = (None if self._prepare_file is None
+                             else self._prepare_file(file))
+        return file.prepared
+
+    def _zero_target_refusal(self, file: AdapterFile,
+                             counts: ApplyCounts) -> Optional[BaseException]:
+        """What a file that covered nothing means, or ``None`` for "not here".
+
+        ``None`` is how a pass covering one component declines to judge a file
+        that binds another: the verdict across components is not this pass's to
+        take, and taking it refuses a file that is about to apply in full.
+        """
+        outcome: Union[str, BaseException, None] = None
+        if self._describe_zero_targets is not None:
+            outcome = self._describe_zero_targets(file, counts)
+            if outcome is None:
+                return None
+        if isinstance(outcome, BaseException):
+            return outcome
+        return AdapterIncompatible(outcome or (
+            f"LoRA '{file.name}': 0 of {file.declared_branches} down/up pairs "
+            f"applied to the loaded model ({counts.mismatched} skipped on shape "
+            f"mismatch) -- unrecognized key format or a different model."
+        ))
+
     def _account(self, file: AdapterFile, counts: ApplyCounts) -> None:
         """The refusal and warning decisions, taken BEFORE anything is mutated."""
         self._log(f"[{self._label}] Applied LoRA to {counts.applied} modules")
         if counts.applied == 0:
-            if self._describe_zero_targets is not None:
-                message = self._describe_zero_targets(file, counts)
-            else:
-                message = (
-                    f"LoRA '{file.name}': 0 of {file.declared_branches} down/up pairs "
-                    f"applied to the loaded model ({counts.mismatched} skipped on shape "
-                    f"mismatch) -- unrecognized key format or a different model."
-                )
-            self._log(f"[{self._label}] ERROR: {message}")
-            raise self._refuse(AdapterIncompatible(message))
+            error = self._zero_target_refusal(file, counts)
+            if error is None:
+                return
+            self._log(f"[{self._label}] ERROR: {self._refusal_text(error)}")
+            raise self._refuse(error, AdapterIncompatible.code)
 
         if counts.mismatched or counts.applied < file.declared_branches:
-            self.warn(
-                f"LoRA '{file.name}': applied {counts.applied} of "
-                f"{file.declared_branches} down/up pairs "
-                f"({counts.mismatched} skipped on shape mismatch).",
-                "lora_partial",
+            error = AdapterIncompatible(
+                f"LoRA '{file.name}': only {counts.applied} of "
+                f"{file.declared_branches} declared branches matched the loaded "
+                f"model ({counts.mismatched} shape mismatch); refusing a partial "
+                f"application.",
+                code="lora_partial",
             )
+            self._log(f"[{self._label}] ERROR: {error.message}")
+            raise self._refuse(error)
 
     # -- installation ------------------------------------------------------
 
@@ -458,14 +604,23 @@ class AdapterSession:
                     state.originals[item.module_path] = item.base
                 new_wrapped = item.module_path not in state.wrapped
                 state.wrapped.add(item.module_path)
-                done.append((item, composite, created, new_original, new_wrapped))
+                owned = _OwnedBranch(
+                    parent=weakref.ref(item.parent),
+                    composite=weakref.ref(composite),
+                    slot=item.slot,
+                    module_path=item.module_path,
+                    branch_name=item.file.branch_name,
+                )
+                state.owned.append(owned)
+                done.append((item, composite, created, new_original, new_wrapped,
+                             owned))
         except Exception as e:
             failed = plan[len(done)].file.name if len(done) < len(plan) else self._label
             self._rollback(done)
             raise self._load_failed(failed, e) from e
 
     def _rollback(self, done) -> None:
-        for item, composite, created, new_original, new_wrapped in reversed(done):
+        for item, composite, created, new_original, new_wrapped, owned in reversed(done):
             state = self.state(item.component.name)
             try:
                 composite.remove_branch(item.file.branch_name)
@@ -478,12 +633,32 @@ class AdapterSession:
                 state.originals.pop(item.module_path, None)
             if new_wrapped:
                 state.wrapped.discard(item.module_path)
+            try:
+                state.owned.remove(owned)
+            except ValueError:
+                pass
 
     # -- public lifetime ---------------------------------------------------
 
-    def load(self, configs: Optional[Sequence[Mapping[str, Any]]],
+    def parse(self, configs: Optional[Sequence[Mapping[str, Any]]]
+              ) -> List[AdapterFile]:
+        """Resolve and read every selected file, touching no model.
+
+        For an architecture that installs in more than one pass, or that must see
+        every file resolved before any is planned. ``load`` takes the result, so
+        a file handed to two passes is read once and keeps one branch name.
+        """
+        return [file for index, config in enumerate(configs or ())
+                if (file := self._parse(index, config)) is not None]
+
+    def load(self,
+             configs: Optional[Sequence[Union[Mapping[str, Any], AdapterFile]]],
              components: Sequence[AdapterComponent]) -> AdapterLoadResult:
-        """Apply every selected adapter to every enabled component, atomically."""
+        """Apply every selected adapter to every enabled component, atomically.
+
+        ``configs`` items are request dicts, or the ``AdapterFile``s ``parse``
+        already read.
+        """
         components = list(components)
         # BEFORE the empty-config exit: a request that selects nothing is exactly
         # when a model swap goes unnoticed, and the next unload would then splice
@@ -495,12 +670,21 @@ class AdapterSession:
         if not configs:
             return result
 
-        live = [c for c in components if c.enabled and c.module is not None]
+        # Enabled, not merely loaded: a pass over a component that is not
+        # loaded is still that pass, and must be accounted as covering it.
+        enabled = [c for c in components if c.enabled]
+        names = tuple(c.name for c in enabled)
         plan: List[_PlannedInstall] = []
         for index, config in enumerate(configs):
-            file = self._parse(index, config)
+            if isinstance(config, AdapterFile):
+                file = config
+            elif (file := self._parse(index, config)) is None:
+                continue
+            file.declared_branches = self._count_declared_branches(
+                file.tensors, names)
             try:
-                planned, counts = self._plan_file(file, live)
+                self.prepare(file)
+                planned, counts = self._plan_file(file, enabled)
             except AdapterRefusal:
                 raise
             except Exception as e:
@@ -523,20 +707,11 @@ class AdapterSession:
         restored = 0
         for component in components:
             state = self.bind(component)
-            if component.module is None or not state.wrapped:
+            if component.module is None or not state.owned:
                 continue
             self._log(f"[{self._label}] Unloading {component.name} "
                       f"({len(state.wrapped)} wrapped module(s))...")
-            for parent, slot, module_path in list(component.iter_targets(component.module)):
-                current = get_module_slot(parent, slot)
-                if not isinstance(current, CompositeAdapterLayer):
-                    continue
-                # pop, not get: a restore that raises part way must leave only
-                # what it still owes.
-                set_module_slot(parent, slot,
-                                state.originals.pop(module_path, current.original_module))
-                restored += 1
-            state.wrapped.clear()
+            restored += self._restore_state(state)
             self._log(f"[{self._label}] Unloaded {restored} module(s)")
         return restored
 

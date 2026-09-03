@@ -22,7 +22,7 @@ Five architectures raising four different types are driven end to end here
 (`FileNotFoundError` from SD1.5/SDXL, `RuntimeError` from Anima and MiniT2I,
 `ValidationError` from LTX-2.3, `AdapterFileMissing` from Z-Image's session),
 through the real warning store, the real error handlers and a real HTTP
-response.
+response. Every tagged LoRA refusal answers 400 regardless of that raised type.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/refusal_error_code_cheap_test.py -v
@@ -44,6 +44,7 @@ import asyncio
 
 import httpx
 import torch
+import yaml
 from torch import nn
 from fastapi import FastAPI
 from safetensors.torch import save_file
@@ -54,10 +55,12 @@ from api.error_handlers import (
     NotFoundError,
     ValidationError,
     register_error_handlers,
+    with_error_code,
 )
 from api.error_handlers import ValidationError as CustomValidationError
 
 _ROUTES = os.path.join(os.path.dirname(__file__), "..", "api", "routes.py")
+_OPENAPI = os.path.join(_REPO, "openapi.yaml")
 
 D = 8
 
@@ -186,7 +189,7 @@ def test_sd15_file_not_found_carries_lora_not_found():
     from core.extensions.lora_manager import LoRAManager
 
     response = _post(lambda: LoRAManager().load_loras(None, [{"path": MISSING}]))
-    body = _assert_well_formed(response, 500)
+    body = _assert_well_formed(response, 400)
     assert body["code"] == "lora_not_found"
     assert _codes(body) == ["lora_not_found"]
 
@@ -194,7 +197,7 @@ def test_sd15_file_not_found_carries_lora_not_found():
 def test_anima_runtime_error_carries_lora_not_found():
     """Anima accumulates per-file failures and raises ONE joined RuntimeError."""
     response = _post(lambda: _anima_backend()._load_lora_anima([{"path": MISSING}]))
-    body = _assert_well_formed(response, 500)
+    body = _assert_well_formed(response, 400)
     assert body["code"] == "lora_not_found"
 
 
@@ -212,7 +215,7 @@ def test_zimage_adapter_session_refusal_carries_its_class_code():
     the code as a class attribute instead of being tagged at the raise. The
     route reads ``.code`` either way, so both mechanisms answer the same."""
     response = _post(lambda: _zimage_backend()._load_lora_zimage([{"path": MISSING}]))
-    body = _assert_well_formed(response, 500)
+    body = _assert_well_formed(response, 400)
     assert body["code"] == "lora_not_found"
 
 
@@ -221,7 +224,7 @@ def test_minit2i_unreadable_file_carries_lora_load_failed(tmp_path):
     broken.write_bytes(b"not a safetensors file")
     response = _post(
         lambda: _minit2i_backend()._minit2i_prepare_loras([{"path": str(broken)}]))
-    body = _assert_well_formed(response, 500)
+    body = _assert_well_formed(response, 400)
     assert body["code"] == "lora_load_failed"
 
 
@@ -235,9 +238,40 @@ def test_anima_reports_the_first_failure_and_warnings_carry_every_code(tmp_path)
 
     response = _post(lambda: _anima_backend()._load_lora_anima(
         [{"path": str(ghost)}, {"path": MISSING}]))
-    body = _assert_well_formed(response, 500)
+    body = _assert_well_formed(response, 400)
     assert body["code"] == "lora_incompatible"
     assert set(_codes(body)) >= {"lora_incompatible", "lora_not_found"}
+
+
+def test_every_lora_refusal_code_answers_400():
+    """The open warning taxonomy is not an enum, but the codes which currently
+    identify refusals form a deliberate HTTP-status contract."""
+    codes = (
+        "lora_not_found",
+        "lora_load_failed",
+        "lora_incompatible",
+        "lora_partial",
+        "lora_uncond_unavailable",
+        "ltx2_lora_arch_mismatch",
+        "minimax_h3_lora_variant_mismatch",
+    )
+    for code in codes:
+        def _refuse(code=code):
+            gs.add_warning("refused", code=code)
+            raise with_error_code(RuntimeError("refused"), code)
+
+        body = _assert_well_formed(_post(_refuse), 400)
+        assert body["code"] == code
+        assert _codes(body) == [code]
+
+
+def test_tagged_api_error_is_normalized_to_400():
+    """The first route clause re-raises APIError subclasses rather than wrapping
+    them, so attach_error_context must normalize those too."""
+    response = _post(lambda: (_ for _ in ()).throw(
+        GenerationError("refused", code="lora_incompatible")))
+    body = _assert_well_formed(response, 400)
+    assert body["code"] == "lora_incompatible"
 
 
 # ── the negative gates ───────────────────────────────────────────────────────
@@ -310,3 +344,18 @@ def test_every_generation_route_carries_the_error_context():
                 missing.append((fn.name, handler.lineno))
     assert not missing, f"failure clauses with no error context: {missing}"
     assert checked >= 26, f"only {checked} failure clauses found; did a route move?"
+
+
+def test_openapi_documents_partial_lora_as_a_400_refusal():
+    with open(_OPENAPI, encoding="utf-8") as handle:
+        schemas = yaml.safe_load(handle)["components"]["schemas"]
+
+    for schema_name in ("GenerationParams", "Txt2VidRequest", "Txt2AudRequest"):
+        description = schemas[schema_name]["properties"]["loras"]["description"]
+        assert "lora_partial" in description
+        assert "answers 400" in description
+        assert "warns `lora_partial`" not in description
+
+    error_code = schemas["ErrorResponse"]["properties"]["code"]["description"]
+    assert "only partially matches" in error_code
+    assert "answers 400" in error_code

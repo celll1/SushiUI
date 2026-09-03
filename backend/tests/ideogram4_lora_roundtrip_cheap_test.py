@@ -34,7 +34,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.ideogram4.ideogram4_lora import (  # noqa: E402
     DEFAULT_SCOPE, _flatten_to_sdscripts, iter_ideogram4_lora_targets,
     normalise_lora_state_dict,
@@ -580,10 +580,8 @@ def test_ideogram4_zero_matched_targets_refuses_and_warns(tmp_path, warnings_see
     assert not wrapped_paths(model)
 
 
-def test_ideogram4_unmatched_module_warns_partial_and_still_generates(tmp_path,
-                                                                     warnings_seen):
-    """A pair naming a module this model does not have is `lora_partial`, not a
-    refusal -- the clause that used to also carry the occupied count."""
+def test_ideogram4_unmatched_module_is_refused_atomically(tmp_path,
+                                                          warnings_seen):
     path, trained_paths, _uncond = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "lora_unet_" + _flatten_to_sdscripts("layers.9.attention.to_q")
@@ -593,10 +591,11 @@ def test_ideogram4_unmatched_module_warns_partial_and_still_generates(tmp_path,
     save_file(saved, str(extended), metadata={"model_type": "ideogram4"})
 
     model = _Stub()
-    applied = _Backend(model)._load_lora_ideogram4(
-        [{"path": str(extended), "strength": STRENGTH}])
-    assert applied == len(trained_paths)
-    assert wrapped_paths(model) == trained_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_ideogram4(
+            [{"path": str(extended), "strength": STRENGTH}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

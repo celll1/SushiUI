@@ -30,7 +30,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.lens.lens_lora import (  # noqa: E402
     DEFAULT_SCOPE, _FULL_SCOPE, _flatten_to_sdscripts, iter_lens_lora_targets,
 )
@@ -417,7 +417,7 @@ def test_lens_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen):
     assert not wrapped_paths(model)
 
 
-def test_lens_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings_seen):
+def test_lens_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen):
     path, trained_paths = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "lora_unet_" + _flatten_to_sdscripts("transformer_blocks.9.attn.img_qkv")
@@ -427,8 +427,10 @@ def test_lens_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings
     save_file(saved, str(partial), metadata={"model_type": "lens"})
 
     model = build_model()
-    assert _Backend(model)._load_lora_lens([{"path": str(partial)}]) == len(trained_paths)
-    assert wrapped_paths(model) == trained_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_lens([{"path": str(partial)}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

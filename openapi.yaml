@@ -10680,7 +10680,8 @@ components:
             rather than reporting it as a failed component — and SenseNova
             stacks its generation and understanding MoT halves separately, so a
             generation-only file leaves every understanding target untouched.
-            A partial application warns (`lora_partial`) and generates.
+            A partial application is refused before denoising and answers 400
+            (`lora_partial`); no subset is silently applied.
           example: '[{"path": "my_lora.safetensors", "strength": 0.8}]'
         prompt_chunking_mode:
           type: string
@@ -11758,8 +11759,8 @@ components:
             that holds across the two key conventions as well: a fused-QKV
             ComfyUI file and a SushiUI-trained one resolve to the same vendored
             targets and add branches beside each other. A partial outcome (some
-            targets unresolved against the loaded model) applies the remainder
-            and warns `lora_partial`.
+            targets unresolved against the loaded model) is refused before
+            denoising and answers 400 (`lora_partial`).
 
             Per-LoRA `step_range` and per-block `unet_layer_weights` are NOT
             honoured on either architecture; LTX-2.3 warns when a request
@@ -13283,8 +13284,8 @@ components:
             (`base + delta_a + delta_b`), each branch at its own strength,
             exactly whatever the selection order. Two LoRAs over disjoint
             modules stack as they always did, and no stack is refused.
-            A partial bind applies the rest and warns
-            `lora_partial`. Not applied on MiniMax Music 3 requests.
+            A partial bind is refused before denoising and answers 400
+            (`lora_partial`). Not applied on MiniMax Music 3 requests.
           items:
             type: object
             properties:
@@ -14970,7 +14971,7 @@ components:
             `lora_no_targets`, `quantization_fallback` and
             `attention_kernel_fallback`; everything else is
             architecture-specific and prefixed with the architecture name.
-            The first three also appear as `ErrorResponse.code` when they cause
+            The first four also appear as `ErrorResponse.code` when they cause
             a refusal.
           example: unsupported_param
         message:
@@ -16470,12 +16471,13 @@ components:
           description: >-
             Machine-readable identifier for a DELIBERATE refusal, from the same
             open taxonomy as `GenerationWarning.code`. A generation that refuses
-            rather than degrading (a LoRA that is missing, unreadable, or matches
-            no target module) reports the same code here that it recorded in
-            `warnings[]`, so a client can branch on the reason without parsing
-            `error`/`detail`. Null for any failure that is not a tagged refusal
-            -- an unexpected exception still produces a well-formed response with
-            `code: null`.
+            rather than degrading (a LoRA that is missing, unreadable, matches
+            no target module, only partially matches, or fails an
+            architecture-specific compatibility check) answers 400 and reports
+            the same code here that it recorded in `warnings[]`, so a client can
+            branch on the reason without parsing `error`/`detail`. Null for any
+            failure that is not a tagged refusal -- an unexpected exception still
+            produces a well-formed response with `code: null`.
           example: "lora_incompatible"
         status_code:
           type: integer

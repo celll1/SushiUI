@@ -274,6 +274,9 @@ def attach_error_context(exc: BaseException, generation_id: Optional[int] = None
     """
     if getattr(exc, "warnings", None) is None:
         exc.warnings = get_warnings(generation_id)
+    from api.error_handlers import is_lora_refusal_code
+    if is_lora_refusal_code(getattr(exc, "code", None)):
+        exc.status_code = 400
 
 
 def update_progress(current_step: int, total_steps: int, phase: Optional[str] = None) -> None:

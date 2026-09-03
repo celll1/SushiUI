@@ -58,16 +58,22 @@ class AnimaMixin:
 
     @staticmethod
     def _anima_resolve_lora_path(raw_path):
-        """LoRAManager resolution, or ``None``.
-
-        ``_load_lora_anima`` resolves every selected file up front and hands the
-        session only the ones that exist, so the session's own miss branch (a
-        ``FileNotFoundError`` with a different sentence) is not reachable from
-        here.
-        """
         from core.extensions.lora_manager import lora_manager
 
         return lora_manager._resolve_lora_path(raw_path)
+
+    def _anima_missing_lora(self, lora_file, _raw_path):
+        """Warn and SKIP rather than refuse here.
+
+        Anima's contract is that ``warnings[]`` carries every failure's code
+        while the response names one (refusal_error_code_cheap_test), so a miss
+        must not stop the request at the first bad file. ``_load_lora_anima``
+        takes the joined verdict once every file has been resolved.
+        """
+        message = f"LoRA '{lora_file}': file not found"
+        self._anima_lora_warn(message, "lora_not_found")
+        self._anima_lora_missing.append(message)
+        return None
 
     @property
     def _anima_lora_session(self):
@@ -85,6 +91,8 @@ class AnimaMixin:
                 warn=self._anima_lora_warn,
                 label="Anima LoRA",
                 count_declared_branches=self._anima_declared_branches,
+                missing_file=self._anima_missing_lora,
+                prepare_file=self._anima_prepare_lora_file,
                 describe_zero_targets=self._anima_zero_target_message,
             )
             self._anima_lora_session_instance = session
@@ -122,7 +130,7 @@ class AnimaMixin:
         return self._anima_lora_session.state("transformer").wrapped
 
     @staticmethod
-    def _anima_declared_branches(tensors) -> int:
+    def _anima_declared_branches(tensors, _components) -> int:
         """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
         spells its halves ``lora_A``/``lora_B``, so the session's default count
         would be zero for every such file and never report a partial one.
@@ -131,26 +139,19 @@ class AnimaMixin:
 
         return len(normalise_lora_state_dict(tensors))
 
-    def _anima_lora_file_state(self, file):
-        """This file's grouped tensors, parsed and reported ONCE.
+    def _anima_prepare_lora_file(self, file):
+        """This file's grouped tensors, parsed and reported once.
 
-        The session has no hook between parsing a file and accounting for it.
-        Reached from the branch builder AND from the zero-target message, so a
-        file that matches nothing still reports its dropped and unresolvable
-        keys first.
+        The session runs this before the file is planned, so a file that matches
+        nothing still reports its dropped and unresolvable keys before its
+        refusal.
         """
-        cache = self._anima_lora_files
-        grouped = cache.get(file.branch_name)
-        if grouped is not None:
-            return grouped
-
         from core.models.anima.anima_lora import (FULL_SCOPE, detect_lora_format,
                                                   iter_anima_lora_targets,
                                                   normalise_lora_state_dict,
                                                   unmatched_source_keys)
 
         grouped = normalise_lora_state_dict(file.tensors)
-        cache[file.branch_name] = grouped
         print(f"[Anima LoRA] {file.name} format={detect_lora_format(file.tensors)} "
               f"keys={len(file.tensors)} matched_modules={len(grouped)} "
               f"strength={file.strength}")
@@ -182,7 +183,7 @@ class AnimaMixin:
         from core.adapters import PreparedBranch
         from core.models.anima.anima_lora import build_lora_branch
 
-        weights = self._anima_lora_file_state(request.file).get(request.module_path)
+        weights = request.prepared.get(request.module_path)
         if weights is None:
             return None
         branch = build_lora_branch(request.base, weights, request.module_path)
@@ -193,9 +194,6 @@ class AnimaMixin:
     def _anima_zero_target_message(self, file, counts) -> str:
         """The zero-target refusal text. The session owns the DECISION to refuse;
         the sentence is Anima's."""
-        # This file's own warnings first, as they were emitted before the
-        # session owned the ordering.
-        self._anima_lora_file_state(file)
         return (f"LoRA '{file.name}': matched 0 target(s) out of {len(file.tensors)} "
                 f"key(s) against the loaded Anima DiT (wrong architecture or key "
                 f"format?)")
@@ -229,30 +227,19 @@ class AnimaMixin:
                 "[Anima LoRA] cannot apply the selected LoRA(s): Anima components are not loaded"
             )
 
-        self._anima_lora_files = {}
-        # Resolution runs AHEAD of the session, and does not stop at the first
-        # miss: Anima's contract is that ``warnings[]`` carries every failure's
-        # code while the response names one (refusal_error_code_cheap_test). The
-        # session refuses the rest of the request at its first bad file.
-        selected: List[Dict] = []
-        missing: List[str] = []
-        for cfg in lora_configs:
-            if self._anima_resolve_lora_path(cfg.get("path", "")) is not None:
-                selected.append(cfg)
-                continue
-            message = f"LoRA '{os.path.basename(str(cfg.get('path', '')))}': file not found"
-            self._anima_lora_warn(message, "lora_not_found")
-            missing.append(message)
-
-        applied = 0
-        if selected:
-            applied = self._anima_lora_session.load(
-                selected, self._anima_lora_components()).applied
-        if missing:
+        # Every file is resolved before any is planned, and a miss is warned
+        # and skipped rather than refused: the response names one failure while
+        # ``warnings[]`` carries every code (refusal_error_code_cheap_test).
+        self._anima_lora_missing: List[str] = []
+        files = self._anima_lora_session.parse(lora_configs)
+        applied = self._anima_lora_session.load(
+            files, self._anima_lora_components()).applied
+        if self._anima_lora_missing:
             # Restore first, so the failure leaves a clean DiT.
             self._unload_lora_anima()
             raise with_error_code(
-                RuntimeError("[Anima LoRA] " + "; ".join(missing)), "lora_not_found")
+                RuntimeError("[Anima LoRA] " + "; ".join(self._anima_lora_missing)),
+                "lora_not_found")
         return applied
 
     def _unload_lora_anima(self) -> int:

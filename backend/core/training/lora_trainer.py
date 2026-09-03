@@ -20,6 +20,7 @@ Author: Claude (2026-01-04)
 
 from pathlib import Path
 from typing import Dict, List
+import torch
 import torch.nn as nn
 
 from .base_trainer import BaseTrainer
@@ -222,31 +223,76 @@ class LoRATrainer(BaseTrainer):
         """
         from safetensors import safe_open
         from safetensors.torch import load_file
-        import torch
 
         print(f"{self.log_prefix} Loading LoRA checkpoint: {checkpoint_path}")
 
         # Extract metadata using safe_open
         step = 0
         with safe_open(checkpoint_path, framework="pt", device="cpu") as f:
-            metadata = f.metadata()
-            if metadata and 'step' in metadata:
+            metadata = f.metadata() or {}
+            if 'step' in metadata:
                 step = int(metadata['step'])
 
         # Load checkpoint weights
         checkpoint = load_file(checkpoint_path)
 
-        # Load LoRA weights into existing layers. The branch names its own
-        # tensors, so an algebra that carries more than down/up resumes too;
-        # `alpha` is deliberately not among them (a spec constant, not state).
+        for field in ("lora_rank", "lora_alpha"):
+            expected = getattr(self, field, None)
+            if field in metadata and expected is not None:
+                try:
+                    actual = float(metadata[field])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"LoRA checkpoint metadata {field!r} is not numeric"
+                    ) from exc
+                if actual != float(expected):
+                    raise ValueError(
+                        f"LoRA checkpoint metadata {field}={actual:g} conflicts "
+                        f"with the current run's {float(expected):g}"
+                    )
+
+        prepared = []
         for lora_name, lora_layer in self.lora_layers.items():
+            targets = lora_layer.branch_tensors()
             slice_ = {}
-            for tensor_name in lora_layer.tensor_names():
-                value = checkpoint.get(f"{lora_name}.{tensor_name}")
-                if value is not None:
-                    slice_[tensor_name] = value
-            if slice_:
+            for tensor_name, target in targets.items():
+                key = f"{lora_name}.{tensor_name}"
+                if key not in checkpoint:
+                    raise ValueError(f"LoRA checkpoint is missing required tensor {key!r}")
+                value = checkpoint[key]
+                if value.shape != target.shape:
+                    raise ValueError(
+                        f"LoRA checkpoint tensor {key!r} has shape "
+                        f"{tuple(value.shape)}, expected {tuple(target.shape)}"
+                    )
+                if not torch.can_cast(value.dtype, target.dtype):
+                    raise ValueError(
+                        f"LoRA checkpoint tensor {key!r} cannot convert from "
+                        f"{value.dtype} to {target.dtype}"
+                    )
+                try:
+                    slice_[tensor_name] = value.to(
+                        device=target.device, dtype=target.dtype)
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"LoRA checkpoint tensor {key!r} cannot be prepared for "
+                        f"{target.device}/{target.dtype}"
+                    ) from exc
+            prepared.append((lora_layer, targets, slice_))
+
+        snapshots = [
+            {name: tensor.detach().clone() for name, tensor in targets.items()}
+            for _layer, targets, _slice in prepared
+        ]
+        try:
+            for lora_layer, _targets, slice_ in prepared:
                 lora_layer.load_tensors(slice_)
+        except Exception:
+            with torch.no_grad():
+                for (_layer, targets, _slice), snapshot in zip(prepared, snapshots):
+                    for name, tensor in targets.items():
+                        tensor.copy_(snapshot[name])
+            raise
 
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")
         return step

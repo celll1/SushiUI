@@ -30,7 +30,9 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer, lora_branch_dtype  # noqa: E402
+from core.adapters import (  # noqa: E402
+    AdapterIncompatible, CompositeAdapterLayer, lora_branch_dtype,
+)
 from core.pipeline_backends.zimage import ZImageMixin  # noqa: E402
 from core.training.adapters.zimage_adapter import ZImageLoRAAdapter  # noqa: E402
 
@@ -353,11 +355,9 @@ def test_zimage_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen,
     assert not wrapped_paths(model)
 
 
-def test_zimage_shape_mismatched_branch_is_skipped_never_assigned(tmp_path,
-                                                                 warnings_seen,
-                                                                 resolve_verbatim):
-    """One target's tensors are the wrong width: it stays a bare Linear, the
-    rest apply, and the request warns rather than failing in the denoise loop."""
+def test_zimage_shape_mismatched_branch_is_refused_atomically(tmp_path,
+                                                              warnings_seen,
+                                                              resolve_verbatim):
     from safetensors.torch import load_file
 
     path, _trained, trained_paths = train_and_save(tmp_path)
@@ -370,9 +370,12 @@ def test_zimage_shape_mismatched_branch_is_skipped_never_assigned(tmp_path,
 
     model = build_model()
     before = dict(model.named_modules())
-    _Backend(model)._load_lora_zimage([{"path": str(broken), "strength": STRENGTH}])
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_zimage(
+            [{"path": str(broken), "strength": STRENGTH}])
 
-    assert wrapped_paths(model) == trained_paths - {victim}
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert dict(model.named_modules())[victim] is before[victim]
     assert "lora_partial" in warning_codes(warnings_seen)
 
@@ -408,4 +411,4 @@ def test_zimage_model_reload_never_splices_model_a_into_model_b(tmp_path):
     for target in trained_paths:
         assert dict(model_b.named_modules())[target] is b_before[target], target
     assert not (module_ids(model_b) & a_ids)
-    assert wrapped_paths(model_a) == trained_paths, "model A lost its wrappers"
+    assert not wrapped_paths(model_a), "the abandoned model retained session branches"

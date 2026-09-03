@@ -297,6 +297,40 @@ Paths below are relative to `backend/core/training/`.
     model, with `peft_config` membership as a second witness. The refusal runs
     before `set_adapters`, whose own error on an empty adapter set would mask
     it.
+  - **SD1.5 and SDXL stack ADDITIVELY, by PEFT, not by
+    `CompositeAdapterLayer`.** Each selected file becomes its own PEFT adapter
+    (`lora_0`, `lora_1`, …) with its own `scaling`, and `peft.tuners.lora.Linear`
+    adds every ACTIVE adapter's delta at forward time. These two are therefore
+    deliberately NOT on the composite: putting them there would replace the
+    production diffusers path with a reimplementation, which is a far larger
+    risk than the defect it would remove.
+  - **The defect that was there (fixed here):** `load_loras` called
+    `pipeline.set_adapters(adapter_name, …)` once per file inside its loop, and
+    `set_adapters` REPLACES the active set rather than adding to it. With two
+    LoRAs selected, both were installed, both counted, both reported — and only
+    the LAST was active. Measured on toy models through the real `load_loras`:
+    the forward was `base + delta_last`, exactly. `LoRAManager.activate_adapters`
+    now makes the whole accumulated set active once, after the loop.
+    - Two consequences that were coupled to it: `unet_layer_weights` was folded
+      into `scaling` per file at load, and the step callback's own
+      `set_adapters` recomputes `scaling` from the adapter weight, so a LoRA
+      carrying BOTH block weights and a `step_range` lost its block weights at
+      step 0 (0.35 → 1.4 measured). Both activations now go through
+      `activate_adapters`, which re-folds the block weights afterwards.
+    - And the reason it was never noticed: the step callback is armed only when
+      some selected LoRA has a non-default `step_range`
+      (`load_loras_for_generation`), and it always set the FULL active list — so
+      stacking silently worked in that one configuration and silently did not in
+      the default one.
+  - **Order independence here is to one fp32 ULP, not bit-exact.** PEFT
+    accumulates into the base (`result = result + delta` per adapter), so
+    swapping two adapters reassociates a three-operand sum;
+    `CompositeAdapterLayer` sums the deltas first and adds the base once, which
+    commutes exactly for two branches. Measured on the toy UNet: 0 of 40 targets
+    bit-identical between the two orders, worst relative deviation 1.27e-07
+    against an fp32 eps of 1.19e-07.
+  - `unload_lora_weights()` removes every adapter and restores the base
+    modules; verified over a two-LoRA stack on both architectures.
 - **sdxl** — Dual text encoders concatenated to 2048-dim; TE2 uses penultimate
   hidden state + pooled output; `time_ids` = [orig_h, orig_w, crop_top, crop_left,
   target_h, target_w].
@@ -341,9 +375,12 @@ Paths below are relative to `backend/core/training/`.
     shape-mismatched targets are skipped with `lora_partial` instead of being
     assigned and failing inside the denoise loop.
   - **Z-Image is the FIRST architecture on `CompositeAdapterLayer`**; Krea 2,
-    Anima, Lens, Ideogram 4, MiniT2I, ACE-Step and LTX-2.3 have since adopted it
-    (see their rows). FLUX.2, SenseNova and MiniMax-H3 still refuse a fully
-    shadowed second LoRA with `lora_stacking_unsupported`. Each target Linear is covered
+    Anima, Lens, Ideogram 4, MiniT2I, ACE-Step, LTX-2.3, SenseNova, FLUX.2 and
+    MiniMax-H3 have since adopted it (see their rows), so no component-based
+    architecture emits `lora_stacking_unsupported` any more. SD1.5 and SDXL are
+    additive by a DIFFERENT mechanism and are not on the composite: their LoRAs
+    are PEFT adapters injected by diffusers, and PEFT sums every active one
+    natively (see the SD1.5/SDXL note below). Each target Linear is covered
     once by a composite and each selected LoRA adds a NAMED branch
     (`"<request index>:<file basename>"`), so two Z-Image LoRAs over the same
     module now SUM instead of being refused, in either selection order, and
@@ -467,6 +504,58 @@ Paths below are relative to `backend/core/training/`.
     `do_classifier_free_guidance`; a full-FT save exported without them would be
     re-detected as `klein-base-4B` — its 20 single blocks match none of the
     probe's 24/36/48 arms — and silently regain CFG.
+  - **FLUX.2 is on `CompositeAdapterLayer`, PER COMPONENT.** Each target Linear
+    is covered once by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two FLUX.2 LoRAs over the same
+    module SUM instead of being refused, in either selection order, each at its
+    own strength; `lora_stacking_unsupported` is gone along with the
+    `already_wrapped` status `_flux2_apply_lora_branch` used to tally. A single
+    LoRA is bit-identical to the pre-composite loader (`torch.equal`, not a
+    tolerance), asserted for BOTH components separately.
+    **The two components have DIFFERENT LIFETIMES**, which is why per-component
+    is not a formality here: `_restore_flux2_te_lora` tears the Qwen3 encoder's
+    composites down in the `finally` of EVERY generation (`a968cfa3`) while the
+    transformer's survive it, so the text encoder keeps its own recorded slot
+    list — one entry per slot, not per branch — and restores only what is
+    installed there. `a968cfa3`'s per-component zero-target refusal survives
+    unchanged and now covers a case it could not reach before: a second LoRA
+    carrying only `lora_te_*` keys leaves the transformer out of the accounting
+    entirely rather than reporting it as a failed component.
+    Load and unload share one enumerator per component
+    (`_flux2_transformer_lora_targets` / `_flux2_te_lora_targets`), so restore
+    iterates what is installed rather than what a dict remembers — and unlike
+    Z-Image, driving it from originals-map membership instead really does fail a
+    gate here, because this map is never cleared, so a second unload re-restores
+    every recorded key. The transformer enumerator selects by BLOCK CLASS NAME
+    (`Flux2Attention` / `Flux2ParallelSelfAttention` / `Flux2FeedForward`), which
+    neither a composite, its base nor its branches carry, so Anima's path-shape
+    collision has no analogue here. Its one int slot (`Flux2Attention.to_out.0`)
+    goes through `set_module_slot`.
+    **`_load_lora_flux2` now restores unconditionally at its top**: the stacking
+    refusal had been the accidental backstop for a wrapper that outlived its
+    request, and a generation killed between the wrap and its cleanup leaves
+    exactly that.
+  - **FLUX.2's two quantization gates both still fire over a composite.** The
+    runtime INT8 refusal reads `lora_wrapped_count`, which counts a composite as
+    ONE root, so a two-LoRA stack reports one root per target rather than one per
+    branch and the conversion is still refused. `_flux2_te_quantization_with_lora`
+    reads the text encoder's recorded slot list, so it still drops text-encoder
+    quantization while a TE LoRA is applied — and it comes back once
+    `_restore_flux2_te_lora` has run. Recorded but NOT fixed: the LEGACY FP8
+    transformer path (`unet_quantization: fp8_e4m3fn`/`fp8_e5m2`, through
+    `move_flux2_transformer_to_gpu` → `_quantize_transformer`) deep-copies and
+    casts every `isinstance(m, nn.Linear)` weight, which includes each LoRA
+    branch's — the same pre-existing gap Z-Image and Anima have and Lens does
+    not, present before and after this change.
+  - **FLUX.2 block swap, measured on the 2-block stub** with the offloader's own
+    `linear_weight_dtypes`: 8 Linears per block bare, 24 with one branch, 40 with
+    two; per-block path sets uniform at every stage, nothing enrolled twice, and
+    the base at `<target>.original_module` exactly as under the old wrapper.
+    Neither `CompositeAdapterLayer` nor `LoRALinearLayer` ends in `Linear`, so
+    the offloader's `endswith("Linear")` selection never sees the wrapper itself;
+    the branch weights are new paths, and what carries is that the per-block sets
+    stay identical ACROSS blocks, since the swap pairs Linears between blocks by
+    name and the rename is uniform.
 - **ideogram4** — Only architecture bundling two transformers (conditional +
   unconditional); asymmetric CFG zeroes the unconditional text branch. FP8
   weight-only Qwen3-VL and FP8 transformer linears; head_dim 256 keeps it on native
@@ -1625,11 +1714,74 @@ Paths below are relative to `backend/core/training/`.
       `minimax_h3_lora_not_found`, `minimax_h3_lora_targets_unresolved` and
       `minimax_h3_lora_load_failed` codes are gone; the shared
       `lora_not_found` / `lora_load_failed` / `lora_incompatible` /
-      `lora_partial` / `lora_stacking_unsupported` taxonomy replaces them).
+      `lora_partial` taxonomy replaces them).
       A native stem missing one of its halves was dropped without a word.
     - The existing conversion test builds a 50-block stub needing tens of
       gigabytes, so the new behaviour is covered by a cheap 3-block file
       (`backend/tests/minimax_h3_lora_apply_cheap_test.py`) instead.
+  - **MiniMax-H3 is on `CompositeAdapterLayer`.** Each target Linear is covered
+    once by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two MiniMax-H3 LoRAs over the same
+    module SUM instead of the second being skipped, in either selection order,
+    each at its own strength; `lora_stacking_unsupported` is gone along with
+    `apply_lora_group`'s `shadowed` out-parameter. That holds across the two key
+    conventions as well — a fused-QKV ComfyUI file and a SushiUI-trained one
+    resolve to the same vendored targets and add branches beside each other. A
+    single LoRA is bit-identical to the pre-composite loader (`torch.equal`, not
+    a tolerance). Gates in
+    `backend/tests/minimax_h3_lora_roundtrip_cheap_test.py`.
+    - **The branch stays a `MiniMaxH3LoRALinearLayer`.** This architecture's
+      forward runs WITHOUT `torch.autocast` and needs that subclass's per-call
+      activation cast; the composite drives every branch through `forward_delta`
+      and never inspects its class, which is what makes the mixed algebra work.
+    - **Target enumeration is KEY-DRIVEN, not a tree walk.** Both
+      `apply_lora_group` and `restore_originals` resolve the CHECKPOINT's own
+      module paths through `minimax_h3_adapter._resolve_leaf`, so they cannot
+      disagree about which slot a target lives in, and neither Anima's
+      path-shape collision nor LTX-2.3's descend-into-the-composite trap has an
+      analogue here. Restore is driven by what is INSTALLED at each recorded
+      path, so a second unload is a no-op. `_resolve_leaf` already returns an int
+      slot for `attn.to_out.0` / `ff.net.2`, which `set_module_slot` handles.
+    - **The branch carries the scale-DEFINING pair, not its own tensor rank.**
+      `normalise_lora_state_dict` now emits `alpha` and `scale_rank` alongside
+      `scale_ratio`, and `apply_lora_group` writes that pair onto the branch, so
+      `add_branch(..., strength=)` recomputes `alpha / scale_rank * strength` —
+      bit-identical to the `scale_ratio * strength` it replaces, because it is
+      the same division and the same multiply. Using the branch's own rank would
+      be wrong after a COMPACT qkv split, where the ratio belongs to the fused
+      stem and the piece's rank is smaller (module docstring, (c)).
+    - **Alpha precedence is unchanged and still branch-dependent**: comfy is
+      per-key `.alpha` then rank and never the file's metadata (those
+      checkpoints bake a flat multiplier into `lora_B`); native is per-key, then
+      file metadata, then rank.
+  - **Adoption makes `lora_wrapped_count` non-zero for MiniMax-H3 for the first
+    time, and nothing consumes it.** `MiniMaxH3LoRALinearLayer` is deliberately
+    absent from `_ADAPTER_WRAPPER_CLASS_NAMES`, so the count was zero however
+    many modules a LoRA wrapped; a composite root is counted, so it is not any
+    more. Both readers of that count — `quantize_linears_in_place`'s
+    `LoraWrappedError` and `apply_runtime_int8_quantization`'s pre-flight, the
+    latter being the former's only non-test caller — sit behind
+    `RUNTIME_INT8_ARCHS`, and `minimax_h3` is not in it (its FP8/W4A8 Linears
+    come from the CHECKPOINT, swapped in by the loader, and `swap_linears_to_w4a8`
+    runs at load time, long before any per-generation LoRA wrap). So no refusal
+    newly fires; the count and the absence of a consumer are pinned together in
+    the gate file, because it is that pairing rather than either half that makes
+    the adoption safe here.
+  - **MiniMax-H3 block swap, measured on the 3-block stub** with the offloader's
+    own `linear_weight_dtypes`: 6 Linears per block bare, 18 with one branch, 30
+    with two; per-block path sets uniform at every stage, nothing enrolled twice,
+    and the base at `<target>.original_module` exactly as under the old wrapper.
+    Neither the composite nor `MiniMaxH3LoRALinearLayer` ends in `Linear`, so the
+    offloader's `endswith("Linear")` selection never sees the wrapper itself. The
+    rank-variation warning (`minimax_h3_lora_rank_varies_with_block_swap`) is
+    unchanged; it is computed per FILE, so two stacked files whose ranks differ
+    from EACH OTHER do not trip it — and do not need to, since the branches sit
+    at different paths (`branches.0` / `branches.1`) and pair per path.
+    Non-uniformity across blocks is a PRE-EXISTING hazard rather than one
+    adoption creates: a LoRA covering only some blocks already produced unequal
+    per-block sets before this change (measured on the stub: 18/6/6 for a single
+    block-0-only file), and stacking merely lets a second such file do it too
+    (30/18/18). Not fixed here.
   - **LoRA training** (`arch/minimax_h3.py` + `ops/minimax_h3_ops.py` +
     `adapters/minimax_h3_adapter.py`). Targets are the per-block attention
     projections (`to_q/to_k/to_v/to_out.0`) and the SwiGLU FFN linears
@@ -2047,15 +2199,59 @@ Paths below are relative to `backend/core/training/`.
       file (`lora_not_found`), a loader exception (`lora_load_failed`) and a
       wrong-format file matching zero modules (`lora_incompatible`) each raise
       before denoising; previously all three printed to the console and
-      generated the base model's image anyway. Two LoRAs over the same module
-      refuse (`lora_stacking_unsupported`) instead of silently discarding the
-      first; over disjoint modules they still stack. Alpha precedence is
+      generated the base model's image anyway. Alpha precedence is
       per-key tensor, then safetensors file metadata, then rank — SenseNova's
       own trainer writes per-key alphas, so its checkpoints are unaffected.
-      Unlike the other architectures' weakref-keyed reset, SenseNova clears
-      its wrapper map on EVERY unload and drives restore from the wrapped set
-      rather than from map membership; 588 stale entries previously survived a
-      model switch and spliced the previous model's Linears into the new tree.
+      SenseNova clears its wrapper map on EVERY unload and drives restore from
+      what is INSTALLED rather than from map membership; 588 stale entries
+      previously survived a model switch and spliced the previous model's
+      Linears into the new tree.
+    - **SenseNova is on `CompositeAdapterLayer`.** Each of the 588 target
+      Linears is covered ONCE by a composite and each selected LoRA adds a
+      NAMED branch (`"<request index>:<file basename>"`), so two SenseNova
+      LoRAs over the same module SUM at each branch's own strength instead of
+      the second being refused; `lora_stacking_unsupported` is gone, and
+      `apply_lora_group` no longer reports a `shadowed` list. A single LoRA is
+      bit-identical to the pre-composite wrapper, asserted per MoT half with
+      `torch.equal` against a reference built from the checkpoint's own
+      tensors. Selecting the same file twice is two branches, not a
+      duplicate-name error.
+    - **The two MoT halves are separate stacks sharing ONE bookkeeping pair,
+      deliberately.** A generation key always carries the `_mot_gen` marker and
+      an understanding key never can, so the partition of
+      `_sensenova_lora_orig` / `_sensenova_lora_keys` is total and splitting
+      the maps would rename state without changing an observable (the MiniT2I
+      shape, not Ideogram 4's). Both halves live in the one `transformer`
+      component, so there is still exactly one weakref key. Gated: two
+      generation-only files stack on the generation half while every
+      understanding target keeps the same bare Linear object.
+    - **MoT phase eviction still routes a stacked branch with its own half.**
+      `mot_weight_selector` classifies by `"_mot_gen" in path` and separates a
+      base from an adapter by `".lora_down"`/`".lora_up"`, so the composite's
+      renaming decides which half its tensors travel with. Measured two
+      branches deep: the base is yielded at `<target>.original_module` ONLY
+      (`named_modules` de-duplicates the branch's alias of the same object, and
+      `CompositeAdapterLayer.__init__` assigns `original_module` before
+      `branches`), branch weights land at `<target>.branches.<i>.lora_{down,up}`,
+      both keep the target's marker, and neither the composite nor its
+      `branches` list owns a tensor of its own — 0 misrouted over 588 targets,
+      halves equal in size and disjoint. The TRAINING selector
+      (`require_exact_symmetry=True`) never sees a generation-side wrapper, and
+      raises identically over a composite tree and over a plain-wrapper one.
+    - **No block swap and no quantization hazard at generation.** SenseNova
+      wires no block offloader (`blocks_to_swap` is inert; MoT phase eviction
+      is the analogue) and `pipeline_backends/sensenova.py` contains no FP8
+      deep-copy or in-place quantization path, so the branch-casting gap
+      Z-Image and Anima carry does not exist here. SenseNova is absent from
+      `RUNTIME_INT8_ARCHS` (its int8 comes from the checkpoint), so the
+      `lora_wrapped_count` refusal never fires for it; the count is asserted
+      anyway (588 roots over a 1176-branch stack) because that is the number a
+      future gate would read.
+    - **Still absent, before and after adoption:** a shape check.
+      `apply_lora_group` assigns the file's tensors into a branch built from
+      the base's `in_features`/`out_features` without comparing them, so a
+      dimensionally wrong file fails inside the denoise loop rather than being
+      skipped with `lora_partial`. Only Z-Image has that check.
   - **Resolution**: free, not bucketed; only the structural /32 token grid
     (patch 16 x merge 2) is enforced by snapping. The 11 upstream ~4 MP
     training-resolution buckets ship as UI presets (starting points, not

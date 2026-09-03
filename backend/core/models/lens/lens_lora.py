@@ -27,11 +27,10 @@ Lens target modules (per block N):
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Optional, Set, Tuple
+from typing import Any, Dict, Generator, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
-from safetensors import safe_open
 
 
 # ---------------------------------------------------------------------------
@@ -125,22 +124,32 @@ def normalise_lora_state_dict(
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
-    """Load a LoRA safetensors file -> (raw_state_dict, format_label, metadata)."""
-    raw: Dict[str, torch.Tensor] = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        metadata = dict(f.metadata() or {})
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
+def detect_lora_format(raw: Mapping[str, torch.Tensor]) -> str:
+    """The key-format label for one already-read file.
+
+    ``AdapterSession`` reads the safetensors and its metadata; this and the
+    mixed-format note below are the only parts of the load that were Lens's.
+    """
     n_sd = sum(1 for k in raw if k.startswith("lora_unet_"))
     n_ix = sum(1 for k in raw if k.startswith(INTERCHANGE_DIT_PREFIX))
-    fmt = "sd-scripts" if n_sd >= n_ix else "interchange"
+    if n_sd == 0 and n_ix == 0:
+        return "unknown"
+    return "sd-scripts" if n_sd >= n_ix else "interchange"
+
+
+def mixed_format_note(raw: Mapping[str, torch.Tensor]) -> Optional[str]:
+    """A console line when a file carries BOTH codecs, else None.
+
+    The minority keys are dropped by the per-format parser, which otherwise
+    looks like a LoRA that half applied.
+    """
+    n_sd = sum(1 for k in raw if k.startswith("lora_unet_"))
+    n_ix = sum(1 for k in raw if k.startswith(INTERCHANGE_DIT_PREFIX))
     if n_sd > 0 and n_ix > 0:
-        print(f"[LensLoRA] WARNING: mixed-format file (sd-scripts={n_sd}, "
-              f"interchange={n_ix}), loading dominant format {fmt!r}")
-    elif n_sd == 0 and n_ix == 0:
-        fmt = "unknown"
-    return raw, fmt, metadata
+        return (f"[LensLoRA] WARNING: mixed-format file (sd-scripts={n_sd}, "
+                f"interchange={n_ix}), loading dominant format "
+                f"{detect_lora_format(raw)!r}")
+    return None
 
 
 def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:
@@ -285,129 +294,63 @@ def iter_lens_lora_targets(
 
 
 # ---------------------------------------------------------------------------
-# Apply / restore
+# Apply (inference). The LIFETIME -- resolve, parse, refuse, install, restore --
+# belongs to ``core.adapters.AdapterSession``; what is Lens's is the target
+# scope, the two key codecs and one branch.
 # ---------------------------------------------------------------------------
 
-def apply_lora_group(
-    transformer: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Linear],
-    wrapped_keys: Set[str],
-    scope: Optional[Dict[str, bool]] = None,
-    default_alpha: Optional[float] = None,
-    branch_name: str = "lora",
-) -> int:
-    """Add one named branch per matching module to the composite covering it.
+def iter_lens_lora_slots(transformer: nn.Module):
+    """``(parent, slot, module_path)`` over the FULL scope, for ``AdapterSession``.
 
-    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
-    over the same module adds a branch beside the first rather than replacing
-    it. ``branch_name`` must be unique within the request.
-
-    Args:
-        transformer:           Lens transformer instance (on GPU).
-        grouped:               Output of normalise_lora_state_dict().
-        strength:              User-supplied scale multiplier.
-        lora_original_modules: Records true originals; first wrap per slot wins.
-        wrapped_keys:          Tracks which module_paths are currently wrapped.
-        scope:                 Which module groups to target. Defaults to the FULL
-                               scope, not DEFAULT_SCOPE: application is lookup-driven,
-                               so the checkpoint's own keys pick the targets, and the
-                               narrower default silently dropped the `mod` group that
-                               training can opt into.
-        default_alpha:         File-metadata alpha, used when a module has no per-key
-                               `.alpha` tensor (see alpha_from_metadata).
-        branch_name:           Unique per selected LoRA within the request.
-
-    Returns:
-        The number of modules this file bound a branch to.
+    Full scope on both the load and the unload path, not DEFAULT_SCOPE.
+    Application is lookup-driven -- a target the file names no key for gets no
+    branch -- so the checkpoint's own keys pick the targets, and the narrower
+    default would silently drop the ``mod`` group that training can opt into.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
-
-    effective_scope = scope if scope is not None else _FULL_SCOPE
-    applied = 0
-
-    # Materialised: the slots are replaced as we go, and a live traversal would
-    # start descending into the wrappers it just installed.
-    for module_path, parent, attr, linear in list(
-            iter_lens_lora_targets(transformer, effective_scope)):
-        weights = grouped.get(module_path)
-        if weights is None:
-            continue
-
-        down = weights["down"]
-        up   = weights["up"]
-        alpha_tensor = weights.get("alpha")
-
-        # Record the genuine original before the first wrap so unload can restore it.
-        true_original = (linear.original_module
-                         if isinstance(linear, CompositeAdapterLayer) else linear)
-        lora_original_modules.setdefault(module_path, true_original)
-
-        rank        = int(down.shape[0])
-        if alpha_tensor is not None:
-            alpha_value = float(alpha_tensor.item())
-        elif default_alpha is not None:
-            alpha_value = float(default_alpha)
-        else:
-            alpha_value = float(rank)
-
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
-                                  lora_name=module_path)
-        device = true_original.weight.device
-
-        # Match the base model's compute dtype (handles FP8-quantised bases).
-        if true_original.bias is not None and true_original.bias.dtype.is_floating_point:
-            compute_dtype = true_original.bias.dtype
-        elif (true_original.weight.dtype.is_floating_point and
-              "float8" not in str(true_original.weight.dtype)):
-            compute_dtype = true_original.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-
-        with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data   = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up   = wrapper.lora_up.to(dtype=compute_dtype)
-
-        # add_branch refolds the strength into the branch's own scale. Never
-        # multiply it onto the delta instead: same LoRA mathematically, but it
-        # loses bit-identity with the single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent, attr)
-        composite.add_branch(branch_name, wrapper, strength=strength)
-        wrapped_keys.add(module_path)
-        applied += 1
-
-    return applied
+    for module_path, parent, attr, _current in iter_lens_lora_targets(
+            transformer, _FULL_SCOPE):
+        yield parent, attr, module_path
 
 
-def restore_originals(
-    transformer: nn.Module,
-    lora_original_modules: Dict[str, nn.Linear],
-    wrapped_keys: Set[str],
-) -> int:
-    """Revert every composite-covered Lens Linear to its pre-LoRA original.
+def build_lora_branch(base: nn.Module, weights: Dict[str, torch.Tensor],
+                      module_path: str,
+                      default_alpha: Optional[float] = None) -> nn.Module:
+    """One branch over ``base``, at the file's own alpha/rank scale.
 
-    Driven by what is INSTALLED, through the enumerator the load path uses, so
-    the two cannot disagree about a slot's address. Bookkeeping for the restored
-    paths is dropped: a surviving `lora_original_modules` entry would be written
-    into the NEXT model loaded at the same path, i.e. one model's Linear
-    installed into another.
+    Alpha precedence: the per-key ``.alpha`` tensor, then ``default_alpha`` (the
+    file metadata's, see ``alpha_from_metadata``), then the rank. The request
+    strength is NOT folded in here: ``add_branch(strength=)`` refolds it into
+    this branch's own scale, and multiplying it onto the delta instead is
+    different arithmetic that loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import CompositeAdapterLayer, set_module_slot
+    from core.adapters import LoRALinearLayer
 
-    restored = 0
-    restored_keys: Set[str] = set()
-    # Full scope, so a composite from any apply scope is caught.
-    for module_path, parent, attr, current in list(
-            iter_lens_lora_targets(transformer, _FULL_SCOPE)):
-        if isinstance(current, CompositeAdapterLayer):
-            set_module_slot(parent, attr, lora_original_modules.get(
-                module_path, current.original_module))
-            restored_keys.add(module_path)
-            restored += 1
-    for key in restored_keys:
-        lora_original_modules.pop(key, None)
-    wrapped_keys -= restored_keys
-    return restored
+    down = weights["down"]
+    up = weights["up"]
+    alpha_tensor = weights.get("alpha")
+    rank = int(down.shape[0])
+    if alpha_tensor is not None:
+        alpha_value = float(alpha_tensor.item())
+    elif default_alpha is not None:
+        alpha_value = float(default_alpha)
+    else:
+        alpha_value = float(rank)
+
+    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
+    device = base.weight.device
+
+    # Match the base model's compute dtype (handles FP8-quantised bases).
+    if base.bias is not None and base.bias.dtype.is_floating_point:
+        compute_dtype = base.bias.dtype
+    elif (base.weight.dtype.is_floating_point and
+          "float8" not in str(base.weight.dtype)):
+        compute_dtype = base.weight.dtype
+    else:
+        compute_dtype = torch.bfloat16
+
+    with torch.no_grad():
+        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+    return branch

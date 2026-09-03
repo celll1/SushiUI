@@ -35,7 +35,9 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer, lora_branch_dtype  # noqa: E402
+from core.adapters import (  # noqa: E402
+    AdapterIncompatible, CompositeAdapterLayer, lora_branch_dtype,
+)
 from core.pipeline_backends.flux2 import (  # noqa: E402
     Flux2Mixin, _flux2_te_lora_targets, _flux2_transformer_lora_targets,
 )
@@ -598,9 +600,9 @@ def test_flux2_component_with_zero_matched_targets_refuses_and_warns(tmp_path,
     assert "lora_incompatible" in warning_codes(warnings_seen)
 
 
-def test_flux2_shape_mismatched_branch_is_skipped_not_assigned(tmp_path, warnings_seen):
-    """A wrong-width pair must leave its target BARE -- not carrying an empty
-    composite -- and warn `lora_partial` rather than failing in the denoise loop."""
+def test_flux2_shape_mismatched_branch_is_refused_atomically(tmp_path, warnings_seen):
+    """A wrong-width pair must refuse atomically, leaving the model bare,
+    and warn `lora_partial` (400 Bad Request) according to AdapterSession's contract."""
     path, tf_paths, _te = train_and_save(tmp_path)
     saved = load_file(path)
     victim = sorted(tf_paths)[0]
@@ -610,16 +612,20 @@ def test_flux2_shape_mismatched_branch_is_skipped_not_assigned(tmp_path, warning
     save_file(saved, str(broken), metadata={"model_type": "flux2"})
 
     transformer, text_encoder = _Transformer(), _TextEncoder()
-    _Backend(transformer, text_encoder)._load_lora_flux2(
-        [{"path": str(broken), "strength": STRENGTH}])
-    assert wrapped_paths(transformer) == tf_paths - {victim}
-    assert isinstance(dict(transformer.named_modules())[victim], nn.Linear)
+    before = dict(transformer.named_modules())
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(transformer, text_encoder)._load_lora_flux2(
+            [{"path": str(broken), "strength": STRENGTH}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(transformer)
+    assert not wrapped_paths(text_encoder)
+    assert dict(transformer.named_modules())[victim] is before[victim]
     assert "lora_partial" in warning_codes(warnings_seen)
 
 
-def test_flux2_unmatched_pair_warns_partial_and_still_generates(tmp_path, warnings_seen):
-    """A pair naming a module this model does not have is `lora_partial`, not a
-    refusal -- the clause that used to also carry the occupied count."""
+def test_flux2_unmatched_pair_refuses_partial(tmp_path, warnings_seen):
+    """A pair naming a module this model does not have refuses as `lora_partial`,
+    leaving the model bare rather than partially applied."""
     path, tf_paths, _te = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "lora_transformer_transformer_blocks_9_attn_to_q"
@@ -629,9 +635,12 @@ def test_flux2_unmatched_pair_warns_partial_and_still_generates(tmp_path, warnin
     save_file(saved, str(extended), metadata={"model_type": "flux2"})
 
     transformer, text_encoder = _Transformer(), _TextEncoder()
-    _Backend(transformer, text_encoder)._load_lora_flux2(
-        [{"path": str(extended), "strength": STRENGTH}])
-    assert wrapped_paths(transformer) == tf_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(transformer, text_encoder)._load_lora_flux2(
+            [{"path": str(extended), "strength": STRENGTH}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(transformer)
+    assert not wrapped_paths(text_encoder)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

@@ -449,7 +449,9 @@ def test_ltx2_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen):
     assert not wrapped_paths(dit), "a refused load left wrappers on the DiT"
 
 
-def test_ltx2_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings_seen):
+def test_ltx2_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen):
+    from core.adapters import AdapterIncompatible
+
     path, trained_paths = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = "lora_unet_transformer_blocks_9_attn1_to_q"
@@ -459,8 +461,10 @@ def test_ltx2_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings
     save_file(saved, str(partial), metadata={"model_type": "ltx2"})
 
     dit = build_dit()
-    assert _Backend(dit)._load_lora_ltx2([{"path": str(partial)}]) == len(trained_paths)
-    assert wrapped_paths(dit) == trained_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(dit)._load_lora_ltx2([{"path": str(partial)}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(dit)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 
@@ -604,6 +608,7 @@ def test_ltx2_evicted_model_drops_the_bookkeeping_before_the_next_load(tmp_path)
     backend = _Backend(dit_a)
     backend._load_lora_ltx2([{"path": path, "strength": 1.0}])
     a_ids = module_ids(dit_a) | {id(m) for m in backend._ltx2_lora_original_modules.values()}
+    _keep_a = list(dit_a.modules()) + list(backend._ltx2_lora_original_modules.values())
 
     backend.ltx2_components = {}
     backend._unload_lora_ltx2()

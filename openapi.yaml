@@ -10656,15 +10656,18 @@ components:
             fully overlap is refused
             (`lora_stacking_unsupported`) — these loaders REPLACE the target
             Linear, so they cannot sum two adapters over one module; two LoRAs
-            over disjoint modules still stack. **Z-Image, Krea 2, Anima and
-            Lens are the exceptions**: each covers a target with a composite
-            adapter holding one named branch per selected LoRA, so two of that
-            architecture's LoRAs over the same module SUM
+            over disjoint modules still stack. **Z-Image, Krea 2, Anima, Lens,
+            Ideogram 4 and MiniT2I are the exceptions**: each covers a target
+            with a composite adapter holding one named branch per selected LoRA,
+            so two of that architecture's LoRAs over the same module SUM
             (`base + delta_a + delta_b`, independent of selection order, each at
-            its own strength) instead of being refused, and those four never
-            emit `lora_stacking_unsupported`. FLUX.2, Ideogram 4, MiniT2I and
-            SenseNova still refuse. A partial application warns
-            (`lora_partial`) and generates.
+            its own strength) instead of being refused, and those six never
+            emit `lora_stacking_unsupported`. On the two-component ones the sum
+            is per component: Ideogram 4 stacks the conditional and the
+            unconditional transformer separately (a file may carry only one
+            branch's keys), and MiniT2I stacks the transformer and the FLAN-T5
+            text encoder separately. FLUX.2 and SenseNova still refuse. A
+            partial application warns (`lora_partial`) and generates.
           example: '[{"path": "my_lora.safetensors", "strength": 0.8}]'
         prompt_chunking_mode:
           type: string
@@ -11731,12 +11734,16 @@ components:
             A request that cannot be honoured FAILS rather than generating
             without the LoRA: a missing file (`lora_not_found`), an unreadable
             or unloadable one (`lora_load_failed`), and a file matching zero
-            target modules (`lora_incompatible`) all answer 400. A file whose
-            targets are ALL already wrapped by an earlier LoRA in the same
-            request is refused as `lora_stacking_unsupported` — neither
-            architecture composes two adapters over one module. Partial
-            outcomes (some targets unresolved, or some held by an earlier
-            LoRA, which then wins) apply the remainder and warn `lora_partial`.
+            target modules (`lora_incompatible`) all answer 400.
+            **LTX-2.3 covers each target with a composite adapter holding
+            one named branch per selected LoRA**, so two LTX-2.3 LoRAs over
+            the same module SUM (`base + delta_a + delta_b`, independent of
+            selection order, each at its own strength) and it never emits
+            `lora_stacking_unsupported`. On MiniMax-H3 a file whose targets
+            are ALL already wrapped by an earlier LoRA in the same request
+            is still refused with that code. Partial outcomes (some targets
+            unresolved, or on MiniMax-H3 some held by an earlier LoRA, which
+            then wins) apply the remainder and warn `lora_partial`.
 
             Per-LoRA `step_range` and per-block `unet_layer_weights` are NOT
             honoured on either architecture; LTX-2.3 warns when a request
@@ -13253,12 +13260,14 @@ components:
             A LoRA that binds NOTHING — a mismatched architecture, an
             unrecognised key format, or a dimensionally incompatible file —
             answers 400 (`lora_incompatible`) rather than returning audio the
-            LoRA never touched; so does a missing file (`lora_not_found`). A
-            file whose targets are all already wrapped by an earlier LoRA in
-            the same request is refused as `lora_stacking_unsupported`; two
-            LoRAs with non-overlapping targets DO stack. A partial bind
-            applies the rest and warns `lora_partial`. Not applied on MiniMax
-            Music 3 requests.
+            LoRA never touched; so does a missing file (`lora_not_found`). Each
+            target is covered by a composite adapter holding one named branch
+            per selected LoRA, so two ACE-Step LoRAs over the same module SUM
+            (`base + delta_a + delta_b`, independent of selection order, each
+            at its own strength) instead of the second being refused;
+            `lora_stacking_unsupported` is never emitted for this
+            architecture. A partial bind applies the rest and warns
+            `lora_partial`. Not applied on MiniMax Music 3 requests.
           items:
             type: object
             properties:

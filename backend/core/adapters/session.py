@@ -56,6 +56,7 @@ import torch.nn as nn
 
 from .codec import CodecRegistry, CodecSpec
 from .layers import CompositeAdapterLayer, get_module_slot, set_module_slot
+from .spec import ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN
 
 Slot = Union[str, int]
 
@@ -317,6 +318,7 @@ class AdapterSession:
         describe_zero_targets: Optional[
             Callable[["AdapterFile", "ApplyCounts"],
                      Union[str, BaseException, None]]] = None,
+        canonicalize_foreign_keys: bool = False,
     ):
         """``label`` prefixes the console; ``message_label`` names the adapter in
         a user-visible message and defaults to it. They are separate because one
@@ -336,6 +338,11 @@ class AdapterSession:
         ``describe_zero_targets(file, counts)`` returns the refusal text, an
         exception to refuse with (a second zero-target code), or ``None``: not a
         refusal, because this pass covers no part of this file.
+
+        ``canonicalize_foreign_keys`` asks for Diffusers/PEFT spellings
+        (``lora_A``/``lora_B``, the ``base_model.model.`` prefix) to be rewritten
+        to ``lora_down``/``lora_up`` BEFORE this architecture parses. Off by
+        default: see ``_canonicalize``.
         """
         self._resolve_path = resolve_path
         self._warn_callback = warn
@@ -346,6 +353,7 @@ class AdapterSession:
         self._missing_file = missing_file
         self._prepare_file = prepare_file
         self._describe_zero_targets = describe_zero_targets
+        self._canonicalize_foreign_keys = canonicalize_foreign_keys
         self._states: Dict[str, _ComponentState] = {}
 
     # -- bookkeeping -------------------------------------------------------
@@ -433,6 +441,36 @@ class AdapterSession:
 
     # -- parsing -----------------------------------------------------------
 
+    def _canonicalize(self, tensors: Mapping[str, torch.Tensor],
+                      metadata: Mapping[str, str]
+                      ) -> Tuple[Dict[str, torch.Tensor], CodecSpec]:
+        """``(the keys this architecture will see, the detected codec)``.
+
+        The REWRITE is opt-in: most architectures parse ``lora_A``/``lora_B``
+        themselves, and rewriting the suffix under them leaves their PEFT branch
+        parsing nothing, so a valid file is refused. See
+        ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
+        """
+        try:
+            codec = CodecRegistry.detect(tensors, metadata)
+        except Exception as e:
+            # Detection is advisory (nothing reads AdapterFile.codec yet) and it
+            # indexes shapes it has not validated -- a 1-D `.lora_A.bias` from a
+            # `lora_bias=True` PEFT export raises IndexError. A failed sniff must
+            # not turn the architecture's clean refusal into an unhandled 500.
+            self._log(f"[{self._label}] codec detection failed "
+                      f"({type(e).__name__}); treating the file as unknown")
+            return dict(tensors), CodecSpec(algorithm=ALGORITHM_UNKNOWN,
+                                            weight_decompose=False,
+                                            format=FORMAT_UNKNOWN,
+                                            metadata=dict(metadata or {}))
+        if self._canonicalize_foreign_keys and codec.format == FORMAT_PEFT:
+            # `normalize_keys` maps onto whatever key it computes without a
+            # collision guard, so a file carrying both `base_model.model.X` and
+            # a bare `X` silently loses one tensor here.
+            return CodecRegistry.normalize_keys(tensors, codec), codec
+        return dict(tensors), codec
+
     def _parse(self, index: int,
                config: Mapping[str, Any]) -> Optional[AdapterFile]:
         """One file, read and described. ``None`` when the architecture's
@@ -472,9 +510,7 @@ class AdapterSession:
         raw_range = config.get("step_range")
         step_range = tuple(int(x) for x in raw_range) if raw_range is not None else None
 
-        codec = CodecRegistry.detect(tensors, metadata)
-        if codec.format == "diffusers_peft":
-            tensors = CodecRegistry.normalize_keys(tensors, codec)
+        tensors, codec = self._canonicalize(tensors, metadata)
 
         self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
         return AdapterFile(

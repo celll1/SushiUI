@@ -539,3 +539,79 @@ def test_anima_a_narrow_checkpoint_wraps_only_the_targets_it_names(tmp_path,
     assert wrapped_paths(model) == mlp_paths
     assert warning_codes(warnings_seen) == []
     assert backend._unload_lora_anima() == len(mlp_paths)
+
+
+# ---------------------------------------------------------------------------
+# Interchange codec (`diffusion_model.*.lora_A/lora_B.weight`)
+# ---------------------------------------------------------------------------
+
+def interchange_copy(path, out_path):
+    """The same tensors, spelled the way third-party tooling exports them."""
+    remapped = {}
+    suffixes = {"down": "lora_A.weight", "up": "lora_B.weight", "alpha": "alpha"}
+    for key, tensor in load_file(path).items():
+        module_path, tag = anima_mod._parse_key(key)
+        remapped[f"{anima_mod.INTERCHANGE_DIT_PREFIX}{module_path}.{suffixes[tag]}"] = tensor
+    save_file(remapped, str(out_path), metadata={"model_type": "anima"})
+    return str(out_path)
+
+
+def test_anima_an_interchange_format_lora_applies_exactly_like_the_native_one(
+        tmp_path, warnings_seen):
+    """Anima's parser reads `lora_A`/`lora_B` itself, so a shared-layer rewrite
+    of those suffixes leaves it parsing nothing and refusing a valid file."""
+    native, trained_paths = train_and_save(tmp_path, scope=anima_mod.FULL_SCOPE)
+    foreign = interchange_copy(native, tmp_path / "interchange.safetensors")
+
+    model = build_model()
+    backend = _Backend(model)
+    applied = backend._load_lora_anima([{"path": foreign, "strength": STRENGTH}])
+
+    assert applied == len(trained_paths)
+    assert wrapped_paths(model) == trained_paths
+    assert warning_codes(warnings_seen) == []
+
+    modules = dict(model.named_modules())
+    for target in sorted(trained_paths):
+        composite = modules[target]
+        base = composite.original_module
+        # From the NATIVE file: `lora_A` must have landed as down, not swapped.
+        down, up = file_branch_tensors(native, target)
+        x = torch.randn(3, base.in_features)
+        expected = base(x) + lora_delta(down, up, x, ALPHA, RANK, STRENGTH)
+        assert torch.allclose(composite(x), expected, atol=1e-5), target
+
+    assert backend._unload_lora_anima() == len(trained_paths)
+
+
+def test_anima_declares_the_interchange_pairs_it_is_about_to_apply(tmp_path):
+    """The declared count is what `lora_partial` compares against; counting
+    `lora_down` keys alone reads an interchange file as zero pairs."""
+    native, trained_paths = train_and_save(tmp_path, scope=anima_mod.FULL_SCOPE)
+    foreign = interchange_copy(native, tmp_path / "ix.safetensors")
+
+    declared = AnimaMixin._anima_declared_branches(load_file(foreign), ("transformer",))
+    assert declared == len(trained_paths)
+
+
+def test_anima_a_peft_export_with_bias_tensors_loads_instead_of_crashing(
+        tmp_path, warnings_seen):
+    """`lora_bias=True` exports carry a 1-D `.lora_A.bias` that the session's
+    codec sniff indexes as 2-D. The sniff is advisory and runs outside every
+    try/except on the load path, so an unguarded one turns this file's clean
+    outcome into an unhandled 500."""
+    native, trained_paths = train_and_save(tmp_path, scope=ATTENTION_ONLY)
+    saved = load_file(interchange_copy(native, tmp_path / "ix.safetensors"))
+    for key in [k for k in saved if k.endswith(".lora_A.weight")]:
+        saved[key[: -len(".weight")] + ".bias"] = torch.zeros(RANK)
+    biased = tmp_path / "with_bias.safetensors"
+    save_file(saved, str(biased), metadata={"model_type": "anima"})
+
+    model = build_model()
+    backend = _Backend(model)
+    applied = backend._load_lora_anima([{"path": str(biased), "strength": STRENGTH}])
+
+    assert applied == len(trained_paths)
+    assert wrapped_paths(model) == trained_paths
+    # The bias tensors themselves are not applied, and Anima says so.
+    assert warning_codes(warnings_seen) == ["anima_lora_keys_unrecognised"]

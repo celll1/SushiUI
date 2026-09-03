@@ -352,23 +352,26 @@ def test_enumeration_passes_the_branch_dtype_default_through():
 #: change, not a test-maintenance chore -- see
 #: docs/guides/LYCORIS_ADAPTER_DESIGN.md.
 ORDINARY_ONLY = {("lora", False)}
-#: The Tier-1 four, whose generation branch builders run on
+#: The architectures whose generation branch builders run on
 #: ``build_adapter_branch`` and which are gated by
-#: ``adapter_lycoris_roundtrip_cheap_test.py``.
+#: ``adapter_lycoris_roundtrip_cheap_test.py``. MiniMax-H3 and SenseNova are
+#: gated separately; SD1.5/SDXL never reach ``AdapterSession``.
 ADDITIVE_LYCORIS = ORDINARY_ONLY | {("loha", False), ("lokr", False)}
 SHIPPED_PAIRS = {
     "sd15": ORDINARY_ONLY,
     "sdxl": ORDINARY_ONLY,
     "zimage": ADDITIVE_LYCORIS,
-    "anima": ORDINARY_ONLY,
-    "lens": ORDINARY_ONLY,
-    "ideogram4": ORDINARY_ONLY,
+    "anima": ADDITIVE_LYCORIS,
+    "lens": ADDITIVE_LYCORIS,
+    "ideogram4": ADDITIVE_LYCORIS,
     "minit2i": ADDITIVE_LYCORIS,
     "krea2": ADDITIVE_LYCORIS,
-    "flux2": ORDINARY_ONLY,
+    "flux2": ADDITIVE_LYCORIS,
     "ltx2": ADDITIVE_LYCORIS,
     "minimax_h3": ORDINARY_ONLY,
-    "acestep": ORDINARY_ONLY,
+    # sd-scripts codec only: the diffusers/PEFT branch bakes (lora_A|lora_B)
+    # into its key regexes, so a LyCORIS file reaches no grouper there.
+    "acestep": ADDITIVE_LYCORIS,
     "sensenova": ORDINARY_ONLY,
 }
 

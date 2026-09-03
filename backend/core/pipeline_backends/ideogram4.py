@@ -168,11 +168,24 @@ class Ideogram4Mixin:
         return [
             AdapterComponent(name="transformer", module=cond,
                              iter_targets=iter_ideogram4_lora_slots,
-                             build_branch=self._ideogram4_build_lora_branch),
+                             build_branch=self._ideogram4_build_lora_branch,
+                             block_swap_active=self._ideogram4_block_swap_live),
             AdapterComponent(name="unconditional_transformer", module=uncond,
                              iter_targets=iter_ideogram4_lora_slots,
-                             build_branch=self._ideogram4_build_lora_branch),
+                             build_branch=self._ideogram4_build_lora_branch,
+                             block_swap_active=self._ideogram4_block_swap_live),
         ]
+
+    def _ideogram4_block_swap_live(self) -> bool:
+        """Is an offloader already splitting either transformer's blocks?
+
+        Accurate here: ``_ideogram4_stage_transformers`` sets
+        ``_ideogram4_offloaders`` (to [] or to one entry per half) and runs
+        before ``_load_lora_ideogram4``. Not per-component: block swap is
+        enabled for both halves or neither.
+        """
+        return any(bool(getattr(off, "blocks_to_swap", 0))
+                   for _name, off in getattr(self, "_ideogram4_offloaders", []) or [])
 
     @property
     def _ideogram4_lora_orig(self):
@@ -225,15 +238,17 @@ class Ideogram4Mixin:
         the module path: both transformers carry identical paths, and only the key
         namespace (``lora_unet_`` / ``lora_uncond_``) tells them apart.
         """
-        from core.adapters import PreparedBranch
+        from core.adapters import SHAPE_MISMATCH, PreparedBranch
         from core.models.ideogram4.ideogram4_lora import build_lora_branch
 
         groups = request.prepared
-        weights = groups[request.component].get(request.module_path)
-        if weights is None:
+        group = groups[request.component].get(request.module_path)
+        if group is None:
             return None
-        branch = build_lora_branch(request.base, weights, request.module_path,
+        branch = build_lora_branch(request.base, group, request.module_path,
                                    default_alpha=groups["alpha"])
+        if branch is SHAPE_MISMATCH:
+            return branch
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta -- a post-multiply is different arithmetic and
         # loses bit-identity with the single-LoRA numerics this replaces.

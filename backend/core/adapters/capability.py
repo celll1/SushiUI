@@ -45,32 +45,36 @@ _ADDITIVE_LYCORIS: FrozenSet[AdapterPair] = frozenset(
 #: reads it through ``declare_adapter_capability``, generation through
 #: ``AdapterSession``.
 #:
-#: The four LyCORIS rows are the ones whose generation branch builder goes
-#: through ``core.adapters.groups.build_adapter_branch`` AND that have no fused
-#: target and no quantization policy in the way; each is gated by
-#: ``backend/tests/adapter_lycoris_roundtrip_cheap_test.py``. SD1.5/SDXL cannot
-#: be flipped from here at all -- they load through diffusers and never reach
-#: ``AdapterSession``.
+#: The LyCORIS rows are the ones whose generation branch builder goes through
+#: ``core.adapters.groups.build_adapter_branch``; each is gated by
+#: ``backend/tests/adapter_lycoris_roundtrip_cheap_test.py``. ACE-Step carries
+#: the pair for its sd-scripts codec only -- its diffusers/PEFT branch bakes
+#: ``(lora_A|lora_B)`` into its key regexes, so a LyCORIS file cannot reach a
+#: grouper there and falls out as zero targets. MiniMax-H3 and SenseNova are
+#: gated separately (their ConvRot forward and activation dtype policy dominate
+#: the step, and MiniMax-H3 needs ``split_group_on_out_rows`` on its fused-QKV
+#: path). SD1.5/SDXL cannot be flipped from here at all -- they load through
+#: diffusers and never reach ``AdapterSession``.
 ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,
     "zimage": _ADDITIVE_LYCORIS,
-    "anima": _ORDINARY_ONLY,
-    "lens": _ORDINARY_ONLY,
-    "ideogram4": _ORDINARY_ONLY,
+    "anima": _ADDITIVE_LYCORIS,
+    "lens": _ADDITIVE_LYCORIS,
+    "ideogram4": _ADDITIVE_LYCORIS,
     "minit2i": _ADDITIVE_LYCORIS,
     "krea2": _ADDITIVE_LYCORIS,
-    "flux2": _ORDINARY_ONLY,
+    "flux2": _ADDITIVE_LYCORIS,
     "ltx2": _ADDITIVE_LYCORIS,
     "minimax_h3": _ORDINARY_ONLY,
-    "acestep": _ORDINARY_ONLY,
+    "acestep": _ADDITIVE_LYCORIS,
     "sensenova": _ORDINARY_ONLY,
 })
 
 #: Reasons shared by the architectures the design-doc table treats alike.
-PHASE2_PENDING = ("LoHa and LoKr reference paths are designed but not "
-                  "implemented (Phase 2), so no checkpoint of either can be "
-                  "written, resumed or applied")
+PHASE2_PENDING = ("LoHa and LoKr generate on the architectures whose row "
+                  "enables them, but this one is not among them yet, so no "
+                  "checkpoint of either can be applied to it")
 PHASE3_PENDING = ("DoRA is planned for dense Linear targets but the dense-DoRA "
                   "phase (Phase 3) has not landed")
 PHASE3_PENDING_DENSE_ONLY = (
@@ -93,13 +97,22 @@ BLOCK_SWAP_ADAPTER_ORDER: Mapping[str, str] = MappingProxyType({
     # prepare_block_devices does blocks[i].to(device) for EVERY tensor and only
     # then returns the swapped blocks' Linear weights to the host, so factors
     # installed first are swept to the device and never offloaded again.
+    # FLUX.2 loads its LoRAs in stage 1 and builds create_flux_block_offloader
+    # hundreds of lines later, in stage 3 of the same generate function.
     "zimage": BEFORE_SPLIT,
+    "flux2": BEFORE_SPLIT,
     "krea2": NO_BLOCK_SWAP,
-    # _minit2i_stage_transformer / _ensure_ltx2_block_swap_wrapper have already
-    # run: a branch over a swapped-out block is built on the HOST and nothing
-    # ever moves it.
+    "acestep": NO_BLOCK_SWAP,
+    # The offloader is already built when the adapters install, so a branch over
+    # a swapped-out block is built on the HOST and nothing ever moves it:
+    # _minit2i_stage_transformer / _ensure_ltx2_block_swap_wrapper, and
+    # _anima_stage_transformer / _lens_stage_transformer /
+    # _ideogram4_stage_transformers, each one call before the LoRA load.
     "minit2i": AFTER_SPLIT,
     "ltx2": AFTER_SPLIT,
+    "anima": AFTER_SPLIT,
+    "lens": AFTER_SPLIT,
+    "ideogram4": AFTER_SPLIT,
 })
 
 #: The refusal, and the advisory. Both name the mechanism, because "not

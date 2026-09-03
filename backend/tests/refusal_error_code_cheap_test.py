@@ -170,6 +170,18 @@ def _zimage_backend():
     return _B()
 
 
+def _sensenova_backend():
+    """One of the two architectures still behind their own LyCORIS gate, so the
+    capability refusal below has somewhere to fire."""
+    from core.pipeline_backends.sensenova import SenseNovaMixin
+
+    class _B(SenseNovaMixin):
+        def __init__(self):
+            self.sensenova_components = {"transformer": _Transformer()}
+
+    return _B()
+
+
 def _minit2i_backend():
     from core.pipeline_backends.minit2i import MiniT2IMixin
 
@@ -230,24 +242,25 @@ def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
     by construction and carries upstream's ``lora_dim`` alpha, which read as
     "an alpha with no rank" and blamed the user for a valid file.
 
-    The additive rows run on ANIMA, which has not been flipped; Z-Image's row
-    now enables LoHa and LoKr. The decomposition axis stays on Z-Image and is
-    the sharper case for it: the algebra underneath is enabled and the refusal
-    must still name DoRA alone."""
+    The additive rows run on SENSENOVA, one of the two architectures still
+    behind their own gate. The decomposition axis stays on Z-Image and is the
+    sharper case for it: the algebra underneath is enabled and the refusal must
+    still name DoRA alone."""
     stem = "lora_unet_layers_0_attn_to_q"
     alpha = {f"{stem}.alpha": torch.tensor(2.0)}
     cases = {
-        "loha": (_anima_backend, {f"{stem}.hada_w1_a": torch.zeros(D, 2),
-                                  f"{stem}.hada_w1_b": torch.zeros(2, D),
-                                  f"{stem}.hada_w2_a": torch.zeros(D, 2),
-                                  f"{stem}.hada_w2_b": torch.zeros(2, D), **alpha},
+        "loha": (_sensenova_backend,
+                 {f"{stem}.hada_w1_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w1_b": torch.zeros(2, D),
+                  f"{stem}.hada_w2_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w2_b": torch.zeros(2, D), **alpha},
                  "loha adapters are not enabled"),
         # No rank to sniff: lokr_w1/lokr_w2 are the operands themselves.
-        "lokr_full": (_anima_backend,
+        "lokr_full": (_sensenova_backend,
                       {f"{stem}.lokr_w1": torch.zeros(2, 2),
                        f"{stem}.lokr_w2": torch.zeros(D // 2, D // 2), **alpha},
                       "lokr adapters are not enabled"),
-        "lokr_factored": (_anima_backend,
+        "lokr_factored": (_sensenova_backend,
                           {f"{stem}.lokr_w1": torch.zeros(2, 2),
                            f"{stem}.lokr_w2_a": torch.zeros(D // 2, 2),
                            f"{stem}.lokr_w2_b": torch.zeros(2, D // 2), **alpha},
@@ -258,7 +271,7 @@ def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
                   f"{stem}.dora_scale": torch.ones(D), **alpha},
                  "dora adapters are not enabled"),
     }
-    loaders = {_anima_backend: lambda b, c: b._load_lora_anima(c),
+    loaders = {_sensenova_backend: lambda b, c: b._load_lora_sensenova(c),
                _zimage_backend: lambda b, c: b._load_lora_zimage(c)}
     for label, (backend, tensors, expected) in cases.items():
         path = tmp_path / f"{label}.safetensors"

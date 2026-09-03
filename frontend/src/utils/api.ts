@@ -317,6 +317,18 @@ export interface CurrentComponentsResponse {
   slots: ComponentSlotState[];
 }
 
+// The adapter family a checkpoint IS, as detected by the backend's one
+// detector (core/adapters/codec.py). "unknown" means detection could not name
+// the algebra -- reported as unknown rather than guessed as "lora", and not an
+// error: such a file is still listed and still applied.
+export type AdapterFamily = "lora" | "loha" | "lokr" | "dora" | "doha" | "dokr";
+export type DetectedAdapterType = AdapterFamily | "unknown";
+// What a request may ASSERT on a loras[] item. "auto" (the default) detects;
+// any other value must match the file or the request is refused 400 with
+// code "lora_adapter_type_mismatch" -- it never converts the file.
+export type AdapterTypeAssertion = "auto" | AdapterFamily;
+export const ADAPTER_TYPE_AUTO = "auto";
+
 export interface LoRAConfig {
   path: string;
   strength: number;
@@ -326,13 +338,36 @@ export interface LoRAConfig {
     [layerName: string]: number;
   };
   step_range: [number, number];
+  // Optional: omitted means "auto" server-side (backend LORA_ITEM_DEFAULTS).
+  adapter_type?: AdapterTypeAssertion;
 }
 
 // Architecture detected from a LoRA file's own key names at scan time
 // (NOT the currently loaded model). "unknown" is a first-class value.
-export type LoRAArch = "sd15" | "sdxl" | "zimage" | "flux2" | "minimax_h3" | "unknown";
+export type LoRAArch =
+  | "sd15" | "sdxl" | "zimage" | "anima" | "lens" | "ideogram4" | "minit2i"
+  | "krea2" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova"
+  | "unknown";
 
-export interface LoRAListEntry {
+// The adapter description GET /loras and GET /loras/{id} report per file.
+// All of it is detected from the file itself, never from the loaded model.
+export interface LoRAAdapterDetection {
+  adapter_type: DetectedAdapterType;
+  adapter_algorithm: "lora" | "loha" | "lokr" | "unknown";
+  weight_decompose: boolean;
+  adapter_format: "sushiui_canonical" | "lycoris_kohya" | "diffusers_peft" | "unknown";
+  // "ok" = nothing in the file's own description refuses it (ordinary LoRA is
+  // always ok: the engine does not validate it either); "unknown" = the algebra
+  // could not be named; "invalid" = a named LyCORIS algebra whose declaration
+  // is inconsistent. NEVER means "this build has not enabled that family" --
+  // that is ArchCapabilities.adapter_families.
+  adapter_state: "ok" | "unknown" | "invalid";
+  adapter_state_reason: string | null;
+  adapter_rank: number | null;
+  adapter_alpha: number | null;
+}
+
+export interface LoRAListEntry extends Partial<LoRAAdapterDetection> {
   name: string;
   path: string;
   arch: LoRAArch;
@@ -347,7 +382,7 @@ export interface LoRARecommendedSettings {
   source: "student_steps";
 }
 
-export interface LoRAInfo {
+export interface LoRAInfo extends Partial<LoRAAdapterDetection> {
   name: string;
   path: string;
   arch?: LoRAArch;
@@ -1537,6 +1572,10 @@ export interface GenerationDefaultsResponse {
   // PARAM_BOUNDS). Optional so an older backend without the key still
   // type-checks. See frontend/src/utils/paramBounds.ts's resolveBound().
   param_bounds?: ParamBoundsRegistry;
+  // Defaults of ONE `loras[]` entry (backend LORA_ITEM_DEFAULTS): a list
+  // default cannot carry its elements'. Today `{ adapter_type: "auto" }`.
+  // Optional so an older backend without the key still type-checks.
+  lora_item?: Record<string, unknown>;
 }
 
 // One PARAM_BOUNDS entry (backend/api/param_defaults.py). `builtin` is
@@ -1655,6 +1694,23 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
 export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boolean>> =>
   (await api.get("/schema/bundle-vae-defaults-by-arch")).data;
 
+// One architecture's adapter-family enablement (ArchCapabilities.adapter_families).
+// `supported` lists the families that load and generate there; `unsupported`
+// maps every other family to the backend's own refusal text -- the same
+// sentence the request would come back with. `block_swap` is present only where
+// the architecture has declared its adapter-install order: a LoHa/LoKr branch's
+// factors are bare parameters that no block offloader moves, so the combination
+// is either refused up front or correct-but-not-offloaded.
+export interface ArchAdapterFamilies {
+  supported: AdapterFamily[];
+  unsupported: Partial<Record<AdapterFamily, string>>;
+  block_swap?: {
+    order: "before_split" | "after_split" | "no_block_swap";
+    effect: "refused" | "not_offloaded" | "not_applicable";
+    code: string | null;
+  };
+}
+
 // Per-architecture capability matrix (GET /schema/arch-capabilities). Mirrors
 // backend/api/arch_capabilities.py: `unsupported[arch][feature]` is a factual
 // one-line reason the feature has NO effect on that architecture. Panels use it
@@ -1668,6 +1724,13 @@ export interface ArchCapabilities {
   supported_values?: Record<string, Record<string, string[]>>;
   feature_params: Record<string, string[]>;
   feature_labels: Record<string, string>;
+  // arch -> which adapter families that architecture can APPLY, and the
+  // factual reason for each one it cannot (backend ENABLED_ADAPTER_PAIRS, the
+  // single place a family is enabled). Paired with the per-file
+  // `adapter_type` of GET /loras, this is what lets the selector say whether a
+  // chosen checkpoint will be accepted BEFORE generating. Optional so an older
+  // backend without the key still type-checks.
+  adapter_families?: Record<string, ArchAdapterFamilies>;
   // Architectures whose transformer the in-place weight-only INT8 converter is
   // wired for, i.e. the ones that honor unet_quantization="int8". Served
   // straight from backend RUNTIME_INT8_ARCHS

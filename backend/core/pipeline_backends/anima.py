@@ -89,6 +89,7 @@ class AnimaMixin:
             session = AdapterSession(
                 resolve_path=self._anima_resolve_lora_path,
                 warn=self._anima_lora_warn,
+                architecture="anima",
                 label="Anima LoRA",
                 count_declared_branches=self._anima_declared_branches,
                 missing_file=self._anima_missing_lora,
@@ -131,13 +132,14 @@ class AnimaMixin:
 
     @staticmethod
     def _anima_declared_branches(tensors, _components) -> int:
-        """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
-        spells its halves ``lora_A``/``lora_B``, so the session's default count
-        would be zero for every such file and never report a partial one.
+        """Complete factor GROUPS, not ``.lora_down.weight`` keys: the
+        interchange codec spells its halves ``lora_A``/``lora_B`` and a LyCORIS
+        file has neither, so a key tally would be zero for both and never
+        report a partial one.
         """
-        from core.models.anima.anima_lora import normalise_lora_state_dict
+        from core.models.anima.anima_lora import declared_branch_count
 
-        return len(normalise_lora_state_dict(tensors))
+        return declared_branch_count(tensors)
 
     def _anima_prepare_lora_file(self, file):
         """This file's grouped tensors, parsed and reported once.

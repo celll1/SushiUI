@@ -19,20 +19,24 @@ from config.settings import settings
 # Latent geometry: Qwen-Image VAE 8x downscale + 2x2 patchify => 16px token grid.
 GRID_ALIGN = 16
 
-_LORA_SUFFIX_BY_TAG = {"down": ".lora_down.weight", "up": ".lora_up.weight", "alpha": ".alpha"}
-
-
-def _dropped_lora_keys(raw: Dict[str, Any], grouped: Dict[str, Dict[str, Any]]) -> List[str]:
+def _dropped_lora_keys(raw: Dict[str, Any], grouped: Dict[str, Any]) -> List[str]:
     """Source keys that carry nothing into ``grouped``: unparseable, foreign
     (``lora_te_*``), or a down without its up. Counting ``grouped`` alone hides
     them, and a dropped key is a silently weaker LoRA rather than a no-op
-    (mirrors ``anima_lora.unmatched_source_keys``)."""
-    from core.models.krea2.krea2_lora import flatten_to_key
-    kept = set()
-    for module_path, tensors in grouped.items():
-        stem = flatten_to_key(module_path)
-        kept.update(stem + suffix for tag, suffix in _LORA_SUFFIX_BY_TAG.items() if tag in tensors)
-    return sorted(set(raw) - kept)
+    (mirrors ``anima_lora.unmatched_source_keys``).
+
+    Asks the parser what each key IS rather than re-spelling each group back
+    into ``.lora_down.weight``: the shared suffix table accepts several
+    spellings per tensor, so a reconstruction reports a file that applied in
+    full as entirely dropped.
+    """
+    from core.models.krea2.krea2_lora import _parse_key
+    dropped = []
+    for key in raw:
+        parsed = _parse_key(key)
+        if parsed is None or parsed[0] not in grouped:
+            dropped.append(key)
+    return sorted(dropped)
 
 
 def _normalize_resolution(width: int, height: int) -> tuple:
@@ -206,6 +210,7 @@ class Krea2Mixin:
             session = AdapterSession(
                 resolve_path=self._krea2_resolve_lora_path,
                 warn=self._krea2_lora_warn,
+                architecture="krea2",
                 # The console prefix this backend has always used, and the
                 # noun its user-visible failure text spells with a space.
                 label="Krea2 LoRA",
@@ -253,13 +258,14 @@ class Krea2Mixin:
 
     @staticmethod
     def _krea2_declared_branches(tensors, _components) -> int:
-        """Down/up PAIRS, not ``.lora_down.weight`` keys: a foreign
+        """Complete factor GROUPS, not ``.lora_down.weight`` keys: a foreign
         (``lora_te_*``) or unpaired key would inflate the count the session
-        compares against and warn ``lora_partial`` on a file that applied in full.
+        compares against and warn ``lora_partial`` on a file that applied in
+        full, and a LyCORIS file has no such key at all.
         """
-        from core.models.krea2.krea2_lora import normalise_lora_state_dict
+        from core.models.krea2.krea2_lora import declared_branch_count
 
-        return len(normalise_lora_state_dict(tensors))
+        return declared_branch_count(tensors)
 
     def _krea2_prepare_lora_file(self, file):
         """This file's grouped tensors, parsed and reported once.

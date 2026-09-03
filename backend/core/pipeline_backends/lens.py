@@ -102,6 +102,7 @@ class LensMixin:
             session = AdapterSession(
                 resolve_path=self._lens_resolve_lora_path,
                 warn=self._lens_lora_warn,
+                architecture="lens",
                 label="Lens LoRA",
                 count_declared_branches=self._lens_declared_branches,
                 missing_file=self._lens_missing_lora,
@@ -145,13 +146,14 @@ class LensMixin:
 
     @staticmethod
     def _lens_declared_branches(tensors, _components) -> int:
-        """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
-        spells its halves ``lora_A``/``lora_B``, so the session's default count
-        would be zero for every such file and never report a partial one.
+        """Complete factor GROUPS, not ``.lora_down.weight`` keys: the
+        interchange codec spells its halves ``lora_A``/``lora_B`` and a LyCORIS
+        file has neither, so a key tally would be zero for both and never
+        report a partial one.
         """
-        from core.models.lens.lens_lora import normalise_lora_state_dict
+        from core.models.lens.lens_lora import declared_branch_count
 
-        return len(normalise_lora_state_dict(tensors))
+        return declared_branch_count(tensors)
 
     @staticmethod
     def _lens_prepare_lora_file(file):

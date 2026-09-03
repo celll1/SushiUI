@@ -73,8 +73,8 @@ class SenseNovaMixin:
 
     @staticmethod
     def _sensenova_declared_branches(tensors, _components) -> int:
-        from core.models.sensenova.sensenova_lora import normalise_lora_state_dict
-        return len(normalise_lora_state_dict(tensors))
+        from core.models.sensenova.sensenova_lora import declared_branch_count
+        return declared_branch_count(tensors)
 
     @staticmethod
     def _sensenova_prepare_lora_file(file):
@@ -119,6 +119,7 @@ class SenseNovaMixin:
             session = AdapterSession(
                 resolve_path=self._sensenova_resolve_lora_path,
                 warn=self._sensenova_lora_warn,
+                architecture="sensenova",
                 label="SenseNova LoRA",
                 count_declared_branches=self._sensenova_declared_branches,
                 missing_file=self._sensenova_missing_lora,

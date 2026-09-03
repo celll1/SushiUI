@@ -22,6 +22,9 @@ from typing import Any, Dict, Generator, Iterable, Optional, Tuple
 import torch
 from torch import nn
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
+
 
 def _flatten(module_path: str) -> str:
     return module_path.replace(".", "__")
@@ -38,26 +41,35 @@ TE_KEY_PREFIX = "lora_te_"
 TE_NAMESPACE = "te::"
 
 
-def _parse_key(key: str) -> Optional[Tuple[str, str]]:
+def _minit2i_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> namespaced module path, or None for a foreign key."""
     for prefix, ns in (("lora_unet_", ""), (TE_KEY_PREFIX, TE_NAMESPACE)):
-        if key.startswith(prefix):
-            rest = key[len(prefix):]
-            for suffix, tag in ((".lora_down.weight", "down"), (".lora_up.weight", "up"), (".alpha", "alpha")):
-                if rest.endswith(suffix):
-                    return ns + _restore(rest[: -len(suffix)]), tag
-            return None
+        if raw_stem.startswith(prefix):
+            return ns + _restore(raw_stem[len(prefix):])
     return None
 
 
-def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        grouped.setdefault(module_path, {})[suffix] = tensor
-    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+def _parse_key(key: str) -> Optional[Tuple[str, str]]:
+    """``(namespaced module path, canonical tensor name)``, or None."""
+    split = split_adapter_suffix(key)
+    if split is None:
+        return None
+    module_path = _minit2i_stem(split[0])
+    return None if module_path is None else (module_path, split[1])
+
+
+def declared_group_stems(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
+    """The groups this file declares, keyed like ``normalise_lora_state_dict``
+    so the per-pass counter can split them on ``TE_NAMESPACE``; see
+    ``declared_groups``."""
+    return declared_groups(raw, _minit2i_stem)
+
+
+def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
+    """Down/up groups by namespaced module path. ``TensorGroup`` answers to
+    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads."""
+    grouped = group_adapter_tensors(raw, _minit2i_stem).groups
+    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
 
 
 def detect_lora_format(keys: Iterable[str]) -> str:

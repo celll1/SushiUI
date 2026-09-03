@@ -252,6 +252,30 @@ def get_warnings(generation_id: Optional[int] = None) -> list:
         return list(bucket)
 
 
+def error_context(exc: BaseException, generation_id: Optional[int] = None) -> Dict[str, Any]:
+    """The ``code``/``warnings`` an error response should carry for a failure.
+
+    ``code`` is whatever the raiser tagged onto ``exc``
+    (`api.error_handlers.with_error_code`, or the `code=` argument of an
+    `APIError`) -- never inferred from the bucket, because a refusal's warned
+    text and its exception text deliberately differ on several architectures.
+    ``warnings`` is this generation's own bucket, so a refusal that recorded
+    several codes reports all of them.
+
+    Returned as kwargs for the `APIError` the route raises in place of ``exc``.
+    """
+    return {"code": getattr(exc, "code", None), "warnings": get_warnings(generation_id)}
+
+
+def attach_error_context(exc: BaseException, generation_id: Optional[int] = None) -> None:
+    """Same, for an `APIError` that is re-raised rather than replaced.
+
+    Its ``code`` already came from the raiser; only the warnings are missing.
+    """
+    if getattr(exc, "warnings", None) is None:
+        exc.warnings = get_warnings(generation_id)
+
+
 def update_progress(current_step: int, total_steps: int, phase: Optional[str] = None) -> None:
     """Call from the per-step progress callback (same callback that feeds the WS broadcast)."""
     with _lock:

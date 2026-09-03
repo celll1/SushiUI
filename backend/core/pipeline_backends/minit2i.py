@@ -585,6 +585,7 @@ class MiniT2IMixin:
             TE_NAMESPACE,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak wrappers into this one. `_minit2i_cleanup`
@@ -608,7 +609,7 @@ class MiniT2IMixin:
                 message = f"MiniT2I LoRA '{lora_file}' not found in any configured LoRA directory"
                 print(f"[MiniT2I LoRA] ERROR: {message}")
                 self._minit2i_lora_warn(message, code="lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
@@ -620,7 +621,7 @@ class MiniT2IMixin:
                 message = (f"MiniT2I LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._minit2i_lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
             prepared.append({
                 "file": lora_file,
                 # Unique within the request, so selecting the SAME file twice is two
@@ -683,6 +684,7 @@ class MiniT2IMixin:
         some of its modules is reported through add_warning.
         """
         from core.models.minit2i.minit2i_lora import apply_lora_group
+        from api.error_handlers import with_error_code
         components = self.minit2i_components or {}
         transformer = components.get("transformer")
         originals, keys = self._minit2i_lora_state(
@@ -714,7 +716,7 @@ class MiniT2IMixin:
                 )
                 print(f"[MiniT2I LoRA] ERROR: {message}")
                 self._minit2i_lora_warn(message, code="lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             if applied_all < len(grouped):
                 self._minit2i_lora_warn(

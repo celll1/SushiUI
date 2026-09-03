@@ -398,6 +398,7 @@ class Flux2Mixin:
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
         from core.adapters import get_module_slot
 
         print(f"[FLUX.2 LoRA] Loading {len(lora_configs)} LoRA(s)...")
@@ -422,7 +423,7 @@ class Flux2Mixin:
                 print(f"[FLUX.2 LoRA]   Searched in: {lora_manager.lora_dir}")
                 print(f"[FLUX.2 LoRA]   Additional dirs: {lora_manager.additional_dirs}")
                 self._flux2_lora_warn(message, code="lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
 
             print(f"[FLUX.2 LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
             if layer_weights:
@@ -486,7 +487,7 @@ class Flux2Mixin:
                 message = (f"FLUX.2 LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._flux2_lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
 
             if not unet_keys_present and not te_keys_present:
                 message = (f"LoRA '{lora_file}': no FLUX.2 LoRA tensors found (expected "
@@ -494,7 +495,7 @@ class Flux2Mixin:
                            f"Sample keys in file: {lora_keys_sample}")
                 print(f"[FLUX.2 LoRA] ERROR: {message}")
                 self._flux2_lora_warn(message, code="lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             unet_pairs = sum(1 for k in lora_state_dict
                              if k.startswith("lora_transformer_") and k.endswith(".lora_down.weight"))
@@ -526,7 +527,7 @@ class Flux2Mixin:
                            f"different model. Sample keys in file: {lora_keys_sample}")
                 print(f"[FLUX.2 LoRA] ERROR: {message}")
                 self._flux2_lora_warn(message, code="lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             if applied_count == 0:
                 # Every tensor the file carries belongs to a component the request

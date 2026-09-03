@@ -14958,7 +14958,20 @@ components:
         code:
           type: string
           nullable: true
-          description: Machine-readable identifier for the degradation; null when the emitter passed no code.
+          description: >-
+            Machine-readable identifier for the degradation; null when the
+            emitter passed no code. Deliberately NOT an enum: the set is open
+            (each architecture adds its own, and there are well over a hundred),
+            so freezing it here would make every new architecture's first
+            warning a spec-breaking change and would license a generated client
+            to reject an otherwise valid response. The stable cross-architecture
+            subset a client may branch on is `lora_not_found`,
+            `lora_load_failed`, `lora_incompatible`, `lora_partial`,
+            `lora_no_targets`, `quantization_fallback` and
+            `attention_kernel_fallback`; everything else is
+            architecture-specific and prefixed with the architecture name.
+            The first three also appear as `ErrorResponse.code` when they cause
+            a refusal.
           example: unsupported_param
         message:
           type: string
@@ -16451,6 +16464,19 @@ components:
           type: string
           description: Detailed error information
           example: "Invalid parameter: steps must be between 1 and 150"
+        code:
+          type: string
+          nullable: true
+          description: >-
+            Machine-readable identifier for a DELIBERATE refusal, from the same
+            open taxonomy as `GenerationWarning.code`. A generation that refuses
+            rather than degrading (a LoRA that is missing, unreadable, or matches
+            no target module) reports the same code here that it recorded in
+            `warnings[]`, so a client can branch on the reason without parsing
+            `error`/`detail`. Null for any failure that is not a tagged refusal
+            -- an unexpected exception still produces a well-formed response with
+            `code: null`.
+          example: "lora_incompatible"
         status_code:
           type: integer
           description: HTTP status code
@@ -16464,6 +16490,16 @@ components:
           type: string
           description: Request path that caused the error
           example: "/generate/txt2img"
+        warnings:
+          type: array
+          description: >-
+            Everything the FAILING generation recorded before it failed, in the
+            same shape the success response returns. Present only when the
+            request was a generation that recorded at least one warning; a
+            refusal that names several files reports all of their codes here
+            while `code` names the first.
+          items:
+            $ref: '#/components/schemas/GenerationWarning'
 
     VideoChainIssue:
       type: object

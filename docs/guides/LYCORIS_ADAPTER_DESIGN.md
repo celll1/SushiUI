@@ -596,9 +596,11 @@ repaired in Phase 0" above for what each of those was.
 Deferred to Phase 1, because each is one engine-level change rather than a
 per-architecture patch: making multiple adapters additive over one module;
 unifying `step_range`, component selection and per-block weights across
-backends; carrying a machine-readable `code` on a refusal's 400 response; and
-enumerating the `GenerationWarning.code` taxonomy in `openapi.yaml`. The first
-of those has landed; the other three have not.
+backends; carrying a machine-readable `code` on a refusal's error response; and
+deciding whether to enumerate the `GenerationWarning.code` taxonomy in
+`openapi.yaml`. Three have landed — the codes now ride on the raised exception
+onto `ErrorResponse.code`, and the enum was decided AGAINST with the reasoning
+recorded below. Only the per-LoRA option unification is outstanding.
 
 ### Phase 1: extract the shared engine — partly landed
 
@@ -677,15 +679,29 @@ per-architecture:**
   leaves only what it still owes. `id()` is unsafe here because a freed object's id is REUSABLE,
   and a reload allocating at the dead model's address is exactly the case the
   key must survive. An engine-level session owns this once.
-- **Refusal warnings are write-only.** Every refusal path calls `add_warning`
-  before raising, but the routes read `get_warnings()` only on the success
-  path; the error paths call `fail_generation` and re-raise. So
-  `lora_incompatible`, `lora_not_found` and the rest never reach a
-  client on a 400 — the client sees the message text embedded in the error and
-  no machine-readable code. Fixing it means putting a `code` on `APIError`
-  (`backend/api/error_handlers.py`, which currently carries only `message`,
-  `status_code` and `detail`) and surfacing it through the error handler. That
-  is repo-wide surface, not LoRA surface, and must not be done piecemeal.
+- **Refusal warnings were write-only — fixed.** Every refusal path calls
+  `add_warning` before raising, but the routes read `get_warnings()` only on the
+  success path, so `lora_incompatible`, `lora_not_found` and the rest reached the
+  client as a generic 400/500 with the taxonomy discarded. `APIError` now carries
+  `code` and `warnings`, `create_error_response` emits both, and every generation
+  route copies them onto the error it answers with (`error_context` /
+  `attach_error_context` in `backend/api/generation_status.py`).
+
+  The code rides on the RAISED EXCEPTION, not on a read-back of the warning
+  bucket, and the raised TYPE is unchanged: `api.error_handlers.with_error_code`
+  tags the plain `FileNotFoundError`/`RuntimeError` the component backends raise,
+  the `APIError` subclasses take a `code=` argument, and `AdapterRefusal`
+  (`core.adapters.session`) carries one as a class attribute. Inference from the
+  bucket was rejected on evidence: ACE-Step and LTX-2.3 deliberately raise a
+  shorter sentence than they warn, so message matching reports no code for them,
+  and last-warning-wins would pin a bystander code on an unrelated failure —
+  Anima can record `lora_partial` for a later file AFTER the refusal it raises
+  for. Converting the raised types to `APIError` instead would have moved nine
+  architectures' refusals from 500 to 400 and changed which `except` clause in
+  `routes.py` catches them, so it is a separate decision (worth taking: the split
+  today is accidental, ACE-Step and LTX-2.3 answer 400 while the other eleven
+  answer 500 for the same class of user error).
+  `backend/tests/refusal_error_code_cheap_test.py` is the gate.
 - **Additive multi-LoRA stacking was blocked repo-wide by the layer class —
   fixed.** `LoRALinearLayer.__init__` reads `original_module.in_features` /
   `out_features` into LOCALS and never exposes them on `self`, so the wrapper
@@ -735,13 +751,21 @@ per-architecture:**
 
   Honouring them uniformly belongs in the engine's target topology and
   session, not in eleven loaders.
-- **`GenerationWarning.code` is a free-form string with no enum in
-  `openapi.yaml`.** The taxonomy actually in use is `lora_not_found`,
-  `lora_load_failed`, `lora_incompatible`, `lora_partial`, plus
-  architecture-specific codes
+- **`GenerationWarning.code` stays a free-form string — decided, not
+  deferred.** The taxonomy in use is `lora_not_found`, `lora_load_failed`,
+  `lora_incompatible`, `lora_partial`, plus architecture-specific codes
   (`minimax_h3_lora_variant_mismatch`, `ltx2_lora_h2d_disabled`,
-  `quantization_fallback`, and others). Enumerating it is part of making
-  refusals machine-readable.
+  `quantization_fallback`, and others). There are **135 distinct codes** passed
+  as `code=` under `backend/api` and `backend/core` today, and each new feature
+  adds more, so an `enum` would make almost every commit a spec change and would
+  license a strict generated client to REJECT an otherwise valid response over a
+  warning it has not heard of — the opposite of what an advisory field is for.
+  `VideoChainIssue.code` is already documented as a free-form "stable
+  machine-readable identifier" for the same reason. The spec instead names the
+  stable cross-architecture subset a client may branch on in the field
+  description, and `ErrorResponse.code` points at the same taxonomy. What is
+  checkable is the mechanism, not the vocabulary: the gate asserts the codes
+  reach the client, not that the set is closed.
 
 ### Phase 2: LoHa and LoKr reference paths
 

@@ -72,24 +72,21 @@ class LensMixin:
     # bookkeeping and its reset. What stays here is Lens's -- the target scope,
     # the two key codecs, the alpha precedence and one branch.
 
-    def _lens_resolve_lora_path(self, raw_path):
-        """LoRAManager resolution; a miss is Lens's OWN refusal.
-
-        The session's ``lora_not_found`` message and exception type are fixed
-        and both differ from the ones this backend's gate pins, so the miss is
-        refused here instead.
-        """
-        from api.error_handlers import with_error_code
+    @staticmethod
+    def _lens_resolve_lora_path(raw_path):
         from core.extensions.lora_manager import lora_manager
 
-        resolved = lora_manager._resolve_lora_path(raw_path)
-        if resolved is None:
-            lora_file = os.path.basename(str(raw_path))
-            message = f"Lens LoRA '{lora_file}' not found in any configured LoRA directory"
-            print(f"[Lens LoRA] ERROR: {message}")
-            self._lens_lora_warn(message, code="lora_not_found")
-            raise with_error_code(FileNotFoundError(message), "lora_not_found")
-        return resolved
+        return lora_manager._resolve_lora_path(raw_path)
+
+    @staticmethod
+    def _lens_missing_lora(lora_file, _raw_path):
+        """Lens's own wording for an unresolvable path. ``AdapterFileMissing``
+        is a ``FileNotFoundError`` carrying ``lora_not_found``, which is the
+        type and code this backend's callers already expect."""
+        from core.adapters import AdapterFileMissing
+
+        return AdapterFileMissing(
+            f"Lens LoRA '{lora_file}' not found in any configured LoRA directory")
 
     @property
     def _lens_lora_session(self):
@@ -107,6 +104,8 @@ class LensMixin:
                 warn=self._lens_lora_warn,
                 label="Lens LoRA",
                 count_declared_branches=self._lens_declared_branches,
+                missing_file=self._lens_missing_lora,
+                prepare_file=self._lens_prepare_lora_file,
                 describe_zero_targets=self._lens_zero_target_message,
             )
             self._lens_lora_session_instance = session
@@ -145,7 +144,7 @@ class LensMixin:
         return self._lens_lora_session.state("transformer").wrapped
 
     @staticmethod
-    def _lens_declared_branches(tensors) -> int:
+    def _lens_declared_branches(tensors, _components) -> int:
         """Down/up PAIRS, not ``.lora_down.weight`` keys: the interchange codec
         spells its halves ``lora_A``/``lora_B``, so the session's default count
         would be zero for every such file and never report a partial one.
@@ -154,18 +153,13 @@ class LensMixin:
 
         return len(normalise_lora_state_dict(tensors))
 
-    def _lens_lora_file_state(self, file):
-        """``(grouped, fmt, metadata_alpha)`` for one file, computed ONCE.
+    @staticmethod
+    def _lens_prepare_lora_file(file):
+        """``(grouped, fmt, metadata_alpha)`` for one file, computed once.
 
-        Per-file work every target lookup would otherwise repeat. Reached from
-        the branch builder AND from the zero-target message, which names the
-        format.
+        Per-file work every target lookup would otherwise repeat, and the format
+        label the zero-target refusal names.
         """
-        cache = self._lens_lora_files
-        state = cache.get(file.branch_name)
-        if state is not None:
-            return state
-
         from core.models.lens.lens_lora import (alpha_from_metadata, detect_lora_format,
                                                 mixed_format_note,
                                                 normalise_lora_state_dict)
@@ -176,7 +170,6 @@ class LensMixin:
         grouped = normalise_lora_state_dict(file.tensors)
         state = (grouped, detect_lora_format(file.tensors),
                  alpha_from_metadata(file.metadata))
-        cache[file.branch_name] = state
         print(f"[Lens LoRA] {file.name} format={state[1]} keys={len(file.tensors)} "
               f"matched_modules={len(grouped)} strength={file.strength}")
         return state
@@ -187,7 +180,7 @@ class LensMixin:
         from core.adapters import PreparedBranch
         from core.models.lens.lens_lora import build_lora_branch
 
-        grouped, _fmt, default_alpha = self._lens_lora_file_state(request.file)
+        grouped, _fmt, default_alpha = request.prepared
         weights = grouped.get(request.module_path)
         if weights is None:
             return None
@@ -200,7 +193,7 @@ class LensMixin:
     def _lens_zero_target_message(self, file, counts) -> str:
         """The zero-target refusal text. The session owns the DECISION to refuse;
         the sentence is Lens's, because the actionable part is the key format."""
-        _grouped, fmt, _alpha = self._lens_lora_file_state(file)
+        _grouped, fmt, _alpha = file.prepared
         return (f"LoRA '{file.name}': 0 of {file.declared_branches} down/up pairs "
                 f"applied to the loaded Lens transformer (format={fmt}) -- "
                 f"unrecognized key format or a different model. Sample keys in file: "
@@ -234,7 +227,6 @@ class LensMixin:
             print("[Lens LoRA] WARNING: components not loaded")
             return 0
 
-        self._lens_lora_files = {}
         return self._lens_lora_session.load(lora_configs, components).applied
 
     def _unload_lora_lens(self) -> int:

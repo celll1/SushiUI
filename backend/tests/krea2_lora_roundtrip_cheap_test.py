@@ -28,7 +28,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.krea2.krea2_lora import (  # noqa: E402
     DEFAULT_SCOPE, flatten_to_key, iter_krea2_lora_targets,
 )
@@ -371,7 +371,7 @@ def test_krea2_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen):
     assert not wrapped_paths(model)
 
 
-def test_krea2_partly_matching_file_warns_and_applies_the_rest(tmp_path, warnings_seen):
+def test_krea2_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen):
     path, trained_paths = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = flatten_to_key("transformer_blocks.99.attn.to_q")
@@ -381,8 +381,10 @@ def test_krea2_partly_matching_file_warns_and_applies_the_rest(tmp_path, warning
     save_file(saved, str(partial))
 
     model = build_model()
-    assert _Backend(model)._load_lora_krea2([{"path": str(partial)}]) == len(trained_paths)
-    assert wrapped_paths(model) == trained_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        _Backend(model)._load_lora_krea2([{"path": str(partial)}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(model)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

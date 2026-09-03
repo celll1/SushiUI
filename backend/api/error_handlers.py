@@ -10,6 +10,22 @@ from typing import Any, Dict, List, Optional
 import traceback
 
 
+_LORA_REFUSAL_CODES = frozenset({
+    "lora_not_found",
+    "lora_load_failed",
+    "lora_incompatible",
+    "lora_partial",
+    "lora_uncond_unavailable",
+    "ltx2_lora_arch_mismatch",
+    "minimax_h3_lora_variant_mismatch",
+})
+
+
+def is_lora_refusal_code(code: Optional[str]) -> bool:
+    """Whether ``code`` identifies a user-caused LoRA refusal."""
+    return code in _LORA_REFUSAL_CODES
+
+
 # ====================
 # Custom Exception Classes
 # ====================
@@ -57,11 +73,13 @@ class NotFoundError(APIError):
 
 
 class GenerationError(APIError):
-    """Generation failed (500)"""
+    """Generation failed (500), or a tagged LoRA refusal (400)."""
     def __init__(self, message: str, detail: str = None,
                  code: Optional[str] = None,
                  warnings: Optional[List[Dict[str, Any]]] = None):
-        super().__init__(message, status.HTTP_500_INTERNAL_SERVER_ERROR, detail, code, warnings)
+        status_code = (status.HTTP_400_BAD_REQUEST if is_lora_refusal_code(code)
+                       else status.HTTP_500_INTERNAL_SERVER_ERROR)
+        super().__init__(message, status_code, detail, code, warnings)
 
 
 class ModelError(APIError):
@@ -96,11 +114,10 @@ def with_error_code(exc: BaseException, code: str) -> BaseException:
     """Tag ``exc`` with the machine-readable ``code`` its refusal warned about.
 
     Used as ``raise with_error_code(RuntimeError(msg), "lora_incompatible")``.
-    Tagging rather than converting to an `APIError` is deliberate: the
-    generation routes discriminate on the raised TYPE to choose the HTTP
-    status, so replacing the type would silently move refusals between 400
-    and 500. The route copies the tag onto the `APIError` it raises in place
-    of ``exc`` (see `api.generation_status.error_context`).
+    Tagging rather than converting to an `APIError` preserves the backend's
+    exception contract. Generation routes use the tag, not the exception type,
+    to answer user-caused LoRA refusals with 400 (see
+    `api.generation_status.error_context`).
     """
     exc.code = code
     return exc

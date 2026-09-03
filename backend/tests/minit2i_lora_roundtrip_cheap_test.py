@@ -34,7 +34,7 @@ from lora_roundtrip_common import (
     warning_codes, warning_probe,
 )
 
-from core.adapters import CompositeAdapterLayer  # noqa: E402
+from core.adapters import AdapterIncompatible, CompositeAdapterLayer  # noqa: E402
 from core.models.minit2i.minit2i_lora import (  # noqa: E402
     DEFAULT_SCOPE, TE_NAMESPACE, flatten_to_key, flatten_to_te_key,
     iter_minit2i_lora_targets,
@@ -629,10 +629,8 @@ def test_minit2i_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen)
     assert not wrapped_paths(transformer)
 
 
-def test_minit2i_unmatched_module_warns_partial_and_still_generates(tmp_path,
-                                                                   warnings_seen):
-    """A pair naming a module this model does not have is `lora_partial`, not a
-    refusal -- the clause that used to also carry the occupied count."""
+def test_minit2i_unmatched_module_is_refused_before_either_pass(tmp_path,
+                                                                warnings_seen):
     path, tf_paths, te_paths = train_and_save(tmp_path)
     saved = load_file(path)
     ghost = flatten_to_key("model.net.double_blocks.9.img_qkv")
@@ -642,10 +640,12 @@ def test_minit2i_unmatched_module_warns_partial_and_still_generates(tmp_path,
     save_file(saved, str(extended), metadata={"model_type": "minit2i"})
 
     transformer, text_encoder = _Transformer(), _TextEncoder()
-    _n_te, total = load_both_halves(_Backend(transformer, text_encoder),
-                                    [{"path": str(extended), "strength": STRENGTH}])
-    assert total == len(tf_paths) + len(te_paths)
-    assert wrapped_paths(transformer) == tf_paths
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_both_halves(_Backend(transformer, text_encoder),
+                         [{"path": str(extended), "strength": STRENGTH}])
+    assert excinfo.value.code == "lora_partial"
+    assert not wrapped_paths(transformer)
+    assert not wrapped_paths(text_encoder)
     assert "lora_partial" in warning_codes(warnings_seen)
 
 

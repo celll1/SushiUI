@@ -93,6 +93,22 @@ class _DenseBranch(nn.Module):
         return F.linear(x, self.delta_weight)
 
 
+class _ExtendedTensorBranch(LoRALinearLayer):
+    def __init__(self, base):
+        super().__init__(base, rank=RANK, alpha=ALPHA, lora_name="extended")
+        self.hada_w1_a = nn.Parameter(torch.randn(RANK, D_IN))
+        self.dora_scale = nn.Parameter(torch.randn(D_OUT))
+
+    def branch_tensors(self):
+        tensors = super().branch_tensors()
+        tensors.update({
+            "hada_w1_a": self.hada_w1_a,
+            "dora_scale": self.dora_scale,
+            "dora_scale_alias": self.dora_scale,
+        })
+        return tensors
+
+
 class _Block(nn.Module):
     def __init__(self):
         super().__init__()
@@ -233,6 +249,20 @@ def test_both_shipped_algebras_work_as_branches():
                                  cls=MiniMaxH3LoRALinearLayer))
     mixed.add_branch("dense", _DenseBranch())
     assert len(mixed) == 3
+
+
+def test_trainable_parameters_derive_from_branch_tensors_without_duplicates():
+    branch = _ExtendedTensorBranch(_base())
+
+    parameters = list(branch.trainable_parameters())
+
+    assert parameters == [
+        branch.lora_down.weight,
+        branch.lora_up.weight,
+        branch.hada_w1_a,
+        branch.dora_scale,
+    ]
+    assert len({id(parameter) for parameter in parameters}) == len(parameters)
 
 
 # ---------------------------------------------------------------- structure

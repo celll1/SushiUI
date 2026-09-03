@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import torch
-from safetensors.torch import save_file
 from torch import nn
 
 from core.models.sensenova.sensenova_lora import (
@@ -135,50 +133,29 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
             lora_layers, "und", LORA_COMPONENT_TEXT_ENCODER_1
         )
 
-    def _split_by_component(
-        self, lora_layers: Dict[str, nn.Module]
-    ) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
-        generation: List[nn.Parameter] = []
-        understanding: List[nn.Parameter] = []
-        for name, layer in lora_layers.items():
-            bucket = (
-                understanding
-                if self.lora_components.get(name) == LORA_COMPONENT_TEXT_ENCODER_1
-                else generation
-            )
-            bucket.extend(layer.lora_down.parameters())
-            bucket.extend(layer.lora_up.parameters())
-        return generation, understanding
-
     def setup_trainable_parameters(
         self, lora_layers: Dict[str, nn.Module]
     ) -> List[Dict[str, Any]]:
-        generation, understanding = self._split_by_component(lora_layers)
-        unet_lr = resolve_component_lr(
-            self.trainer, "unet_lr", label="SenseNova generation branch"
-        )
-        groups: List[Dict[str, Any]] = []
-        if generation:
-            groups.append({"params": generation, "lr": unet_lr})
-        if understanding:
+        return self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: resolve_component_lr(
+                self.trainer, "unet_lr", label="SenseNova generation branch"),
             # Same fallback chain SDXL's LoRA adapter uses for TE1.
-            und_lr = resolve_component_lr(
+            LORA_COMPONENT_TEXT_ENCODER_1: lambda: resolve_component_lr(
                 self.trainer,
                 "text_encoder_1_lr",
                 "text_encoder_lr",
                 "unet_lr",
                 label="SenseNova understanding branch",
-            )
-            groups.append({"params": understanding, "lr": und_lr})
-        return groups
+            ),
+        })
 
-    def save_checkpoint(
-        self,
-        lora_layers: Dict[str, nn.Module],
-        step: int,
-        epoch: int,
-        output_path: Path,
-    ) -> None:
+    CHECKPOINT_LOG_FORMAT = (
+        "[{adapter}] Saved LoRA checkpoint ({layers} layers, {lora_targets}) -> {path}"
+    )
+
+    def checkpoint_metadata(
+        self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
+    ) -> Dict[str, str]:
         components = self.lora_components
         gen_count = sum(
             1
@@ -195,19 +172,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
             )
         branch = "both" if gen_count != len(lora_layers) else "gen"
 
-        state_dict: Dict[str, torch.Tensor] = {}
-        for module_path, layer in lora_layers.items():
-            state_dict[f"{module_path}.lora_down.weight"] = (
-                layer.lora_down.weight.detach().cpu()
-            )
-            state_dict[f"{module_path}.lora_up.weight"] = (
-                layer.lora_up.weight.detach().cpu()
-            )
-            state_dict[f"{module_path}.alpha"] = torch.tensor(
-                float(self.lora_alpha), dtype=torch.float32
-            )
-
-        metadata = {
+        return {
             "model_type": "sensenova",
             "modelspec.architecture": "sensenova",
             "tensor_kind": "neo_hf_lora",
@@ -217,11 +182,6 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
             "step": str(step),
             "epoch": str(epoch),
         }
-        save_file(state_dict, str(output_path), metadata=metadata)
-        print(
-            f"[SenseNovaLoRAAdapter] Saved LoRA checkpoint "
-            f"({len(lora_layers)} layers, {metadata['lora_targets']}) -> {output_path}"
-        )
 
 
 class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):

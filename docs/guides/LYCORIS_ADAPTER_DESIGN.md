@@ -725,8 +725,15 @@ recorded below. Only the per-LoRA option unification is outstanding.
   `core.adapters.codec` provides `CodecRegistry`, `detect_adapter_codec()`, and
   `normalize_adapter_keys()`. It identifies algorithm (`lora`, `loha`, `lokr`),
   weight decomposition (`dora`), and container format (`sushiui_canonical`,
-  `lycoris_kohya`, `diffusers_peft`), normalizing Hugging Face PEFT keys into
-  canonical down/up stems seamlessly during `AdapterSession` parsing.
+  `lycoris_kohya`, `diffusers_peft`). Detection always runs during
+  `AdapterSession` parsing; rewriting Hugging Face PEFT keys into canonical
+  down/up stems is opt-in per session and off by default, because six
+  architectures parse the `lora_A`/`lora_B` spelling themselves: ACE-Step
+  discriminates on it directly, the others reach it inside a branch selected by
+  PREFIX (`diffusion_model.` vs `lora_unet_`), so a rewrite leaves that branch
+  matching nothing. Rewriting unconditionally refused five of them. Detection
+  itself is advisory and guarded: it indexes shapes it has not validated, and a
+  failed sniff must not replace an architecture's 400 with a 500.
 - **`AdapterSpec`, `AdapterTarget` and a per-architecture capability matrix.**
   `core.adapters.spec.AdapterSpec` is the normalized two-axis description, and
   it OWNS the `sushi.adapter.*` key names: `codec.py` imports those constants

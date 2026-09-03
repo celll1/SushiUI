@@ -124,6 +124,10 @@ class SenseNovaMixin:
                 missing_file=self._sensenova_missing_lora,
                 prepare_file=self._sensenova_prepare_lora_file,
                 describe_zero_targets=self._sensenova_zero_target_message,
+                # `_parse_key` matches the suffix on a VERBATIM module path, so a
+                # PEFT export only differs by `base_model.model.` + `lora_A/B`;
+                # canonicalising those is the whole of its foreign-format support.
+                canonicalize_foreign_keys=True,
             )
             self._sensenova_lora_session_instance = session
         return session

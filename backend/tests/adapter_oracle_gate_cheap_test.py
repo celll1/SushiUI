@@ -694,3 +694,42 @@ def test_loha_and_lokr_carry_alpha_as_a_branch_tensor_but_lora_does_not():
     for cls in (LoHaLinearLayer, LoKrLinearLayer):
         tensors = cls(base, rank=RANK, alpha=ALPHA, lora_name="l").branch_tensors()
         assert not isinstance(tensors["alpha"], nn.Parameter)
+
+
+# -- the same oracle, reached through the checkpoint builder ----------------
+# ``build_adapter_branch`` derives geometry, alpha and stored form from the
+# TENSORS. A builder that transposes a factor, picks the wrong Kronecker split
+# or applies the scale twice produces a correctly shaped branch, so only a
+# numeric comparison catches it.
+
+#: ``scalar`` is a training-side tensor no file carries (upstream folds it into
+#: ``w1`` at save and forces ``scalar := 1`` at load), so the builder refuses to
+#: reconstruct one and those two rows cannot round-trip through it.
+BUILDABLE = tuple(a for a in ALGEBRAS if "scalar" not in a.variant)
+
+
+@pytest.mark.parametrize("algebra", BUILDABLE, ids=lambda a: a.name)
+@pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
+def test_a_branch_built_from_tensors_matches_the_oracle(algebra, dtype):
+    from core.adapters import SHAPE_MISMATCH, TensorGroup, build_adapter_branch
+
+    for strength in STRENGTHS:
+        base, layer = _build(algebra, dtype)
+        group = TensorGroup("gate", dict(layer.export_tensors()))
+        # LoRA exports no ``alpha``, so its scale must come from the metadata
+        # arm of the precedence; LoHa/LoKr carry the tensor and it wins.
+        branch = build_adapter_branch(base, group, metadata_alpha=ALPHA,
+                                      lora_dtype=dtype, lora_name="gate")
+        assert branch is not SHAPE_MISMATCH
+        _assert_matches_oracle(algebra, base, branch, dtype, strength)
+
+
+@pytest.mark.parametrize("algebra", BUILDABLE, ids=lambda a: a.name)
+def test_a_built_branch_reproduces_the_source_layer_bit_for_bit(algebra):
+    from core.adapters import TensorGroup, build_adapter_branch
+
+    base, layer = _build(algebra)
+    expected = _delta_weight(layer)
+    branch = build_adapter_branch(base, TensorGroup("gate", dict(layer.export_tensors())),
+                                  metadata_alpha=ALPHA)
+    assert torch.equal(_delta_weight(branch), expected)

@@ -44,6 +44,15 @@ from .session import (
     BranchRequest,
     PreparedBranch,
 )
+from .groups import (
+    ADAPTER_SUFFIXES,
+    GroupingResult,
+    TensorGroup,
+    build_adapter_branch,
+    group_adapter_tensors,
+    split_adapter_suffix,
+    split_group_on_out_rows,
+)
 from .codec import (
     CodecRegistry,
     CodecSpec,
@@ -106,6 +115,13 @@ __all__ = [
     "FORMATS",
     "KNOWN_ARCHITECTURES",
     "AdapterSpec",
+    "ADAPTER_SUFFIXES",
+    "GroupingResult",
+    "TensorGroup",
+    "build_adapter_branch",
+    "group_adapter_tensors",
+    "split_adapter_suffix",
+    "split_group_on_out_rows",
     "CodecRegistry",
     "CodecSpec",
     "detect_adapter_codec",

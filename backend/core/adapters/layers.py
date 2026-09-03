@@ -71,15 +71,80 @@ class _BranchTensorProtocol:
         return {name: weight.detach().cpu()
                 for name, weight in self.branch_tensors().items()}
 
+    def spec_constants(self) -> Tuple[str, ...]:
+        """Names in ``branch_tensors()`` that are a freshly built VALUE, so
+        ``load_tensors`` must ASSIGN them: LoHa/LoKr rebuild ``alpha`` per call,
+        and copying into that throwaway dropped the file's scale silently
+        (measured 0.5x; design doc, phase 2)."""
+        return ()
+
+    def load_spec_constant(self, name: str, value: torch.Tensor) -> None:
+        raise KeyError(f"{type(self).__name__} has no spec constant {name!r}")
+
     def load_tensors(self, tensors: Mapping[str, torch.Tensor]) -> None:
         """Copy a stem-relative slice back in place. Names absent from the
         slice are left alone, which is the tolerance training resume has always
         had for a checkpoint that carries only some of a branch's tensors."""
         refuse_tucker_tensors(tensors, type(self).__name__)
+        constants = self.spec_constants()
         for name, weight in self.branch_tensors().items():
             value = tensors.get(name)
-            if value is not None:
+            if value is None:
+                continue
+            if name in constants:
+                self.load_spec_constant(name, value)
+            else:
                 weight.data.copy_(value)
+
+
+class _AlphaIsASpecConstant(_BranchTensorProtocol):
+    """For the algebras whose ``branch_tensors()`` carries ``alpha``."""
+
+    def spec_constants(self) -> Tuple[str, ...]:
+        return ("alpha",)
+
+    def load_spec_constant(self, name: str, value: torch.Tensor) -> None:
+        if name != "alpha":
+            raise KeyError(f"{type(self).__name__} has no spec constant {name!r}")
+        self.set_alpha(float(value.item()) if torch.is_tensor(value) else float(value))
+
+    def set_alpha(self, alpha: float) -> None:
+        self.alpha = float(alpha)
+
+
+def _base_geometry(base: nn.Module) -> Tuple[int, int]:
+    out_features = getattr(base, "out_features", None)
+    in_features = getattr(base, "in_features", None)
+    if out_features is None or in_features is None:
+        raise ValueError(f"{type(base).__name__} exposes no in_features/out_features")
+    return int(out_features), int(in_features)
+
+
+def _require_shape(name: str, tensor: torch.Tensor,
+                   expected: Tuple[int, ...]) -> torch.Tensor:
+    if tuple(tensor.shape) != expected:
+        raise ValueError(f"{name} is {tuple(tensor.shape)}, not {expected}")
+    return tensor
+
+
+def _alpha_from_tensors(tensors: Mapping[str, torch.Tensor],
+                        rank: int, alpha: Optional[float]) -> float:
+    """Alpha precedence, the order Z-Image's codec set: per-key tensor, then
+    the caller's (file metadata), then rank."""
+    stored = tensors.get("alpha")
+    if stored is not None:
+        return float(stored.item()) if torch.is_tensor(stored) else float(stored)
+    if alpha is not None:
+        return float(alpha)
+    return float(rank) if rank else 1.0
+
+
+def _refuse_use_scalar(cls_name: str) -> None:
+    """No file carries ``scalar`` (see ``LoHaLinearLayer``), and a layer built
+    from one would multiply the whole delta by zero."""
+    raise ValueError(
+        f"{cls_name}.from_tensors: use_scalar layers cannot be built from a "
+        f"checkpoint -- scalar starts at zero and no file carries the key")
 
 
 class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
@@ -122,6 +187,33 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         device = original_module.weight.device
         self.lora_down.to(device=device, dtype=lora_dtype)
         self.lora_up.to(device=device, dtype=lora_dtype)
+
+    @classmethod
+    def from_tensors(cls, base: nn.Module,
+                     tensors: Mapping[str, torch.Tensor], *,
+                     alpha: Optional[float] = None,
+                     lora_dtype: torch.dtype = torch.float32,
+                     lora_name: str = "") -> "LoRALinearLayer":
+        """Geometry from the TENSORS, then load them.
+
+        Unlike LoHa/LoKr this cannot allocate a shape the base disagrees with,
+        so it keeps the constructor's initialisation (which the eleven
+        generation loaders also pay) rather than skipping it.
+        """
+        if tensors.get("lora_mid.weight") is not None:
+            raise ValueError("lora_mid.weight is a LoCon convolution factor; a "
+                             "Linear branch cannot honour it")
+        down = tensors["lora_down.weight"]
+        up = tensors["lora_up.weight"]
+        out_features, in_features = _base_geometry(base)
+        rank = int(down.shape[0])
+        _require_shape("lora_down.weight", down, (rank, in_features))
+        _require_shape("lora_up.weight", up, (out_features, rank))
+        layer = cls(base, rank=rank,
+                    alpha=_alpha_from_tensors(tensors, rank, alpha),
+                    lora_name=lora_name, lora_dtype=lora_dtype)
+        layer.load_tensors(tensors)
+        return layer
 
     @property
     def weight(self):
@@ -216,7 +308,7 @@ class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
         return up * self.scale
 
 
-class LoHaLinearLayer(_BranchTensorProtocol, nn.Module):
+class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
     """LoHa (Low-rank Hadamard Product) layer for Linear modules.
 
     ``use_scalar`` is upstream's trained ``scalar``: a parameter starting at
@@ -238,6 +330,7 @@ class LoHaLinearLayer(_BranchTensorProtocol, nn.Module):
         lora_name: str,
         lora_dtype: torch.dtype = torch.float32,
         use_scalar: bool = False,
+        init: bool = True,
     ):
         super().__init__()
         self.original_module = original_module
@@ -257,15 +350,41 @@ class LoHaLinearLayer(_BranchTensorProtocol, nn.Module):
         self.hada_w2_a = nn.Parameter(torch.empty((out_features, rank), device=device, dtype=lora_dtype))
         self.hada_w2_b = nn.Parameter(torch.empty((rank, in_features), device=device, dtype=lora_dtype))
 
-        nn.init.kaiming_uniform_(self.hada_w1_a, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.hada_w1_b, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.hada_w2_b, a=math.sqrt(5))
+        self.scalar = (nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
+                       if use_scalar else None)
+        # ``init=False`` leaves every factor uninitialised for a caller that is
+        # about to overwrite all of them; kaiming draws from the GLOBAL rng.
+        if init:
+            nn.init.kaiming_uniform_(self.hada_w1_a, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.hada_w1_b, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.hada_w2_b, a=math.sqrt(5))
+            if use_scalar:
+                nn.init.kaiming_uniform_(self.hada_w2_a, a=math.sqrt(5))
+            else:
+                nn.init.zeros_(self.hada_w2_a)
+
+    @classmethod
+    def from_tensors(cls, base: nn.Module,
+                     tensors: Mapping[str, torch.Tensor], *,
+                     alpha: Optional[float] = None,
+                     lora_dtype: torch.dtype = torch.float32,
+                     lora_name: str = "",
+                     use_scalar: bool = False) -> "LoHaLinearLayer":
+        """Geometry from the TENSORS -- the rank is ``hada_w1_a.shape[1]``, not
+        a constructor argument -- then load them."""
         if use_scalar:
-            nn.init.kaiming_uniform_(self.hada_w2_a, a=math.sqrt(5))
-            self.scalar = nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
-        else:
-            nn.init.zeros_(self.hada_w2_a)
-            self.scalar = None
+            _refuse_use_scalar(cls.__name__)
+        out_features, in_features = _base_geometry(base)
+        rank = int(tensors["hada_w1_a"].shape[1])
+        for name in ("hada_w1_a", "hada_w2_a"):
+            _require_shape(name, tensors[name], (out_features, rank))
+        for name in ("hada_w1_b", "hada_w2_b"):
+            _require_shape(name, tensors[name], (rank, in_features))
+        layer = cls(base, rank=rank,
+                    alpha=_alpha_from_tensors(tensors, rank, alpha),
+                    lora_name=lora_name, lora_dtype=lora_dtype, init=False)
+        layer.load_tensors(tensors)
+        return layer
 
     @property
     def weight(self):
@@ -274,6 +393,10 @@ class LoHaLinearLayer(_BranchTensorProtocol, nn.Module):
     @property
     def bias(self):
         return getattr(self.original_module, "bias", None)
+
+    def set_alpha(self, alpha: float) -> None:
+        self.alpha = float(alpha)
+        self.scale = self.alpha / self.rank if self.rank > 0 else self.alpha
 
     def set_adapter_strength(self, strength: float) -> None:
         self.strength = float(strength)
@@ -347,7 +470,7 @@ def factorization(dimension: int, factor: int = -1) -> Tuple[int, int]:
     return (m, n) if m <= n else (n, m)
 
 
-class LoKrLinearLayer(_BranchTensorProtocol, nn.Module):
+class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
     """LoKr (Low-rank Kronecker Product) layer for Linear modules.
 
     Either operand may be stored full or low-rank: ``rank == 0`` keeps ``w2``
@@ -365,6 +488,8 @@ class LoKrLinearLayer(_BranchTensorProtocol, nn.Module):
         factor: int = -1,
         decompose_both: bool = False,
         use_scalar: bool = False,
+        factors: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None,
+        init: bool = True,
     ):
         super().__init__()
         self.original_module = original_module
@@ -382,35 +507,104 @@ class LoKrLinearLayer(_BranchTensorProtocol, nn.Module):
         in_features = original_module.in_features
         device = original_module.weight.device
 
-        # ``factor`` applies to BOTH dimensions, as upstream does.
-        out_l, out_k = factorization(out_features, factor)
-        in_m, in_n = factorization(in_features, factor)
+        if factors is not None:
+            # A loader passes the split read off the tensors: ``factor`` is not
+            # stored in a checkpoint, so ``factorization`` cannot recover it.
+            (out_l, out_k), (in_m, in_n) = factors
+            if out_l * out_k != out_features or in_m * in_n != in_features:
+                raise ValueError(
+                    f"factors {factors} do not multiply to the base's "
+                    f"[{out_features}, {in_features}]")
+        else:
+            # ``factor`` applies to BOTH dimensions, as upstream does.
+            out_l, out_k = factorization(out_features, factor)
+            in_m, in_n = factorization(in_features, factor)
         self.factors = ((out_l, out_k), (in_m, in_n))
 
         if decompose_both:
             self.lokr_w1_a = nn.Parameter(torch.empty((out_l, rank), device=device, dtype=lora_dtype))
             self.lokr_w1_b = nn.Parameter(torch.empty((rank, in_m), device=device, dtype=lora_dtype))
-            nn.init.kaiming_uniform_(self.lokr_w1_a, a=math.sqrt(5))
-            nn.init.kaiming_uniform_(self.lokr_w1_b, a=math.sqrt(5))
         else:
             self.lokr_w1 = nn.Parameter(torch.empty((out_l, in_m), device=device, dtype=lora_dtype))
-            nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
 
         if rank > 0:
             self.lokr_w2_a = nn.Parameter(torch.empty((out_k, rank), device=device, dtype=lora_dtype))
             self.lokr_w2_b = nn.Parameter(torch.empty((rank, in_n), device=device, dtype=lora_dtype))
-            nn.init.kaiming_uniform_(self.lokr_w2_b, a=math.sqrt(5))
             zeroed = self.lokr_w2_a
         else:
             self.lokr_w2 = nn.Parameter(torch.empty((out_k, in_n), device=device, dtype=lora_dtype))
             zeroed = self.lokr_w2
 
+        self.scalar = (nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
+                       if use_scalar else None)
+        # See ``LoHaLinearLayer.__init__`` on ``init=False``.
+        if init:
+            if decompose_both:
+                nn.init.kaiming_uniform_(self.lokr_w1_a, a=math.sqrt(5))
+                nn.init.kaiming_uniform_(self.lokr_w1_b, a=math.sqrt(5))
+            else:
+                nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+            if rank > 0:
+                nn.init.kaiming_uniform_(self.lokr_w2_b, a=math.sqrt(5))
+            if use_scalar:
+                nn.init.kaiming_uniform_(zeroed, a=math.sqrt(5))
+            else:
+                nn.init.zeros_(zeroed)
+
+    @classmethod
+    def from_tensors(cls, base: nn.Module,
+                     tensors: Mapping[str, torch.Tensor], *,
+                     alpha: Optional[float] = None,
+                     lora_dtype: torch.dtype = torch.float32,
+                     lora_name: str = "",
+                     use_scalar: bool = False) -> "LoKrLinearLayer":
+        """Geometry from the TENSORS, which is REQUIRED rather than tidier:
+        ``__init__`` derives its split from ``factorization(out_features,
+        factor)`` and no LyCORIS file stores ``factor``, so a foreign LoKr
+        written with a different one allocates other shapes and ``copy_``
+        raises.
+        """
         if use_scalar:
-            nn.init.kaiming_uniform_(zeroed, a=math.sqrt(5))
-            self.scalar = nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
+            _refuse_use_scalar(cls.__name__)
+        out_features, in_features = _base_geometry(base)
+
+        w1_full = tensors.get("lokr_w1")
+        if w1_full is not None:
+            (out_l, in_m), rank_w1, decompose_both = tuple(w1_full.shape), 0, False
         else:
-            nn.init.zeros_(zeroed)
-            self.scalar = None
+            w1_a, w1_b = tensors["lokr_w1_a"], tensors["lokr_w1_b"]
+            out_l, rank_w1, decompose_both = int(w1_a.shape[0]), int(w1_a.shape[1]), True
+            in_m = int(w1_b.shape[1]) if w1_b.ndim == 2 else -1
+            _require_shape("lokr_w1_b", w1_b, (rank_w1, in_m))
+
+        w2_full = tensors.get("lokr_w2")
+        if w2_full is not None:
+            (out_k, in_n), rank = tuple(w2_full.shape), 0
+        else:
+            w2_a, w2_b = tensors["lokr_w2_a"], tensors["lokr_w2_b"]
+            out_k, rank = int(w2_a.shape[0]), int(w2_a.shape[1])
+            in_n = int(w2_b.shape[1]) if w2_b.ndim == 2 else -1
+            _require_shape("lokr_w2_b", w2_b, (rank, in_n))
+
+        if decompose_both and rank_w1 != rank:
+            # One ``lora_dim`` serves both operands upstream; w1-factored +
+            # w2-full is the stored form this algebra cannot represent at all
+            # (``decompose_both`` needs rank > 0). See the design doc.
+            raise ValueError(
+                f"lokr_w1 rank {rank_w1} and lokr_w2 rank {rank} disagree; a "
+                f"w1-factored operand needs a factored w2 of the same rank")
+        if out_l * out_k != out_features or in_m * in_n != in_features:
+            raise ValueError(
+                f"lokr factors ({out_l}x{out_k}, {in_m}x{in_n}) do not match the "
+                f"base's [{out_features}, {in_features}]")
+
+        layer = cls(base, rank=rank,
+                    alpha=_alpha_from_tensors(tensors, rank, alpha),
+                    lora_name=lora_name, lora_dtype=lora_dtype,
+                    decompose_both=decompose_both,
+                    factors=((out_l, out_k), (in_m, in_n)), init=False)
+        layer.load_tensors(tensors)
+        return layer
 
     @property
     def scale(self) -> float:
@@ -581,6 +775,14 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
             tensors.update(self.branch.branch_tensors())
         tensors["dora_scale"] = self.dora_scale
         return tensors
+
+    def spec_constants(self) -> Tuple[str, ...]:
+        """The inner branch's, since its tensors ride in ``branch_tensors``."""
+        getter = getattr(self.branch, "spec_constants", None)
+        return tuple(getter()) if callable(getter) else ()
+
+    def load_spec_constant(self, name: str, value: torch.Tensor) -> None:
+        self.branch.load_spec_constant(name, value)
 
 
 def get_module_slot(parent: nn.Module, slot: Union[str, int]) -> nn.Module:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+    PHASE2_PENDING, QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
 )
 from core.training.components.wiring import KREA2_WIRING
 
@@ -17,6 +18,18 @@ from core.training.components.wiring import KREA2_WIRING
 class Krea2ArchHandler(ArchHandler):
     name = "krea2"
     wiring = KREA2_WIRING
+    adapter_capability = declare_adapter_capability(
+        "krea2",
+        additive_family=True,
+        initial_dora="deferred",
+        additive_reason=PHASE2_PENDING,
+        dora_reason=(
+            "DoRA is deferred: INT8/FP8 bases need capability gates before the "
+            "base weight's direction and norm can be read"),
+        quantized_base_reason=(
+            f"{QUANTIZED_ADDITIVE_PENDING}; its INT8/FP8 bases need capability "
+            f"gates"),
+    )
     pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
     wires_sample_step_progress = True
     # noisy = (1-sigma)*latents + sigma*noise (ops/krea2_ops.py, "sigma=1 ->

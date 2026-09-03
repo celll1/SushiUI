@@ -678,11 +678,34 @@ recorded below. Only the per-LoRA option unification is outstanding.
   weight decomposition (`dora`), and container format (`sushiui_canonical`,
   `lycoris_kohya`, `diffusers_peft`), normalizing Hugging Face PEFT keys into
   canonical down/up stems seamlessly during `AdapterSession` parsing.
+- **`AdapterSpec`, `AdapterTarget` and a per-architecture capability matrix.**
+  `core.adapters.spec.AdapterSpec` is the normalized two-axis description, and
+  it OWNS the `sushi.adapter.*` key names: `codec.py` imports those constants
+  rather than repeating the literals, and `to_metadata()` / `from_metadata()`
+  are the single encode/decode pair. A block with no `sushi.adapter.*` key
+  normalizes to ordinary LoRA, but a Kohya/LyCORIS one is REFUSED there rather
+  than defaulted, because its algorithm lives in `ss_*` keys that entry point
+  does not read; `AdapterSpec.from_codec(detect_adapter_codec(...))` is the
+  entry point for an arbitrary file. `validate()` refuses an unknown algorithm
+  or format, a bad or missing rank where the algebra scales by `alpha/rank`, an
+  alpha with no rank, an unknown architecture and a newer schema version.
+  `core.adapters.targets.AdapterTarget` is the section-3 topology record
+  (path, parent and attribute/index slot, component, scope/block tags,
+  geometry, base and branch dtype, quantization kind, merge capability), with
+  `enumerate_adapter_targets()` beside it. Every `ArchHandler` declares an
+  `AdapterCapability` carrying the feasibility table's verdicts AND, separately,
+  what round-trips today: ordinary LoRA alone on all thirteen, with a factual
+  reason on every other `(algorithm, weight_decompose)` pair, so no LoHa/LoKr/
+  DoRA run can start. Nothing consumes the matrix yet and it is deliberately
+  absent from `api/arch_capabilities.py` and every HTTP response, per the
+  shipped-boundary rule.
+  `backend/tests/adapter_spec_targets_cheap_test.py` is the gate.
 
 **Not landed.**
 
-- `AdapterSpec`, `AdapterTarget` and the architecture-registry hooks that would
-  carry generation topology and a capability matrix.
+- The architecture-registry hooks that would carry generation TOPOLOGY -- target
+  discovery, component policy, scope names, checkpoint-stem translation -- and
+  the migration of the thirteen existing target iterators onto `AdapterTarget`.
 - Checkpoint codec parsing and training adapter integration for foreign LoHa/LoKr/DoRA.
 - The generation `AdapterSpec` API, codec-derived adapter metadata, and the
   corresponding frontend selector/training controls.

@@ -339,10 +339,36 @@ Paths below are relative to `backend/core/training/`.
     a load failure and zero matched targets now refuse
     (`lora_not_found` / `lora_load_failed` / `lora_incompatible`), and
     shape-mismatched targets are skipped with `lora_partial` instead of being
-    assigned and failing inside the denoise loop. **Behaviour change:** two
-    Z-Image LoRAs used to succeed while silently applying only the first; a
-    fully shadowed second file is now `lora_stacking_unsupported` (400), so
-    presets and loop queues carrying two Z-Image LoRAs start erroring.
+    assigned and failing inside the denoise loop.
+  - **Z-Image is the FIRST architecture on `CompositeAdapterLayer`** and the
+    only one today; every other architecture still refuses a fully shadowed
+    second LoRA with `lora_stacking_unsupported`. Each target Linear is covered
+    once by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two Z-Image LoRAs over the same
+    module now SUM instead of being refused, in either selection order, and
+    each branch keeps its own strength folded into its own scale. A single
+    LoRA is bit-identical to the pre-composite loader
+    (`torch.equal`, not a tolerance): the composite adds one delta to the base
+    in the same order `LoRALinearLayer.forward` did. Load and unload share one
+    target enumerator (`_zimage_lora_targets`), so restore iterates what is
+    actually installed rather than what a dict remembers. The wrapper class
+    name ends in `Layer`, so the block offloader's `endswith("Linear")`
+    selection still sees the base at `<target>.original_module` and the branch
+    weights at `<target>.branches.<i>.lora_{down,up}` — measured identical in
+    count and in per-block relative path set to the old wrapper's layout, with
+    no module enrolled twice. `count_adapter_wrapper_roots` counts a composite
+    as ONE root, so the runtime-INT8 conversion still refuses a LoRA'd
+    transformer (16 roots, not 16 composites + 32 branches) instead of casting
+    the adapter's own branches.
+  - **Not gated on Z-Image:** the legacy FP8 path
+    (`_quantize_transformer`) deep-copies the transformer and casts every
+    `isinstance(m, nn.Linear)` weight, which includes each LoRA branch's
+    `lora_down`/`lora_up`. Lens gates exactly this with
+    `_lens_quantization_with_lora`; Z-Image has no equivalent, before or after
+    composite adoption. The copy is local to `move_zimage_transformer_to_gpu`'s
+    caller and is not written back into `zimage_components`, so the wrapper
+    bookkeeping is not stranded — the damage is confined to that generation's
+    branch precision.
   - **Stale block offloader**: `transformer._block_offloader` is attached per
     block-swap generation and NEVER cleared (`_zimage_cleanup` says so, and the
     transformer's `forward` consults the attribute whenever present). The INT8

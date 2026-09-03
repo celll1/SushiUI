@@ -910,6 +910,8 @@ class LoRAManager:
             successful generation. The caller unloads in a ``finally``, so a
             refusal here leaves no adapter behind.
         """
+        from api.error_handlers import with_error_code
+
         print(f"[LoRAManager] load_loras called with {len(lora_configs) if lora_configs else 0} configs")
         print(f"[LoRAManager] lora_configs: {lora_configs}")
 
@@ -937,7 +939,7 @@ class LoRAManager:
                 print(f"[LoRAManager]   Searched in: {self.lora_dir}")
                 print(f"[LoRAManager]   Additional dirs: {self.additional_dirs}")
                 _lora_warn(message, code="lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
 
             adapter_name = f"lora_{i}"
             file_pairs = 0
@@ -1071,7 +1073,7 @@ class LoRAManager:
                 message = (f"LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 _lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
 
             # Refuse BEFORE set_adapters: with zero targets installed that call
             # raises too, and its generic failure would mask the real reason.
@@ -1087,7 +1089,7 @@ class LoRAManager:
                 )
                 print(f"[LoRAManager] ERROR: {message}")
                 _lora_warn(message, code="lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             if 0 < applied < file_pairs:
                 _lora_warn(
@@ -1131,7 +1133,7 @@ class LoRAManager:
                 message = (f"LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 _lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
 
         # The activation above names ONE adapter, and set_adapters REPLACES the
         # active set rather than adding to it, so without this every LoRA but

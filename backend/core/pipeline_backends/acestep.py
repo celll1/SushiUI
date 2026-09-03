@@ -855,6 +855,7 @@ class AceStepMixin:
                 raise ValidationError(
                     f"LoRA file not found: {lora_file}",
                     detail="No such file exists in the registered LoRA directories.",
+                    code="lora_not_found",
                 )
 
             print(f"[AceStep LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
@@ -999,7 +1000,8 @@ class AceStepMixin:
             )
             print(f"[AceStep LoRA] ERROR: {message}")
             self._acestep_lora_warn(message, code="lora_incompatible")
-            raise ValidationError(message, detail="; ".join(reasons) + ".")
+            raise ValidationError(message, detail="; ".join(reasons) + ".",
+                                  code="lora_incompatible")
 
         if unbound or foreign_stems:
             # Bound something: a partial application is a warning, matching

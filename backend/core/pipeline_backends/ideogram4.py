@@ -131,6 +131,7 @@ class Ideogram4Mixin:
             alpha_from_metadata,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak wrappers into this one. `_ideogram4_cleanup`
@@ -158,7 +159,7 @@ class Ideogram4Mixin:
                 message = f"Ideogram 4 LoRA '{lora_file}' not found in any configured LoRA directory"
                 print(f"[Ideogram4 LoRA] ERROR: {message}")
                 self._ideogram4_lora_warn(message, code="lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 default_alpha = alpha_from_metadata(metadata)
@@ -193,7 +194,7 @@ class Ideogram4Mixin:
                 message = (f"Ideogram 4 LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._ideogram4_lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
 
             pairs = len(grouped) + len(grouped_u)
             applied_all = applied + applied_u
@@ -219,7 +220,7 @@ class Ideogram4Mixin:
                     code = "lora_incompatible"
                 print(f"[Ideogram4 LoRA] ERROR: {message}")
                 self._ideogram4_lora_warn(message, code=code)
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), code)
 
             if applied_all < pairs:
                 self._ideogram4_lora_warn(

@@ -81,6 +81,7 @@ class AnimaMixin:
             derive_scope_from_keys, unmatched_source_keys,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: a model reload or a
         # restore that failed in an earlier request must not leak the previous
@@ -100,6 +101,7 @@ class AnimaMixin:
 
         total_applied = 0
         failures: List[str] = []
+        failure_codes: List[str] = []
         for i, cfg in enumerate(lora_configs):
             lora_path = cfg.get("path", "")
             # Warnings ride into the PNG metadata chunk, so never an absolute path.
@@ -110,6 +112,7 @@ class AnimaMixin:
                 message = f"LoRA '{lora_file}': file not found"
                 self._anima_lora_warn(message, "lora_not_found")
                 failures.append(message)
+                failure_codes.append("lora_not_found")
                 continue
             try:
                 raw, fmt = load_lora_safetensors(str(resolved))
@@ -153,6 +156,7 @@ class AnimaMixin:
                     )
                     self._anima_lora_warn(message, "lora_incompatible")
                     failures.append(message)
+                    failure_codes.append("lora_incompatible")
                 total_applied += applied
             except Exception as e:
                 print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")
@@ -163,12 +167,16 @@ class AnimaMixin:
                            f"({type(e).__name__}); see the server log for details")
                 self._anima_lora_warn(message, "lora_load_failed")
                 failures.append(message)
+                failure_codes.append("lora_load_failed")
 
         if failures:
             # Refuse before denoising rather than generate with a silently
             # partial LoRA set; restore the DiT first so the failure is clean.
             self._unload_lora_anima()
-            raise RuntimeError("[Anima LoRA] " + "; ".join(failures))
+            # The response reports the FIRST failure's code; warnings[] carries
+            # every one of them.
+            raise with_error_code(
+                RuntimeError("[Anima LoRA] " + "; ".join(failures)), failure_codes[0])
         return total_applied
 
     def _unload_lora_anima(self) -> int:

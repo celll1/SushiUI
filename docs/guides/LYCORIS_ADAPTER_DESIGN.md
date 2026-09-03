@@ -399,11 +399,28 @@ Each algebra implementation provides:
 - merge support and exact strength semantics;
 - an unfused reference path and optional fused backend.
 
-Replace the single-branch wrapper with `CompositeAdapterLinear`. It owns the
-base once and holds multiple named branches, allowing AddLoRA to change strength
-or step activation without rewrapping. Its output is the base result plus every
-active additive branch. DoRA uses the full-difference interpolation contract
-rather than being treated as an ordinary additive factor.
+Replace the single-branch wrapper with `CompositeAdapterLayer`
+(`backend/core/adapters/layers.py`, shipped; no architecture has adopted it
+yet). It owns the base once and holds multiple named branches, allowing AddLoRA
+to change strength or step activation without rewrapping. Its output is the base
+result plus every active additive branch. DoRA uses the full-difference
+interpolation contract rather than being treated as an ordinary additive factor.
+
+The name ends in `Layer`, not `Linear`: every offloader in
+`core.memory_management.block_offloading` selects modules by
+`__class__.__name__.endswith("Linear")`, so a `*Linear`-named wrapper with a
+delegating `.weight` enrols the base weight twice and the paired staging swap,
+applied twice, restores the outgoing block's weights. The branch contract is one
+method, `forward_delta(x)` (plus `set_adapter_strength(strength)` for a branch
+whose strength changes after installation), which both existing algebras
+satisfy, so the composite never dispatches on a branch's class. Because the
+composite is what hides the base module from `nn.Linear` selection,
+`lora_wrapped_count` (`core.models.common.int8_runtime_quantize`) now counts
+adapter wrapper ROOTS through `core.adapters.count_adapter_wrapper_roots`
+instead of matching `LoRALinearLayer` by name; the INT8 pre-flight in
+`core.vram_optimization`, the in-place converter and the Lens FP8 gate all read
+that one function, so a composite holding a non-LoRA branch is refused by all
+three. `backend/tests/adapter_composite_layer_cheap_test.py` is the gate.
 
 ### 3. Target topology
 
@@ -626,7 +643,9 @@ per-architecture:**
   `out_features` into LOCALS and never exposes them on `self`, so the wrapper
   cannot wrap a wrapper. This is why every architecture is first-wins or a
   refusal today rather than summing branches. The composite wrapper is the
-  fix; a per-architecture re-wrap is not.
+  fix; a per-architecture re-wrap is not. `CompositeAdapterLayer` now exists
+  and is gated (see boundary 2); no architecture has adopted it, so every
+  refusal still stands until each loader is migrated in its own commit.
 - **The four per-LoRA options are each honoured by a different subset of
   architectures.** `LoRAConfig` (`backend/core/extensions/lora_manager.py`)
   parses all four for every request, but:

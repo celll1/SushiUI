@@ -6,8 +6,42 @@ import Button from "./Button";
 import Slider from "./Slider";
 import RangeSlider from "./RangeSlider";
 import LayerWeightGraph from "./LayerWeightGraph";
-import { LoRAConfig, LoRAInfo, LoRAListEntry, getLoras, getLoraInfo, archDisplayName } from "@/utils/api";
+import {
+  ADAPTER_TYPE_AUTO,
+  AdapterTypeAssertion,
+  ArchAdapterFamilies,
+  DetectedAdapterType,
+  LoRAConfig,
+  LoRAInfo,
+  LoRAListEntry,
+  getLoras,
+  getLoraInfo,
+  archDisplayName,
+} from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
+
+// Display spelling only; the VALUES come from the backend detector
+// (GET /loras -> adapter_type). An unmapped value renders as itself, so a
+// family added backend-side shows up instead of disappearing.
+const ADAPTER_TYPE_LABELS: Record<string, string> = {
+  lora: "LoRA",
+  loha: "LoHa",
+  lokr: "LoKr",
+  dora: "DoRA",
+  doha: "DoHa",
+  dokr: "DoKr",
+  unknown: "Unknown",
+};
+
+// Assertion choices offered under Advanced. "auto" is the default and stays
+// first; the rest must MATCH the file (a mismatch is refused, not applied).
+const ADAPTER_TYPE_ASSERTIONS: AdapterTypeAssertion[] = [
+  "auto", "lora", "loha", "lokr", "dora", "doha", "dokr",
+];
+
+function adapterTypeLabel(value: string): string {
+  return ADAPTER_TYPE_LABELS[value] || value;
+}
 
 // Display order for LoRA architecture groups. "unknown" is a first-class
 // value (files whose key structure doesn't match any recognized signature),
@@ -34,10 +68,11 @@ interface LoRASelectorProps {
   simpleMode?: boolean;
   /**
    * Architecture of the currently loaded model (e.g. "sdxl", "minimax_h3").
-   * Used only to order the LoRA list -- the group matching this arch is
-   * listed first/expanded. A LoRA whose detected arch does not match stays
-   * selectable; a wrong or unrecognized arch sniff must never make a LoRA
-   * unreachable.
+   * Orders the LoRA list -- the group matching this arch is listed
+   * first/expanded -- and selects the adapter-family capability entry used to
+   * warn that a detected family would be refused. A LoRA whose detected arch
+   * does not match stays selectable; a wrong or unrecognized arch sniff must
+   * never make a LoRA unreachable.
    */
   loadedArch?: string | null;
   /**
@@ -56,6 +91,90 @@ interface LoRALayerWeightsProps {
   onChange: (weights: { [layerName: string]: number }) => void;
   disabled?: boolean;
   loadLoraInfo: (loraPath: string) => Promise<LoRAInfo | null>;
+}
+
+interface LoRAAdapterNoteProps {
+  entry?: LoRAListEntry;
+  asserted: AdapterTypeAssertion;
+  onAssert: (adapter_type: AdapterTypeAssertion) => void;
+  families?: ArchAdapterFamilies;
+  disabled?: boolean;
+}
+
+// What the FILE is (detected by the backend), and -- separately -- whether the
+// LOADED architecture can apply it. Two different questions, two different
+// sources: `GET /loras`'s adapter_type and `adapter_families` of
+// `GET /schema/arch-capabilities`. The reason shown for a family the
+// architecture refuses is the backend's own sentence, so what the user reads
+// here is what the request would answer with.
+function LoRAAdapterNote({ entry, asserted, onAssert, families, disabled }: LoRAAdapterNoteProps) {
+  const detected = (entry?.adapter_type ?? undefined) as DetectedAdapterType | undefined;
+  if (!detected) return null;
+
+  const unsupportedReason =
+    detected !== "unknown" && families
+      ? families.unsupported?.[detected as Exclude<DetectedAdapterType, "unknown">]
+      : undefined;
+  const invalidReason =
+    entry?.adapter_state === "invalid" ? entry.adapter_state_reason : null;
+
+  return (
+    <div className="mt-1 space-y-1 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded bg-gray-700 px-1.5 py-0.5 text-gray-200">
+          {adapterTypeLabel(detected)}
+        </span>
+        {entry?.adapter_format && entry.adapter_format !== "unknown" && (
+          <span className="text-gray-500">{entry.adapter_format}</span>
+        )}
+        {entry?.adapter_rank != null && (
+          <span className="text-gray-500">
+            rank {entry.adapter_rank}
+            {entry.adapter_alpha != null ? ` / alpha ${entry.adapter_alpha}` : ""}
+          </span>
+        )}
+        {detected === "unknown" && (
+          <span className="text-gray-500">
+            detection could not name this file&apos;s adapter algebra
+          </span>
+        )}
+        {asserted !== ADAPTER_TYPE_AUTO && (
+          <span className="text-gray-400">asserted: {adapterTypeLabel(asserted)}</span>
+        )}
+      </div>
+
+      {invalidReason && <div className="text-amber-400">{invalidReason}</div>}
+
+      {unsupportedReason && (
+        <div className="text-amber-400">
+          The loaded model does not accept this adapter family -- {unsupportedReason}
+        </div>
+      )}
+
+      <details>
+        <summary className="cursor-pointer text-gray-500">Advanced</summary>
+        <label className="mt-1 flex flex-wrap items-center gap-2 text-gray-400">
+          <span>Adapter type</span>
+          <select
+            value={asserted}
+            onChange={(e) => onAssert(e.target.value as AdapterTypeAssertion)}
+            disabled={disabled}
+            className="bg-gray-700 text-white px-2 py-1 rounded text-xs"
+          >
+            {ADAPTER_TYPE_ASSERTIONS.map((value) => (
+              <option key={value} value={value}>
+                {value === ADAPTER_TYPE_AUTO ? "Auto (detect)" : adapterTypeLabel(value)}
+              </option>
+            ))}
+          </select>
+          <span className="text-gray-500">
+            An assertion about the file, not a conversion: any value but Auto
+            must match what was detected, or the request is refused.
+          </span>
+        </label>
+      </details>
+    </div>
+  );
 }
 
 interface LoRARecommendedNoteProps {
@@ -168,7 +287,7 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
 }
 
 export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed", simpleMode = false, loadedArch = null, onApplyRecommended }: LoRASelectorProps) {
-  const { isBackendReady, modelLoaded } = useStartup();
+  const { isBackendReady, modelLoaded, archCapabilities, generationDefaults } = useStartup();
   const [availableLoras, setAvailableLoras] = useState<Array<LoRAListEntry>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
   const mountedRef = useRef(true);
@@ -214,6 +333,15 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
     }
   };
 
+  // Backend LORA_ITEM_DEFAULTS; the literal is the not-yet-started fallback.
+  const adapterTypeDefault: AdapterTypeAssertion =
+    (generationDefaults?.lora_item?.adapter_type as AdapterTypeAssertion | undefined) ??
+    ADAPTER_TYPE_AUTO;
+  const adapterFamilies = loadedArch
+    ? archCapabilities?.adapter_families?.[loadedArch]
+    : undefined;
+  const detectionByPath = new Map(availableLoras.map((e) => [e.path, e]));
+
   const addLoRA = () => {
     if (availableLoras.length === 0) return;
 
@@ -224,6 +352,7 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
       apply_to_unet: true,
       unet_layer_weights: {},
       step_range: [0, 1000],
+      adapter_type: adapterTypeDefault,
     };
 
     onChange([...value, newLora]);
@@ -307,6 +436,14 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
                 Remove
               </Button>
             </div>
+
+            <LoRAAdapterNote
+              entry={detectionByPath.get(lora.path)}
+              asserted={lora.adapter_type ?? adapterTypeDefault}
+              onAssert={(adapter_type) => updateLora(index, { adapter_type })}
+              families={adapterFamilies}
+              disabled={disabled}
+            />
 
             <LoRARecommendedNote
               loraPath={lora.path}

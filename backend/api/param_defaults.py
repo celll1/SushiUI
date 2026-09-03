@@ -553,6 +553,17 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# `loras[]` request items (every generation route, JSON and multipart)
+# ---------------------------------------------------------------------------
+# Per-ITEM, because a list default cannot carry its elements'. `adapter_type`
+# is an ASSERTION about the checkpoint, never a conversion: "auto" detects the
+# algebra, any other value must equal what the detector reports for that file
+# (api/adapter_types.py).
+LORA_ITEM_DEFAULTS: Dict[str, Any] = {
+    "adapter_type": "auto",
+}
+
+# ---------------------------------------------------------------------------
 # Per-architecture image defaults overlay (SSOT)
 # ---------------------------------------------------------------------------
 # `GENERATION_DEFAULTS` above is shared by every image architecture. The

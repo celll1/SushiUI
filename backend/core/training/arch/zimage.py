@@ -22,6 +22,10 @@ class ZImageArchHandler(ArchHandler):
     # sampler t=0 is clean.
     timestep_convention = "t0"
 
+    def lora_adapter_class(self):
+        from core.training.adapters import ZImageLoRAAdapter
+        return ZImageLoRAAdapter
+
     def load_components(self, trainer) -> None:
         # P3a: body lives in ops/zimage_ops (shared with the base_trainer
         # load-time dispatcher, which cannot route via self.arch — see the

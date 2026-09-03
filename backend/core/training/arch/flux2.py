@@ -22,6 +22,10 @@ class Flux2ArchHandler(ArchHandler):
     # sampler t=0 is clean.
     timestep_convention = "t0"
 
+    def lora_adapter_class(self):
+        from core.training.adapters import FLUX2LoRAAdapter
+        return FLUX2LoRAAdapter
+
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/flux2_ops (shared with the base_trainer load-time
         # dispatcher, which cannot route via self.arch — self.arch binds after

@@ -21,7 +21,9 @@ raises, and ``api.arch_capabilities.TRAINING_UNSUPPORTED`` declares it.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import MINIMAX_H3_TEMPORAL, MINIMAX_H3_WIRING
 from core.training.ops.minimax_h3_ops import (
     MINIMAX_H3_AUDIO_PREP_VERSION,
@@ -44,6 +46,19 @@ class MiniMaxH3ArchHandler(ArchHandler):
     # shift), monotonic increasing in the sampler draw u. sampler u=0 -> sigma=0
     # -> x_t=x0 (clean); u=1 -> sigma=1 -> x_t=noise. sampler t=0 is clean.
     timestep_convention = "t0"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import MiniMaxH3LoRAAdapter
+        return MiniMaxH3LoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        # Default attention+ff IS the design's target set (300 modules / 83.1 M
+        # params at rank 16 across all 50 blocks). The I/O heads, the token
+        # refiner and AdaLN are excluded permanently and are not reachable from
+        # any scope string — see adapters/minimax_h3_adapter.py per exclusion.
+        from core.training.adapters.minimax_h3_adapter import parse_scope_csv
+        return {"scope": parse_scope_csv(resolve_scope_csv(
+            trainer, "minimax_h3_lora_scope", "attention,ff"))}
 
     def load_components(self, trainer) -> None:
         from core.training.ops import minimax_h3_ops

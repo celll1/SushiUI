@@ -8,7 +8,9 @@ Nothing calls these until a later phase flips the corresponding dispatcher.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import LENS_WIRING
 
 
@@ -27,6 +29,18 @@ class LensArchHandler(ArchHandler):
     # rewriting the already-collated conditioning. Mirrored for the API process
     # by api/arch_capabilities.CFG_NULL_STAGE_BY_ARCH.
     cfg_null_stage = "collated"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import LensLoRAAdapter
+        return LensLoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        # parse_scope_csv builds from an all-false scope, so unticking a group in
+        # the panel actually removes it; an inline parse that started from
+        # DEFAULT_SCOPE and only set True ignored a narrowing selection.
+        from core.models.lens.lens_lora import parse_scope_csv
+        return {"scope": parse_scope_csv(resolve_scope_csv(
+            trainer, "lens_lora_scope", "img_attn,txt_attn,img_mlp,txt_mlp"))}
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/lens_ops (shared with the base_trainer

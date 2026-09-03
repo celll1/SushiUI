@@ -24,6 +24,10 @@ class SDXLArchHandler(ArchHandler):
         noise_process = getattr(trainer, "noise_process", "ddpm") if trainer is not None else "ddpm"
         return "t0" if noise_process == "flow" else "t1"
 
+    def lora_adapter_class(self):
+        from core.training.adapters import SDXLLoRAAdapter
+        return SDXLLoRAAdapter
+
     def load_components(self, trainer) -> None:
         # P3a: ONE loader serves both SD1.5 and SDXL; it SETS trainer.is_sdxl.
         # Body lives in ops/sd_sdxl_ops (shared with the base_trainer load-time

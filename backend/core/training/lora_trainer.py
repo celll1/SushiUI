@@ -1,17 +1,14 @@
 """
 LoRA (Low-Rank Adaptation) Trainer for Stable Diffusion models.
 
-This is a modular implementation using model-specific adapters:
-- SD15LoRAAdapter: SD1.5 models
-- SDXLLoRAAdapter: SDXL models
-- ZImageLoRAAdapter: Z-Image models
-- FLUX2LoRAAdapter: FLUX.2 Klein models
+This is a modular implementation using model-specific adapters. Which adapter
+serves an architecture is declared on that architecture's ArchHandler
+(``core/training/arch/``), not decided here.
 
 Key improvements:
 - Model-specific logic separated into adapters
-- Supports SD1.5, SDXL, Z-Image, and FLUX.2
 - Clean separation of concerns
-- Easy to extend with new model types
+- Adding an architecture is one registry entry, not a branch here
 
 References:
 - sd-scripts (Apache-2 license) by kohya-ss
@@ -26,22 +23,6 @@ from typing import Dict, List
 import torch.nn as nn
 
 from .base_trainer import BaseTrainer
-from .adapters import (
-    SD15LoRAAdapter,
-    SDXLLoRAAdapter,
-    ZImageLoRAAdapter,
-    # DEUSLoRAAdapter,  # DEUS support removed
-    FLUX2LoRAAdapter,
-    AnimaLoRAAdapter,
-    LensLoRAAdapter,
-    Ideogram4LoRAAdapter,
-    MiniT2ILoRAAdapter,
-    Krea2LoRAAdapter,
-    Ltx2LoRAAdapter,
-    MiniMaxH3LoRAAdapter,
-    AceStepLoRAAdapter,
-    SenseNovaLoRAAdapter,
-)
 
 
 class LoRATrainer(BaseTrainer):
@@ -135,144 +116,24 @@ class LoRATrainer(BaseTrainer):
         print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}, Vision Encoder: {ve_status}")
 
     def _create_adapter(self):
-        """Create model-specific LoRA adapter based on detected model type."""
-        if getattr(self, "is_sensenova", False):
-            self.adapter = SenseNovaLoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype
-            )
-            print(f"{self.log_prefix} Using SenseNovaLoRAAdapter")
-        elif self.is_zimage:
-            self.adapter = ZImageLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-            print(f"{self.log_prefix} Using ZImageLoRAAdapter")
-        # DEUS support removed - architecture no longer maintained
-        # elif self.is_deus:
-        #     self.adapter = DEUSLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-        #     print(f"{self.log_prefix} Using DEUSLoRAAdapter")
-        elif self.is_flux2:
-            self.adapter = FLUX2LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-            print(f"{self.log_prefix} Using FLUX2LoRAAdapter")
-        elif self.is_lens:
-            from core.models.lens.lens_lora import parse_scope_csv
-            scope_csv = (getattr(self, "lens_lora_scope", "")
-                          or self.config.get("lens_lora_scope", "")
-                          or "img_attn,txt_attn,img_mlp,txt_mlp")
-            # parse_scope_csv builds from an all-false scope, so unticking a
-            # group in the panel actually removes it. The previous inline parse
-            # started from DEFAULT_SCOPE and only set True, so a narrowing
-            # selection was silently ignored. Same shape as every sibling arch.
-            scope = parse_scope_csv(scope_csv)
-            self.adapter = LensLoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using LensLoRAAdapter (scope={scope})")
-        elif self.is_ideogram4:
-            from core.models.ideogram4.ideogram4_lora import parse_scope_csv
-            scope_csv = (getattr(self, "ideogram4_lora_scope", "")
-                          or self.config.get("ideogram4_lora_scope", "")
-                          or "attn,mlp")
-            scope = parse_scope_csv(scope_csv)
-            self.adapter = Ideogram4LoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using Ideogram4LoRAAdapter (scope={scope})")
-        elif self.is_minit2i:
-            from core.models.minit2i.minit2i_lora import parse_scope_csv, parse_te_scope_csv
-            scope_csv = (getattr(self, "minit2i_lora_scope", "")
-                          or self.config.get("minit2i_lora_scope", "")
-                          or "attn,mlp,txt_embed")
-            scope = parse_scope_csv(scope_csv)
-            te_scope_csv = (getattr(self, "minit2i_te_lora_scope", "")
-                             or self.config.get("minit2i_te_lora_scope", "")
-                             or "attn,ff")
-            te_scope = parse_te_scope_csv(te_scope_csv)
-            self.adapter = MiniT2ILoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope, te_scope=te_scope,
-            )
-            print(f"{self.log_prefix} Using MiniT2ILoRAAdapter (scope={scope}, te_scope={te_scope})")
-        elif self.is_krea2:
-            from core.models.krea2.krea2_lora import parse_scope_csv
-            scope_csv = (getattr(self, "krea2_lora_scope", "")
-                          or self.config.get("krea2_lora_scope", "")
-                          or "attn,mlp")
-            scope = parse_scope_csv(scope_csv)
-            self.adapter = Krea2LoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using Krea2LoRAAdapter (scope={scope})")
-        elif self.is_anima:
-            # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
-            # (attention + mlp + llm_adapter, no AdaLN modulation).
-            scope_csv = (getattr(self, "anima_lora_scope", "")
-                          or self.config.get("anima_lora_scope", "")
-                          or "attention,mlp,llm_adapter")
-            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
-            # Allow train_llm_adapter to override the llm_adapter scope flag.
-            if hasattr(self, "train_llm_adapter") or "train_llm_adapter" in self.config:
-                wanted["llm_adapter"] = bool(
-                    getattr(self, "train_llm_adapter",
-                            self.config.get("train_llm_adapter", True))
-                )
-            scope = {
-                "attention": wanted.get("attention", True),
-                "mlp": wanted.get("mlp", True),
-                "mod": wanted.get("mod", False),
-                "llm_adapter": wanted.get("llm_adapter", True),
-            }
-            self.adapter = AnimaLoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using AnimaLoRAAdapter (scope={scope})")
-        elif self.is_ltx2:
-            # Parse scope from config; default to attention-only (video LoRA).
-            scope_csv = (getattr(self, "ltx2_lora_scope", "")
-                          or self.config.get("ltx2_lora_scope", "")
-                          or "attention")
-            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
-            scope = {
-                "attention": wanted.get("attention", True),
-                "ff": wanted.get("ff", False),
-                "audio": wanted.get("audio", False),
-                "av_cross": wanted.get("av_cross", False),
-            }
-            self.adapter = Ltx2LoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using Ltx2LoRAAdapter (scope={scope})")
-        elif self.is_minimax_h3:
-            # Scope from config; default attention+ff, which IS the design's
-            # target set (300 modules / 83.1 M params at rank 16 across all 50
-            # blocks). The I/O heads, the token refiner and AdaLN are excluded
-            # permanently and are not reachable from any scope string -- see
-            # adapters/minimax_h3_adapter.py for the reason per exclusion.
-            from core.training.adapters.minimax_h3_adapter import parse_scope_csv
-            scope_csv = (getattr(self, "minimax_h3_lora_scope", "")
-                          or self.config.get("minimax_h3_lora_scope", "")
-                          or "attention,ff")
-            scope = parse_scope_csv(scope_csv)
-            self.adapter = MiniMaxH3LoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using MiniMaxH3LoRAAdapter (scope={scope})")
-        elif self.is_acestep:
-            # Parse scope from config; default to attention-only (audio LoRA).
-            scope_csv = (getattr(self, "acestep_lora_scope", "")
-                          or self.config.get("acestep_lora_scope", "")
-                          or "attention")
-            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
-            scope = {
-                "attention": wanted.get("attention", True),
-                "mlp": wanted.get("mlp", False),
-            }
-            self.adapter = AceStepLoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
-            )
-            print(f"{self.log_prefix} Using AceStepLoRAAdapter (scope={scope})")
-        elif self.is_sdxl:
-            self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-            print(f"{self.log_prefix} Using SDXLLoRAAdapter")
-        else:
-            self.adapter = SD15LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-            print(f"{self.log_prefix} Using SD15LoRAAdapter")
+        """Create the LoRA adapter the arch registry declares for this model.
+
+        Which adapter class an architecture uses, and the scope arguments it
+        takes beyond (trainer, rank, alpha, dtype), are declared on its
+        ArchHandler (``lora_adapter_class`` / ``lora_adapter_kwargs``). Reading
+        them off ``self.arch`` rather than re-testing ``is_<arch>`` here also
+        means the adapter and the training ops can never resolve to different
+        architectures.
+        """
+        from core.training.arch import get_arch_handler
+
+        # BaseTrainer.__init__ binds self.arch once every is_<arch> flag is
+        # final; resolving from the flags otherwise keeps _create_adapter
+        # callable on a bare trainer. Both go through the same registry.
+        arch = getattr(self, "arch", None) or get_arch_handler(self)
+        plan = arch.lora_adapter_plan(self)
+        self.adapter = plan.build(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
+        print(f"{self.log_prefix} Using {plan.adapter_cls.__name__}{plan.log_detail}")
 
     def train(self, *args, **kwargs):
         try:

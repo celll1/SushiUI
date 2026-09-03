@@ -22,10 +22,13 @@ apply to both (the inference loader uses distinct sub-prefixes per branch).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
+
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
 
 from .vendor.fp8_linear import Fp8Linear
 from .vendor.int8_linear import Int8Linear
@@ -63,60 +66,55 @@ def _flatten_to_sdscripts(module_path: str) -> str:
     return intermediate.replace(".", "_")
 
 
-def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    """Return (module_path, suffix in {down, up, alpha}) for a LoRA key, else None."""
-    if key.startswith(INTERCHANGE_DIT_PREFIX):
-        rest = key[len(INTERCHANGE_DIT_PREFIX):]
-        if rest.endswith(".lora_A.weight"):
-            return rest[: -len(".lora_A.weight")], "down"
-        if rest.endswith(".lora_B.weight"):
-            return rest[: -len(".lora_B.weight")], "up"
-        if rest.endswith(".alpha"):
-            return rest[: -len(".alpha")], "alpha"
-        return None
-
+def _ideogram4_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> module path, or None for a foreign key."""
+    if raw_stem.startswith(INTERCHANGE_DIT_PREFIX):
+        return raw_stem[len(INTERCHANGE_DIT_PREFIX):]
     for prefix in ("lora_unet_", "lora_uncond_"):
-        if key.startswith(prefix):
-            rest = key[len(prefix):]
-            if "." not in rest:
-                return None
-            flat_module, weight_name = rest.split(".", 1)
-            module_path = _restore_sdscripts_dots(flat_module)
-            if weight_name == "lora_down.weight":
-                return module_path, "down"
-            if weight_name == "lora_up.weight":
-                return module_path, "up"
-            if weight_name == "alpha":
-                return module_path, "alpha"
-            return None
+        if raw_stem.startswith(prefix):
+            flat = raw_stem[len(prefix):]
+            # The native codec flattens every dot away, so a dot left in the
+            # stem means an unrecognised weight name, not a module path.
+            return None if "." in flat else _restore_sdscripts_dots(flat)
     return None
+
+
+def _branch_stem(branch: str) -> Callable[[str], Optional[str]]:
+    """``_ideogram4_stem`` restricted to one asymmetric-CFG branch's keys."""
+    def stem_of(raw_stem: str) -> Optional[str]:
+        if branch == "uncond":
+            if not raw_stem.startswith("lora_uncond_"):
+                return None
+        elif raw_stem.startswith("lora_uncond_"):
+            # cond: sd-scripts lora_unet_ and interchange, but NOT lora_uncond_.
+            return None
+        return _ideogram4_stem(raw_stem)
+    return stem_of
+
+
+def _parse_key(key: str) -> Optional[Tuple[str, str]]:
+    """``(module_path, canonical tensor name)`` for a LoRA key, else None."""
+    split = split_adapter_suffix(key)
+    if split is None:
+        return None
+    module_path = _ideogram4_stem(split[0])
+    return None if module_path is None else (module_path, split[1])
 
 
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
     branch: str = "cond",
-) -> Dict[str, Dict[str, torch.Tensor]]:
-    """Group raw LoRA tensors for one branch → {module_path: {down, up, alpha?}}.
+) -> Dict[str, TensorGroup]:
+    """Group raw LoRA tensors for one branch → {module_path: TensorGroup}.
 
     branch="cond" reads "lora_unet_" / interchange keys; branch="uncond" reads
-    "lora_uncond_" keys. Entries missing a down/up pair are dropped.
+    "lora_uncond_" keys. Only down/up groups are returned -- any other algebra
+    is counted (``count_declared_pairs``) and refused unapplied rather than
+    handed to a builder that cannot express it. ``TensorGroup`` answers to
+    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads.
     """
-    want_prefix = "lora_uncond_" if branch == "uncond" else "lora_unet_"
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        if branch == "uncond":
-            if not key.startswith("lora_uncond_"):
-                continue
-        else:
-            # cond: accept sd-scripts lora_unet_ and interchange, but NOT lora_uncond_
-            if key.startswith("lora_uncond_"):
-                continue
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        grouped.setdefault(module_path, {})[suffix] = tensor
-    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+    grouped = group_adapter_tensors(raw, _branch_stem(branch)).groups
+    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
 
 
 def detect_lora_format(raw: Mapping[str, Any]) -> str:
@@ -129,14 +127,9 @@ def detect_lora_format(raw: Mapping[str, Any]) -> str:
 
 
 def count_declared_pairs(raw: Mapping[str, torch.Tensor]) -> int:
-    """Down/up pairs across BOTH branches.
-
-    ``AdapterSession``'s default counts ``.lora_down.weight``, which misses the
-    interchange codec's ``.lora_A.weight`` entirely and would stop the
-    ``lora_partial`` warning firing on those files.
-    """
-    return (len(normalise_lora_state_dict(raw, branch="cond"))
-            + len(normalise_lora_state_dict(raw, branch="uncond")))
+    """Branches this file declares across BOTH branches; see ``declared_groups``."""
+    return sum(len(declared_groups(raw, _branch_stem(b)))
+               for b in ("cond", "uncond"))
 
 
 def alpha_from_metadata(metadata: Optional[Dict[str, str]]) -> Optional[float]:

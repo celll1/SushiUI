@@ -191,6 +191,39 @@ _FLUX2_TARGET_ATTRS = {
 }
 
 
+_FLUX2_LORA_PREFIXES = ("lora_transformer_", "lora_te_")
+
+
+def _flux2_lora_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> stem, or None for a key that is not FLUX.2's."""
+    return raw_stem if raw_stem.startswith(_FLUX2_LORA_PREFIXES) else None
+
+
+def _flux2_lora_groups(tensors: Mapping[str, torch.Tensor]):
+    """``(transformer groups, text-encoder groups)``: the COMPLETE factor groups,
+    keyed by the stem the builder looks up.
+
+    The builder reads these rather than raw keys, so the counter and the builder
+    accept the same set of files -- a spelling one takes and the other does not
+    is a file that declares N and applies 0.
+    """
+    from core.adapters import group_adapter_tensors
+
+    groups = group_adapter_tensors(tensors, _flux2_lora_stem).groups
+    unet = {s: g for s, g in groups.items() if s.startswith("lora_transformer_")}
+    return unet, {s: g for s, g in groups.items() if s not in unet}
+
+
+def _flux2_declared_counts(tensors: Mapping[str, torch.Tensor]):
+    """``(transformer, text encoder)`` DECLARED branch counts; see
+    ``core.adapters.groups.declared_groups`` for the half-pair term."""
+    from core.adapters.groups import declared_groups
+
+    stems = declared_groups(tensors, _flux2_lora_stem)
+    unet = sum(1 for s in stems if s.startswith("lora_transformer_"))
+    return unet, len(stems) - unet
+
+
 def _flux2_transformer_lora_targets(transformer):
     """``(parent, slot, module_key)`` for every transformer LoRA target.
 
@@ -354,13 +387,12 @@ class Flux2Mixin:
     @staticmethod
     def _flux2_declared_branches(tensors: Mapping[str, torch.Tensor],
                                  components: Tuple[str, ...]) -> int:
+        unet_declared, te_declared = _flux2_declared_counts(tensors)
         declared = 0
         if "transformer" in components:
-            declared += sum(1 for k in tensors
-                            if k.startswith("lora_transformer_") and k.endswith(".lora_down.weight"))
+            declared += unet_declared
         if "text_encoder" in components:
-            declared += sum(1 for k in tensors
-                            if k.startswith("lora_te_") and k.endswith(".lora_down.weight"))
+            declared += te_declared
         return declared
 
     @property
@@ -373,6 +405,7 @@ class Flux2Mixin:
             session = AdapterSession(
                 resolve_path=self._flux2_resolve_lora_path,
                 warn=self._flux2_lora_warn,
+                architecture="flux2",
                 label="FLUX.2 LoRA",
                 count_declared_branches=self._flux2_declared_branches,
                 missing_file=self._flux2_missing_lora,
@@ -443,10 +476,8 @@ class Flux2Mixin:
         apply_to_unet = file.config.get("apply_to_unet", True)
         apply_to_te = file.config.get("apply_to_text_encoder", True)
 
-        unet_pairs = sum(1 for k in file.tensors
-                         if k.startswith("lora_transformer_") and k.endswith(".lora_down.weight"))
-        te_pairs = sum(1 for k in file.tensors
-                       if k.startswith("lora_te_") and k.endswith(".lora_down.weight"))
+        unet_groups, te_groups = _flux2_lora_groups(file.tensors)
+        unet_pairs, te_pairs = _flux2_declared_counts(file.tensors)
 
         if not apply_to_unet and apply_to_te:
             file.declared_branches = te_pairs
@@ -469,16 +500,14 @@ class Flux2Mixin:
         unet_hits = 0
         if transformer is not None and unet_keys_present:
             for _parent, _slot, module_path in _flux2_transformer_lora_targets(transformer):
-                prefix = f"lora_transformer_{module_path.replace('.', '_')}"
-                if f"{prefix}.lora_down.weight" in file.tensors:
+                if f"lora_transformer_{module_path.replace('.', '_')}" in unet_groups:
                     unet_hits += 1
 
         te_hits = 0
         if text_encoder is not None and te_keys_present:
             for _parent, _slot, module_path in _flux2_te_component_targets(text_encoder):
                 te_suffix = module_path[len("text_encoder."):].replace(".", "_")
-                prefix = f"lora_te_{te_suffix}"
-                if f"{prefix}.lora_down.weight" in file.tensors:
+                if f"lora_te_{te_suffix}" in te_groups:
                     te_hits += 1
 
         dead = []
@@ -502,6 +531,8 @@ class Flux2Mixin:
             "te_hits": te_hits,
             "unet_pairs": unet_pairs,
             "te_pairs": te_pairs,
+            "unet_groups": unet_groups,
+            "te_groups": te_groups,
         }
 
     def _flux2_zero_target_message(self, file, counts):
@@ -557,13 +588,14 @@ class Flux2Mixin:
             return None
 
         file = request.file
-        tensors = file.tensors
+        prepared = request.prepared or {}
         module_path = request.module_path
 
         if request.component == "transformer":
             if not file.config.get("apply_to_unet", True):
                 return None
             lora_name = f"lora_transformer_{module_path.replace('.', '_')}"
+            groups = prepared.get("unet_groups") or {}
             layer_weights = file.config.get("unet_layer_weights", {})
             block_weight = layer_weights.get(self._get_flux2_block_name(module_path), 1.0)
             strength = file.strength * block_weight
@@ -572,14 +604,18 @@ class Flux2Mixin:
                 return None
             te_suffix = module_path[len("text_encoder."):].replace(".", "_")
             lora_name = f"lora_te_{te_suffix}"
+            groups = prepared.get("te_groups") or {}
             strength = file.strength
         else:
             return None
 
-        down = tensors.get(f"{lora_name}.lora_down.weight")
-        up = tensors.get(f"{lora_name}.lora_up.weight")
-        if down is None or up is None:
+        # The groups ``prepare`` already parsed, not a second read of the raw
+        # keys: a spelling the counter takes and this does not would declare N
+        # and apply 0.
+        group = groups.get(lora_name)
+        if group is None or "down" not in group or "up" not in group:
             return None
+        down, up = group["down"], group["up"]
 
         in_features = getattr(base, "in_features", None)
         out_features = getattr(base, "out_features", None)
@@ -591,7 +627,7 @@ class Flux2Mixin:
             return SHAPE_MISMATCH
 
         rank = down.shape[0]
-        alpha = tensors.get(f"{lora_name}.alpha")
+        alpha = group.get("alpha")
         alpha_value = alpha.item() if alpha is not None else rank
 
         branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)

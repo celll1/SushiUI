@@ -548,7 +548,8 @@ def test_anima_a_narrow_checkpoint_wraps_only_the_targets_it_names(tmp_path,
 def interchange_copy(path, out_path):
     """The same tensors, spelled the way third-party tooling exports them."""
     remapped = {}
-    suffixes = {"down": "lora_A.weight", "up": "lora_B.weight", "alpha": "alpha"}
+    suffixes = {"lora_down.weight": "lora_A.weight",
+                "lora_up.weight": "lora_B.weight", "alpha": "alpha"}
     for key, tensor in load_file(path).items():
         module_path, tag = anima_mod._parse_key(key)
         remapped[f"{anima_mod.INTERCHANGE_DIT_PREFIX}{module_path}.{suffixes[tag]}"] = tensor

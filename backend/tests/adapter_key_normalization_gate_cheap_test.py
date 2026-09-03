@@ -22,10 +22,10 @@ Run with:
     venv/Scripts/python.exe -m pytest backend/tests/adapter_key_normalization_gate_cheap_test.py -v
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import pytest
 import torch
@@ -58,6 +58,33 @@ def _peft(stem: str, out: int = DIM) -> Dict[str, torch.Tensor]:
     return _pair(stem, "lora_A.weight", "lora_B.weight", out)
 
 
+def _loha(stem: str, out: int = DIM) -> Dict[str, torch.Tensor]:
+    """A LyCORIS LoHa factor set: no ``.lora_down.weight`` key anywhere."""
+    return {
+        f"{stem}.hada_w1_a": torch.randn(out, RANK, generator=_GEN),
+        f"{stem}.hada_w1_b": torch.randn(RANK, DIM, generator=_GEN),
+        f"{stem}.hada_w2_a": torch.randn(out, RANK, generator=_GEN),
+        f"{stem}.hada_w2_b": torch.randn(RANK, DIM, generator=_GEN),
+        f"{stem}.alpha": torch.tensor(float(RANK)),
+    }
+
+
+def _half(stem: str) -> Dict[str, torch.Tensor]:
+    """A stem carrying ``lora_down`` and no ``lora_up``: a checkpoint truncated
+    mid-write, or a converter that dropped half a pair."""
+    return {f"{stem}.lora_down.weight": torch.randn(RANK, DIM, generator=_GEN)}
+
+
+def _lokr(stem: str, out: int = DIM) -> Dict[str, torch.Tensor]:
+    """A LyCORIS LoKr factor set: a full ``lokr_w1`` and a decomposed w2."""
+    return {
+        f"{stem}.lokr_w1": torch.randn(2, 2, generator=_GEN),
+        f"{stem}.lokr_w2_a": torch.randn(out // 2, RANK, generator=_GEN),
+        f"{stem}.lokr_w2_b": torch.randn(RANK, DIM // 2, generator=_GEN),
+        f"{stem}.alpha": torch.tensor(float(RANK)),
+    }
+
+
 @dataclass(frozen=True)
 class _Arch:
     module: str
@@ -68,6 +95,19 @@ class _Arch:
     formats: Dict[str, Tuple[Dict[str, torch.Tensor], bool, int]]
     #: ``prepare_file`` consults the LOADED components, so it cannot run here.
     parse_hook_needs_model: bool = False
+    #: ``label -> (keys, branches declared)`` for a LyCORIS file, in THIS
+    #: architecture's own stem spelling. Deliberately NOT in ``formats``: these
+    #: are not supported formats, and the only contract they carry is the one
+    #: below -- the counter must SEE them, so the session refuses the file as
+    #: unapplied instead of declaring 0 branches and passing.
+    variants: Dict[str, Tuple[Dict[str, torch.Tensor], int]] = field(
+        default_factory=dict)
+    #: ``(one whole pair + one half pair, branches declared)``, again in this
+    #: architecture's own spelling. Declared must be 2: the half pair is a
+    #: target the file names and no builder can apply, so counting it is what
+    #: makes ``applied < declared`` refuse a truncated checkpoint instead of
+    #: generating from it with one target silently missing.
+    truncated: Optional[Tuple[Dict[str, torch.Tensor], int]] = None
 
 
 # Every backend that builds an AdapterSession, with the key formats its own
@@ -81,6 +121,12 @@ ARCHES: Dict[str, _Arch] = {
             "sd-scripts": (_canonical("lora_unet_decoder_layers_0_self_attn_q_proj"), False, 1),
             "diffusers": (_peft("transformer_blocks.0.attn.to_q"), True, 1),
         },
+        truncated=({**_canonical("lora_unet_decoder_layers_0_self_attn_q_proj"),
+                    **_half("lora_unet_decoder_layers_0_self_attn_k_proj")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_decoder_layers_0_self_attn_q_proj"), 1),
+            "lokr": (_lokr("lora_unet_decoder_layers_0_self_attn_q_proj"), 1),
+        },
     ),
     "anima": _Arch(
         "core.pipeline_backends.anima", "AnimaMixin", "_anima_lora_session",
@@ -88,6 +134,12 @@ ARCHES: Dict[str, _Arch] = {
         {
             "sd-scripts": (_canonical("lora_unet_blocks_0_self_attn_q_proj"), False, 1),
             "interchange": (_peft("diffusion_model.blocks.0.self_attn.q_proj"), True, 1),
+        },
+        truncated=({**_canonical("lora_unet_blocks_0_self_attn_q_proj"),
+                    **_half("lora_unet_blocks_0_self_attn_k_proj")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_blocks_0_self_attn_q_proj"), 1),
+            "lokr": (_lokr("lora_unet_blocks_0_self_attn_q_proj"), 1),
         },
     ),
     "flux2": _Arch(
@@ -97,6 +149,12 @@ ARCHES: Dict[str, _Arch] = {
             "sd-scripts": (_canonical("lora_transformer_transformer_blocks_0_attn_to_q"), False, 1),
         },
         parse_hook_needs_model=True,
+        truncated=({**_canonical("lora_transformer_transformer_blocks_0_attn_to_q"),
+                    **_half("lora_transformer_transformer_blocks_0_attn_to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_transformer_transformer_blocks_0_attn_to_q"), 1),
+            "lokr": (_lokr("lora_transformer_transformer_blocks_0_attn_to_q"), 1),
+        },
     ),
     "ideogram4": _Arch(
         "core.pipeline_backends.ideogram4", "Ideogram4Mixin", "_ideogram4_lora_session",
@@ -105,12 +163,24 @@ ARCHES: Dict[str, _Arch] = {
             "sd-scripts": (_canonical("lora_unet_layers_0_attention_to_q"), False, 1),
             "interchange": (_peft("diffusion_model.layers.0.attention.to_q"), True, 1),
         },
+        truncated=({**_canonical("lora_unet_layers_0_attention_to_q"),
+                    **_half("lora_unet_layers_0_attention_to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_layers_0_attention_to_q"), 1),
+            "lokr": (_lokr("lora_unet_layers_0_attention_to_q"), 1),
+        },
     ),
     "krea2": _Arch(
         "core.pipeline_backends.krea2", "Krea2Mixin", "_krea2_lora_session",
         ("transformer",),
         {
             "sd-scripts": (_canonical("lora_unet_transformer_blocks__0__attn__to_q"), False, 1),
+        },
+        truncated=({**_canonical("lora_unet_transformer_blocks__0__attn__to_q"),
+                    **_half("lora_unet_transformer_blocks__0__attn__to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_transformer_blocks__0__attn__to_q"), 1),
+            "lokr": (_lokr("lora_unet_transformer_blocks__0__attn__to_q"), 1),
         },
     ),
     "lens": _Arch(
@@ -120,6 +190,12 @@ ARCHES: Dict[str, _Arch] = {
             "sd-scripts": (_canonical("lora_unet_transformer_blocks_0_attn_img_qkv"), False, 1),
             "interchange": (_peft("diffusion_model.transformer_blocks.0.attn.img_qkv"), True, 1),
         },
+        truncated=({**_canonical("lora_unet_transformer_blocks_0_attn_img_qkv"),
+                    **_half("lora_unet_transformer_blocks_0_attn_txt_qkv")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_transformer_blocks_0_attn_img_qkv"), 1),
+            "lokr": (_lokr("lora_unet_transformer_blocks_0_attn_img_qkv"), 1),
+        },
     ),
     "ltx2": _Arch(
         "core.pipeline_backends.ltx2", "LTX2Mixin", "_ltx2_lora_session",
@@ -127,6 +203,12 @@ ARCHES: Dict[str, _Arch] = {
         {
             "sd-scripts": (_canonical("lora_unet_transformer_blocks_0_attn1_to_q"), False, 1),
             "interchange": (_peft("diffusion_model.transformer_blocks.0.attn1.to_q"), True, 1),
+        },
+        truncated=({**_canonical("lora_unet_transformer_blocks_0_attn1_to_q"),
+                    **_half("lora_unet_transformer_blocks_0_attn1_to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_transformer_blocks_0_attn1_to_q"), 1),
+            "lokr": (_lokr("lora_unet_transformer_blocks_0_attn1_to_q"), 1),
         },
     ),
     "minimax_h3": _Arch(
@@ -138,6 +220,12 @@ ARCHES: Dict[str, _Arch] = {
             "comfy": (_peft("diffusion_model.blocks.0.attn.qkv_proj", out=3 * DIM),
                       True, 3),  # one fused stem -> to_q/to_k/to_v
         },
+        truncated=({**_canonical("diffusion_model.blocks.0.attn.to_q"),
+                    **_half("diffusion_model.blocks.0.attn.to_k")}, 2),
+        variants={
+            "loha": (_loha("diffusion_model.blocks.0.attn.qkv_proj", out=3 * DIM), 3),
+            "lokr": (_lokr("diffusion_model.blocks.0.attn.qkv_proj", out=3 * DIM), 3),
+        },
     ),
     "minit2i": _Arch(
         # Its counter answers "pairs THIS PASS could apply", so a transformer
@@ -148,6 +236,12 @@ ARCHES: Dict[str, _Arch] = {
             "sd-scripts": (_canonical("lora_unet_blocks__0__attn__to_q"), False, 1),
         },
         parse_hook_needs_model=True,
+        truncated=({**_canonical("lora_unet_blocks__0__attn__to_q"),
+                    **_half("lora_unet_blocks__0__attn__to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_unet_blocks__0__attn__to_q"), 1),
+            "lokr": (_lokr("lora_unet_blocks__0__attn__to_q"), 1),
+        },
     ),
     "sensenova": _Arch(
         "core.pipeline_backends.sensenova", "SenseNovaMixin", "_sensenova_lora_session",
@@ -161,6 +255,12 @@ ARCHES: Dict[str, _Arch] = {
                 "base_model.model.language_model.model.layers.0.self_attn.q_proj_mot_gen"),
                 True, 1),
         },
+        truncated=({**_canonical("language_model.model.layers.0.self_attn.q_proj_mot_gen"),
+                    **_half("language_model.model.layers.0.self_attn.k_proj_mot_gen")}, 2),
+        variants={
+            "loha": (_loha("language_model.model.layers.0.self_attn.q_proj_mot_gen"), 1),
+            "lokr": (_lokr("language_model.model.layers.0.self_attn.q_proj_mot_gen"), 1),
+        },
     ),
     "zimage": _Arch(
         "core.pipeline_backends.zimage", "ZImageMixin", "_zimage_lora_session",
@@ -168,10 +268,18 @@ ARCHES: Dict[str, _Arch] = {
         {
             "sd-scripts": (_canonical("lora_unet_layers_0_attn_to_q"), False, 1),
         },
+        truncated=({**_canonical("lora_transformer_layers_0_attn_to_q"),
+                    **_half("lora_transformer_layers_0_attn_to_k")}, 2),
+        variants={
+            "loha": (_loha("lora_transformer_layers_0_attn_to_q"), 1),
+            "lokr": (_lokr("lora_transformer_layers_0_attn_to_q"), 1),
+        },
     ),
 }
 
 CASES = [(arch, label) for arch, spec in ARCHES.items() for label in spec.formats]
+VARIANT_CASES = [(arch, label)
+                 for arch, spec in ARCHES.items() for label in spec.variants]
 
 
 def _session(arch: str):
@@ -203,6 +311,78 @@ def test_every_declared_key_format_survives_the_session(arch, label):
         f"{expected} -- a valid file would be refused (0 counted) or warned "
         f"partial (under-counted)."
     )
+
+
+@pytest.mark.parametrize("arch,label", VARIANT_CASES)
+def test_a_lycoris_file_is_counted_by_the_same_declared_branch_counter(arch, label):
+    """Every counter reads a LyCORIS factor set as the branches it carries.
+
+    A LoHa/LoKr file has ZERO ``.lora_down.weight`` keys, so a counter that
+    tallies those reads it as 0 branches. This pins that none of the eleven does
+    -- the fused ``qkv_proj`` stem included, which is 3 for LyCORIS exactly as
+    it is for LoRA.
+
+    What this is NOT: the live refusal path. ``_refuse_unsupported_algebra``
+    fires in ``_parse``, strictly before the counter runs, so in production a
+    LoHa/LoKr file is refused by the capability matrix and never reaches here.
+    These rows call the counter directly, and what they pin is that the count
+    does not silently rot behind that refusal -- the number the session would
+    compare ``applied`` against if the matrix ever opened.
+    """
+    spec = ARCHES[arch]
+    session = _session(arch)
+    raw, expected = spec.variants[label]
+
+    # Non-vacuity: with a pair key present, a pre-migration key tally would
+    # already have counted the file and this row would pin nothing.
+    assert not [k for k in raw
+                if k.endswith((".lora_down.weight", ".lora_A.weight"))], (
+        f"{arch}/{label}: fixture is not a LyCORIS-only file")
+
+    handed, _codec = session._canonicalize(raw, {})
+    counted = session._count_declared_branches(handed, spec.components)
+
+    assert counted == expected, (
+        f"{arch}/{label}: {arch}'s declared-branch counter reads "
+        f"{sorted(handed)[:4]} as {counted} branch(es), not {expected}; at 0 "
+        f"the session would apply nothing and refuse nothing."
+    )
+
+
+@pytest.mark.parametrize("arch", sorted(a for a in ARCHES if ARCHES[a].truncated))
+def test_a_truncated_file_declares_the_half_pair_it_cannot_apply(arch):
+    """One whole pair plus one half pair must declare TWO.
+
+    At 1 the file applies its one good pair and generates, with the truncated
+    target silently missing -- subtly wrong images and no signal. At 2 the
+    half pair is unapplied, ``applied < declared_branches`` fires, and the user
+    is told. The counter is the ONLY place that can see the difference: by the
+    time a builder is asked about the half pair's module there is nothing to
+    return but ``None``, which is indistinguishable from "this file does not
+    cover that target".
+    """
+    spec = ARCHES[arch]
+    session = _session(arch)
+    raw, expected = spec.truncated
+
+    handed, _codec = session._canonicalize(raw, {})
+    counted = session._count_declared_branches(handed, spec.components)
+
+    assert counted == expected, (
+        f"{arch}: a file with one whole pair and one half pair declares "
+        f"{counted}, not {expected} -- at {counted} the truncation is invisible."
+    )
+
+
+def test_every_architecture_declares_a_loha_and_a_lokr_fixture():
+    """The counter is the one surface every architecture shares, so no
+    architecture may sit out the LyCORIS row."""
+    missing = {arch: sorted({"loha", "lokr"} - set(spec.variants))
+               for arch, spec in ARCHES.items()
+               if {"loha", "lokr"} - set(spec.variants)}
+    assert not missing, f"architectures with no LyCORIS fixture: {missing}"
+    no_truncated = sorted(a for a, spec in ARCHES.items() if spec.truncated is None)
+    assert not no_truncated, f"architectures with no truncated fixture: {no_truncated}"
 
 
 @pytest.mark.parametrize("arch,label", CASES)
@@ -259,11 +439,16 @@ def test_a_session_that_did_not_ask_for_canonical_keys_gets_the_file_verbatim(ar
 
 
 @pytest.mark.parametrize("arch", sorted(ARCHES))
-def test_a_file_the_detector_cannot_read_does_not_take_the_load_down(arch):
+def test_a_file_with_bias_tensors_does_not_take_the_load_down(arch, monkeypatch):
     """A `lora_bias=True` PEFT export carries a 1-D ``.lora_A.bias``, which the
-    codec's rank extraction indexes as 2-D (``IndexError``). Detection is
-    advisory, and ``_parse`` runs it outside every try/except the load has, so
-    a failed sniff would replace the architecture's own 400 with a raw 500."""
+    codec's rank extraction used to index as 2-D (``IndexError``). ``_parse``
+    runs detection outside every try/except the load has AND now refuses on its
+    verdict, so a failed sniff would replace the architecture's own 400 with a
+    raw 500.
+
+    ``_sniff_rank`` skips a tensor too small for its axis, so this file is now
+    read correctly rather than merely survived; the fallback is still the
+    contract, so it is exercised below with detection forced to raise."""
     session = _session(arch)
     stem = "transformer_blocks.0.attn.to_q"
     keys = dict(_peft(stem))
@@ -272,9 +457,16 @@ def test_a_file_the_detector_cannot_read_does_not_take_the_load_down(arch):
     # `.lora_A.weight` -- which is why the 1-D tensor is the one detect reaches.
     biased = {k: keys[k] for k in sorted(keys)}
 
-    with pytest.raises(IndexError):
-        CodecRegistry.detect(biased, {})  # the raw call this fixture is here for
+    codec = CodecRegistry.detect(biased, {})  # the raw call this fixture is for
+    assert codec.format == FORMAT_PEFT and codec.rank == RANK
 
+    handed, codec = session._canonicalize(biased, {})
+    assert len(handed) == len(biased), "a failed sniff must not drop tensors"
+
+    def _explode(*_a, **_k):
+        raise IndexError("simulated sniff failure")
+
+    monkeypatch.setattr(CodecRegistry, "detect", staticmethod(_explode))
     handed, codec = session._canonicalize(biased, {})
     assert codec.format == FORMAT_UNKNOWN
     assert len(handed) == len(biased), "a failed sniff must not drop tensors"

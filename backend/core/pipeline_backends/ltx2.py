@@ -289,6 +289,7 @@ class LTX2Mixin:
             session = AdapterSession(
                 resolve_path=self._ltx2_resolve_lora_path,
                 warn=self._ltx2_lora_warn,
+                architecture="ltx2",
                 label="LTX-2.3 LoRA",
                 message_label="LTX-2.3 LoRA",
                 count_declared_branches=self._ltx2_count_declared_branches,
@@ -324,8 +325,8 @@ class LTX2Mixin:
 
     @classmethod
     def _ltx2_count_declared_branches(cls, tensors, _components) -> int:
-        from core.models.ltx2.ltx2_lora import normalise_lora_state_dict
-        return len(normalise_lora_state_dict(tensors))
+        from core.models.ltx2.ltx2_lora import declared_branch_count
+        return declared_branch_count(tensors)
 
     @staticmethod
     def _ltx2_zero_target_message(file, counts):

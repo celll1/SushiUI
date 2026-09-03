@@ -96,6 +96,8 @@ import torch
 from torch import nn
 from safetensors import safe_open
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
 from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
 from core.models.ideogram4.vendor.int8_linear import Int8Linear
 
@@ -103,10 +105,6 @@ from core.models.ideogram4.vendor.int8_linear import Int8Linear
 # ---------------------------------------------------------------------------
 # Key parsing
 # ---------------------------------------------------------------------------
-
-_LORA_DOWN_SUFFIX = ".lora_down.weight"
-_LORA_UP_SUFFIX = ".lora_up.weight"
-_ALPHA_SUFFIX = ".alpha"
 
 # The layer-index-bearing prefix every real target module path starts with;
 # used only as a cheap file-format sniff (`load_lora_safetensors`), not by
@@ -117,35 +115,37 @@ LAYER_PREFIX = "language_model.model.layers."
 
 
 def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    """Return (module_path, suffix in {down, up, alpha}) for a LoRA key, else None."""
-    if key.endswith(_LORA_DOWN_SUFFIX):
-        return key[: -len(_LORA_DOWN_SUFFIX)], "down"
-    if key.endswith(_LORA_UP_SUFFIX):
-        return key[: -len(_LORA_UP_SUFFIX)], "up"
-    if key.endswith(_ALPHA_SUFFIX):
-        return key[: -len(_ALPHA_SUFFIX)], "alpha"
-    return None
+    """``(module_path, canonical tensor name)`` for an adapter key, else None.
+
+    The module path is the key verbatim: any path shape is accepted so a future
+    non-MoT-doubled target is not dropped by an over-narrow prefix check.
+    """
+    return split_adapter_suffix(key)
+
+
+def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
+    """Branches this file declares to SenseNova; see ``declared_groups``.
+
+    No ``stem_of``: this parser deliberately accepts any module path (see
+    ``_parse_key``), so a half key of any shape declares a branch here.
+    """
+    return len(declared_groups(raw))
 
 
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
-) -> Dict[str, Dict[str, torch.Tensor]]:
-    """Group raw LoRA tensors -> {module_path: {down, up, alpha?}}.
+) -> Dict[str, TensorGroup]:
+    """Group raw LoRA tensors -> {module_path: TensorGroup}.
 
-    Entries missing a down/up pair are dropped (mirrors
-    ``ideogram4_lora.normalise_lora_state_dict``). There is no cond/uncond
-    split here (unlike Ideogram 4's), so every key that parses is kept --
-    including understanding-branch ones, which ``apply_lora_group`` reaches
-    because it enumerates both MoT halves.
+    Groups missing a down/up pair are dropped, as is any other algebra
+    (``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
+    is what the builder reads). There is no cond/uncond split here (unlike
+    Ideogram 4's), so every key that parses is kept -- including
+    understanding-branch ones, which ``apply_lora_group`` reaches because it
+    enumerates both MoT halves.
     """
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        grouped.setdefault(module_path, {})[suffix] = tensor
-    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+    grouped = group_adapter_tensors(raw).groups
+    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
 
 
 def _looks_like_sensenova_key(key: str) -> bool:

@@ -54,9 +54,11 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, NamedTuple,
 import torch
 import torch.nn as nn
 
+from .capability import ADAPTER_PAIRS, ORDINARY_LORA, adapter_refusal_reason
 from .codec import CodecRegistry, CodecSpec
 from .layers import CompositeAdapterLayer, get_module_slot, set_module_slot
-from .spec import ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN
+from .spec import (ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN,
+                   AdapterSpec)
 
 Slot = Union[str, int]
 
@@ -290,7 +292,19 @@ class _PlannedInstall(NamedTuple):
 
 def _default_declared_branches(tensors: Mapping[str, torch.Tensor],
                                components: Tuple[str, ...]) -> int:
-    return sum(1 for key in tensors if key.endswith(".lora_down.weight"))
+    """Complete factor GROUPS, not ``.lora_down.weight`` keys: a LoHa/LoKr file
+    has none of the latter, would declare zero, and ``_account``'s
+    partial-application refusal would be inert for it.
+
+    Complete ones ONLY, unlike every architecture's own counter: with no
+    ``stem_of`` this cannot tell a foreign half key from a truncated one of its
+    own, and over-declaring refuses a file that applied in full. An
+    architecture that wants a truncated file refused passes its own counter
+    over ``declared_groups`` -- all eleven do.
+    """
+    from .groups import group_adapter_tensors  # groups imports this module
+
+    return len(group_adapter_tensors(tensors).groups)
 
 
 class AdapterSession:
@@ -306,6 +320,7 @@ class AdapterSession:
         *,
         resolve_path: Callable[[Any], Optional[str]],
         warn: Optional[Callable[[str, str], None]] = None,
+        architecture: Optional[str] = None,
         label: str = "LoRA",
         message_label: Optional[str] = None,
         log: Callable[[str], None] = print,
@@ -339,6 +354,11 @@ class AdapterSession:
         exception to refuse with (a second zero-target code), or ``None``: not a
         refusal, because this pass covers no part of this file.
 
+        ``architecture`` is the ``ARCH_REGISTRY`` name of the model behind
+        these components; it keys the adapter capability table
+        (``core.adapters.capability``). Unset means "no architecture declared",
+        which enables nothing.
+
         ``canonicalize_foreign_keys`` asks for Diffusers/PEFT spellings
         (``lora_A``/``lora_B``, the ``base_model.model.`` prefix) to be rewritten
         to ``lora_down``/``lora_up`` BEFORE this architecture parses. Off by
@@ -346,6 +366,7 @@ class AdapterSession:
         """
         self._resolve_path = resolve_path
         self._warn_callback = warn
+        self._architecture = architecture
         self._label = label
         self._message_label = message_label or label
         self._log = log
@@ -454,10 +475,11 @@ class AdapterSession:
         try:
             codec = CodecRegistry.detect(tensors, metadata)
         except Exception as e:
-            # Detection is advisory (nothing reads AdapterFile.codec yet) and it
-            # indexes shapes it has not validated -- a 1-D `.lora_A.bias` from a
-            # `lora_bias=True` PEFT export raises IndexError. A failed sniff must
-            # not turn the architecture's clean refusal into an unhandled 500.
+            # Detection indexes shapes it has not validated -- a 1-D
+            # `.lora_A.bias` from a `lora_bias=True` PEFT export raises
+            # IndexError. A failed sniff must not turn the architecture's clean
+            # refusal into an unhandled 500; `unknown` is not gated on, so the
+            # file still reaches the architecture's own parser.
             self._log(f"[{self._label}] codec detection failed "
                       f"({type(e).__name__}); treating the file as unknown")
             return dict(tensors), CodecSpec(algorithm=ALGORITHM_UNKNOWN,
@@ -511,6 +533,7 @@ class AdapterSession:
         step_range = tuple(int(x) for x in raw_range) if raw_range is not None else None
 
         tensors, codec = self._canonicalize(tensors, metadata)
+        self._refuse_unsupported_algebra(name, codec)
 
         self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
         return AdapterFile(
@@ -531,6 +554,35 @@ class AdapterSession:
             step_range=step_range,
             codec=codec,
         )
+
+    def _refuse_unsupported_algebra(self, name: str, codec: CodecSpec) -> None:
+        """Refuse a LoHa/LoKr/DoRA file HERE, before any slot is mutated.
+
+        Two files are deliberately NOT judged. Ordinary LoRA is not validated
+        at all: ``validate()`` refuses an algorithm whose rank it cannot see and
+        the codec sniffs a rank from three key spellings only, so switching it
+        on today would refuse working files. An UNRECOGNIZED algebra is left to
+        the architecture's own zero-target refusal for the same reason -- a
+        valid ``lora_bias=True`` PEFT export sniffs as ``unknown``, as does any
+        file whose detection raised.
+        """
+        pair = (codec.algorithm, bool(codec.weight_decompose))
+        if pair == ORDINARY_LORA or pair not in ADAPTER_PAIRS:
+            return
+        spec = AdapterSpec.from_codec(codec, architecture=self._architecture)
+        try:
+            spec.validate()
+        except AdapterRefusal as error:
+            self._log(f"[{self._label}] ERROR: {self._refusal_text(error)}")
+            raise self._refuse(error)
+        # The architecture the model IS, not the one the file claims to be.
+        reason = adapter_refusal_reason(self._architecture, spec.algorithm,
+                                        spec.weight_decompose)
+        if reason is None:
+            return
+        error = AdapterIncompatible(f"{self._message_label} '{name}': {reason}")
+        self._log(f"[{self._label}] ERROR: {error.message}")
+        raise self._refuse(error)
 
     def _load_failed(self, name: str, error: Exception) -> AdapterLoadFailed:
         self._log(f"[{self._label}] ERROR: could not apply {name}: {error}")

@@ -93,6 +93,9 @@ import torch
 from torch import nn
 from safetensors import safe_open
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors)
+
 
 _PREFIX = "diffusion_model."
 _NATIVE_PREFIX = "lora_unet_"
@@ -104,27 +107,18 @@ _FC1_SUFFIX = ".mlp.fc1"
 # Raw key parsing
 # ---------------------------------------------------------------------------
 
-def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    """``(comfy_module_stem, tag)`` for a recognised key, ``tag`` in
-    ``{"down", "up", "alpha"}``; ``None`` for anything else (dropped)."""
-    if not key.startswith(_PREFIX):
+def _comfy_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> comfy module stem, or None for a foreign key."""
+    if not raw_stem.startswith(_PREFIX):
         return None
-    rest = key[len(_PREFIX):]
-    for suffix, tag in ((".lora_A.weight", "down"), (".lora_B.weight", "up"), (".alpha", "alpha")):
-        if rest.endswith(suffix):
-            return rest[: -len(suffix)], tag
-    return None
+    return raw_stem[len(_PREFIX):]
 
 
-def _parse_native_key(key: str) -> Optional[Tuple[str, str]]:
-    """``(flattened_stem, tag)`` for an sd-scripts native key, else ``None``."""
-    if not key.startswith(_NATIVE_PREFIX):
+def _native_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> flattened sd-scripts stem, or None."""
+    if not raw_stem.startswith(_NATIVE_PREFIX):
         return None
-    rest = key[len(_NATIVE_PREFIX):]
-    for suffix, tag in ((".lora_down.weight", "down"), (".lora_up.weight", "up"), (".alpha", "alpha")):
-        if rest.endswith(suffix):
-            return rest[: -len(suffix)], tag
-    return None
+    return raw_stem[len(_NATIVE_PREFIX):]
 
 
 _NATIVE_STEM_RE = re.compile(r"^transformer_blocks_(\d+)_(.+)$")
@@ -189,15 +183,26 @@ def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str,
     return raw, metadata
 
 
-def _group_raw(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        stem, tag = parsed
-        grouped.setdefault(stem, {})[tag] = tensor
-    return {s: v for s, v in grouped.items() if "down" in v and "up" in v}
+def _group_raw(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
+    """Down/up comfy groups. Any other algebra is dropped here and counted by
+    ``count_declared_branches``, so it is refused unapplied rather than reaching
+    ``_normalise_comfy``, which reads ``["down"]``."""
+    grouped = group_adapter_tensors(raw, _comfy_stem).groups
+    return {s: g for s, g in grouped.items() if "down" in g and "up" in g}
+
+
+def count_declared_branches(raw: Dict[str, torch.Tensor]) -> int:
+    """Branches this file declares (see ``declared_groups``), counting a fused
+    comfy ``qkv_proj`` stem as the THREE targets ``_split_qkv`` turns it into.
+
+    Does not run the conversion, so unlike ``normalise_lora_state_dict`` it
+    never raises.
+    """
+    native = any(key.startswith(_NATIVE_PREFIX) for key in raw)
+    stems = declared_groups(raw, _native_stem if native else _comfy_stem)
+    if native:
+        return len(stems)
+    return sum(3 if stem.endswith(_QKV_SUFFIX) else 1 for stem in stems)
 
 
 # ---------------------------------------------------------------------------
@@ -378,13 +383,10 @@ def _normalise_native(
     Only the underscored stem is un-flattened, against the training adapter's
     own leaf table.
     """
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_native_key(key)
-        if parsed is None:
-            continue
-        stem, tag = parsed
-        grouped.setdefault(stem, {})[tag] = tensor
+    # groups + partial: a stem that carries only one half must reach the
+    # ``incomplete`` refusal below, not be dropped silently.
+    collected = group_adapter_tensors(raw, _native_stem)
+    grouped: Dict[str, TensorGroup] = {**collected.groups, **collected.partial}
 
     table = _native_leaf_table()
     targets: Dict[str, Dict[str, Any]] = {}

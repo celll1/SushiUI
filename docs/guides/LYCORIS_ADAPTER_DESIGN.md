@@ -888,9 +888,32 @@ LyCORIS set, the PEFT `lora_A`/`lora_B` names and `.dora_scale`),
 `split_adapter_suffix`, `TensorGroup`, `group_adapter_tensors(tensors,
 stem_of)`, `split_group_on_out_rows` and `build_adapter_branch`. Alongside it,
 `LoRALinearLayer` / `LoHaLinearLayer` / `LoKrLinearLayer` gained `from_tensors`.
-**No architecture imports any of it**, the capability matrix still refuses every
-LoHa/LoKr/DoRA pair on all thirteen, and ordinary LoRA is byte-unchanged. Gates:
-`backend/tests/adapter_tensor_group_cheap_test.py`, plus new rows in
+**Migrated: all eleven checkpoint-key parsers now run on it.** Every
+architecture parses suffixes through `split_adapter_suffix`, groups through
+`group_adapter_tensors(tensors, stem_of)` (its own prefix/flattening logic
+unchanged, passed in as `stem_of`), and counts declared branches with
+`declared_groups` -- the complete groups PLUS the incomplete ones whose algebra
+is recognised, so a checkpoint truncated mid-write declares the half pair it
+cannot apply and `applied < declared_branches` refuses it. All eleven do that;
+the session default (which nothing uses now that Z-Image passes its own) counts
+complete groups only, because with no `stem_of` it cannot tell a foreign half
+key from a truncated one of its own. Nine builders are untouched -- they still
+read `weights["down"]`, which the legacy aliases answer, and each grouper hands
+them down/up groups only. Two changed: FLUX.2's now reads the groups
+`prepare_file` parsed instead of re-reading raw keys (a spelling its counter
+took and its builder did not would declare N and apply 0), and Z-Image's
+`_zimage_lora_branch` delegates to a `TensorGroup` probe. Two exceptions, both deliberate: ACE-Step's
+diffusers branch keeps its regexes (they bake `lora_A`/`lora_B` into the match,
+so no non-pair key can reach a grouper there) and MiniMax-H3's `_split_qkv` /
+`_normalise_comfy` are untouched (`split_group_on_out_rows` is phase 8) --
+its counter still expands a fused `qkv_proj` stem to 3. The one widening: an
+architecture now also accepts the alternate spellings of the shared table under
+its own prefixes, so a key it used to drop (and refuse the file over) may now
+parse. The capability matrix still refuses every LoHa/LoKr/DoRA pair on all
+thirteen, and ordinary LoRA is byte-unchanged. Gates:
+`backend/tests/adapter_tensor_group_cheap_test.py`, 22 LyCORIS rows (11
+architectures x LoHa/LoKr) and 11 truncated-file rows in
+`adapter_key_normalization_gate_cheap_test.py`, plus new rows in
 `adapter_lycoris_variants_cheap_test.py`, `adapter_oracle_gate_cheap_test.py`
 and `adapter_composite_layer_cheap_test.py`.
 
@@ -973,12 +996,88 @@ and `adapter_composite_layer_cheap_test.py`.
   carries the same throwaway-`alpha` defect on its ROLLBACK path. Unreachable
   today because only `LoRALinearLayer` is ever constructed for training; it
   becomes live the moment a training adapter constructs a LyCORIS layer.
-- **ACE-Step will not migrate mechanically.**
-  `core/pipeline_backends/acestep.py` seeds each group with
+- **ACE-Step did not migrate mechanically, and half of it did not migrate at
+  all.** `core/pipeline_backends/acestep.py` seeds each DIFFUSERS group with
   `{"source_prefix": ..., "down": None, "up": None, "alpha": None}` — a
   non-tensor key plus `None` placeholders that `TensorGroup` cannot hold, and
   whose `"down" in v` test is inverted relative to this engine's (always true
-  there, presence-based here). It needs its own step.
+  there, presence-based here). That branch is UNCHANGED and still needs its own
+  step; its regexes bake `(lora_A|lora_B)` into the key match, so no non-pair
+  key can reach a grouper there in the meantime. The sd-scripts branch and the
+  declared-branch counter did migrate.
+
+**Landed: the capability gate, enforcing on the generation path.**
+`backend/core/adapters/capability.py` owns `ENABLED_ADAPTER_PAIRS`, one explicit
+row per architecture in the `ARCH_REGISTRY` spelling, and it is the ONLY place a
+family is enabled. `AdapterSession` gained `architecture=` (all eleven
+generation backends pass it) and refuses an unenabled algebra in `_parse`.
+Nothing was enabled: all thirteen rows are still `{("lora", False)}`.
+
+- **The table is in `core/adapters/`, and `base_arch` reads it, because the
+  dependency only runs one way.** `core.adapters` may not import
+  `core.training` (measured back-edge: 8.9 s, 5801 modules and a CUDA context
+  in a fresh process; `backend/tests/adapter_layering_test.py` re-measures the
+  clean arm every run at ~1.3 s / ~1020 modules). The reverse is fine and
+  already pervasive, so `declare_adapter_capability` READS
+  `declared_pairs(arch)` instead of hardcoding `frozenset({("lora", False)})`.
+  The alternative considered and rejected was mirroring the enabled set into
+  `core/adapters/` with a pinned-equality test, the way `KNOWN_ARCHITECTURES`
+  mirrors `ARCH_REGISTRY` — a second copy that can drift, for a fact that
+  needs no copy.
+- **A flip is one table row, and the refusal cannot be dropped separately.**
+  Enabling a family used to mean adding the pair to `supported` AND skipping it
+  in the refusal loop, with `AdapterCapability.__post_init__` raising if only
+  the second half was done. The loop is now driven by the table (`if pair in
+  supported: continue`), so both halves move together by construction. The
+  `__post_init__` check is kept: it still guards hand-built matrices
+  (`NO_ADAPTER_CAPABILITY` and the gates).
+- **The refusal fires before the model is mutated, and the gate asserts that,
+  not merely that something raised.** `_refuse_unsupported_algebra` runs in
+  `_parse`, i.e. before `AdapterFile` is constructed and therefore before
+  `_count_declared_branches`, `prepare`, `_plan_file` and `_install`. The test
+  installs a recording `build_branch` and asserts `visited == []` plus an
+  unchanged slot map; a sibling test shows `visited == list(TARGETS)` when the
+  gate deliberately does not fire, which is what gives the first one its
+  discriminating power. It is an `AdapterIncompatible`, so `code =
+  "lora_incompatible"` answers HTTP 400 through `error_handlers`
+  (`is_lora_refusal_code`) rather than 500 — driven end to end over a real ASGI
+  round trip in `refusal_error_code_cheap_test.py`.
+- **The message is asserted, not just the code, because `validate()`'s
+  malformed-file arms answer the same 400.** A user must not be told their file
+  is broken when the truth is "LoKr is not implemented yet". Two fixes were
+  needed for that to hold: `AdapterSpec.from_codec` now drops an alpha that
+  comes with no rank, exactly as `TensorGroup.to_spec()` already did (a
+  full/full LoKr has no rank and carries upstream's `lora_dim` alpha, so
+  `validate()` refused every legitimate one as "an alpha with no rank"), and
+  the codec's rank sniff was widened below. Gates cover both LoKr forms.
+- **The codec's rank sniff was wrong for ten real spellings and blind to LoKr.**
+  It read `tensor.shape[1]` for anything that was not `.lora_down.weight`, but
+  PEFT's `lora_A` is `[rank, in]` exactly like `lora_down` — only the LyCORIS
+  `*_a` factors are `[out, rank]`. MEASURED on a rank-4 / 128-wide fixture, the
+  interchange or PEFT spelling of **acestep, anima, ideogram4, lens, ltx2,
+  minimax_h3, sensenova, sd15 and sdxl** each reported **128** (in_features) as
+  the rank; factored LoKr (`lokr_w2_a`) reported `None`. `_sniff_rank` now
+  mirrors `TensorGroup.rank`'s per-algebra axes and skips a tensor too small for
+  its axis, so a `lora_bias=True` PEFT export's 1-D `.lora_A.bias` no longer
+  raises `IndexError` out of detection. This was live, not latent, the moment
+  `_parse` started calling `validate()`.
+- **`("unknown", *)` is deliberately NOT gated.** `_canonicalize` fabricates an
+  `unknown` codec whenever detection raises, and a valid `lora_bias=True` PEFT
+  export used to do exactly that; refusing on `unknown` would refuse valid files
+  on whichever architectures the sniff misses — the `3271627b` / `22f21078`
+  failure shape. An unrecognised algebra is left to the architecture's own
+  zero-target refusal. Ordinary LoRA is not validated at all for the same
+  reason; widening either is a separate, evidence-gated step.
+- **SD1.5 and SDXL never reach `AdapterSession`, so the gate does not cover
+  them.** They load through diffusers (`core/extensions/lora_manager.py`).
+  A kohya LyCORIS LoHa carries `lora_unet_*` keys, so `has_lora_unet` accepts it
+  as a valid LoRA and it is LISTED IN THE UI; it then reaches diffusers' loader,
+  which does not understand `hada_*`. There is no `lora_incompatible` refusal on
+  that path — just whatever diffusers raises. This is the one place "a refusal
+  arrives before the model is mutated" does not hold, and it needs its own step.
+- **`AdapterCapability.require()` still has no training caller.** Training-side
+  enforcement is not part of this step; the capability check reached generation
+  only.
 
 ### Phase 3: dense DoRA
 

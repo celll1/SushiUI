@@ -103,14 +103,57 @@ def _zimage_lora_key_stems(module_path: str) -> List[str]:
     ]
 
 
+#: The two stem spellings ``_zimage_lora_key_stems`` produces.
+_ZIMAGE_LORA_PREFIXES = ("lora_transformer_", "transformer.")
+
+
+def _zimage_declared_branches(tensors, _components) -> int:
+    """Complete groups whatever their prefix -- the session default counted every
+    ``.lora_down.weight`` key the same way -- plus HALF groups under Z-Image's
+    OWN stems only, so a truncated file is still refused while a foreign file's
+    half key cannot over-declare. See ``declared_groups``.
+    """
+    from core.adapters.groups import group_adapter_tensors
+    from core.adapters.spec import ALGORITHM_UNKNOWN
+
+    result = group_adapter_tensors(tensors)
+    return len(result.groups) + sum(
+        1 for stem, group in result.partial.items()
+        if group.algorithm != ALGORITHM_UNKNOWN
+        and stem.startswith(_ZIMAGE_LORA_PREFIXES))
+
+
+def _zimage_lora_group(state_dict: Dict[str, Any], module_path: str):
+    """The first candidate stem's down/up group, or None.
+
+    Probes the table per stem instead of grouping the file once because the call
+    site has a per-target signature and Z-Image passes no ``prepare_file`` hook
+    to hang a single grouping off; a whole-file grouping would be the cheaper
+    shape if it had one.
+
+    ``_SUFFIXES_LONGEST_FIRST`` order is irrelevant here and only here: this
+    builds exact ``stem + suffix`` keys rather than stripping a suffix off a
+    key, so no suffix can shadow a longer one.
+    """
+    from core.adapters import ADAPTER_SUFFIXES, TensorGroup
+
+    for stem in _zimage_lora_key_stems(module_path):
+        group = TensorGroup(stem)
+        for suffix, name in ADAPTER_SUFFIXES.items():
+            tensor = state_dict.get(f"{stem}{suffix}")
+            if tensor is not None:
+                group.tensors[name] = tensor
+        if "down" in group and "up" in group:
+            return group
+    return None
+
+
 def _zimage_lora_branch(state_dict: Dict[str, Any], module_path: str):
     """``(down, up, alpha_or_None)`` for ``module_path``, or None if absent."""
-    for stem in _zimage_lora_key_stems(module_path):
-        down = state_dict.get(f"{stem}.lora_down.weight")
-        up = state_dict.get(f"{stem}.lora_up.weight")
-        if down is not None and up is not None:
-            return down, up, state_dict.get(f"{stem}.alpha")
-    return None
+    group = _zimage_lora_group(state_dict, module_path)
+    if group is None:
+        return None
+    return group["down"], group["up"], group.get("alpha")
 
 
 def _zimage_lora_metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
@@ -317,7 +360,9 @@ class ZImageMixin:
             session = AdapterSession(
                 resolve_path=self._zimage_resolve_lora_path,
                 warn=self._zimage_lora_warn,
+                architecture="zimage",
                 label="Z-Image LoRA",
+                count_declared_branches=_zimage_declared_branches,
                 describe_zero_targets=_zimage_zero_target_message,
             )
             self._zimage_lora_session_instance = session

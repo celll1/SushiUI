@@ -31,6 +31,8 @@ if str(BACKEND) not in sys.path:
 
 import torch  # noqa: E402
 
+from core.adapters.capability import (  # noqa: E402
+    ADAPTER_PAIRS, ENABLED_ADAPTER_PAIRS, ORDINARY_LORA, supported_pairs)
 from core.training.arch import ARCH_REGISTRY, resolve_arch_name  # noqa: E402
 
 RANK, ALPHA = 16, 8
@@ -275,6 +277,104 @@ class AdapterRegistryParityTest(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             Nameless().lora_adapter_plan(_trainer("sd15"))
+
+
+class AdapterCapabilityTableTest(unittest.TestCase):
+    """``core.adapters.capability.ENABLED_ADAPTER_PAIRS`` is the ONE place a
+    capability is flipped: generation reads it directly (it may not import
+    ``core.training``) and every handler's matrix is built from it."""
+
+    def test_the_table_has_a_row_for_every_registered_architecture(self):
+        self.assertEqual(set(ENABLED_ADAPTER_PAIRS), set(ARCH_REGISTRY))
+
+    def test_this_phase_enables_nothing_beyond_ordinary_lora(self):
+        for name in ARCH_REGISTRY:
+            with self.subTest(arch=name):
+                self.assertEqual(ENABLED_ADAPTER_PAIRS[name],
+                                 frozenset({ORDINARY_LORA}))
+
+    def test_every_handler_matrix_is_the_table_row(self):
+        for name, handler in ARCH_REGISTRY.items():
+            with self.subTest(arch=name):
+                capability = handler.adapter_capability
+                self.assertEqual(set(capability.supported),
+                                 set(ENABLED_ADAPTER_PAIRS[name]))
+                self.assertEqual(set(capability.supported),
+                                 set(supported_pairs(name)))
+
+    def test_a_flip_in_the_table_is_the_only_edit_a_declaration_needs(self):
+        """The single-source property itself: move one row and the handler's
+        matrix moves with it -- supported gains the pair AND the refusal for it
+        disappears, which is what makes a dropped refusal impossible."""
+        from unittest import mock
+
+        from core.training.arch import base_arch
+
+        flipped = dict(ENABLED_ADAPTER_PAIRS)
+        flipped["zimage"] = frozenset({ORDINARY_LORA, ("loha", False)})
+        with mock.patch.object(base_arch, "declared_pairs", flipped.__getitem__):
+            capability = base_arch.declare_adapter_capability(
+                "zimage", additive_family=True, initial_dora="dense",
+                additive_reason="a", dora_reason="b",
+                quantized_base_reason="c")
+        self.assertTrue(capability.supports("loha", False))
+        self.assertIsNone(capability.refusal_reason("loha", False))
+        self.assertIsNotNone(capability.refusal_reason("lokr", False))
+
+    def test_an_unaccounted_pair_still_raises_at_construction(self):
+        """The safety property survives the restructuring: a hand-built matrix
+        that neither supports a pair nor gives it a reason is rejected."""
+        from core.training.arch.base_arch import AdapterCapability
+
+        with self.assertRaises(ValueError):
+            AdapterCapability(
+                additive_family=True,
+                initial_dora="dense",
+                supported=frozenset({ORDINARY_LORA}),
+                refusals={pair: "reason" for pair in ADAPTER_PAIRS
+                          if pair != ORDINARY_LORA and pair != ("loha", False)},
+                quantized_base_additive_family=False,
+                quantized_base_reason="reason",
+            )
+
+    def test_an_architecture_absent_from_the_table_cannot_declare_a_matrix(self):
+        from core.training.arch.base_arch import declare_adapter_capability
+
+        with self.assertRaises(KeyError):
+            declare_adapter_capability(
+                "not_an_architecture", additive_family=True,
+                initial_dora="dense", additive_reason="a", dora_reason="b",
+                quantized_base_reason="c")
+
+    def test_an_unknown_architecture_inherits_no_enablement(self):
+        self.assertEqual(supported_pairs("not_an_architecture"), frozenset())
+        self.assertEqual(supported_pairs(None), frozenset())
+
+    def test_every_generation_session_names_an_architecture_from_the_table(self):
+        """AST-only, so it costs no import: a backend that builds an
+        ``AdapterSession`` without ``architecture=`` would key the capability
+        check on nothing, and a later flip of its row would not reach it."""
+        import ast
+
+        backends = BACKEND / "core" / "pipeline_backends"
+        found = {}
+        for path in sorted(backends.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and getattr(node.func, "id", None) == "AdapterSession"):
+                    continue
+                declared = [kw.value.value for kw in node.keywords
+                            if kw.arg == "architecture"
+                            and isinstance(kw.value, ast.Constant)]
+                found[path.stem] = declared
+        self.assertTrue(found, "no AdapterSession construction found")
+        for module, declared in sorted(found.items()):
+            with self.subTest(backend=module):
+                self.assertEqual(len(declared), 1,
+                                 f"{module} builds a session without a literal "
+                                 f"architecture=")
+                self.assertIn(declared[0], ENABLED_ADAPTER_PAIRS)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,15 @@ from .spec import (
     KNOWN_ARCHITECTURES,
     AdapterSpec,
 )
+from .capability import (
+    ADAPTER_PAIRS,
+    ENABLED_ADAPTER_PAIRS,
+    ORDINARY_LORA,
+    adapter_refusal_reason,
+    declared_pairs,
+    is_adapter_supported,
+    supported_pairs,
+)
 from .targets import (
     AdapterTarget,
     count_quantized_linears,
@@ -115,6 +124,13 @@ __all__ = [
     "FORMATS",
     "KNOWN_ARCHITECTURES",
     "AdapterSpec",
+    "ADAPTER_PAIRS",
+    "ENABLED_ADAPTER_PAIRS",
+    "ORDINARY_LORA",
+    "adapter_refusal_reason",
+    "declared_pairs",
+    "is_adapter_supported",
+    "supported_pairs",
     "ADAPTER_SUFFIXES",
     "GroupingResult",
     "TensorGroup",

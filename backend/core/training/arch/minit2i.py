@@ -8,7 +8,9 @@ Nothing calls these until a later phase flips the corresponding dispatcher.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import MINIT2I_WIRING
 
 
@@ -26,6 +28,21 @@ class MiniT2IArchHandler(ArchHandler):
     # documented there as "t=1 data, t=0 noise"). sampler t=1 is clean -- the
     # inverse of the SD3/FLUX-style default.
     timestep_convention = "t1"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import MiniT2ILoRAAdapter
+        return MiniT2ILoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        from core.models.minit2i.minit2i_lora import (
+            parse_scope_csv, parse_te_scope_csv,
+        )
+        return {
+            "scope": parse_scope_csv(resolve_scope_csv(
+                trainer, "minit2i_lora_scope", "attn,mlp,txt_embed")),
+            "te_scope": parse_te_scope_csv(resolve_scope_csv(
+                trainer, "minit2i_te_lora_scope", "attn,ff")),
+        }
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/minit2i_ops (shared with the base_trainer load-time

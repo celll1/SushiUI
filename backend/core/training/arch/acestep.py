@@ -8,7 +8,9 @@ instead of 5D ``[B, C, T, H, W]``.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import ACESTEP_WIRING
 
 
@@ -21,6 +23,19 @@ class AceStepArchHandler(ArchHandler):
     # xt = (1-sigma)*latents + sigma*noise (ops/acestep_ops.py train_step; the
     # vendored model's own x1=noise naming). sampler t=0 is clean.
     timestep_convention = "t0"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import AceStepLoRAAdapter
+        return AceStepLoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        # Default: attention-only (audio LoRA).
+        scope_csv = resolve_scope_csv(trainer, "acestep_lora_scope", "attention")
+        wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
+        return {"scope": {
+            "attention": wanted.get("attention", True),
+            "mlp": wanted.get("mlp", False),
+        }}
 
     def load_components(self, trainer) -> None:
         from core.training.ops import acestep_ops

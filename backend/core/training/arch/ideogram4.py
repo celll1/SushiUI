@@ -8,7 +8,9 @@ Nothing calls these until a later phase flips the corresponding dispatcher.
 
 from __future__ import annotations
 
-from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.arch.base_arch import (
+    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
+)
 from core.training.components.wiring import IDEOGRAM4_WIRING
 
 
@@ -20,6 +22,15 @@ class Ideogram4ArchHandler(ArchHandler):
     # noisy = (1-sigma)*latents + sigma*noise (ops/ideogram4_ops.py, "sigma=1 ->
     # noise" comment). sampler t=0 is clean.
     timestep_convention = "t0"
+
+    def lora_adapter_class(self):
+        from core.training.adapters import Ideogram4LoRAAdapter
+        return Ideogram4LoRAAdapter
+
+    def lora_adapter_kwargs(self, trainer):
+        from core.models.ideogram4.ideogram4_lora import parse_scope_csv
+        return {"scope": parse_scope_csv(resolve_scope_csv(
+            trainer, "ideogram4_lora_scope", "attn,mlp"))}
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/ideogram4_ops (shared with the base_trainer

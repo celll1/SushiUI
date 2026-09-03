@@ -22,6 +22,10 @@ class SenseNovaArchHandler(ArchHandler):
     # inverse of the SD3/FLUX-style default.
     timestep_convention = "t1"
 
+    def lora_adapter_class(self):
+        from core.training.adapters import SenseNovaLoRAAdapter
+        return SenseNovaLoRAAdapter
+
     def load_components(self, trainer) -> None:
         from core.training.ops import sensenova_ops
 

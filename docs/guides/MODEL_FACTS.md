@@ -340,9 +340,10 @@ Paths below are relative to `backend/core/training/`.
     (`lora_not_found` / `lora_load_failed` / `lora_incompatible`), and
     shape-mismatched targets are skipped with `lora_partial` instead of being
     assigned and failing inside the denoise loop.
-  - **Z-Image is the FIRST architecture on `CompositeAdapterLayer`** and the
-    only one today; every other architecture still refuses a fully shadowed
-    second LoRA with `lora_stacking_unsupported`. Each target Linear is covered
+  - **Z-Image is the FIRST architecture on `CompositeAdapterLayer`**; Krea 2,
+    Anima and Lens have since adopted it (see their rows). FLUX.2, Ideogram 4,
+    MiniT2I, SenseNova, ACE-Step, LTX-2.3 and MiniMax-H3 still refuse a fully
+    shadowed second LoRA with `lora_stacking_unsupported`. Each target Linear is covered
     once by a composite and each selected LoRA adds a NAMED branch
     (`"<request index>:<file basename>"`), so two Z-Image LoRAs over the same
     module now SUM instead of being refused, in either selection order, and
@@ -552,6 +553,34 @@ Paths below are relative to `backend/core/training/`.
     exception there carried wrappers into the next generation; restore now
     runs in the `finally` of every entry point, guarded so a restore failure
     cannot replace the real error.
+  - **Lens is on `CompositeAdapterLayer`.** Each target Linear is covered once
+    by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two Lens LoRAs over the same
+    module SUM instead of being refused, in either selection order, each at its
+    own strength; `lora_stacking_unsupported` is gone and
+    `apply_lora_group` returns a plain applied count instead of
+    `(applied, occupied)`. A single LoRA is bit-identical to the pre-composite
+    loader (`torch.equal`, not a tolerance). `iter_lens_lora_targets` is the
+    single enumerator for both load and unload, so restore iterates what is
+    installed; its three int slots (`attn.to_out.0`, `img_mod.1`, `txt_mod.1`)
+    go through `set_module_slot`. A hand-rolled `setattr(parent, 1, ...)` raises
+    `TypeError` on those — measured, and NOT the silent no-op the adoption
+    recipe warned about: `setattr(module_list, "1", m)` really does replace the
+    child, because `nn.Module.__setattr__` files a Module in `_modules` under
+    the string key `ModuleList` indexes by.
+    **`_load_lora_lens` now restores unconditionally at its top**, like the
+    other three composite archs: the outer `finally` swallows restore failures,
+    and a leaked wrapper that used to be caught by the stacking refusal would
+    now silently double-apply.
+    The FP8 gate still fires: `_lens_quantization_with_lora` reads
+    `lora_wrapped_count` -> `count_adapter_wrapper_roots`, which counts a
+    composite as ONE root, so a two-LoRA stack reports one root per target and
+    still drops the request's quantization (`quantization_fallback`).
+    Block swap is unaffected — measured: the base sits at
+    `<target>.original_module` under a composite exactly as under the old
+    wrapper, and the per-block relative set of `endswith("Linear")` weight
+    modules stays identical across blocks (36/block bare or single-branch), with
+    nothing enrolled twice.
 - **minit2i** — Pixel-space MM-JiT: default variants have no VAE and decode is a
   tensor→image passthrough (`is_latent=False`); a latent VAE variant exists. x0
   (sample) prediction under flow matching. b16 head_dim 64 routes tq; l16 head_dim
@@ -571,6 +600,42 @@ Paths below are relative to `backend/core/training/`.
   Training can be restricted to the LLM Adapter only; TE and Qwen-Image VAE frozen.
   Inference attention routes tq via conduit; training `attn_mode` (torch/flash)
   blocks tq.
+  - **Anima is on `CompositeAdapterLayer`.** Each target Linear is covered once
+    by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two Anima LoRAs over the same
+    module SUM instead of being refused, in either selection order, each at its
+    own strength; `lora_stacking_unsupported` is gone. Two LoRAs over DISJOINT
+    scopes still stack as before. The applied scope is still derived per file
+    from its own keys (`derive_scope_from_keys`); unload enumerates
+    `FULL_SCOPE`, because the installed set spans whatever scopes the applied
+    checkpoints derived. A single LoRA is bit-identical to the pre-composite
+    loader (`torch.equal`, not a tolerance).
+    **Anima has the most int slots of any arch on the composite**:
+    `adaln_modulation_{self_attn,cross_attn,mlp}.{1,2}` and
+    `llm_adapter.blocks.<N>.mlp.{0,2}` are `nn.Sequential` children whose only
+    address is the index, so load and unload both go through
+    `get_module_slot` / `set_module_slot`.
+    That index is also why `iter_anima_lora_targets` now SKIPS any path
+    containing `.branches.` or `.original_module`: its second pass selects by
+    path shape, and `adaln_modulation_mlp.1.branches.1` ends in "1" exactly like
+    the target it sits under, so a stacked composite would otherwise enumerate
+    targets INSIDE the adapter it just installed. Both passes are also
+    materialised before any slot is replaced, since they walk `named_modules()`.
+    Block swap is unaffected — measured: the base sits at
+    `<target>.original_module` under a composite exactly as under the old
+    wrapper, and the per-block relative set of `endswith("Linear")` weight
+    modules stays identical across blocks (48/block with one branch, 80 with
+    two), with nothing enrolled twice.
+    **Not gated on Anima, before or after adoption:** the legacy FP8 path
+    (`_anima_stage_transformer` -> `vram_optimization._anima_quantize_fp8`,
+    block-swap branch) deep-copies the transformer and casts every
+    `isinstance(m, nn.Linear)` weight, which would include each branch's
+    `lora_down`/`lora_up`. It runs BEFORE `_load_lora_anima` in the same
+    request, so it can only meet a wrapper that leaked from an earlier one —
+    exactly the residual window Lens closes with
+    `_lens_quantization_with_lora`. Anima has no equivalent, same
+    pre-existing gap as Z-Image. The in-place runtime INT8 path IS gated
+    (`count_adapter_wrapper_roots`, which counts a composite as one root).
   - **Weight-only INT8 (W8A8)**: Anima accepts a mixed int8/e4m3 checkpoint
     produced by `subapps/fp8_quantize/quantize_transformer_fp8.py --arch anima
     --format int8 --skip-below-work-gate`. `anima_loader.load_anima_dit` detects
@@ -827,11 +892,29 @@ Paths below are relative to `backend/core/training/`.
     `finally` AND again at the top of the loader, so a restore that failed in
     an earlier request cannot leak wrappers into a later generation; a failed
     restore is reported rather than swallowed. Zero matched targets, an
-    unresolvable path, a file with no usable keys and a fully shadowed second
-    LoRA all refuse before denoising. `apply_to_text_encoder` is absent by
+    unresolvable path and a file with no usable keys refuse before denoising.
+    `apply_to_text_encoder` is absent by
     design (Krea 2's TE is frozen); `unet_layer_weights` and a non-default
     `step_range` are reported as ignored. Keep-models-hot residency stays
     disabled while LoRAs are present, matching every other architecture.
+  - **Krea 2 is on `CompositeAdapterLayer`.** Each target Linear is covered once
+    by a composite and each selected LoRA adds a NAMED branch
+    (`"<request index>:<file basename>"`), so two Krea 2 LoRAs over the same
+    module SUM instead of being refused, in either selection order, each at its
+    own strength; `lora_stacking_unsupported` is gone. A single LoRA is
+    bit-identical to the pre-composite loader (`torch.equal`, not a tolerance).
+    `iter_krea2_lora_targets` is the single enumerator for both load and unload,
+    so restore iterates what is INSTALLED rather than what the originals map
+    remembers — the previous `restore_originals` wrote every map entry back over
+    the full scope whether or not a wrapper was there. Its one int slot
+    (`attn.to_out.0`) goes through `set_module_slot`.
+    Krea 2 has no block-swap streaming, so the swap pairing question does not
+    arise; the layout was measured anyway and matches the old wrapper's
+    (base at `<target>.original_module`, 24 `endswith("Linear")` weight modules
+    per block, nothing enrolled twice). Krea 2 has no FP8 deep-copy path to gate
+    either — its `unet_quantization` is the in-place INT8 conversion, which runs
+    BEFORE LoRA application and is refused over a wrapper by
+    `count_adapter_wrapper_roots` (a composite counts as one root).
 - **ltx2** — Video (+ optional audio) generation, not part of the 10-architecture
   image roster; loaded/routed separately from `model_loader.py`'s image-model
   detection. All speed/lightweight features below are opt-in (default OFF) and

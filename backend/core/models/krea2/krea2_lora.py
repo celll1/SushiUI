@@ -85,20 +85,26 @@ def parse_scope_csv(scope_csv: Optional[str]) -> Dict[str, bool]:
 
 def _is_target(m) -> bool:
     """True for a module a LoRA can wrap: a plain Linear, EITHER quantized
-    Linear (weight-only e4m3 or int8), or an already-wrapped LoRALinearLayer.
+    Linear (weight-only e4m3 or int8), or an adapter wrapper an earlier LoRA in
+    the same request already installed.
 
     ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
     subclasses, so both must be named explicitly. Omitting one is silent: the
     iterator simply yields no targets for those layers and ``apply_lora_group``
     reports a small ``applied`` count without raising -- which on a quantized
-    checkpoint looks exactly like "the LoRA had no effect"."""
-    from core.adapters import LoRALinearLayer
+    checkpoint looks exactly like "the LoRA had no effect".
+
+    ``CompositeAdapterLayer`` is here for the same reason: drop it and a second
+    selected LoRA skips every occupied target and reports zero matches as if its
+    keys were wrong."""
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
     try:
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
-        return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
+        return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer,
+                              CompositeAdapterLayer))
     except Exception:
-        return isinstance(m, (nn.Linear, LoRALinearLayer))
+        return isinstance(m, (nn.Linear, LoRALinearLayer, CompositeAdapterLayer))
 
 
 _ATTN_ATTRS = ("to_q", "to_k", "to_v", "to_gate")
@@ -134,9 +140,14 @@ def iter_krea2_lora_targets(
 ) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
     """Yield (module_path, parent, attr_or_idx, current_module) per LoRA target.
 
+    ONE enumerator for both load and unload, so the two cannot disagree about a
+    slot once a target can hold more than one branch.
+
     module_path is relative to the Krea2Transformer2DModel
     (e.g. "transformer_blocks.0.attn.to_q"). attr_or_idx is a str for normal
-    attributes or an int for ModuleList children (to_out[0]) — use _set_module().
+    attributes or an int for ModuleList children (to_out[0]) -- address it with
+    ``core.adapters.get_module_slot`` / ``set_module_slot``, which take either;
+    ``setattr(parent, 0, module)`` raises TypeError.
     """
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
@@ -191,13 +202,6 @@ def iter_krea2_lora_targets(
         yield entry
 
 
-def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
-    if isinstance(attr, int):
-        parent[attr] = module
-    else:
-        setattr(parent, attr, module)
-
-
 def flatten_to_key(module_path: str) -> str:
     """Module path -> sd-scripts-style LoRA key stem ('lora_unet_<flat>')."""
     return f"lora_unet_{_flatten(module_path)}"
@@ -214,41 +218,55 @@ def apply_lora_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
+    branch_name: str = "lora",
 ) -> int:
-    """Wrap matching modules with LoRALinearLayer (stackable, reversible)."""
-    from core.adapters import LoRALinearLayer
+    """Add one named branch per matching module to the composite covering it.
+
+    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
+    over the same module adds a branch beside the first rather than rebuilding
+    from the base and discarding it. ``branch_name`` must be unique within the
+    request.
+    """
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0
-    for module_path, parent, attr, linear in iter_krea2_lora_targets(transformer, effective_scope):
+    # Materialised: the slots are replaced as we go, and a live traversal would
+    # start descending into the wrappers it just installed.
+    for module_path, parent, attr, linear in list(
+            iter_krea2_lora_targets(transformer, effective_scope)):
         weights = grouped.get(module_path)
         if weights is None:
             continue
         down, up = weights["down"], weights["up"]
         alpha_tensor = weights.get("alpha")
-        true_original = linear.original_module if isinstance(linear, LoRALinearLayer) else linear
-        lora_original_modules.setdefault(module_path, true_original)
+        base = (linear.original_module
+                if isinstance(linear, CompositeAdapterLayer) else linear)
+        lora_original_modules.setdefault(module_path, base)
         rank = int(down.shape[0])
         alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
-        device = true_original.weight.device
+        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
+        device = base.weight.device
         # Compute dtype for the LoRA branch: the base weight's dtype when it is a
         # normal float, else bf16. Both quantized bases take the bf16 branch --
         # e4m3 by the "float8" test, int8 because an integer dtype is not
         # floating point at all -- which is also the dtype their own forward
         # produces from a bf16 activation.
-        if (true_original.weight.dtype.is_floating_point and
-                "float8" not in str(true_original.weight.dtype)):
-            compute_dtype = true_original.weight.dtype
+        if (base.weight.dtype.is_floating_point and
+                "float8" not in str(base.weight.dtype)):
+            compute_dtype = base.weight.dtype
         else:
             compute_dtype = torch.bfloat16
         with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = (alpha_value / rank) * strength
-        _set_module(parent, attr, wrapper)
+            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+        # add_branch refolds the strength into the branch's own scale. Never
+        # multiply it onto the delta instead: same LoRA mathematically, but it
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, branch, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
     return applied
@@ -259,11 +277,20 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original."""
+    """Revert every composite-covered module to its pre-LoRA original.
+
+    Driven by what is INSTALLED, through the enumerator the load path uses, so
+    the two cannot disagree about a slot's address.
+    """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
-    for module_path, parent, attr, _linear in iter_krea2_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in lora_original_modules:
-            _set_module(parent, attr, lora_original_modules[module_path])
-            restored += 1
+    for module_path, parent, attr, current in list(
+            iter_krea2_lora_targets(transformer, _FULL_SCOPE)):
+        if not isinstance(current, CompositeAdapterLayer):
+            continue
+        set_module_slot(parent, attr,
+                        lora_original_modules.get(module_path, current.original_module))
+        restored += 1
     wrapped_keys.clear()
     return restored

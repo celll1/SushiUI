@@ -10656,12 +10656,15 @@ components:
             fully overlap is refused
             (`lora_stacking_unsupported`) — these loaders REPLACE the target
             Linear, so they cannot sum two adapters over one module; two LoRAs
-            over disjoint modules still stack. **Z-Image is the exception**: it
-            covers each target with a composite adapter holding one named
-            branch per selected LoRA, so two Z-Image LoRAs over the same module
-            SUM (`base + delta_a + delta_b`, independent of selection order,
-            each at its own strength) instead of being refused. A partial
-            application warns (`lora_partial`) and generates.
+            over disjoint modules still stack. **Z-Image, Krea 2, Anima and
+            Lens are the exceptions**: each covers a target with a composite
+            adapter holding one named branch per selected LoRA, so two of that
+            architecture's LoRAs over the same module SUM
+            (`base + delta_a + delta_b`, independent of selection order, each at
+            its own strength) instead of being refused, and those four never
+            emit `lora_stacking_unsupported`. FLUX.2, Ideogram 4, MiniT2I and
+            SenseNova still refuse. A partial application warns
+            (`lora_partial`) and generates.
           example: '[{"path": "my_lora.safetensors", "strength": 0.8}]'
         prompt_chunking_mode:
           type: string

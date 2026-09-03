@@ -213,6 +213,10 @@ DEFAULT_TRAINING_SCOPE = {
     "llm_adapter": True,
 }
 
+# Every scope at once. Unload enumerates with this, because the installed set
+# spans whatever scopes the applied checkpoints derived.
+FULL_SCOPE = {k: True for k in DEFAULT_TRAINING_SCOPE}
+
 
 _LORA_TARGET_TYPES: Optional[tuple] = None
 
@@ -236,24 +240,25 @@ def _lora_target_types() -> tuple:
     global _LORA_TARGET_TYPES
     if _LORA_TARGET_TYPES is not None:
         return _LORA_TARGET_TYPES
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
     try:
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
-        _LORA_TARGET_TYPES = (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer)
+        _LORA_TARGET_TYPES = (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer,
+                              CompositeAdapterLayer)
     except Exception as e:
         print(f"[AnimaLoRA] weight-only quantized Linear classes unavailable ({e}); "
               f"only plain nn.Linear layers can be wrapped. On a quantized Anima DiT "
               f"this yields FAR fewer LoRA targets than intended and the LoRA will "
               f"appear to have little or no effect.")
-        _LORA_TARGET_TYPES = (nn.Linear, LoRALinearLayer)
+        _LORA_TARGET_TYPES = (nn.Linear, LoRALinearLayer, CompositeAdapterLayer)
     return _LORA_TARGET_TYPES
 
 
 def _is_lora_target(m) -> bool:
     """True for a module a LoRA can wrap: a plain ``nn.Linear``, EITHER
     weight-only quantized Linear (e4m3 ``Fp8Linear`` or ``Int8Linear``), or an
-    already-wrapped ``LoRALinearLayer``.
+    adapter wrapper an earlier LoRA in the same request already installed.
 
     ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
     subclasses, so both must be named explicitly. Omitting them is SILENT: on a
@@ -270,6 +275,16 @@ def _is_lora_target(m) -> bool:
     return isinstance(m, _lora_target_types())
 
 
+def _inside_an_adapter(name: str) -> bool:
+    """True for a path that descends INTO an installed adapter.
+
+    A composite's branch index collides with the Sequential index this walk
+    addresses by: `...adaln_modulation_mlp.1.branches.1` ends in "1" exactly
+    like the target it sits under, so the path-shape pass must not follow one.
+    """
+    return ".branches." in name or ".original_module" in name
+
+
 def iter_anima_lora_targets(
     transformer: nn.Module,
     scope: Optional[Dict[str, bool]] = None,
@@ -277,11 +292,16 @@ def iter_anima_lora_targets(
     """Yield (module_path, parent_module, attr_name_or_int, current_module) for
     each LoRA-targetable Linear in the Anima DiT under the requested scope.
 
+    ONE enumerator for both load and unload, so the two cannot disagree about a
+    slot once a target can hold more than one branch.
+
     `current_module` is whatever currently sits at `getattr(parent, attr)`
-    (or `parent[attr]` for ModuleList children) — typically an nn.Linear on
-    the un-LoRA'd model, or a LoRALinearLayer once wrapped. Including wrapped
-    modules here lets restore_originals() and LoRA stacking find the slots
-    after a previous load.
+    (or `parent[attr]` for ModuleList children) -- typically an nn.Linear on
+    the un-LoRA'd model, or a CompositeAdapterLayer once wrapped. Including
+    wrapped modules here lets restore_originals() and LoRA stacking find the
+    slots after a previous load. Callers MATERIALISE this before mutating: the
+    walk reads `named_modules()`, and replacing slots underneath it makes the
+    traversal descend into the wrappers it just installed.
 
     Scope flags (all default False if not present in the dict; see
     DEFAULT_TRAINING_SCOPE for the typical training preset):
@@ -295,8 +315,6 @@ def iter_anima_lora_targets(
                      + llm_adapter.blocks.<N>.mlp.{0,2}
                      + llm_adapter.in_proj (if Linear) + llm_adapter.out_proj
     """
-    from core.adapters import LoRALinearLayer
-
     scope = scope or {}
     want_attn = bool(scope.get("attention", False))
     want_mlp = bool(scope.get("mlp", False))
@@ -332,7 +350,7 @@ def iter_anima_lora_targets(
     # The remaining scopes (mlp, mod, adapter mlp/projections) are easier to
     # enumerate via parameter-path inspection rather than class detection.
     for name, module in transformer.named_modules():
-        if not is_linear_or_wrap(module):
+        if not is_linear_or_wrap(module) or _inside_an_adapter(name):
             continue
 
         # 3. Block MLP: blocks.<N>.mlp.{layer1, layer2}
@@ -424,8 +442,13 @@ def apply_lora_group(
     lora_original_modules: Dict[str, nn.Linear],
     wrapped_keys: set,
     scope: Optional[Dict[str, bool]] = None,
+    branch_name: str = "lora",
 ) -> Tuple[int, List[str]]:
-    """Wrap matching Linear modules in the transformer with LoRALinearLayer.
+    """Add one named branch per matching module to the composite covering it.
+
+    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
+    over the same module adds a branch beside the first rather than rebuilding
+    from the base and discarding it.
 
     Args:
         transformer: Anima DiT instance.
@@ -437,20 +460,24 @@ def apply_lora_group(
         wrapped_keys: Set of module_paths currently wrapped (for unload).
         scope: Target scope; defaults to the one derive_scope_from_keys reads
             off `grouped`, i.e. exactly what the checkpoint contains.
+        branch_name: Unique per selected LoRA within the request.
 
     Returns:
         (wrapped_count, unmatched_module_paths). `unmatched` is every module
-        path the checkpoint carries that no target in the scope matched — the
+        path the checkpoint carries that no target in the scope matched -- the
         caller reports it; this function never drops one silently.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     if scope is None:
         scope = derive_scope_from_keys(grouped.keys())
 
     applied = 0
     matched: set = set()
-    for module_path, parent, attr, linear in iter_anima_lora_targets(transformer, scope):
+    # Materialised: the slots are replaced as we go, and this walk reads
+    # named_modules(), so a live traversal would descend into what it installed.
+    for module_path, parent, attr, linear in list(
+            iter_anima_lora_targets(transformer, scope)):
         weights = grouped.get(module_path)
         if weights is None:
             continue
@@ -459,11 +486,8 @@ def apply_lora_group(
         up = weights["up"]
         alpha_tensor = weights.get("alpha")
 
-        # Unwrap existing wrapper to get the true original for stacking.
-        if isinstance(linear, LoRALinearLayer):
-            true_original = linear.original_module
-        else:
-            true_original = linear
+        true_original = (linear.original_module
+                         if isinstance(linear, CompositeAdapterLayer) else linear)
 
         # First time we touch this slot — preserve the genuine original for unload.
         lora_original_modules.setdefault(module_path, true_original)
@@ -505,15 +529,15 @@ def apply_lora_group(
         # builds — re-create as the right dtype).
         wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
         wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = (alpha_value / rank) * strength
 
         # adaln_modulation_* and llm_adapter MLP targets sit inside an
-        # nn.Sequential, so the slot is an index; block mlp.layer1/layer2 and
-        # the attention projections are attribute-named.
-        if isinstance(attr, int):
-            parent[attr] = wrapper
-        else:
-            setattr(parent, attr, wrapper)
+        # nn.Sequential, so the slot is an index; attach() takes either, where
+        # setattr(parent, 1, module) raises TypeError.
+        # add_branch refolds the strength into the branch's own scale. Never
+        # multiply it onto the delta instead: same LoRA mathematically, but it
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, wrapper, strength=strength)
         matched.add(module_path)
         wrapped_keys.add(module_path)
         applied += 1
@@ -526,33 +550,33 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Linear],
     wrapped_keys: set,
 ) -> Tuple[int, List[str]]:
-    """Revert every wrapped Linear to its original (pre-LoRA) module.
+    """Revert every composite-covered Linear to its original (pre-LoRA) module.
 
-    Driven by the wrapped paths rather than by a target scope: the wrapped set
-    spans whatever scopes the applied checkpoints carried, and unload must not
-    depend on re-deriving them.
+    Driven by what is INSTALLED, through the enumerator the load path uses, so
+    the two cannot disagree about a slot's address. Enumerated over FULL_SCOPE
+    because the installed set spans whatever scopes the applied checkpoints
+    derived; `unresolved` is then whatever the wrapped set claims but the DiT
+    does not actually carry.
 
     Returns (restored_count, unresolved_paths); the caller must surface the
-    latter, since those wrappers are still installed. Both bookkeeping
+    latter, since those wrappers may still be installed. Both bookkeeping
     structures are cleared, but only on a clean return -- an exception mid-loop
     skips that, so the caller must additionally key them to the CURRENT
     transformer (see ``AnimaMixin._anima_lora_state``) rather than rely on it.
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
-    unresolved: List[str] = []
-    for module_path in sorted(wrapped_keys):
-        original = lora_original_modules.get(module_path)
-        parent, attr = (None, None)
-        if original is not None:
-            parent, attr = _resolve_parent(transformer, module_path)
-        if original is None or parent is None:
-            unresolved.append(module_path)
+    found: set = set()
+    for module_path, parent, attr, current in list(
+            iter_anima_lora_targets(transformer, FULL_SCOPE)):
+        if not isinstance(current, CompositeAdapterLayer):
             continue
-        if isinstance(attr, int):
-            parent[attr] = original
-        else:
-            setattr(parent, attr, original)
+        set_module_slot(parent, attr,
+                        lora_original_modules.get(module_path, current.original_module))
+        found.add(module_path)
         restored += 1
+    unresolved: List[str] = sorted(set(wrapped_keys) - found)
     if unresolved:
         print(f"[AnimaLoRA] WARNING: {len(unresolved)} wrapped module(s) could not be "
               f"restored (first few: {unresolved[:5]}); the DiT may still carry LoRA "

@@ -120,27 +120,24 @@ def declared_branch_count(raw_state_dict: Dict[str, torch.Tensor]) -> int:
 
 
 def normalise_lora_state_dict(raw_state_dict: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
-    """Group raw LoRA tensors by module path into {module_path: TensorGroup}.
+    """COMPLETE factor groups by module path, whatever the algebra.
 
-    ``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
-    is what ``build_lora_branch`` reads. Only down/up groups are returned: any
-    other algebra is counted (``declared_branch_count``) and refused unapplied
-    rather than handed to a builder that cannot express it.
+    ``group_adapter_tensors`` already drops the incomplete ones; a down/up
+    filter on top would silently drop every LoHa and LoKr group.
 
     Unrecognised keys are silently dropped (typically text-encoder LoRA keys
     when only the DiT side is targeted).
     """
-    grouped = group_adapter_tensors(raw_state_dict, _anima_stem).groups
-    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
+    return group_adapter_tensors(raw_state_dict, _anima_stem).groups
 
 
 def unmatched_source_keys(
     raw_state_dict: Dict[str, torch.Tensor],
     grouped: Dict[str, Dict[str, torch.Tensor]],
 ) -> List[str]:
-    """Raw keys that carry nothing into `grouped` — unparseable, or part of a
-    module group missing its down/up pair. Callers must surface these: a dropped
-    key is a silently weaker LoRA, not a no-op.
+    """Raw keys that carry nothing into `grouped` — unparseable, or part of an
+    incomplete factor group. Callers must surface these: a dropped key is a
+    silently weaker LoRA, not a no-op.
     """
     dropped: List[str] = []
     for key in raw_state_dict:
@@ -416,46 +413,41 @@ def iter_anima_lora_slots(transformer: nn.Module):
         yield parent, attr, module_path
 
 
-def build_lora_branch(base: nn.Module, weights: Dict[str, torch.Tensor],
+def branch_dtype(base: nn.Module) -> torch.dtype:
+    """Anima's own branch dtype: the base's COMPUTE dtype, not the file's stored
+    one and not the base weight's.
+
+    Deliberately not ``core.adapters.lora_branch_dtype``, which has no
+    ``compute_dtype``/bias tier: Fp8Linear / Int8Linear state theirs outright,
+    an int8 weight is not floating point at all, and a bias-less quantized layer
+    would otherwise fall through to the bfloat16 default -- right today only by
+    coincidence.
+    """
+    declared = getattr(base, "compute_dtype", None)
+    if isinstance(declared, torch.dtype) and declared.is_floating_point:
+        return declared
+    bias = getattr(base, "bias", None)
+    if bias is not None and bias.dtype.is_floating_point:
+        return bias.dtype
+    weight_dtype = base.weight.dtype
+    if weight_dtype.is_floating_point and "float8" not in str(weight_dtype):
+        return weight_dtype
+    return torch.bfloat16
+
+
+def build_lora_branch(base: nn.Module, group: TensorGroup,
                       module_path: str) -> nn.Module:
-    """One branch over ``base``, at the file's own alpha/rank scale.
+    """One branch over ``base``, or ``SHAPE_MISMATCH``.
+
+    The algebra is the group's, not this function's: ``build_adapter_branch``
+    dispatches on the tensor names. Alpha precedence is the per-key tensor then
+    the rank -- Anima checkpoints carry no file-level alpha tier.
 
     The request strength is NOT folded in here: ``add_branch(strength=)`` refolds
     it into this branch's own scale, and multiplying it onto the delta instead is
     different arithmetic that loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import build_adapter_branch
 
-    down = weights["down"]
-    up = weights["up"]
-    alpha_tensor = weights.get("alpha")
-    rank = int(down.shape[0])
-    alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-
-    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
-    device = base.weight.device
-    # The LoRA matrices must match the base's COMPUTE dtype, not the file's
-    # stored one. Fp8Linear / Int8Linear state theirs outright, so ask them: an
-    # int8 weight is not floating point at all, and a bias-less quantized layer
-    # would otherwise fall through to the bfloat16 default, which is right today
-    # only by coincidence.
-    declared = getattr(base, "compute_dtype", None)
-    if isinstance(declared, torch.dtype) and declared.is_floating_point:
-        compute_dtype = declared
-    elif base.bias is not None and base.bias.dtype.is_floating_point:
-        compute_dtype = base.bias.dtype
-    elif base.weight.dtype.is_floating_point and not (
-        'float8' in str(base.weight.dtype)
-    ):
-        compute_dtype = base.weight.dtype
-    else:
-        compute_dtype = torch.bfloat16
-
-    with torch.no_grad():
-        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-    # LoRALinearLayer builds float32 weights and we overwrote .data; some torch
-    # builds still track the Parameter's dtype as float32, so re-create them.
-    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-    return branch
+    return build_adapter_branch(base, group, lora_dtype=branch_dtype(base),
+                                lora_name=module_path)

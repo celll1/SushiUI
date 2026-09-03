@@ -1,7 +1,8 @@
-"""LoHa and LoKr, loaded and applied by the four architectures that enable them.
+"""LoHa and LoKr, loaded and applied by the architectures that enable them.
 
-The evidence for the ``core/adapters/capability.py`` flip. One row per Tier-1
-architecture -- Z-Image, Krea 2, MiniT2I, LTX-2.3 -- each driving that
+The evidence for the ``core/adapters/capability.py`` flips. One row per enabled
+architecture -- Z-Image, Krea 2, MiniT2I, LTX-2.3 (Tier 1) and Anima, Lens,
+Ideogram 4, FLUX.2, ACE-Step (Tiers 2 and 4) -- each driving that
 architecture's REAL generation loader over a synthetic LyCORIS checkpoint
 written in its own key spelling, on CPU in a couple of seconds. A flip is legal
 only when its architecture passes all five:
@@ -23,9 +24,11 @@ only when its architecture passes all five:
 The stub trees come from those sibling files rather than being copied, so the
 two cannot describe different models. Z-Image's is the production transformer.
 
-The last row is the stacking property nothing had exercised with MIXED
-algebras: one LoRA and one LoHa over the same module, summed at their own
-strengths, in either selection order.
+The last rows are the stacking property nothing had exercised with MIXED
+algebras -- one LoRA and one LoHa over the same module, summed at their own
+strengths, in either selection order -- and FLUX.2's two components, whose
+text-encoder half takes the plain request strength while its transformer half
+multiplies the per-block weight into it.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/adapter_lycoris_roundtrip_cheap_test.py -v
@@ -99,6 +102,24 @@ def _stage_minit2i_offloader(backend) -> None:
 def _stage_ltx2_offloader(backend) -> None:
     offloader = _live_offloader()
     backend._ltx2_block_offloader = lambda: offloader
+
+
+def _stage_anima_offloader(backend) -> None:
+    """What ``_anima_stage_transformer`` sets, one call before
+    ``_load_lora_anima``."""
+    backend._anima_offloader = _live_offloader()
+
+
+def _stage_lens_offloader(backend) -> None:
+    """What ``_lens_stage_transformer`` sets, one call before
+    ``_load_lora_lens``."""
+    backend._lens_offloader = _live_offloader()
+
+
+def _stage_ideogram4_offloader(backend) -> None:
+    """``_ideogram4_stage_transformers`` builds one offloader per HALF, or none
+    at all -- so a single live entry is the whole request being swapped."""
+    backend._ideogram4_offloaders = [("transformer", _live_offloader())]
 
 
 def _zimage() -> Arch:
@@ -209,7 +230,148 @@ def _ltx2() -> Arch:
     )
 
 
-ARCHES = {a.name: a for a in (_zimage(), _krea2(), _minit2i(), _ltx2())}
+def _anima() -> Arch:
+    from core.models.anima.anima_lora import _flatten_to_sdscripts, branch_dtype
+    from core.pipeline_backends.anima import AnimaMixin
+    import anima_lora_roundtrip_cheap_test as gate
+
+    class _B(AnimaMixin):
+        def __init__(self, model):
+            self.anima_components = {"transformer": model}
+
+    return Arch(
+        name="anima",
+        build=gate.build_model,
+        backend=_B,
+        components=lambda b: b._anima_lora_components(),
+        stem=lambda p: "lora_unet_" + _flatten_to_sdscripts(p),
+        load=lambda b, c: b._load_lora_anima(c),
+        unload=lambda b: b._unload_lora_anima(),
+        swap=lambda b, m: b.anima_components.__setitem__("transformer", m),
+        # Not ``lora_branch_dtype``: Anima asks the base for its declared
+        # compute dtype, then its bias, before the weight.
+        branch_dtype=branch_dtype,
+        session=lambda b: b._anima_lora_session,
+        branch_hook="_anima_build_lora_branch",
+        fake_offloader=_stage_anima_offloader,
+    )
+
+
+def _lens() -> Arch:
+    from core.models.lens.lens_lora import _flatten_to_sdscripts, branch_dtype
+    from core.pipeline_backends.lens import LensMixin
+    import lens_lora_roundtrip_cheap_test as gate
+
+    class _B(LensMixin):
+        def __init__(self, model):
+            self.lens_components = {"transformer": model}
+
+    return Arch(
+        name="lens",
+        build=gate.build_model,
+        backend=_B,
+        components=lambda b: b._lens_lora_components(),
+        # The fused-QKV targets (img_qkv/txt_qkv) are ordinary Linears here, so
+        # one group covers the whole fused stem -- no row split is involved.
+        stem=lambda p: "lora_unet_" + _flatten_to_sdscripts(p),
+        load=lambda b, c: b._load_lora_lens(c),
+        unload=lambda b: b._unload_lora_lens(),
+        swap=lambda b, m: b.lens_components.__setitem__("transformer", m),
+        branch_dtype=branch_dtype,
+        session=lambda b: b._lens_lora_session,
+        branch_hook="_lens_build_lora_branch",
+        fake_offloader=_stage_lens_offloader,
+    )
+
+
+def _ideogram4() -> Arch:
+    from core.models.ideogram4.ideogram4_lora import (_flatten_to_sdscripts,
+                                                      branch_dtype)
+    from core.pipeline_backends.ideogram4 import Ideogram4Mixin
+    import ideogram4_lora_roundtrip_cheap_test as gate
+
+    class _B(Ideogram4Mixin):
+        def __init__(self, model):
+            # Conditional half only: the two transformers carry identical module
+            # paths and are told apart by the key namespace, so a one-half
+            # backend is what pins that ``lora_unet_`` reaches the cond branch.
+            self.ideogram4_components = {"transformer": model}
+
+    return Arch(
+        name="ideogram4",
+        build=gate._Stub,
+        backend=_B,
+        components=lambda b: b._ideogram4_lora_components(),
+        stem=lambda p: "lora_unet_" + _flatten_to_sdscripts(p),
+        load=lambda b, c: b._load_lora_ideogram4(c),
+        unload=lambda b: b._unload_lora_ideogram4(),
+        swap=lambda b, m: b.ideogram4_components.__setitem__("transformer", m),
+        branch_dtype=branch_dtype,
+        session=lambda b: b._ideogram4_lora_session,
+        branch_hook="_ideogram4_build_lora_branch",
+        fake_offloader=_stage_ideogram4_offloader,
+    )
+
+
+def _flux2() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.pipeline_backends.flux2 import Flux2Mixin
+    import flux2_lora_roundtrip_cheap_test as gate
+
+    class _B(Flux2Mixin):
+        def __init__(self, model):
+            # Transformer only for the shared rows; the text-encoder half is a
+            # SECOND component with its own key namespace and its own strength
+            # rule, driven by the FLUX.2 rows at the end of this file.
+            self.flux2_components = {"transformer": model, "text_encoder": None,
+                                     "vae": None}
+
+    return Arch(
+        name="flux2",
+        build=gate._Transformer,
+        backend=_B,
+        components=lambda b: b._flux2_lora_components(),
+        stem=lambda p: "lora_transformer_" + p.replace(".", "_"),
+        load=lambda b, c: b._load_lora_flux2(c),
+        unload=lambda b: b._unload_lora_flux2(),
+        swap=lambda b, m: b.flux2_components.__setitem__("transformer", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._flux2_lora_session,
+        branch_hook="_flux2_build_lora_branch",
+    )
+
+
+def _acestep() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.pipeline_backends.acestep import AceStepMixin
+    import acestep_lora_roundtrip_cheap_test as gate
+
+    class _B(AceStepMixin):
+        def __init__(self, model):
+            self.acestep_components = {"dit": model}
+
+    return Arch(
+        name="acestep",
+        build=gate.build_dit,
+        backend=_B,
+        components=lambda b: b._acestep_lora_components(),
+        # sd-scripts codec only. The diffusers/PEFT branch bakes
+        # ``(lora_A|lora_B)`` into its key regexes, so a LyCORIS file cannot
+        # reach a grouper there at all -- it matches no regex, groups nothing,
+        # and is refused as a zero-target file.
+        stem=lambda p: "lora_unet_" + p.replace(".", "_"),
+        load=lambda b, c: b._load_lora_acestep(c),
+        unload=lambda b: b._unload_lora_acestep(),
+        swap=lambda b, m: b.acestep_components.__setitem__("dit", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._acestep_lora_session,
+        branch_hook="_acestep_build_lora_branch",
+    )
+
+
+ARCHES = {a.name: a for a in (_zimage(), _krea2(), _minit2i(), _ltx2(),
+                              _anima(), _lens(), _ideogram4(), _flux2(),
+                              _acestep())}
 NAMES = sorted(ARCHES)
 ALGEBRAS = ("loha", "lokr")
 
@@ -220,7 +382,7 @@ ALGEBRAS = ("loha", "lokr")
 
 @pytest.fixture(autouse=True)
 def resolve_verbatim(monkeypatch):
-    """All four resolve through ``LoRAManager``; these files live in tmp_path."""
+    """All nine resolve through ``LoRAManager``; these files live in tmp_path."""
     from core.extensions import lora_manager as lm
 
     monkeypatch.setattr(lm.lora_manager, "_resolve_lora_path",
@@ -570,24 +732,145 @@ def test_a_lora_and_a_loha_stack_over_one_module(name, tmp_path, warnings_seen):
 
 
 # --------------------------------------------------------------------------
+# ACE-Step: the sd-scripts codec only
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_acestep_refuses_a_lycoris_file_in_the_diffusers_spelling(
+        algorithm, tmp_path, warnings_seen):
+    """ACE-Step's row is enabled for its sd-scripts codec ALONE.
+
+    Its diffusers/PEFT branch selects on ``(lora_A|lora_B)`` baked into three
+    key regexes, so a LyCORIS file in that spelling reaches no grouper: it is
+    neither ``is_sdscripts`` (no ``lora_unet_decoder_layers_`` prefix) nor
+    ``is_diffusers`` (no ``.lora_A.``/``.lora_B.`` key), and ``prepare_file``
+    refuses it outright as an unrecognized key format. Migrating that branch is
+    its own step -- design doc, phase 2.
+    """
+    from core.adapters import AdapterIncompatible
+
+    arch = ARCHES["acestep"]
+    backend = arch.backend(arch.build())
+    _path, base = live_targets(arch, backend)[0]
+    generator = torch.Generator().manual_seed(5)
+    tensors = factor_tensors(algorithm, base.out_features, base.in_features,
+                             generator)
+    stem = "transformer_blocks.0.attn.to_q"
+    path = tmp_path / f"acestep_diffusers_{algorithm}.safetensors"
+    save_file({f"{stem}.{k}": v for k, v in tensors.items()}, str(path),
+              metadata={"model_type": "acestep"})
+
+    model = backend_model(arch, backend)
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, str(path))
+    assert excinfo.value.code == "lora_incompatible"
+    assert "unrecognized key format" in str(excinfo.value)
+    # The codec's own verdict, not the capability gate's: ACE-Step DOES enable
+    # both families, so a "not enabled" message here would be a lie.
+    assert "not enabled" not in str(excinfo.value)
+    assert not composites(model)
+
+
+# --------------------------------------------------------------------------
+# FLUX.2's two components, and the two different strength rules
+# --------------------------------------------------------------------------
+
+def _flux2_pair():
+    """A backend holding BOTH FLUX.2 components, plus the file-stem functions.
+
+    The shared rows above run FLUX.2 transformer-only, because a text-encoder
+    target's module path (``text_encoder.model.layers...``) is not its path
+    inside the encoder module and no generic row can compare the two.
+    """
+    from core.pipeline_backends.flux2 import (Flux2Mixin, _flux2_te_lora_targets,
+                                              _flux2_transformer_lora_targets)
+    import flux2_lora_roundtrip_cheap_test as gate
+
+    class _B(Flux2Mixin):
+        def __init__(self, transformer, text_encoder):
+            self.flux2_components = {"transformer": transformer,
+                                     "text_encoder": text_encoder, "vae": None}
+
+    transformer, text_encoder = gate._Transformer(), gate._TextEncoder()
+    unet = [("lora_transformer_" + key.replace(".", "_"),
+             key, get_module_slot(parent, slot))
+            for parent, slot, key in _flux2_transformer_lora_targets(transformer)]
+    te = [(lora_name, key, getattr(parent, attr))
+          for parent, attr, key, lora_name in _flux2_te_lora_targets(text_encoder)]
+    return _B(transformer, text_encoder), transformer, text_encoder, unet, te
+
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_flux2_covers_both_components_at_their_own_strength_rules(
+        algorithm, tmp_path, warnings_seen):
+    """One file, two key namespaces, two strength rules.
+
+    ``unet_layer_weights`` multiplies the request strength for a transformer
+    target -- ``_get_flux2_block_name`` maps ``transformer_blocks.N`` to
+    ``DUALnn`` -- while the Qwen3 text-encoder half deliberately takes the plain
+    strength. The strength is read back off the composite, which is where
+    ``add_branch(strength=)`` folded it into the branch's own scale.
+    """
+    backend, transformer, text_encoder, unet, te = _flux2_pair()
+    assert unet and te, "setup: the fixture must cover both components"
+
+    generator = torch.Generator().manual_seed(23)
+    raw = {}
+    for stem, _key, base in unet + te:
+        for name, value in factor_tensors(algorithm, base.out_features,
+                                          base.in_features, generator).items():
+            raw[stem + _SUFFIX.get(name, "." + name)] = value
+    path = tmp_path / f"flux2_both_{algorithm}.safetensors"
+    save_file(raw, str(path), metadata={"model_type": "flux2"})
+
+    weights = {"DUAL00": 0.5, "DUAL01": 0.25}
+    backend._load_lora_flux2([{"path": str(path), "strength": STRENGTH,
+                               "unet_layer_weights": weights}])
+
+    tf_modules = dict(transformer.named_modules())
+    te_modules = dict(text_encoder.named_modules())
+    assert composites(transformer) == {key for _s, key, _b in unet}
+    assert composites(text_encoder) == {key[len("text_encoder."):]
+                                        for _s, key, _b in te}
+
+    for _stem, key, _base in unet:
+        composite = tf_modules[key]
+        block = backend._get_flux2_block_name(key)
+        assert composite.get_strength(composite.branch_names[0]) == pytest.approx(
+            STRENGTH * weights[block]), key
+    for _stem, key, _base in te:
+        composite = te_modules[key[len("text_encoder."):]]
+        assert composite.get_strength(composite.branch_names[0]) == pytest.approx(
+            STRENGTH), key
+    # Non-vacuity: the two rules really differ on this fixture.
+    assert set(weights.values()) != {1.0}
+    assert not warning_codes(warnings_seen)
+
+    backend._unload_lora_flux2()
+    assert not composites(transformer) and not composites(text_encoder)
+
+
+# --------------------------------------------------------------------------
 # The other side of the boundary: the architectures this phase did NOT flip
 # --------------------------------------------------------------------------
 
-#: Every session-managed architecture whose row is still ordinary LoRA. SD1.5
-#: and SDXL are absent because they build no ``AdapterSession`` at all -- they
-#: load through diffusers, so a kohya LoHa is listed in the UI and reaches
+#: Every session-managed architecture whose row is still ordinary LoRA: the
+#: Tier-3 two, gated separately because their ConvRot forward and activation
+#: dtype policy dominate the step (and MiniMax-H3 additionally needs
+#: ``split_group_on_out_rows`` wired into its fused-QKV path). SD1.5 and SDXL
+#: are absent because they build no ``AdapterSession`` at all -- they load
+#: through diffusers, so a kohya LoHa is listed in the UI and reaches
 #: diffusers' loader with no ``lora_incompatible`` refusal anywhere. That is a
 #: known gap, recorded in docs/guides/LYCORIS_ADAPTER_DESIGN.md, not something
 #: this table can express.
-NOT_ENABLED = ("acestep", "anima", "flux2", "ideogram4", "lens", "minimax_h3",
-               "sensenova")
+NOT_ENABLED = ("minimax_h3", "sensenova")
 
 
 @pytest.mark.parametrize("arch", NOT_ENABLED)
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
 def test_an_unflipped_architecture_still_refuses_both_families(arch, algorithm):
     """Driven through each backend's REAL session object, not read off the
-    table: seven rows unchanged is a claim about behaviour."""
+    table: the remaining rows unchanged is a claim about behaviour."""
     import adapter_key_normalization_gate_cheap_test as keys
 
     session = keys._session(arch)
@@ -603,7 +886,7 @@ def test_an_unflipped_architecture_still_refuses_both_families(arch, algorithm):
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
 def test_a_flipped_architectures_session_does_not_refuse(name, algorithm):
     """The sibling that makes the row above discriminating rather than a
-    tautology about seven names."""
+    tautology about the names left in it."""
     import adapter_key_normalization_gate_cheap_test as keys
 
     session = keys._session(name)
@@ -647,8 +930,9 @@ def test_a_flipped_architecture_still_refuses_the_decomposition_axis(name):
 #: Split by ``BLOCK_SWAP_ADAPTER_ORDER``, which records an ORDERING fact about
 #: each backend's generate function: does it install adapters before or after
 #: the offloader splits the blocks?
-STRANDS = ("ltx2", "minit2i")   # AFTER_SPLIT  -> refuse
-SWEPT = ("zimage",)             # BEFORE_SPLIT -> advise
+STRANDS = ("ltx2", "minit2i", "anima", "lens", "ideogram4")  # AFTER  -> refuse
+SWEPT = ("zimage", "flux2")                                 # BEFORE -> advise
+NO_SWAP = ("krea2", "acestep")            # no generation-time offloader at all
 
 
 def _recording_backend(arch: Arch, monkeypatch, visited):
@@ -759,7 +1043,7 @@ def test_the_block_swap_order_table_covers_every_lycoris_architecture():
                if pairs != frozenset({ORDINARY_LORA})}
     assert lycoris == set(NAMES)
     assert lycoris - set(BLOCK_SWAP_ADAPTER_ORDER) == set()
-    assert set(STRANDS) | set(SWEPT) | {"krea2"} == lycoris
+    assert set(STRANDS) | set(SWEPT) | set(NO_SWAP) == lycoris
 
 
 def test_exactly_the_stranding_backends_declare_a_block_swap_probe():

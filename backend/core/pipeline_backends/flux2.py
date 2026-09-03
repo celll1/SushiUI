@@ -578,8 +578,13 @@ class Flux2Mixin:
         return "BASE"
 
     def _flux2_build_lora_branch(self, request):
+        """The branch for one target, ``None`` when this file names no key for it,
+        or ``SHAPE_MISMATCH``. The algebra is the group's: ``build_adapter_branch``
+        dispatches on the tensor names. Alpha precedence is the per-key tensor
+        then the rank -- FLUX.2 checkpoints carry no file-level alpha tier.
+        """
         from core.adapters import (
-            PreparedBranch, LoRALinearLayer, lora_branch_dtype,
+            PreparedBranch, build_adapter_branch, lora_branch_dtype,
             is_lora_wrappable_linear, SHAPE_MISMATCH,
         )
 
@@ -613,30 +618,18 @@ class Flux2Mixin:
         # keys: a spelling the counter takes and this does not would declare N
         # and apply 0.
         group = groups.get(lora_name)
-        if group is None or "down" not in group or "up" not in group:
+        if group is None:
             return None
-        down, up = group["down"], group["up"]
 
-        in_features = getattr(base, "in_features", None)
-        out_features = getattr(base, "out_features", None)
-        if (down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]
-                or down.shape[1] != in_features or up.shape[0] != out_features):
-            print(f"[FLUX.2 LoRA] WARNING: shape mismatch at {module_path}: "
-                  f"down{tuple(down.shape)} up{tuple(up.shape)} vs Linear"
-                  f"({in_features} -> {out_features}); skipping this module")
+        branch = build_adapter_branch(base, group,
+                                      lora_dtype=lora_branch_dtype(base),
+                                      lora_name=module_path)
+        if branch is SHAPE_MISMATCH:
+            print(f"[FLUX.2 LoRA] WARNING: {group.algorithm} factors at "
+                  f"{module_path} do not fit Linear("
+                  f"{getattr(base, 'in_features', None)} -> "
+                  f"{getattr(base, 'out_features', None)}); skipping this module")
             return SHAPE_MISMATCH
-
-        rank = down.shape[0]
-        alpha = group.get("alpha")
-        alpha_value = alpha.item() if alpha is not None else rank
-
-        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
-        device = base.weight.device
-        dtype = lora_branch_dtype(base)
-
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=dtype)
 
         return PreparedBranch(branch, strength)
 
@@ -1090,6 +1083,9 @@ class Flux2Mixin:
 
                 # Prepare block devices
                 block_offloader.prepare_block_devices_before_forward()
+                # Adapters are already installed (stage 1): the sweep above put
+                # a LyCORIS branch's bare parameters on the device for good.
+                self._flux2_lora_session.warn_unoffloaded_branches("transformer")
                 # Track the active offloader on self so the finally-block safety net
                 # (_flux2_cleanup) can tear it down even if an exception is raised
                 # before the normal-path cleanup below runs.
@@ -2687,6 +2683,9 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
+                # Adapters are already installed (stage 1): the sweep above put
+                # a LyCORIS branch's bare parameters on the device for good.
+                self._flux2_lora_session.warn_unoffloaded_branches("transformer")
                 # Track the active offloader on self so the finally-block safety net
                 # (_flux2_cleanup) can tear it down even if an exception is raised
                 # before the normal-path cleanup below runs.
@@ -3562,6 +3561,9 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
+                # Adapters are already installed (stage 1): the sweep above put
+                # a LyCORIS branch's bare parameters on the device for good.
+                self._flux2_lora_session.warn_unoffloaded_branches("transformer")
                 # Track the active offloader on self so the finally-block safety net
                 # (_flux2_cleanup) can tear it down even if an exception is raised
                 # before the normal-path cleanup below runs.

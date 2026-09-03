@@ -27,6 +27,9 @@ from typing import Any, Dict, Generator, Mapping, Optional, Tuple
 import torch
 from torch import nn
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
+
 
 def _flatten(module_path: str) -> str:
     return module_path.replace(".", "__")
@@ -36,24 +39,32 @@ def _restore(flat: str) -> str:
     return flat.replace("__", ".")
 
 
+def _krea2_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> module path, or None for a foreign key."""
+    if not raw_stem.startswith("lora_unet_"):
+        return None
+    return _restore(raw_stem[len("lora_unet_"):])
+
+
 def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    if key.startswith("lora_unet_"):
-        rest = key[len("lora_unet_"):]
-        for suffix, tag in ((".lora_down.weight", "down"), (".lora_up.weight", "up"), (".alpha", "alpha")):
-            if rest.endswith(suffix):
-                return _restore(rest[: -len(suffix)]), tag
-    return None
+    """``(module_path, canonical tensor name)`` for a recognised key, else None."""
+    split = split_adapter_suffix(key)
+    if split is None:
+        return None
+    module_path = _krea2_stem(split[0])
+    return None if module_path is None else (module_path, split[1])
 
 
-def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        grouped.setdefault(module_path, {})[suffix] = tensor
-    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
+    """Branches this file declares to Krea 2; see ``declared_groups``."""
+    return len(declared_groups(raw, _krea2_stem))
+
+
+def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
+    """Down/up groups by module path. ``TensorGroup`` answers to
+    ``["down"]``/``["up"]``/``.get("alpha")``, which is what the builder reads."""
+    grouped = group_adapter_tensors(raw, _krea2_stem).groups
+    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
 
 
 def detect_lora_format(raw: Mapping[str, torch.Tensor]) -> str:

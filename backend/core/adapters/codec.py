@@ -39,6 +39,42 @@ class CodecSpec:
     metadata: Dict[str, str] = field(default_factory=dict)
 
 
+#: Suffix -> the axis of that factor that IS the rank, mirroring
+#: ``groups.TensorGroup.rank``. PEFT's ``lora_A`` is ``[rank, in]`` exactly like
+#: ``lora_down`` -- only the LyCORIS ``*_a`` factors are ``[out, rank]``, and
+#: reading them alike reported in_features as the rank for ten real spellings.
+_RANK_AXIS_BY_SUFFIX: Dict[str, int] = {
+    ".lora_down.weight": 0,
+    ".lora_A.weight": 0,
+    ".lora_A.default.weight": 0,
+    ".hada_w1_a": 1,
+    ".lokr_w1_a": 1,
+    ".lokr_w2_a": 1,
+}
+
+
+def _sniff_rank(tensors: Mapping[str, torch.Tensor]) -> Optional[int]:
+    """The rank a checkpoint's factor shapes imply, or ``None``.
+
+    ``None`` is a real answer for the full/full LoKr, which has no rank.
+    A tensor too small for its axis is SKIPPED rather than indexed: a
+    ``lora_bias=True`` PEFT export carries a 1-D ``.lora_A.bias``.
+    """
+    for key, tensor in tensors.items():
+        axis = None
+        for suffix, candidate in _RANK_AXIS_BY_SUFFIX.items():
+            if key.endswith(suffix):
+                axis = candidate
+                break
+        else:
+            # Any other PEFT adapter name (``.lora_A.<name>.weight``).
+            if ".lora_A." in key and key.endswith(".weight"):
+                axis = 0
+        if axis is not None and len(getattr(tensor, "shape", ())) > axis:
+            return int(tensor.shape[axis])
+    return None
+
+
 class CodecRegistry:
     """Registry for detecting, normalizing, and registering adapter checkpoint codecs."""
 
@@ -117,10 +153,7 @@ class CodecRegistry:
                 pass
 
         if rank is None:
-            for k, tensor in tensors.items():
-                if k.endswith(".lora_down.weight") or ".lora_A." in k or "hada_w1_a" in k:
-                    rank = int(tensor.shape[0] if k.endswith(".lora_down.weight") else tensor.shape[1])
-                    break
+            rank = _sniff_rank(tensors)
 
         if alpha is None:
             # Check for scalar alpha tensor in checkpoint

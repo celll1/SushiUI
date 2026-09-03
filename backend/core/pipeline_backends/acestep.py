@@ -787,6 +787,7 @@ class AceStepMixin:
             session = AdapterSession(
                 resolve_path=self._acestep_resolve_lora_path,
                 warn=self._acestep_lora_warn,
+                architecture="acestep",
                 label="AceStep LoRA",
                 message_label="ACE-Step LoRA",
                 count_declared_branches=self._acestep_count_declared_branches,
@@ -821,13 +822,18 @@ class AceStepMixin:
 
     @classmethod
     def _acestep_count_declared_branches(cls, tensors, _components) -> int:
-        sd_count = sum(1 for k in tensors if k.startswith(cls._ACESTEP_LORA_SD_PREFIX) and k.endswith(".lora_down.weight"))
-        if sd_count > 0:
-            return sd_count
-        peft_count = sum(1 for k in tensors if ".lora_A." in k)
-        if peft_count > 0:
-            return peft_count
-        return sum(1 for k in tensors if k.endswith(".lora_down.weight"))
+        """Declared GROUPS, sd-scripts tier first (see ``declared_groups``).
+
+        Groups rather than ``.lora_down.weight`` / ``.lora_A.`` key tallies: a
+        LoHa/LoKr file has neither, and ``.lora_A.`` also counted a
+        ``lora_bias=True`` export's 1-D ``.lora_A.bias``, which is not an
+        adapter tensor and now falls out as unmatched.
+        """
+        from core.adapters.groups import declared_groups
+
+        stems = declared_groups(tensors)
+        sd_stems = [s for s in stems if s.startswith(cls._ACESTEP_LORA_SD_PREFIX)]
+        return len(sd_stems) or len(stems)
 
     @staticmethod
     def _acestep_zero_target_message(file, counts):
@@ -872,17 +878,11 @@ class AceStepMixin:
                 code="lora_incompatible",
             )
         if is_sdscripts:
-            stems: Dict[str, Dict[str, Any]] = {}
-            for k, v in file.tensors.items():
-                if k.endswith(".lora_down.weight"):
-                    stem = k[:-len(".lora_down.weight")]
-                    stems.setdefault(stem, {})["down"] = v
-                elif k.endswith(".lora_up.weight"):
-                    stem = k[:-len(".lora_up.weight")]
-                    stems.setdefault(stem, {})["up"] = v
-                elif k.endswith(".alpha"):
-                    stem = k[:-len(".alpha")]
-                    stems.setdefault(stem, {})["alpha"] = v
+            # Complete groups only; an unpaired stem was already dropped by the
+            # builder's ``down is None`` check, so this is the same set.
+            from core.adapters import group_adapter_tensors
+
+            stems = group_adapter_tensors(file.tensors).groups
             fallback_alpha = None
             for a_key in ("lora_alpha", "alpha"):
                 if a_key in file.metadata:
@@ -893,6 +893,11 @@ class AceStepMixin:
                         pass
             return {"format": "sdscripts", "stems": stems, "fallback_alpha": fallback_alpha}
         else:
+            # NOT migrated onto ``group_adapter_tensors``: the regexes below bake
+            # ``(lora_A|lora_B)`` into the key match, so no non-pair key can
+            # reach a grouper here, and the ``None`` placeholders are not
+            # something ``TensorGroup`` can hold. Its own step (design doc,
+            # phase 2); only the sd-scripts branch above moved.
             groups: Dict[str, Dict[str, Any]] = {}
             for key, tensor in file.tensors.items():
                 m = cls._ACESTEP_LORA_DIFFUSERS_DIT_QKV_RE.match(key)

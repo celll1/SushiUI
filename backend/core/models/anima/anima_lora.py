@@ -30,6 +30,9 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch import nn
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
+
 
 # Module-path tokens that the underscore-flattened native format may map back to.
 # Order matters: longer compound names first so they bind before their substrings.
@@ -90,55 +93,45 @@ def _flatten_to_sdscripts(module_path: str) -> str:
     return intermediate.replace(".", "_")
 
 
-def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    """Return (module_path, suffix) for a recognised LoRA key, or None.
-
-    suffix is one of {"down", "up", "alpha"}.
-    """
-    # Interchange format first (unambiguous prefix)
-    if key.startswith(INTERCHANGE_DIT_PREFIX):
-        rest = key[len(INTERCHANGE_DIT_PREFIX):]
-        if rest.endswith(".lora_A.weight"):
-            return rest[:-len(".lora_A.weight")], "down"
-        if rest.endswith(".lora_B.weight"):
-            return rest[:-len(".lora_B.weight")], "up"
-        if rest.endswith(".alpha"):
-            return rest[:-len(".alpha")], "alpha"
-        return None
-
-    # sd-scripts native: lora_unet_<flattened>.<suffix>
-    if key.startswith("lora_unet_"):
-        rest = key[len("lora_unet_"):]
-        if "." not in rest:
-            return None
-        flat_module, weight_name = rest.split(".", 1)
-        module_path = _restore_sdscripts_dots(flat_module)
-        if weight_name == "lora_down.weight":
-            return module_path, "down"
-        if weight_name == "lora_up.weight":
-            return module_path, "up"
-        if weight_name == "alpha":
-            return module_path, "alpha"
-        return None
-
+def _anima_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> Anima module path, or None for a foreign key."""
+    if raw_stem.startswith(INTERCHANGE_DIT_PREFIX):
+        return raw_stem[len(INTERCHANGE_DIT_PREFIX):]
+    if raw_stem.startswith("lora_unet_"):
+        flat = raw_stem[len("lora_unet_"):]
+        # The native codec flattens every dot away, so a dot left in the stem
+        # means the key carried an unrecognised weight name, not a module path.
+        return None if "." in flat else _restore_sdscripts_dots(flat)
     return None
 
 
-def normalise_lora_state_dict(raw_state_dict: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, torch.Tensor]]:
-    """Group raw LoRA tensors by module path into {module_path: {down, up, alpha?}}.
+def _parse_key(key: str) -> Optional[Tuple[str, str]]:
+    """``(module_path, canonical tensor name)`` for a recognised key, else None."""
+    split = split_adapter_suffix(key)
+    if split is None:
+        return None
+    module_path = _anima_stem(split[0])
+    return None if module_path is None else (module_path, split[1])
+
+
+def declared_branch_count(raw_state_dict: Dict[str, torch.Tensor]) -> int:
+    """Branches this file declares to Anima; see ``declared_groups``."""
+    return len(declared_groups(raw_state_dict, _anima_stem))
+
+
+def normalise_lora_state_dict(raw_state_dict: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
+    """Group raw LoRA tensors by module path into {module_path: TensorGroup}.
+
+    ``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
+    is what ``build_lora_branch`` reads. Only down/up groups are returned: any
+    other algebra is counted (``declared_branch_count``) and refused unapplied
+    rather than handed to a builder that cannot express it.
 
     Unrecognised keys are silently dropped (typically text-encoder LoRA keys
     when only the DiT side is targeted).
     """
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw_state_dict.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        module_path, suffix = parsed
-        grouped.setdefault(module_path, {})[suffix] = tensor
-    # Drop entries missing the required down/up pair
-    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+    grouped = group_adapter_tensors(raw_state_dict, _anima_stem).groups
+    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
 
 
 def unmatched_source_keys(

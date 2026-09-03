@@ -23,6 +23,9 @@ import torch
 from torch import nn
 from safetensors import safe_open
 
+from core.adapters.groups import (TensorGroup, declared_groups,
+                                  group_adapter_tensors, split_adapter_suffix)
+
 
 # Every scope the trainer can be configured to save, so a file trained with a
 # non-default scope (ff / audio / av_cross) round-trips too.
@@ -36,13 +39,6 @@ FULL_SCOPE: Dict[str, bool] = {
 _SDSCRIPTS_PREFIX = "lora_unet_"
 # Prefixes third-party exports put in front of a DOTTED DiT module path.
 _DOTTED_PREFIXES = ("diffusion_model.", "transformer.")
-_SUFFIXES = (
-    (".lora_down.weight", "down"),
-    (".lora_up.weight", "up"),
-    (".lora_A.weight", "down"),
-    (".lora_B.weight", "up"),
-    (".alpha", "alpha"),
-)
 
 
 def flatten_module_path(module_path: str) -> str:
@@ -50,36 +46,42 @@ def flatten_module_path(module_path: str) -> str:
     return module_path.replace(".", "_")
 
 
+def _ltx2_stem(raw_stem: str) -> Optional[str]:
+    """Suffix-stripped key -> the flattened stem, or None for a foreign key."""
+    if raw_stem.startswith(_SDSCRIPTS_PREFIX):
+        return raw_stem[len(_SDSCRIPTS_PREFIX):]
+    for prefix in _DOTTED_PREFIXES:
+        if raw_stem.startswith(prefix):
+            raw_stem = raw_stem[len(prefix):]
+            break
+    # A dotted stem is a module path; a bare one names no LTX-2.3 target.
+    return flatten_module_path(raw_stem) if "." in raw_stem else None
+
+
 def _parse_key(key: str) -> Optional[Tuple[str, str]]:
-    """``(flattened stem, "down"|"up"|"alpha")`` for a recognised key, else None."""
-    for suffix, tag in _SUFFIXES:
-        if not key.endswith(suffix):
-            continue
-        stem = key[: -len(suffix)]
-        if stem.startswith(_SDSCRIPTS_PREFIX):
-            return stem[len(_SDSCRIPTS_PREFIX):], tag
-        for prefix in _DOTTED_PREFIXES:
-            if stem.startswith(prefix):
-                stem = stem[len(prefix):]
-                break
-        if "." in stem:
-            return flatten_module_path(stem), tag
+    """``(flattened stem, canonical tensor name)`` for a recognised key, else None."""
+    split = split_adapter_suffix(key)
+    if split is None:
         return None
-    return None
+    stem = _ltx2_stem(split[0])
+    return None if stem is None else (stem, split[1])
+
+
+def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
+    """Branches this file declares to LTX-2.3; see ``declared_groups``."""
+    return len(declared_groups(raw, _ltx2_stem))
 
 
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
-) -> Dict[str, Dict[str, torch.Tensor]]:
-    """Group raw tensors by flattened module stem, keeping complete pairs only."""
-    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key, tensor in raw.items():
-        parsed = _parse_key(key)
-        if parsed is None:
-            continue
-        stem, tag = parsed
-        grouped.setdefault(stem, {})[tag] = tensor
-    return {stem: v for stem, v in grouped.items() if "down" in v and "up" in v}
+) -> Dict[str, TensorGroup]:
+    """Group raw tensors by flattened module stem, keeping complete pairs only.
+
+    ``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
+    is what the branch builder reads.
+    """
+    grouped = group_adapter_tensors(raw, _ltx2_stem).groups
+    return {stem: g for stem, g in grouped.items() if "down" in g and "up" in g}
 
 
 def detect_lora_format(raw: Dict[str, torch.Tensor]) -> str:

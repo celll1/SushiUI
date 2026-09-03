@@ -567,18 +567,18 @@ class MiniT2IMixin:
 
     @staticmethod
     def _minit2i_declared_pairs(tensors, components) -> int:
-        """Down/up pairs THIS PASS could have applied.
+        """Factor groups THIS PASS could have applied.
 
         ``lora_partial`` compares applied against declared; a pass that can only
-        reach one component must not be told the other component's pairs were
+        reach one component must not be told the other component's groups were
         declared to it, or every mixed file would warn.
         """
         from core.models.minit2i.minit2i_lora import (
-            TE_NAMESPACE, normalise_lora_state_dict,
+            TE_NAMESPACE, declared_group_stems,
         )
 
         want_te = "text_encoder" in components
-        return sum(1 for key in normalise_lora_state_dict(tensors)
+        return sum(1 for key in declared_group_stems(tensors)
                    if key.startswith(TE_NAMESPACE) is want_te)
 
     @property
@@ -595,6 +595,7 @@ class MiniT2IMixin:
             session = AdapterSession(
                 resolve_path=self._minit2i_resolve_lora_path,
                 warn=self._minit2i_lora_warn,
+                architecture="minit2i",
                 label="MiniT2I LoRA",
                 count_declared_branches=self._minit2i_declared_pairs,
                 missing_file=self._minit2i_missing_lora,

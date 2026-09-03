@@ -1,11 +1,12 @@
 """Tensor grouping: checkpoint keys -> one stem's factor set -> a branch.
 
-The eleven component-loader architectures each hand-write this: parse a key
+The eleven component-loader architectures each hand-wrote this: parse a key
 into ``(module_path, suffix)``, bucket by module path, drop anything that is
 not a complete ``down``/``up`` pair, then build a ``LoRALinearLayer``. Four of
-them spell the drop identically (``if "down" in v and "up" in v``). This module
-is the one implementation they migrate onto, extended to the LyCORIS factor
-sets. NOTHING IMPORTS IT YET -- see the design doc's phase 2.
+them spelled the drop identically (``if "down" in v and "up" in v``). This
+module is the one implementation they now share, extended to the LyCORIS factor
+sets. Their branch BUILDERS still read ``weights["down"]`` -- see the aliases
+below and the design doc's phase 2.
 
 ``TensorGroup`` answers to the legacy ``"down"``/``"up"``/``"alpha"`` spellings
 as well as the canonical ones, so that migration can be additive rather than
@@ -36,6 +37,7 @@ __all__ = [
     "GroupingResult",
     "TensorGroup",
     "build_adapter_branch",
+    "declared_groups",
     "group_adapter_tensors",
     "split_adapter_suffix",
     "split_group_on_out_rows",
@@ -259,6 +261,30 @@ def group_adapter_tensors(
         target = partial if group.missing() else groups
         target[stem] = group
     return GroupingResult(groups, partial, tuple(unmatched))
+
+
+def declared_groups(
+    tensors: Mapping[str, torch.Tensor],
+    stem_of: Optional[Callable[[str], Optional[str]]] = None,
+) -> Dict[str, TensorGroup]:
+    """What a file DECLARES: the complete groups plus the incomplete ones whose
+    algebra is recognised.
+
+    The partial term is what keeps a truncated checkpoint refusable. A stem with
+    a ``lora_down`` and no ``lora_up`` is a target the file meant to carry and no
+    loader can apply, so counting it is what makes ``_account``'s
+    ``applied < declared_branches`` fire instead of the file quietly applying
+    with one target missing. An alpha-only stem names no algebra and is not
+    counted, or every ``.alpha`` a parser dropped would over-declare.
+
+    ``stem_of`` matters more here than for applying: without it a FOREIGN half
+    key counts as a declared branch of this architecture.
+    """
+    result = group_adapter_tensors(tensors, stem_of)
+    out = dict(result.groups)
+    out.update({stem: group for stem, group in result.partial.items()
+                if group.algorithm != ALGORITHM_UNKNOWN})
+    return out
 
 
 def split_group_on_out_rows(

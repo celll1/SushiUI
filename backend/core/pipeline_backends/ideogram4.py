@@ -135,6 +135,7 @@ class Ideogram4Mixin:
             session = AdapterSession(
                 resolve_path=self._ideogram4_resolve_lora_path,
                 warn=self._ideogram4_lora_warn,
+                architecture="ideogram4",
                 label="Ideogram 4 LoRA",
                 count_declared_branches=self._ideogram4_declared_branches,
                 missing_file=self._ideogram4_missing_lora,

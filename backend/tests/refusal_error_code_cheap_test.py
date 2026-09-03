@@ -219,6 +219,51 @@ def test_zimage_adapter_session_refusal_carries_its_class_code():
     assert body["code"] == "lora_not_found"
 
 
+def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
+    """The adapter capability gate (``core/adapters/capability.py``) refuses an
+    algebra the architecture has not enabled, during parse.
+
+    Two properties, and the second is why the message is asserted and not just
+    the code: ``AdapterSpec.validate``'s malformed-file arms answer the SAME
+    400 ``lora_incompatible``, so only the text distinguishes "LoKr is not
+    implemented yet" from "your file is broken". A full/full LoKr has no rank
+    by construction and carries upstream's ``lora_dim`` alpha, which read as
+    "an alpha with no rank" and blamed the user for a valid file."""
+    stem = "lora_unet_layers_0_attn_to_q"
+    alpha = {f"{stem}.alpha": torch.tensor(2.0)}
+    cases = {
+        "loha": ({f"{stem}.hada_w1_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w1_b": torch.zeros(2, D),
+                  f"{stem}.hada_w2_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w2_b": torch.zeros(2, D), **alpha},
+                 "loha adapters are not enabled"),
+        # No rank to sniff: lokr_w1/lokr_w2 are the operands themselves.
+        "lokr_full": ({f"{stem}.lokr_w1": torch.zeros(2, 2),
+                       f"{stem}.lokr_w2": torch.zeros(D // 2, D // 2), **alpha},
+                      "lokr adapters are not enabled"),
+        "lokr_factored": ({f"{stem}.lokr_w1": torch.zeros(2, 2),
+                           f"{stem}.lokr_w2_a": torch.zeros(D // 2, 2),
+                           f"{stem}.lokr_w2_b": torch.zeros(2, D // 2), **alpha},
+                          "lokr adapters are not enabled"),
+        "dora": ({f"{stem}.lora_down.weight": torch.zeros(2, D),
+                  f"{stem}.lora_up.weight": torch.zeros(D, 2),
+                  f"{stem}.dora_scale": torch.ones(D), **alpha},
+                 "dora adapters are not enabled"),
+    }
+    for label, (tensors, expected) in cases.items():
+        path = tmp_path / f"{label}.safetensors"
+        save_file(tensors, str(path))
+        response = _post(
+            lambda p=path: _zimage_backend()._load_lora_zimage([{"path": str(p)}]))
+        body = _assert_well_formed(response, 400)
+        assert body["code"] == "lora_incompatible", label
+        assert _codes(body) == ["lora_incompatible"], label
+        message = body["warnings"][0]["message"]
+        assert expected in message, (label, message)
+        for malformed in ("scale is undefined", "is unusable", "not a known"):
+            assert malformed not in message, (label, message)
+
+
 def test_minit2i_unreadable_file_carries_lora_load_failed(tmp_path):
     broken = tmp_path / "broken.safetensors"
     broken.write_bytes(b"not a safetensors file")

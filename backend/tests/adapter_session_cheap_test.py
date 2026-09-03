@@ -13,7 +13,9 @@ responsible for, over a three-Linear stub that belongs to no architecture:
    model's Linears into the new tree;
 4. every refusal is taken BEFORE the model is mutated, and carries its warning
    code as data as well as through the callback;
-5. the five decisions an ARCHITECTURE owns are hooks and really reach the
+5. an adapter algebra the architecture has not enabled (LoHa/LoKr/DoRA) is
+   refused at PARSE time, before a single target is even walked;
+6. the five decisions an ARCHITECTURE owns are hooks and really reach the
    session: how a missing file is refused (or skipped), what one file's keys
    mean, how many branches it declares to THIS pass, what a zero-target file
    means, and which of its two names a message uses.
@@ -487,6 +489,166 @@ def test_the_refusal_carries_its_code_with_no_warning_channel_at_all(tmp_path):
         session.load([{"path": str(tmp_path / "absent.safetensors")}],
                      [component(_Stub())])
     assert excinfo.value.code == "lora_not_found"
+
+
+# -- 5. the capability gate (core/adapters/capability.py) ---------------------
+
+def write_loha(tmp_path, name="loha.safetensors", targets=TARGETS):
+    """A LyCORIS LoHa file. ``hada_w1_a`` alone is what the codec detects on."""
+    generator = torch.Generator().manual_seed(3)
+    tensors = {}
+    for target in targets:
+        tensors[f"{target}.hada_w1_a"] = torch.randn(WIDTH, RANK, generator=generator)
+        tensors[f"{target}.hada_w1_b"] = torch.randn(RANK, WIDTH, generator=generator)
+        tensors[f"{target}.hada_w2_a"] = torch.randn(WIDTH, RANK, generator=generator)
+        tensors[f"{target}.hada_w2_b"] = torch.randn(RANK, WIDTH, generator=generator)
+    path = tmp_path / name
+    save_file(tensors, str(path), metadata={"lora_alpha": str(ALPHA)})
+    return str(path)
+
+
+def _watched_component(model, visited):
+    def build(request):
+        visited.append(request.module_path)
+        return build_branch(request)
+
+    return component(model, build_branch=build)
+
+
+def test_a_loha_file_is_refused_before_any_target_is_walked(tmp_path, warned):
+    """The whole point of the gate: the refusal arrives during ``_parse``, so
+    no target was walked, no branch built and no slot touched.
+
+    REVERT THAT PROVES THIS BITES: drop the ``_refuse_unsupported_algebra``
+    call from ``_parse``. The file then reaches the architecture's builder and
+    is refused one level along as a zero-target file -- same code, but only
+    after the tree has been walked, and on architectures whose builder happens
+    to accept a ``hada_*`` group it would not be refused at all."""
+    model = _Stub()
+    before = slots(model)
+    visited = []
+
+    session = make_session(warned, architecture="zimage")
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session.load([{"path": write_loha(tmp_path), "strength": STRENGTH}],
+                     [_watched_component(model, visited)])
+
+    assert excinfo.value.code == "lora_incompatible"
+    assert [code for code, _m in warned] == ["lora_incompatible"]
+    assert "loha" in warned[0][1] and "zimage" in warned[0][1]
+    assert visited == [], "a target was walked before the refusal"
+    assert slots(model) == before
+    assert not composites(model)
+    state = session.state("transformer")
+    assert not state.wrapped and not state.originals and not state.owned
+
+
+def test_a_dora_file_is_refused_on_the_decomposition_axis(tmp_path, warned):
+    """DoRA is ordinary LoRA plus ``dora_scale``: the same tensors the gate
+    lets through become a refusal on the second axis alone."""
+    model = _Stub()
+    before = slots(model)
+    from safetensors.torch import load_file
+
+    tensors = load_file(write_lora(tmp_path))
+    for target in TARGETS:
+        tensors[f"{target}.dora_scale"] = torch.ones(WIDTH)
+    path = tmp_path / "dora.safetensors"
+    save_file(tensors, str(path), metadata={"lora_alpha": str(ALPHA)})
+
+    session = make_session(warned, architecture="zimage")
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session.load([{"path": str(path)}], [component(model)])
+
+    assert excinfo.value.code == "lora_incompatible"
+    assert "dora" in warned[0][1]
+    assert slots(model) == before
+
+
+def test_both_lokr_forms_name_the_capability_reason_not_a_malformed_file(tmp_path,
+                                                                        warned):
+    """``validate()`` runs before the capability check, and its malformed-file
+    arms answer the SAME code, so only the TEXT tells the user which it is.
+
+    A full/full LoKr has no rank by construction and carries upstream's
+    ``lora_dim`` alpha; reading that pair as "an alpha with no rank" blamed the
+    user for a valid file. The factored form's rank is on ``lokr_w2_a``, which
+    the codec's sniff did not read at all."""
+    forms = {
+        "full": {"a.lokr_w1": torch.randn(2, 2),
+                 "a.lokr_w2": torch.randn(WIDTH // 2, WIDTH // 2)},
+        "factored": {"a.lokr_w1": torch.randn(2, 2),
+                     "a.lokr_w2_a": torch.randn(WIDTH // 2, RANK),
+                     "a.lokr_w2_b": torch.randn(RANK, WIDTH // 2)},
+    }
+    for label, tensors in forms.items():
+        model = _Stub()
+        before = slots(model)
+        path = tmp_path / f"lokr_{label}.safetensors"
+        save_file({**tensors, "a.alpha": torch.tensor(ALPHA)}, str(path))
+
+        del warned[:]
+        session = make_session(warned, architecture="zimage")
+        with pytest.raises(AdapterIncompatible) as excinfo:
+            session.load([{"path": str(path)}], [component(model)])
+
+        assert excinfo.value.code == "lora_incompatible", label
+        assert "lokr adapters are not enabled" in excinfo.value.message, label
+        for malformed in ("scale is undefined", "is unusable", "not a known"):
+            assert malformed not in excinfo.value.message, (label, malformed)
+        assert slots(model) == before and not composites(model), label
+
+
+def test_a_session_with_no_declared_architecture_enables_nothing(tmp_path, warned):
+    """``architecture=None`` must not read as "anything goes"."""
+    model = _Stub()
+    session = make_session(warned)
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session.load([{"path": write_loha(tmp_path)}], [component(model)])
+    assert excinfo.value.code == "lora_incompatible"
+    assert not composites(model)
+
+
+def test_ordinary_lora_is_not_validated_by_the_gate(tmp_path, warned):
+    """DELIBERATE CARVE-OUT. ``AdapterSpec.validate`` refuses an architecture
+    string it does not know, among other things; running it over ordinary LoRA
+    today would refuse working files, so the gate skips that pair entirely."""
+    model = _Stub()
+    generator = torch.Generator().manual_seed(11)
+    tensors = {}
+    for target in TARGETS:
+        tensors[f"{target}.lora_down.weight"] = torch.randn(RANK, WIDTH, generator=generator)
+        tensors[f"{target}.lora_up.weight"] = torch.randn(WIDTH, RANK, generator=generator)
+    path = tmp_path / "foreign_metadata.safetensors"
+    save_file(tensors, str(path),
+              metadata={"model_type": "not_an_architecture_at_all",
+                        "lora_alpha": str(ALPHA)})
+
+    session = make_session(warned, architecture="zimage")
+    result = session.load([{"path": str(path), "strength": STRENGTH}],
+                          [component(model)])
+
+    assert result.applied == 3
+    assert not warned
+    assert composites(model) == set(TARGETS)
+
+
+def test_an_unrecognized_algebra_is_left_to_the_architecture(tmp_path, warned):
+    """The other carve-out: ``unknown`` is a detection FAILURE, not a family.
+    A `lora_bias=True` PEFT export sniffs as unknown, so gating on it would
+    refuse valid files -- the architecture's own zero-target verdict stands."""
+    model = _Stub()
+    visited = []
+    path = tmp_path / "unreadable_algebra.safetensors"
+    save_file({f"{t}.mystery_factor": torch.randn(WIDTH, RANK) for t in TARGETS},
+              str(path))
+
+    session = make_session(warned, architecture="zimage")
+    with pytest.raises(AdapterIncompatible):
+        session.load([{"path": str(path)}], [_watched_component(model, visited)])
+
+    assert visited == list(TARGETS), "the walk never happened: the gate fired"
+    assert not composites(model)
 
 
 # -- per-component accounting (the shape FLUX.2 needs) ------------------------

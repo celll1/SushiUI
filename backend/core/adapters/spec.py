@@ -194,7 +194,11 @@ class AdapterSpec:
             algorithm=spec.algorithm,
             weight_decompose=bool(spec.weight_decompose),
             rank=spec.rank,
-            alpha=spec.alpha,
+            # Same rule as ``TensorGroup.to_spec``: a full/full LoKr has no rank
+            # and its stored alpha is upstream's ``lora_dim`` override, so
+            # carrying it would make ``validate()`` call a legitimate file
+            # malformed instead of naming the real reason it is refused.
+            alpha=None if spec.rank is None else spec.alpha,
             architecture=architecture or metadata.get(METADATA_ARCHITECTURE) or None,
             components=components or _scope_from_metadata(metadata),
             format=spec.format,

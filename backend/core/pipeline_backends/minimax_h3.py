@@ -648,6 +648,7 @@ class MiniMaxH3Mixin:
             session = AdapterSession(
                 resolve_path=self._minimax_h3_resolve_lora_path,
                 warn=self._minimax_h3_lora_warn,
+                architecture="minimax_h3",
                 label="MiniMax-H3 LoRA",
                 message_label="MiniMax-H3 LoRA",
                 count_declared_branches=self._minimax_h3_count_declared_branches,
@@ -690,9 +691,9 @@ class MiniMaxH3Mixin:
 
     @classmethod
     def _minimax_h3_count_declared_branches(cls, tensors, _components) -> int:
-        from core.models.minimax_h3.minimax_h3_lora import normalise_lora_state_dict
+        from core.models.minimax_h3.minimax_h3_lora import count_declared_branches
         try:
-            return len(normalise_lora_state_dict(tensors))
+            return count_declared_branches(tensors)
         except Exception:
             return 0
 

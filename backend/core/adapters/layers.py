@@ -1,25 +1,88 @@
 """Adapter leaf layers: the wrappers that carry the trainable branch.
 
-Two algebras live here already, and the eventual ``AdapterLayer`` protocol has
-to accommodate both: the stock layer relies on an ambient ``torch.autocast`` to
-reconcile its fp32 masters with a bf16 activation, the MiniMax-H3 subclass
-casts per call because that architecture's forward runs without autocast. Both
-are usable as branches of ``CompositeAdapterLayer``, which is what lets two
-adapters share one base module.
+Several algebras live here, and the eventual ``AdapterLayer`` protocol has to
+accommodate all of them: the stock LoRA layer relies on an ambient
+``torch.autocast`` to reconcile its fp32 masters with a bf16 activation, the
+MiniMax-H3 subclass casts per call because that architecture's forward runs
+without autocast. All are usable as branches of ``CompositeAdapterLayer``,
+which is what lets two adapters share one base module. The LoHa/LoKr/DoRA
+LOAD conventions -- tensor set, scale, magnitude axis, factorization -- follow
+LyCORIS 4.0.0 at 03270a3839102e63b48578c80e7c024036de74d7. The INITIALISATIONS
+deliberately do not: upstream zeroes ``lokr_w2_b`` where this zeroes
+``lokr_w2_a``, and inits LoHa with ``normal_`` rather than kaiming. Equivalent
+as a "starts as a no-op", different training dynamics.
 
 Moved verbatim from ``core.training.adapters.{sd15,minimax_h3}_adapter``;
 those modules now import these classes from here like everyone else.
 """
 
 import math
-from typing import Dict, Iterator, List, Mapping, Optional, Set, Tuple, Union
+from typing import (Dict, FrozenSet, Iterable, Iterator, List, Mapping,
+                    Optional, Set, Tuple, Union)
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LoRALinearLayer(nn.Module):
+#: Tucker-decomposed factors. They exist only for a target with kernel dims
+#: (upstream ``weight_gen``: ``if k and tucker``), so a Linear branch cannot
+#: honour them; their presence also transposes ``hada_w1_a``. Refused, never
+#: dropped -- dropping them changes the algebra silently.
+TUCKER_TENSOR_NAMES: FrozenSet[str] = frozenset({"hada_t1", "hada_t2", "lokr_t2"})
+
+
+def refuse_tucker_tensors(names: Iterable[str], where: str = "") -> None:
+    present = sorted(TUCKER_TENSOR_NAMES.intersection(names))
+    if present:
+        raise ValueError(
+            f"{where or 'adapter branch'}: Tucker tensors {present} require a "
+            f"target with kernel dimensions; a Linear branch cannot honour them")
+
+
+class _BranchTensorProtocol:
+    """save / resume / optimise, all derived from ``branch_tensors()`` alone.
+
+    ``branch_tensors`` is the single extension point: an algebra with a
+    different tensor set overrides that one and inherits the four below.
+    """
+
+    def branch_tensors(self) -> Dict[str, torch.Tensor]:
+        raise NotImplementedError
+
+    def tensor_names(self) -> Tuple[str, ...]:
+        """The names ``export_tensors`` produces and ``load_tensors`` consumes."""
+        return tuple(self.branch_tensors())
+
+    def trainable_parameters(self) -> Iterator[nn.Parameter]:
+        """The branch's own parameters. The wrapped base is frozen and excluded."""
+        seen = set()
+        for tensor in self.branch_tensors().values():
+            if isinstance(tensor, nn.Parameter) and id(tensor) not in seen:
+                seen.add(id(tensor))
+                yield tensor
+
+    def export_tensors(self) -> Dict[str, torch.Tensor]:
+        """Detached CPU copies of the LIVE tensor set.
+
+        Not yet a LyCORIS-compatible file: a `scalar` still needs folding into
+        `w1`/`hada_w1_a` and its key dropping. See ``LoHaLinearLayer.branch_tensors``.
+        """
+        return {name: weight.detach().cpu()
+                for name, weight in self.branch_tensors().items()}
+
+    def load_tensors(self, tensors: Mapping[str, torch.Tensor]) -> None:
+        """Copy a stem-relative slice back in place. Names absent from the
+        slice are left alone, which is the tolerance training resume has always
+        had for a checkpoint that carries only some of a branch's tensors."""
+        refuse_tucker_tensors(tensors, type(self).__name__)
+        for name, weight in self.branch_tensors().items():
+            value = tensors.get(name)
+            if value is not None:
+                weight.data.copy_(value)
+
+
+class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
     """
     LoRA layer for Linear modules.
 
@@ -109,12 +172,6 @@ class LoRALinearLayer(nn.Module):
         installed branch is not a rebuild."""
         self.scale = self.alpha / self.rank * strength
 
-    # -- tensor protocol ---------------------------------------------------
-    # The four methods below are what let a caller save, resume and optimise a
-    # branch without naming ``lora_down``/``lora_up``. ``branch_tensors`` is the
-    # single extension point: an algebra with a different tensor set overrides
-    # that one and inherits the rest.
-
     def branch_tensors(self) -> Dict[str, torch.Tensor]:
         """Stem-relative name -> the LIVE weight, in checkpoint order.
 
@@ -126,32 +183,6 @@ class LoRALinearLayer(nn.Module):
             "lora_down.weight": self.lora_down.weight,
             "lora_up.weight": self.lora_up.weight,
         }
-
-    def tensor_names(self) -> Tuple[str, ...]:
-        """The names ``export_tensors`` produces and ``load_tensors`` consumes."""
-        return tuple(self.branch_tensors())
-
-    def trainable_parameters(self) -> Iterator[nn.Parameter]:
-        """The branch's own parameters. The wrapped base is frozen and excluded."""
-        seen = set()
-        for tensor in self.branch_tensors().values():
-            if isinstance(tensor, nn.Parameter) and id(tensor) not in seen:
-                seen.add(id(tensor))
-                yield tensor
-
-    def export_tensors(self) -> Dict[str, torch.Tensor]:
-        """Detached CPU copies, ready to hand to ``save_file``."""
-        return {name: weight.detach().cpu()
-                for name, weight in self.branch_tensors().items()}
-
-    def load_tensors(self, tensors: Mapping[str, torch.Tensor]) -> None:
-        """Copy a stem-relative slice back in place. Names absent from the
-        slice are left alone, which is the tolerance training resume has always
-        had for a checkpoint that carries only some of a branch's tensors."""
-        for name, weight in self.branch_tensors().items():
-            value = tensors.get(name)
-            if value is not None:
-                weight.data.copy_(value)
 
 
 class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
@@ -185,8 +216,19 @@ class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
         return up * self.scale
 
 
-class LoHaLinearLayer(nn.Module):
-    """LoHa (Low-rank Hadamard Product) layer for Linear modules."""
+class LoHaLinearLayer(_BranchTensorProtocol, nn.Module):
+    """LoHa (Low-rank Hadamard Product) layer for Linear modules.
+
+    ``use_scalar`` is upstream's trained ``scalar``: a parameter starting at
+    0.0, folded in BEFORE the request strength, which REPLACES the
+    zero-initialised ``hada_w2_a`` as the "starts as a no-op" mechanism.
+
+    It is a TRAINING-side tensor only. Upstream's ``custom_state_dict`` folds it
+    into the saved ``hada_w1_a`` and emits no ``scalar`` key, and
+    ``load_weight_hook`` forces ``scalar := 1`` after any load -- so no file
+    carries one, and reading a file without it (``scalar is None``) is right.
+    See ``branch_tensors`` for what that costs an exporter.
+    """
 
     def __init__(
         self,
@@ -195,6 +237,7 @@ class LoHaLinearLayer(nn.Module):
         alpha: float,
         lora_name: str,
         lora_dtype: torch.dtype = torch.float32,
+        use_scalar: bool = False,
     ):
         super().__init__()
         self.original_module = original_module
@@ -216,8 +259,13 @@ class LoHaLinearLayer(nn.Module):
 
         nn.init.kaiming_uniform_(self.hada_w1_a, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.hada_w1_b, a=math.sqrt(5))
-        nn.init.zeros_(self.hada_w2_a)
         nn.init.kaiming_uniform_(self.hada_w2_b, a=math.sqrt(5))
+        if use_scalar:
+            nn.init.kaiming_uniform_(self.hada_w2_a, a=math.sqrt(5))
+            self.scalar = nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
+        else:
+            nn.init.zeros_(self.hada_w2_a)
+            self.scalar = None
 
     @property
     def weight(self):
@@ -233,7 +281,10 @@ class LoHaLinearLayer(nn.Module):
     def compute_delta_weight(self) -> torch.Tensor:
         w1 = self.hada_w1_a @ self.hada_w1_b
         w2 = self.hada_w2_a @ self.hada_w2_b
-        return (w1 * w2) * (self.scale * self.strength)
+        delta = (w1 * w2) * self.scale
+        if self.scalar is not None:
+            delta = delta * self.scalar
+        return delta * self.strength
 
     def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
         delta_w = self.compute_delta_weight().to(x.dtype)
@@ -243,17 +294,66 @@ class LoHaLinearLayer(nn.Module):
         return self.original_module(x) + self.forward_delta(x)
 
     def branch_tensors(self) -> Dict[str, torch.Tensor]:
-        return {
+        """LIVE tensors, for the optimizer and for resume.
+
+        NOT a serializer contract: ``scalar`` must be FOLDED into
+        ``hada_w1_a`` and its key dropped on export, because upstream's reader
+        forces ``scalar := 1``. Emitting it bare leaves the adapter
+        ``1/scalar`` too strong for every other reader.
+        """
+        tensors: Dict[str, torch.Tensor] = {
             "hada_w1_a": self.hada_w1_a,
             "hada_w1_b": self.hada_w1_b,
             "hada_w2_a": self.hada_w2_a,
             "hada_w2_b": self.hada_w2_b,
-            "alpha": torch.tensor(self.alpha, dtype=torch.float32),
         }
+        if self.scalar is not None:
+            tensors["scalar"] = self.scalar
+        tensors["alpha"] = torch.tensor(self.alpha, dtype=torch.float32)
+        return tensors
 
 
-class LoKrLinearLayer(nn.Module):
-    """LoKr (Low-rank Kronecker Product) layer for Linear modules."""
+def factorization(dimension: int, factor: int = -1) -> Tuple[int, int]:
+    """Upstream LyCORIS ``functional/general.py.factorization``: the most
+    balanced divisor pair ``(m, n)`` with ``m <= n``, with the divisor search
+    capped at ``factor``.
+
+    ``factor=-1`` agrees with the balanced ``isqrt`` search it replaces on every
+    dimension tested (2..20000), so adopting upstream's algorithm moves no
+    existing LoKr. Upstream's own docstring table is stale: the CODE gives
+    360 -> (18, 20), not the (8, 45) it documents.
+
+    A LOADER MUST NOT CALL THIS. ``factor`` is not stored in the checkpoint, so
+    a file's ``(m1, n1)`` comes from the ``lokr_w1`` shape (or
+    ``w1_a.shape[0]`` / ``w1_b.shape[1]``) with ``m2 = out/m1``, ``n2 = in/n1``.
+    That derivation also absorbs upstream's ``unbalanced_factorization``, which
+    swaps ``out_l``/``out_k`` and which no tensor records.
+    """
+    if factor > 0 and (dimension % factor) == 0:
+        m, n = factor, dimension // factor
+        return (m, n) if m <= n else (n, m)
+    if factor < 0:
+        factor = dimension
+    m, n = 1, dimension
+    length = m + n
+    while m < n:
+        new_m = m + 1
+        while dimension % new_m != 0:
+            new_m += 1
+        new_n = dimension // new_m
+        if new_m + new_n > length or new_m > factor:
+            break
+        m, n = new_m, new_n
+    return (m, n) if m <= n else (n, m)
+
+
+class LoKrLinearLayer(_BranchTensorProtocol, nn.Module):
+    """LoKr (Low-rank Kronecker Product) layer for Linear modules.
+
+    Either operand may be stored full or low-rank: ``rank == 0`` keeps ``w2``
+    full, ``decompose_both`` factors ``w1``. ``use_scalar`` is the same trained
+    scalar as ``LoHaLinearLayer``.
+    """
 
     def __init__(
         self,
@@ -263,46 +363,77 @@ class LoKrLinearLayer(nn.Module):
         lora_name: str,
         lora_dtype: torch.dtype = torch.float32,
         factor: int = -1,
+        decompose_both: bool = False,
+        use_scalar: bool = False,
     ):
         super().__init__()
         self.original_module = original_module
         self.rank = rank
         self.alpha = alpha
-        self.scale = alpha / rank if rank > 0 else alpha
         self.lora_name = lora_name
         self.lora_dtype = lora_dtype
         self.strength = 1.0
+        self.decompose_both = bool(decompose_both)
+
+        if decompose_both and rank <= 0:
+            raise ValueError("decompose_both stores w1 low-rank, so it needs rank > 0")
 
         out_features = original_module.out_features
         in_features = original_module.in_features
         device = original_module.weight.device
 
-        def get_factors(n: int) -> Tuple[int, int]:
-            for i in range(int(math.isqrt(n)), 0, -1):
-                if n % i == 0:
-                    return i, n // i
-            return 1, n
+        # ``factor`` applies to BOTH dimensions, as upstream does.
+        out_l, out_k = factorization(out_features, factor)
+        in_m, in_n = factorization(in_features, factor)
+        self.factors = ((out_l, out_k), (in_m, in_n))
 
-        if factor > 0 and out_features % factor == 0:
-            m1 = factor
-            m2 = out_features // factor
+        if decompose_both:
+            self.lokr_w1_a = nn.Parameter(torch.empty((out_l, rank), device=device, dtype=lora_dtype))
+            self.lokr_w1_b = nn.Parameter(torch.empty((rank, in_m), device=device, dtype=lora_dtype))
+            nn.init.kaiming_uniform_(self.lokr_w1_a, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.lokr_w1_b, a=math.sqrt(5))
         else:
-            m1, m2 = get_factors(out_features)
+            self.lokr_w1 = nn.Parameter(torch.empty((out_l, in_m), device=device, dtype=lora_dtype))
+            nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
 
-        n1, n2 = get_factors(in_features)
-        self.factors = ((m1, m2), (n1, n2))
-
-        self.lokr_w1 = nn.Parameter(torch.empty((m1, n1), device=device, dtype=lora_dtype))
         if rank > 0:
-            self.lokr_w2_a = nn.Parameter(torch.empty((m2, rank), device=device, dtype=lora_dtype))
-            self.lokr_w2_b = nn.Parameter(torch.empty((rank, n2), device=device, dtype=lora_dtype))
-            nn.init.zeros_(self.lokr_w2_a)
+            self.lokr_w2_a = nn.Parameter(torch.empty((out_k, rank), device=device, dtype=lora_dtype))
+            self.lokr_w2_b = nn.Parameter(torch.empty((rank, in_n), device=device, dtype=lora_dtype))
             nn.init.kaiming_uniform_(self.lokr_w2_b, a=math.sqrt(5))
+            zeroed = self.lokr_w2_a
         else:
-            self.lokr_w2 = nn.Parameter(torch.empty((m2, n2), device=device, dtype=lora_dtype))
-            nn.init.zeros_(self.lokr_w2)
+            self.lokr_w2 = nn.Parameter(torch.empty((out_k, in_n), device=device, dtype=lora_dtype))
+            zeroed = self.lokr_w2
 
-        nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+        if use_scalar:
+            nn.init.kaiming_uniform_(zeroed, a=math.sqrt(5))
+            self.scalar = nn.Parameter(torch.zeros((), device=device, dtype=lora_dtype))
+        else:
+            nn.init.zeros_(zeroed)
+            self.scalar = None
+
+    @property
+    def scale(self) -> float:
+        """Upstream's ``rank_scale`` (``kernels/autograd/lokr.py``): a FUNCTION
+        OF THE TENSOR SET, not of a constructor argument.
+
+        The divisor is the rank of whichever operand is factored, so the
+        full/full form scales by exactly 1 -- upstream reaches that by
+        overriding ``alpha = lora_dim`` in that branch, which is also what it
+        writes into the file. Reading that stored ``alpha`` as ``alpha/rank``
+        scales the whole adapter by ``lora_dim``.
+
+        w1 is consulted first, as upstream does. No representable checkpoint can
+        tell the two orders apart (one ``lora_dim`` serves both operands), but a
+        future asymmetric writer would, silently.
+        """
+        w1_a = getattr(self, "lokr_w1_a", None)
+        if w1_a is not None:
+            return self.alpha / w1_a.shape[1]
+        w2_a = getattr(self, "lokr_w2_a", None)
+        if w2_a is not None:
+            return self.alpha / w2_a.shape[1]
+        return 1.0
 
     @property
     def weight(self):
@@ -316,12 +447,12 @@ class LoKrLinearLayer(nn.Module):
         self.strength = float(strength)
 
     def compute_delta_weight(self) -> torch.Tensor:
-        if self.rank > 0:
-            w2 = self.lokr_w2_a @ self.lokr_w2_b
-        else:
-            w2 = self.lokr_w2
-        delta_w = torch.kron(self.lokr_w1, w2)
-        return delta_w * (self.scale * self.strength)
+        w1 = self.lokr_w1_a @ self.lokr_w1_b if self.decompose_both else self.lokr_w1
+        w2 = self.lokr_w2_a @ self.lokr_w2_b if self.rank > 0 else self.lokr_w2
+        delta = torch.kron(w1, w2) * self.scale
+        if self.scalar is not None:
+            delta = delta * self.scalar
+        return delta * self.strength
 
     def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
         delta_w = self.compute_delta_weight().to(x.dtype)
@@ -331,16 +462,48 @@ class LoKrLinearLayer(nn.Module):
         return self.original_module(x) + self.forward_delta(x)
 
     def branch_tensors(self) -> Dict[str, torch.Tensor]:
-        tensors = {"lokr_w1": self.lokr_w1, "alpha": torch.tensor(self.alpha, dtype=torch.float32)}
+        """LIVE tensors; see ``LoHaLinearLayer.branch_tensors`` -- an exporter
+        must fold ``scalar`` into ``lokr_w1``/``lokr_w1_a`` and drop the key."""
+        tensors: Dict[str, torch.Tensor] = {}
+        if self.decompose_both:
+            tensors["lokr_w1_a"] = self.lokr_w1_a
+            tensors["lokr_w1_b"] = self.lokr_w1_b
+        else:
+            tensors["lokr_w1"] = self.lokr_w1
         if self.rank > 0:
             tensors["lokr_w2_a"] = self.lokr_w2_a
             tensors["lokr_w2_b"] = self.lokr_w2_b
         else:
             tensors["lokr_w2"] = self.lokr_w2
+        if self.scalar is not None:
+            tensors["scalar"] = self.scalar
+        tensors["alpha"] = torch.tensor(self.alpha, dtype=torch.float32)
         return tensors
 
 
-class DoRALinearLayer(nn.Module):
+def dora_magnitude_axis(dora_scale: torch.Tensor, out_features: int,
+                        in_features: int) -> int:
+    """Which axis of the weight ``dora_scale`` carries one magnitude per.
+
+    The shape is the only record of upstream's ``wd_on_out``: ``True`` (its
+    default) stores ``(out, 1)`` and norms per output row, ``False`` stores
+    ``(1, in)`` and norms per input column. Refused rather than reshaped,
+    because a ``view(-1, 1)`` on a ``(1, in)`` vector raises only when
+    ``in != out`` -- on a square projection, which every attention
+    ``to_q``/``to_k``/``to_v``/``to_out`` is, it silently applies column
+    magnitudes as row magnitudes.
+    """
+    shape = tuple(dora_scale.shape)
+    if shape in ((out_features,), (out_features, 1)):
+        return 1
+    if shape == (1, in_features):
+        return 0
+    raise ValueError(
+        f"dora_scale shape {shape} is neither ({out_features}, 1) nor "
+        f"(1, {in_features}) for a [{out_features}, {in_features}] weight")
+
+
+class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
     """DoRA (Weight-Decomposed Low-Rank Adaptation) wrapper for an adapter branch.
 
     Strength is the interpolation contract ``W_eff(s) = W0 + s * (W_adapter - W0)``
@@ -367,8 +530,11 @@ class DoRALinearLayer(nn.Module):
         dtype = original_module.weight.dtype
 
         if dora_scale is not None:
+            dora_magnitude_axis(dora_scale, original_module.out_features,
+                                original_module.in_features)  # refuse a bad shape here
             self.dora_scale = nn.Parameter(dora_scale.detach().clone().to(device=device, dtype=dtype))
         else:
+            # Upstream's wd_on_out=True default, in its 1-D spelling.
             with torch.no_grad():
                 init_scale = torch.norm(original_module.weight.detach().to(torch.float32), p=2, dim=1)
             self.dora_scale = nn.Parameter(init_scale.to(device=device, dtype=dtype))
@@ -396,9 +562,12 @@ class DoRALinearLayer(nn.Module):
     def compute_delta_weight(self) -> torch.Tensor:
         w0 = self.original_module.weight.to(torch.float32)
         v = w0 + self.branch_delta_weight()
-        v_norm = torch.norm(v, p=2, dim=1, keepdim=True).clamp_min(1e-12)
-        w_adapter = self.dora_scale.view(-1, 1).to(torch.float32) * (v / v_norm)
-        return (w_adapter - w0) * self.strength
+        out_features, in_features = w0.shape
+        axis = dora_magnitude_axis(self.dora_scale, out_features, in_features)
+        v_norm = torch.norm(v, p=2, dim=axis, keepdim=True).clamp_min(1e-12)
+        magnitudes = self.dora_scale.to(torch.float32).reshape(
+            (out_features, 1) if axis == 1 else (1, in_features))
+        return (magnitudes * (v / v_norm) - w0) * self.strength
 
     def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.compute_delta_weight().to(x.dtype))

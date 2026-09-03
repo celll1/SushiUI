@@ -25,10 +25,11 @@ Run with:
 """
 
 import ast
+import math
 import os
 import sys
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _BACKEND = os.path.join(_REPO, "backend")
@@ -43,10 +44,12 @@ from torch import nn  # noqa: E402
 from torch.utils.checkpoint import checkpoint  # noqa: E402
 
 from core.adapters import (  # noqa: E402
+    TUCKER_TENSOR_NAMES,
     DoRALinearLayer,
     LoHaLinearLayer,
     LoKrLinearLayer,
     LoRALinearLayer,
+    factorization,
 )
 from core.adapters.reference import (  # noqa: E402
     adapter_delta_weight,
@@ -56,6 +59,9 @@ from core.adapters.reference import (  # noqa: E402
 #: 10 = 2*5 and 12 = 3*4, so LoKr factors BOTH sides non-trivially; a square or
 #: prime shape would collapse its Kronecker structure and hide an operand swap.
 D_IN, D_OUT = 12, 10
+#: ...which is exactly why the DoRA magnitude axis needs a SQUARE case of its
+#: own: that is where a wrong reshape does not raise.
+SQUARE = (D_IN, D_IN)
 RANK, ALPHA = 4, 8.0          # alpha != rank throughout: the scale must be 2.0
 STRENGTHS = (0.0, 1.0, 0.35, 1.8, -0.6)
 
@@ -74,10 +80,15 @@ TOLERANCE = {
 }
 DTYPES = tuple(TOLERANCE)
 
-#: Randomisation applied to the zero-initialised factor. Sized by the SMALLEST
-#: delta of the six algebras (LoHa's, a Hadamard product of two small factors),
-#: so that even at strength 0.35 the branch clears ``MIN_MOVE``.
+#: Randomisation applied to the factor that starts as a no-op. Sized by the
+#: SMALLEST delta of the eleven rows (LoHa's, a Hadamard product of two small
+#: factors), so that even at strength 0.35 the branch clears ``MIN_MOVE``.
 FACTOR_STD = 2.0
+
+#: Relative perturbation of ``dora_scale`` away from the base's own norms, which
+#: is where the epilogue is an identity. 0.05 left the column-magnitude DoHa row
+#: at 0.095 -- just under ``MIN_MOVE``.
+DORA_JITTER = 0.12
 
 #: Fake-assertion guard: the branch must move the base output by at least this
 #: fraction, so a comparison cannot pass with the branch effectively absent.
@@ -92,13 +103,18 @@ FACTOR_STD = 2.0
 MIN_MOVE = 0.10
 
 
-#: The factors each algebra must export, independent of the layer classes: a
-#: branch that silently stops exporting one has to fail, and a set derived from
-#: what the layer exported could not notice.
+#: The factors each STORED FORM must export, independent of the layer classes:
+#: a branch that silently stops exporting one has to fail, and a set derived
+#: from what the layer exported could not notice.
 FACTORS = {
     "lora": ("lora_down.weight", "lora_up.weight"),
     "loha": ("hada_w1_a", "hada_w1_b", "hada_w2_a", "hada_w2_b"),
+    "loha_scalar": ("hada_w1_a", "hada_w1_b", "hada_w2_a", "hada_w2_b", "scalar"),
     "lokr": ("lokr_w1", "lokr_w2_a", "lokr_w2_b"),
+    "lokr_full": ("lokr_w1", "lokr_w2"),
+    "lokr_both": ("lokr_w1_a", "lokr_w1_b", "lokr_w2_a", "lokr_w2_b"),
+    "lokr_both_scalar": ("lokr_w1_a", "lokr_w1_b", "lokr_w2_a", "lokr_w2_b",
+                         "scalar"),
 }
 
 
@@ -107,11 +123,15 @@ class Algebra:
     name: str
     algorithm: str                # what the oracle dispatches on
     weight_decompose: bool
-    zero_init: Tuple[str, ...]    # factors the layer zero-initialises
+    zero_init: Tuple[str, ...]    # factors that start as a no-op
+    variant: str = ""             # FACTORS key; defaults to ``algorithm``
+    #: Constructor arguments past rank/alpha, as pairs so the row stays hashable.
+    options: Tuple[Tuple[str, Any], ...] = ()
+    rank: Optional[int] = None    # forced rank; the full LoKr form is rank 0
 
     @property
     def parameter_names(self) -> FrozenSet[str]:
-        names = FACTORS[self.algorithm]
+        names = FACTORS[self.variant or self.algorithm]
         if not self.weight_decompose:
             return frozenset(names)
         return frozenset([f"branch.{name}" for name in names] + ["dora_scale"])
@@ -120,6 +140,10 @@ class Algebra:
 #: Table-driven so Phase 3's weight-decomposed pairs are rows, not copies. The
 #: decomposed rows exercise the epilogue only; the capability matrix in
 #: ``core.training.arch.base_arch`` still refuses every one of them.
+#:
+#: The last five rows are forms that exist upstream and that this repo either
+#: mis-scaled or did not model: the full/full LoKr whose scale is 1 rather than
+#: the stored ``alpha``, ``decompose_both``, and the trained ``scalar``.
 ALGEBRAS = (
     Algebra("lora", "lora", False, ("lora_up.weight",)),
     Algebra("loha", "loha", False, ("hada_w2_a",)),
@@ -127,7 +151,17 @@ ALGEBRAS = (
     Algebra("dora", "lora", True, ("lora_up.weight",)),
     Algebra("doha", "loha", True, ("hada_w2_a",)),
     Algebra("dokr", "lokr", True, ("lokr_w2_a",)),
+    Algebra("loha_scalar", "loha", False, ("scalar",), "loha_scalar",
+            (("use_scalar", True),)),
+    Algebra("lokr_full", "lokr", False, ("lokr_w2",), "lokr_full", (), 0),
+    Algebra("lokr_both", "lokr", False, ("lokr_w2_a",), "lokr_both",
+            (("decompose_both", True),)),
+    Algebra("lokr_both_scalar", "lokr", False, ("scalar",), "lokr_both_scalar",
+            (("decompose_both", True), ("use_scalar", True))),
+    Algebra("dokr_full", "lokr", True, ("lokr_w2",), "lokr_full", (), 0),
 )
+BY_NAME = {algebra.name: algebra for algebra in ALGEBRAS}
+DECOMPOSED = [a for a in ALGEBRAS if a.weight_decompose]
 _LAYER_CLASS = {"lora": LoRALinearLayer, "loha": LoHaLinearLayer,
                 "lokr": LoKrLinearLayer}
 
@@ -143,9 +177,33 @@ def _base_linear(dtype: torch.dtype, generator: torch.Generator,
     return base.to(dtype)
 
 
+def _layer(algebra: Algebra, base: nn.Linear, rank: int = RANK,
+           alpha: float = ALPHA, dtype: torch.dtype = torch.float32):
+    return _LAYER_CLASS[algebra.algorithm](
+        base, rank=rank if algebra.rank is None else algebra.rank, alpha=alpha,
+        lora_name="gate", lora_dtype=dtype, **dict(algebra.options))
+
+
+def _dora_scale(base: nn.Linear, axis: str,
+                generator: torch.Generator) -> torch.Tensor:
+    """A PERTURBED magnitude vector in the requested orientation.
+
+    Left at the base's own norms, ``W_adapter == W0`` and the delta is
+    near-zero: the same trap as a zero factor. ``"row"`` is upstream's
+    ``wd_on_out=True`` default, ``"column"`` its ``(1, in)`` alternative.
+    """
+    weight = base.weight.detach().to(torch.float32)
+    if axis == "row":
+        scale = torch.linalg.vector_norm(weight, ord=2, dim=1)
+    else:
+        scale = torch.linalg.vector_norm(weight, ord=2, dim=0, keepdim=True)
+    jitter = 1.0 + DORA_JITTER * torch.randn(scale.shape, generator=generator)
+    return (scale * jitter).to(base.weight.dtype)
+
+
 def _build(algebra: Algebra, dtype: torch.dtype = torch.float32, seed: int = 11,
            rank: int = RANK, alpha: float = ALPHA,
-           shape: Tuple[int, int] = (D_IN, D_OUT)):
+           shape: Tuple[int, int] = (D_IN, D_OUT), dora_axis: str = "row"):
     """A base and an adapter layer whose delta is NOT zero.
 
     Randomising ``algebra.zero_init`` is the whole point: with the shipped
@@ -157,22 +215,21 @@ def _build(algebra: Algebra, dtype: torch.dtype = torch.float32, seed: int = 11,
     # "identical" builds are only identical if this is seeded too.
     torch.manual_seed(seed)
     base = _base_linear(dtype, generator, shape)
-    layer = _LAYER_CLASS[algebra.algorithm](
-        base, rank=rank, alpha=alpha, lora_name="gate", lora_dtype=dtype)
+    layer = _layer(algebra, base, rank, alpha, dtype)
     tensors = layer.branch_tensors()
     with torch.no_grad():
         for name in algebra.zero_init:
             tensor = tensors[name]
-            tensor.copy_((torch.randn(tensor.shape, generator=generator) * FACTOR_STD
-                          ).to(tensor.dtype))
+            drawn = torch.randn(tensor.shape, generator=generator) * FACTOR_STD
+            if tensor.ndim == 0:
+                # A lone scalar can land near zero and make the branch vanish,
+                # failing MIN_MOVE for a reason that is not a defect. The floor
+                # also covers use_scalar leaving the other factors small.
+                drawn = drawn.abs() + FACTOR_STD
+            tensor.copy_(drawn.to(tensor.dtype))
     if algebra.weight_decompose:
-        layer = DoRALinearLayer(base, layer)
-        with torch.no_grad():
-            # dora_scale left at the base's row norms makes W_adapter == W0 and
-            # the delta near-zero: the same trap as the zero factor.
-            layer.dora_scale.mul_(
-                (1.0 + 0.05 * torch.randn(layer.dora_scale.shape, generator=generator)
-                 ).to(layer.dora_scale.dtype))
+        layer = DoRALinearLayer(
+            base, layer, dora_scale=_dora_scale(base, dora_axis, generator))
     return base, layer
 
 
@@ -232,51 +289,60 @@ def _delta_weight(layer: nn.Module) -> torch.Tensor:
     return layer.compute_delta_weight().detach().to(torch.float32)
 
 
+def _assert_matches_oracle(algebra: Algebra, base: nn.Linear, layer: nn.Module,
+                           dtype: torch.dtype, strength: float,
+                           rank: int = RANK, alpha: float = ALPHA) -> None:
+    """Forward, input gradient and EVERY parameter gradient against the oracle."""
+    tolerance = TOLERANCE[dtype]
+    d_in, d_out = base.in_features, base.out_features
+    layer.set_adapter_strength(strength)
+
+    generator = torch.Generator().manual_seed(5)
+    x = (torch.randn(4, d_in, generator=generator) * 0.5).to(dtype).requires_grad_()
+    grad_out = (torch.randn(4, d_out, generator=generator) * 0.5).to(dtype)
+
+    if strength != 0.0:
+        _assert_delta_is_exercised(layer, base, x.detach(),
+                                   f"{algebra.name}/{dtype}/s={strength}")
+    out = layer(x)
+    (out * grad_out).sum().backward()
+
+    parameters = _branch_parameters(layer)
+    # Before the oracle, so a branch that stops exporting a factor fails here
+    # rather than as a KeyError inside it.
+    assert set(parameters) == algebra.parameter_names, \
+        f"{algebra.name}: the branch exports {sorted(parameters)}"
+    oracle_leaves = {name: tensor.detach().to(torch.float32).clone().requires_grad_()
+                     for name, tensor in parameters.items()}
+    base_w = base.weight.detach().to(torch.float32)
+    base_b = base.bias.detach().to(torch.float32)
+    x32 = x.detach().to(torch.float32).clone().requires_grad_()
+
+    delta = _oracle_delta(algebra, oracle_leaves, base_w, strength, rank, alpha)
+    out_ref = F.linear(x32, base_w + delta, base_b)
+    (out_ref * grad_out.to(torch.float32)).sum().backward()
+
+    label = f"{algebra.name} {dtype} s={strength}"
+    assert _relative_error(out, out_ref) <= tolerance, f"{label}: forward"
+    assert _relative_error(x.grad, x32.grad) <= tolerance, f"{label}: input grad"
+    # forward_delta is the CompositeAdapterLayer branch protocol, i.e. what
+    # every generation backend actually calls; LoRA computes it separately from
+    # its own forward, so it needs its own comparison.
+    with torch.no_grad():
+        composed = base(x.detach()) + layer.forward_delta(x.detach())
+    assert _relative_error(composed, out_ref) <= tolerance, f"{label}: forward_delta"
+    for name, parameter in parameters.items():
+        assert parameter.grad is not None, f"{label}: no gradient reached {name}"
+        error = _relative_error(parameter.grad, oracle_leaves[name].grad)
+        assert error <= tolerance, f"{label}: grad {name} off by {error:.3e}"
+
+
 @pytest.mark.parametrize("algebra", ALGEBRAS, ids=lambda a: a.name)
 @pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
 def test_forward_input_grad_and_every_parameter_grad_match_the_oracle(algebra, dtype):
-    tolerance = TOLERANCE[dtype]
     for strength in STRENGTHS:
         base, layer = _build(algebra, dtype)
-        layer.set_adapter_strength(strength)
-
-        generator = torch.Generator().manual_seed(5)
-        x = (torch.randn(4, D_IN, generator=generator) * 0.5).to(dtype).requires_grad_()
-        grad_out = (torch.randn(4, D_OUT, generator=generator) * 0.5).to(dtype)
-
-        if strength != 0.0:
-            _assert_delta_is_exercised(layer, base, x.detach(),
-                                       f"{algebra.name}/{dtype}/s={strength}")
-        out = layer(x)
-        (out * grad_out).sum().backward()
-
-        parameters = _branch_parameters(layer)
-        # Before the oracle, so a branch that stops exporting a factor fails
-        # here rather than as a KeyError inside it.
-        assert set(parameters) == algebra.parameter_names,             f"{algebra.name}: the branch exports {sorted(parameters)}"
-        oracle_leaves = {name: tensor.detach().to(torch.float32).clone().requires_grad_()
-                         for name, tensor in parameters.items()}
-        base_w = base.weight.detach().to(torch.float32)
-        base_b = base.bias.detach().to(torch.float32)
-        x32 = x.detach().to(torch.float32).clone().requires_grad_()
-
-        delta = _oracle_delta(algebra, oracle_leaves, base_w, strength)
-        out_ref = F.linear(x32, base_w + delta, base_b)
-        (out_ref * grad_out.to(torch.float32)).sum().backward()
-
-        label = f"{algebra.name} {dtype} s={strength}"
-        assert _relative_error(out, out_ref) <= tolerance, f"{label}: forward"
-        assert _relative_error(x.grad, x32.grad) <= tolerance, f"{label}: input grad"
-        # forward_delta is the CompositeAdapterLayer branch protocol, i.e. what
-        # every generation backend actually calls; LoRA computes it separately
-        # from its own forward, so it needs its own comparison.
-        with torch.no_grad():
-            composed = base(x.detach()) + layer.forward_delta(x.detach())
-        assert _relative_error(composed, out_ref) <= tolerance, f"{label}: forward_delta"
-        for name, parameter in parameters.items():
-            assert parameter.grad is not None, f"{label}: no gradient reached {name}"
-            error = _relative_error(parameter.grad, oracle_leaves[name].grad)
-            assert error <= tolerance, f"{label}: grad {name} off by {error:.3e}"
+        _assert_matches_oracle(algebra, base, layer, dtype, strength)
 
 
 @pytest.mark.parametrize("algebra", ALGEBRAS, ids=lambda a: a.name)
@@ -422,8 +488,7 @@ def test_the_shipped_initialisation_really_does_hide_a_broken_algebra(algebra):
     """
     generator = torch.Generator().manual_seed(11)
     base = _base_linear(torch.float32, generator)
-    layer = _LAYER_CLASS[algebra.algorithm](
-        base, rank=RANK, alpha=ALPHA, lora_name="fresh")
+    layer = _layer(algebra, base)
     if algebra.weight_decompose:
         layer = DoRALinearLayer(base, layer)
     x = torch.randn(4, D_IN, generator=generator) * 0.5
@@ -454,27 +519,168 @@ def test_oracle_module_does_not_import_training_or_api():
     assert offenders == [], f"reference.py must not import {offenders}"
 
 
-# -- current-behaviour records, NOT endorsements ----------------------------
-# Each documents a convention the parallel upstream-LyCORIS check owns, so that
-# changing one is deliberate and visible in a diff.
+# -- upstream conventions, verified against LyCORIS 4.0.0 -------------------
+# Commit 03270a3839102e63b48578c80e7c024036de74d7. Each of these was WRONG here
+# and shape-compatible, so a third-party checkpoint loaded and denoised at the
+# wrong numbers rather than failing.
 
-def test_lokr_unfactored_form_scales_by_alpha_alone():
-    """rank 0 selects the full ``lokr_w2`` and the scale becomes ``alpha`` --
-    neither ``alpha/rank`` nor 1.0. Convention under review."""
-    generator = torch.Generator().manual_seed(1)
-    base = _base_linear(torch.float32, generator)
-    layer = LoKrLinearLayer(base, rank=0, alpha=8.0, lora_name="full")
-    assert layer.scale == 8.0
-    assert "lokr_w2" in layer.branch_tensors()
+
+@pytest.mark.parametrize("options,rank,expected", [
+    ((), RANK, ALPHA / RANK),                              # w2 factored
+    ((("decompose_both", True),), RANK, ALPHA / RANK),     # both factored
+    ((), 0, 1.0),                                          # both full
+])
+def test_lokr_scale_comes_from_the_tensor_set_not_from_the_stored_alpha(
+        options, rank, expected):
+    """Upstream overrides ``alpha = lora_dim`` when both operands are stored
+    full, so its scale there is exactly 1 -- and it writes that ``lora_dim``
+    into the file's ``alpha``. Reading that back as "no rank, so use alpha
+    bare" scaled the whole adapter by ``lora_dim``: 8x in this fixture.
+    """
+    base = _base_linear(torch.float32, torch.Generator().manual_seed(1))
+    layer = LoKrLinearLayer(base, rank=rank, alpha=ALPHA, lora_name="s",
+                            **dict(options))
+    assert layer.scale == expected
+    assert layer.branch_tensors()["alpha"].item() == ALPHA
+
+
+def test_the_full_lokr_form_ignores_alpha_entirely():
+    """The invariant behind the row above: with no factored operand there is no
+    rank to divide by, so the delta cannot depend on ``alpha`` at all."""
+    deltas = []
+    for alpha in (1.0, ALPHA):
+        base, layer = _build(BY_NAME["lokr_full"], alpha=alpha)
+        _assert_delta_is_exercised(
+            layer, base,
+            torch.randn(4, D_IN, generator=torch.Generator().manual_seed(9)) * 0.5,
+            f"lokr_full/a{alpha}")
+        deltas.append(_delta_weight(layer))
+    assert torch.equal(*deltas)
+
+
+@pytest.mark.parametrize("dimension,expected", [
+    (127, (1, 127)), (320, (16, 20)), (360, (18, 20)), (768, (24, 32)),
+    (1024, (32, 32)), (1280, (32, 40)), (3072, (48, 64)), (18432, (128, 144)),
+])
+def test_factorization_pins_the_default_factor(dimension, expected):
+    """Upstream's own docstring table is stale: the CODE gives 360 -> (18, 20),
+    not the (8, 45) it documents."""
+    assert factorization(dimension) == expected == factorization(dimension, -1)
+
+
+def test_the_default_factor_agrees_with_the_previous_balanced_search():
+    """``factor=-1`` is the only path any shipped code took, and upstream's
+    algorithm agrees with the ``isqrt`` search it replaces on every dimension
+    -- so adopting upstream moves no existing LoKr."""
+    def balanced(n):
+        for i in range(int(math.isqrt(n)), 0, -1):
+            if n % i == 0:
+                return i, n // i
+        return 1, n
+
+    assert [factorization(d) for d in range(2, 4097)] == \
+        [balanced(d) for d in range(2, 4097)]
+
+
+@pytest.mark.parametrize("dimension,factor,expected", [
+    (1024, 64, (16, 64)),   # m <= n, so not the (64, 16) this repo returned
+    (1024, 8, (8, 128)),
+    (768, 8, (8, 96)),
+    (30, 4, (3, 10)),       # 30 % 4 != 0: the divisor search caps at 4
+    (12, 8, (3, 4)),
+])
+def test_factorization_pins_an_explicit_factor(dimension, factor, expected):
+    assert factorization(dimension, factor) == expected
+
+
+def test_an_explicit_factor_reaches_both_dimensions():
+    """It reached ``out_features`` alone, so the input side stayed balanced and
+    the Kronecker structure differed from upstream's for the same config."""
+    layer = LoKrLinearLayer(nn.Linear(256, 1024), rank=0, alpha=1.0,
+                            lora_name="f", factor=64)
+    assert layer.factors == ((16, 64), (4, 64))
+    assert tuple(layer.lokr_w1.shape) == (16, 4)
+    assert tuple(layer.lokr_w2.shape) == (64, 64)
+
+
+@pytest.mark.parametrize("algebra", DECOMPOSED, ids=lambda a: a.name)
+@pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
+def test_column_magnitudes_on_a_square_weight_match_the_oracle(algebra, dtype):
+    """``wd_on_out=False`` stores ``(1, in)`` and norms per INPUT column.
+
+    Square is the dangerous shape: the old ``dora_scale.view(-1, 1)`` raised
+    whenever ``in != out`` and reshaped silently otherwise -- and every
+    attention ``to_q``/``to_k``/``to_v``/``to_out`` is square.
+
+    This IS two implementations agreeing on one convention; what makes the
+    convention right is that it agrees with upstream ``_weight_decompose``,
+    checked at ``03270a38``, which no test here can perform.
+    """
+    for strength in STRENGTHS:
+        base, layer = _build(algebra, dtype, shape=SQUARE, dora_axis="column")
+        assert tuple(layer.dora_scale.shape) == (1, D_IN)
+        _assert_matches_oracle(algebra, base, layer, dtype, strength)
+
+
+def test_column_magnitudes_are_not_the_old_row_reshape():
+    """MEASURED on this fixture: reading a ``(1, in)`` vector as row magnitudes
+    is 47.6% off on the delta weight, and 45-68% off on the layer output
+    depending on the probe input. Not a rounding nit -- a different image from
+    the one the file was trained for."""
+    base, layer = _build(BY_NAME["dora"], shape=SQUARE, dora_axis="column")
+    correct = _delta_weight(layer)
+
+    w0 = base.weight.detach().to(torch.float32)
+    v = w0 + layer.branch_delta_weight()
+    row_norm = torch.norm(v, p=2, dim=1, keepdim=True)
+    as_rows = layer.dora_scale.detach().reshape(-1, 1) * (v / row_norm) - w0
+
+    assert _relative_error(as_rows, correct) > 0.3
+
+
+@pytest.mark.parametrize("shape", [(D_IN + 1, 1), (1, D_IN + 1), (2, 2),
+                                   (D_IN, 2), (1, 1, D_IN)])
+def test_a_dora_scale_of_any_other_shape_is_refused(shape):
+    """Refused, not reshaped: the shape is the only record of ``wd_on_out``."""
+    base = _base_linear(torch.float32, torch.Generator().manual_seed(1), SQUARE)
+    branch = LoRALinearLayer(base, rank=RANK, alpha=ALPHA, lora_name="d")
+    with pytest.raises(ValueError):
+        DoRALinearLayer(base, branch, dora_scale=torch.ones(shape))
+    with pytest.raises(ValueError):
+        dora_effective_delta_weight(base.weight, torch.zeros_like(base.weight),
+                                    torch.ones(shape))
+
+
+@pytest.mark.parametrize("name", ["loha_scalar", "lokr_both_scalar"])
+def test_the_trained_scalar_sets_the_effective_strength(name):
+    """``scalar`` must actually scale the delta.
+
+    No file carries the key -- upstream folds it into the saved
+    ``w1``/``hada_w1_a`` and its reader forces ``scalar := 1`` -- so what this
+    pins is the WRITE side: a serializer built on ``branch_tensors()`` that
+    emitted ``scalar`` bare, beside an unfolded ``w1``, would hand every other
+    reader an adapter ``1/scalar`` too strong."""
+    base, layer = _build(BY_NAME[name])
+    scalar = float(layer.scalar.detach())
+    assert scalar != 1.0
+    trained = _delta_weight(layer)
+
     with torch.no_grad():
-        layer.lokr_w2.copy_(torch.randn(layer.lokr_w2.shape, generator=generator) * 0.3)
-    oracle = adapter_delta_weight(
-        "lokr",
-        {name: tensor.detach() for name, tensor in layer.branch_tensors().items()},
-        rank=0, alpha=8.0)
-    x = torch.randn(4, D_IN, generator=torch.Generator().manual_seed(9)) * 0.5
-    _assert_delta_is_exercised(layer, base, x, "lokr/rank0")
-    assert _relative_error(_delta_weight(layer), oracle) <= TOLERANCE[torch.float32]
+        layer.scalar.fill_(1.0)          # what dropping the tensor would give
+    ignored = _delta_weight(layer)
+
+    assert _relative_error(ignored * scalar, trained) <= TOLERANCE[torch.float32]
+    assert _relative_error(ignored, trained) > 0.1
+
+
+@pytest.mark.parametrize("name", sorted(TUCKER_TENSOR_NAMES))
+def test_a_tucker_tensor_is_refused_rather_than_dropped(name):
+    """They exist only for a target with kernel dims and also transpose
+    ``hada_w1_a``; a Linear branch that ignored them would apply a different
+    algebra at matching shapes."""
+    _, layer = _build(BY_NAME["loha"])
+    with pytest.raises(ValueError, match="Tucker"):
+        layer.load_tensors({name: torch.zeros(2, 2, 1, 1)})
 
 
 def test_loha_and_lokr_carry_alpha_as_a_branch_tensor_but_lora_does_not():

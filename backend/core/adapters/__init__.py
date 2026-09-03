@@ -13,6 +13,7 @@ see ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 """
 
 from .layers import (
+    TUCKER_TENSOR_NAMES,
     CompositeAdapterLayer,
     DoRALinearLayer,
     LoHaLinearLayer,
@@ -20,10 +21,13 @@ from .layers import (
     LoRALinearLayer,
     MiniMaxH3LoRALinearLayer,
     count_adapter_wrapper_roots,
+    dora_magnitude_axis,
+    factorization,
     get_module_slot,
     is_adapter_covered,
     is_adapter_wrapper,
     named_modules_outside_adapters,
+    refuse_tucker_tensors,
     set_module_slot,
 )
 from .session import (
@@ -75,6 +79,7 @@ __all__ = [
     "ApplyCounts",
     "BranchRequest",
     "PreparedBranch",
+    "TUCKER_TENSOR_NAMES",
     "CompositeAdapterLayer",
     "DoRALinearLayer",
     "LoHaLinearLayer",
@@ -82,10 +87,13 @@ __all__ = [
     "LoRALinearLayer",
     "MiniMaxH3LoRALinearLayer",
     "count_adapter_wrapper_roots",
+    "dora_magnitude_axis",
+    "factorization",
     "get_module_slot",
     "is_adapter_covered",
     "is_adapter_wrapper",
     "named_modules_outside_adapters",
+    "refuse_tucker_tensors",
     "set_module_slot",
     "AdapterTarget",
     "count_quantized_linears",

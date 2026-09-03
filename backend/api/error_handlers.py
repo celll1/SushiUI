@@ -6,6 +6,7 @@ from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 import traceback
 
 
@@ -14,53 +15,95 @@ import traceback
 # ====================
 
 class APIError(Exception):
-    """Base API error"""
+    """Base API error.
+
+    ``code`` is the machine-readable identifier of WHY the request was
+    refused, drawn from the same taxonomy as `GenerationWarning.code`
+    (`lora_not_found`, `lora_incompatible`, ...). It is optional: an
+    unrelated failure carries no code and still produces a well-formed
+    `ErrorResponse`. ``warnings`` carries the failing generation's
+    `warnings[]` so a refusal reports what it recorded, not just its text.
+    """
     def __init__(
         self,
         message: str,
         status_code: int = 500,
-        detail: str = None
+        detail: str = None,
+        code: Optional[str] = None,
+        warnings: Optional[List[Dict[str, Any]]] = None
     ):
         self.message = message
         self.status_code = status_code
         self.detail = detail
+        self.code = code
+        self.warnings = warnings
         super().__init__(self.message)
 
 
 class ValidationError(APIError):
     """Validation error (400)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_400_BAD_REQUEST, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_400_BAD_REQUEST, detail, code, warnings)
 
 
 class NotFoundError(APIError):
     """Resource not found (404)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_404_NOT_FOUND, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_404_NOT_FOUND, detail, code, warnings)
 
 
 class GenerationError(APIError):
     """Generation failed (500)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_500_INTERNAL_SERVER_ERROR, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_500_INTERNAL_SERVER_ERROR, detail, code, warnings)
 
 
 class ModelError(APIError):
     """Model loading/operation error (500)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_500_INTERNAL_SERVER_ERROR, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_500_INTERNAL_SERVER_ERROR, detail, code, warnings)
 
 
 class AuthenticationError(APIError):
     """Authentication error (401)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_401_UNAUTHORIZED, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_401_UNAUTHORIZED, detail, code, warnings)
 
 
 class PermissionError(APIError):
     """Permission denied (403)"""
-    def __init__(self, message: str, detail: str = None):
-        super().__init__(message, status.HTTP_403_FORBIDDEN, detail)
+    def __init__(self, message: str, detail: str = None,
+                 code: Optional[str] = None,
+                 warnings: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(message, status.HTTP_403_FORBIDDEN, detail, code, warnings)
+
+
+# ====================
+# Refusal codes on plain exceptions
+# ====================
+
+def with_error_code(exc: BaseException, code: str) -> BaseException:
+    """Tag ``exc`` with the machine-readable ``code`` its refusal warned about.
+
+    Used as ``raise with_error_code(RuntimeError(msg), "lora_incompatible")``.
+    Tagging rather than converting to an `APIError` is deliberate: the
+    generation routes discriminate on the raised TYPE to choose the HTTP
+    status, so replacing the type would silently move refusals between 400
+    and 500. The route copies the tag onto the `APIError` it raises in place
+    of ``exc`` (see `api.generation_status.error_context`).
+    """
+    exc.code = code
+    return exc
 
 
 # ====================
@@ -71,7 +114,9 @@ def create_error_response(
     request: Request,
     error: str,
     status_code: int,
-    detail: str = None
+    detail: str = None,
+    code: Optional[str] = None,
+    warnings: Optional[List[Dict[str, Any]]] = None
 ) -> JSONResponse:
     """
     Create standardized error response
@@ -81,21 +126,24 @@ def create_error_response(
         {
             "error": str,           # Error message
             "detail": str,          # Detailed error information (optional)
+            "code": str,            # Machine-readable refusal code (null when none)
             "status_code": int,     # HTTP status code
             "timestamp": str,       # ISO 8601 timestamp
-            "path": str            # Request path
+            "path": str,            # Request path
+            "warnings": list        # Failing generation's warnings (omitted when none)
         }
     """
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": error,
-            "detail": detail,
-            "status_code": status_code,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "path": str(request.url.path)
-        }
-    )
+    content = {
+        "error": error,
+        "detail": detail,
+        "code": code,
+        "status_code": status_code,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "path": str(request.url.path)
+    }
+    if warnings:
+        content["warnings"] = warnings
+    return JSONResponse(status_code=status_code, content=content)
 
 
 # ====================
@@ -112,7 +160,9 @@ async def api_error_handler(request: Request, exc: APIError):
         request,
         exc.message,
         exc.status_code,
-        exc.detail
+        exc.detail,
+        code=getattr(exc, "code", None),
+        warnings=getattr(exc, "warnings", None)
     )
 
 

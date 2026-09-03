@@ -680,6 +680,7 @@ class MiniMaxH3Mixin:
             check_variant_compatibility, detect_rank_variation,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: this is what re-keys
         # the state to the live transformer, and a restore that failed in an
@@ -734,7 +735,7 @@ class MiniMaxH3Mixin:
                     f"registered LoRA directories -- refusing to generate without it."
                 )
                 warn(message, "lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
             raw, metadata = self._minimax_h3_read_lora_file(str(resolved), lora_file, warn)
             try:
                 check_variant_compatibility(metadata, lora_file, current_variant, warn)
@@ -743,7 +744,7 @@ class MiniMaxH3Mixin:
                 # itself. Surfaced through warn() too, so it reaches the
                 # generation's warnings[] like every other refusal here.
                 warn(str(exc), "minimax_h3_lora_variant_mismatch")
-                raise
+                raise with_error_code(exc, "minimax_h3_lora_variant_mismatch")
             try:
                 targets = normalise_lora_state_dict(raw, metadata)
                 print(f"[MiniMax-H3 LoRA] {i + 1}/{len(lora_configs)}: {lora_file} "
@@ -807,7 +808,7 @@ class MiniMaxH3Mixin:
                 message = (f"MiniMax-H3 LoRA '{lora_file}' could not be applied "
                            f"({type(exc).__name__}); see the server log for details")
                 warn(message, "lora_load_failed")
-                raise RuntimeError(message) from exc
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from exc
 
             print(f"[MiniMax-H3 LoRA]   wrapped {applied} module(s)")
             # An occupied target is no longer one of the ways to get here: the
@@ -822,7 +823,7 @@ class MiniMaxH3Mixin:
                     f"Sample keys in file: {list(raw.keys())[:5]}"
                 )
                 warn(message, "lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             if missing:
                 warn(
@@ -839,6 +840,7 @@ class MiniMaxH3Mixin:
     def _minimax_h3_read_lora_file(resolved: str, lora_file: str, warn):
         """Read a LoRA safetensors file, or refuse the generation."""
         from core.models.minimax_h3.minimax_h3_lora import load_lora_safetensors
+        from api.error_handlers import with_error_code
 
         try:
             return load_lora_safetensors(resolved)
@@ -849,7 +851,7 @@ class MiniMaxH3Mixin:
             message = (f"MiniMax-H3 LoRA '{lora_file}' could not be applied "
                        f"({type(exc).__name__}); see the server log for details")
             warn(message, "lora_load_failed")
-            raise RuntimeError(message) from exc
+            raise with_error_code(RuntimeError(message), "lora_load_failed") from exc
 
     def _unload_lora_minimax_h3(self) -> int:
         """Restore every MiniMax-H3 transformer Linear to its pre-LoRA original.

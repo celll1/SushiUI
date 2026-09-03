@@ -101,6 +101,7 @@ class LensMixin:
             alpha_from_metadata,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak wrappers into this one. It used to be
@@ -129,7 +130,7 @@ class LensMixin:
                 message = f"Lens LoRA '{lora_file}' not found in any configured LoRA directory"
                 print(f"[Lens LoRA] ERROR: {message}")
                 self._lens_lora_warn(message, code="lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped  = normalise_lora_state_dict(raw)
@@ -152,7 +153,7 @@ class LensMixin:
                 message = (f"Lens LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._lens_lora_warn(message, code="lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
 
             if applied == 0:
                 message = (
@@ -162,7 +163,7 @@ class LensMixin:
                 )
                 print(f"[Lens LoRA] ERROR: {message}")
                 self._lens_lora_warn(message, code="lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             if applied < len(grouped):
                 self._lens_lora_warn(

@@ -332,7 +332,7 @@ class LTX2Mixin:
         host for a swapped-out block, GPU for a resident one -- so the offloader
         carries it with the block it lives in.
         """
-        from api.error_handlers import ValidationError
+        from api.error_handlers import ValidationError, with_error_code
         from core.extensions.lora_manager import lora_manager
         from core.models.ltx2.ltx2_lora import (
             apply_lora_group, load_lora_safetensors, metadata_alpha,
@@ -385,7 +385,8 @@ class LTX2Mixin:
                         f"LoRA file not found: {lora_file}",
                         detail="No such file in the configured LoRA directory or in any "
                                "additional directory; see the server log for the paths "
-                               "searched.")
+                               "searched.",
+                        code="lora_not_found")
 
                 try:
                     raw, metadata, fmt = load_lora_safetensors(str(resolved))
@@ -397,7 +398,7 @@ class LTX2Mixin:
                     message = (f"LTX-2.3 LoRA '{lora_file}' could not be applied "
                                f"({type(e).__name__}); see the server log for details")
                     self._ltx2_lora_warn(message, "lora_load_failed")
-                    raise RuntimeError(message) from e
+                    raise with_error_code(RuntimeError(message), "lora_load_failed") from e
                 declared = str(metadata.get("model_type")
                                or metadata.get("modelspec.architecture") or "").strip()
                 if declared and declared != "ltx2":
@@ -408,7 +409,8 @@ class LTX2Mixin:
                         f"LoRA '{lora_file}' was trained for '{declared}', not LTX-2.3",
                         detail="Its tensors index a different architecture's module tree; "
                                "applying it would either match nothing or match the wrong "
-                               "layers.")
+                               "layers.",
+                        code="ltx2_lora_arch_mismatch")
 
                 # Unique within the request, so two selections of the SAME file
                 # are two branches rather than a duplicate-name refusal.
@@ -424,7 +426,8 @@ class LTX2Mixin:
                         detail=f"{len(raw)} tensor(s), key format '{fmt}'. Expected "
                                f"sd-scripts native keys (lora_unet_<module path>."
                                f"lora_down.weight / lora_up.weight / alpha) as written by "
-                               f"SushiUI's LTX-2.3 trainer.")
+                               f"SushiUI's LTX-2.3 trainer.",
+                        code="lora_incompatible")
 
                 applied, unmatched = apply_lora_group(
                     transformer, grouped, strength, originals, wrapped_keys,
@@ -439,7 +442,8 @@ class LTX2Mixin:
                         f"LoRA '{lora_file}' matched 0 target modules in the LTX-2.3 DiT",
                         detail=f"{len(grouped)} adapter(s) in the file, none of whose module "
                                f"paths exist in this transformer (first few: "
-                               f"{sorted(grouped)[:5]}).")
+                               f"{sorted(grouped)[:5]}).",
+                        code="lora_incompatible")
                 if unmatched:
                     self._ltx2_lora_warn(
                         f"LoRA '{lora_file}': {len(unmatched)} adapter(s) did not resolve "

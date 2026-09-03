@@ -199,6 +199,7 @@ class Krea2Mixin:
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: a restore that failed in
         # an earlier request must not leak its wrappers into this generation.
@@ -224,7 +225,7 @@ class Krea2Mixin:
                 message = (f"Krea 2 LoRA file not found: '{lora_file}' -- no such file in any "
                            f"registered LoRA directory.")
                 self._krea2_lora_warn(message, "lora_not_found")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_not_found")
 
             try:
                 raw, fmt = load_lora_safetensors(str(resolved))
@@ -236,7 +237,7 @@ class Krea2Mixin:
                 message = (f"Krea 2 LoRA '{lora_file}' could not be applied "
                            f"({type(e).__name__}); see the server log for details")
                 self._krea2_lora_warn(message, "lora_load_failed")
-                raise RuntimeError(message) from e
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from e
             grouped = normalise_lora_state_dict(raw)
             if not grouped:
                 raise RuntimeError(
@@ -273,7 +274,7 @@ class Krea2Mixin:
                     f"LoRA '{lora_file}': 0 of {len(grouped)} modules matched the loaded "
                     f"Krea 2 transformer -- wrong architecture or an unsupported target scope.")
                 self._krea2_lora_warn(message, "lora_incompatible")
-                raise RuntimeError(f"Krea 2 {message}")
+                raise with_error_code(RuntimeError(f"Krea 2 {message}"), "lora_incompatible")
             if applied < len(grouped):
                 self._krea2_lora_warn(
                     f"LoRA '{lora_file}': applied {applied} of {len(grouped)} modules; the rest "

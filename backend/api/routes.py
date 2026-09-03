@@ -1286,7 +1286,8 @@ async def generate_txt2img(
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
@@ -1737,6 +1738,7 @@ async def generate_txt2img(
     except GenerationError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
@@ -1745,7 +1747,8 @@ async def generate_txt2img(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-image generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
     finally:
         # Unload LoRAs after generation
@@ -2293,7 +2296,8 @@ async def generate_img2img(
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
@@ -2735,6 +2739,7 @@ async def generate_img2img(
     except GenerationError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
@@ -2743,7 +2748,8 @@ async def generate_img2img(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Image-to-image generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
     finally:
         # Unload LoRAs after generation
@@ -2796,7 +2802,8 @@ async def generate_upscale(
     """Upscale an image via PIL resample, a spandrel super-resolution model,
     RTX Video Super Resolution (nvvfx), or diffusion tile upscale (img2img
     per tile with the currently loaded model)."""
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from core.upscaler import run_upscale
     _gen_id = start_generation("upscale")
     try:
@@ -2961,6 +2968,7 @@ async def generate_upscale(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -2968,7 +2976,8 @@ async def generate_upscale(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Upscale failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -3025,7 +3034,8 @@ async def generate_txt2vid(
     then validated against that architecture's `TemporalSpec` — so neither the
     defaults nor the constraints are written out here.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from utils.video_utils import save_video_with_metadata
 
     params = request.dict()
@@ -3308,6 +3318,7 @@ async def generate_txt2vid(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -3315,7 +3326,8 @@ async def generate_txt2vid(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-video generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -3338,7 +3350,8 @@ async def generate_txt2aud(
     generation state contract") so a later commit's extend/repaint can resume
     the autoregressive stage from it.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, add_warning, error_context, attach_error_context)
     from utils.audio_utils import save_audio_with_metadata
 
     params = request.dict()
@@ -3523,6 +3536,7 @@ async def generate_txt2aud(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -3530,7 +3544,8 @@ async def generate_txt2aud(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-audio generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -3602,7 +3617,8 @@ async def generate_aud2aud(
     user-supplied. Produces a lossless FLAC file and a gallery row.
     Requires an ACE-Step 1.5 or MiniMax Music 3 model to be loaded.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, add_warning, error_context, attach_error_context)
     from utils.audio_utils import save_audio_with_metadata
 
     # Parse LoRA configs (same JSON-string-of-configs convention as txt2img/img2img/inpaint)
@@ -3873,6 +3889,7 @@ async def generate_aud2aud(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -3880,7 +3897,8 @@ async def generate_aud2aud(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Audio-to-audio generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -3986,7 +4004,8 @@ async def generate_outpaint_audio(
     - MiniMax Music 3: `placement` must be `"extend_forward"` (required, no
       default); `extend_duration_sec` must be positive.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, add_warning, error_context, attach_error_context)
     from utils.audio_utils import save_audio_with_metadata
 
     # Parse LoRA configs (same JSON-string-of-configs convention as txt2aud/aud2aud)
@@ -4322,6 +4341,7 @@ async def generate_outpaint_audio(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -4329,7 +4349,8 @@ async def generate_outpaint_audio(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Audio outpaint generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -4458,7 +4479,8 @@ async def generate_img2vid(
     `TemporalSpec` -- the same two steps, in the same order, as
     /generate/txt2vid.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from utils.video_utils import save_video_with_metadata
 
     # The optional last-frame upload, normalised once: an absent part and a part
@@ -4955,6 +4977,7 @@ async def generate_img2vid(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -4962,7 +4985,8 @@ async def generate_img2vid(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Image-to-video generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -5056,7 +5080,8 @@ async def generate_ref2vid(
     remain placement conditioning; combining them is measured to bind on this
     partition (`minimax_h3_conditioning_design.md` M-C0a).
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from utils.video_utils import save_video_with_metadata, load_video_frames
     from core.models.minimax_h3 import h3_references as h3refs
 
@@ -5435,6 +5460,7 @@ async def generate_ref2vid(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except ValueError as e:
         # The reference-normalisation rules (rates, resolutions, the 22-frame
@@ -5442,14 +5468,16 @@ async def generate_ref2vid(
         # They are client errors about the uploaded media, not generation
         # failures, so they must not be re-wrapped as a 500.
         fail_generation(str(e), generation_id=_gen_id)
-        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e))
+        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e),
+                                    **error_context(e, _gen_id))
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Reference-to-video generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -5593,7 +5621,8 @@ async def generate_outpaint_video(
     playable H.264 mp4 proxy (`preview_filename` on the row). Requires a
     video model to be loaded.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_outpaint_placement
     from api.param_defaults import outpaint_video_defaults_for_arch, MAX_VIDEO_UPLOAD_DECODE_BYTES
@@ -6167,6 +6196,7 @@ async def generate_outpaint_video(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except ValueError as e:
         # Same reasoning as /generate/ref2vid's identical clause: the ref2va
@@ -6174,14 +6204,16 @@ async def generate_outpaint_video(
         # ValueError from the ops layer, and they are client errors about the
         # uploaded media, not generation failures.
         fail_generation(str(e), generation_id=_gen_id)
-        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e))
+        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e),
+                                    **error_context(e, _gen_id))
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Video outpaint generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -6329,7 +6361,8 @@ async def generate_inpaint_video(
     returns a `minimax_h3_undocumented_conditioning` warning stating exactly
     that, and a spatial mask cannot be combined with references (400).
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_inpaint_span
     from api.param_defaults import (
@@ -7078,6 +7111,7 @@ async def generate_inpaint_video(
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         import traceback
@@ -7085,7 +7119,8 @@ async def generate_inpaint_video(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Video inpaint generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
 
 
@@ -7612,7 +7647,8 @@ async def generate_inpaint(
     _reject_if_sensenova_too_many_ref_images(ref_images)
     _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
@@ -8075,6 +8111,7 @@ async def generate_inpaint(
     except GenerationError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
@@ -8083,7 +8120,8 @@ async def generate_inpaint(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Inpaint generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
     finally:
         # Unload LoRAs after generation
@@ -8271,7 +8309,8 @@ async def generate_outpaint(
     _reject_if_audio_model("/generate/outpaint")
     _reject_if_sensenova_unsupported("/generate/outpaint")
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import (start_generation, complete_generation, fail_generation,
+                                       get_warnings, error_context, attach_error_context)
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
@@ -8793,6 +8832,7 @@ async def generate_outpaint(
     except GenerationError as e:
         # Re-raise custom errors as-is
         fail_generation(str(e), generation_id=_gen_id)
+        attach_error_context(e, _gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
@@ -8801,7 +8841,8 @@ async def generate_outpaint(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Outpaint generation failed",
-            detail=f"{str(e)}\n\n{error_detail}"
+            detail=f"{str(e)}\n\n{error_detail}",
+            **error_context(e, _gen_id)
         )
     finally:
         # Unload LoRAs after generation

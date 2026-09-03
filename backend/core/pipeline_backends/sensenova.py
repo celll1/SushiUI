@@ -67,6 +67,7 @@ class SenseNovaMixin:
             metadata_alpha, normalise_lora_state_dict, apply_lora_group,
         )
         from core.extensions.lora_manager import lora_manager
+        from api.error_handlers import with_error_code
 
         # Unconditional, and BEFORE the empty-config exit: this is what re-keys
         # the state to the live transformer and drops originals no wrapper owes,
@@ -94,7 +95,7 @@ class SenseNovaMixin:
                 )
                 print(f"[SenseNova LoRA] ERROR: {message}")
                 self._sensenova_lora_warn(message, "lora_not_found")
-                raise FileNotFoundError(message)
+                raise with_error_code(FileNotFoundError(message), "lora_not_found")
             try:
                 raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
@@ -113,7 +114,7 @@ class SenseNovaMixin:
                 message = (f"SenseNova LoRA '{lora_file}' could not be applied "
                            f"({type(exc).__name__}); see the server log for details")
                 self._sensenova_lora_warn(message, "lora_load_failed")
-                raise RuntimeError(message) from exc
+                raise with_error_code(RuntimeError(message), "lora_load_failed") from exc
 
             print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_file} "
                   f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
@@ -130,7 +131,7 @@ class SenseNovaMixin:
                 )
                 print(f"[SenseNova LoRA] ERROR: {message}")
                 self._sensenova_lora_warn(message, "lora_incompatible")
-                raise RuntimeError(message)
+                raise with_error_code(RuntimeError(message), "lora_incompatible")
 
             shortfall = check_lora_application(grouped, applied, metadata)
             if shortfall is not None:

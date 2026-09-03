@@ -598,9 +598,13 @@ def apply_lora_group(
     function cannot even RESOLVE against the live module tree is a real
     problem worth surfacing).
     """
-    from core.training.adapters.base_adapter import is_lora_wrappable_linear, lora_branch_dtype
-    from core.training.adapters.minimax_h3_adapter import MiniMaxH3LoRALinearLayer, _resolve_leaf
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import (
+        LoRALinearLayer,
+        MiniMaxH3LoRALinearLayer,
+        is_lora_wrappable_linear,
+        lora_branch_dtype,
+    )
+    from core.training.adapters.minimax_h3_adapter import _resolve_leaf
 
     applied = 0
     missing: list = []

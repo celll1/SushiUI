@@ -66,7 +66,7 @@ def _is_lora_target(module) -> bool:
     """True for a module a generation-time ACE-Step LoRA may wrap.
 
     Thin re-export of the shared
-    ``core.training.adapters.base_adapter.is_lora_wrappable_linear``, and it
+    ``core.adapters.targets.is_lora_wrappable_linear``, and it
     exists as a MODULE-LEVEL name for two reasons. First, `Int8Linear` /
     `Fp8Linear` are ``nn.Module``s but NOT ``nn.Linear`` subclasses, so the
     ``isinstance(x, torch.nn.Linear)`` these two call sites used to spell skipped
@@ -78,7 +78,7 @@ def _is_lora_target(module) -> bool:
     ``Int8Linear``/``Fp8Linear``/``nn.Linear`` instances; an inline test cannot be
     checked that way.
     """
-    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+    from core.adapters import is_lora_wrappable_linear
 
     return is_lora_wrappable_linear(module)
 
@@ -595,7 +595,7 @@ class AceStepMixin:
     # `ZImageMixin._load_lora_zimage`/`_wrap_with_lora`/`_unload_lora_zimage`
     # and `FluxMixin._load_lora_flux2` (pipeline_backends/zimage.py,
     # pipeline_backends/flux2.py): LoRAs wrap the original nn.Linear via
-    # forward-time addition (`core.training.adapters.sd15_adapter.LoRALinearLayer`),
+    # forward-time addition (`core.adapters.layers.LoRALinearLayer`),
     # not weight merging, so they can be unloaded by restoring the original
     # module reference (no drift, no leak across generations).
     #
@@ -1003,7 +1003,7 @@ class AceStepMixin:
         trained against a different-sized ACE-Step variant (see the
         `_load_lora_acestep_diffusers_format` docstring).
         """
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         if isinstance(original_linear, LoRALinearLayer):
             true_original = original_linear.original_module
@@ -1040,7 +1040,7 @@ class AceStepMixin:
         # dtype only when it is a real floating-point one and falls back to
         # bfloat16 otherwise. The DEVICE is still the base's -- that is a
         # placement, not a precision.
-        from core.training.adapters.base_adapter import lora_branch_dtype
+        from core.adapters import lora_branch_dtype
 
         device = true_original.weight.device
         dtype = lora_branch_dtype(true_original)

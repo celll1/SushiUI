@@ -35,7 +35,7 @@ from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
     resolve_component_lr, LORA_COMPONENT_UNET,
 )
-from .sd15_adapter import LoRALinearLayer
+from core.adapters import LoRALinearLayer
 
 # Reuse Phase B.3 iteration + flatten helpers.
 from core.models.anima.anima_lora import (

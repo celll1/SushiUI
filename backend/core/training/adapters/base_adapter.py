@@ -10,14 +10,7 @@ from typing import Dict, List, Any, Optional
 import torch
 import torch.nn as nn
 
-# Temporary Phase 1 shim: these three moved to ``core.adapters.targets``, outside
-# the training package, and are re-exported here so existing importers keep
-# working. Removed at the end of Phase 1.
-from core.adapters.targets import (  # noqa: F401
-    count_quantized_linears,
-    is_lora_wrappable_linear,
-    lora_branch_dtype,
-)
+from core.adapters import count_quantized_linears
 
 
 LORA_COMPONENT_UNET = "unet"

@@ -621,11 +621,11 @@ class Flux2Mixin:
         replaces the parameter wholesale and would only fail later, inside text
         encoding or the denoise loop.
         """
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
         # NOT ``isinstance(x, torch.nn.Linear)``: after a runtime INT8 conversion
         # (unet_quantization="int8") the very layers a LoRA targets are Int8Linear /
         # Fp8Linear, which are nn.Module but NOT nn.Linear subclasses.
-        from core.training.adapters.base_adapter import is_lora_wrappable_linear
+        from core.adapters import is_lora_wrappable_linear
 
         def _tally(status):
             counts[status] = counts.get(status, 0) + 1
@@ -671,7 +671,7 @@ class Flux2Mixin:
             True if wrapped successfully, False otherwise
         """
         # Import LoRALinearLayer from training adapters (model-agnostic wrapper class)
-        from core.training.adapters.sd15_adapter import LoRALinearLayer
+        from core.adapters import LoRALinearLayer
 
         # Handle already wrapped modules
         if isinstance(original_linear, LoRALinearLayer):
@@ -700,7 +700,7 @@ class Flux2Mixin:
         # 254 levels over its own amax; e4m3: ~2.6e-02 relative error). Both
         # quantized bases produce bf16 from a bf16 activation, so the branch uses
         # bf16 too. Same rule as krea2_lora.apply_lora_group.
-        from core.training.adapters.base_adapter import lora_branch_dtype
+        from core.adapters import lora_branch_dtype
 
         device = true_original.weight.device
         dtype = lora_branch_dtype(true_original)

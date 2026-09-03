@@ -135,7 +135,7 @@ def iter_minit2i_te_lora_targets(
       attn: SelfAttention.{q,k,v,o}
       ff:   DenseReluDense.{wi,wi_0,wi_1,wo} (gated-gelu uses wi_0/wi_1)
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     scope = scope if scope is not None else TE_DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
@@ -184,7 +184,7 @@ def iter_minit2i_lora_targets(
 
     module_path is relative to `transformer` (e.g. "model.net.double_blocks.0.img_qkv").
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
@@ -253,7 +253,7 @@ def _apply_group(
     ``default_alpha`` is the file-metadata alpha used for a module with no per-key
     ``.alpha`` tensor (see alpha_from_metadata).
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     applied = 0
     occupied = 0

@@ -8,11 +8,19 @@ modules importing the leaf layer class were all paying. Nothing under this
 package may import ``core.training`` or ``api`` at module scope;
 ``backend/tests/adapter_layering_test.py`` is the gate.
 
-The old ``core.training.adapters`` paths re-export these names during Phase 1;
+Every importer -- generation, training and tests -- reaches these names here;
 see ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 """
 
-from .layers import LoRALinearLayer, MiniMaxH3LoRALinearLayer
+from .layers import (
+    CompositeAdapterLayer,
+    LoRALinearLayer,
+    MiniMaxH3LoRALinearLayer,
+    count_adapter_wrapper_roots,
+    get_module_slot,
+    is_adapter_wrapper,
+    set_module_slot,
+)
 from .targets import (
     count_quantized_linears,
     is_lora_wrappable_linear,
@@ -20,8 +28,13 @@ from .targets import (
 )
 
 __all__ = [
+    "CompositeAdapterLayer",
     "LoRALinearLayer",
     "MiniMaxH3LoRALinearLayer",
+    "count_adapter_wrapper_roots",
+    "get_module_slot",
+    "is_adapter_wrapper",
+    "set_module_slot",
     "count_quantized_linears",
     "is_lora_wrappable_linear",
     "lora_branch_dtype",

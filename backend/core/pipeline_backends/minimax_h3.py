@@ -65,7 +65,7 @@ def _is_lora_target(module) -> bool:
     """Whether ``module`` is a Linear a MiniMax-H3 LoRA may wrap.
 
     Delegates to the ONE shared predicate,
-    ``core.training.adapters.base_adapter.is_lora_wrappable_linear``, and exists
+    ``core.adapters.targets.is_lora_wrappable_linear``, and exists
     as a named module-level function for the reason
     ``backend/tests/quantized_capability_parity_test.py`` states: the released
     MiniMax-H3 DiT ships weight-only FP8, so 300 of its Linears are
@@ -81,7 +81,7 @@ def _is_lora_target(module) -> bool:
     it land with the training phase; until then this is the arch's declared
     predicate and nothing else.
     """
-    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+    from core.adapters import is_lora_wrappable_linear
 
     return is_lora_wrappable_linear(module)
 

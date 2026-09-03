@@ -12,15 +12,14 @@ from core.models.sensenova.sensenova_lora import (
     iter_sensenova_lora_targets,
 )
 
+from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
 from .base_adapter import (
     BaseFullParameterAdapter,
     BaseLoRAAdapter,
-    is_lora_wrappable_linear,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_UNET,
     resolve_component_lr,
 )
-from .sd15_adapter import LoRALinearLayer
 
 _TARGETS_PER_BRANCH = 294
 _LAYERS = 42

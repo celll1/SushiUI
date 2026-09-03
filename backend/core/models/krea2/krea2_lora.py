@@ -92,7 +92,7 @@ def _is_target(m) -> bool:
     iterator simply yields no targets for those layers and ``apply_lora_group``
     reports a small ``applied`` count without raising -- which on a quantized
     checkpoint looks exactly like "the LoRA had no effect"."""
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
     try:
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
@@ -216,7 +216,7 @@ def apply_lora_group(
     scope: Optional[Dict[str, bool]] = None,
 ) -> int:
     """Wrap matching modules with LoRALinearLayer (stackable, reversible)."""
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0

@@ -39,17 +39,14 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-# Temporary Phase 1 shim: ``MiniMaxH3LoRALinearLayer`` moved to
-# ``core.adapters.layers``, outside the training package, and is re-exported
-# here so existing importers (generation included) keep working. Removed at the
-# end of Phase 1.
-from core.adapters.layers import (  # noqa: F401
+from core.adapters import (
     LoRALinearLayer,
     MiniMaxH3LoRALinearLayer,
+    is_lora_wrappable_linear,
 )
 
 from .base_adapter import (
-    BaseLoRAAdapter, is_lora_wrappable_linear, resolve_component_lr, LORA_COMPONENT_UNET
+    BaseLoRAAdapter, resolve_component_lr, LORA_COMPONENT_UNET
 )
 
 

@@ -204,7 +204,7 @@ def _is_lora_target(m: Any) -> bool:
     against ``Int8Linear``/``Fp8Linear`` the same way it checks Anima's
     ``_is_lora_target`` and Krea 2's ``_is_target``. The behaviour is unchanged.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
 
@@ -281,7 +281,7 @@ def apply_lora_group(
     LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The
     caller turns the count into a refusal or a warning.
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    from core.adapters import LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0

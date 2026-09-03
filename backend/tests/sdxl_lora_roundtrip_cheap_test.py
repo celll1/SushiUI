@@ -409,3 +409,122 @@ def test_sdxl_partly_matching_lora_applies_and_warns(tmp_path, warnings_seen):
     assert warning_codes(warnings_seen) == ["lora_partial"]
     applied = len(unet_paths) + len(te1_paths) + len(te2_paths)
     assert f"applied {applied} of {applied + 2}" in warnings_seen[-1][1]
+
+
+# ---------------------------------------------------------------------------
+# Stacking. SDXL shares LoRAManager.load_loras with SD1.5, so the defect and
+# the fix are the same; what is SDXL's own is that the active set has to cover
+# THREE components. A per-file activation left every LoRA but the last inert.
+# ---------------------------------------------------------------------------
+
+STRENGTH_B = 0.4  # the second LoRA's, so a shared weight shows up as a wrong sum
+
+
+def stack_through_manager(tmp_path, configs, unet, te1, te2):
+    pipeline = Pipeline(unet, te1, te2)
+    manager = manager_for(tmp_path)
+    manager.load_loras(pipeline, configs)
+    return pipeline, manager
+
+
+def stackable_targets(directory, name, unet_paths):
+    """UNet targets whose kohya stem is present in the file, with the tensors."""
+    saved = load_file(f"{directory}/{name}")
+    found = {}
+    for target in sorted(unet_paths):
+        stem = "lora_unet_" + target.replace(".", "_")
+        if f"{stem}.lora_down.weight" in saved:
+            found[target] = (saved[f"{stem}.lora_down.weight"],
+                             saved[f"{stem}.lora_up.weight"])
+    assert found, "setup: no kohya stem round-tripped"
+    return found
+
+
+def test_sdxl_two_loras_stay_active_together_and_their_deltas_sum(tmp_path,
+                                                                  warnings_seen):
+    directory, name_a, unet_paths, te1_paths, te2_paths = train_and_save(
+        tmp_path, "a.safetensors", seed=1234)
+    _d, name_b, _u, _t1, _t2 = train_and_save(tmp_path, "b.safetensors", seed=4321)
+    a_tensors = stackable_targets(directory, name_a, unet_paths)
+    b_tensors = stackable_targets(directory, name_b, unet_paths)
+
+    unet = build_unet()
+    te1, te2 = build_text_encoders()
+    pipeline, _m = stack_through_manager(
+        tmp_path, [{"path": name_a, "strength": STRENGTH},
+                   {"path": name_b, "strength": STRENGTH_B}], unet, te1, te2)
+
+    assert set(pipeline.get_active_adapters()) == {"lora_0", "lora_1"}
+    assert warning_codes(warnings_seen) == []
+    # All three components carry both adapters, not just the UNet.
+    for model, paths in ((unet, unet_paths), (te1, te1_paths), (te2, te2_paths)):
+        modules = dict(model.named_modules())
+        assert paths, "setup: every component must have targets"
+        for target in paths:
+            assert set(modules[target].lora_A.keys()) == {"lora_0", "lora_1"}, target
+
+    base_modules = dict(build_unet().named_modules())
+    modules = dict(unet.named_modules())
+    for target, (down_a, up_a) in a_tensors.items():
+        down_b, up_b = b_tensors[target]
+        module = modules[target]
+        assert round(module.scaling["lora_0"], 9) == round(SCALE * STRENGTH, 9)
+        assert round(module.scaling["lora_1"], 9) == round(SCALE * STRENGTH_B, 9)
+
+        base = base_modules[target]
+        x = torch.randn(2, base.in_features)
+        expected = (base(x)
+                    + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH)
+                    + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B))
+        assert torch.allclose(module(x), expected, atol=1e-5), target
+        assert not torch.allclose(
+            module(x), base(x) + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B),
+            atol=1e-5), f"{target}: only the last LoRA is in effect"
+
+
+def test_sdxl_unload_removes_both_adapters_and_restores_the_base(tmp_path):
+    directory, name_a, unet_paths, te1_paths, te2_paths = train_and_save(
+        tmp_path, "a.safetensors")
+    _d, name_b, _u, _t1, _t2 = train_and_save(tmp_path, "b.safetensors", seed=4321)
+
+    unet = build_unet()
+    te1, te2 = build_text_encoders()
+    pipeline, manager = stack_through_manager(
+        tmp_path, [{"path": name_a, "strength": STRENGTH},
+                   {"path": name_b, "strength": STRENGTH_B}], unet, te1, te2)
+    assert peft_wrapped_paths(unet) == unet_paths
+
+    manager.unload_loras(pipeline)
+    for model in (unet, te1, te2):
+        assert not peft_wrapped_paths(model)
+    base_modules = dict(build_unet().named_modules())
+    modules = dict(unet.named_modules())
+    for target in stackable_targets(directory, name_a, unet_paths):
+        base = base_modules[target]
+        x = torch.randn(2, base.in_features)
+        assert torch.allclose(modules[target](x), base(x), atol=1e-6), target
+
+
+def test_sdxl_unet_layer_weights_survive_a_stack_and_the_step_callback(tmp_path):
+    """``unet_layer_weights`` is honoured on this path only, and ``set_adapters``
+    recomputes ``scaling``, so the per-block factor has to be re-folded after
+    every activation -- including the one that makes the second LoRA active."""
+    _directory, name_a, unet_paths, _t1, _t2 = train_and_save(tmp_path, "a.safetensors")
+    _d, name_b, _u, _tt1, _tt2 = train_and_save(tmp_path, "b.safetensors", seed=4321)
+
+    unet = build_unet()
+    te1, te2 = build_text_encoders()
+    pipeline, manager = stack_through_manager(
+        tmp_path, [{"path": name_a, "strength": STRENGTH,
+                    "unet_layer_weights": {"IN01": 0.25}},
+                   {"path": name_b, "strength": STRENGTH_B}], unet, te1, te2)
+
+    scaled = {t for t in unet_paths if t.startswith("down_blocks.1.")}
+    assert scaled, "setup: the toy UNet must have a down_blocks.1 target"
+    for _ in range(2):
+        modules = dict(unet.named_modules())
+        assert {round(modules[t].scaling["lora_0"], 9) for t in scaled} == \
+            {round(SCALE * STRENGTH * 0.25, 9)}
+        assert {round(modules[t].scaling["lora_1"], 9) for t in scaled} == \
+            {round(SCALE * STRENGTH_B, 9)}
+        manager.create_step_callback(pipeline, total_steps=10)(pipeline, 0, 0.0, {})

@@ -1121,10 +1121,6 @@ class LoRAManager:
                                         print(f"[LoRAManager]     scaling: {module.scaling}")
                         print(f"[LoRAManager] Total LoRA modules in UNet: {lora_module_count}")
 
-                    # Apply per-layer weights if specified
-                    if lora_config.unet_layer_weights and hasattr(pipeline, 'unet'):
-                        print(f"[LoRAManager] Applying per-layer weights: {len(lora_config.unet_layer_weights)} layers")
-                        self._apply_layer_weights(pipeline, adapter_name, lora_config)
                 else:
                     print(f"[LoRAManager] WARNING: Pipeline does not have set_adapters method")
 
@@ -1137,9 +1133,40 @@ class LoRAManager:
                 _lora_warn(message, code="lora_load_failed")
                 raise RuntimeError(message) from e
 
+        # The activation above names ONE adapter, and set_adapters REPLACES the
+        # active set rather than adding to it, so without this every LoRA but
+        # the last was installed, counted, reported -- and silently inactive.
+        self.activate_adapters(
+            pipeline,
+            [f"lora_{i}" for i in range(len(self.loaded_loras))],
+            [cfg.strength for cfg in self.loaded_loras],
+        )
+
         print(f"[LoRAManager] Successfully loaded {len(self.loaded_loras)} LoRA(s)")
 
         return pipeline
+
+    def activate_adapters(self, pipeline: Any, names: List[str],
+                          weights: List[float]) -> None:
+        """Make exactly ``names`` the active set, then re-apply per-block weights.
+
+        ``set_adapters`` recomputes each named adapter's ``scaling`` from its
+        weight, so ``unet_layer_weights`` has to be folded in AFTERWARDS or it
+        is silently discarded -- which is what happened to a LoRA carrying both
+        block weights and a ``step_range``, because the step callback reactivates
+        every step. ``_apply_layer_weights`` multiplies the current scaling, so
+        it is correct exactly once per activation.
+        """
+        if not names or not hasattr(pipeline, 'set_adapters'):
+            return
+        pipeline.set_adapters(names, adapter_weights=weights)
+        if getattr(pipeline, "unet", None) is None:
+            return
+        for name in names:
+            index = int(name.rsplit("_", 1)[1])
+            config = self.loaded_loras[index]
+            if config.unet_layer_weights:
+                self._apply_layer_weights(pipeline, name, config)
 
     def _apply_layer_weights(self, pipeline: Any, adapter_name: str, lora_config: LoRAConfig):
         """
@@ -1259,7 +1286,7 @@ class LoRAManager:
             # Update active adapters for this step
             if hasattr(pipeline, 'set_adapters'):
                 if active_adapters:
-                    pipeline.set_adapters(active_adapters, adapter_weights=adapter_weights)
+                    self.activate_adapters(pipeline, active_adapters, adapter_weights)
                 else:
                     # Disable all LoRAs if none are active
                     pipeline.disable_lora()

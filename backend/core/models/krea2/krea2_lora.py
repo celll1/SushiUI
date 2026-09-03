@@ -22,11 +22,10 @@ are wrapped too. Forward-time addition, fully reversible.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Generator, Optional, Set, Tuple
+from typing import Any, Dict, Generator, Mapping, Optional, Tuple
 
 import torch
 from torch import nn
-from safetensors import safe_open
 
 
 def _flatten(module_path: str) -> str:
@@ -57,13 +56,13 @@ def normalise_lora_state_dict(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[st
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
-    raw: Dict[str, torch.Tensor] = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
-    fmt = "sd-scripts" if any(k.startswith("lora_unet_") for k in raw) else "unknown"
-    return raw, fmt
+def detect_lora_format(raw: Mapping[str, torch.Tensor]) -> str:
+    """The key-format label for one file.
+
+    ``AdapterSession`` reads the safetensors itself; this is the only part of
+    the file load that is Krea 2's.
+    """
+    return "sd-scripts" if any(k.startswith("lora_unet_") for k in raw) else "unknown"
 
 
 DEFAULT_SCOPE: Dict[str, bool] = {"attn": True, "mlp": True, "text_fusion": False, "proj": False}
@@ -90,9 +89,9 @@ def _is_target(m) -> bool:
 
     ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
     subclasses, so both must be named explicitly. Omitting one is silent: the
-    iterator simply yields no targets for those layers and ``apply_lora_group``
-    reports a small ``applied`` count without raising -- which on a quantized
-    checkpoint looks exactly like "the LoRA had no effect".
+    iterator simply yields no targets for those layers and the session reports a
+    small ``applied`` count without raising -- which on a quantized checkpoint
+    looks exactly like "the LoRA had no effect".
 
     ``CompositeAdapterLayer`` is here for the same reason: drop it and a second
     selected LoRA skips every occupied target and reports zero matches as if its
@@ -208,89 +207,46 @@ def flatten_to_key(module_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Apply / restore (inference)
+# Apply (inference). The LIFETIME -- resolve, parse, refuse, install, restore --
+# belongs to ``core.adapters.AdapterSession``; what is Krea 2's is the target
+# scope, the key codec and one branch.
 # ---------------------------------------------------------------------------
 
-def apply_lora_group(
-    transformer: nn.Module,
-    grouped: Dict[str, Dict[str, torch.Tensor]],
-    strength: float,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-    scope: Optional[Dict[str, bool]] = None,
-    branch_name: str = "lora",
-) -> int:
-    """Add one named branch per matching module to the composite covering it.
+def iter_krea2_lora_slots(transformer: nn.Module):
+    """``(parent, slot, module_path)`` over the FULL scope, for ``AdapterSession``.
 
-    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
-    over the same module adds a branch beside the first rather than rebuilding
-    from the base and discarding it. ``branch_name`` must be unique within the
-    request.
+    Full scope on both the load and the unload path. Application is
+    lookup-driven -- a target the file names no key for gets no branch -- so
+    enumerating every group applies exactly what the checkpoint's own scope
+    would, and restore reaches a composite installed from any scope.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
-
-    effective_scope = scope if scope is not None else _FULL_SCOPE
-    applied = 0
-    # Materialised: the slots are replaced as we go, and a live traversal would
-    # start descending into the wrappers it just installed.
-    for module_path, parent, attr, linear in list(
-            iter_krea2_lora_targets(transformer, effective_scope)):
-        weights = grouped.get(module_path)
-        if weights is None:
-            continue
-        down, up = weights["down"], weights["up"]
-        alpha_tensor = weights.get("alpha")
-        base = (linear.original_module
-                if isinstance(linear, CompositeAdapterLayer) else linear)
-        lora_original_modules.setdefault(module_path, base)
-        rank = int(down.shape[0])
-        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
-        branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
-        device = base.weight.device
-        # Compute dtype for the LoRA branch: the base weight's dtype when it is a
-        # normal float, else bf16. Both quantized bases take the bf16 branch --
-        # e4m3 by the "float8" test, int8 because an integer dtype is not
-        # floating point at all -- which is also the dtype their own forward
-        # produces from a bf16 activation.
-        if (base.weight.dtype.is_floating_point and
-                "float8" not in str(base.weight.dtype)):
-            compute_dtype = base.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-        with torch.no_grad():
-            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
-        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
-        # add_branch refolds the strength into the branch's own scale. Never
-        # multiply it onto the delta instead: same LoRA mathematically, but it
-        # loses bit-identity with the single-LoRA numerics this replaces.
-        composite = CompositeAdapterLayer.attach(parent, attr)
-        composite.add_branch(branch_name, branch, strength=strength)
-        wrapped_keys.add(module_path)
-        applied += 1
-    return applied
+    for module_path, parent, attr, _current in iter_krea2_lora_targets(
+            transformer, _FULL_SCOPE):
+        yield parent, attr, module_path
 
 
-def restore_originals(
-    transformer: nn.Module,
-    lora_original_modules: Dict[str, nn.Module],
-    wrapped_keys: Set[str],
-) -> int:
-    """Revert every composite-covered module to its pre-LoRA original.
+def build_lora_branch(base: nn.Module, weights: Dict[str, torch.Tensor],
+                      module_path: str) -> nn.Module:
+    """One branch over ``base``, at the file's own alpha/rank scale.
 
-    Driven by what is INSTALLED, through the enumerator the load path uses, so
-    the two cannot disagree about a slot's address.
+    The request strength is NOT folded in here: ``add_branch(strength=)`` refolds
+    it into this branch's own scale, and multiplying it onto the delta instead is
+    different arithmetic that loses bit-identity with the single-LoRA numerics.
     """
-    from core.adapters import CompositeAdapterLayer, set_module_slot
+    from core.adapters import LoRALinearLayer, lora_branch_dtype
 
-    restored = 0
-    for module_path, parent, attr, current in list(
-            iter_krea2_lora_targets(transformer, _FULL_SCOPE)):
-        if not isinstance(current, CompositeAdapterLayer):
-            continue
-        set_module_slot(parent, attr,
-                        lora_original_modules.get(module_path, current.original_module))
-        restored += 1
-    wrapped_keys.clear()
-    return restored
+    down, up = weights["down"], weights["up"]
+    alpha_tensor = weights.get("alpha")
+    rank = int(down.shape[0])
+    alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
+    branch = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name=module_path)
+    device = base.weight.device
+    # Never the base weight's own dtype: over an int8 base that would quantize
+    # the branch to 8 levels, over an e4m3 one it would round most of it away.
+    compute_dtype = lora_branch_dtype(base)
+    with torch.no_grad():
+        branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+        branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+    branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+    branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+    return branch

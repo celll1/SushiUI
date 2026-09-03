@@ -491,3 +491,49 @@ def test_anima_model_reload_never_splices_model_a_into_model_b(tmp_path):
     for target in trained_paths:
         assert dict(model_b.named_modules())[target] is b_before[target], target
     assert not (module_ids(model_b) & a_ids)
+
+
+def test_anima_a_refused_file_leaves_the_ones_before_it_uninstalled(tmp_path,
+                                                                   warnings_seen):
+    """``AdapterSession`` plans the WHOLE request before mutating a slot.
+
+    Anima used to wrap file by file and unwrap again at the end, so between the
+    two a refused request ran its restore over a DiT it had just wrapped; now
+    nothing is installed at all.
+    """
+    path, _trained_paths = train_and_save(tmp_path, scope=ATTENTION_ONLY)
+    ghost = tmp_path / "ghost.safetensors"
+    save_file({"lora_unet_blocks_9_self_attn_q_proj.lora_down.weight": torch.zeros(RANK, D),
+               "lora_unet_blocks_9_self_attn_q_proj.lora_up.weight": torch.zeros(D, RANK)},
+              str(ghost), metadata={"model_type": "anima"})
+
+    model = build_model()
+    before = dict(model.named_modules())
+    backend = _Backend(model)
+    with pytest.raises(RuntimeError):
+        backend._load_lora_anima([{"path": path}, {"path": str(ghost)}])
+
+    assert not wrapped_paths(model)
+    assert dict(model.named_modules()) == before
+    assert not backend._anima_lora_wrapped_keys
+    assert not backend._anima_lora_original_modules
+    assert "lora_incompatible" in warning_codes(warnings_seen)
+
+
+def test_anima_a_narrow_checkpoint_wraps_only_the_targets_it_names(tmp_path,
+                                                                  warnings_seen):
+    """One enumerator, over FULL_SCOPE, on both the load and the unload path.
+
+    It replaced a per-file scope derived from the checkpoint's keys, and is
+    equivalent only because application is lookup-driven: an mlp-only file must
+    still wrap the mlp targets and nothing else, and must not read as partial.
+    """
+    path, mlp_paths = train_and_save(tmp_path, scope=MLP_ONLY)
+    assert mlp_paths and all(".mlp." in p for p in mlp_paths)
+
+    model = build_model()
+    backend = _Backend(model)
+    assert backend._load_lora_anima([{"path": path}]) == len(mlp_paths)
+    assert wrapped_paths(model) == mlp_paths
+    assert warning_codes(warnings_seen) == []
+    assert backend._unload_lora_anima() == len(mlp_paths)

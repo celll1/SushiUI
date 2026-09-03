@@ -421,3 +421,30 @@ def test_krea2_dropping_the_components_drops_the_bookkeeping(tmp_path):
     assert backend._unload_lora_krea2() == 0
     assert not backend._krea2_lora_original_modules
     assert not backend._krea2_lora_wrapped_keys
+
+
+def test_krea2_a_refused_file_leaves_the_ones_before_it_uninstalled(tmp_path,
+                                                                   warnings_seen):
+    """``AdapterSession`` plans the WHOLE request before mutating a slot.
+
+    Krea 2 used to wrap file by file, so a second file that matched nothing left
+    the first one installed and refused the generation anyway -- the request came
+    back as an error over a model that was no longer the one the user has.
+    """
+    path, _trained_paths = train_and_save(tmp_path)
+    ghost = tmp_path / "ghost.safetensors"
+    stem = flatten_to_key("transformer_blocks.99.attn.to_q")
+    save_file({f"{stem}.lora_down.weight": torch.zeros(RANK, D),
+               f"{stem}.lora_up.weight": torch.zeros(D, RANK)}, str(ghost))
+
+    model = build_model()
+    before = dict(model.named_modules())
+    backend = _Backend(model)
+    with pytest.raises(RuntimeError, match="0 of 1 modules matched"):
+        backend._load_lora_krea2([{"path": path, "strength": STRENGTH},
+                                  {"path": str(ghost), "strength": 1.0}])
+
+    assert not wrapped_paths(model)
+    assert dict(model.named_modules()) == before
+    assert not backend._krea2_lora_wrapped_keys
+    assert not backend._krea2_lora_original_modules

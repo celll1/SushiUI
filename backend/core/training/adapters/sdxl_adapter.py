@@ -18,7 +18,6 @@ Author: Claude (2026-01-04)
 
 from pathlib import Path
 from typing import Dict, List, Any
-import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 import math
@@ -218,68 +217,19 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
         return count
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
-        """
-        Collect trainable parameters with per-component learning rates.
+        """Collect trainable parameters with per-component learning rates."""
+        return self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: self.trainer.unet_lr,
+            LORA_COMPONENT_TEXT_ENCODER_1: lambda: self.trainer.text_encoder_1_lr,
+            LORA_COMPONENT_TEXT_ENCODER_2: lambda: self.trainer.text_encoder_2_lr,
+        })
 
-        Args:
-            lora_layers: Dictionary of LoRA layers
+    CHECKPOINT_LOG_FORMAT = "[{adapter}] Saved LoRA checkpoint: {path}"
 
-        Returns:
-            List of parameter groups for optimizer
-        """
-        params = []
-        unet_params = []
-        te1_params = []
-        te2_params = []
-
-        for lora_name, lora_layer in lora_layers.items():
-            if lora_name.startswith("lora_unet_"):
-                unet_params.extend(lora_layer.lora_down.parameters())
-                unet_params.extend(lora_layer.lora_up.parameters())
-            elif lora_name.startswith("lora_te1_"):
-                te1_params.extend(lora_layer.lora_down.parameters())
-                te1_params.extend(lora_layer.lora_up.parameters())
-            elif lora_name.startswith("lora_te2_"):
-                te2_params.extend(lora_layer.lora_down.parameters())
-                te2_params.extend(lora_layer.lora_up.parameters())
-
-        # Add parameter groups with component-specific learning rates
-        if unet_params:
-            params.append({"params": unet_params, "lr": self.trainer.unet_lr})
-        if te1_params:
-            params.append({"params": te1_params, "lr": self.trainer.text_encoder_1_lr})
-        if te2_params:
-            params.append({"params": te2_params, "lr": self.trainer.text_encoder_2_lr})
-
-        return params
-
-    def save_checkpoint(
-        self,
-        lora_layers: Dict[str, nn.Module],
-        step: int,
-        epoch: int,
-        output_path: Path
-    ):
-        """
-        Save LoRA checkpoint in safetensors format.
-
-        Args:
-            lora_layers: Dictionary of LoRA layers
-            step: Current training step
-            epoch: Current training epoch
-            output_path: Path to save checkpoint
-        """
-        # Collect LoRA weights
-        lora_state_dict = {}
-
-        for lora_name, lora_layer in lora_layers.items():
-            lora_state_dict[f"{lora_name}.lora_down.weight"] = lora_layer.lora_down.weight
-            lora_state_dict[f"{lora_name}.lora_up.weight"] = lora_layer.lora_up.weight
-            # Add alpha for diffusers compatibility (required by _create_lora_config)
-            lora_state_dict[f"{lora_name}.alpha"] = torch.tensor(self.lora_alpha, dtype=torch.float32)
-
-        # Add metadata
-        metadata = {
+    def checkpoint_metadata(
+        self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
+    ) -> Dict[str, str]:
+        return {
             "lora_rank": str(self.lora_rank),
             "lora_alpha": str(self.lora_alpha),
             "step": str(step),
@@ -287,10 +237,6 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             "model_type": "sdxl",
             **sushi_modelspec_metadata(self.trainer),
         }
-
-        # Save safetensors
-        save_file(lora_state_dict, output_path, metadata=metadata)
-        print(f"[SDXLLoRAAdapter] Saved LoRA checkpoint: {output_path}")
 
 
 # ============================================================

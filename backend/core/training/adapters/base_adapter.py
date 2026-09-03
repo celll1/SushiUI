@@ -6,9 +6,10 @@ Author: Claude (2026-01-04)
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Optional
 import torch
 import torch.nn as nn
+from safetensors.torch import save_file
 
 from core.adapters import count_quantized_linears
 
@@ -19,13 +20,18 @@ LORA_COMPONENT_TEXT_ENCODER_1 = "text_encoder_1"
 LORA_COMPONENT_TEXT_ENCODER_2 = "text_encoder_2"
 LORA_COMPONENT_VISION_ENCODER = "vision_encoder"
 
-LORA_COMPONENTS = frozenset({
+# Param-group order. Every architecture that groups by component already emits
+# its groups in this order, and the order is part of a resume's contract:
+# `_configured_group_lrs` is written back index-for-index.
+LORA_COMPONENT_ORDER = (
     LORA_COMPONENT_UNET,
     LORA_COMPONENT_TEXT_ENCODER,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_TEXT_ENCODER_2,
     LORA_COMPONENT_VISION_ENCODER,
-})
+)
+
+LORA_COMPONENTS = frozenset(LORA_COMPONENT_ORDER)
 
 
 def resolve_component_lr(trainer, *attr_names: str, label: str = "component") -> float:
@@ -244,6 +250,48 @@ class BaseLoRAAdapter(ABC):
         """
         pass
 
+    def component_param_groups(
+        self,
+        lora_layers: Dict[str, nn.Module],
+        lr_by_component: Dict[str, Callable[[], float]],
+    ) -> List[Dict[str, Any]]:
+        """One optimizer group per non-empty component, in ``LORA_COMPONENT_ORDER``.
+
+        Buckets by the component recorded at injection, not by a prefix test on
+        the layer name: the two agree for every architecture today, and the
+        recorded component is the one that cannot drift from the injection.
+
+        Each rate is a THUNK and is called only for a component that actually
+        has parameters, so an architecture never has to resolve a rate for a
+        component it did not inject. What the thunk does -- read an attribute,
+        go through ``resolve_component_lr``, apply an architecture's LR factor
+        -- stays with the architecture, because that genuinely differs.
+        """
+        buckets: Dict[str, List[nn.Parameter]] = {}
+        for name, layer in lora_layers.items():
+            component = self.lora_components.get(name, LORA_COMPONENT_UNET)
+            buckets.setdefault(component, []).extend(layer.trainable_parameters())
+
+        groups: List[Dict[str, Any]] = []
+        for component in LORA_COMPONENT_ORDER:
+            params = buckets.pop(component, None)
+            if not params:
+                continue
+            resolve = lr_by_component.get(component)
+            if resolve is None:
+                raise KeyError(
+                    f"{type(self).__name__} injected {len(params)} {component!r} LoRA "
+                    f"parameter(s) but declares no learning rate for that component"
+                )
+            groups.append({"params": params, "lr": resolve()})
+        leftover = sorted(c for c, p in buckets.items() if p)
+        if leftover:
+            raise ValueError(
+                f"{type(self).__name__} recorded LoRA component(s) {leftover} that are "
+                f"missing from LORA_COMPONENT_ORDER, so their parameters would not train"
+            )
+        return groups
+
     @abstractmethod
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
         """
@@ -257,7 +305,46 @@ class BaseLoRAAdapter(ABC):
         """
         pass
 
+    # Z-Image is the exception: its file carries alpha in safetensors metadata
+    # only, and its generation loader reads it from there.
+    CHECKPOINT_WRITES_ALPHA = True
+
+    CHECKPOINT_LOG_FORMAT = (
+        "[{adapter}] Saved LoRA checkpoint ({layers} layers) -> {path}"
+    )
+
     @abstractmethod
+    def checkpoint_metadata(
+        self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
+    ) -> Dict[str, str]:
+        """The safetensors ``__metadata__`` block for this architecture.
+
+        Called before anything is written, so an architecture that refuses to
+        save some layer set (SenseNova refuses an understanding-only LoRA)
+        raises from here.
+        """
+        pass
+
+    def export_state_dict(self, lora_layers: Dict[str, nn.Module]) -> Dict[str, torch.Tensor]:
+        """``<stem>.<branch tensor name>`` for every layer, plus per-layer alpha.
+
+        The stem is the ``lora_layers`` key verbatim. It is not just a file key:
+        for Z-Image it is also the trainer's in-memory layer identity and its
+        resume key, so nothing here may reshape it.
+
+        Alpha is a fresh tensor per key on purpose -- one shared tensor object
+        under several keys is what safetensors rejects as shared memory.
+        """
+        state_dict: Dict[str, torch.Tensor] = {}
+        for stem, layer in lora_layers.items():
+            for name, tensor in layer.export_tensors().items():
+                state_dict[f"{stem}.{name}"] = tensor
+            if self.CHECKPOINT_WRITES_ALPHA:
+                state_dict[f"{stem}.alpha"] = torch.tensor(
+                    float(self.lora_alpha), dtype=torch.float32
+                )
+        return state_dict
+
     def save_checkpoint(
         self,
         lora_layers: Dict[str, nn.Module],
@@ -274,7 +361,13 @@ class BaseLoRAAdapter(ABC):
             epoch: Current training epoch
             output_path: Path to save checkpoint
         """
-        pass
+        metadata = self.checkpoint_metadata(lora_layers, step, epoch)
+        save_file(self.export_state_dict(lora_layers), str(output_path), metadata=metadata)
+        # Metadata fields are available to the log format (SenseNova names its
+        # branch from lora_targets); the three below always win a name clash.
+        fields = dict(metadata)
+        fields.update(adapter=type(self).__name__, layers=len(lora_layers), path=output_path)
+        print(self.CHECKPOINT_LOG_FORMAT.format(**fields))
 
 
 class BaseFullParameterAdapter(ABC):

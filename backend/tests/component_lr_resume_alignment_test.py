@@ -334,9 +334,9 @@ def test_single_group_dit_lora_resumes_at_the_configured_unet_lr(name):
         "lens": LensLoRAAdapter, "ltx2": Ltx2LoRAAdapter,
         "minimax_h3": MiniMaxH3LoRAAdapter,
     }
-    layer = nn.Module()
-    layer.lora_down = nn.Linear(2, 2, bias=False)
-    layer.lora_up = nn.Linear(2, 2, bias=False)
+    from core.adapters import LoRALinearLayer
+
+    layer = LoRALinearLayer(nn.Linear(2, 2, bias=False), 2, 2, "lora_unet_x")
 
     probe = _Probe(learning_rate=1e-4, unet_lr=2e-5)
     groups = adapters[name](probe, lora_rank=2, lora_alpha=2).setup_trainable_parameters(

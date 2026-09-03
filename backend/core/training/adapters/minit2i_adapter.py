@@ -20,7 +20,6 @@ from typing import Dict, List, Any, Optional
 
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
@@ -100,21 +99,18 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
         return count
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
-        unet_params: List[nn.Parameter] = []
-        te_params: List[nn.Parameter] = []
-        for name, lora_layer in lora_layers.items():
-            target = te_params if name.startswith("lora_te_") else unet_params
-            target.extend(lora_layer.lora_down.parameters())
-            target.extend(lora_layer.lora_up.parameters())
-        groups: List[Dict[str, Any]] = []
-        if unet_params:
-            base_lr = resolve_component_lr(self.trainer, "unet_lr", label="MiniT2I LoRA")
-            lr_factor = float(self.trainer.config.get("minit2i_lr_factor", 1.0))
-            groups.append({"params": unet_params, "lr": base_lr * lr_factor})
-        if te_params:
-            te_lr = resolve_component_lr(self.trainer, "text_encoder_lr", label="MiniT2I FLAN-T5 LoRA")
-            groups.append({"params": te_params, "lr": te_lr})
+        def _te_lr() -> float:
+            te_lr = resolve_component_lr(self.trainer, "text_encoder_lr",
+                                         label="MiniT2I FLAN-T5 LoRA")
             print(f"[MiniT2ILoRAAdapter] FLAN-T5 LoRA param group lr={te_lr}")
+            return te_lr
+
+        groups = self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: (
+                resolve_component_lr(self.trainer, "unet_lr", label="MiniT2I LoRA")
+                * float(self.trainer.config.get("minit2i_lr_factor", 1.0))),
+            LORA_COMPONENT_TEXT_ENCODER: _te_lr,
+        })
         # REPA projector (training-only alignment head). Without this group the
         # projector would never update and the alignment target would be random,
         # defeating REPA. Appended last so the param-group order is stable on resume.
@@ -127,30 +123,25 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
                 groups.append({"params": p_params, "lr": proj_lr})
         return groups
 
-    def save_checkpoint(self, lora_layers: Dict[str, nn.Module], step: int, epoch: int, output_path: Path):
-        state_dict: Dict[str, torch.Tensor] = {}
-        alpha_value = float(self.lora_alpha)
-        for lora_name, lora_layer in lora_layers.items():
-            state_dict[f"{lora_name}.lora_down.weight"] = lora_layer.lora_down.weight.detach().cpu()
-            state_dict[f"{lora_name}.lora_up.weight"] = lora_layer.lora_up.weight.detach().cpu()
-            state_dict[f"{lora_name}.alpha"] = torch.tensor(alpha_value, dtype=torch.float32)
-        active_scopes = ",".join(k for k, v in self.scope.items() if v)
+    def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
+                            step: int, epoch: int) -> Dict[str, str]:
         active_te_scopes = ",".join(k for k, v in self.te_scope.items() if v)
         has_te = any(name.startswith("lora_te_") for name in lora_layers)
-        metadata = {
+        return {
             "model_type": "minit2i",
             "modelspec.architecture": "minit2i",
             "variant": str(getattr(self.trainer, "minit2i_variant", "") or ""),
             "lora_rank": str(self.lora_rank),
             "lora_alpha": str(self.lora_alpha),
-            "lora_targets": active_scopes,
+            "lora_targets": ",".join(k for k, v in self.scope.items() if v),
             "lora_te_targets": active_te_scopes if has_te else "",
             "step": str(step),
             "epoch": str(epoch),
             "format": "pt",
         }
-        save_file(state_dict, str(output_path), metadata=metadata)
-        print(f"[MiniT2ILoRAAdapter] Saved LoRA checkpoint ({len(lora_layers)} layers) -> {output_path}")
+
+    def save_checkpoint(self, lora_layers: Dict[str, nn.Module], step: int, epoch: int, output_path: Path):
+        super().save_checkpoint(lora_layers, step, epoch, output_path)
 
         # REPA projector (training-only): saved alongside for resume; not in the LoRA file.
         if getattr(self.trainer, "repa_enable", False) and getattr(self.trainer, "repa_projector", None) is not None:

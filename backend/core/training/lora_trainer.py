@@ -375,17 +375,17 @@ class LoRATrainer(BaseTrainer):
         # Load checkpoint weights
         checkpoint = load_file(checkpoint_path)
 
-        # Load LoRA weights into existing layers
+        # Load LoRA weights into existing layers. The branch names its own
+        # tensors, so an algebra that carries more than down/up resumes too;
+        # `alpha` is deliberately not among them (a spec constant, not state).
         for lora_name, lora_layer in self.lora_layers.items():
-            # Load lora_down weight
-            down_key = f"{lora_name}.lora_down.weight"
-            if down_key in checkpoint:
-                lora_layer.lora_down.weight.data.copy_(checkpoint[down_key])
-
-            # Load lora_up weight
-            up_key = f"{lora_name}.lora_up.weight"
-            if up_key in checkpoint:
-                lora_layer.lora_up.weight.data.copy_(checkpoint[up_key])
+            slice_ = {}
+            for tensor_name in lora_layer.tensor_names():
+                value = checkpoint.get(f"{lora_name}.{tensor_name}")
+                if value is not None:
+                    slice_[tensor_name] = value
+            if slice_:
+                lora_layer.load_tensors(slice_)
 
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")
         return step

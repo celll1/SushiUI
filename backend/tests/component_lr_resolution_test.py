@@ -183,15 +183,13 @@ def test_every_adapter_lr_site_goes_through_the_resolver():
 # Per-adapter behaviour with a real fake trainer
 # ---------------------------------------------------------------------------
 
-class _FakeLoRALayer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.lora_down = nn.Linear(4, 2, bias=False)
-        self.lora_up = nn.Linear(2, 4, bias=False)
-
-
 def _lora_layers():
-    return {"lora_unet_x": _FakeLoRALayer()}
+    """The real branch class, not a stub: it owns the tensor protocol the
+    adapters collect parameters through."""
+    from core.adapters import LoRALinearLayer
+
+    return {"lora_unet_x": LoRALinearLayer(nn.Linear(4, 4, bias=False), 2, 2,
+                                           "lora_unet_x")}
 
 
 def _lora_adapters():

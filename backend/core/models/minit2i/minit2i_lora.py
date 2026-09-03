@@ -10,7 +10,9 @@ txt_embedder/pooled_embedder), grouped by scope:
 Module paths are relative to the MiniT2IMMJiTModel (e.g. model.net.double_blocks.0.img_qkv).
 Keys use a reversible "."<->"__" encoding ("lora_unet_<path with . as __>") — module
 names contain only single underscores, so "__" is unambiguously the path separator.
-All targets are plain nn.Linear (no fp8). Forward-time addition, fully reversible.
+All targets are plain nn.Linear (no fp8). Each is covered ONCE by a
+CompositeAdapterLayer holding one named branch per selected LoRA (forward-time
+addition, fully reversible), so two LoRAs over one module SUM.
 """
 
 from __future__ import annotations
@@ -130,17 +132,23 @@ def iter_minit2i_te_lora_targets(
 ) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
     """Yield (module_path, parent, attr, current_module) for each FLAN-T5 LoRA target.
 
+    ONE enumerator for both load and unload of the TEXT-ENCODER half, so the two
+    cannot disagree about a slot once a target can hold more than one branch.
+
     module_path is relative to the T5EncoderModel
     (e.g. "encoder.block.0.layer.0.SelfAttention.q"). Targets:
       attn: SelfAttention.{q,k,v,o}
       ff:   DenseReluDense.{wi,wi_0,wi_1,wo} (gated-gelu uses wi_0/wi_1)
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     scope = scope if scope is not None else TE_DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
     want_ff = bool(scope.get("ff", False))
-    is_target = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+    # A composite is a target too: drop it and a second selected LoRA skips every
+    # occupied slot and reports zero matches as if its keys were wrong.
+    is_target = lambda m: isinstance(
+        m, (nn.Linear, LoRALinearLayer, CompositeAdapterLayer))
 
     encoder = getattr(text_encoder, "encoder", None)
     if encoder is None:
@@ -182,15 +190,18 @@ def iter_minit2i_lora_targets(
 ) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
     """Yield (module_path, parent, attr, current_module) for each LoRA target.
 
+    ONE enumerator for both load and unload of the TRANSFORMER half.
+
     module_path is relative to `transformer` (e.g. "model.net.double_blocks.0.img_qkv").
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
     want_mlp = bool(scope.get("mlp", False))
     want_txt_embed = bool(scope.get("txt_embed", False))
-    is_target = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+    is_target = lambda m: isinstance(
+        m, (nn.Linear, LoRALinearLayer, CompositeAdapterLayer))
 
     net = _net(transformer)
     if net is None:
@@ -224,13 +235,6 @@ def iter_minit2i_lora_targets(
                 yield f"model.net.{attr}", net, attr, m
 
 
-def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
-    if isinstance(attr, int):
-        parent[attr] = module
-    else:
-        setattr(parent, attr, module)
-
-
 def _apply_group(
     targets,
     grouped: Dict[str, Dict[str, torch.Tensor]],
@@ -239,35 +243,36 @@ def _apply_group(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
     default_alpha: Optional[float] = None,
-) -> Tuple[int, int]:
-    """Wrap each target Linear with a LoRALinearLayer -> (applied, already_wrapped).
+    branch_name: str = "lora",
+) -> int:
+    """Add one named branch per matching module to the composite covering it.
+
+    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA over
+    the same module adds a branch beside the first rather than replacing it.
+    ``branch_name`` must be unique within the request.
 
     grouped keys are namespaced ("" for transformer, "te::" for the text encoder);
     `namespace` selects which entries this pass consumes so a single state dict can
-    hold both transformer and TE LoRA without collision.
-
-    A target already wrapped by an earlier LoRA is counted, not re-wrapped:
-    LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The caller
-    turns the count into a refusal or a warning.
+    hold both transformer and TE LoRA without collision. The same namespace keys
+    the shared bookkeeping, which is what lets one component be unloaded or
+    reloaded without disturbing the other.
 
     ``default_alpha`` is the file-metadata alpha used for a module with no per-key
     ``.alpha`` tensor (see alpha_from_metadata).
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     applied = 0
-    occupied = 0
-    for module_path, parent, attr, linear in targets:
+    # Materialised: the slots are replaced as we go.
+    for module_path, parent, attr, linear in list(targets):
         key = namespace + module_path
         weights = grouped.get(key)
         if weights is None:
             continue
-        if isinstance(linear, LoRALinearLayer):
-            occupied += 1
-            continue
         down, up = weights["down"], weights["up"]
         alpha_tensor = weights.get("alpha")
-        true_original = linear
+        true_original = (linear.original_module
+                         if isinstance(linear, CompositeAdapterLayer) else linear)
         lora_original_modules.setdefault(key, true_original)
         rank = int(down.shape[0])
         if alpha_tensor is not None:
@@ -276,19 +281,22 @@ def _apply_group(
             alpha_value = float(default_alpha)
         else:
             alpha_value = float(rank)
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=key)
+        branch = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=key)
         device = true_original.weight.device
         compute_dtype = true_original.weight.dtype if true_original.weight.dtype.is_floating_point else torch.float32
         with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = (alpha_value / rank) * strength
-        _set_module(parent, attr, wrapper)
+            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
+        # add_branch refolds the strength into the branch's own scale. Never
+        # multiply it onto the delta instead: same LoRA mathematically, but it
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, branch, strength=strength)
         wrapped_keys.add(key)
         applied += 1
-    return applied, occupied
+    return applied
 
 
 def apply_lora_group(
@@ -299,10 +307,12 @@ def apply_lora_group(
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
     default_alpha: Optional[float] = None,
-) -> Tuple[int, int]:
+    branch_name: str = "lora",
+) -> int:
     return _apply_group(
         iter_minit2i_lora_targets(transformer, scope if scope is not None else _FULL_SCOPE),
         grouped, "", strength, lora_original_modules, wrapped_keys, default_alpha,
+        branch_name,
     )
 
 
@@ -314,10 +324,12 @@ def apply_te_lora_group(
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
     default_alpha: Optional[float] = None,
-) -> Tuple[int, int]:
+    branch_name: str = "lora",
+) -> int:
     return _apply_group(
         iter_minit2i_te_lora_targets(text_encoder, scope if scope is not None else _TE_FULL_SCOPE),
         grouped, TE_NAMESPACE, strength, lora_original_modules, wrapped_keys, default_alpha,
+        branch_name,
     )
 
 
@@ -327,26 +339,34 @@ def restore_originals(
     wrapped_keys: Set[str],
     text_encoder: Optional[nn.Module] = None,
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original.
+    """Revert every composite-covered module to its pre-LoRA original.
 
-    Restores only keys this session actually wrapped, and drops their bookkeeping
-    afterwards: a surviving ``lora_original_modules`` entry would be written into
-    the NEXT model loaded at the same path, i.e. one model's Linear installed into
-    another. Entries whose component is absent at unload time (a text encoder
-    already freed, say) are kept, so a later unload can still recover them.
+    Driven by what is INSTALLED, per component, through the enumerators the load
+    path uses, so the two cannot disagree about a slot's address. Bookkeeping for
+    the restored keys is dropped: a surviving ``lora_original_modules`` entry
+    would be written into the NEXT model loaded at the same path, i.e. one
+    model's Linear installed into another. A component that is absent here (a
+    text encoder already freed, say) keeps its half of the map, so a later unload
+    can still recover it -- that is what the ``te::`` namespace buys.
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
     restored_keys: Set[str] = set()
-    for module_path, parent, attr, _linear in iter_minit2i_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in wrapped_keys and module_path in lora_original_modules:
-            _set_module(parent, attr, lora_original_modules[module_path])
+    for module_path, parent, attr, current in list(
+            iter_minit2i_lora_targets(transformer, _FULL_SCOPE)):
+        if isinstance(current, CompositeAdapterLayer):
+            set_module_slot(parent, attr, lora_original_modules.get(
+                module_path, current.original_module))
             restored_keys.add(module_path)
             restored += 1
     if text_encoder is not None:
-        for module_path, parent, attr, _linear in iter_minit2i_te_lora_targets(text_encoder, _TE_FULL_SCOPE):
-            key = TE_NAMESPACE + module_path
-            if key in wrapped_keys and key in lora_original_modules:
-                _set_module(parent, attr, lora_original_modules[key])
+        for module_path, parent, attr, current in list(
+                iter_minit2i_te_lora_targets(text_encoder, _TE_FULL_SCOPE)):
+            if isinstance(current, CompositeAdapterLayer):
+                key = TE_NAMESPACE + module_path
+                set_module_slot(parent, attr, lora_original_modules.get(
+                    key, current.original_module))
                 restored_keys.add(key)
                 restored += 1
     for key in restored_keys:

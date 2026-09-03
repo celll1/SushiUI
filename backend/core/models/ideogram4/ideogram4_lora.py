@@ -1,7 +1,8 @@
 """LoRA support for the Ideogram 4 DiT (training target enumeration + inference apply).
 
-Wraps target Linear / Fp8Linear layers with LoRALinearLayer (forward-time addition,
-fully reversible — never merges into the fp8 base). Mirrors the Lens LoRA design.
+Covers each target Linear / Fp8Linear with a CompositeAdapterLayer holding one
+named branch per selected LoRA (forward-time addition, fully reversible — never
+merges into the fp8 base), so two LoRAs over one module SUM. Mirrors Lens.
 
 Accepted key formats:
   1. sd-scripts native ("lora_unet_" prefix, dots flattened to underscores):
@@ -181,32 +182,28 @@ def parse_scope_csv(scope_csv: Optional[str]) -> Dict[str, bool]:
     return scope
 
 
-def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
-    if isinstance(attr, int):
-        parent[attr] = module
-    else:
-        setattr(parent, attr, module)
-
-
 def _is_lora_target(m: Any) -> bool:
     """True for a module a LoRA can wrap or re-wrap on the Ideogram 4 DiT.
 
-    A plain ``nn.Linear``, EITHER weight-only quantized Linear, or an
-    already-wrapped ``LoRALinearLayer`` (yielded so re-application and stacking
-    find the slot). ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT
-    ``nn.Linear`` subclasses, so both have to be named or their layers are
-    skipped SILENTLY -- no target, no warning, and a LoRA that appears to do
-    nothing on a quantized checkpoint. Ideogram 4's published checkpoints are
-    quantized, so that would be the normal case here, not an edge case.
+    A plain ``nn.Linear``, EITHER weight-only quantized Linear, or an adapter
+    wrapper already sitting in the slot (yielded so a second selected LoRA finds
+    the composite instead of skipping every occupied target and reporting zero
+    matches as if its keys were wrong). ``Fp8Linear`` and ``Int8Linear`` are
+    ``nn.Module``s, NOT ``nn.Linear`` subclasses, so both have to be named or
+    their layers are skipped SILENTLY -- no target, no warning, and a LoRA that
+    appears to do nothing on a quantized checkpoint. Ideogram 4's published
+    checkpoints are quantized, so that would be the normal case here, not an
+    edge case.
 
     MODULE-LEVEL rather than the closure it used to be, so that
     ``quantized_capability_parity_test`` can find it by convention and check it
     against ``Int8Linear``/``Fp8Linear`` the same way it checks Anima's
     ``_is_lora_target`` and Krea 2's ``_is_target``. The behaviour is unchanged.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
-    return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
+    return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer,
+                          CompositeAdapterLayer))
 
 
 def iter_ideogram4_lora_targets(
@@ -215,10 +212,16 @@ def iter_ideogram4_lora_targets(
 ) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
     """Yield (module_path, parent, attr_or_idx, current_module) per LoRA target.
 
+    ONE enumerator for both load and unload, so the two cannot disagree about a
+    slot once a target can hold more than one branch. Callers materialise it
+    before mutating.
+
     attr_or_idx is a str for normal attributes or an int for ModuleList children
-    (e.g. to_out[0]). Use _set_module() for assignment. Targets include both plain
-    nn.Linear, weight-only-quantized Fp8Linear / Int8Linear (the e4m3 and int8
-    bases), plus already-wrapped LoRALinearLayer (for stacking).
+    (e.g. to_out[0]) -- address it with ``core.adapters.get_module_slot`` /
+    ``set_module_slot``, which take either; ``setattr(parent, 0, module)`` raises
+    TypeError. Targets include plain nn.Linear, weight-only-quantized Fp8Linear /
+    Int8Linear (the e4m3 and int8 bases), plus an adapter wrapper already in the
+    slot.
     """
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
@@ -271,36 +274,39 @@ def apply_lora_group(
     wrapped_keys: Set[str],
     scope: Optional[Dict[str, bool]] = None,
     default_alpha: Optional[float] = None,
-) -> Tuple[int, int]:
-    """Wrap matching modules with LoRALinearLayer -> (applied, already_wrapped).
+    branch_name: str = "lora",
+) -> int:
+    """Add one named branch per matching module to the composite covering it.
+
+    Each target is covered ONCE by a ``CompositeAdapterLayer``; a second LoRA
+    over the same module adds a branch beside the first rather than replacing
+    it. ``branch_name`` must be unique within the request.
+
+    Called once per BRANCH of the dual transformer, with that branch's own
+    ``grouped`` slice and its own bookkeeping maps, so a stack on the
+    conditional half cannot reach the unconditional one.
 
     ``default_alpha`` is the file-metadata alpha used for a module with no
     per-key ``.alpha`` tensor (see alpha_from_metadata).
-
-    A target already wrapped by an earlier LoRA is counted, not re-wrapped:
-    LoRALinearLayer cannot wrap a wrapper (no in_features/out_features). The
-    caller turns the count into a refusal or a warning.
     """
-    from core.adapters import LoRALinearLayer
+    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
 
     effective_scope = scope if scope is not None else _FULL_SCOPE
     applied = 0
-    occupied = 0
 
-    for module_path, parent, attr, linear in iter_ideogram4_lora_targets(transformer, effective_scope):
+    # Materialised: the slots are replaced as we go.
+    for module_path, parent, attr, linear in list(
+            iter_ideogram4_lora_targets(transformer, effective_scope)):
         weights = grouped.get(module_path)
         if weights is None:
-            continue
-
-        if isinstance(linear, LoRALinearLayer):
-            occupied += 1
             continue
 
         down = weights["down"]
         up = weights["up"]
         alpha_tensor = weights.get("alpha")
 
-        true_original = linear
+        true_original = (linear.original_module
+                         if isinstance(linear, CompositeAdapterLayer) else linear)
         lora_original_modules.setdefault(module_path, true_original)
 
         rank = int(down.shape[0])
@@ -311,7 +317,8 @@ def apply_lora_group(
         else:
             alpha_value = float(rank)
 
-        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
+        branch = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
+                                 lora_name=module_path)
         device = true_original.weight.device
 
         # Match the base compute dtype (fp8 base -> bf16 compute).
@@ -324,17 +331,20 @@ def apply_lora_group(
             compute_dtype = torch.bfloat16
 
         with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.scale = (alpha_value / rank) * strength
+            branch.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            branch.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
+        branch.lora_down = branch.lora_down.to(dtype=compute_dtype)
+        branch.lora_up = branch.lora_up.to(dtype=compute_dtype)
 
-        _set_module(parent, attr, wrapper)
+        # add_branch refolds the strength into the branch's own scale. Never
+        # multiply it onto the delta instead: same LoRA mathematically, but it
+        # loses bit-identity with the single-LoRA numerics this replaces.
+        composite = CompositeAdapterLayer.attach(parent, attr)
+        composite.add_branch(branch_name, branch, strength=strength)
         wrapped_keys.add(module_path)
         applied += 1
 
-    return applied, occupied
+    return applied
 
 
 def restore_originals(
@@ -342,18 +352,24 @@ def restore_originals(
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original.
+    """Revert every composite-covered module of ONE transformer to its original.
 
-    Restores only paths this session actually wrapped, and drops their
-    bookkeeping afterwards: a surviving ``lora_original_modules`` entry would be
-    written into the NEXT model loaded at the same path, i.e. one model's
-    Linear installed into another.
+    Driven by what is INSTALLED, through the enumerator the load path uses, so
+    the two cannot disagree about a slot's address. Bookkeeping for the restored
+    paths is dropped: a surviving ``lora_original_modules`` entry would be
+    written into the NEXT model loaded at the same path, i.e. one model's Linear
+    installed into another. The caller passes one branch's maps, so restoring
+    the conditional transformer leaves the unconditional one untouched.
     """
+    from core.adapters import CompositeAdapterLayer, set_module_slot
+
     restored = 0
     restored_keys: Set[str] = set()
-    for module_path, parent, attr, _linear in iter_ideogram4_lora_targets(transformer, _FULL_SCOPE):
-        if module_path in wrapped_keys and module_path in lora_original_modules:
-            _set_module(parent, attr, lora_original_modules[module_path])
+    for module_path, parent, attr, current in list(
+            iter_ideogram4_lora_targets(transformer, _FULL_SCOPE)):
+        if isinstance(current, CompositeAdapterLayer):
+            set_module_slot(parent, attr, lora_original_modules.get(
+                module_path, current.original_module))
             restored_keys.add(module_path)
             restored += 1
     for key in restored_keys:

@@ -881,6 +881,105 @@ per-architecture:**
 - Gate MiniMax-H3 and SenseNova separately because their ConvRot training
   forward and activation dtype policy dominate more of the step.
 
+**Landed: the tensor-group engine, with no production caller.**
+`backend/core/adapters/groups.py` owns the step between a checkpoint's keys and
+a branch: `ADAPTER_SUFFIXES` (22 spellings into 18 canonical names, covering the
+LyCORIS set, the PEFT `lora_A`/`lora_B` names and `.dora_scale`),
+`split_adapter_suffix`, `TensorGroup`, `group_adapter_tensors(tensors,
+stem_of)`, `split_group_on_out_rows` and `build_adapter_branch`. Alongside it,
+`LoRALinearLayer` / `LoHaLinearLayer` / `LoKrLinearLayer` gained `from_tensors`.
+**No architecture imports any of it**, the capability matrix still refuses every
+LoHa/LoKr/DoRA pair on all thirteen, and ordinary LoRA is byte-unchanged. Gates:
+`backend/tests/adapter_tensor_group_cheap_test.py`, plus new rows in
+`adapter_lycoris_variants_cheap_test.py`, `adapter_oracle_gate_cheap_test.py`
+and `adapter_composite_layer_cheap_test.py`.
+
+- **`TensorGroup` answers to the legacy aliases on purpose.** `group["down"]` is
+  `group["lora_down.weight"]` and `"down" in group` is true, while iteration
+  yields canonical names only. The eleven component-loader architectures each
+  hand-write this grouping and four of them spell the drop identically
+  (`if "down" in v and "up" in v`), so the aliases are what makes their
+  migration additive instead of a simultaneous rewrite of eleven branch builders
+  — the change shape that cost five architectures a day of broken LoRA loading
+  in `22f21078`. **Removal condition: delete them once no branch builder reads
+  `weights["down"]`.**
+- **`partial` is computed and returned, never raised on.** Every architecture
+  drops incomplete groups silently today; making that a refusal is a separate,
+  evidence-gated change and not a side effect of the migration.
+- **The alpha drop, fixed.** `branch_tensors()["alpha"]` is a freshly built
+  tensor for LoHa/LoKr, so the `weight.data.copy_(value)` in `load_tensors`
+  mutated a throwaway and the layer's `alpha` — hence its `scale` — never moved.
+  The fix is `spec_constants()` / `load_spec_constant()`: a constant is
+  ASSIGNED, not copied into. MEASURED: a checkpoint saved at `alpha=8, rank=4`
+  loaded into a layer built at `alpha == rank` applied a delta exactly **0.5x**
+  the correct one — right shapes, wrong image. `LoRALinearLayer` is unaffected
+  (`spec_constants()` is empty, so its load path is the old loop unchanged).
+- **Geometry comes from the tensors, which is required rather than tidier.**
+  `LoKrLinearLayer.__init__` derives its split from
+  `factorization(out_features, factor)` and **no LyCORIS file stores `factor`**,
+  so a foreign LoKr written with a different one allocates the wrong
+  `lokr_w1`/`lokr_w2` shapes and `copy_` raises. `from_tensors` reads
+  `out_l`/`out_k`/`in_m`/`in_n` off the tensors and passes them through a new
+  `factors=` argument; LoHa takes its rank from `hada_w1_a.shape[1]`. It also
+  skips the kaiming init of factors it is about to overwrite, which keeps a load
+  from advancing the GLOBAL rng once per wrapped target.
+- **A layer built from a file may not carry `scalar`.** It initialises to
+  `zeros(())` and no real file has the key (upstream folds it into
+  `hada_w1_a`/`lokr_w1` at save and forces `scalar := 1` at load), so such a
+  layer would multiply the whole delta by zero. `from_tensors` refuses
+  `use_scalar=True` and ignores a stored `scalar` key, matching upstream's
+  reader.
+- **`split_group_on_out_rows` refuses a LoKr split it cannot represent.** The
+  row slice is exact for `lora` (slice `lora_up`) and `loha` (slice
+  `hada_w1_a`/`hada_w2_a`), the `_b` factors being shared. For `lokr`,
+  `kron(w1, w2)` puts row `i*K + k` at `w1[i]` times `w2[k]`, so a contiguous
+  piece is another Kronecker product **under the parent's own `(out_l, out_k)` /
+  `(in_m, in_n)` split** only when it covers whole `i` blocks, i.e. `n` divides
+  `w1.shape[0]`. The qualifier is load-bearing: every matrix is a degenerate
+  Kronecker product of a 1x1 with itself, which is a different factorization and
+  a dense delta, not a slice of this adapter. MEASURED on a 12x12 base (L=3,
+  K=4), worst piece against the parent's (3, 4) column split: **0.31** at n=2
+  and **0.27** at n=4 — not roundoff. The refusal is also deliberately
+  conservative: when `inner` divides `w2.shape[0]` every piece lands inside one
+  `i` block and IS representable (measured 2.1e-08 at n=6), and is refused
+  anyway. Both facts have pinning tests; implementing the second arm is optional
+  future work, never a correctness fix.
+- **`build_adapter_branch` returns `SHAPE_MISMATCH`, never raises.** One
+  malformed target in a foreign file is a module to skip, as it already is in
+  the eleven loaders. Every read of the group's tensors is therefore inside the
+  try, and the caught set includes `IndexError` and `ZeroDivisionError`: a 1-D
+  `hada_w1_a`, a 0-D `lora_down.weight`, a two-element `.alpha` and a rank-0
+  `lora_down.weight` each escaped an earlier draft, which would have turned
+  "skip it, warn `lora_partial`" into a 500 out of a generation request.
+  `AttributeError` is deliberately not caught — a missing attribute is an engine
+  bug, not a file defect. A rank-0 `lora`/`loha` group is refused for the same
+  reason `AdapterSpec.validate` refuses it (`RANK_REQUIRED`): its delta is
+  exactly zero. LoKr's full/full form is legitimately rank 0 and scales by 1.
+- **`TensorGroup.to_spec()` drops the alpha of a rank-0 LoKr.** Upstream
+  overrides `alpha = lora_dim` for the full/full form and writes that into the
+  file, the layer's `scale` ignores it, and keeping it would make `validate()`
+  refuse every legitimate full/full LoKr as "an alpha with no rank". DECIDED,
+  with the residual gap recorded: a serializer reconstructing a LyCORIS `.alpha`
+  from a spec alone would lose the stored value. It is not parked in `options`
+  today, because `options` is written into `sushi.adapter.options` on save and
+  that would be a durable format commitment for a value nothing reads; the live
+  layer carries it either way via `_alpha_from_tensors`. Revisit when a
+  spec-driven serializer exists.
+
+**Phase 2 checklist for the migration itself:**
+
+- `core/training/lora_trainer.py` (`_load_checkpoint`, the resume slice) both
+  snapshots and rolls back by iterating `branch_tensors()` and copying, so it
+  carries the same throwaway-`alpha` defect on its ROLLBACK path. Unreachable
+  today because only `LoRALinearLayer` is ever constructed for training; it
+  becomes live the moment a training adapter constructs a LyCORIS layer.
+- **ACE-Step will not migrate mechanically.**
+  `core/pipeline_backends/acestep.py` seeds each group with
+  `{"source_prefix": ..., "down": None, "up": None, "alpha": None}` — a
+  non-tensor key plus `None` placeholders that `TensorGroup` cannot hold, and
+  whose `"down" in v` test is inverted relative to this engine's (always true
+  there, presence-based here). It needs its own step.
+
 ### Phase 3: dense DoRA
 
 - Start with SD1.5, SDXL, Z-Image, Lens, and dense MiniT2I targets.

@@ -491,6 +491,63 @@ def test_ideogram4_cleanup_unwraps_on_a_path_that_never_denoised(tmp_path):
     assert not wrapped_paths(model)
 
 
+def test_ideogram4_a_failure_on_the_uncond_half_leaves_the_cond_half_unwrapped(
+        tmp_path, monkeypatch, warnings_seen):
+    """Atomic installation across BOTH components, which is new with the session.
+
+    The conditional half used to be applied file by file before the
+    unconditional one was even looked at, so a failure there left the model
+    running with half a request installed and no record of which half.
+    """
+    path, cond_paths, uncond_paths = train_and_save(tmp_path, with_uncond=True)
+    cond, uncond = _Stub(), _Stub()
+
+    real_add_branch = CompositeAdapterLayer.add_branch
+    installed = []
+
+    def fail_once_the_uncond_half_starts(self, name, branch, **kwargs):
+        installed.append(name)
+        if len(installed) > len(cond_paths):
+            raise RuntimeError("install failed on the unconditional branch")
+        return real_add_branch(self, name, branch, **kwargs)
+
+    monkeypatch.setattr(CompositeAdapterLayer, "add_branch",
+                        fail_once_the_uncond_half_starts)
+
+    with pytest.raises(RuntimeError, match="could not be applied"):
+        _Backend(cond, uncond)._load_lora_ideogram4([{"path": path, "strength": 1.0}])
+
+    assert len(installed) > len(cond_paths), "setup: the cond half must have installed"
+    assert not wrapped_paths(cond), "the conditional half must have rolled back"
+    assert not wrapped_paths(uncond)
+    assert "lora_load_failed" in warning_codes(warnings_seen)
+
+
+def test_ideogram4_restoring_the_uncond_branch_first_still_restores_both(tmp_path):
+    """The per-branch separation, demonstrated the only way that bites.
+
+    One shared originals map passes every gate that unloads the conditional half
+    first, because that restore pops every key before the unconditional one
+    reads it. Varying the order is what exposes it.
+    """
+    path, cond_paths, uncond_paths = train_and_save(tmp_path, with_uncond=True)
+    cond, uncond = _Stub(), _Stub()
+    before = {**dict(cond.named_modules()),
+              **{f"u::{n}": m for n, m in uncond.named_modules()}}
+    backend = _Backend(cond, uncond)
+    backend._load_lora_ideogram4([{"path": path, "strength": 1.0}])
+
+    components = backend._ideogram4_lora_components()
+    restored = backend._ideogram4_lora_session.unload(list(reversed(components)))
+
+    assert restored == len(cond_paths) + len(uncond_paths)
+    for target in uncond_paths:
+        assert dict(uncond.named_modules())[target] is before[f"u::{target}"], target
+    for target in cond_paths:
+        assert dict(cond.named_modules())[target] is before[target], target
+    assert not wrapped_paths(cond) and not wrapped_paths(uncond)
+
+
 def test_ideogram4_missing_file_refuses_and_warns(warnings_seen):
     with pytest.raises(FileNotFoundError, match="not found"):
         _Backend(_Stub())._load_lora_ideogram4([{"path": "no_such_i4_lora.safetensors"}])

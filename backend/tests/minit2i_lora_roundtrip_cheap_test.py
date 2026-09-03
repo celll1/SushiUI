@@ -544,6 +544,56 @@ def test_minit2i_a_leaked_wrapper_is_restored_before_the_next_load(tmp_path):
             assert torch.equal(leaked[target](x), clean[target](x)), target
 
 
+def test_minit2i_a_failed_transformer_pass_rolls_back_only_that_pass(
+        tmp_path, monkeypatch, warnings_seen):
+    """Atomicity here is per PASS, and deliberately so.
+
+    The text-encoder half is installed before the prompt encode and the
+    transformer half only after staging, so one ``AdapterSession.load`` cannot
+    span them. The transformer pass still rolls ITSELF back completely -- new
+    with the session -- while the already-committed TE half stays, and
+    ``_minit2i_cleanup``'s unconditional unload is what takes that back down.
+    """
+    path, tf_paths, te_paths = train_and_save(tmp_path)
+    transformer, text_encoder = _Transformer(), _TextEncoder()
+    backend = _Backend(transformer, text_encoder)
+
+    prepared = backend._minit2i_prepare_loras([{"path": path, "strength": STRENGTH}])
+    assert backend._apply_te_lora_minit2i(prepared) == len(te_paths)
+
+    def always_fail(self, name, branch, **kwargs):
+        raise RuntimeError("install failed on the transformer")
+
+    monkeypatch.setattr(CompositeAdapterLayer, "add_branch", always_fail)
+    with pytest.raises(RuntimeError, match="could not be applied"):
+        backend._load_lora_minit2i(prepared)
+    monkeypatch.undo()
+
+    assert not wrapped_paths(transformer), "the transformer pass must roll back"
+    assert wrapped_paths(text_encoder) == te_paths, "the committed TE pass stays"
+    assert "lora_load_failed" in warning_codes(warnings_seen)
+    assert backend._unload_lora_minit2i() == len(te_paths)
+    assert not wrapped_paths(text_encoder)
+
+
+def test_minit2i_unload_restores_the_te_when_the_transformer_is_gone(tmp_path):
+    """A component that is not loaded is expressed as ``module=None``, which
+    resets that component's bookkeeping and leaves the other's restorable."""
+    path, tf_paths, te_paths = train_and_save(tmp_path)
+    transformer, text_encoder = _Transformer(), _TextEncoder()
+    before = dict(text_encoder.named_modules())
+    backend = _Backend(transformer, text_encoder)
+    load_both_halves(backend, [{"path": path, "strength": STRENGTH}])
+
+    backend.minit2i_components.pop("transformer")
+
+    assert backend._unload_lora_minit2i() == len(te_paths)
+    for target in te_paths:
+        assert dict(text_encoder.named_modules())[target] is before[target], target
+    assert not wrapped_paths(text_encoder)
+    assert not backend._minit2i_lora_keys
+
+
 def test_minit2i_missing_file_refuses_and_warns(warnings_seen):
     backend = _Backend(_Transformer())
     with pytest.raises(FileNotFoundError, match="not found"):

@@ -623,11 +623,23 @@ class MiniT2IMixin:
         return [
             AdapterComponent(name="transformer", module=components.get("transformer"),
                              iter_targets=iter_minit2i_lora_slots,
-                             build_branch=self._minit2i_build_lora_branch),
+                             build_branch=self._minit2i_build_lora_branch,
+                             block_swap_active=self._minit2i_block_swap_live),
             AdapterComponent(name="text_encoder", module=components.get("text_encoder"),
                              iter_targets=iter_minit2i_te_lora_slots,
                              build_branch=self._minit2i_build_lora_branch),
         ]
+
+    def _minit2i_block_swap_live(self) -> bool:
+        """Is an offloader already splitting the double blocks?
+
+        Accurate for the transformer pass: ``_minit2i_stage_transformer`` sets
+        ``_minit2i_offloader`` (to None or an offloader) and runs immediately
+        before ``_load_lora_minit2i``. The text-encoder pass runs earlier and
+        declares no probe -- it is not block-swapped at all.
+        """
+        offloader = getattr(self, "_minit2i_offloader", None)
+        return offloader is not None and bool(getattr(offloader, "blocks_to_swap", 0))
 
     @property
     def _minit2i_lora_orig(self):
@@ -654,10 +666,11 @@ class MiniT2IMixin:
         The cross-component verdict is taken HERE, once, before either pass:
         each pass sees one half and would refuse a file that binds the other.
         """
-        from core.adapters import AdapterIncompatible, CompositeAdapterLayer
+        from core.adapters import (SHAPE_MISMATCH, AdapterIncompatible,
+                                   CompositeAdapterLayer)
         from core.models.minit2i.minit2i_lora import (
-            TE_NAMESPACE, alpha_from_metadata, detect_lora_format,
-            normalise_lora_state_dict,
+            TE_NAMESPACE, alpha_from_metadata, build_lora_branch,
+            detect_lora_format, normalise_lora_state_dict,
         )
 
         grouped = normalise_lora_state_dict(file.tensors)
@@ -680,22 +693,25 @@ class MiniT2IMixin:
         if "text_encoder" in live:
             declared_here += prepared["te_pairs"]
         matched_here = prepared["te_hits"] + prepared["unet_hits"]
+        # THE builder, not a second geometry check beside it: whether a group
+        # fits is whatever ``build_adapter_branch`` says, for every algebra.
+        # ``fork_rng`` because a branch's factors are drawn from the GLOBAL rng
+        # and this probe throws its branch away.
         mismatched = 0
-        for component in self._minit2i_lora_components():
-            if component.module is None:
-                continue
-            for parent, slot, module_path in component.iter_targets(component.module):
-                weights = grouped.get(module_path)
-                if weights is None:
+        with torch.random.fork_rng(devices=[]):
+            for component in self._minit2i_lora_components():
+                if component.module is None:
                     continue
-                current = parent[slot] if isinstance(slot, int) else getattr(parent, slot)
-                base = (current.original_module
-                        if isinstance(current, CompositeAdapterLayer) else current)
-                down, up = weights["down"], weights["up"]
-                if (down.ndim != 2 or up.ndim != 2
-                        or down.shape[1] != base.in_features
-                        or up.shape != (base.out_features, down.shape[0])):
-                    mismatched += 1
+                for parent, slot, module_path in component.iter_targets(component.module):
+                    group = grouped.get(module_path)
+                    if group is None:
+                        continue
+                    current = parent[slot] if isinstance(slot, int) else getattr(parent, slot)
+                    base = (current.original_module
+                            if isinstance(current, CompositeAdapterLayer) else current)
+                    if build_lora_branch(base, group, module_path,
+                                         prepared["alpha"]) is SHAPE_MISMATCH:
+                        mismatched += 1
         if mismatched or matched_here < declared_here:
             message = (
                 f"LoRA '{file.name}': only {matched_here - mismatched} of "
@@ -722,15 +738,17 @@ class MiniT2IMixin:
         namespaced key the checkpoint uses, so the transformer and text-encoder
         halves route themselves.
         """
-        from core.adapters import PreparedBranch
+        from core.adapters import SHAPE_MISMATCH, PreparedBranch
         from core.models.minit2i.minit2i_lora import build_lora_branch
 
         groups = request.prepared
-        weights = groups["grouped"].get(request.module_path)
-        if weights is None:
+        group = groups["grouped"].get(request.module_path)
+        if group is None:
             return None
-        branch = build_lora_branch(request.base, weights, request.module_path,
+        branch = build_lora_branch(request.base, group, request.module_path,
                                    default_alpha=groups["alpha"])
+        if branch is SHAPE_MISMATCH:
+            return branch
         # Strength is folded into the branch's own scale by ``add_branch``, never
         # multiplied onto its delta -- a post-multiply is different arithmetic and
         # loses bit-identity with the single-LoRA numerics this replaces.

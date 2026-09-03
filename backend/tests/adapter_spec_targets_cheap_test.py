@@ -348,9 +348,29 @@ def test_enumeration_passes_the_branch_dtype_default_through():
 # Architecture adapter capability matrix
 # ---------------------------------------------------------------------------
 
-#: What round-trips today. Growing this set is a Phase 2/3 change, not a
-#: test-maintenance chore -- see docs/guides/LYCORIS_ADAPTER_DESIGN.md.
-SHIPPED_PAIRS = {("lora", False)}
+#: What round-trips today, per architecture. Growing a row is a Phase 2/3
+#: change, not a test-maintenance chore -- see
+#: docs/guides/LYCORIS_ADAPTER_DESIGN.md.
+ORDINARY_ONLY = {("lora", False)}
+#: The Tier-1 four, whose generation branch builders run on
+#: ``build_adapter_branch`` and which are gated by
+#: ``adapter_lycoris_roundtrip_cheap_test.py``.
+ADDITIVE_LYCORIS = ORDINARY_ONLY | {("loha", False), ("lokr", False)}
+SHIPPED_PAIRS = {
+    "sd15": ORDINARY_ONLY,
+    "sdxl": ORDINARY_ONLY,
+    "zimage": ADDITIVE_LYCORIS,
+    "anima": ORDINARY_ONLY,
+    "lens": ORDINARY_ONLY,
+    "ideogram4": ORDINARY_ONLY,
+    "minit2i": ADDITIVE_LYCORIS,
+    "krea2": ADDITIVE_LYCORIS,
+    "flux2": ORDINARY_ONLY,
+    "ltx2": ADDITIVE_LYCORIS,
+    "minimax_h3": ORDINARY_ONLY,
+    "acestep": ORDINARY_ONLY,
+    "sensenova": ORDINARY_ONLY,
+}
 
 
 class TestArchAdapterCapability:
@@ -372,12 +392,21 @@ class TestArchAdapterCapability:
             assert capability.initial_dora in (
                 "dense", "dense_only", "deferred", "refused"), name
 
-    def test_only_ordinary_lora_is_supported_today(self):
+    def test_each_architecture_supports_exactly_its_shipped_row(self):
+        assert set(SHIPPED_PAIRS) == set(self._registry())
         for name, handler in self._registry().items():
             capability = handler.adapter_capability
-            assert set(capability.supported) == SHIPPED_PAIRS, name
+            assert set(capability.supported) == SHIPPED_PAIRS[name], name
             assert capability.supports("lora") is True, name
             capability.require("lora", False)
+
+    def test_no_architecture_enables_a_weight_decomposed_pair(self):
+        """DoRA/DoHa/DoKr are Phase 3. A flip that reached the decomposition
+        axis would be caught here rather than by a mis-scaled image."""
+        for name, handler in self._registry().items():
+            for algorithm in ("lora", "loha", "lokr"):
+                assert not handler.adapter_capability.supports(algorithm, True), \
+                    f"{name}/{algorithm}"
 
     def test_every_unsupported_pair_carries_a_reason_and_refuses(self):
         from core.training.arch.base_arch import ADAPTER_ALGORITHMS
@@ -386,7 +415,7 @@ class TestArchAdapterCapability:
             capability = handler.adapter_capability
             for algorithm in ADAPTER_ALGORITHMS:
                 for decompose in (False, True):
-                    if (algorithm, decompose) in SHIPPED_PAIRS:
+                    if (algorithm, decompose) in SHIPPED_PAIRS[name]:
                         continue
                     label = f"{name}/{algorithm}/decompose={decompose}"
                     assert capability.supports(algorithm, decompose) is False, label
@@ -407,7 +436,10 @@ class TestArchAdapterCapability:
         for name, handler in self._registry().items():
             assert handler.adapter_capability.additive_family is True, name
 
-    def test_a_decomposed_non_lora_pair_names_both_missing_halves(self):
+    def test_a_decomposed_non_lora_pair_names_every_half_that_is_missing(self):
+        """DoHa/DoKr are blocked twice over where the additive algebra is not
+        enabled, and by the decomposition ALONE where it is -- telling a Z-Image
+        user that LoHa is unimplemented would now be false."""
         for name, handler in self._registry().items():
             capability = handler.adapter_capability
             for algorithm in ("loha", "lokr"):
@@ -415,8 +447,11 @@ class TestArchAdapterCapability:
                 additive = capability.refusal_reason(algorithm, False)
                 dora = capability.refusal_reason("lora", True)
                 label = f"{name}/{algorithm}"
-                assert additive.split(": ", 1)[1] in decomposed, label
                 assert dora.split(": ", 1)[1] in decomposed, label
+                if additive is None:
+                    assert decomposed == dora, label
+                else:
+                    assert additive.split(": ", 1)[1] in decomposed, label
 
     def test_the_two_later_gate_architectures_are_marked_as_such(self):
         gated = {name for name, handler in self._registry().items()

@@ -208,9 +208,13 @@ class AdapterCapability:
 
     A declaration WITH GATES, deliberately in two halves: ``additive_family``
     and ``initial_dora`` record the design-doc verdict, while ``supported`` comes
-    from ``core.adapters.capability.ENABLED_ADAPTER_PAIRS`` and records what
-    round-trips today -- ordinary LoRA alone, until the Phase 2/3 codec and
-    training integration land.
+    from ``core.adapters.capability.ENABLED_ADAPTER_PAIRS``.
+
+    ``supported`` IS THE GENERATION BOUNDARY, not the training one. Four
+    architectures enable LoHa and LoKr there; training builds ``LoRALinearLayer``
+    and only that, on all thirteen. Whoever wires ``require()`` into the trainer
+    needs a second axis first -- this one will answer True for a family no
+    trainer can construct.
     """
 
     additive_family: bool
@@ -291,12 +295,15 @@ def declare_adapter_capability(
     for algorithm, decompose in _ADAPTER_PAIRS:
         if (algorithm, decompose) in supported:
             continue
-        # DoHa/DoKr are blocked twice over: by the decomposition AND by the
-        # additive algebra underneath it.
-        if decompose and algorithm != ALGORITHM_LORA:
+        # DoHa/DoKr are blocked twice over -- by the decomposition AND by the
+        # additive algebra underneath it -- unless that algebra is enabled here,
+        # in which case saying so would be false.
+        if not decompose:
+            reason = additive_reason
+        elif algorithm != ALGORITHM_LORA and (algorithm, False) not in supported:
             reason = f"{dora_reason}; and {additive_reason}"
         else:
-            reason = dora_reason if decompose else additive_reason
+            reason = dora_reason
         refusals[(algorithm, decompose)] = f"{arch}: {reason}"
     return AdapterCapability(
         additive_family=additive_family,

@@ -12,7 +12,7 @@ those modules now import these classes from here like everyone else.
 """
 
 import math
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Iterator, List, Mapping, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -106,6 +106,47 @@ class LoRALinearLayer(nn.Module):
         installed branch is not a rebuild."""
         self.scale = self.alpha / self.rank * strength
 
+    # -- tensor protocol ---------------------------------------------------
+    # The four methods below are what let a caller save, resume and optimise a
+    # branch without naming ``lora_down``/``lora_up``. ``branch_tensors`` is the
+    # single extension point: an algebra with a different tensor set overrides
+    # that one and inherits the rest.
+
+    def branch_tensors(self) -> Dict[str, torch.Tensor]:
+        """Stem-relative name -> the LIVE weight, in checkpoint order.
+
+        ``alpha`` is deliberately absent: it is a spec constant the saving
+        adapter owns (Z-Image writes none at all), not a tensor this branch
+        trains.
+        """
+        return {
+            "lora_down.weight": self.lora_down.weight,
+            "lora_up.weight": self.lora_up.weight,
+        }
+
+    def tensor_names(self) -> Tuple[str, ...]:
+        """The names ``export_tensors`` produces and ``load_tensors`` consumes."""
+        return tuple(self.branch_tensors())
+
+    def trainable_parameters(self) -> Iterator[nn.Parameter]:
+        """The branch's own parameters. The wrapped base is frozen and excluded."""
+        yield from self.lora_down.parameters()
+        yield from self.lora_up.parameters()
+
+    def export_tensors(self) -> Dict[str, torch.Tensor]:
+        """Detached CPU copies, ready to hand to ``save_file``."""
+        return {name: weight.detach().cpu()
+                for name, weight in self.branch_tensors().items()}
+
+    def load_tensors(self, tensors: Mapping[str, torch.Tensor]) -> None:
+        """Copy a stem-relative slice back in place. Names absent from the
+        slice are left alone, which is the tolerance training resume has always
+        had for a checkpoint that carries only some of a branch's tensors."""
+        for name, weight in self.branch_tensors().items():
+            value = tensors.get(name)
+            if value is not None:
+                weight.data.copy_(value)
+
 
 class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
     """``LoRALinearLayer`` with the LoRA branch cast to the ACTIVATION dtype.
@@ -184,7 +225,10 @@ class CompositeAdapterLayer(nn.Module):
     whose strength is changed after installation. ``LoRALinearLayer`` and
     ``MiniMaxH3LoRALinearLayer`` differ in their forward (ambient autocast
     versus a per-call activation cast) and both satisfy it, so the composite
-    never tests a branch's class.
+    never tests a branch's class. Saving, resuming and optimising a branch go
+    through the tensor protocol on the branch itself (``branch_tensors`` and
+    friends); the composite does not aggregate those, because naming tensors
+    across several branches in one file is the codec's job, not this class's.
 
     NUMERICS. With one active branch the output is ``base(x) + delta`` -- the
     same two operations in the same order as ``LoRALinearLayer.forward``, hence

@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Dict, List, Any
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file
 import math
 
 from core.adapters import LoRALinearLayer, is_lora_wrappable_linear
@@ -146,75 +145,35 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
         return 0
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
+        """Collect trainable parameters. Only the Transformer carries LoRA here."""
+        return self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: self.trainer.unet_lr,
+        })
+
+    CHECKPOINT_LOG_FORMAT = "[{adapter}] Saved LoRA checkpoint: {path}"
+
+    # Alpha lives in safetensors metadata only, and the generation loader
+    # (``pipeline_backends/zimage``) reads it from there -- an ``alpha != rank``
+    # LoRA would otherwise apply at scale 1.
+    CHECKPOINT_WRITES_ALPHA = False
+
+    def checkpoint_metadata(
+        self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
+    ) -> Dict[str, str]:
+        """Key stem is the ``lora_layers`` key verbatim
+        (``lora_transformer_<module path with dots flattened>``), which is also
+        the resume key in ``LoRATrainer.load_checkpoint``; the generation loader
+        reconstructs it from the module path. Renaming it would strand resume
+        for every checkpoint already on disk, so a spelling mismatch is repaired
+        on the load side instead.
         """
-        Collect trainable parameters with per-component learning rates.
-
-        For Z-Image, only Transformer LoRA parameters are trainable.
-
-        Args:
-            lora_layers: Dictionary of LoRA layers
-
-        Returns:
-            List of parameter groups for optimizer
-        """
-        params = []
-        transformer_params = []
-
-        for lora_name, lora_layer in lora_layers.items():
-            if lora_name.startswith("lora_transformer_"):
-                transformer_params.extend(lora_layer.lora_down.parameters())
-                transformer_params.extend(lora_layer.lora_up.parameters())
-
-        # Add parameter group with Transformer learning rate
-        if transformer_params:
-            params.append({"params": transformer_params, "lr": self.trainer.unet_lr})
-
-        return params
-
-    def save_checkpoint(
-        self,
-        lora_layers: Dict[str, nn.Module],
-        step: int,
-        epoch: int,
-        output_path: Path
-    ):
-        """
-        Save LoRA checkpoint in safetensors format.
-
-        Key stem is ``lora_name`` verbatim (``lora_transformer_<module path with
-        dots flattened>``), which is also the resume key in
-        ``LoRATrainer.load_checkpoint``; the generation loader
-        (``pipeline_backends/zimage._zimage_lora_key_stems``) reconstructs it
-        from the module path. Renaming it here would strand resume for every
-        checkpoint already on disk, so a spelling mismatch is repaired on the
-        load side instead. Alpha is metadata-only, and that loader reads it
-        from there -- an ``alpha != rank`` LoRA would otherwise apply at scale 1.
-
-        Args:
-            lora_layers: Dictionary of LoRA layers
-            step: Current training step
-            epoch: Current training epoch
-            output_path: Path to save checkpoint
-        """
-        # Collect LoRA weights
-        lora_state_dict = {}
-
-        for lora_name, lora_layer in lora_layers.items():
-            lora_state_dict[f"{lora_name}.lora_down.weight"] = lora_layer.lora_down.weight
-            lora_state_dict[f"{lora_name}.lora_up.weight"] = lora_layer.lora_up.weight
-
-        # Add metadata
-        metadata = {
+        return {
             "lora_rank": str(self.lora_rank),
             "lora_alpha": str(self.lora_alpha),
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "zimage",
         }
-
-        # Save safetensors
-        save_file(lora_state_dict, output_path, metadata=metadata)
-        print(f"[ZImageLoRAAdapter] Saved LoRA checkpoint: {output_path}")
 
 
 # ============================================================

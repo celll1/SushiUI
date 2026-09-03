@@ -32,12 +32,10 @@ Save format: sd-scripts native — ``lora_unet_<flattened>.lora_down.weight`` /
 ``lora_up.weight`` / ``alpha``; metadata ``model_type="minimax_h3"``.
 """
 
-from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from safetensors.torch import save_file
 
 from core.adapters import (
     LoRALinearLayer,
@@ -202,38 +200,21 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]
                                     ) -> List[Dict[str, Any]]:
-        params: List[nn.Parameter] = []
-        for lora_layer in lora_layers.values():
-            params.extend(lora_layer.lora_down.parameters())
-            params.extend(lora_layer.lora_up.parameters())
-        if not params:
-            return []
-        return [{"params": params,
-                 "lr": resolve_component_lr(self.trainer, "unet_lr", label="MiniMax-H3 LoRA")}]
+        return self.component_param_groups(lora_layers, {
+            LORA_COMPONENT_UNET: lambda: resolve_component_lr(
+                self.trainer, "unet_lr", label="MiniMax-H3 LoRA"),
+        })
 
-    def save_checkpoint(self, lora_layers: Dict[str, nn.Module],
-                         step: int, epoch: int, output_path: Path):
-        """Save LoRA weights in sd-scripts native format."""
-        state_dict: Dict[str, torch.Tensor] = {}
-        alpha_value = float(self.lora_alpha)
-
-        for lora_name, lora_layer in lora_layers.items():
-            state_dict[f"{lora_name}.lora_down.weight"] = lora_layer.lora_down.weight.detach().cpu()
-            state_dict[f"{lora_name}.lora_up.weight"] = lora_layer.lora_up.weight.detach().cpu()
-            state_dict[f"{lora_name}.alpha"] = torch.tensor(alpha_value, dtype=torch.float32)
-
-        active_scopes = ",".join(k for k, v in self.scope.items() if v)
-        metadata = {
+    def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
+                            step: int, epoch: int) -> Dict[str, str]:
+        """sd-scripts native format."""
+        return {
             "model_type": "minimax_h3",
             "modelspec.architecture": "minimax_h3",
             "lora_rank": str(self.lora_rank),
             "lora_alpha": str(self.lora_alpha),
-            "lora_targets": active_scopes,
+            "lora_targets": ",".join(k for k, v in self.scope.items() if v),
             "step": str(step),
             "epoch": str(epoch),
             "format": "pt",
         }
-
-        save_file(state_dict, str(output_path), metadata=metadata)
-        print(f"[MiniMaxH3LoRAAdapter] Saved LoRA checkpoint ({len(lora_layers)} layers) "
-              f"-> {output_path}")

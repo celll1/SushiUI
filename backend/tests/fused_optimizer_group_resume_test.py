@@ -590,12 +590,12 @@ def _lora_groups(name, probe):
         "lens": LensLoRAAdapter, "ltx2": Ltx2LoRAAdapter,
         "minimax_h3": MiniMaxH3LoRAAdapter,
     }
+    from core.adapters import LoRALinearLayer
+
     layers = {}
     for i in range(3):
-        layer = nn.Module()
-        layer.lora_down = nn.Linear(2, 2, bias=False)
-        layer.lora_up = nn.Linear(2, 2, bias=False)
-        layers[f"lora_unet_x{i}"] = layer
+        stem = f"lora_unet_x{i}"
+        layers[stem] = LoRALinearLayer(nn.Linear(2, 2, bias=False), 2, 2, stem)
     return adapters[name](probe, lora_rank=2, lora_alpha=2).setup_trainable_parameters(layers)
 
 

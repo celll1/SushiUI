@@ -31,11 +31,12 @@ TWO key conventions are supported, detected from the keys themselves.
    The only work is un-flattening the underscored stem, which is ambiguous in
    general and is therefore done against a table built from the training
    adapter's own scope constants (``_native_leaf_table``) rather than guessed.
-   A stem that table cannot map, and a stem missing its down or up half, both
-   raise instead of being dropped -- a self-trained checkpoint that matched
+   A stem that table cannot map, and a stem whose factor group is incomplete,
+   both raise instead of being dropped -- a self-trained checkpoint that matched
    nothing used to be indistinguishable from a generation with no LoRA at all,
-   and this repo writes both halves for every target it saves, so either is a
-   real defect in the file.
+   and this repo writes every factor of every target it saves, so either is a
+   real defect in the file. A COMPLETE LyCORIS group in this spelling is a
+   target, not an incomplete pair.
 
 Three conversions turn the Comfy layout into the vendored one (measured
 against two real checkpoints -- see ``minimax_h3/loader.py``'s own DiT
@@ -49,14 +50,18 @@ BASE weights and is the ground truth this module was checked against):
       ``lora_B``'s own nonzero-column ranges per output third, never assumed
       to be an equal three-way split of the rank; a malformed or unexpected
       LoRA raises rather than silently producing a wrong split.
-      See ``_split_qkv``.
+      See ``_split_qkv``. A LoHa/LoKr goes through the engine's
+      ``split_group_on_out_rows`` instead (``_split_qkv_targets``), which is
+      exact for LoHa and REFUSES a LoKr whose ``w1`` rows are not divisible by
+      three rather than emitting a different factorization.
 
   (b) **fc1 SwiGLU half swap.** Comfy stores ``mlp.fc1`` as ``[gate; up]``;
       the vendored ``ff.net.0.proj`` (SwiGLU) expects ``[up; gate]``. This is
-      a ROW PERMUTATION of ``lora_B`` only -- ``lora_A`` (the down
-      projection, over the INPUT dimension) is untouched. Getting this
+      a ROW PERMUTATION of the OUT axis only -- the input-side factors are
+      untouched -- so it moves ``lora_B``, or ``hada_w1_a``/``hada_w2_a``, or a
+      LoKr's ``w1`` and only when its rows are even. Getting this
       backwards is silent: shapes match, the load is clean, and the gate
-      delta lands in the up path. See ``_swap_fc1_halves``.
+      delta lands in the up path. See ``_swap_fc1_group``.
 
   (c) **Scale.** Final per-module scale is ``(alpha / rank) * user_strength``,
       exactly as ``krea2_lora.apply_lora_group`` computes it -- where
@@ -85,16 +90,20 @@ Save format reference: ``core/training/adapters/minimax_h3_adapter.py``
 
 from __future__ import annotations
 
+import collections.abc
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import torch
 from torch import nn
 from safetensors import safe_open
 
 from core.adapters.groups import (TensorGroup, declared_groups,
-                                  group_adapter_tensors)
+                                  group_adapter_tensors,
+                                  split_group_on_out_rows)
+from core.adapters.spec import ALGORITHM_LOHA, ALGORITHM_LOKR, ALGORITHM_LORA
 
 
 _PREFIX = "diffusion_model."
@@ -184,11 +193,56 @@ def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], Dict[str,
 
 
 def _group_raw(raw: Dict[str, torch.Tensor]) -> Dict[str, TensorGroup]:
-    """Down/up comfy groups. Any other algebra is dropped here and counted by
-    ``count_declared_branches``, so it is refused unapplied rather than reaching
-    ``_normalise_comfy``, which reads ``["down"]``."""
-    grouped = group_adapter_tensors(raw, _comfy_stem).groups
-    return {s: g for s, g in grouped.items() if "down" in g and "up" in g}
+    """COMPLETE comfy factor groups, whatever the algebra.
+
+    ``group_adapter_tensors`` already drops the incomplete ones, which
+    ``count_declared_branches`` still counts, so a truncated file is refused
+    unapplied rather than applying with a target missing.
+    """
+    return group_adapter_tensors(raw, _comfy_stem).groups
+
+
+@dataclass
+class ConvertedTarget(collections.abc.Mapping):
+    """One vendored target's factors plus the pair that DEFINES its scale.
+
+    ``scale_rank`` is the FUSED qkv stem's rank, which after a compact split is
+    NOT this piece's own tensor rank (module docstring, (c)). A LyCORIS row
+    split keeps the rank columns, so for those the two agree.
+
+    A ``Mapping`` over ``group``, answering the legacy ``["down"]``/
+    ``["scale_ratio"]`` spellings its callers still use.
+    """
+
+    group: TensorGroup
+    alpha: float
+    scale_rank: int
+    #: The file-metadata alpha tier: native only, never comfy (docstring, (c)).
+    metadata_alpha: Optional[float] = None
+
+    _SCALARS = ("scale_ratio", "alpha", "scale_rank")
+
+    @property
+    def scale_ratio(self) -> float:
+        return self.alpha / self.scale_rank
+
+    def __getitem__(self, name: str) -> Any:
+        if name in self._SCALARS:
+            return self.scale_ratio if name == "scale_ratio" else getattr(self, name)
+        return self.group[name]
+
+    def __iter__(self) -> Iterator[str]:
+        names = list(self.group.tensors)
+        yield from names
+        for name in self._SCALARS:
+            if name not in names:
+                yield name
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._SCALARS or name in self.group
 
 
 def count_declared_branches(raw: Dict[str, torch.Tensor]) -> int:
@@ -303,6 +357,94 @@ def _split_qkv(
     return parts, r
 
 
+_QKV_NAMES = ("to_q", "to_k", "to_v")
+
+
+def _fused_out_rows(group: TensorGroup) -> int:
+    """The fused Linear's output rows, from whichever factors carry that axis."""
+    algorithm = group.algorithm
+    if algorithm == ALGORITHM_LORA:
+        return int(group["lora_up.weight"].shape[0])
+    if algorithm == ALGORITHM_LOHA:
+        return int(group["hada_w1_a"].shape[0])
+    if algorithm == ALGORITHM_LOKR:
+        w1 = group["lokr_w1"] if "lokr_w1" in group else group["lokr_w1_a"]
+        w2 = group["lokr_w2"] if "lokr_w2" in group else group["lokr_w2_a"]
+        return int(w1.shape[0]) * int(w2.shape[0])
+    raise ValueError(f"unrecognised adapter algebra {algorithm!r} on a fused stem")
+
+
+def _own_shared_tensors(parent: TensorGroup, piece: TensorGroup) -> TensorGroup:
+    """Clone what ``split_group_on_out_rows`` shares BY REFERENCE.
+
+    ``from_tensors`` ADOPTS a group's tensors as parameter storage, so without
+    this the three qkv branches alias one buffer and any in-place write reaches
+    all three. ``_split_qkv`` already clones ``lora_down`` for the same reason.
+    """
+    tensors = {name: (value.clone() if value is parent.tensors.get(name) else value)
+               for name, value in piece.tensors.items()}
+    return TensorGroup(piece.stem, tensors)
+
+
+def _qkv_split_refusal(stem: str, group: TensorGroup) -> str:
+    """Why a WELL-FORMED LyCORIS group cannot be split three ways.
+
+    Kept distinct from the truncated/corrupt wording: nothing is wrong with the
+    file, its factorization simply does not line up with the fused projection.
+    """
+    if group.use_tucker or group.weight_decompose or "lora_mid.weight" in group:
+        return (f"{stem}: a fused qkv {group.algorithm} carrying a Tucker core, a "
+                f"LoCon mid factor or a DoRA magnitude has no output-row split -- "
+                f"those factors mix or rescale rows, so no contiguous third is a "
+                f"sub-adapter of the fused projection.")
+    if group.algorithm == ALGORITHM_LOKR:
+        w1 = group["lokr_w1"] if "lokr_w1" in group else group["lokr_w1_a"]
+        return (f"{stem}: a fused qkv LoKr cannot be split into to_q/to_k/to_v. "
+                f"kron(w1, w2) puts output row i*K + k at w1[i] (x) w2[k], so a "
+                f"contiguous third is another Kronecker product only when 3 "
+                f"divides w1's {int(w1.shape[0])} rows, and it does not. The file "
+                f"is well formed; its factorization does not line up with this "
+                f"architecture's fused qkv projection.")
+    return (f"{stem}: a fused qkv {group.algorithm} adapter could not be split "
+            f"into to_q/to_k/to_v -- its factor shapes disagree with the fused "
+            f"projection's output rows.")
+
+
+def _split_qkv_targets(
+    stem: str, group: TensorGroup,
+) -> List[Tuple[str, TensorGroup, int]]:
+    """``(target leaf, its factor group, the scale-defining rank)`` x 3.
+
+    LoRA keeps ``_split_qkv``'s two exact paths byte for byte. Every other
+    algebra goes through the engine's ``split_group_on_out_rows``, which is
+    exact for LoHa and refuses a LoKr whose ``w1`` rows are not divisible by 3
+    rather than emitting a wrong factorization.
+    """
+    # A LoRA piece is rebuilt from down/up alone, so an extra factor would be
+    # DROPPED rather than refused -- and the non-fused path refuses it.
+    if group.weight_decompose or "lora_mid.weight" in group:
+        raise ValueError(_qkv_split_refusal(stem, group))
+    if group.algorithm == ALGORITHM_LORA:
+        parts, rank_total = _split_qkv(stem, group["down"], group["up"])
+        return [(name,
+                 TensorGroup(f"{stem}#{name}", {"lora_down.weight": parts[name][0],
+                                                "lora_up.weight": parts[name][1]}),
+                 rank_total)
+                for name in _QKV_NAMES]
+
+    total_out = _fused_out_rows(group)
+    if total_out % 3 != 0:
+        raise ValueError(
+            f"{stem}: fused qkv adapter has {total_out} output rows, not divisible "
+            f"by 3 -- cannot be a [q_all | k_all | v_all] fused qkv projection.")
+    pieces = split_group_on_out_rows(group, 3, total_out // 3)
+    if pieces is None:
+        raise ValueError(_qkv_split_refusal(stem, group))
+    rank = group.rank or 1
+    return [(name, _own_shared_tensors(group, pieces[index]), rank)
+            for index, name in enumerate(_QKV_NAMES)]
+
+
 # ---------------------------------------------------------------------------
 # (b) fc1 SwiGLU half swap
 # ---------------------------------------------------------------------------
@@ -314,8 +456,56 @@ def _swap_fc1_halves(up: torch.Tensor) -> torch.Tensor:
     return torch.cat([up_half, gate], dim=0).contiguous()
 
 
+def _fc1_row_factors(group: TensorGroup) -> Tuple[str, ...]:
+    """The factor names carrying the OUT axis, or ``()`` when the half swap is
+    not expressible in this group's stored form.
+
+    Generalized from ``lora_up``: the swap is a permutation of the output rows,
+    so it also moves ``hada_w1_a``/``hada_w2_a``. For a LoKr it moves ``w1``
+    alone, and only when ``w1``'s row count is even -- kron puts row ``i*K + k``
+    at ``w1[i] (x) w2[k]``, so the half boundary is a block boundary exactly
+    then.
+    """
+    algorithm = group.algorithm
+    if algorithm == ALGORITHM_LORA:
+        return ("lora_up.weight",)
+    if algorithm == ALGORITHM_LOHA:
+        return ("hada_w1_a", "hada_w2_a")
+    if algorithm == ALGORITHM_LOKR:
+        name = "lokr_w1" if "lokr_w1" in group else "lokr_w1_a"
+        return (name,) if int(group[name].shape[0]) % 2 == 0 else ()
+    return ()
+
+
+def _fc1_swap_refusal(stem: str, group: TensorGroup) -> str:
+    """Why a WELL-FORMED group cannot take the fc1 half swap. Same distinction
+    as ``_qkv_split_refusal``: the file is fine, its factorization is not."""
+    if group.algorithm == ALGORITHM_LOKR:
+        w1 = group["lokr_w1"] if "lokr_w1" in group else group["lokr_w1_a"]
+        return (f"{stem}: an fc1 LoKr cannot be converted to the vendored SwiGLU "
+                f"order. The comfy [gate; up] -> [up; gate] swap is a permutation "
+                f"of the output rows, which kron(w1, w2) expresses only when w1's "
+                f"{int(w1.shape[0])} rows are even, and they are not. The file is "
+                f"well formed; its factorization does not line up with this "
+                f"architecture's SwiGLU projection.")
+    return (f"{stem}: an fc1 {group.algorithm} adapter has no factor carrying "
+            f"the output-row axis, so the vendored SwiGLU half swap cannot be "
+            f"expressed in its stored form.")
+
+
+def _swap_fc1_group(stem: str, group: TensorGroup) -> TensorGroup:
+    """The fc1 half swap applied to a whole factor group."""
+    names = _fc1_row_factors(group)
+    if not names:
+        raise ValueError(_fc1_swap_refusal(stem, group))
+    tensors = dict(group.tensors)
+    for name in names:
+        tensors[name] = _swap_fc1_halves(tensors[name])
+    return TensorGroup(group.stem, tensors)
+
+
 # ---------------------------------------------------------------------------
-# Full conversion: comfy raw state dict -> {vendored_target_path: {down, up, scale_ratio}}
+# Full conversion: raw state dict -> {vendored_target_path: ConvertedTarget}
 # ---------------------------------------------------------------------------
 
 def _resolve_alpha(alpha_tensor, metadata_alpha: Optional[float], rank: int) -> float:
@@ -328,101 +518,79 @@ def _resolve_alpha(alpha_tensor, metadata_alpha: Optional[float], rank: int) -> 
     return float(rank)
 
 
-def _normalise_comfy(raw: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, Any]]:
+def _normalise_comfy(raw: Dict[str, torch.Tensor]) -> Dict[str, ConvertedTarget]:
     """ComfyUI/interchange layout -> vendored targets. Takes no metadata: this
     branch's alpha is per-key or rank, never the file's (module docstring, (c))."""
     from core.models.minimax_h3.loader import _rename_dit_key
 
-    grouped_raw = _group_raw(raw)
-    targets: Dict[str, Dict[str, Any]] = {}
+    targets: Dict[str, ConvertedTarget] = {}
 
-    for stem, weights in grouped_raw.items():
-        down = weights["down"]
-        up = weights["up"]
-        alpha_tensor = weights.get("alpha")
+    def record(path: str, stem: str, target: ConvertedTarget) -> None:
+        if path in targets:
+            raise ValueError(f"duplicate LoRA target {path!r} (from stem {stem!r})")
+        targets[path] = target
 
+    for stem, group in _group_raw(raw).items():
         mapped = _rename_dit_key(stem + ".weight")
         if not mapped.endswith(".weight"):
             raise ValueError(f"{stem}: unexpected renamed key {mapped!r} (expected a .weight suffix)")
         mapped = mapped[: -len(".weight")]
 
         if stem.endswith(_QKV_SUFFIX):
-            parts, rank_total = _split_qkv(stem, down, up)
-            alpha_value = _resolve_alpha(alpha_tensor, None, rank_total)
-            scale_ratio = alpha_value / rank_total
             base = mapped.split(".attn.qkv_proj")[0] + ".attn."
-            for name, (d, u) in parts.items():
-                target = base + name
-                if target in targets:
-                    raise ValueError(f"duplicate LoRA target {target!r} (from stem {stem!r})")
-                targets[target] = {"down": d, "up": u, "scale_ratio": scale_ratio,
-                                   "alpha": alpha_value, "scale_rank": rank_total}
+            for name, piece, rank_total in _split_qkv_targets(stem, group):
+                alpha_value = _resolve_alpha(group.tensors.get("alpha"), None, rank_total)
+                record(base + name, stem, ConvertedTarget(piece, alpha_value, rank_total))
             continue
 
-        rank = int(down.shape[0])
-        alpha_value = _resolve_alpha(alpha_tensor, None, rank)
-        scale_ratio = alpha_value / rank
-
         if stem.endswith(_FC1_SUFFIX):
-            up = _swap_fc1_halves(up)
+            group = _swap_fc1_group(stem, group)
 
-        if mapped in targets:
-            raise ValueError(f"duplicate LoRA target {mapped!r} (from stem {stem!r})")
-        targets[mapped] = {"down": down, "up": up, "scale_ratio": scale_ratio,
-                           "alpha": alpha_value, "scale_rank": rank}
+        rank = group.rank
+        alpha_value = _resolve_alpha(group.tensors.get("alpha"), None, rank)
+        record(mapped, stem, ConvertedTarget(group, alpha_value, rank or 1))
 
     return targets
 
 
 def _normalise_native(
     raw: Dict[str, torch.Tensor], metadata_alpha: Optional[float],
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, ConvertedTarget]:
     """sd-scripts native (this repo's own trainer output) -> vendored targets.
 
     One-to-one with the vendored module names: no qkv split, no fc1 half swap.
     Only the underscored stem is un-flattened, against the training adapter's
     own leaf table.
     """
-    # groups + partial: a stem that carries only one half must reach the
-    # ``incomplete`` refusal below, not be dropped silently.
     collected = group_adapter_tensors(raw, _native_stem)
-    grouped: Dict[str, TensorGroup] = {**collected.groups, **collected.partial}
-
     table = _native_leaf_table()
-    targets: Dict[str, Dict[str, Any]] = {}
+    targets: Dict[str, ConvertedTarget] = {}
     unmapped: list = []
-    incomplete: list = []
-    for stem, weights in grouped.items():
-        if "down" not in weights or "up" not in weights:
-            incomplete.append(stem)
-            continue
+    # An incomplete group is a target the file names and no builder can apply,
+    # whatever its algebra; a COMPLETE LoHa/LoKr one is not incomplete.
+    incomplete: list = sorted(collected.partial)
+    for stem, group in collected.groups.items():
         module_path = _native_stem_to_module_path(stem, table)
         if module_path is None:
             unmapped.append(stem)
             continue
-        down = weights["down"]
-        up = weights["up"]
-        rank = int(down.shape[0])
-        if int(up.shape[1]) != rank:
+        rank = group.rank
+        if group.algorithm == ALGORITHM_LORA and int(group["up"].shape[1]) != rank:
             raise ValueError(
-                f"{stem}: lora_down rank {rank} does not match lora_up's {up.shape[1]} columns."
+                f"{stem}: lora_down rank {rank} does not match lora_up's "
+                f"{group['up'].shape[1]} columns."
             )
         if module_path in targets:
             raise ValueError(f"duplicate LoRA target {module_path!r} (from stem {stem!r})")
-        alpha_value = _resolve_alpha(weights.get("alpha"), metadata_alpha, rank)
-        targets[module_path] = {
-            "down": down,
-            "up": up,
-            "scale_ratio": alpha_value / rank,
-            "alpha": alpha_value,
-            "scale_rank": rank,
-        }
+        alpha_value = _resolve_alpha(group.tensors.get("alpha"), metadata_alpha, rank)
+        targets[module_path] = ConvertedTarget(group, alpha_value, rank or 1,
+                                               metadata_alpha)
 
     if incomplete:
         raise ValueError(
-            f"{len(incomplete)} sd-scripts LoRA stem(s) carry only one of lora_down/lora_up "
-            f"(first few: {sorted(incomplete)[:5]}); this repo's trainer writes both for every "
-            f"target it saves, so the file is truncated or corrupt."
+            f"{len(incomplete)} sd-scripts LoRA stem(s) carry an incomplete factor "
+            f"group (first few: {incomplete[:5]}); this repo's trainer writes every "
+            f"factor of every target it saves, so the file is truncated or corrupt."
         )
     if unmapped:
         raise ValueError(
@@ -435,11 +603,12 @@ def _normalise_native(
 
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor], metadata: Optional[Dict[str, str]] = None,
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, ConvertedTarget]:
     """Group + convert a raw LoRA state dict into vendored targets.
 
-    Returns ``{vendored_module_path: {"down": Tensor, "up": Tensor,
-    "scale_ratio": float, "alpha": float, "scale_rank": int}}``.
+    Returns ``{vendored_module_path: ConvertedTarget}``, which reads as the
+    ``{"down", "up", "scale_ratio", "alpha", "scale_rank"}`` mapping it replaced
+    and additionally carries the whole factor ``group``, whatever its algebra.
     ``scale_ratio`` is ``alpha / scale_rank`` (``scale_rank`` being the FUSED
     rank for a qkv split's three pieces, see point (c) in the module docstring);
     the caller multiplies by the user-supplied LoRA strength. The pair is
@@ -559,9 +728,9 @@ def check_variant_compatibility(
 _BLOCK_LEAF_RE = re.compile(r"^transformer_blocks\.(\d+)\.(.+)$")
 
 
-def detect_rank_variation(targets: Dict[str, Dict[str, Any]]) -> Dict[str, bool]:
+def detect_rank_variation(targets: Dict[str, "ConvertedTarget"]) -> Dict[str, bool]:
     """``{leaf_name: True}`` for every ``transformer_blocks.*`` leaf whose rank
-    (down.shape[0]) differs between blocks.
+    differs between blocks.
 
     Only ``transformer_blocks.*`` entries matter here:
     ``TransformerBlockOffloader._build_weight_swap_jobs``
@@ -569,14 +738,17 @@ def detect_rank_variation(targets: Dict[str, Dict[str, Any]]) -> Dict[str, bool]
     outgoing block's Linear weights by name + shape + dtype, and only the
     block stack is ever swapped -- ``token_refiner`` and ``final_layer``
     leaves are moved whole, never paired block-to-block.
+
+    LoHa/LoKr branches are skipped: they own no ``nn.Linear`` for that pairing
+    to reach at all (see ``BLOCK_SWAP_ADAPTER_ORDER``).
     """
     ranks_by_leaf: Dict[str, set] = {}
-    for module_path, weights in targets.items():
+    for module_path, target in targets.items():
         m = _BLOCK_LEAF_RE.match(module_path)
-        if not m:
+        if not m or target.group.algorithm != ALGORITHM_LORA:
             continue
         leaf = m.group(2)
-        ranks_by_leaf.setdefault(leaf, set()).add(int(weights["down"].shape[0]))
+        ranks_by_leaf.setdefault(leaf, set()).add(target.group.rank)
     return {leaf: len(ranks) > 1 for leaf, ranks in ranks_by_leaf.items()}
 
 
@@ -584,9 +756,42 @@ def detect_rank_variation(targets: Dict[str, Dict[str, Any]]) -> Dict[str, bool]
 # Apply / restore (inference)
 # ---------------------------------------------------------------------------
 
+def build_lora_branch(base: nn.Module, target: "ConvertedTarget",
+                      module_path: str) -> nn.Module:
+    """One branch over ``base``, or ``SHAPE_MISMATCH``.
+
+    The algebra is the file's: ``build_adapter_branch`` dispatches on the tensor
+    names. Only the LoRA branch takes this architecture's per-call activation
+    cast -- MiniMax-H3's forward runs without ``torch.autocast``, and LoHa/LoKr
+    already cast their merged delta inside ``forward_delta``.
+
+    The branch dtype is per target, never bf16 by hand: this tree is mixed
+    precision (Fp8Linear block stack, fp32 AdaLN and head projections).
+    """
+    from core.adapters import (SHAPE_MISMATCH, MiniMaxH3LoRALinearLayer,
+                               build_adapter_branch, lora_branch_dtype)
+
+    is_lora = target.group.algorithm == ALGORITHM_LORA
+    branch = build_adapter_branch(
+        base, target.group,
+        metadata_alpha=target.metadata_alpha,
+        layer_cls=MiniMaxH3LoRALinearLayer if is_lora else None,
+        lora_dtype=lora_branch_dtype(base),
+        lora_name=module_path)
+    if branch is SHAPE_MISMATCH:
+        return branch
+    if is_lora:
+        # The scale-defining pair, NOT the branch's own tensor rank: after a
+        # compact qkv split the ratio belongs to the FUSED stem (docstring, (c)).
+        # ``set_adapter_strength`` then recomputes ``alpha / rank * strength``.
+        branch.alpha = target.alpha
+        branch.rank = target.scale_rank
+    return branch
+
+
 def apply_lora_group(
     transformer: nn.Module,
-    targets: Dict[str, Dict[str, Any]],
+    targets: Dict[str, "ConvertedTarget"],
     strength: float,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: set,
@@ -618,10 +823,9 @@ def apply_lora_group(
     problem worth surfacing).
     """
     from core.adapters import (
+        SHAPE_MISMATCH,
         CompositeAdapterLayer,
-        MiniMaxH3LoRALinearLayer,
         is_lora_wrappable_linear,
-        lora_branch_dtype,
     )
     from core.training.adapters.minimax_h3_adapter import _resolve_leaf
 
@@ -640,33 +844,11 @@ def apply_lora_group(
             missing.append(module_path)
             continue
 
+        wrapper = build_lora_branch(true_original, weights, module_path)
+        if wrapper is SHAPE_MISMATCH:
+            missing.append(module_path)
+            continue
         lora_original_modules.setdefault(module_path, true_original)
-
-        down = weights["down"]
-        up = weights["up"]
-        rank = int(down.shape[0])
-
-        # `rank`/`alpha` passed to the constructor only size lora_down/lora_up.
-        wrapper = MiniMaxH3LoRALinearLayer(true_original, rank=rank, alpha=rank, lora_name=module_path)
-        device = true_original.weight.device
-        # MIXED PRECISION: the block stack's attn/ff Linears are Fp8Linear
-        # (branch defaults to bf16); adaln_proj.linear / norm_out.linear /
-        # proj_out / audio_proj_out are real float32 Linears (branch matches
-        # that fp32). Never hardcode bf16 here -- see the module + adapter
-        # docstrings on why the H3 tree is mixed precision.
-        compute_dtype = lora_branch_dtype(true_original)
-        with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        # The scale-defining pair, NOT the branch's own tensor rank: after a
-        # compact qkv split the ratio belongs to the FUSED stem (module
-        # docstring, (c)). Written onto the branch so `set_adapter_strength`
-        # recomputes `alpha / scale_rank * strength`, which is bit-identical to
-        # the `scale_ratio * strength` this replaces.
-        wrapper.alpha = float(weights.get("alpha", weights["scale_ratio"]))
-        wrapper.rank = weights.get("scale_rank", 1)
 
         composite = CompositeAdapterLayer.attach(parent, attr)
         composite.add_branch(branch_name, wrapper, strength=strength)

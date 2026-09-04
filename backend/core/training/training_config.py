@@ -814,9 +814,12 @@ class TrainingConfigGenerator:
                         "device": "cuda:0",
                         "network": {
                             "type": "lora",
+                            "adapter_algorithm": p.get("adapter_algorithm") or "lora",
+                            "weight_decompose": bool(p.get("weight_decompose", False)),
                             "linear": p.get("lora_rank") or 16,
                             "linear_alpha": p.get("lora_alpha") or 16,
                             "lora_dtype": p.get("lora_dtype") or "fp32",
+                            "adapter_config": p.get("adapter_config") or {},
                         },
                         "dtype": {
                             "weight": p.get("weight_dtype", "fp16"),

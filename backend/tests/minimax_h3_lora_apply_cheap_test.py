@@ -267,8 +267,27 @@ def test_native_stem_missing_a_half_raises():
         "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight": torch.zeros(4, _HIDDEN),
         "lora_unet_transformer_blocks_0_attn_to_q.alpha": torch.tensor(4.0),
     }
-    with pytest.raises(ValueError, match="only one of lora_down/lora_up"):
+    with pytest.raises(ValueError, match="incomplete factor group"):
         lora_mod.normalise_lora_state_dict(raw)
+
+
+def test_a_complete_native_loha_is_a_target_not_a_truncated_pair():
+    """The wart the LyCORIS flip had to clear. A native LoHa used to reach the
+    ``incomplete`` list -- refused with the right verdict for the wrong reason,
+    since nothing about the file is truncated."""
+    stem = "lora_unet_transformer_blocks_0_attn_to_q"
+    raw = {
+        f"{stem}.hada_w1_a": torch.zeros(_INNER, 4),
+        f"{stem}.hada_w1_b": torch.zeros(4, _HIDDEN),
+        f"{stem}.hada_w2_a": torch.zeros(_INNER, 4),
+        f"{stem}.hada_w2_b": torch.zeros(4, _HIDDEN),
+        f"{stem}.alpha": torch.tensor(8.0),
+    }
+    targets = lora_mod.normalise_lora_state_dict(raw)
+    assert set(targets) == {"transformer_blocks.0.attn.to_q"}
+    target = targets["transformer_blocks.0.attn.to_q"]
+    assert target.group.algorithm == "loha"
+    assert target.alpha == 8.0 and target.scale_rank == 4
 
 
 def test_unrecognised_native_leaf_raises():

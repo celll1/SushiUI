@@ -19,11 +19,23 @@ Author: Claude (2026-01-04)
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 
 from .base_trainer import BaseTrainer
+
+
+def require_trainable_algebra(trainer, arch) -> None:
+    """The backstop for ``_create_adapter``: ``train_runner`` refuses the same
+    thing from the config, before the model loads. A function, not a method, so
+    it runs for anything that drives ``_create_adapter``."""
+    from core.training.adapters.base_adapter import (
+        refuse_untrainable_algebra, resolve_training_adapter_spec)
+
+    refuse_untrainable_algebra(resolve_training_adapter_spec(trainer),
+                               arch.adapter_capability,
+                               getattr(trainer, "blocks_to_swap", 0) or 0)
 
 
 class LoRATrainer(BaseTrainer):
@@ -39,6 +51,9 @@ class LoRATrainer(BaseTrainer):
         lora_rank: int = 16,
         lora_alpha: int = 16,
         lora_dtype: str = 'fp32',
+        adapter_algorithm: str = 'lora',
+        weight_decompose: bool = False,
+        adapter_config: Optional[Dict] = None,
         train_unet: bool = True,
         train_text_encoder: bool = False,
         train_image_encoder: bool = False,  # Image Encoder (future support)
@@ -51,6 +66,9 @@ class LoRATrainer(BaseTrainer):
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha (scaling factor = alpha / rank)
             lora_dtype: Data type for LoRA weights ('fp32', 'fp16', 'bf16')
+            adapter_algorithm: Adapter algebra ('lora', 'loha', 'lokr')
+            weight_decompose: DoRA-style weight decomposition (Phase 3; refused)
+            adapter_config: Algebra-specific options (LoKr factor / decompose_both)
             train_unet: Whether to train U-Net/Transformer
             train_text_encoder: Whether to train Text Encoder(s)
             train_image_encoder: Whether to train Image Encoder (future support)
@@ -60,6 +78,11 @@ class LoRATrainer(BaseTrainer):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.lora_scale = lora_alpha / lora_rank
+        # Read back by resolve_training_adapter_spec, which every adapter's
+        # build_branch goes through.
+        self.adapter_algorithm = adapter_algorithm
+        self.weight_decompose = weight_decompose
+        self.adapter_config = dict(adapter_config or {})
         self.train_unet = train_unet
         self.train_text_encoder = train_text_encoder
         self.train_image_encoder = train_image_encoder
@@ -132,9 +155,11 @@ class LoRATrainer(BaseTrainer):
         # final; resolving from the flags otherwise keeps _create_adapter
         # callable on a bare trainer. Both go through the same registry.
         arch = getattr(self, "arch", None) or get_arch_handler(self)
+        require_trainable_algebra(self, arch)
         plan = arch.lora_adapter_plan(self)
         self.adapter = plan.build(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
-        print(f"{self.log_prefix} Using {plan.adapter_cls.__name__}{plan.log_detail}")
+        print(f"{self.log_prefix} Using {plan.adapter_cls.__name__}"
+              f"{plan.log_detail} [{self.adapter.adapter_spec.algorithm}]")
 
     def train(self, *args, **kwargs):
         try:
@@ -289,9 +314,16 @@ class LoRATrainer(BaseTrainer):
                 lora_layer.load_tensors(slice_)
         except Exception:
             with torch.no_grad():
-                for (_layer, targets, _slice), snapshot in zip(prepared, snapshots):
+                for (layer, targets, _slice), snapshot in zip(prepared, snapshots):
+                    # A spec constant (LoHa/LoKr alpha) is a freshly built value,
+                    # not a live buffer: copying into it restores a throwaway and
+                    # leaves the layer's scale where the failed load put it.
+                    constants = layer.spec_constants()
                     for name, tensor in targets.items():
-                        tensor.copy_(snapshot[name])
+                        if name in constants:
+                            layer.load_spec_constant(name, snapshot[name])
+                        else:
+                            tensor.copy_(snapshot[name])
             raise
 
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")

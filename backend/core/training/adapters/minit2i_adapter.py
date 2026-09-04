@@ -70,7 +70,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_key(module_path)  # "lora_unet_<flat>"
-            lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)
+            lora_layer = self.build_branch(current, lora_name)
             if isinstance(attr, int):
                 parent[attr] = lora_layer
             else:
@@ -93,7 +93,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_te_key(module_path)  # "lora_te_<flat>"
-            lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)
+            lora_layer = self.build_branch(current, lora_name)
             setattr(parent, attr, lora_layer)
             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
             count += 1

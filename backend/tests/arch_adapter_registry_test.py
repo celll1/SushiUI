@@ -32,17 +32,18 @@ if str(BACKEND) not in sys.path:
 import torch  # noqa: E402
 
 from core.adapters.capability import (  # noqa: E402
-    ADAPTER_PAIRS, ENABLED_ADAPTER_PAIRS, ORDINARY_LORA, supported_pairs)
+    ADAPTER_PAIRS, AXIS_TRAINING, ENABLED_ADAPTER_PAIRS, ORDINARY_LORA,
+    supported_pairs)
 from core.training.arch import ARCH_REGISTRY, resolve_arch_name  # noqa: E402
 
 #: Every architecture whose generation branch builder runs on
 #: ``build_adapter_branch``, each gated by
-#: ``adapter_lycoris_roundtrip_cheap_test.py``. MiniMax-H3 and SenseNova stay
-#: on ordinary LoRA behind their own gate, and SD1.5/SDXL cannot be flipped
-#: from this table at all -- they load through diffusers and never reach
-#: ``AdapterSession``.
+#: ``adapter_lycoris_roundtrip_cheap_test.py``. Every architecture that builds
+#: an ``AdapterSession`` is here; SD1.5/SDXL cannot be flipped from this table
+#: at all -- they load through diffusers and never reach one.
 LYCORIS_ENABLED = {"zimage", "krea2", "minit2i", "ltx2",
-                   "anima", "lens", "ideogram4", "flux2", "acestep"}
+                   "anima", "lens", "ideogram4", "flux2", "acestep",
+                   "minimax_h3", "sensenova"}
 ADDITIVE_LYCORIS = frozenset({ORDINARY_LORA, ("loha", False), ("lokr", False)})
 
 RANK, ALPHA = 16, 8
@@ -322,14 +323,21 @@ class AdapterCapabilityTableTest(unittest.TestCase):
     def test_a_flip_in_the_table_is_the_only_edit_a_declaration_needs(self):
         """The single-source property itself: move one row and the handler's
         matrix moves with it -- supported gains the pair AND the refusal for it
-        disappears, which is what makes a dropped refusal impossible."""
+        disappears, which is what makes a dropped refusal impossible.
+
+        And the second property this file exists to pin: the GENERATION row
+        flipped alone leaves training refused, because they are two tables."""
         from unittest import mock
 
+        from core.adapters.capability import AXIS_GENERATION
         from core.training.arch import base_arch
 
-        flipped = dict(ENABLED_ADAPTER_PAIRS)
-        flipped["zimage"] = frozenset({ORDINARY_LORA, ("loha", False)})
-        with mock.patch.object(base_arch, "declared_pairs", flipped.__getitem__):
+        tables = {AXIS_GENERATION: frozenset({ORDINARY_LORA, ("loha", False)})}
+
+        def declared(arch, axis=AXIS_GENERATION):
+            return tables.get(axis, frozenset({ORDINARY_LORA}))
+
+        with mock.patch.object(base_arch, "declared_pairs", declared):
             capability = base_arch.declare_adapter_capability(
                 "zimage", additive_family=True, initial_dora="dense",
                 additive_reason="a", dora_reason="b",
@@ -337,6 +345,9 @@ class AdapterCapabilityTableTest(unittest.TestCase):
         self.assertTrue(capability.supports("loha", False))
         self.assertIsNone(capability.refusal_reason("loha", False))
         self.assertIsNotNone(capability.refusal_reason("lokr", False))
+        self.assertFalse(capability.supports("loha", False, AXIS_TRAINING))
+        self.assertIsNotNone(
+            capability.refusal_reason("loha", False, AXIS_TRAINING))
 
     def test_an_unaccounted_pair_still_raises_at_construction(self):
         """The safety property survives the restructuring: a hand-built matrix

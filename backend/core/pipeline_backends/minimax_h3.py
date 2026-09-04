@@ -595,6 +595,12 @@ class MiniMaxH3Mixin:
             h2d_only=False,
         )
         offloader.prepare_block_devices_before_forward()
+        # Adapters install BEFORE this (the generate function loads them one
+        # call earlier), and the sweep above moves every tensor of a block to
+        # the device and returns only the Linear weights -- so a LyCORIS
+        # branch's bare parameters stay resident. See
+        # ``warn_unoffloaded_branches``.
+        self._minimax_h3_lora_session.warn_unoffloaded_branches("transformer")
 
         wrapper = MiniMaxH3BlockLoopWrapper(transformer, block_offloader=offloader)
         components["transformer"] = wrapper
@@ -729,6 +735,12 @@ class MiniMaxH3Mixin:
                 AdapterIncompatible.__init__(self, message, code=code)
                 ValueError.__init__(self, message)
 
+        class MiniMaxH3Incompatible(AdapterIncompatible, RuntimeError):
+            def __init__(self, message: str, detail: str = None, code: Optional[str] = None):
+                code = code or "lora_incompatible"
+                AdapterIncompatible.__init__(self, message, code=code)
+                RuntimeError.__init__(self, message)
+
         components = getattr(self, "minimax_h3_components", None) or {}
         current_variant = components.get("variant")
 
@@ -744,7 +756,15 @@ class MiniMaxH3Mixin:
             self._minimax_h3_lora_warn(str(exc), "minimax_h3_lora_variant_mismatch")
             raise MiniMaxH3VariantMismatch(str(exc), code="minimax_h3_lora_variant_mismatch") from exc
 
-        targets = normalise_lora_state_dict(file.tensors, file.metadata)
+        try:
+            targets = normalise_lora_state_dict(file.tensors, file.metadata)
+        except ValueError as exc:
+            # A key convention this file cannot be read in, an unmappable stem,
+            # a truncated group, or a fused stem whose factorization does not
+            # split three ways: all "this file cannot be applied here", so they
+            # answer 400 with their own sentence rather than a bare 500.
+            self._minimax_h3_lora_warn(str(exc), "lora_incompatible")
+            raise MiniMaxH3Incompatible(str(exc), code="lora_incompatible") from exc
 
         if blocks_to_swap > 0:
             rank_variation = detect_rank_variation(targets)
@@ -792,35 +812,18 @@ class MiniMaxH3Mixin:
         return targets
 
     def _minimax_h3_build_lora_branch(self, request):
-        from core.adapters import MiniMaxH3LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH, lora_branch_dtype
+        """The branch for one target, ``None`` when this file names no key for
+        it, or ``SHAPE_MISMATCH`` when its factors do not fit."""
+        from core.adapters import PreparedBranch, SHAPE_MISMATCH
+        from core.models.minimax_h3.minimax_h3_lora import build_lora_branch
 
         weights = request.prepared.get(request.module_path)
         if weights is None:
             return None
-
-        down = weights["down"]
-        up = weights["up"]
-        base = request.base
-
-        expected_in = getattr(base, "in_features", None)
-        expected_out = getattr(base, "out_features", None)
-        lora_in = down.shape[-1]
-        lora_out = up.shape[0]
-        if lora_in != expected_in or lora_out != expected_out or down.shape[0] != up.shape[1]:
-            return SHAPE_MISMATCH
-
-        rank = int(down.shape[0])
-        wrapper = MiniMaxH3LoRALinearLayer(base, rank=rank, alpha=rank, lora_name=request.module_path)
-        device = base.weight.device
-        compute_dtype = lora_branch_dtype(base)
-        with torch.no_grad():
-            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            wrapper.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
-        wrapper.lora_up = wrapper.lora_up.to(dtype=compute_dtype)
-        wrapper.alpha = float(weights.get("alpha", weights["scale_ratio"]))
-        wrapper.rank = weights.get("scale_rank", 1)
-
+        wrapper = build_lora_branch(request.base, weights, request.module_path)
+        if wrapper is SHAPE_MISMATCH:
+            return wrapper
+        # Strength is folded into the branch's own scale by ``add_branch``.
         return PreparedBranch(wrapper, request.file.strength)
 
     def _minimax_h3_lora_components(self):

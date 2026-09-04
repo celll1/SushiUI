@@ -15267,7 +15267,10 @@ class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
     dataset_configs: Optional[List[DatasetConfigItem]] = None  # Multiple datasets with filters
     run_name: Optional[str] = None  # Optional - will use UUID if not provided
-    training_method: str  # 'lora' | 'relora' | 'controlnet' | 'full_finetune' | 'vae_decoder'
+    # A closed set: an unrecognized method used to fall through to
+    # full_finetune, which ran a different run than the one that was asked for.
+    training_method: Literal["lora", "relora", "full_finetune", "controlnet",
+                             "vae_decoder"]
     base_model_path: str
     # Physical GPU index to pin this run's training subprocess to. None keeps
     # the previous behaviour (inherit the backend's visible devices). Validated
@@ -15341,6 +15344,19 @@ class TrainingRunCreateRequest(BaseModel):
     lora_alpha: Optional[int] = 16
     lora_dtype: Optional[str] = "fp32"  # fp32, fp16, bf16 (LoRA weight dtype, independent of main model)
     network_type: Optional[str] = "lora"
+    # Adapter algebra. Enabled per architecture (and per axis: what generates is
+    # not what trains) by core.adapters.capability; refused with the reason at
+    # POST /training/runs/{id}/start, before the model loads.
+    adapter_algorithm: Literal["lora", "loha", "lokr"] = TRAINING_DEFAULTS[
+        "adapter_algorithm"
+    ]
+    # Accepted, refused: DoRA/DoHa/DoKr are Phase 3.
+    weight_decompose: bool = TRAINING_DEFAULTS["weight_decompose"]
+    # Algebra-specific options; LoKr takes "factor" and "decompose_both".
+    # Optional because a YAML written before this key existed restores as None
+    # through /params, and every reader treats None as the empty TRAINING_DEFAULTS
+    # mapping.
+    adapter_config: Optional[Dict[str, Any]] = None
 
     # Advanced. save_every/sample_every: 0 = never (same reading as the tagger
     # and VAE trainers); negative is refused rather than silently folded.
@@ -16121,6 +16137,9 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "lora_rank": ("network", "linear"),
     "lora_alpha": ("network", "linear_alpha"),
     "lora_dtype": ("network", "lora_dtype"),
+    "adapter_algorithm": ("network",),
+    "weight_decompose": ("network",),
+    "adapter_config": ("network",),
     # network.controlnet section
     "controlnet_type": ("network.controlnet", "type"),
     "controlnet_pretrained_path": ("network.controlnet", "pretrained_path"),

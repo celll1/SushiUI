@@ -171,55 +171,23 @@ class SenseNovaMixin:
 
     @staticmethod
     def _sensenova_build_lora_branch(request):
-        from core.adapters import LoRALinearLayer, PreparedBranch, SHAPE_MISMATCH
+        """The branch for one target, ``None`` when this file names no key for
+        it, or ``SHAPE_MISMATCH`` when its factors do not fit."""
+        from core.adapters import PreparedBranch, SHAPE_MISMATCH
+        from core.models.sensenova.sensenova_lora import build_lora_branch
 
         prepared = request.prepared
         grouped = prepared.get("grouped", {}) if isinstance(prepared, dict) else {}
-        weights = grouped.get(request.module_path)
-        if weights is None:
+        group = grouped.get(request.module_path)
+        if group is None:
             return None
-
-        down = weights["down"]
-        up = weights["up"]
-        alpha_tensor = weights.get("alpha")
         file_alpha = prepared.get("alpha") if isinstance(prepared, dict) else None
 
-        true_original = request.base
-        in_features = getattr(true_original, "in_features", None)
-        out_features = getattr(true_original, "out_features", None)
-        if in_features is not None and down.shape[1] != in_features:
-            return SHAPE_MISMATCH
-        if out_features is not None and up.shape[0] != out_features:
-            return SHAPE_MISMATCH
-        if down.shape[0] != up.shape[1]:
-            return SHAPE_MISMATCH
-
-        rank = int(down.shape[0])
-        if alpha_tensor is not None:
-            alpha_value = float(alpha_tensor.item())
-        elif file_alpha is not None:
-            alpha_value = file_alpha
-        else:
-            alpha_value = float(rank)
-
-        branch_layer = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
-                                       lora_name=request.module_path)
-        device = true_original.weight.device
-
-        if getattr(true_original, "bias", None) is not None and true_original.bias.dtype.is_floating_point:
-            compute_dtype = true_original.bias.dtype
-        elif (true_original.weight.dtype.is_floating_point and
-              "float8" not in str(true_original.weight.dtype)):
-            compute_dtype = true_original.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-
-        with torch.no_grad():
-            branch_layer.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            branch_layer.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        branch_layer.lora_down = branch_layer.lora_down.to(dtype=compute_dtype)
-        branch_layer.lora_up = branch_layer.lora_up.to(dtype=compute_dtype)
-
+        branch_layer = build_lora_branch(request.base, group,
+                                         request.module_path, file_alpha)
+        if branch_layer is SHAPE_MISMATCH:
+            return branch_layer
+        # Strength is folded into the branch's own scale by ``add_branch``.
         return PreparedBranch(branch_layer, request.file.strength)
 
     @property

@@ -1,8 +1,7 @@
 """LoHa and LoKr, loaded and applied by the architectures that enable them.
 
 The evidence for the ``core/adapters/capability.py`` flips. One row per enabled
-architecture -- Z-Image, Krea 2, MiniT2I, LTX-2.3 (Tier 1) and Anima, Lens,
-Ideogram 4, FLUX.2, ACE-Step (Tiers 2 and 4) -- each driving that
+architecture -- all eleven that build an ``AdapterSession`` -- each driving that
 architecture's REAL generation loader over a synthetic LyCORIS checkpoint
 written in its own key spelling, on CPU in a couple of seconds. A flip is legal
 only when its architecture passes all five:
@@ -26,16 +25,19 @@ two cannot describe different models. Z-Image's is the production transformer.
 
 The last rows are the stacking property nothing had exercised with MIXED
 algebras -- one LoRA and one LoHa over the same module, summed at their own
-strengths, in either selection order -- and FLUX.2's two components, whose
+strengths, in either selection order -- FLUX.2's two components, whose
 text-encoder half takes the plain request strength while its transformer half
-multiplies the per-block weight into it.
+multiplies the per-block weight into it, and MiniMax-H3's fused ``qkv_proj``,
+whose three row-sliced pieces must reconstruct the fused delta exactly and
+whose LoKr must be REFUSED, by name, when its ``w1`` rows do not divide by
+three.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/adapter_lycoris_roundtrip_cheap_test.py -v
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Callable, List, Optional, Tuple
 
@@ -82,6 +84,13 @@ class Arch:
     #: ``None`` for an architecture that builds one only AFTER adapters install
     #: (or has none at all).
     fake_offloader: Optional[Callable[[object], None]] = None
+    #: File metadata this architecture's ``prepare_file`` reads before it looks
+    #: at a single tensor -- a format sniff, or a variant it must be told.
+    extra_metadata: dict = field(default_factory=dict)
+
+
+def file_metadata(arch: Arch) -> dict:
+    return {"model_type": arch.name, **arch.extra_metadata}
 
 
 def _live_offloader():
@@ -369,9 +378,68 @@ def _acestep() -> Arch:
     )
 
 
+def _minimax_h3() -> Arch:
+    from core.adapters import lora_branch_dtype
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+    import minimax_h3_lora_roundtrip_cheap_test as gate
+
+    class _B(MiniMaxH3Mixin):
+        def __init__(self, model):
+            self.minimax_h3_components = {"transformer": model, "variant": "fl2va"}
+
+    return Arch(
+        name="minimax_h3",
+        build=gate._Stub,
+        backend=_B,
+        components=lambda b: b._minimax_h3_lora_components(),
+        # The NATIVE spelling, which is one-to-one with the vendored module
+        # names: no fusion to split, no half swap. The comfy spelling's fused
+        # qkv stem is pinned by its own rows at the end of this file.
+        stem=lambda p: "lora_unet_" + p.replace(".", "_"),
+        load=lambda b, c: b._load_lora_minimax_h3(c, {}),
+        unload=lambda b: b._unload_lora_minimax_h3(),
+        swap=lambda b, m: b.minimax_h3_components.__setitem__("transformer", m),
+        branch_dtype=lora_branch_dtype,
+        session=lambda b: b._minimax_h3_lora_session,
+        branch_hook="_minimax_h3_build_lora_branch",
+        # fl2va and ref2va checkpoints are indistinguishable by key or shape, so
+        # a LoRA that names neither is WARNED about; naming the loaded variant
+        # is what keeps the no-warning rows about the adapter.
+        extra_metadata={"base_model": "MiniMax-H3-fl2va"},
+    )
+
+
+def _sensenova() -> Arch:
+    from core.models.sensenova.sensenova_lora import branch_dtype
+    from core.pipeline_backends.sensenova import SenseNovaMixin
+    import sensenova_lora_roundtrip_cheap_test as gate
+
+    class _B(SenseNovaMixin):
+        def __init__(self, model):
+            self.sensenova_components = {"transformer": model}
+
+    return Arch(
+        name="sensenova",
+        build=gate.build_model,
+        backend=_B,
+        # BOTH MoT halves, as two components over one module; the stems are the
+        # module paths verbatim, which is why this is the one architecture that
+        # asks the session to canonicalize a PEFT export's keys.
+        components=lambda b: b._sensenova_lora_components(),
+        stem=lambda p: p,
+        load=lambda b, c: b._load_lora_sensenova(c),
+        unload=lambda b: b._unload_lora_sensenova(),
+        swap=lambda b, m: b.sensenova_components.__setitem__("transformer", m),
+        branch_dtype=branch_dtype,
+        session=lambda b: b._sensenova_lora_session,
+        branch_hook="_sensenova_build_lora_branch",
+        extra_metadata={"tensor_kind": "neo_hf_lora"},
+    )
+
+
 ARCHES = {a.name: a for a in (_zimage(), _krea2(), _minit2i(), _ltx2(),
                               _anima(), _lens(), _ideogram4(), _flux2(),
-                              _acestep())}
+                              _acestep(), _minimax_h3(), _sensenova())}
 NAMES = sorted(ARCHES)
 ALGEBRAS = ("loha", "lokr")
 
@@ -475,7 +543,7 @@ def write_checkpoint(arch: Arch, backend, tmp_path, algorithm, name=None, seed=7
         for key, value in tensors.items():
             raw[stem + _SUFFIX.get(key, "." + key)] = value
     path = tmp_path / (name or f"{arch.name}_{algorithm}.safetensors")
-    save_file(raw, str(path), metadata={"model_type": arch.name})
+    save_file(raw, str(path), metadata=file_metadata(arch))
     return str(path), per_target
 
 
@@ -568,7 +636,7 @@ def test_dropping_the_alpha_tensor_changes_the_scale(name, algorithm, tmp_path,
     from safetensors.torch import load_file
     stripped = tmp_path / f"{arch.name}_{algorithm}_noalpha.safetensors"
     save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
-              str(stripped), metadata={"model_type": arch.name})
+              str(stripped), metadata=file_metadata(arch))
     without = arch.backend(arch.build())
     load_one(arch, without, str(stripped))
 
@@ -600,7 +668,7 @@ def test_a_wrong_shape_group_refuses_lora_partial(name, algorithm, tmp_path,
     original = raw[f"{victim}.{bent}"]
     raw[f"{victim}.{bent}"] = torch.zeros(original.shape[0], original.shape[1] + 1)
     broken = tmp_path / f"{arch.name}_{algorithm}_bent.safetensors"
-    save_file(raw, str(broken), metadata={"model_type": arch.name})
+    save_file(raw, str(broken), metadata=file_metadata(arch))
 
     model = backend_model(arch, backend)
     with pytest.raises(AdapterIncompatible) as excinfo:
@@ -625,7 +693,7 @@ def test_a_partial_tensor_group_refuses_lora_incompatible(name, algorithm,
     stem = arch.stem(module_path)
     path = tmp_path / f"{arch.name}_{algorithm}_half.safetensors"
     save_file({f"{stem}.{k}": full[k] for k in keep}, str(path),
-              metadata={"model_type": arch.name})
+              metadata=file_metadata(arch))
 
     model = backend_model(arch, backend)
     with pytest.raises(AdapterIncompatible) as excinfo:
@@ -854,31 +922,38 @@ def test_flux2_covers_both_components_at_their_own_strength_rules(
 # The other side of the boundary: the architectures this phase did NOT flip
 # --------------------------------------------------------------------------
 
-#: Every session-managed architecture whose row is still ordinary LoRA: the
-#: Tier-3 two, gated separately because their ConvRot forward and activation
-#: dtype policy dominate the step (and MiniMax-H3 additionally needs
-#: ``split_group_on_out_rows`` wired into its fused-QKV path). SD1.5 and SDXL
-#: are absent because they build no ``AdapterSession`` at all -- they load
-#: through diffusers, so a kohya LoHa is listed in the UI and reaches
+#: EMPTY: every architecture that builds an ``AdapterSession`` now takes both
+#: families. SD1.5 and SDXL are absent because they build no session at all --
+#: they load through diffusers, so a kohya LoHa is listed in the UI and reaches
 #: diffusers' loader with no ``lora_incompatible`` refusal anywhere. That is a
 #: known gap, recorded in docs/guides/LYCORIS_ADAPTER_DESIGN.md, not something
-#: this table can express.
-NOT_ENABLED = ("minimax_h3", "sensenova")
+#: this table can express. Kept as a name so a future architecture that lands
+#: unflipped has somewhere to go.
+NOT_ENABLED = ()
 
 
-@pytest.mark.parametrize("arch", NOT_ENABLED)
+@pytest.mark.parametrize("unenabled", ("sd15", "sdxl"))
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
-def test_an_unflipped_architecture_still_refuses_both_families(arch, algorithm):
-    """Driven through each backend's REAL session object, not read off the
-    table: the remaining rows unchanged is a claim about behaviour."""
+def test_the_capability_gate_still_refuses_a_family_no_row_enables(
+        algorithm, unenabled):
+    """``NOT_ENABLED`` is empty, so the discriminating negative is no longer an
+    architecture with a session -- it is the two rows without one. Told it is
+    loading for SD1.5, a real session still refuses, which is what keeps the
+    sibling below from passing on a dead check.
+
+    An unknown NAME would not do: ``AdapterSpec.validate`` refuses that first,
+    with a message about the architecture rather than the family.
+    """
     import adapter_key_normalization_gate_cheap_test as keys
 
-    session = keys._session(arch)
-    raw, _declared = keys.ARCHES[arch].variants[algorithm]
-    handed, codec = session._canonicalize(raw, {})
-    assert codec.algorithm == algorithm, (arch, codec.algorithm)
+    session = keys._session("zimage")
+    raw, _declared = keys.ARCHES["zimage"].variants[algorithm]
+    _handed, codec = session._canonicalize(raw, {})
+    assert codec.algorithm == algorithm
+    assert session._refuse_unsupported_algebra("probe.safetensors", codec) is None
+    session._architecture = unenabled
     with pytest.raises(AdapterIncompatible) as excinfo:
-        session._refuse_unsupported_algebra(f"{arch}.safetensors", codec)
+        session._refuse_unsupported_algebra("probe.safetensors", codec)
     assert f"{algorithm} adapters are not enabled" in str(excinfo.value)
 
 
@@ -896,11 +971,23 @@ def test_a_flipped_architectures_session_does_not_refuse(name, algorithm):
 
 
 def test_every_session_architecture_is_on_exactly_one_side_of_the_boundary():
-    from core.adapters.capability import ENABLED_ADAPTER_PAIRS
+    """With ``NOT_ENABLED`` empty the boundary is no longer inside the session
+    architectures -- it IS the session. What is still contingent, and what this
+    asserts: every architecture that builds an ``AdapterSession`` is a row in
+    this file AND carries both families, and the only two capability rows
+    without a session are SD1.5 and SDXL, which are still ordinary LoRA because
+    they load through diffusers. A new architecture that lands unflipped fails
+    the second loop; one that lands with no row here fails the first.
+    """
+    from core.adapters.capability import ENABLED_ADAPTER_PAIRS, ORDINARY_LORA
     import adapter_key_normalization_gate_cheap_test as keys
 
     assert set(keys.ARCHES) == set(NAMES) | set(NOT_ENABLED)
     assert set(ENABLED_ADAPTER_PAIRS) - set(keys.ARCHES) == {"sd15", "sdxl"}
+    for name in NAMES:
+        assert {(a, False) for a in ALGEBRAS} <= ENABLED_ADAPTER_PAIRS[name], name
+    for name in ("sd15", "sdxl"):
+        assert ENABLED_ADAPTER_PAIRS[name] == frozenset({ORDINARY_LORA}), name
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -931,8 +1018,11 @@ def test_a_flipped_architecture_still_refuses_the_decomposition_axis(name):
 #: each backend's generate function: does it install adapters before or after
 #: the offloader splits the blocks?
 STRANDS = ("ltx2", "minit2i", "anima", "lens", "ideogram4")  # AFTER  -> refuse
-SWEPT = ("zimage", "flux2")                                 # BEFORE -> advise
-NO_SWAP = ("krea2", "acestep")            # no generation-time offloader at all
+SWEPT = ("zimage", "flux2", "minimax_h3")                   # BEFORE -> advise
+# krea2/acestep build no generation-time offloader; SenseNova's blocks_to_swap
+# is inert and its MoT phase evictor moves a module's OWN parameters, so it
+# carries a LyCORIS branch with the half it sits under.
+NO_SWAP = ("krea2", "acestep", "sensenova")
 
 
 def _recording_backend(arch: Arch, monkeypatch, visited):
@@ -1153,3 +1243,343 @@ def test_an_undetectable_file_is_not_refused_by_the_block_swap_gate(
     load_one(arch, backend, path)
     assert "lora_blockswap_unsupported" not in warning_codes(warnings_seen)
     assert composites(backend_model(arch, backend)) == set(tensors)
+
+
+# --------------------------------------------------------------------------
+# MiniMax-H3: the fused QKV row split, and the fc1 half swap generalized
+# --------------------------------------------------------------------------
+
+_H3_PREFIX = "diffusion_model."
+_H3_IN = 16          # minimax_h3_lora_roundtrip_cheap_test._HIDDEN
+_H3_HEAD = 8         # ... _INNER, one projection's output rows
+_H3_QKV_OUT = 3 * _H3_HEAD
+_H3_FFN = 24         # ... _FFN, the fc1 output rows
+
+
+def _h3_backend():
+    arch = ARCHES["minimax_h3"]
+    backend = arch.backend(arch.build())
+    return arch, backend, backend_model(arch, backend)
+
+
+def _h3_write(tmp_path, name, stem, tensors):
+    """One comfy-spelled stem, which is the only spelling with a fused qkv."""
+    raw = {}
+    for key, value in tensors.items():
+        raw[_H3_PREFIX + stem + _SUFFIX.get(key, "." + key)] = value
+    path = tmp_path / name
+    save_file(raw, str(path), metadata=file_metadata(ARCHES["minimax_h3"]))
+    return str(path)
+
+
+def _h3_fused_factors(algorithm, out_features, generator, *, w1_rows=None):
+    """A fused stem's factors at ``(out_features, _H3_IN)``.
+
+    ``w1_rows`` is the LoKr knob this pair of rows exists for: a contiguous
+    piece is another Kronecker product only when the piece count divides it,
+    and no file stores the factorization, so a checkpoint may carry any pair
+    that multiplies out.
+    """
+    if algorithm in ("lora", "loha"):
+        return factor_tensors(algorithm, out_features, _H3_IN, generator)
+    assert algorithm == "lokr"
+    in_m, in_n = factorization(_H3_IN)
+    assert out_features % w1_rows == 0
+    return {
+        "lokr_w1": _randn((w1_rows, in_m), generator),
+        "lokr_w2_a": _randn((out_features // w1_rows, RANK), generator),
+        "lokr_w2_b": _randn((RANK, in_n), generator),
+        "alpha": torch.tensor(ALPHA),
+    }
+
+
+@pytest.mark.parametrize("algorithm,w1_rows",
+                         [("lora", None), ("loha", None), ("lokr", 3)])
+def test_minimax_h3_qkv_pieces_reconstruct_the_fused_delta(
+        algorithm, w1_rows, tmp_path, warnings_seen):
+    """One fused ``attn.qkv_proj`` stem -> to_q/to_k/to_v, exactly.
+
+    ``delta[rows] = up[rows, :] @ down`` makes the row slice exact for LoRA and
+    LoHa; for LoKr it is exact only under the parent's own ``(out_l, out_k)``
+    split, so this row uses a ``w1`` whose rows divide by 3 and its sibling
+    below uses one that does not.
+    """
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(31)
+    fused = _h3_fused_factors(algorithm, _H3_QKV_OUT, generator, w1_rows=w1_rows)
+    path = _h3_write(tmp_path, "h3_qkv_" + algorithm + ".safetensors",
+                     "blocks.0.attn.qkv_proj", fused)
+
+    assert arch.load(backend, [{"path": path, "strength": STRENGTH}]) == 3
+    modules = dict(model.named_modules())
+    pieces = [sole_branch(modules["transformer_blocks.0.attn." + leaf]).compute_delta_weight()
+              for leaf in ("to_q", "to_k", "to_v")]
+    assert [tuple(p.shape) for p in pieces] == [(_H3_HEAD, _H3_IN)] * 3
+
+    expected = reference.adapter_delta_weight(algorithm, fused, rank=RANK,
+                                              alpha=ALPHA, strength=STRENGTH)
+    assert expected.shape == (_H3_QKV_OUT, _H3_IN)
+    actual = torch.cat(pieces, dim=0).float()
+    assert torch.allclose(actual, expected, atol=1e-6), (
+        algorithm, float((actual - expected).abs().max()))
+    # Non-vacuity: the thirds really differ, so a wrong assignment would show.
+    assert not torch.allclose(pieces[0], pieces[1], atol=1e-6)
+    assert not warning_codes(warnings_seen)
+
+
+def test_minimax_h3_qkv_pieces_do_not_share_one_storage(tmp_path):
+    """``split_group_on_out_rows`` shares the non-sliced factors BY REFERENCE and
+    ``from_tensors`` ADOPTS, so the three branches would otherwise alias one
+    buffer -- and any in-place write would reach all three. The split clones."""
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(37)
+    fused = _h3_fused_factors("loha", _H3_QKV_OUT, generator)
+    path = _h3_write(tmp_path, "h3_qkv_shared.safetensors",
+                     "blocks.0.attn.qkv_proj", fused)
+    arch.load(backend, [{"path": path, "strength": STRENGTH}])
+
+    modules = dict(model.named_modules())
+    branches = [sole_branch(modules["transformer_blocks.0.attn." + leaf])
+                for leaf in ("to_q", "to_k", "to_v")]
+    shared = [b.hada_w1_b for b in branches]
+    assert len({t.data_ptr() for t in shared}) == 3
+    before = branches[1].compute_delta_weight().clone()
+    with torch.no_grad():
+        shared[0].add_(1.0)
+    assert torch.equal(branches[1].compute_delta_weight(), before)
+
+
+def test_minimax_h3_refuses_a_fused_qkv_lokr_that_straddles_a_block(
+        tmp_path, warnings_seen):
+    """A LoKr whose ``w1`` rows are not divisible by 3 is REFUSED, and told why.
+
+    Every matrix is a degenerate Kronecker product of a 1x1 with itself, so
+    emitting the slice anyway would be a numerically different adapter, not a
+    rounding difference (measured 0.31 off in ``split_group_on_out_rows``). The
+    message must not read as a corrupt file: nothing about this one is.
+    """
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(41)
+    fused = _h3_fused_factors("lokr", _H3_QKV_OUT, generator, w1_rows=4)
+    path = _h3_write(tmp_path, "h3_qkv_lokr_straddle.safetensors",
+                     "blocks.0.attn.qkv_proj", fused)
+
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        arch.load(backend, [{"path": path, "strength": STRENGTH}])
+    message = str(excinfo.value)
+    assert excinfo.value.code == "lora_incompatible"
+    assert "lora_incompatible" in warning_codes(warnings_seen)
+    assert "3 divides w1's 4 rows" in message
+    assert "well formed" in message
+    # Not a corrupt file, and not the capability gate: the row IS enabled.
+    assert "truncated or corrupt" not in message
+    assert "not enabled" not in message
+    assert not composites(model)
+
+
+@pytest.mark.parametrize("algorithm,w1_rows",
+                         [("lora", None), ("loha", None), ("lokr", 4)])
+def test_minimax_h3_swaps_the_fc1_halves_on_every_algebra(
+        algorithm, w1_rows, tmp_path, warnings_seen):
+    """Comfy ``[gate; up]`` -> vendored SwiGLU ``[up; gate]``, generalized.
+
+    A permutation of the OUT axis, so it moves ``lora_up``, both LoHa ``*_a``
+    factors, or a LoKr's ``w1`` -- and getting it wrong is silent: the shapes
+    match, the load is clean, and the gate delta lands in the up path.
+    """
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(43)
+    fused = _h3_fused_factors(algorithm, _H3_FFN, generator, w1_rows=w1_rows)
+    path = _h3_write(tmp_path, "h3_fc1_" + algorithm + ".safetensors",
+                     "blocks.0.mlp.fc1", fused)
+
+    assert arch.load(backend, [{"path": path, "strength": STRENGTH}]) == 1
+    installed = sole_branch(dict(model.named_modules())["transformer_blocks.0.ff.net.0.proj"])
+    comfy = reference.adapter_delta_weight(algorithm, fused, rank=RANK,
+                                           alpha=ALPHA, strength=STRENGTH)
+    gate_half, up_half = comfy.chunk(2, dim=0)
+    expected = torch.cat([up_half, gate_half], dim=0)
+    actual = installed.compute_delta_weight().float()
+    assert torch.allclose(actual, expected, atol=1e-6), algorithm
+    # Non-vacuity: the unswapped delta is a different matrix.
+    assert not torch.allclose(actual, comfy, atol=1e-6)
+    assert not warning_codes(warnings_seen)
+
+
+def test_minimax_h3_refuses_an_fc1_lokr_whose_halves_straddle_a_block(
+        tmp_path, warnings_seen):
+    """The same conditional as the qkv split, at 2 pieces instead of 3: the
+    half swap is a whole-block permutation only when ``w1``'s rows are even."""
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(47)
+    fused = _h3_fused_factors("lokr", _H3_FFN, generator, w1_rows=3)
+    path = _h3_write(tmp_path, "h3_fc1_lokr_straddle.safetensors",
+                     "blocks.0.mlp.fc1", fused)
+
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        arch.load(backend, [{"path": path, "strength": STRENGTH}])
+    message = str(excinfo.value)
+    assert excinfo.value.code == "lora_incompatible"
+    assert "w1's 3 rows are even" in message
+    assert "well formed" in message
+    assert "truncated or corrupt" not in message and "not enabled" not in message
+    assert not composites(model)
+
+
+def test_minimax_h3_native_and_comfy_lycoris_reach_the_same_delta(tmp_path):
+    """The two key conventions are one adapter. A native LoHa on the three
+    unfused attention leaves must install the same three deltas a comfy file
+    reaches through the fused stem -- which is what makes the split a key codec
+    rather than a second algebra."""
+    arch, backend, model = _h3_backend()
+    generator = torch.Generator().manual_seed(53)
+    fused = _h3_fused_factors("loha", _H3_QKV_OUT, generator)
+    comfy = _h3_write(tmp_path, "h3_pair_comfy.safetensors",
+                      "blocks.0.attn.qkv_proj", fused)
+    arch.load(backend, [{"path": comfy, "strength": STRENGTH}])
+    leaves = ("to_q", "to_k", "to_v")
+    modules = dict(model.named_modules())
+    from_comfy = {leaf: sole_branch(modules["transformer_blocks.0.attn." + leaf])
+                  .compute_delta_weight().clone() for leaf in leaves}
+
+    raw = {}
+    for index, leaf in enumerate(leaves):
+        rows = slice(index * _H3_HEAD, (index + 1) * _H3_HEAD)
+        stem = "lora_unet_transformer_blocks_0_attn_" + leaf
+        for name, value in fused.items():
+            # .clone(): safetensors refuses to save three stems sharing one
+            # storage, which the shared _b factors would otherwise be.
+            raw[stem + "." + name] = (value[rows].contiguous()
+                                      if name in ("hada_w1_a", "hada_w2_a")
+                                      else value.clone())
+    native_path = tmp_path / "h3_pair_native.safetensors"
+    save_file(raw, str(native_path), metadata=file_metadata(ARCHES["minimax_h3"]))
+
+    other_backend = arch.backend(arch.build())
+    arch.load(other_backend, [{"path": str(native_path), "strength": STRENGTH}])
+    other = dict(backend_model(arch, other_backend).named_modules())
+    for leaf in leaves:
+        native = sole_branch(other["transformer_blocks.0.attn." + leaf])
+        assert torch.allclose(native.compute_delta_weight(), from_comfy[leaf],
+                              atol=1e-6), leaf
+
+
+# --------------------------------------------------------------------------
+# SenseNova: the one architecture that OPTS IN to key canonicalization
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_sensenova_canonicalizes_a_peft_prefixed_lycoris_file(
+        algorithm, tmp_path, warnings_seen):
+    """``canonicalize_foreign_keys=True`` has to carry LyCORIS too.
+
+    SenseNova's parser matches the suffix on a VERBATIM module path, so a PEFT
+    export differs from its own spelling only by ``base_model.model.``.
+    ``normalize_keys`` strips exactly that; its ``lora_A``/``lora_B`` rewrites
+    never fire on ``hada_*``/``lokr_*`` keys, so the same rewrite that made a
+    PEFT LoRA loadable makes a PEFT LoHa loadable. Without the strip the stems
+    parse and then match no live module, which is a zero-target refusal.
+    """
+    arch = ARCHES["sensenova"]
+    backend = arch.backend(arch.build())
+    plain, per_target = write_checkpoint(arch, arch.backend(arch.build()),
+                                         tmp_path, algorithm)
+
+    from safetensors.torch import load_file
+    prefixed = tmp_path / f"sensenova_peft_{algorithm}.safetensors"
+    save_file({"base_model.model." + k: v.clone()
+               for k, v in load_file(plain).items()},
+              str(prefixed), metadata=file_metadata(arch))
+
+    model = backend_model(arch, backend)
+    load_one(arch, backend, str(prefixed))
+    assert composites(model) == set(per_target)
+    assert not warning_codes(warnings_seen)
+
+
+# --------------------------------------------------------------------------
+# The quantized base: what MiniMax-H3's and SenseNova's targets ACTUALLY are
+# --------------------------------------------------------------------------
+
+def _quantized_stub(cls, bias):
+    """The SenseNova stub with every ``nn.Linear`` replaced by ``cls``.
+
+    Its 294 targets per MoT half are all ``Int8Linear`` in production and
+    MiniMax-H3's block stack is all ``Fp8Linear``, so a gate built entirely on
+    ``nn.Linear`` never touches the layer class these two actually carry. What
+    changed for them is the shape check: it moved from a
+    ``getattr(base, "in_features", None)``-tolerant comparison to
+    ``_base_geometry``, which RAISES on a base that answers neither -- caught by
+    ``build_adapter_branch`` and returned as ``SHAPE_MISMATCH``, i.e. a target
+    silently skipped and then a ``lora_partial`` refusal for the whole file.
+    """
+    model = ARCHES["sensenova"].build()
+    if cls is nn.Linear:
+        return model
+    for parent in model.modules():
+        for attr, child in list(parent.named_children()):
+            if not isinstance(child, nn.Linear):
+                continue
+            setattr(parent, attr, cls(child.in_features, child.out_features,
+                                      bias=bias, compute_dtype=torch.bfloat16))
+    return model
+
+
+def _quantized_classes():
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    from core.models.ideogram4.vendor.int8_linear import Int8Linear
+
+    return {"int8": Int8Linear, "fp8": Fp8Linear, "dense": nn.Linear}
+
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+@pytest.mark.parametrize("kind,bias", [("dense", True), ("int8", True),
+                                       ("int8", False), ("fp8", False)])
+def test_a_lycoris_branch_installs_over_a_quantized_base(
+        kind, bias, algorithm, tmp_path, warnings_seen):
+    """The declaration these two rows made true.
+
+    `quantized_base_additive_family` is True for MiniMax-H3 and SenseNova alone
+    because neither has a dense configuration to ship first. This is the row
+    that backs it: the same file, over `Int8Linear` and `Fp8Linear` with and
+    without a bias, reaching every target and matching the fp32 oracle. The
+    branch dtype is the architecture's own — the bias when there is a real
+    floating one, bfloat16 for a quantized weight with none — because an int8
+    weight is not floating point at all.
+    """
+    from core.models.sensenova.sensenova_lora import _is_lora_target
+
+    cls = _quantized_classes()[kind]
+    arch = ARCHES["sensenova"]
+    backend = arch.backend(_quantized_stub(cls, bias))
+    model = backend_model(arch, backend)
+    targets = live_targets(arch, backend)
+    assert targets and all(isinstance(base, cls) for _p, base in targets), kind
+    assert all(_is_lora_target(base) for _p, base in targets), kind
+
+    path, per_target = write_checkpoint(
+        arch, arch.backend(_quantized_stub(cls, bias)), tmp_path, algorithm,
+        name=f"sensenova_{kind}_{int(bias)}_{algorithm}.safetensors")
+    load_one(arch, backend, path)
+    assert composites(model) == set(per_target)
+    assert not warning_codes(warnings_seen)
+
+    modules = dict(model.named_modules())
+    # A quantized weight is float8 or not floating at all, so the bias decides
+    # when there is one and bfloat16 is the floor when there is not.
+    expect_dtype = torch.float32 if kind == "dense" else torch.bfloat16
+    for module_path, tensors in per_target.items():
+        branch = sole_branch(modules[module_path])
+        base = modules[module_path].original_module
+        assert arch.branch_dtype(base) == expect_dtype, (kind, bias)
+        factor = next(t for n, t in branch.branch_tensors().items() if n != "alpha")
+        assert factor.dtype == expect_dtype, (kind, bias, module_path)
+        expected = reference.adapter_delta_weight(
+            algorithm, tensors, rank=RANK, alpha=ALPHA, strength=STRENGTH)
+        actual = branch.compute_delta_weight().float()
+        assert torch.allclose(actual, expected, rtol=3e-2,
+                              atol=max(1e-6, float(expected.abs().max()) * 3e-2)), (
+            kind, bias, module_path)
+
+    arch.unload(backend)
+    assert not composites(model)

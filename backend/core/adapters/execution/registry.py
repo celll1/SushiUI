@@ -1,22 +1,13 @@
 """Adapter-algebra execution backend registry.
 
-One frozen :class:`AdapterBackend` descriptor per backend captures what it can
-serve -- which ``(algorithm, weight_decompose)`` pairs, which activation
-dtypes, which device kinds, whether it has a backward -- alongside the callable
-that computes the branch delta. ``selection.py`` reads these descriptors to
-decide whether a request may name a backend; ``dispatch.py`` reads ``fn`` to
-run it and ``probe.py`` checks it against the fp32 oracle before it is allowed
-to run anything.
+One frozen :class:`AdapterBackend` per backend: what it can serve, plus the
+callable computing the branch delta. ``selection`` reads it to admit a name,
+``probe`` to check it against the fp32 oracle, ``dispatch`` to run it.
 
-Modelled on ``core/attention/registry.py``, which is this repo's existing
-answer to the same problem: adding a backend is ONE entry here plus its
-callable, and no architecture, loader or trainer changes.
-
-``reference`` is the built-in entry: it is the shipped path, it is what runs
-when nothing is selected, and it is the only implementation this build has. A
-fused backend (LyCORIS 4.0.0's Triton/TileLang operations, or any other) is not
-registered here -- see ``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` phase 4 for
-what registering one requires.
+Modelled on ``core/attention/registry.py``: adding a backend is one entry plus
+a callable, with no architecture or trainer change. ``reference`` is the only
+entry and is what runs when nothing is selected; registering a fused one is
+``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` phase 4.
 """
 
 from dataclasses import dataclass
@@ -34,33 +25,19 @@ REFERENCE = "reference"
 class AdapterBackend:
     """Immutable capability descriptor for an adapter execution backend.
 
-    Attributes:
-        name: Canonical backend string ("reference" | ...).
-        fn: Delta callable. Signature ``fn(branch, x) -> Tensor | None``,
-            returning the branch's contribution ALONE (the ``forward_delta``
-            contract), or ``None`` to decline this call without failing. A
-            raised exception latches the backend off; see ``dispatch.py``.
-        pairs: ``(algorithm, weight_decompose)`` pairs it implements.
-        dtypes: Activation dtypes it accepts; ``None`` means unrestricted. This
-            is the ALLOWLIST axis -- upstream's device guard accepts floating
-            dtypes beyond the three it documents, and a region whose dtype has
-            no measured tolerance is refused by ``probe.ORACLE_TOLERANCE``
-            regardless of what a backend declares here.
-        device_kinds: ``torch.device.type`` values it runs on; ``None`` means
-            unrestricted.
-        trainable: False when the backend has no backward, which makes it
-            unusable for training and for the probe's gradient arm.
-        requires_matching_dtypes: True when the activation and the branch
-            parameter dtype must be equal -- the MIXED-dtype axis, upstream
-            refusing fp16 mixed with bf16 in one operation. Declared here rather
-            than left to the kernel to discover.
-        needs_probe: True when a region must pass an executed comparison
-            against the fp32 oracle before the backend may serve it. Only
-            ``reference`` sets this False, because it IS the implementation the
-            oracle checks.
-        availability: Called once when the backend is selected. Returns None if
-            the backend can run in this process, or a sentence saying why not
-            (missing dependency, unsupported toolchain). Never raises.
+    ``fn(branch, x)`` returns the branch's contribution alone (the
+    ``forward_delta`` contract), or ``None`` to decline one call; raising
+    latches the backend off for the process.
+
+    ``dtypes`` is the allowlist axis and ``requires_matching_dtypes`` the
+    mixed-dtype one -- two different questions that read alike. A region whose
+    dtype has no measured ``probe.ORACLE_TOLERANCE`` is refused whatever
+    ``dtypes`` says.
+
+    ``trainable`` False means no backward: no training, no gradient arm in the
+    probe. ``needs_probe`` is False only for ``reference``, which is the
+    implementation the oracle checks. ``availability()`` returns None or a
+    sentence saying why the backend cannot run here, and never raises.
     """
 
     name: str

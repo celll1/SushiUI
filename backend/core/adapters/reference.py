@@ -1,49 +1,23 @@
 """fp32 reference oracle for the adapter algebras.
 
-An oracle that shares code with the thing it validates proves nothing, so
-nothing here calls into ``layers.py``: each delta weight is written from its
-algebraic definition -- an explicit sum of outer products for a low-rank
-product, an explicit block assembly for the Kronecker product -- in fp32, at
-whatever cost.
+Shares no code with ``layers.py``: each delta is written from its algebraic
+definition, since an oracle that reuses the implementation proves nothing.
 
-WHO MAY IMPORT IT. ``backend/tests/*``, and one production module:
-``core.adapters.execution.probe``, whose job is to compare a candidate
-execution backend against this file before that backend may serve a region.
-The import there is deferred to the function that runs it, so a process that
-imports ``core.adapters`` does not load the oracle, and no shipped forward can
-reach it -- ``adapter_layering_test`` gates both halves. Nothing else may
-import it: an oracle a shipped path depends on stops being an independent
-check of that path.
+Importable only by ``backend/tests/*`` and by ``execution.probe``, which
+compares a candidate backend against it; that import is deferred to the
+function so importing ``core.adapters`` does not load this file.
+``adapter_layering_test`` gates both halves.
 
-The functions take the branch tensors under the names ``branch_tensors()``
-produces, so a layer's live state can be handed straight over. Extra keys
-(``alpha``, which LyCORIS carries as a tensor) are ignored.
+Takes the tensor names ``branch_tensors()`` produces and ignores extras.
+Strength is the design doc's ``W_eff(s) = W_base + s * (W_adapter - W_base)``,
+not upstream's.
 
-Strength is the design doc's contract, ``W_eff(s) = W_base + s * (W_adapter -
-W_base)``, not upstream's; see ``dora_effective_weight`` and "Runtime hazards"
-item 2 in ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
-
-KNOWN BLIND SPOTS -- conventions this file SHARES with ``layers.py`` rather
-than deriving, so no comparison between the two can catch them. Each was
-checked by hand against upstream at
-``03270a3839102e63b48578c80e7c024036de74d7``:
-
-1. the LoKr operand order (``kron(w1, w2)``; the swap has the SAME output
-   shape) -- agrees with ``make_kron``;
-2. LoKr's scale derivation, including which operand's rank is the divisor --
-   agrees with ``rank_scale`` in ``kernels/autograd/lokr.py``.
-
-The ``dora_scale`` axis is written from the definition here rather than copied,
-but that too is only evidence once read against upstream ``_weight_decompose``,
-which a test cannot do. The ROW form -- upstream's ``wd_on_out=True`` default,
-stored ``(out,)`` or ``(out, 1)`` -- no longer rests on that agreement alone:
-``adapter_oracle_gate_cheap_test`` compares it against PEFT's
-``DoraLinearLayer``, a third implementation installed in this venv, which norms
-along ``dim=1`` and holds one magnitude per output row, and onto whose
-``lora_magnitude_vector`` diffusers maps a Kohya ``dora_scale`` directly.
-Measured agreement 4.1e-7; a reversed row order is 1.04 off. The COLUMN form
-(``(1, in)``) has no such witness -- PEFT does not implement it -- and remains
-two mirrors of one reading.
+Blind spots -- conventions shared with ``layers.py`` rather than derived, so
+comparing the two cannot catch them, each checked by hand against upstream
+``03270a38``: the LoKr operand order, and which operand's rank divides its
+scale. ``dora_scale``'s row form is additionally cross-checked against PEFT;
+the column form has no third implementation to check against.
+See ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 """
 
 from __future__ import annotations

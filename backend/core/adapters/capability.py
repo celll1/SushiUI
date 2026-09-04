@@ -1,19 +1,15 @@
-"""Which adapter algebras each architecture has ENABLED -- one table, one edit.
+"""Which adapter algebras each architecture has enabled -- one table, one edit.
 
-The enablement decision lives HERE rather than in
-``core.training.arch.base_arch`` because generation has to reach it, and
-importing ``core.training`` from a generation path costs 8.9 s, 5801 modules and
-a CUDA context in a fresh process (``backend/tests/adapter_layering_test.py``).
-The dependency therefore runs the other way: ``declare_adapter_capability``
-READS this table, so there is no mirrored set to drift.
+The decision lives here rather than in ``core.training.arch.base_arch`` because
+generation must reach it, and importing ``core.training`` from a generation path
+costs 8.9 s, 5801 modules and a CUDA context (``adapter_layering_test``). So the
+dependency runs the other way: ``declare_adapter_capability`` reads this table
+and there is no mirror to drift.
 
-TWO AXES, TWO TABLES. ``ENABLED_ADAPTER_PAIRS`` says a checkpoint of that
-family LOADS AND GENERATES; ``TRAINABLE_ADAPTER_PAIRS`` says a trainer can
-CONSTRUCT it, save it and resume it. They are separate because a generation
-flip must not silently enable training: the trainer has its own optimizer
-census, resume slice and block-swap contract, and the file it writes is only
-useful if the generation row is open too. See
-``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` Phases 2 and 3.
+``ENABLED_ADAPTER_PAIRS`` says a checkpoint of that family loads and generates;
+``TRAINABLE_ADAPTER_PAIRS`` says a trainer can construct, save and resume it.
+Separate so a generation flip does not silently enable training, which has its
+own optimizer census, resume slice and block-swap contract.
 """
 
 from __future__ import annotations

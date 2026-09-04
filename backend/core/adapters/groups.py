@@ -267,18 +267,17 @@ def declared_groups(
     tensors: Mapping[str, torch.Tensor],
     stem_of: Optional[Callable[[str], Optional[str]]] = None,
 ) -> Dict[str, TensorGroup]:
-    """What a file DECLARES: the complete groups plus the incomplete ones whose
-    algebra is recognised.
+    """What a file declares: complete groups plus incomplete ones whose algebra is
+    recognised.
 
-    The partial term is what keeps a truncated checkpoint refusable. A stem with
-    a ``lora_down`` and no ``lora_up`` is a target the file meant to carry and no
-    loader can apply, so counting it is what makes ``_account``'s
-    ``applied < declared_branches`` fire instead of the file quietly applying
-    with one target missing. An alpha-only stem names no algebra and is not
-    counted, or every ``.alpha`` a parser dropped would over-declare.
+    The partial term is what keeps a truncated checkpoint refusable -- a stem
+    with a ``lora_down`` and no ``lora_up`` is a target no loader can apply, and
+    counting it is what makes ``_account``'s ``applied < declared`` fire. An
+    alpha-only stem names no algebra and is not counted, or every dropped
+    ``.alpha`` would over-declare.
 
-    ``stem_of`` matters more here than for applying: without it a FOREIGN half
-    key counts as a declared branch of this architecture.
+    Without ``stem_of`` a foreign half key counts as a branch of this
+    architecture.
     """
     result = group_adapter_tensors(tensors, stem_of)
     out = dict(result.groups)
@@ -290,23 +289,21 @@ def declared_groups(
 def split_group_on_out_rows(
     group: TensorGroup, n: int, inner: int,
 ) -> Optional[Dict[int, TensorGroup]]:
-    """Split a group into ``n`` pieces of ``inner`` OUTPUT ROWS each.
+    """Split a group into ``n`` pieces of ``inner`` output rows each.
 
-    The engine-owned half of MiniMax-H3's fused-QKV mapping: ``delta[rows] =
-    up[rows, :] @ down`` makes the row slice exact for ``lora`` (slice
-    ``lora_up``) and for ``loha`` (slice ``hada_w1_a`` and ``hada_w2_a``), the
-    ``_b`` factors being shared.
+    The engine half of MiniMax-H3's fused-QKV mapping. ``delta[rows] =
+    up[rows, :] @ down`` makes the slice exact for ``lora`` and ``loha`` (slice
+    the ``_a`` factors, share the ``_b``).
 
-    ``lokr`` is different in kind: ``kron(w1, w2)`` puts row ``i*K + k`` at
-    ``w1[i] (x) w2[k]``, so a piece is another Kronecker product UNDER THE
-    PARENT'S OWN split only when it covers whole ``i`` blocks -- ``n`` dividing
-    ``w1.shape[0]``. Anything else returns ``None``, because emitting the slice
-    would be a numerically wrong adapter (measured 0.31 off at n=2). The
-    refusal is conservative and the qualifier on "Kronecker product" is
-    load-bearing; both are in the design doc, phase 2.
+    ``lokr`` differs in kind: ``kron(w1, w2)`` puts row ``i*K + k`` at
+    ``w1[i] (x) w2[k]``, so a piece is another Kronecker product under the
+    parent's own split only when ``n`` divides ``w1.shape[0]``. Otherwise
+    ``None`` -- emitting the slice is a wrong adapter, measured 0.31 off at
+    n=2. The qualifier on "under the parent's own split" is load-bearing:
+    every matrix is a degenerate ``kron(1x1, itself)``.
 
-    Weight-decomposed and Tucker groups are refused too: ``dora_scale``'s
-    ``(1, in)`` form has no row axis to slice at all.
+    Weight-decomposed and Tucker groups are refused: ``dora_scale``'s
+    ``(1, in)`` form has no row axis to slice.
     """
     if n <= 0 or inner <= 0 or group.missing() or group.use_tucker:
         return None
@@ -360,20 +357,16 @@ def build_adapter_branch(
 ):
     """A branch for ``base`` from one stem's tensors, or ``SHAPE_MISMATCH``.
 
-    ``SHAPE_MISMATCH`` rather than an exception for the same reason the eleven
-    loaders return it: one target whose shapes disagree is a module to skip,
-    not a request to refuse.
+    A sentinel rather than an exception, as the eleven loaders use it: one
+    target whose shapes disagree is a module to skip, not a request to refuse.
+    ``layer_cls`` overrides the algebra's default for an architecture needing a
+    subclass.
 
-    ``layer_cls`` overrides the algebra's default layer for an architecture
-    that needs a subclass (MiniMax-H3 casts per call, having no autocast).
-
-    EVERY read of the group's tensors happens inside the try: a rank-deficient
-    factor, a 0-D weight or a two-element ``.alpha`` raises from a shape index
-    or ``Tensor.item()``, not from a validated check. ``AttributeError`` is
-    deliberately NOT caught -- a missing attribute is an engine bug, not a file
-    defect, and swallowing it would silently apply nothing. ``RuntimeError``
-    is caught broadly, so a CUDA OOM here reports as ``lora_partial`` rather
-    than as itself.
+    Every read of the group's tensors is inside the try -- a rank-deficient
+    factor, a 0-D weight or a two-element ``.alpha`` raises from a shape index,
+    not from a validated check. ``AttributeError`` is not caught: that is an
+    engine bug, and swallowing it applies nothing silently. ``RuntimeError`` is
+    caught broadly, so a CUDA OOM here reports as ``lora_partial``.
     """
     if group.missing() or group.use_tucker:
         return SHAPE_MISMATCH

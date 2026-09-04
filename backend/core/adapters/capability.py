@@ -37,9 +37,8 @@ _ORDINARY_ONLY: FrozenSet[AdapterPair] = frozenset({ORDINARY_LORA})
 _ADDITIVE_LYCORIS: FrozenSet[AdapterPair] = frozenset(
     {ORDINARY_LORA, ("loha", False), ("lokr", False)})
 
-#: ...plus DENSE DoRA. The decomposed pairs over LoHa/LoKr (DoHa/DoKr) are NOT
-#: here: the engine builds all three the same way, but each pair needs its own
-#: per-architecture round trip and Phase 3's declared scope is dense DoRA.
+#: ...plus dense DoRA. DoHa/DoKr are not here: the engine builds all three
+#: alike, but each pair needs its own per-architecture round trip.
 _ADDITIVE_LYCORIS_WITH_DORA: FrozenSet[AdapterPair] = (
     _ADDITIVE_LYCORIS | frozenset({("lora", True)}))
 
@@ -48,15 +47,12 @@ _ADDITIVE_LYCORIS_WITH_DORA: FrozenSet[AdapterPair] = (
 #: reads it through ``declare_adapter_capability``, generation through
 #: ``AdapterSession``.
 #:
-#: The LyCORIS rows are the ones whose generation branch builder goes through
-#: ``core.adapters.groups.build_adapter_branch``; each is gated by
-#: ``backend/tests/adapter_lycoris_roundtrip_cheap_test.py``. ACE-Step carries
-#: the pair for its sd-scripts codec only -- its diffusers/PEFT branch bakes
-#: ``(lora_A|lora_B)`` into its key regexes, so a LyCORIS file cannot reach a
-#: grouper there and falls out as zero targets. MiniMax-H3 splits a fused-QKV
-#: group with ``split_group_on_out_rows``, which refuses a LoKr whose ``w1``
-#: rows are not divisible by three. SD1.5/SDXL cannot be flipped from here at
-#: all -- they load through diffusers and never reach ``AdapterSession``.
+#: A LyCORIS row means that architecture's builder goes through
+#: ``build_adapter_branch``. Three exceptions a reader editing this table needs:
+#: ACE-Step carries the pair for its sd-scripts codec only (its PEFT branch
+#: bakes ``lora_A``/``lora_B`` into its key regexes); MiniMax-H3's fused-QKV
+#: split refuses a LoKr whose ``w1`` rows are not divisible by three; SD1.5 and
+#: SDXL cannot be flipped here at all, loading through diffusers.
 ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,

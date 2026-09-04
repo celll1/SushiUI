@@ -4607,17 +4607,30 @@ paths:
       description: Load TIPO tag generation model
       operationId: loadTipoModel
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                model_name:
-                  type: string
-                  default: KBlueLeaf/TIPO-500M
+              $ref: '#/components/schemas/TIPOLoadModelRequest'
       responses:
         '200':
-          description: Model loaded
+          description: |
+            Loaded. `loaded` is read back from the manager rather than
+            assumed, so a load that left it false reports false here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TIPOLoadModelResponse'
+        '422':
+          description: The body was absent or malformed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The load failed. Answered as FastAPI's plain `{"detail": ...}`,
+            not `ErrorResponse` -- no `HTTPException` handler is registered.
 
   /tipo/generate:
     post:
@@ -4712,7 +4725,17 @@ paths:
       operationId: unloadTipoModel
       responses:
         '200':
-          description: Model unloaded
+          description: |
+            Unloaded. `loaded` is the literal `false` the handler returns,
+            not a read-back of the manager.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TIPOUnloadResponse'
+        '500':
+          description: |
+            The unload failed. Answered as FastAPI's plain `{"detail": ...}`,
+            not `ErrorResponse` -- no `HTTPException` handler is registered.
 
   /tagger/load-model:
     post:
@@ -9495,6 +9518,82 @@ components:
           description: >-
             Treat `input_prompt` as natural language instead of a tag list.
             Honoured by the tipo-kgen backend only.
+
+    ActiveTrainingResponse:
+      type: object
+      description: |
+        Body of `GET /training/active`. Every field except `is_running` is
+        null when nothing is training, so a client must branch on
+        `is_running` rather than on the status code -- idle is a 200.
+      required: [run_id, run_name, training_method, current_step, is_running]
+      properties:
+        run_id:
+          type: integer
+          nullable: true
+          description: Null when idle. The highest active id when more than one run is live.
+          example: 112
+        run_name:
+          type: string
+          nullable: true
+          description: |
+            Null when idle, and also null when the run row cannot be read --
+            the handler swallows that lookup's failure rather than failing
+            the poll.
+          example: anima_lora_v3
+        training_method:
+          type: string
+          nullable: true
+          description: Null under the same two conditions as `run_name`.
+          example: lora
+        current_step:
+          type: integer
+          nullable: true
+          description: Null when idle; 0 when the process has not reported one yet.
+          example: 4820
+        is_running:
+          type: boolean
+          description: The only field that is never null. Branch on this.
+          example: true
+
+    TIPOLoadModelRequest:
+      type: object
+      description: Body of `POST /tipo/load-model`.
+      properties:
+        model_name:
+          type: string
+          default: KBlueLeaf/TIPO-500M
+          description: Hugging Face id or local path of the TIPO model to load.
+          example: KBlueLeaf/TIPO-500M
+      example:
+        model_name: KBlueLeaf/TIPO-500M
+
+    TIPOLoadModelResponse:
+      type: object
+      required: [status, model_name, loaded]
+      properties:
+        status:
+          type: string
+          example: success
+        model_name:
+          type: string
+          description: The model that was requested, echoed back.
+          example: KBlueLeaf/TIPO-500M
+        loaded:
+          type: boolean
+          description: The manager's own state after the load.
+          example: true
+
+    TIPOUnloadResponse:
+      type: object
+      required: [status, loaded]
+      properties:
+        status:
+          type: string
+          example: success
+        loaded:
+          type: boolean
+          description: Always `false` on this path.
+          example: false
 
     TIPOGenerateResponse:
       type: object

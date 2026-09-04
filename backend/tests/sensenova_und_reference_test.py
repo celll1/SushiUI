@@ -265,8 +265,16 @@ def test_negative_control_the_shipped_tree_refused_on_both_paths():
 
     now = Path(sensenova_ops.__file__).read_text(encoding="utf-8")
     assert _REFUSAL not in now
-    # The eviction refusal on the same path is NOT what U-3 lifted.
-    assert now.count("cannot run with MoT phase ") == 1
+    # The eviction refusal on the same path is NOT what U-3 lifted, and each
+    # encode entry owes it independently: `encode_prompt`, and the packed
+    # `encode_prompts` added by `71672449`.
+    def _body(name: str) -> str:
+        body = now[now.index(f"def {name}("):]
+        end = body.find("\ndef ", 1)
+        return body if end < 0 else body[:end]
+
+    for entry in ("encode_prompt", "encode_prompts"):
+        assert "cannot run with MoT phase " in _body(entry), entry
 
 
 @pytest.mark.parametrize("four_phase", [False, True])

@@ -392,9 +392,10 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             f"SenseNova full fine-tuning requires gradient_accumulation_steps=1, "
             f"got {accumulation}. Its updates are applied per parameter during "
             f"backward and each gradient is freed as it is applied, so no "
-            f"gradient survives to be summed across backward passes. Physical "
-            f"batch 1 with no accumulation is what this route trains; LoRA "
-            f"training on this architecture does support accumulation."
+            f"gradient survives to be summed across backward passes. A larger "
+            f"effective batch comes from batch_size with enable_bucketing, not "
+            f"from accumulation; LoRA training on this architecture does "
+            f"support accumulation."
         )
     groups = _normalize_sensenova_integer(train_config, "num_optimizer_groups", 0)
     if groups != 0:

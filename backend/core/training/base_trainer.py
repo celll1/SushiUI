@@ -8209,10 +8209,10 @@ class BaseTrainer(ABC):
         scalar loss is already the item's own, so nothing is stashed and the
         split below reads the scalar -- this recomputes the squared error, and
         paying for that on every step of a run that cannot use it is not free.
-        SenseNova never calls it for exactly that reason: its route runs at
-        physical batch 1 (arch_capabilities TRAINING_REQUIRED_VALUES), so its
-        batch cannot be mixed and its own train_step stays free of any
-        null-handling, which its tests assert.
+        SenseNova does not call it: its train_step stays free of any
+        null-handling (its tests assert that), the item's label travelling with
+        its caption to the batch encode instead. A packed batch could be split
+        here -- its v_pred/v_target are batch-first -- but nothing wires it.
 
         Both arguments must be batch-first. Best-effort by construction: a
         failure here loses a monitoring series, and must never take down a
@@ -12182,8 +12182,10 @@ class BaseTrainer(ABC):
             if base_resolutions is None:
                 base_resolutions = [1024]
 
-            # Sampler tidiness only for SenseNova: at its forced batch_size=1 the
-            # prefix is per-item anyway, so this never underwrites prefix shape.
+            # Load-bearing for SenseNova since packed batches (71672449): at
+            # batch_size >= 2 the (resolution, has_reference) bucket key is the
+            # only thing keeping ref and non-ref items out of one packed prefix,
+            # which `sensenova_ops.pack_prefix_inputs` refuses mid-step.
             separate_by_reference = use_reference_images and (self.is_flux2 or self.is_sensenova)
 
             # Align to the ARCH's pixel requirement, not a hardcoded /8 -- the

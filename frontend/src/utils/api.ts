@@ -2074,16 +2074,25 @@ export interface TrainingRequiredValue {
   // is then its default member. Absent = `value` is the only legal one. A
   // control offers exactly these and leaves a current member alone.
   values?: (string | number | boolean)[];
+  // The config that LIFTS the requirement (all pairs must hold). Present only
+  // for a CONDITIONAL requirement: SenseNova's batch_size=1 holds unless
+  // `enable_bucketing` is on. Resolved by passing the run's params below.
+  unless?: Record<string, string | number | boolean>;
 }
 
 // The config values `arch` requires under `method`, param -> {value, reason}.
 // Empty for an unknown arch or an unloaded matrix: unconstrained, so a control
 // keeps its own default and the backend refuses the run if that is wrong —
 // recoverable, where a control pinned to a value invented here is not.
+//
+// `params` resolves the CONDITIONAL entries (`unless`). Without it they are
+// omitted rather than returned: every consumer here pins a control, and a pin
+// the config may already have lifted would disable a supported configuration.
 export const trainingRequiredValues = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
-  method?: string | null
+  method?: string | null,
+  params?: Record<string, any> | null
 ): Record<string, TrainingRequiredValue> => {
   if (!arch) return {};
   const entries = caps?.training_required_values?.[arch];
@@ -2091,6 +2100,12 @@ export const trainingRequiredValues = (
   const out: Record<string, TrainingRequiredValue> = {};
   for (const [param, entry] of Object.entries(entries)) {
     if (entry.methods && method && !entry.methods.includes(method)) continue;
+    if (entry.unless) {
+      // Unreachable today: the one call site passes no params, so a
+      // conditional entry never reaches a control.
+      if (!params) continue;
+      if (Object.entries(entry.unless).every(([key, value]) => params[key] === value)) continue;
+    }
     out[param] = entry;
   }
   return out;

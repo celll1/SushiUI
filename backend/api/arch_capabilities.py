@@ -18,7 +18,7 @@ to a non-default value (compared against ``GENERATION_DEFAULTS``).
 """
 from typing import Any, Dict, List, Optional, Tuple
 
-from api.param_defaults import GENERATION_DEFAULTS
+from api.param_defaults import GENERATION_DEFAULTS, TRAINING_DEFAULTS
 # Re-exported (and served by GET /schema/arch-capabilities) so the generation
 # panels can offer unet_quantization="int8" exactly where the in-place converter
 # is wired, without a second hardcoded arch list in the frontend. The tuple is
@@ -402,7 +402,7 @@ TRAINING_SAMPLE_NOTES: Dict[str, str] = {
 
 # ---------------------------------------------------------------------------
 # TRAINING_REQUIRED_VALUES[arch][param] = {"value": ..., "reason": ...,
-#                                          "methods"?: [...]}
+#                                          "methods"?: [...], "unless"?: {...}}
 #
 # A FOURTH axis. The three above say what is missing; this one says what a
 # parameter must BE. An architecture can implement a training method under a
@@ -421,6 +421,11 @@ TRAINING_SAMPLE_NOTES: Dict[str, str] = {
 # ABSENT MEANS UNCONSTRAINED, same direction as the tables above. `methods`
 # narrows the claim; omitted, it applies to every training method.
 #
+# `unless` makes a requirement CONDITIONAL on the rest of the config: the entry
+# holds unless every parameter it names already equals the value it names. A
+# client that knows the run's config resolves it; one that does not must not
+# present the entry as an unconditional pin.
+#
 # This table does not restate `TRAINING_FEATURE_UNSUPPORTED`: a parameter whose
 # whole mechanism is missing (blocks_to_swap on SenseNova) belongs there, and an
 # entry here would be a second copy of it.
@@ -430,17 +435,22 @@ TRAINING_REQUIRED_VALUES: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 def _add_training_required_value(arch: str, param: str, value: Any, reason: str,
                                  methods: Optional[List[str]] = None,
-                                 values: Optional[List[Any]] = None) -> None:
+                                 values: Optional[List[Any]] = None,
+                                 unless: Optional[Dict[str, Any]] = None) -> None:
     """``value`` is what a client pins the control to; ``values``, when given, is
     the full admitted set and ``value`` is its default member. A client offers
     exactly ``values`` and leaves a current member alone -- pinning a run that
     already selected another admitted value would be a silent override of its own.
+
+    ``unless`` is the config that LIFTS the requirement (all pairs must hold).
     """
     entry: Dict[str, Any] = {"value": value, "reason": reason}
     if values:
         entry["values"] = list(values)
     if methods:
         entry["methods"] = list(methods)
+    if unless:
+        entry["unless"] = dict(unless)
     TRAINING_REQUIRED_VALUES.setdefault(arch, {})[param] = entry
 
 # ---------------------------------------------------------------------------
@@ -1103,7 +1113,7 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
         "per-phase MoT weight-half CPU eviction is specific to SenseNova's two-half decoder; this architecture has no idle weight half to evict and its training VRAM mechanism is block swap")
 _add_training_feature_advisory(
     "sensenova", "sensenova_mot_eviction", "experimental",
-    "One interlocked setting, not two toggles. sensenova_mot_phase_eviction keeps only the phase-active half resident. Under LoRA it stands alone, on any branch. Under full fine-tuning it is the MORE constrained of the two flags, not the freer one: it is refused before the model loads unless train_unet and train_text_encoder are BOTH set, because a single-branch full fine-tune materializes only the half it trains and leaves the other one quantized, and the evictor requires the two halves to hold the same kind of weight (measured in both directions on the real checkpoint, SENSENOVA_TRAINING_DESIGN.md 13.7). Training both halves in turn requires sensenova_four_phase_eviction, which splits the single backward at the prefix KV cache so a TRAINED understanding half can still be evicted, and which is itself refused before the load unless train_text_encoder, sensenova_mot_phase_eviction and training_method=full_finetune all hold. So under full fine-tuning the only accepted shape is both halves plus the split; train_text_encoder together with sensenova_mot_phase_eviction WITHOUT the split is refused, because the three-state evictor moves the understanding half to CPU before its backward. Understanding training without eviction needs neither flag. Two costs, measured apart and not interchangeable. The SPLIT alone, at 1024px with a 467-token prefix and understanding gradients supplied by a rank-4 both-branch LoRA over int8 halves (n=25, p50; SENSENOVA_TRAINING_DESIGN.md 8.3.2, the U-2-4 box): a 0.190 s recomputed understanding forward against a 1.758 s generation forward+backward, i.e. a 1.09-1.10x step, and it adds no weight transfer beyond the three-phase form's. What a both-branch full fine-tune actually pays is that split PLUS the eviction transfers -- a 7.60 GiB int8 half staged to pinned host memory and back measured 0.666 s per round trip and the step makes two, and a bf16 half is 15.09 GiB, so the full-fine-tune route moves twice that volume. End to end the train loop went 42.67 s to 80.51 s over 12 steps at 512px, i.e. 1.89x with eviction included (SENSENOVA_TRAINING_DESIGN.md 8.3.3). What it buys: the steady step peak falls from 33.94 to 18.76 GiB at 512px, and at 1024px the both-branch step fits at 19.26 GiB where without it the probe OOMed against its 34.551 GiB cap",
+    "One interlocked setting, not two toggles. sensenova_mot_phase_eviction keeps only the phase-active half resident. Under LoRA it stands alone, on any branch. Under full fine-tuning it is the MORE constrained of the two flags, not the freer one: it is refused before the model loads unless train_unet and train_text_encoder are BOTH set, because a single-branch full fine-tune materializes only the half it trains and leaves the other one quantized, and the evictor requires the two halves to hold the same kind of weight (measured in both directions on the real checkpoint; that campaign's own write-up was condensed out of SENSENOVA_TRAINING_DESIGN.md and is not tracked). Training both halves in turn requires sensenova_four_phase_eviction, which splits the single backward at the prefix KV cache so a TRAINED understanding half can still be evicted, and which is itself refused before the load unless train_text_encoder, sensenova_mot_phase_eviction and training_method=full_finetune all hold. So under full fine-tuning the only accepted shape is both halves plus the split; train_text_encoder together with sensenova_mot_phase_eviction WITHOUT the split is refused, because the three-state evictor moves the understanding half to CPU before its backward. Understanding training without eviction needs neither flag. Two costs, measured apart and not interchangeable. The SPLIT alone, at 1024px with a 467-token prefix and understanding gradients supplied by a rank-4 both-branch LoRA over int8 halves (n=25, p50; SENSENOVA_TRAINING_DESIGN.md, section 'What the four-phase split costs and buys'): a 0.190 s recomputed understanding forward against a 1.758 s generation forward+backward, i.e. a 1.09-1.10x step, and it adds no weight transfer beyond the three-phase form's. What a both-branch full fine-tune actually pays is that split PLUS the eviction transfers -- a 7.60 GiB int8 half staged to pinned host memory and back measured 0.666 s per round trip and the step makes two, and a bf16 half is 15.09 GiB, so the full-fine-tune route moves twice that volume. End to end the train loop went 42.67 s to 80.51 s over 12 steps at 512px, i.e. 1.89x with eviction included (SENSENOVA_TRAINING_DESIGN.md, section 'Measured resolution campaign'). What it buys: the steady step peak falls from 33.94 to 18.76 GiB at 512px, and at 1024px the both-branch step fits at 19.26 GiB where without it the probe OOMed against its 34.551 GiB cap",
     methods=["lora", "full_finetune"])
 
 # --- SenseNova training-time sample KV cache streaming ----------------------
@@ -1160,11 +1170,16 @@ _add_training_feature_unsupported(
 
 # --- VAE --------------------------------------------------------------------
 # --- Required config values -------------------------------------------------
-# SenseNova's training contract (SENSENOVA_TRAINING_DESIGN.md 6.2/6.5), applied
-# by train_runner from the config alone before torch is imported. The first
-# group is refused; the last two are overwritten (`train_runner.py:254-255`),
-# which is why they are declared -- an overwritten control is a user choice the
-# run drops without saying so. None of them is a recommendation.
+# SenseNova's training contract (SENSENOVA_TRAINING_DESIGN.md, "Full-parameter
+# preflight contract" and "Packed batches"), applied by train_runner from the
+# config alone before torch is imported. The first group is refused; the last
+# two are overwritten, which is why they are declared -- an overwritten control
+# is a user choice the run drops without saying so. None of them is a
+# recommendation.
+_add_training_required_value(
+    "sensenova", "batch_size", 1,
+    "a physical batch is one pixel tensor [B, 3, H, W] at one resolution and one noise scale, and only the bucket manager guarantees that every item in a batch shares a resolution, so batch_size > 1 is accepted ONLY with enable_bucketing. Without it the run is refused before the datasets are read. The prompts of a packed batch are not padded: each item's prefix is laid end to end along the sequence axis, so nothing about batch_size=1 is a limit of the encoder",
+    unless={"enable_bucketing": True})
 _add_training_required_value(
     "sensenova", "optimizer", "adafactor",
     "each update is applied from that parameter's own post-accumulate-grad hook, so the optimizer needs a per-parameter seam and state small enough to sit beside the dequantized bf16 half. Adafactor meets both unconditionally (0.002991 B/param, factored second moment). The two ring-buffer optimizers meet the second one only with optimizer_state_host_resident, which moves their 8-bit state to pinned host memory (measured 2.0 B/param for AdamW, 1.0 for Lion, i.e. 30.19 / 15.09 GiB pinned over both MoT halves) and leaves absmax on the GPU; without it they allocate a measured 2.031250 / 1.015625 B/param of GPU state (32.9 / 16.5 GB over both halves) beside the materialized bf16 weights, and the run is refused before the checkpoint loads. No step-wall comparison between them has been measured on this route",
@@ -1282,6 +1297,15 @@ for _arch, _params in TRAINING_REQUIRED_VALUES.items():
         assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
             f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] scopes unknown "
             f"training methods")
+        # A lift condition a client cannot read off the run's config is one it
+        # can never satisfy.
+        for _lift in _entry.get("unless", {}):
+            assert _lift in TRAINING_DEFAULTS, (
+                f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}]['unless'] names "
+                f"{_lift!r}, which is not a training parameter")
+            assert _lift != _param, (
+                f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}]['unless'] "
+                f"conditions the parameter on itself")
         # A parameter whose whole mechanism is declared missing must not also be
         # given a required value: the two tables would then both own it.
         for _feature, _keys in TRAINING_FEATURE_PARAMS.items():
@@ -1359,23 +1383,49 @@ def training_feature_advisories(arch: Optional[str],
     return out
 
 
+def _requirement_is_lifted(unless: Dict[str, Any], config: Dict[str, Any]) -> bool:
+    """Every pair in ``unless`` holds in ``config``. Bools compare by identity:
+    an unparsed ``"true"`` leaves the requirement standing rather than lifting
+    it on a value the runner has not normalized yet."""
+    for key, wanted in unless.items():
+        current = config.get(key)
+        if isinstance(wanted, bool):
+            if current is not wanted:
+                return False
+        elif current != wanted:
+            return False
+    return True
+
+
 def training_required_values(arch: Optional[str],
-                             method: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+                             method: Optional[str] = None,
+                             config: Optional[Dict[str, Any]] = None,
+                             ) -> Dict[str, Dict[str, Any]]:
     """The config values ``arch`` requires under ``method``: param -> entry.
 
     "Requires" covers both enforcement shapes the runner uses -- refusing a
     different value, and overwriting it. Empty for an unknown/None arch: absent
     means unconstrained, so a newly added architecture keeps every control at
     its own default.
+
+    ``config``, when given, resolves the conditional entries against a run: one
+    whose ``unless`` already holds is dropped, because it constrains that run in
+    no way. Without it they are returned carrying their ``unless``, and the
+    caller decides -- presenting one as an unconditional pin is wrong.
     """
     out: Dict[str, Dict[str, Any]] = {}
     for param, entry in (TRAINING_REQUIRED_VALUES.get(arch or "") or {}).items():
         methods = entry.get("methods")
         if methods and method is not None and method not in methods:
             continue
+        unless = entry.get("unless")
+        if unless and config is not None and _requirement_is_lifted(unless, config):
+            continue
         out[param] = {"value": entry["value"], "reason": entry["reason"]}
         if entry.get("values"):
             out[param]["values"] = list(entry["values"])
+        if unless:
+            out[param]["unless"] = dict(unless)
     return out
 
 

@@ -16,11 +16,14 @@ training of either MoT half or both** (`train_unet` / `train_text_encoder`
 select them; both halves is measured but expensive, and the capability table
 says so on its advisory axis rather than pretending it is unsupported), under a
 per-run contract that is not
-negotiable (bf16, batch 1, no gradient accumulation, no EMA,
+negotiable (bf16, no gradient accumulation, no EMA,
 `blocks_to_swap=0`, and one of three optimizers — `adafactor`, or either
 ring-buffer optimizer with `optimizer_state_host_resident`) and refused before
-the model loads. `relora` and
-`controlnet` are still refused for it. See
+the model loads. Physical batch is 1 **unless `enable_bucketing` is on**
+(a batch is one pixel tensor at one resolution; the prompts are packed, not
+padded) — that one is conditional, applies to LoRA too, and the capability
+surface expresses it with an `unless` clause rather than as an absolute.
+`relora` and `controlnet` are still refused for it. See
 `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
 implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
 for the remaining training-out-of-scope architecture.

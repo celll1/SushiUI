@@ -2,7 +2,8 @@
 
 1. The training form offered a method whose shipped defaults could not run.
    SenseNova refuses `optimizer != adafactor` under full fine-tuning and
-   `batch_size != 1` under every method, from the config and before the model
+   `batch_size != 1` without `enable_bucketing` under every method, from the
+   config and before the model
    loads -- while `TRAINING_DEFAULTS["optimizer"]` is `adamw8bit`. The fix is a
    fourth capability axis, `TRAINING_REQUIRED_VALUES`: what a parameter must BE,
    next to the three tables that say what is missing. It is served by
@@ -84,17 +85,54 @@ def test_negative_control_shipped_defaults_are_refused_for_a_full_finetune():
 
 
 def test_negative_control_the_stale_frontend_batch_size_is_refused_for_lora_too():
-    """`batch_size: 4` was the frontend literal. It is refused under EVERY
-    SenseNova method, not only full fine-tuning -- so the same defect reached
-    the LoRA form. (The backend SSOT already said 1; the literal was stale.)"""
+    """`batch_size: 4` was the frontend literal. Under EVERY SenseNova method,
+    not only full fine-tuning, it is refused with bucketing off -- so the same
+    defect reached the LoRA form. (The backend SSOT already said 1; the literal
+    was stale.)"""
     assert TRAINING_DEFAULTS["batch_size"] == 1
+    assert TRAINING_DEFAULTS["enable_bucketing"] is False
     for method in ("lora", "full_finetune"):
         with _sensenova():
-            with pytest.raises(ValueError, match="requires batch_size=1"):
+            with pytest.raises(ValueError, match="requires enable_bucketing"):
                 _apply_sensenova_training_contract(
                     "model", method, _shipped_train_config(batch_size=4),
                     {"sample": {}}
                 )
+
+
+@pytest.mark.parametrize("method", ["lora", "full_finetune"])
+def test_the_batch_size_requirement_is_conditional_and_says_on_what(method):
+    """`71672449` packs a batch's prompts along the sequence axis, so a physical
+    batch above 1 is implemented -- but only bucketing makes its items share the
+    one resolution a `[B, 3, H, W]` tensor has. The requirement is therefore
+    `batch_size=1` UNLESS `enable_bucketing`, and the axis says so rather than
+    dropping the claim (invisible) or stating batch 1 outright (false)."""
+    entry = training_required_values("sensenova", method)["batch_size"]
+    assert entry["value"] == 1
+    assert entry["unless"] == {"enable_bucketing": True}
+    # Lifted: with bucketing on, batch 4 runs and the axis stops constraining it.
+    lifted = training_required_values(
+        "sensenova", method, _shipped_train_config(enable_bucketing=True))
+    assert "batch_size" not in lifted
+    config = _shipped_train_config(batch_size=4, enable_bucketing=True)
+    config.update({param: entry["value"] for param, entry in lifted.items()})
+    with _sensenova():
+        assert _apply_sensenova_training_contract(
+            "model", method, config, {"sample": {}})
+    assert config["batch_size"] == 4
+    # Standing: with it off, the same run is refused before the load.
+    standing = training_required_values(
+        "sensenova", method, _shipped_train_config(enable_bucketing=False))
+    assert standing["batch_size"]["value"] == 1
+
+
+def test_an_unnormalized_lift_value_leaves_the_requirement_standing():
+    """A hand-written YAML `enable_bucketing: "true"` has not been through the
+    runner's boolean normalization. Reading it as a lift would advertise a
+    batch the run may still refuse, so the strict compare keeps the pin."""
+    entry = training_required_values(
+        "sensenova", "lora", _shipped_train_config(enable_bucketing="true"))
+    assert entry["batch_size"]["value"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +284,11 @@ def test_the_table_names_known_archs_and_known_methods():
             json.dumps(entry["value"])
             # And it must be a real training parameter, not a spelling of one.
             assert param in TRAINING_DEFAULTS, param
+            # A lift condition is read off the run's own config, so every key
+            # it names has to be a parameter that config carries.
+            for lift in entry.get("unless", {}):
+                assert lift in TRAINING_DEFAULTS, (param, lift)
+                assert lift != param, param
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +316,8 @@ def test_the_openapi_spec_documents_the_served_key():
     entry = schema["training_required_values"]["additionalProperties"][
         "additionalProperties"]
     assert set(entry["required"]) == {"value", "reason"}
-    assert set(entry["properties"]) == {"value", "reason", "methods", "values"}
+    assert set(entry["properties"]) == {"value", "reason", "methods", "values",
+                                        "unless"}
     assert "training_required_values" in (
         spec["paths"]["/schema/arch-capabilities"]["get"]["description"])
 

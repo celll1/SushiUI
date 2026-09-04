@@ -50,11 +50,17 @@ released 2026-09-01. The release notes and source are the primary references:
 - [Apache-2.0 license](https://github.com/KohakuBlueleaf/LyCORIS/blob/03270a3839102e63b48578c80e7c024036de74d7/LICENSE.md)
 
 The source and package metadata declare Apache-2.0. There is no upstream
-`NOTICE` file at the reviewed commit. As of 2026-09-02, PyPI publishes
-`lycoris-lora` 3.4.0 rather than 4.0.0, so an initial dependency would need an
-immutable Git commit pin. Vendoring instead requires the Apache license,
-attribution, modification notices, and an entry in
-`docs/legal/THIRD_PARTY_PROVENANCE.md`.
+`NOTICE` file at the reviewed commit. PyPI published `lycoris-lora` 4.0.0 on
+2026-09-01 (sdist and a `py3-none-any` wheel; `requires-python >=3.10`;
+`4.0.1.dev` builds have followed daily since), so a dependency is an exact
+`==4.0.0` pin with a file hash rather than the Git commit pin an earlier draft
+of this section assumed. What the sdist contains has NOT been diffed against
+the reviewed commit `03270a3`; do that before registering a backend, because
+this document's review applies to the commit. Vendoring instead requires the
+Apache license, attribution, modification notices, and an entry in
+`docs/legal/THIRD_PARTY_PROVENANCE.md` -- and the reviewed operations are not a
+small surface: the LoHa Linear bypass alone pulls in the kernel-selection
+layer, the plan tuner and its user-level cache.
 
 ## What the fused kernels do
 
@@ -1775,8 +1781,9 @@ metadata and resume), and the decomposed rows of
 
 ### Phase 4: experimental fused backend — the mechanism landed, no backend did
 
-- Prefer a pinned upstream dependency if 4.0.0 is published with fixes; otherwise
-  vendor only the reviewed operations with complete provenance.
+- Prefer the exact PyPI pin over vendoring; the reviewed operations are not
+  separable from the selection layer and the tuner, and that tree is still
+  moving.
 - Add an executed per-device/dtype/shape probe against the independent oracle.
 - On launch failure, latch the backend off for the process and use the reference
   path on later calls; never switch the base mathematical function mid-training.
@@ -1914,11 +1921,15 @@ never runs.
   exist no region may be auto-selected, and the published upstream table is not
   a substitute: its `lora` benchmark calls LoHa functions, and two of its rows
   are slower than eager.
-- **The dependency decision.** A real backend needs either an immutable Git
-  commit pin (4.0.0 is not on PyPI) or vendoring of only the reviewed operations
-  with the Apache-2.0 license text, attribution, modification notices and an
-  entry in `docs/legal/THIRD_PARTY_PROVENANCE.md`. That is the repo owner's
-  call; nothing here imports, vendors or depends on `lycoris`.
+- **The dependency decision, which is smaller than it looks.** 4.0.0 is on
+  PyPI, so this is an exact `==4.0.0` pin with a file hash, added when a
+  backend is registered and not before; `availability()` is where the import
+  and version check belong. It is not the blocker -- the measurement is.
+  Nothing here imports, vendors or depends on `lycoris`.
+- **The tuner is operational surface, not just a dependency.** Upstream's
+  first-use plan search runs a shortlist of candidates per (op, shape) and
+  writes `~/.cache/lycoris_kernels/tuning.json` unless
+  `LYCORIS_KERNEL_CACHE_DIR` redirects it. Warm-up would pay that per region.
 - Generation-side warm-up. `AdapterSession`'s install completion is the
   analogous point, deliberately unwired while nothing can select a backend for
   generation.

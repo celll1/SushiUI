@@ -41,12 +41,21 @@ cache/datasets/{dataset_unique_id}/
 ### Constructor
 
 ```python
-LatentCache(dataset_unique_id: str, base_cache_dir: str = None)
+LatentCache(
+    dataset_unique_id: str,
+    base_cache_dir: str = None,
+    namespace: str = None
+)
 ```
 
 **Parameters**:
 - `dataset_unique_id` (str): Dataset unique ID (UUID)
 - `base_cache_dir` (str, optional): Base directory for cache. Defaults to user settings (`cache/datasets`)
+- `namespace` (str, optional): Architecture/VAE identity component (see
+  `build_cache_namespace`). With it the cache lives at
+  `{base}/{dataset_id}/{namespace}/`; without it the legacy
+  `{base}/{dataset_id}/` layout is used, and those entries are unlabeled and
+  must not be shared across architectures.
 
 **Behavior**:
 - Automatically creates cache directories (`latents/`, `text_embeddings/`)
@@ -462,7 +471,8 @@ BucketManager(
     base_resolutions: List[int],
     divisibility: int = 8,
     strategy: Literal["resize", "crop", "random_crop"] = "resize",
-    multi_resolution_mode: Literal["max", "random"] = "max"
+    multi_resolution_mode: Literal["max", "random"] = "max",
+    separate_by_reference: bool = False
 )
 ```
 
@@ -476,6 +486,8 @@ BucketManager(
 - `multi_resolution_mode` (Literal): How to assign images when multiple resolutions specified:
   - `"max"`: Use largest resolution that fits the image (minimizes cropping, default)
   - `"random"`: Randomly select from available resolutions
+- `separate_by_reference` (bool): Key buckets by `(resolution, has_reference)` so
+  a batch is uniform in reference status as well as size (default: False)
 
 **Example**:
 ```python
@@ -512,8 +524,11 @@ def assign_image_to_bucket(
     height: int,
     caption: str = "",
     target_resolution: Optional[int] = None,
-    dataset_unique_id: Optional[str] = None
-) -> Tuple[BucketResolution, Dict]
+    dataset_unique_id: Optional[str] = None,
+    has_reference: bool = False,
+    reference_images: Optional[list] = None,
+    forced_bucket: Optional[BucketResolution] = None,
+) -> Tuple[BucketKey, Dict]
 ```
 
 Assign an image to the best bucket.
@@ -525,9 +540,14 @@ Assign an image to the best bucket.
 - `caption` (str): Image caption (default: "")
 - `target_resolution` (int, optional): Specific resolution to use (or None for auto)
 - `dataset_unique_id` (str, optional): Dataset UUID (for cache management)
+- `has_reference` (bool): Item carries reference images (default: False)
+- `reference_images` (list, optional): Reference image entries for the item
+- `forced_bucket` (BucketResolution, optional): Bypass selection and use this bucket
 
 **Returns**:
-- `Tuple[BucketResolution, Dict]`: (bucket_resolution, image_info)
+- `Tuple[BucketKey, Dict]`: (bucket key, image_info). The key is a
+  `BucketResolution`, or `(BucketResolution, has_reference)` when the manager
+  was built with `separate_by_reference=True`.
 
 **Image Info Dict**:
 ```python
@@ -595,7 +615,7 @@ for item in all_items:
 #### `get_items_by_bucket`
 
 ```python
-def get_items_by_bucket(self) -> Dict[BucketResolution, List[Dict]]
+def get_items_by_bucket(self) -> Dict[BucketKey, List[Dict]]
 ```
 
 Get items grouped by bucket.
@@ -717,11 +737,13 @@ Manages tag groups for caption processing (categorization, shuffle, dropout).
 ### Constructor
 
 ```python
-TagGroupManager(tag_group_dir: str = "taglist")
+TagGroupManager(tag_group_dir: str = "taglist", enable_gelbooru: bool = False)
 ```
 
 **Parameters**:
 - `tag_group_dir` (str): Directory containing tag group JSON files (default: "taglist")
+- `enable_gelbooru` (bool): Also load the gelbooru supplement from `taglist_gel/`
+  (training only, to reduce "Unknown" tags; larger vocabulary, more noise)
 
 **Behavior**:
 - Automatically loads tag groups from JSON files
@@ -966,13 +988,18 @@ output = normalize_tag_for_output("long_hair")
 #### `get_tag_group_manager`
 
 ```python
-def get_tag_group_manager(tag_group_dir: str = "taglist") -> TagGroupManager
+def get_tag_group_manager(
+    tag_group_dir: str = "taglist",
+    enable_gelbooru: bool = False
+) -> TagGroupManager
 ```
 
 Get or create tag group manager (cached globally).
 
 **Parameters**:
 - `tag_group_dir` (str): Directory containing tag group JSON files
+- `enable_gelbooru` (bool): Enable the gelbooru supplement; once enabled it stays
+  enabled for the session
 
 **Returns**:
 - `TagGroupManager`: Cached instance
@@ -999,67 +1026,46 @@ Generates YAML configuration files for ai-toolkit-based training.
 ```python
 @staticmethod
 def generate_lora_config(
+    p: Optional[Dict[str, Any]] = None,
+    *,
     run_name: str,
-    dataset_path: str,
     base_model_path: str,
     output_dir: str,
+    dataset_path: str = "",
     dataset_configs: Optional[List[Dict[str, Any]]] = None,
-    total_steps: Optional[int] = None,
-    epochs: Optional[int] = None,
-    batch_size: int = 1,
-    learning_rate: float = 1e-4,
-    lr_scheduler: str = "constant",
-    optimizer: str = "adamw8bit",
-    lora_rank: int = 16,
-    lora_alpha: int = 16,
-    save_every: int = 100,
-    save_every_unit: str = "steps",
-    sample_every: int = 100,
     sample_prompts: Optional[list] = None,
-    debug_latents: bool = False,
-    debug_latents_every: int = 50,
-    enable_bucketing: bool = False,
-    base_resolutions: Optional[list] = None,
-    bucket_strategy: str = "resize",
-    multi_resolution_mode: str = "max",
-    train_unet: bool = True,
-    train_text_encoder: bool = False,
-    unet_lr: Optional[float] = None,
-    text_encoder_lr: Optional[float] = None,
-    text_encoder_1_lr: Optional[float] = None,
-    text_encoder_2_lr: Optional[float] = None,
-    cache_latents_to_disk: bool = False,
-    weight_dtype: str = "fp16",
-    training_dtype: str = "fp16",
-    output_dtype: str = "fp32",
-    vae_dtype: str = "fp16",
-    mixed_precision: bool = True,
-    use_flash_attention: bool = False,
-    min_snr_gamma: float = 5.0,
-    sample_width: int = 1024,
-    sample_height: int = 1024,
-    sample_steps: int = 28,
-    sample_cfg_scale: float = 7.0,
-    sample_sampler: str = "euler",
-    sample_seed: int = 42,
-    resume_from_checkpoint: Optional[str] = None,
     caption_processing: Optional[Dict[str, Any]] = None,
+    **legacy_kwargs: Any,
 ) -> str
 ```
 
 Generate LoRA training configuration YAML.
 
-**Key Parameters**:
-- `run_name` (str): Training run identifier
-- `dataset_path` (str): Path to dataset directory (deprecated, use `dataset_configs`)
-- `base_model_path` (str): Path to base model
-- `output_dir` (str): Output directory for checkpoints
-- `dataset_configs` (List[Dict], optional): List of dataset configurations (new, multi-dataset support)
-- `total_steps` (int, optional): Total training steps (mutually exclusive with `epochs`)
-- `epochs` (int, optional): Number of epochs (mutually exclusive with `total_steps`)
-- `lora_rank` (int): LoRA rank (default: 16)
-- `lora_alpha` (int): LoRA alpha (default: 16)
-- `optimizer` (str): Optimizer type (e.g., `"adamw8bit"`, `"adamw"`, `"sgd"`)
+**Parameters**:
+- `p` (Dict, optional): The training parameters dict — normally
+  `TrainingRunCreateRequest.model_dump()`. Every knob not named below
+  (`total_steps`/`epochs`, `batch_size`, `learning_rate`, `optimizer`,
+  `lora_rank`, `lora_alpha`, bucketing, dtypes, sample settings,
+  `resume_from_checkpoint`, ...) is read out of this dict. It also carries
+  `_explicit_fields` (the route passes `request.model_fields_set`), which the
+  sample-default resolver uses to tell a caller-supplied value from a Pydantic
+  default.
+- `run_name` (str, keyword-only): Training run identifier
+- `base_model_path` (str, keyword-only): Path to base model
+- `output_dir` (str, keyword-only): Output directory for checkpoints
+- `dataset_path` (str, keyword-only): Deprecated, use `dataset_configs`
+- `dataset_configs` (List[Dict], keyword-only): List of dataset configurations
+- `sample_prompts` (list, keyword-only): Sample prompts
+- `caption_processing` (Dict, keyword-only): Caption processing config from the
+  database. Not written to the YAML — the trainer reads
+  `Dataset.caption_processing` at training time.
+- `**legacy_kwargs`: absorbs the old kwargs-style call. They are **merged into
+  `p`, not ignored and not warned about**: with no `p`, `p = legacy_kwargs`;
+  with both, `p = {**p, **legacy_kwargs}`, so a legacy kwarg overrides the same
+  key in `p`. An old-shape call therefore still works.
+
+Either `total_steps` or `epochs` must be present in the resulting dict, and not
+both; otherwise `ValueError`.
 
 **Returns**:
 - `str`: YAML configuration string
@@ -1069,16 +1075,18 @@ Generate LoRA training configuration YAML.
 from core.training.training_config import TrainingConfigGenerator
 
 yaml_config = TrainingConfigGenerator.generate_lora_config(
+    {
+        "epochs": 10,
+        "batch_size": 4,
+        "learning_rate": 1e-4,
+        "lora_rank": 16,
+        "enable_bucketing": True,
+        "base_resolutions": [1024],
+    },
     run_name="lora_training_001",
-    dataset_path="datasets/my_dataset",
     base_model_path="models/sdxl_base.safetensors",
     output_dir="training/lora_001",
-    epochs=10,
-    batch_size=4,
-    learning_rate=1e-4,
-    lora_rank=16,
-    enable_bucketing=True,
-    base_resolutions=[1024]
+    dataset_configs=[{"path": "datasets/my_dataset"}],
 )
 ```
 
@@ -1163,53 +1171,30 @@ first.
 ```python
 @staticmethod
 def generate_full_finetune_config(
+    p: Optional[Dict[str, Any]] = None,
+    *,
     run_name: str,
-    dataset_path: str,
     base_model_path: str,
     output_dir: str,
+    dataset_path: str = "",
     dataset_configs: Optional[List[Dict[str, Any]]] = None,
-    total_steps: Optional[int] = None,
-    epochs: Optional[int] = None,
-    batch_size: int = 1,
-    learning_rate: float = 1e-6,
-    lr_scheduler: str = "constant",
-    optimizer: str = "adamw8bit",
-    save_every: int = 100,
-    save_every_unit: str = "steps",
-    sample_every: int = 100,
     sample_prompts: Optional[list] = None,
-    debug_latents: bool = False,
-    debug_latents_every: int = 50,
-    enable_bucketing: bool = False,
-    base_resolutions: Optional[List[int]] = None,
-    bucket_strategy: str = "resize",
-    multi_resolution_mode: str = "max",
-    train_unet: bool = True,
-    train_text_encoder: bool = True,
-    unet_lr: Optional[float] = None,
-    text_encoder_lr: Optional[float] = None,
-    text_encoder_1_lr: Optional[float] = None,
-    text_encoder_2_lr: Optional[float] = None,
-    cache_latents_to_disk: bool = False,
-    weight_dtype: str = "fp16",
-    training_dtype: str = "fp16",
-    output_dtype: str = "fp32",
-    vae_dtype: str = "fp16",
-    mixed_precision: bool = True,
-    use_flash_attention: bool = False,
-    min_snr_gamma: float = 5.0,
-    sample_width: int = 1024,
-    sample_height: int = 1024,
-    sample_steps: int = 28,
-    sample_cfg_scale: float = 7.0,
-    sample_sampler: str = "euler",
-    sample_seed: int = -1,
-    resume_from_checkpoint: Optional[str] = None,
-    caption_processing: Optional[dict] = None,
+    caption_processing: Optional[Dict[str, Any]] = None,
+    **legacy_kwargs: Any,
 ) -> str
 ```
 
-Generate full fine-tuning configuration YAML (similar to `generate_lora_config` but with `network.type: full_finetune`).
+Generate full fine-tuning configuration YAML (`network.type: full_finetune`).
+Same call shape and same `legacy_kwargs` merge as `generate_lora_config`.
+Differences in what it writes:
+
+- `learning_rate` default `1e-6` (vs `1e-4` for LoRA)
+- `train_text_encoder` default from
+  `param_defaults.resolve_full_finetune_train_text_encoder`
+- `max_step_saves_to_keep` default 3
+- `noise_process` default `"add_noise"`, `strict_validation` default `True`
+- Component LRs emitted only if not None (LoRA always emits them)
+- Bucketing emitted only if `enable_bucketing`
 
 **Returns**:
 - `str`: YAML configuration string
@@ -1217,17 +1202,29 @@ Generate full fine-tuning configuration YAML (similar to `generate_lora_config` 
 **Example**:
 ```python
 yaml_config = TrainingConfigGenerator.generate_full_finetune_config(
+    {
+        "epochs": 5,
+        "batch_size": 2,
+        "learning_rate": 1e-6,
+        "train_unet": True,
+        "train_text_encoder": True,
+    },
     run_name="full_finetune_001",
-    dataset_path="datasets/my_dataset",
     base_model_path="models/sdxl_base.safetensors",
     output_dir="training/full_001",
-    epochs=5,
-    batch_size=2,
-    learning_rate=1e-6,  # Lower LR for full fine-tune
-    train_unet=True,
-    train_text_encoder=True
+    dataset_configs=[{"path": "datasets/my_dataset"}],
 )
 ```
+
+#### `generate_relora_config`, `generate_controlnet_config`, `generate_vae_config`
+
+Same call shape as `generate_lora_config` (`p` positional, the same seven
+keyword-only arguments, the same `legacy_kwargs` merge). `generate_relora_config`
+builds the LoRA config and rewrites `network.type` to `relora`;
+`generate_controlnet_config` hardcodes ControlNet-only training;
+`generate_vae_config` writes `network.type: vae_decoder` with no `sample`
+section — see `docs/guides/VAE_TRAINING.md` and each method's docstring in
+`training_config.py`.
 
 #### `save_config`
 

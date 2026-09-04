@@ -37,10 +37,15 @@ ADAPTER_PAIRS: Tuple[AdapterPair, ...] = tuple(
 _ORDINARY_ONLY: FrozenSet[AdapterPair] = frozenset({ORDINARY_LORA})
 
 #: Ordinary LoRA plus the two additive LyCORIS algebras, no weight
-#: decomposition -- DoRA needs the base weight's direction and norm and is
-#: Phase 3.
+#: decomposition.
 _ADDITIVE_LYCORIS: FrozenSet[AdapterPair] = frozenset(
     {ORDINARY_LORA, ("loha", False), ("lokr", False)})
+
+#: ...plus DENSE DoRA. The decomposed pairs over LoHa/LoKr (DoHa/DoKr) are NOT
+#: here: the engine builds all three the same way, but each pair needs its own
+#: per-architecture round trip and Phase 3's declared scope is dense DoRA.
+_ADDITIVE_LYCORIS_WITH_DORA: FrozenSet[AdapterPair] = (
+    _ADDITIVE_LYCORIS | frozenset({("lora", True)}))
 
 #: THE capability flip point, keyed by the ``ARCH_REGISTRY`` spelling. Enabling
 #: LoHa on one architecture is an edit to its row and nothing else: training
@@ -59,11 +64,11 @@ _ADDITIVE_LYCORIS: FrozenSet[AdapterPair] = frozenset(
 ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,
-    "zimage": _ADDITIVE_LYCORIS,
+    "zimage": _ADDITIVE_LYCORIS_WITH_DORA,
     "anima": _ADDITIVE_LYCORIS,
-    "lens": _ADDITIVE_LYCORIS,
+    "lens": _ADDITIVE_LYCORIS_WITH_DORA,
     "ideogram4": _ADDITIVE_LYCORIS,
-    "minit2i": _ADDITIVE_LYCORIS,
+    "minit2i": _ADDITIVE_LYCORIS_WITH_DORA,
     "krea2": _ADDITIVE_LYCORIS,
     "flux2": _ADDITIVE_LYCORIS,
     "ltx2": _ADDITIVE_LYCORIS,
@@ -87,11 +92,11 @@ ENABLED_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
 TRAINABLE_ADAPTER_PAIRS: Mapping[str, FrozenSet[AdapterPair]] = MappingProxyType({
     "sd15": _ORDINARY_ONLY,
     "sdxl": _ORDINARY_ONLY,
-    "zimage": _ADDITIVE_LYCORIS,
+    "zimage": _ADDITIVE_LYCORIS_WITH_DORA,
     "anima": _ADDITIVE_LYCORIS,
-    "lens": _ADDITIVE_LYCORIS,
+    "lens": _ADDITIVE_LYCORIS_WITH_DORA,
     "ideogram4": _ADDITIVE_LYCORIS,
-    "minit2i": _ADDITIVE_LYCORIS,
+    "minit2i": _ADDITIVE_LYCORIS_WITH_DORA,
     "krea2": _ADDITIVE_LYCORIS,
     "flux2": _ADDITIVE_LYCORIS,
     "ltx2": _ADDITIVE_LYCORIS,
@@ -123,11 +128,25 @@ del _arch, _pairs, _extra
 PHASE2_PENDING = ("LoHa and LoKr generate on the architectures whose row "
                   "enables them, but this one is not among them yet, so no "
                   "checkpoint of either can be applied to it")
-PHASE3_PENDING = ("DoRA is planned for dense Linear targets but the dense-DoRA "
-                  "phase (Phase 3) has not landed")
+PHASE3_PENDING = ("DoRA is planned for dense Linear targets but this "
+                  "architecture's row is not open")
 PHASE3_PENDING_DENSE_ONLY = (
     "DoRA is planned for dense Linear targets ONLY because this architecture's "
-    "base may be weight-only quantized, and Phase 3 has not landed")
+    "base may be weight-only quantized, and its row is not open")
+PHASE3_DECOMPOSED_PENDING = (
+    "dense DoRA ships here, but DoHa and DoKr do not: the engine builds all "
+    "three the same way, and each decomposed pair still needs its own "
+    "per-architecture round trip")
+DORA_DIFFUSERS_STRIPS_MAGNITUDES = (
+    "DoRA cannot be applied here: this architecture loads through diffusers, "
+    "whose lora_state_dict DROPS every dora_scale key -- with a log line and "
+    "nothing else -- before its Kohya converter can see them (measured on "
+    "diffusers 0.38.0), so the file would apply as an ordinary LoRA at the "
+    "wrong numbers instead of failing")
+DORA_QUANTIZED_BASE_REFUSAL = (
+    "a weight-decomposed adapter needs the base weight's direction and norm, "
+    "so a weight-only quantized base would have to be dequantized every "
+    "forward and the fused base GEMM abandoned")
 QUANTIZED_ADDITIVE_PENDING = (
     "additive branches over an INT8/FP8/W4A8 base are the second half of "
     "Phase 2 and are not enabled")
@@ -163,6 +182,49 @@ TRAINING_REFUSAL_REASONS: Mapping[str, str] = MappingProxyType({
 def training_refusal_reason(architecture: Optional[str]) -> str:
     """The prose for a closed training row: this architecture's, or the generic."""
     return TRAINING_REFUSAL_REASONS.get(architecture or "", PHASE2_TRAINING_PENDING)
+
+
+#: What blocks the DECOMPOSITION axis on an architecture whose row is closed.
+#: Here rather than on the ArchHandler for the reason ``TRAINING_REFUSAL_REASONS``
+#: is: ``api/arch_capabilities.py`` may not import the trainer stack, so a
+#: sentence declared on the handler cannot reach a client, and
+#: ``declare_adapter_capability`` READS this table so the handler and the
+#: payload cannot word the same refusal differently.
+DECOMPOSE_REFUSAL_REASONS: Mapping[str, str] = MappingProxyType({
+    "sd15": DORA_DIFFUSERS_STRIPS_MAGNITUDES,
+    "sdxl": DORA_DIFFUSERS_STRIPS_MAGNITUDES,
+    "flux2": PHASE3_PENDING_DENSE_ONLY,
+    "anima": PHASE3_PENDING_DENSE_ONLY,
+    "ltx2": PHASE3_PENDING_DENSE_ONLY,
+    "acestep": PHASE3_PENDING_DENSE_ONLY,
+    "krea2": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and this "
+              f"loader can produce INT8/FP8 bases"),
+    "ideogram4": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and "
+                  f"either transformer can be loaded FP8"),
+    "minimax_h3": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and "
+                   f"this architecture has no dense configuration -- its whole "
+                   f"DiT block stack is Fp8Linear. The custom QKV row mapping "
+                   f"has no decomposed split either: dora_scale's (1, in) form "
+                   f"has no row axis to slice"),
+    "sensenova": (f"DoRA is deferred here: {DORA_QUANTIZED_BASE_REFUSAL}, and "
+                  f"this architecture has no dense configuration -- all 294 "
+                  f"targets per MoT half are Int8Linear"),
+})
+
+
+def decompose_refusal_reason(architecture: Optional[str],
+                             algorithm: str = ALGORITHM_LORA) -> str:
+    """The prose for a closed decomposition row.
+
+    Two different facts share the axis. Where dense DoRA is OPEN, a DoHa/DoKr
+    request is refused because that PAIR has no round trip, not because
+    decomposition is unimplemented -- telling a Z-Image user that DoRA has not
+    landed is false there, the same way "LoHa is unimplemented" became false at
+    the Phase 2 flips.
+    """
+    if algorithm != ALGORITHM_LORA and (ALGORITHM_LORA, True) in supported_pairs(architecture):
+        return PHASE3_DECOMPOSED_PENDING
+    return DECOMPOSE_REFUSAL_REASONS.get(architecture or "", PHASE3_PENDING)
 
 #: Does this backend's generate function install adapters BEFORE or AFTER its
 #: offloader splits the blocks? No session can observe that, and it decides
@@ -232,8 +294,13 @@ __all__ = [
     "ENABLED_ADAPTER_PAIRS",
     "ORDINARY_LORA",
     "PHASE2_PENDING",
+    "DECOMPOSE_REFUSAL_REASONS",
+    "DORA_DIFFUSERS_STRIPS_MAGNITUDES",
+    "DORA_QUANTIZED_BASE_REFUSAL",
+    "PHASE3_DECOMPOSED_PENDING",
     "PHASE3_PENDING",
     "PHASE3_PENDING_DENSE_ONLY",
+    "decompose_refusal_reason",
     "QUANTIZED_ADDITIVE_PENDING",
     "QUANTIZED_ADDITIVE_SHIPPED",
     "adapter_refusal_reason",
@@ -349,10 +416,12 @@ def adapter_refusal_reason(architecture: Optional[str], algorithm: str,
     where = architecture or "this build"
     if pair not in ADAPTER_PAIRS:
         return f"{where}: adapter algorithm {algorithm!r} is not recognized"
-    if (pair[1] and algorithm != ALGORITHM_LORA
-            and (algorithm, False) not in supported_pairs(architecture)):
-        # Blocked twice over: by the decomposition AND by the algebra under it.
-        why = f"{PHASE3_PENDING}; and {PHASE2_PENDING}"
+    if not pair[1]:
+        why = PHASE2_PENDING
     else:
-        why = PHASE3_PENDING if pair[1] else PHASE2_PENDING
+        why = decompose_refusal_reason(architecture, algorithm)
+        if (algorithm != ALGORITHM_LORA
+                and (algorithm, False) not in supported_pairs(architecture)):
+            # Blocked twice over: by the decomposition AND by the algebra under it.
+            why = f"{why}; and {PHASE2_PENDING}"
     return f"{where}: {FAMILY_NAMES[pair]} adapters are not enabled -- {why}"

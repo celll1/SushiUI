@@ -1,4 +1,4 @@
-"""The training engine for LoHa/LoKr: census, export, resume, refusals.
+"""The training engine for LoHa/LoKr/DoRA: census, export, resume, refusals.
 
 What the per-architecture gate
 (``adapter_lycoris_training_roundtrip_cheap_test.py``) does not cover, because it
@@ -6,6 +6,11 @@ is architecture-independent: that every factor reaches the optimizer exactly
 once through BOTH fused paths, that the exporter folds ``scalar`` away, that a
 failed resume restores the layer's alpha, and that the two capability axes are
 asked separately.
+
+The census rows run with AND without weight decomposition, because
+``dora_scale`` is the tensor the census can lose without the loss noticing: a
+magnitude that trains but is never saved, or is saved but never resumed, or
+reaches the optimizer twice, all look like a normal run from outside.
 
 Run with:
     venv/Scripts/python.exe -m pytest \
@@ -43,6 +48,18 @@ ALPHA = 6
 FACTOR_COUNT = {"lora": 2, "loha": 4, "lokr": 3}
 ALGEBRAS = sorted(FACTOR_COUNT)
 
+#: Every ``(algorithm, weight_decompose)`` the engine can build. The capability
+#: tables enable only ``("lora", True)`` of the decomposed three; ``build``
+#: never consults them (its trainer has no ``arch``), which is what lets this
+#: file gate the ENGINE independently of which rows are open.
+CENSUS = [(algorithm, wd) for algorithm in ALGEBRAS for wd in (False, True)]
+CENSUS_IDS = [f"{a}{'+wd' if wd else ''}" for a, wd in CENSUS]
+
+
+def factor_count(algorithm, weight_decompose):
+    """``dora_scale`` is one more trainable tensor per target."""
+    return FACTOR_COUNT[algorithm] + (1 if weight_decompose else 0)
+
 
 class _Block(nn.Module):
     def __init__(self):
@@ -77,11 +94,12 @@ class _Adapter(BaseLoRAAdapter):
         return {"model_type": "test", "step": str(step), "epoch": str(epoch)}
 
 
-def build(algorithm, options=None, seed=3):
+def build(algorithm, options=None, seed=3, weight_decompose=False):
     torch.manual_seed(0)
     model = _Block()
     trainer = SimpleNamespace(transformer=model, config={},
                               adapter_algorithm=algorithm,
+                              weight_decompose=weight_decompose,
                               adapter_config=options or {})
     adapter = _Adapter(trainer, RANK, ALPHA, torch.float32)
     layers = {}
@@ -114,9 +132,15 @@ def test_an_unknown_algorithm_is_refused_by_name(value):
         TrainingAdapterSpec(algorithm=value)
 
 
-def test_weight_decompose_is_accepted_as_a_field_and_refused_as_a_value():
-    with pytest.raises(ValueError, match="Phase 3"):
-        TrainingAdapterSpec(algorithm="loha", weight_decompose=True)
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_weight_decompose_is_the_second_axis_of_the_spec(algorithm):
+    """It is not a fourth algorithm: the spec keeps the pair, and the metadata
+    block a decomposed run writes says so on both axes."""
+    spec = TrainingAdapterSpec(algorithm=algorithm, weight_decompose=True)
+    assert (spec.algorithm, spec.weight_decompose) == (algorithm, True)
+    assert not spec.is_ordinary_lora
+    assert spec.metadata()["sushi.adapter.algorithm"] == algorithm
+    assert spec.metadata()["sushi.adapter.weight_decompose"] == "true"
 
 
 @pytest.mark.parametrize("algorithm", ["loha", "lokr"])
@@ -140,12 +164,12 @@ def test_lokr_options_reach_the_layer():
 
 # --- the optimizer census -------------------------------------------------
 
-@pytest.mark.parametrize("algorithm", ALGEBRAS)
-def test_every_factor_reaches_the_optimizer_exactly_once(algorithm):
-    adapter, layers, _model = build(algorithm)
+@pytest.mark.parametrize("algorithm,wd", CENSUS, ids=CENSUS_IDS)
+def test_every_factor_reaches_the_optimizer_exactly_once(algorithm, wd):
+    adapter, layers, _model = build(algorithm, weight_decompose=wd)
     groups = adapter.setup_trainable_parameters(layers)
     params = [p for group in groups for p in group["params"]]
-    expected = FACTOR_COUNT[algorithm] * len(layers)
+    expected = factor_count(algorithm, wd) * len(layers)
     assert len(params) == expected
     assert len({id(p) for p in params}) == expected, "a factor was handed over twice"
 
@@ -154,6 +178,11 @@ def test_every_factor_reaches_the_optimizer_exactly_once(algorithm):
     owned = {id(p) for layer in layers.values() for p in layer.parameters()
              if p.requires_grad}
     assert owned == {id(p) for p in params}
+
+    if wd:
+        magnitudes = {id(layer.dora_scale) for layer in layers.values()}
+        assert magnitudes <= {id(p) for p in params}, \
+            "a magnitude vector never reached the optimizer"
 
 
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
@@ -165,13 +194,13 @@ def test_the_alpha_of_a_lycoris_layer_is_not_an_optimizer_parameter(algorithm):
         assert "alpha" in layer.branch_tensors()
 
 
-@pytest.mark.parametrize("algorithm", ALGEBRAS)
-def test_fused_optimizer_groups_complete_and_clear_every_gradient(algorithm):
+@pytest.mark.parametrize("algorithm,wd", CENSUS, ids=CENSUS_IDS)
+def test_fused_optimizer_groups_complete_and_clear_every_gradient(algorithm, wd):
     from core.training.optimizers.fused_optimizer_groups import (
         FusedOptimizerGroups, create_optimizer_groups,
     )
 
-    adapter, layers, model = build(algorithm)
+    adapter, layers, model = build(algorithm, weight_decompose=wd)
     groups = adapter.setup_trainable_parameters(layers)
     params = [p for group in groups for p in group["params"]]
     optimizers = create_optimizer_groups(params, "adamw", 3, 1e-3)
@@ -193,13 +222,13 @@ def test_fused_optimizer_groups_complete_and_clear_every_gradient(algorithm):
     assert moved == len(params), f"only {moved}/{len(params)} factors were updated"
 
 
-@pytest.mark.parametrize("algorithm", ALGEBRAS)
-def test_the_fused_backward_hooks_fire_once_per_factor(algorithm):
+@pytest.mark.parametrize("algorithm,wd", CENSUS, ids=CENSUS_IDS)
+def test_the_fused_backward_hooks_fire_once_per_factor(algorithm, wd):
     """The other fused path: one per-parameter hook, Adafactor's ``step_param``."""
     from core.training.base_trainer import BaseTrainer
     from core.training.optimizer_factory import OptimizerFactory
 
-    adapter, layers, model = build(algorithm)
+    adapter, layers, model = build(algorithm, weight_decompose=wd)
     groups = adapter.setup_trainable_parameters(layers)
     params = [p for group in groups for p in group["params"]]
     optimizer = OptimizerFactory.create_optimizer("adafactor", groups, 1e-3)
@@ -247,18 +276,57 @@ def test_export_folds_scalar_into_the_first_factor_and_drops_the_key(algorithm,
                        layer.branch_tensors()[folded].detach() * 0.25)
 
 
-@pytest.mark.parametrize("algorithm", ALGEBRAS)
-def test_a_saved_checkpoint_carries_exactly_the_resume_tensors(algorithm,
+@pytest.mark.parametrize("algorithm,wd", CENSUS, ids=CENSUS_IDS)
+def test_a_saved_checkpoint_carries_exactly_the_resume_tensors(algorithm, wd,
                                                                tmp_path):
     from safetensors.torch import load_file
 
-    adapter, layers, _model = build(algorithm)
+    adapter, layers, _model = build(algorithm, weight_decompose=wd)
     path = tmp_path / "a.safetensors"
     adapter.save_checkpoint(layers, 5, 1, path)
     saved = load_file(str(path))
     for name, layer in layers.items():
         for key in layer.branch_tensors():
             assert f"{name}.{key}" in saved, f"resume would refuse: {name}.{key}"
+    if wd:
+        assert all(f"{name}.dora_scale" in saved for name in layers)
+
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_a_decomposed_resume_moves_the_magnitude_and_refuses_without_it(
+        algorithm, tmp_path):
+    """The specific way a magnitude goes wrong quietly: trained, saved, and
+    then not read back, so a resumed run silently restarts it at the base's own
+    row norms and the loss curve looks fine."""
+    from safetensors.torch import load_file, save_file
+    from core.training.lora_trainer import LoRATrainer
+
+    adapter, layers, _model = build(algorithm, weight_decompose=True)
+    with torch.no_grad():
+        for layer in layers.values():
+            layer.dora_scale.mul_(1.7)
+    trained = {name: layer.dora_scale.detach().clone()
+               for name, layer in layers.items()}
+    path = tmp_path / "a.safetensors"
+    adapter.save_checkpoint(layers, 5, 1, path)
+
+    _a2, resumed, _m2 = build(algorithm, seed=99, weight_decompose=True)
+    assert not any(torch.equal(resumed[n].dora_scale, trained[n]) for n in trained)
+    trainer = SimpleNamespace(lora_layers=resumed, log_prefix="[test]",
+                              lora_rank=RANK, lora_alpha=ALPHA)
+    LoRATrainer.load_checkpoint(trainer, str(path))
+    for name, expected in trained.items():
+        assert torch.equal(resumed[name].dora_scale, expected)
+
+    stripped = tmp_path / "b.safetensors"
+    saved = {k: v for k, v in load_file(str(path)).items()
+             if not k.endswith("dora_scale")}
+    save_file(saved, str(stripped), metadata={"step": "5"})
+    _a3, fresh, _m3 = build(algorithm, seed=7, weight_decompose=True)
+    trainer = SimpleNamespace(lora_layers=fresh, log_prefix="[test]",
+                              lora_rank=RANK, lora_alpha=ALPHA)
+    with pytest.raises(ValueError, match="dora_scale"):
+        LoRATrainer.load_checkpoint(trainer, str(stripped))
 
 
 @pytest.mark.parametrize("algorithm", ["loha", "lokr"])
@@ -342,10 +410,39 @@ def test_an_ordinary_lora_run_is_unaffected_by_the_capability_check():
     assert all(isinstance(layer, LoRALinearLayer) for layer in layers.values())
 
 
-def test_the_branch_factory_refuses_weight_decomposition():
-    with pytest.raises(ValueError, match="Phase 3"):
-        new_adapter_branch("lora", nn.Linear(D, D), rank=RANK, alpha=ALPHA,
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+def test_the_branch_factory_wraps_every_algebra_in_the_epilogue(algorithm):
+    """The decomposition is an epilogue on all three algebras, not a fourth one:
+    what changes is the wrapper, not the factors underneath it."""
+    from core.adapters import DoRALinearLayer
+
+    base = nn.Linear(D, D)
+    plain = new_adapter_branch(algorithm, base, rank=RANK, alpha=ALPHA)
+    decomposed = new_adapter_branch(algorithm, base, rank=RANK, alpha=ALPHA,
+                                    weight_decompose=True)
+    assert isinstance(decomposed, DoRALinearLayer)
+    assert type(decomposed.branch) is type(plain)
+    assert set(decomposed.branch_tensors()) == \
+        set(plain.branch_tensors()) | {"dora_scale"}
+
+
+@pytest.mark.parametrize("algorithm", ALGEBRAS)
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.int8])
+def test_the_branch_factory_refuses_a_weight_only_quantized_base(algorithm,
+                                                                 dtype):
+    """The epilogue divides by the base weight's norm, so a quantized base would
+    have to be dequantized every forward. Keyed on the weight DTYPE, which is
+    what the legacy in-place fp8 cast leaves behind on a plain nn.Linear."""
+    base = nn.Linear(D, D)
+    # int8 cannot be the data of a grad-requiring parameter, and a
+    # quantized base is frozen anyway.
+    base.weight.requires_grad_(False)
+    base.weight.data = base.weight.data.to(dtype)
+    with pytest.raises(ValueError, match="weight_decompose"):
+        new_adapter_branch(algorithm, base, rank=RANK, alpha=ALPHA,
                            weight_decompose=True)
+    # The additive algebras are unaffected: they never read the base weight.
+    new_adapter_branch(algorithm, base, rank=RANK, alpha=ALPHA)
 
 
 # --- the run-level contract, refused before the model loads ---------------
@@ -387,9 +484,48 @@ def test_the_contract_refuses_every_method_but_lora(method):
         _contract({"adapter_algorithm": "loha"}, method=method)
 
 
-def test_the_contract_refuses_weight_decomposition_by_name():
-    with pytest.raises(ValueError, match="Phase 3"):
-        _contract({"adapter_algorithm": "lora", "weight_decompose": True})
+def test_the_contract_accepts_dense_dora_where_the_row_is_open():
+    _contract({"adapter_algorithm": "lora", "weight_decompose": True},
+              architecture="zimage")
+
+
+@pytest.mark.parametrize("architecture", ["krea2", "sd15"])
+def test_the_contract_refuses_dora_where_the_row_is_closed(architecture):
+    with pytest.raises(ValueError, match="(?i)dora"):
+        _contract({"adapter_algorithm": "lora", "weight_decompose": True},
+                  architecture=architecture)
+
+
+@pytest.mark.parametrize("algorithm", ["loha", "lokr"])
+def test_the_contract_refuses_the_decomposed_pairs_by_their_own_name(algorithm):
+    """DoHa/DoKr are refused on an architecture where dense DoRA ships, so the
+    message must not claim decomposition is unimplemented."""
+    with pytest.raises(ValueError) as excinfo:
+        _contract({"adapter_algorithm": algorithm, "weight_decompose": True},
+                  architecture="zimage")
+    message = str(excinfo.value)
+    assert "dense DoRA ships here" in message
+    assert "loha adapters" not in message and "lokr adapters" not in message
+
+
+def test_block_swap_is_refused_for_a_decomposed_run_too():
+    """The magnitude is a bare parameter, so no offloader moves it either."""
+    with pytest.raises(ValueError, match="dora_scale"):
+        _contract({"adapter_algorithm": "lora", "weight_decompose": True},
+                  architecture="zimage", train={"blocks_to_swap": 8})
+
+
+def test_an_fp8_base_is_refused_from_the_config_not_at_the_first_target():
+    """``fp8_base_dtype`` quantizes the frozen transformer in
+    ``prepare_models_for_training``, i.e. BEFORE injection, so the layer-level
+    refusal would only fire once the whole checkpoint is resident."""
+    with pytest.raises(ValueError, match="fp8_base_dtype"):
+        _contract({"adapter_algorithm": "lora", "weight_decompose": True},
+                  architecture="zimage",
+                  train={"fp8_base_dtype": "fp8_e4m3fn"})
+    # An additive run is unaffected: it never reads the base weight.
+    _contract({"adapter_algorithm": "loha"}, architecture="zimage",
+              train={"fp8_base_dtype": "fp8_e4m3fn"})
 
 
 def test_the_contract_refuses_an_unknown_algebra():

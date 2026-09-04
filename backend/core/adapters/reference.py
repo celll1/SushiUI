@@ -27,7 +27,15 @@ checked by hand against upstream at
 
 The ``dora_scale`` axis is written from the definition here rather than copied,
 but that too is only evidence once read against upstream ``_weight_decompose``,
-which a test cannot do.
+which a test cannot do. The ROW form -- upstream's ``wd_on_out=True`` default,
+stored ``(out,)`` or ``(out, 1)`` -- no longer rests on that agreement alone:
+``adapter_oracle_gate_cheap_test`` compares it against PEFT's
+``DoraLinearLayer``, a third implementation installed in this venv, which norms
+along ``dim=1`` and holds one magnitude per output row, and onto whose
+``lora_magnitude_vector`` diffusers maps a Kohya ``dora_scale`` directly.
+Measured agreement 4.1e-7; a reversed row order is 1.04 off. The COLUMN form
+(``(1, in)``) has no such witness -- PEFT does not implement it -- and remains
+two mirrors of one reading.
 """
 
 from __future__ import annotations

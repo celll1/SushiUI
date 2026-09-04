@@ -395,7 +395,10 @@ def build_adapter_branch(
         branch = cls.from_tensors(base, group, alpha=alpha, lora_dtype=lora_dtype,
                                   lora_name=lora_name or group.stem)
         if group.weight_decompose:
-            branch = DoRALinearLayer(base, branch, dora_scale=group["dora_scale"])
+            # Same dtype as the factors it rides with -- usually the base
+            # weight's own, though Lens's branch dtype prefers the bias.
+            branch = DoRALinearLayer(base, branch, dora_scale=group["dora_scale"],
+                                     dtype=lora_dtype)
     except (IndexError, KeyError, RuntimeError, TypeError, ValueError,
             ZeroDivisionError):
         return SHAPE_MISMATCH

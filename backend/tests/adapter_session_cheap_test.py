@@ -585,26 +585,82 @@ def test_an_enabled_architecture_installs_the_same_loha_file(tmp_path, warned):
     assert not warned
 
 
-def test_a_dora_file_is_refused_on_the_decomposition_axis(tmp_path, warned):
-    """DoRA is ordinary LoRA plus ``dora_scale``: the same tensors the gate
-    lets through become a refusal on the second axis alone."""
-    model = _Stub()
-    before = slots(model)
+def write_dora(tmp_path, name="dora.safetensors"):
+    """Ordinary LoRA plus one magnitude vector per target."""
     from safetensors.torch import load_file
 
     tensors = load_file(write_lora(tmp_path))
+    generator = torch.Generator().manual_seed(5)
     for target in TARGETS:
-        tensors[f"{target}.dora_scale"] = torch.ones(WIDTH)
-    path = tmp_path / "dora.safetensors"
+        tensors[f"{target}.dora_scale"] = (
+            torch.rand(WIDTH, generator=generator) + 0.5)
+    path = tmp_path / name
     save_file(tensors, str(path), metadata={"lora_alpha": str(ALPHA)})
+    return str(path)
 
-    session = make_session(warned, architecture="zimage")
+
+def test_a_dora_file_is_refused_where_the_decomposition_row_is_closed(tmp_path,
+                                                                     warned):
+    """DoRA is ordinary LoRA plus ``dora_scale``: the same tensors the gate
+    lets through become a refusal on the second axis alone. Krea 2's row stays
+    closed for a STATED reason -- a base that can be INT8/FP8 -- rather than
+    for "not implemented"."""
+    model = _Stub()
+    before = slots(model)
+    path = write_dora(tmp_path)
+
+    session = make_session(warned, architecture="krea2")
     with pytest.raises(AdapterIncompatible) as excinfo:
-        session.load([{"path": str(path)}], [component(model)])
+        session.load([{"path": path}], [component(model)])
 
     assert excinfo.value.code == "lora_incompatible"
     assert "dora" in warned[0][1]
     assert slots(model) == before
+
+
+def test_a_dora_file_installs_where_the_row_is_open(tmp_path, warned):
+    """The sibling that makes the refusal above discriminating rather than a
+    tautology about a name."""
+    from core.adapters import DoRALinearLayer
+
+    model = _Stub()
+    visited = []
+    session = make_session(warned, architecture="zimage")
+    result = session.load([{"path": write_dora(tmp_path), "strength": STRENGTH}],
+                          [_engine_component(model, visited)])
+
+    assert visited == list(TARGETS)
+    assert result.applied == len(TARGETS)
+    assert composites(model) == set(TARGETS)
+    for composite in slots(model).values():
+        branch = composite.get_branch(composite.branch_names[0])
+        assert isinstance(branch, DoRALinearLayer)
+        assert branch.strength == STRENGTH
+    assert not warned
+
+
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.int8])
+def test_a_dora_file_is_refused_over_a_weight_only_quantized_base(tmp_path,
+                                                                 warned, dtype):
+    """Asked of the BUILT branch and the base it holds, so a file MISLABELLED
+    as ordinary LoRA cannot slip past a label test. Planning mutates nothing,
+    so the model is untouched."""
+    model = _Stub()
+    for base in (model.a, model.b, model.pack[0]):
+        base.weight.requires_grad_(False)
+        base.weight.data = base.weight.data.to(dtype)
+    before = slots(model)
+    visited = []
+
+    session = make_session(warned, architecture="zimage")
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        session.load([{"path": write_dora(tmp_path)}],
+                     [_engine_component(model, visited)])
+
+    assert excinfo.value.code == "lora_incompatible"
+    assert "weight-decomposed" in str(excinfo.value)
+    assert slots(model) == before
+    assert composites(model) == set()
 
 
 def test_both_lokr_forms_name_the_capability_reason_not_a_malformed_file(tmp_path,

@@ -779,8 +779,9 @@ def _assert_adapter_algebra_contract(
 
     A missing field normalizes to ordinary LoRA without weight decomposition,
     which is what every YAML written before this existed means. ``train_config``
-    is here for ``blocks_to_swap``, which lives in that section: without it the
-    refusal would land after the checkpoint is resident.
+    is here for ``blocks_to_swap`` and ``fp8_base_dtype``, which live in that
+    section: without it those refusals would land after the checkpoint is
+    resident.
     """
     from core.adapters.spec import ALGORITHMS
     from core.training.adapters.base_adapter import (
@@ -792,22 +793,21 @@ def _assert_adapter_algebra_contract(
         raise ValueError(
             f"network.adapter_algorithm={algorithm!r} is not one of "
             f"{list(ALGORITHMS)}")
-    if bool(network_config.get('weight_decompose', False)):
-        raise ValueError(
-            "network.weight_decompose is accepted but not implemented: DoRA, "
-            "DoHa and DoKr are Phase 3 (docs/guides/LYCORIS_ADAPTER_DESIGN.md). "
-            "Set weight_decompose: false.")
+    weight_decompose = bool(network_config.get('weight_decompose', False))
     # Built before the arch lookup so a stale adapter_config is refused by name
     # on an ORDINARY LoRA run too, where nothing else would ever read it.
     spec = TrainingAdapterSpec(algorithm=algorithm,
+                               weight_decompose=weight_decompose,
                                options=network_config.get('adapter_config') or {})
     if spec.is_ordinary_lora:
         return
     if network_type != 'lora':
         # ReLoRA merges and reinitializes the branch and resets optimizer state;
-        # neither is defined for a Hadamard or Kronecker factorization yet.
+        # neither is defined for a Hadamard or Kronecker factorization, nor for a
+        # magnitude vector whose meaning depends on the base it was merged into.
         raise ValueError(
-            f"network.adapter_algorithm={algorithm!r} is supported for "
+            f"network.adapter_algorithm={algorithm!r} "
+            f"(weight_decompose={weight_decompose}) is supported for "
             f"network.type='lora' only, not '{network_type}'. ReLoRA's merge / "
             f"reinitialize and optimizer reset are defined for the ordinary "
             f"low-rank branch alone.")
@@ -818,7 +818,8 @@ def _assert_adapter_algebra_contract(
     if handler is None:
         return  # the trainer's own backstop answers for an unknown name
     refuse_untrainable_algebra(spec, handler.adapter_capability,
-                               int(train_config.get('blocks_to_swap', 0) or 0))
+                               int(train_config.get('blocks_to_swap', 0) or 0),
+                               train_config.get('fp8_base_dtype') or None)
 
 
 def _apply_reference_training_contract(

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -560,6 +560,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const loraAlpha = params.lora_alpha ?? 16;
   const loraDtype = params.lora_dtype ?? "fp32";
   const adapterAlgorithm = params.adapter_algorithm ?? "lora";
+  const weightDecompose = params.weight_decompose ?? false;
 
   // Advanced (Phase 3e: migrated to params)
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
@@ -990,6 +991,35 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ? "Block swap is on, so only ordinary LoRA is offered: a LoHa or LoKr branch owns bare parameters, which no block offloader moves."
     : adapterTrainingRefusalReason(archCapabilities, baseModelArch, "loha")
   );
+  // Weight decomposition (DoRA/DoHa/DoKr) is the SECOND axis, not a fourth
+  // algorithm, so it is offered per (algorithm, arch) pair. The two settings
+  // that contradict it are refused from the run's config before the model
+  // loads, so the control is hidden rather than left to earn a 400: no block
+  // offloader moves a bare dora_scale, and fp8_base_dtype quantizes the very
+  // base weight the magnitude epilogue divides by.
+  const weightDecomposeAvailable = (
+    trainingMethod === "lora"
+    && blocksToSwap === 0
+    && !params.fp8_base_dtype
+    && weightDecomposeTrainable(archCapabilities, baseModelArch, adapterAlgorithm)
+  );
+  const weightDecomposeUnavailableNote: string | undefined = (
+    weightDecomposeAvailable ? undefined
+    : trainingMethod !== "lora"
+      ? "ReLoRA trains the ordinary low-rank branch only."
+    : blocksToSwap > 0
+      ? "Block swap is on: no block offloader moves a bare dora_scale, so a decomposed branch would stay on the host."
+    : params.fp8_base_dtype
+      ? "An FP8 base is selected: the magnitude epilogue reads the base weight's direction and norm every forward."
+    // Silent where the architecture simply has no LyCORIS row: the algorithm
+    // select is hidden there too, and a decomposition refusal under a plain
+    // LoRA panel names a feature the user was never offered.
+    : adapterAlgorithmChoices.length > 1
+      ? adapterTrainingRefusalReason(archCapabilities, baseModelArch,
+                                     decomposedAdapterFamily(adapterAlgorithm))
+    : undefined
+  );
+
   // param -> the value it held before this component pinned it, so the banner
   // names what was replaced instead of just saying something was.
   const [contractAdjusted, setContractAdjusted] = useState<Record<string, string>>({});
@@ -1860,8 +1890,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (!adapterAlgorithmChoices.includes(adapterAlgorithm)) {
       updateParam("adapter_algorithm", "lora");
     }
+    if (weightDecompose && !weightDecomposeAvailable) {
+      updateParam("weight_decompose", false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adapterAlgorithmChoices, adapterAlgorithm, capabilitiesReady]);
+  }, [adapterAlgorithmChoices, adapterAlgorithm, capabilitiesReady,
+      weightDecompose, weightDecomposeAvailable]);
 
   // Clear the arming values of a feature this base model has no mechanism for,
   // so a value carried over from a previous model is not submitted and refused.
@@ -2380,6 +2414,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       loraAlpha: params.lora_alpha,
       loraDtype: params.lora_dtype,
       adapterAlgorithm: params.adapter_algorithm,
+      weightDecompose: params.weight_decompose,
       adapterConfig: params.adapter_config,
       saveEvery,
       saveEveryUnit,
@@ -2568,6 +2603,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.loraAlpha !== undefined) updateParam("lora_alpha", config.loraAlpha);
     if (config.loraDtype !== undefined) updateParam("lora_dtype", config.loraDtype);
     if (config.adapterAlgorithm !== undefined) updateParam("adapter_algorithm", config.adapterAlgorithm);
+    if (config.weightDecompose !== undefined) updateParam("weight_decompose", config.weightDecompose);
     if (config.adapterConfig !== undefined) updateParam("adapter_config", config.adapterConfig);
     if (config.saveEvery !== undefined) updateParam("save_every", config.saveEvery);
     if (config.saveEveryUnit !== undefined) updateParam("save_every_unit", config.saveEveryUnit);
@@ -3457,6 +3493,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
             {adapterAlgorithmCollapsedNote && (
               <p className="text-xs text-gray-500">{adapterAlgorithmCollapsedNote}</p>
+            )}
+
+            {weightDecomposeAvailable && (
+              <div>
+                <label className="flex items-center gap-2 text-xs text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={weightDecompose}
+                    onChange={(e) => updateParam("weight_decompose", e.target.checked)}
+                    className="rounded"
+                  />
+                  Weight decomposition ({decomposedAdapterFamily(adapterAlgorithm).toUpperCase()})
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  One magnitude vector per target (dora_scale) on top of the
+                  algebra&apos;s factors. Not available with block swap or an FP8 base.
+                </p>
+              </div>
+            )}
+            {!weightDecomposeAvailable && weightDecomposeUnavailableNote && (
+              <p className="text-xs text-gray-500">{weightDecomposeUnavailableNote}</p>
             )}
           </div>
         )}

@@ -274,8 +274,11 @@ def test_the_flag_is_submitted_saved_and_restored():
     # them in the panel; this assertion spans both.
     tsx = (TRAINING_PARAMS_TS.read_text(encoding="utf-8")
            + TRAINING_CONFIG_TSX.read_text(encoding="utf-8"))
-    # Request payload.
-    assert "sensenova_four_phase_eviction: params.sensenova_four_phase_eviction," in tsx
+    # Request payload: PARAM_KEYS is what passThroughParams copies, and the
+    # flag is not one of the keys getRequestData builds itself.
+    assert "COMPUTED_REQUEST_KEYS" in tsx
+    assert "sensenova_four_phase_eviction" not in tsx[
+        tsx.index("const COMPUTED_REQUEST_KEYS"):tsx.index("export function passThroughParams")]
     # YAML round trip and preset round trip -- a control that submits but does
     # not persist is a setting the user loses on the next run.
     assert '"sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",' in tsx

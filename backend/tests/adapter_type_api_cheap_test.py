@@ -570,27 +570,38 @@ def test_openapi_weight_decompose_is_not_described_as_refused():
 
 #: The run's adapter algebra: three fields that decide WHICH adapter is built.
 #: They travel together or a restored run trains a different one than it says.
+#: Mapped to the METHOD GATE getRequestData() puts on each, because that gate
+#: decides whether a preset saved under that method carries the field at all.
 _ADAPTER_ALGEBRA_PARAMS = {
-    "adapter_algorithm": "adapterAlgorithm",
-    "weight_decompose": "weightDecompose",
-    "adapter_config": "adapterConfig",
+    "adapter_algorithm": 'trainingMethod === "lora" ?',
+    "weight_decompose": '(trainingMethod === "lora" || trainingMethod === "relora")',
+    "adapter_config": '(trainingMethod === "lora" || trainingMethod === "relora")',
 }
 
 
 def test_the_training_preset_round_trips_every_adapter_algebra_field():
-    """Presets are a SUBSET of `PARAM_KEYS` by design, so a missing field is
-    invisible: it restores to the form default and the run trains an ordinary
-    LoRA that looks exactly like the DoRA the user saved. This pins the one
-    group where that is a wrong-adapter bug rather than a lost preference.
+    """A missing field here is invisible: it restores to the form default and
+    the run trains an ordinary LoRA that looks exactly like the DoRA the user
+    saved. `weight_decompose` really did fall through that hole.
+
+    The preset payload is derived (getRequestData() minus PRESET_EXCLUDED_KEYS)
+    and gated for every parameter by training_preset_payload_test.py; this pins
+    the one group where a gap is a wrong-adapter bug rather than a lost
+    preference. It asserts the EXACT method gate rather than the mere presence
+    of the key, because the gate decides whether the value reaches the preset:
+    `adapter_algorithm` is gated on `lora` alone, so a ReLoRA preset does not
+    carry it, and only a gate-level assertion says that out loud.
     """
     source = _read_frontend("components", "training", "TrainingConfig.tsx")
     param_keys = source.split(
         "const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [", 1)[1]
     param_keys = param_keys.split("];", 1)[0]
+    request = source.split("const getRequestData", 1)[1].split(
+        "const applyParamsToState", 1)[0]
+    excluded = source.split("const PRESET_EXCLUDED_KEYS", 1)[1].split("];", 1)[0]
 
-    for snake, camel in _ADAPTER_ALGEBRA_PARAMS.items():
+    for snake, gate in _ADAPTER_ALGEBRA_PARAMS.items():
         assert f'"{snake}"' in param_keys, f"{snake} is not restored from YAML"
-        assert f"{camel}: params.{snake}," in source, \
-            f"the preset does not SAVE {snake}"
-        assert f'if (config.{camel} !== undefined) updateParam("{snake}",' in source, \
-            f"the preset does not RESTORE {snake}"
+        assert f"{snake}: {gate}" in request, (
+            f"{snake} is not SAVED under the method gate it is documented with")
+        assert f'"{snake}"' not in excluded, f"{snake} is excluded from presets"

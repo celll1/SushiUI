@@ -1773,7 +1773,7 @@ metadata and resume), and the decomposed rows of
   since no enabled architecture puts a DoRA target on a text encoder it
   quantizes.
 
-### Phase 4: experimental fused backend
+### Phase 4: experimental fused backend — the mechanism landed, no backend did
 
 - Prefer a pinned upstream dependency if 4.0.0 is published with fixes; otherwise
   vendor only the reviewed operations with complete provenance.
@@ -1784,6 +1784,159 @@ metadata and resume), and the decomposed rows of
 - Start with LoHa/LoKr Linear bypass and the combined quantized-base path.
 - Keep standard LoRA and DoRA unfused until their local measurements and strength
   contracts pass.
+
+**Landed: the selection mechanism, with `reference` as the only backend.**
+`backend/core/adapters/execution/` holds four boundaries, shaped after
+`core/attention/` because that package is this repo's existing answer to the
+same problem: `registry.py` (frozen `AdapterBackend` descriptors plus the
+callable), `probe.py` (the executed per-region check), `dispatch.py` (the
+conduit, the latch and warm-up) and `selection.py` (the name vocabulary).
+Adding a backend is one `BACKENDS` entry and one callable. Gate:
+`backend/tests/adapter_execution_backend_cheap_test.py`, whose every arm runs
+against a FAKE backend the test registers — one numerically wrong, one that
+raises during its probe, one that raises only after admission — because a gate
+that could only be exercised by a backend nobody has written is a gate that
+never runs.
+
+- **The dispatch point is `forward_delta`, and no architecture is on it.** Each
+  algebra keeps its unfused body as `reference_delta` and inherits one
+  `forward_delta` from `_BranchTensorProtocol`, which calls the conduit. The
+  eleven component-loader architectures reach the delta only through
+  `CompositeAdapterLayer.forward`; TRAINING installs a bare branch, so
+  `LoRALinearLayer.forward` and the MiniMax-H3 subclass's now call
+  `forward_delta` instead of inlining the same two operations — same ops, same
+  order, bit-identical, and it is what stops a fused backend from covering
+  generation while missing training. Checked rather than asserted: an AST scan
+  over `backend/` finds no module outside `core/adapters` that defines or calls
+  `forward_delta` / `reference_delta`, and that scan is a gate.
+- **A backend is usable for a region only after an executed comparison.** A
+  region is `(algorithm, weight_decompose, device kind and index, activation
+  dtype, branch dtype, out_features, in_features)`, and a verdict never
+  generalises across regions — the bf16 arm of a shape whose fp32 arm passed is
+  still unprobed. The probe holds a candidate to the SAME tolerances the shipped
+  algebras are held to (`ORACLE_TOLERANCE`, now defined in `probe.py` and
+  imported and pinned by `adapter_oracle_gate_cheap_test`, so loosening it there
+  fails that gate); it compares the forward, the input gradient and every
+  parameter gradient, and takes gradients with `torch.autograd.grad` so no
+  `.grad` buffer is written.
+- **The probe copies the branch, and that is load-bearing twice.** Every algebra
+  zero-initialises one factor, so a freshly built branch has a delta of exactly
+  zero and any backend at all — including one returning zeros — passes against
+  it. The copy's zero factors are randomised and `PROBE_MIN_MOVE` refuses a
+  verdict that could not have failed. The copy is also what keeps the probe off
+  the live run's tensors.
+- **The oracle is now reachable from one production module, deferred.**
+  `core.adapters.reference` was test-only by contract; the probe is the executed
+  admission check phase 4 asks for, and it has to compare against the
+  independent oracle rather than against `layers.py`. `adapter_layering_test`
+  therefore allows exactly `core/adapters/execution/probe.py`, requires the
+  import to stay inside the function that runs it, and asserts in a fresh
+  process that importing `core.adapters` still does not load the oracle.
+- **The oracle's cost is a real limit on what can be certified.** It is written
+  from the definition — `rank` explicit outer products, an explicit Kronecker
+  assembly — so its working set is `2 * rank` full delta weights in fp32, not
+  `rank`: `_low_rank_product` holds the list of rank-1 terms AND the
+  `torch.stack` of them live at once. MEASURED at 512x512 rank 48 without a
+  backward graph: a `rank + 3` estimate said 51.0 MiB against a 97.2 MiB peak,
+  1.91x optimistic — and an inference-only backend, the fused GENERATION kernel
+  case, is exactly the arm that skips the backward doubling. On a 4096x4096
+  rank-32 projection this is gigabytes either way, so the probe estimates the
+  host bytes BEFORE allocating and reports a region over
+  `PROBE_ORACLE_BUDGET_BYTES` (2 GiB) as not admitted, rather than certifying it
+  with a check that never ran. Fail-closed, and a residual: certifying the large
+  regions needs a chunked oracle or an offline gate, and neither exists.
+- **The latch is per PROCESS.** A launch or compile failure is a property of the
+  process's toolchain, not of the layer that hit it first. Per LAYER would leave
+  one model running two different mathematical functions and would let a layer
+  change its own function at step 5000; per RUN would re-arm, for the next run
+  in the same process, a backend that has already proved it cannot launch here.
+  A process latch still cannot un-compute the steps that ran before it, so what
+  makes "never switch the base mathematical function mid-training" true is that
+  admission happens BEFORE step 0: a backend that fails warm-up never computes a
+  training step. The failing call itself returns the reference result: a
+  training step must not die because an experimental kernel did.
+- **The latch message is keyed on a live result, not on warm-up having run.**
+  It reports whether real work was computed with the backend, and that is
+  `_served` — set when `backend.fn` returns successfully from
+  `adapter_forward_delta`, never by the probe, which runs on a COPY. Keying it
+  on "warm-up ran" conflates the two, and a first live call that latches on an
+  unwarmed region then tells the operator that earlier steps used a function
+  they did not. A message that can be false about which function computed a run
+  is worse than no message. Both arms are gated.
+- **Warm-up hooks into `BaseTrainer.train`, one line before
+  `_maybe_compile_transformer`.** That window is already this repo's answer to
+  the same question — after model device/dtype, gradient checkpointing, adapter
+  injection and optimizer setup, after the stop-flag cleanup, before the first
+  step. The gate reads the call out of the source, so a hook nobody calls fails
+  rather than passing.
+- **The run's training dtype is a HINT, unioned with each branch's own, never a
+  replacement.** A run dtype is not what every branch sees: MiniMax-H3 runs a
+  bf16 block stack with fp32 I/O heads and AdaLN projections and no `autocast`.
+  Taking the run dtype alone fabricated a bf16 region for an fp32 head — whose
+  probe fails on a genuine `mat1 and mat2 must have the same dtype` — while
+  leaving the fp32 region that head really uses UNWARMED, so an operator who
+  set `SUSHI_ADAPTER_BACKEND` on such a run got either a hard refusal over a
+  region no forward produces or the step-1 stall warm-up exists to prevent.
+  `strict` therefore refuses only when a branch has NO admitted region, not when
+  one member of its union fails. The set is expected rather than certain — a
+  branch's device can still move under block swap — so the conduit probes an
+  unwarmed region on first sight and says so in the log. TWO KNOWN GAPS, both
+  recorded rather than fixed: a backend admitted at warm-up and latched on a
+  later region leaves `usable > 0`, so `strict` does not raise and the run
+  continues on the reference path with only the `lora_backend_latched` warning;
+  and a run with no adapter branches at all warms nothing and is not refused,
+  which is why an env var set on a full-parameter run is inert rather than
+  fatal.
+- **Selection is explicit, off by default, and has no API surface.**
+  `SUSHI_ADAPTER_BACKEND` is the developer entry point, the same shape as
+  `SUSHI_FP8_SCALED_MM` and `SUSHI_INT8_MM`. Unlike the attention resolver,
+  which absorbs an unknown string into `native` because a downgraded attention
+  kernel computes the same function, an unrecognised, unavailable or latched
+  adapter backend is REFUSED — `AdapterIncompatible` carrying
+  `lora_backend_unavailable`, or the same code as a warning when the caller asks
+  for that instead. The trainer refuses. No `openapi.yaml`, `param_defaults` or
+  frontend change: only `reference` is registered, so a UI control would offer a
+  choice of one, and the shipped-boundary rule says a design verdict is not a
+  supported feature.
+- **Nothing is auto-selected, and no performance property is claimed anywhere.**
+  Auto-selection is defined by the acceptance matrix as a consequence of
+  measurement on real device/dtype/shape regions, and this change measured
+  nothing.
+
+**Not landed, each blocked on something this step could not supply:**
+
+- **The measurements.** The performance gates need a GPU, with the same model,
+  batch, bucket, checkpointing, block-swap, optimizer and attention settings
+  across four arms (current LoRA, unfused variant, fused variant, fused
+  quantized base plus fused adapter), reporting warm-up separately and
+  median/p95 forward, forward+backward, optimizer-inclusive whole step,
+  generation latency, peak allocated/reserved VRAM and host memory. Until those
+  exist no region may be auto-selected, and the published upstream table is not
+  a substitute: its `lora` benchmark calls LoHa functions, and two of its rows
+  are slower than eager.
+- **The dependency decision.** A real backend needs either an immutable Git
+  commit pin (4.0.0 is not on PyPI) or vendoring of only the reviewed operations
+  with the Apache-2.0 license text, attribution, modification notices and an
+  entry in `docs/legal/THIRD_PARTY_PROVENANCE.md`. That is the repo owner's
+  call; nothing here imports, vendors or depends on `lycoris`.
+- Generation-side warm-up. `AdapterSession`'s install completion is the
+  analogous point, deliberately unwired while nothing can select a backend for
+  generation.
+- The merge path. `compute_delta_weight` is not on the seam, so a backend's
+  rebuild/merge operations would need their own hook and their own probe. One
+  qualification: `DoRALinearLayer.branch_delta_weight` reaches the seam through
+  `self.branch.forward_delta(eye)` in its fallback arm — dead today, since every
+  algebra this repo builds has `compute_delta_weight`, and live the moment an
+  inner branch class without one exists.
+
+**What registering a real backend requires, concretely:** a callable
+`fn(branch, x) -> Tensor | None` returning the branch contribution alone; one
+`AdapterBackend` entry declaring its `(algorithm, weight_decompose)` pairs,
+activation dtypes, device kinds, whether it has a backward, whether it refuses a
+mixed activation/branch dtype, and an `availability()` that reports a missing
+dependency instead of raising; the dependency decision above; and the
+measurements above before any region is auto-selected. No architecture, loader,
+trainer or API file changes.
 
 ## Acceptance matrix
 

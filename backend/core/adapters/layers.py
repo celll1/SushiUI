@@ -24,6 +24,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .execution.dispatch import adapter_forward_delta
+
 
 #: Tucker-decomposed factors. They exist only for a target with kernel dims
 #: (upstream ``weight_gen``: ``if k and tucker``), so a Linear branch cannot
@@ -41,14 +43,42 @@ def refuse_tucker_tensors(names: Iterable[str], where: str = "") -> None:
 
 
 class _BranchTensorProtocol:
-    """save / resume / optimise, all derived from ``branch_tensors()`` alone.
+    """save / resume / optimise, all derived from ``branch_tensors()`` alone,
+    plus the execution seam every algebra shares.
 
     ``branch_tensors`` is the single extension point: an algebra with a
     different tensor set overrides that one and inherits the four below.
+
+    THE EXECUTION SEAM. ``forward_delta`` is the branch protocol the composite
+    executes and is therefore where an execution backend belongs; each algebra
+    implements ``reference_delta`` and inherits the dispatch, so registering a
+    fused backend changes no algebra and no architecture. With nothing selected
+    the conduit calls ``reference_delta`` directly (``execution/dispatch.py``).
     """
+
+    #: The branch's two-axis algebra identity, for the execution registry and
+    #: the probe. ``DoRALinearLayer`` reads its inner branch's.
+    ADAPTER_ALGORITHM: str = ""
+    WEIGHT_DECOMPOSE: bool = False
 
     def branch_tensors(self) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
+
+    def adapter_strength(self) -> float:
+        """The request strength currently in force on this branch.
+
+        Every algebra records it in ``set_adapter_strength``, including the LoRA
+        layer, which also folds it into ``scale``. The probe needs it to ask the
+        fp32 oracle for the same function the branch is computing.
+        """
+        return float(getattr(self, "strength", 1.0))
+
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
+        """The unfused PyTorch contribution of this branch alone."""
+        raise NotImplementedError
+
+    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+        return adapter_forward_delta(self, x)
 
     def tensor_names(self) -> Tuple[str, ...]:
         """The names ``export_tensors`` produces and ``load_tensors`` consumes."""
@@ -189,6 +219,8 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
     Formula: output = original_output + (lora_up(lora_down(x))) * scale
     """
 
+    ADAPTER_ALGORITHM = "lora"
+
     def __init__(
         self,
         original_module: nn.Linear,
@@ -205,6 +237,9 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         self.scale = alpha / rank
         self.lora_name = lora_name
         self.lora_dtype = lora_dtype
+        # Folded into ``scale`` rather than applied separately; kept because
+        # ``adapter_strength()`` cannot recover it from a scale alone.
+        self.strength = 1.0
 
         in_features = original_module.in_features
         out_features = original_module.out_features
@@ -269,17 +304,15 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         - LoRA weights (fp32) are automatically converted to training dtype during forward
         - Gradients flow back to fp32 master weights correctly
         - GradScaler handles gradient scaling for fp16/bf16 training
+
+        Goes through ``forward_delta`` so a bare branch (what training installs)
+        and a composite branch (what generation installs) share ONE delta site.
+        Same two operations in the same order as the inlined version it
+        replaced, hence bit-identical.
         """
-        org_out = self.original_module(x)
+        return self.original_module(x) + self.forward_delta(x)
 
-        # LoRA computation (autocast will handle dtype conversion automatically)
-        # If we're in an autocast context (training_dtype), this will run in that dtype
-        # Gradients will still flow back to fp32 master weights correctly
-        lora_out = self.lora_up(self.lora_down(x))
-
-        return org_out + lora_out * self.scale
-
-    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
         """The branch contribution alone, so this layer can be a composite branch.
 
         Must stay bit-identical to the second term of ``forward``;
@@ -297,6 +330,7 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         """Refold a request strength into the scale, exactly as the generation
         loaders do (``(alpha / rank) * strength``), so restrengthening an
         installed branch is not a rebuild."""
+        self.strength = float(strength)
         self.scale = self.alpha / self.rank * strength
 
     def branch_tensors(self) -> Dict[str, torch.Tensor]:
@@ -332,12 +366,9 @@ class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
     """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        org_out = self.original_module(x)
-        down = F.linear(x, self.lora_down.weight.to(x.dtype))
-        up = F.linear(down, self.lora_up.weight.to(x.dtype))
-        return org_out + up * self.scale
+        return self.original_module(x) + self.forward_delta(x)
 
-    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
         down = F.linear(x, self.lora_down.weight.to(x.dtype))
         up = F.linear(down, self.lora_up.weight.to(x.dtype))
         return up * self.scale
@@ -356,6 +387,8 @@ class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
     carries one, and reading a file without it (``scalar is None``) is right.
     See ``branch_tensors`` for what that costs an exporter.
     """
+
+    ADAPTER_ALGORITHM = "loha"
 
     def __init__(
         self,
@@ -444,7 +477,7 @@ class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
             delta = delta * self.scalar
         return delta * self.strength
 
-    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
         delta_w = self.compute_delta_weight().to(x.dtype)
         return F.linear(x, delta_w)
 
@@ -515,6 +548,8 @@ class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
     full, ``decompose_both`` factors ``w1``. ``use_scalar`` is the same trained
     scalar as ``LoHaLinearLayer``.
     """
+
+    ADAPTER_ALGORITHM = "lokr"
 
     def __init__(
         self,
@@ -686,7 +721,7 @@ class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
             delta = delta * self.scalar
         return delta * self.strength
 
-    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
         delta_w = self.compute_delta_weight().to(x.dtype)
         return F.linear(x, delta_w)
 
@@ -777,6 +812,8 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
     ``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` says why upstream's order is refused.
     """
 
+    WEIGHT_DECOMPOSE = True
+
     def __init__(
         self,
         original_module: nn.Linear,
@@ -863,6 +900,11 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
     def lora_name(self):
         return getattr(self.branch, "lora_name", "")
 
+    @property
+    def ADAPTER_ALGORITHM(self) -> str:  # noqa: N802 - matches the class attr it shadows
+        """The algebra under the decomposition; the pair is (this, True)."""
+        return getattr(self.branch, "ADAPTER_ALGORITHM", "")
+
     def set_adapter_strength(self, strength: float) -> None:
         """Owned here, not delegated to the branch -- see the class docstring."""
         self.strength = float(strength)
@@ -885,7 +927,7 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
             (out_features, 1) if axis == 1 else (1, in_features))
         return (magnitudes * (v / v_norm) - w0) * self.strength
 
-    def forward_delta(self, x: torch.Tensor) -> torch.Tensor:
+    def reference_delta(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.compute_delta_weight().to(x.dtype))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

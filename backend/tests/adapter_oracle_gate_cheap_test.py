@@ -51,6 +51,7 @@ from core.adapters import (  # noqa: E402
     LoRALinearLayer,
     factorization,
 )
+from core.adapters.execution.probe import ORACLE_TOLERANCE  # noqa: E402
 from core.adapters.reference import (  # noqa: E402
     adapter_delta_weight,
     dora_effective_delta_weight,
@@ -73,11 +74,15 @@ STRENGTHS = (0.0, 1.0, 0.35, 1.8, -0.6)
 #: is therefore 2.4x / 2.3x / 1.7x, not the uniform 3x an earlier and narrower
 #: sweep suggested. The seeds the tests themselves use are fixed, so the gate is
 #: deterministic; above these values is a real disagreement, not rounding.
-TOLERANCE = {
-    torch.float32: 2e-6,
-    torch.float16: 6e-3,
-    torch.bfloat16: 5e-2,
-}
+#:
+#: DEFINED in ``core.adapters.execution.probe``, because the phase-4 backend
+#: probe admits a candidate against the same bar and a second copy of these
+#: numbers would drift. Pinned below, so loosening them there fails HERE.
+TOLERANCE = ORACLE_TOLERANCE
+assert TOLERANCE == {torch.float32: 2e-6, torch.float16: 6e-3,
+                     torch.bfloat16: 5e-2}, (
+    "the measured oracle tolerances moved; re-measure the sweep in this file's "
+    "docstring before changing them")
 DTYPES = tuple(TOLERANCE)
 
 #: Randomisation applied to the factor that starts as a no-op. Sized by the

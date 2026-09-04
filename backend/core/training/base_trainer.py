@@ -11705,6 +11705,28 @@ class BaseTrainer(ABC):
     # Training Loop Infrastructure
     # ============================================================
 
+    def _warm_up_adapter_execution_backend(self):
+        """Select and warm the adapter execution backend, before step 0.
+
+        Nothing is selected by default, so this is normally a no-op and the
+        reference path runs. Here rather than at injection because the branches
+        are on their final device and dtype by now; a configured backend that
+        can serve some branch not at all is REFUSED rather than downgraded. See
+        ``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` phase 4.
+        """
+        from core.adapters import (apply_configured_backend,
+                                   warm_up_adapter_backend)
+        from core.adapters.execution import REFERENCE
+
+        def log(line):
+            print(f"{self.log_prefix} {line}")
+
+        if apply_configured_backend(log=log) == REFERENCE:
+            return
+        warm_up_adapter_backend(list(getattr(self, "lora_layers", {}).values()),
+                                activation_dtypes=(self.training_dtype,),
+                                log=log, strict=True)
+
     def _maybe_compile_transformer(self):
         """Opt-in torch.compile for DiT training (config key ``torch_compile``).
 
@@ -12670,6 +12692,11 @@ class BaseTrainer(ABC):
         if stop_flag_file.exists():
             print(f"{self.log_prefix} Removing stale stop flag from previous run")
             stop_flag_file.unlink()
+
+        # Same window, and for the same reason as the compile below: the
+        # adapter execution backend is admitted per region by an executed probe,
+        # and paying that inside step 1 is indistinguishable from a hung run.
+        self._warm_up_adapter_execution_backend()
 
         # Opt-in torch.compile for DiT training. Runs here — after model
         # device/dtype + gradient-checkpointing + adapter/optimizer setup, and

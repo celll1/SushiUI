@@ -17,11 +17,20 @@
 3. Host-side requirements were recorded nowhere a user could see them, and at
    48 GB of VRAM they are the binding constraint.
 
-Every figure asserted here is READ OUT OF `SENSENOVA_TRAINING_DESIGN.md` 8.3.3 --
-the measurement matrix, the A/B paragraph, the host non-reproduction box -- and
+Every figure asserted here is READ OUT OF `SENSENOVA_TRAINING_DESIGN.md` -- the
+measurement matrix, the A/B sentence, the host non-reproduction pair -- and
 compared with the advisory, so a literal written twice cannot make this pass.
 The recommendations derived from those measurements are checked as advice: they
 must be marked as such and must not be phrased as measurements.
+
+ANCHORING. This suite used to slice the doc between `### 8.3.3` and `### 8.4`,
+and an editorial pass that dropped the numbered plan (`86291fa1`) took every
+assertion below with it -- `substring not found`, from a document that was
+right. Nothing here anchors on a heading or a section number any more: a
+measurement row is found by its ARM ID, a ratio by the shape of the sentence
+that carries it, and everything else by the value itself, anywhere in the file.
+A figure that moves to another section keeps passing; a figure that changes
+fails, which is the only thing this suite is for.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/sensenova_advisory_resolution_and_host_test.py -v
@@ -58,12 +67,6 @@ def _doc() -> str:
     return DESIGN_DOC.read_text(encoding="utf-8")
 
 
-def _section_833() -> str:
-    doc = _doc()
-    start = doc.index("### 8.3.3")
-    return doc[start:doc.index("### 8.4", start)]
-
-
 def _advisory(feature: str) -> str:
     return TRAINING_FEATURE_ADVISORY["sensenova"][feature]["reason"]
 
@@ -72,21 +75,30 @@ def _floats(text: str):
     return [float(m) for m in re.findall(r"\d+\.\d+", text.replace(",", ""))]
 
 
-def _matrix():
-    """arm id -> {res, four_phase, load, step} from 8.3.3's measurement table.
+def _flat(text: str = None) -> str:
+    """The doc with its line breaks collapsed. Re-wrapping a paragraph is the
+    most ordinary edit there is, and it must not break a figure's provenance."""
+    return re.sub(r"\s+", " ", _doc() if text is None else text)
 
-    `step` is the steady-state figure: the float before 定常 where the cell
-    carries one ("32.6606 (step 1) -> 18.7607 定常"), otherwise the first float
-    (later ones are the cell's own commentary, e.g. "gate の 98.2%").
+
+def _matrix():
+    """arm id -> {res, four_phase, load, step} from the measurement table.
+
+    Found by ARM ID anywhere in the document -- the row is the measurement's
+    identity, the heading above it is not.
+
+    `step` is the steady-state figure: the float before `steady` where the cell
+    carries one ("32.6606 (step 1) -> 18.7607 steady"), otherwise the first
+    float (later ones are the cell's own commentary, e.g. "98.2% of the gate").
     """
     rows = {}
-    for line in _section_833().splitlines():
+    for line in _doc().splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != 8 or not re.fullmatch(r"[A-D]\d", cells[0]):
             continue
         cell = cells[5]
-        step = _floats(cell.split("定常")[0] if "定常" in cell else cell)
-        if "定常" not in cell:
+        step = _floats(cell.split("steady")[0] if "steady" in cell else cell)
+        if "steady" not in cell:
             step = step[:1]
         rows[cells[0]] = {
             "branch": cells[1],
@@ -182,8 +194,8 @@ def test_the_1024_refusal_is_reported_as_the_probes_cap_not_the_card():
     """B3 was refused 192 MiB with 9.95 GiB free on the card. An advisory that
     said "does not fit in 48 GB" would be claiming something unmeasured."""
     reason = _advisory("text_encoder_training")
-    section = _section_833()
-    assert "192.00 MiB" in section and "9.95 GiB" in section
+    doc = _flat()
+    assert "192.00 MiB" in doc and "9.95 GiB" in doc
     assert "192 MiB" in reason and "9.95 GiB" in reason
     assert _gib(_matrix()["B3"]["step"]) in reason   # where it was refused
     assert "34.55" in reason
@@ -191,8 +203,9 @@ def test_the_1024_refusal_is_reported_as_the_probes_cap_not_the_card():
 
 
 def test_the_advisory_keeps_the_reserved_caveat_the_doc_insists_on():
-    """8.3.3: the split lowers what a STEP needs, not what the process holds."""
-    assert "33.9" in _section_833() and "34.4" in _section_833()
+    """The doc's own caveat: the split lowers what a STEP needs, not what the
+    process holds."""
+    assert "33.9-34.4 GiB" in _flat()
     reason = _advisory("text_encoder_training")
     assert "33.9-34.4 GiB" in reason
     assert "not what the process holds" in reason
@@ -201,7 +214,7 @@ def test_the_advisory_keeps_the_reserved_caveat_the_doc_insists_on():
 def test_the_advisory_refuses_to_extrapolate_where_the_doc_does():
     reason = _advisory("text_encoder_training")
     assert "unmeasured" in reason and "superlinear" in reason
-    # The und branch at 512/1024 is NOT measured (8.3.3) -- but 64px IS
+    # The und branch at 512/1024 is NOT measured -- but 64px IS
     # (U-2-5, 26.2571 GiB), so "at any resolution" was the overstatement this
     # assertion used to pin. It must say ABOVE 64px and carry the value.
     assert "understanding half alone above 64px" in reason
@@ -215,9 +228,8 @@ def test_the_advisory_refuses_to_extrapolate_where_the_doc_does():
 
 def _wall_clock_ab():
     """The 512px four-phase A/B: (off_seconds, on_seconds, ratio)."""
-    para = _section_833()
-    match = re.search(r"(\d+\.\d+) s → (\d+\.\d+) s = (\d+\.\d+) 倍", para)
-    assert match, "8.3.3's wall-clock A/B sentence moved"
+    match = re.search(r"(\d+\.\d+) s -> (\d+\.\d+) s = (\d+\.\d+)x", _flat())
+    assert match, "the doc's wall-clock A/B sentence no longer states both arms"
     return float(match.group(1)), float(match.group(2)), float(match.group(3))
 
 
@@ -382,8 +394,10 @@ def test_the_designed_shape_is_still_accepted():
 # ---------------------------------------------------------------------------
 
 def _host_commits():
-    match = re.search(r"commit が (\d+\.\d+) と (\d+\.\d+) GiB", _section_833())
-    assert match, "8.3.3's host non-reproduction box moved"
+    """The pair that did not reproduce, read off whichever row carries it."""
+    match = re.search(r"peak commit charge.{0,120}?(\d+\.\d+) / (\d+\.\d+) GiB",
+                      _flat())
+    assert match, "the doc no longer states the host commit pair as a pair"
     return float(match.group(1)), float(match.group(2))
 
 
@@ -407,16 +421,16 @@ def test_the_measured_host_commit_pair_is_quoted_as_a_pair():
 
 
 def test_the_checkpoint_sizes_come_from_the_docs_byte_counts():
-    doc = _doc()
+    doc = _flat()
     bf16 = re.search(r"35,091,856,594 B = (\d+\.\d+) GiB", doc)
-    int8 = re.search(r"（\*\*(18,885,547,920) byte = (\d+\.\d+) GiB\*\*）", doc)
+    int8 = re.search(r"\*\*18,885,547,920 B = (\d+\.\d+) GiB\*\*", doc)
     assert bf16 and int8, "the save-format byte counts moved"
     reason = _advisory("text_encoder_training")
     assert f"{float(bf16.group(1)):.2f} GiB in bf16" in reason
     # The int8 number is still traceable to the same byte count, but it was
     # measured on a GEN-branch save (C1); the advisory must carry the value and
     # label the both-branch equality as the inference it is.
-    assert f"the {float(int8.group(2)):.2f} GiB int8 figure" in reason
+    assert f"the {float(int8.group(1)):.2f} GiB int8 figure" in reason
     assert "GENERATION-branch save" in reason
     assert "not a measurement" in reason
 
@@ -432,11 +446,13 @@ def test_the_recommendations_are_marked_as_advice_not_measurement():
 
 
 def test_the_design_doc_separates_measured_from_recommended():
-    section = _section_833()
-    assert "#### host 側の所要量" in section
-    block = section[section.index("#### host 側の所要量"):]
-    assert "**推奨は監査の助言であって実測ではない。**" in block
-    assert "**実測" in block and "**推奨" in block
+    """Found by the disclaimer itself: whatever heading it sits under, the
+    sentence that separates the two is what a reader needs to be there."""
+    doc = _flat()
+    disclaimer = "the recommendations are the audit's advice, not measurements."
+    assert disclaimer in doc.lower()
+    block = doc[doc.lower().index(disclaimer):]
+    assert "**Measured**" in block and "**Recommended**" in block
     # And it points at the surface a user actually reads.
     assert "arch_capabilities.py" in block and "text_encoder_training" in block
 

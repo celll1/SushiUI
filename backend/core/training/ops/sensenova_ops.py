@@ -1,6 +1,7 @@
 """Training-only SenseNova decoder operations.
 
-The trainer supplies one prompt prefix per physical B1 batch. It is immutable
+The trainer supplies one prompt prefix per step -- a single prompt, or one
+packed prefix carrying a segment per item above batch 1. It is immutable
 either way, but not always detached: with ``train_text_encoder`` the prefix is
 built by a differentiable understanding-branch pass so the gradient reaches the
 understanding LoRA (Phase U). Both modes share one structural contract and
@@ -213,9 +214,9 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
             "survives to be summed across backward passes: every backward would "
             "become its own optimizer step, and the run would move further per "
             "reported step than the effective batch implies (measured 3.88x at "
-            "accum=4 with AdamW). Physical batch 1 with no accumulation is what "
-            "this route trains. LoRA training on this architecture does support "
-            "gradient_accumulation_steps."
+            "accum=4 with AdamW). A larger effective batch comes from batch_size "
+            "with enable_bucketing, not from accumulation. LoRA training on this "
+            "architecture does support gradient_accumulation_steps."
         )
 
     if bool(settings.get("sensenova_four_phase_eviction", False)) or bool(

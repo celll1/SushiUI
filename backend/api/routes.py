@@ -1030,10 +1030,15 @@ async def get_arch_capabilities():
 
     `training_required_values` is a FOURTH axis, and the only one that says what
     a parameter must BE rather than what is missing: architecture -> training
-    config parameter -> `{value, reason, methods?}`. SenseNova implements full
-    fine-tuning under a contract that fixes the optimizer, and every SenseNova
-    run is batch 1. `train_runner` applies these before the model loads, either
-    by REFUSING a different value or by OVERWRITING it (the two encoding modes),
+    config parameter -> `{value, reason, methods?, values?, unless?}`.
+    SenseNova implements full fine-tuning under a contract that fixes the
+    optimizer, and every SenseNova run is batch 1 unless `enable_bucketing` is
+    on. `values` is the full admitted set when the contract admits more than
+    one, `value` being its default member; `unless` is the config that LIFTS
+    the requirement, so an entry carrying one must not be shown as an
+    unconditional pin. `train_runner` applies these before the model loads,
+    either by REFUSING a different value or by OVERWRITING it (the two
+    encoding modes),
     and each `reason` says which -- an overwritten control is a user choice the
     run drops silently, so both kinds have to be visible to a client. Pin the
     control to the value rather than offering a default the run rejects or

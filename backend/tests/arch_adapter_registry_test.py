@@ -46,6 +46,14 @@ LYCORIS_ENABLED = {"zimage", "krea2", "minit2i", "ltx2",
                    "minimax_h3", "sensenova"}
 ADDITIVE_LYCORIS = frozenset({ORDINARY_LORA, ("loha", False), ("lokr", False)})
 
+#: Phase 3's declared start set, minus the two that cannot be flipped from this
+#: table (SD1.5/SDXL load through diffusers, whose lora_state_dict drops every
+#: dora_scale key). Each is gated by the ``dora`` rows of
+#: ``adapter_lycoris_roundtrip_cheap_test.py`` and
+#: ``adapter_lycoris_training_roundtrip_cheap_test.py``.
+DENSE_DORA_ENABLED = {"zimage", "lens", "minit2i"}
+ADDITIVE_LYCORIS_WITH_DORA = ADDITIVE_LYCORIS | frozenset({("lora", True)})
+
 RANK, ALPHA = 16, 8
 DTYPE = torch.float32
 
@@ -301,15 +309,25 @@ class AdapterCapabilityTableTest(unittest.TestCase):
     def test_only_the_gated_architectures_enable_the_additive_algebras(self):
         for name in ARCH_REGISTRY:
             with self.subTest(arch=name):
-                expected = (ADDITIVE_LYCORIS if name in LYCORIS_ENABLED
-                            else frozenset({ORDINARY_LORA}))
+                if name in DENSE_DORA_ENABLED:
+                    expected = ADDITIVE_LYCORIS_WITH_DORA
+                elif name in LYCORIS_ENABLED:
+                    expected = ADDITIVE_LYCORIS
+                else:
+                    expected = frozenset({ORDINARY_LORA})
                 self.assertEqual(ENABLED_ADAPTER_PAIRS[name], expected)
 
-    def test_no_architecture_enables_a_weight_decomposed_pair(self):
-        """DoRA/DoHa/DoKr are Phase 3, on every architecture."""
+    def test_only_dense_dora_is_enabled_on_the_decomposition_axis(self):
+        """The decomposition axis is open for ``("lora", True)`` alone. DoHa and
+        DoKr build through the same engine, so what keeps them shut is this
+        table plus the absence of a round trip -- assert it, or the next flip
+        opens three pairs while gating one."""
         for name, pairs in ENABLED_ADAPTER_PAIRS.items():
             with self.subTest(arch=name):
-                self.assertEqual([p for p in pairs if p[1]], [])
+                decomposed = sorted(p for p in pairs if p[1])
+                expected = ([("lora", True)] if name in DENSE_DORA_ENABLED
+                            else [])
+                self.assertEqual(decomposed, expected)
 
     def test_every_handler_matrix_is_the_table_row(self):
         for name, handler in ARCH_REGISTRY.items():
@@ -340,8 +358,7 @@ class AdapterCapabilityTableTest(unittest.TestCase):
         with mock.patch.object(base_arch, "declared_pairs", declared):
             capability = base_arch.declare_adapter_capability(
                 "zimage", additive_family=True, initial_dora="dense",
-                additive_reason="a", dora_reason="b",
-                quantized_base_reason="c")
+                additive_reason="a", quantized_base_reason="c")
         self.assertTrue(capability.supports("loha", False))
         self.assertIsNone(capability.refusal_reason("loha", False))
         self.assertIsNotNone(capability.refusal_reason("lokr", False))
@@ -371,7 +388,7 @@ class AdapterCapabilityTableTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             declare_adapter_capability(
                 "not_an_architecture", additive_family=True,
-                initial_dora="dense", additive_reason="a", dora_reason="b",
+                initial_dora="dense", additive_reason="a",
                 quantized_base_reason="c")
 
     def test_an_unknown_architecture_inherits_no_enablement(self):

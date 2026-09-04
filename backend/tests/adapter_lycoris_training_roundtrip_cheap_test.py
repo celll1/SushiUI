@@ -1,4 +1,4 @@
-"""LoHa/LoKr TRAINING round trip, per architecture, on CPU in a few seconds.
+"""LoHa/LoKr/DoRA TRAINING round trip, per architecture, on CPU in seconds.
 
 For every architecture whose ``TRAINABLE_ADAPTER_PAIRS`` row carries the pair:
 the REAL training adapter builds the algebra, the REAL ``save_checkpoint``
@@ -26,7 +26,8 @@ from safetensors.torch import load_file
 from lora_roundtrip_common import randomise_branch_tensors  # noqa: E402
 
 from core.adapters import (  # noqa: E402
-    LoHaLinearLayer, LoKrLinearLayer, TRAINABLE_ADAPTER_PAIRS,
+    DoRALinearLayer, LoHaLinearLayer, LoKrLinearLayer, LoRALinearLayer,
+    TRAINABLE_ADAPTER_PAIRS,
 )
 from core.adapters.layers import is_adapter_wrapper  # noqa: E402
 
@@ -46,6 +47,17 @@ ALPHA = 6  # alpha/rank = 1.5, so a dropped or doubled scale shows up
 BRANCH_CLASS = {"loha": LoHaLinearLayer, "lokr": LoKrLinearLayer}
 
 
+def branch_class(algorithm, weight_decompose):
+    """The class the run's ``(algorithm, weight_decompose)`` pair builds.
+
+    The decomposition is an EPILOGUE: what a decomposed run installs is a
+    ``DoRALinearLayer`` over the algebra's own layer, so the outer class is the
+    same for all three pairs and the inner one is what differs."""
+    if weight_decompose:
+        return DoRALinearLayer
+    return BRANCH_CLASS[algorithm]
+
+
 class Arch:
     """One architecture's three moves: train, load for generation, name it."""
 
@@ -56,9 +68,9 @@ class Arch:
         self._load = load            # (models, path) -> applied count
         self._primary = primary      # models -> the model the deltas live on
 
-    def train(self, algorithm, seed=1234):
+    def train(self, algorithm, seed=1234, weight_decompose=False):
         models = self._build()
-        adapter = self._adapter(models, algorithm)
+        adapter = self._adapter(models, (algorithm, weight_decompose))
         layers = {}
         adapter.apply_lora_to_unet(layers)
         adapter.apply_lora_to_text_encoders(layers)
@@ -74,8 +86,8 @@ def _stub(**kwargs):
     return SimpleNamespace(config={}, **kwargs)
 
 
-def _spec(trainer, algorithm):
-    trainer.adapter_algorithm = algorithm
+def _spec(trainer, pair):
+    trainer.adapter_algorithm, trainer.weight_decompose = pair
     return trainer
 
 
@@ -179,13 +191,18 @@ ARCHES = [
 ]
 
 ALGEBRAS = ["loha", "lokr"]
-ROWS = [(arch, algorithm) for arch in ARCHES for algorithm in ALGEBRAS]
-IDS = [f"{arch.name}-{algorithm}" for arch, algorithm in ROWS]
+#: Phase 3's dense-DoRA training rows. A subset, and the eight LoHa/LoKr rows
+#: beside them are what keep it from reading as "decomposition is on".
+DENSE_DORA = {"zimage", "lens", "minit2i"}
+ROWS = ([(arch, algorithm, False) for arch in ARCHES for algorithm in ALGEBRAS]
+        + [(arch, "lora", True) for arch in ARCHES if arch.name in DENSE_DORA])
+IDS = [f"{arch.name}-{algorithm}{'+wd' if wd else ''}"
+       for arch, algorithm, wd in ROWS]
 
 
-def branch_paths(model, algorithm):
+def branch_paths(model, algorithm, weight_decompose=False):
     return sorted(name for name, module in model.named_modules()
-                  if isinstance(module, BRANCH_CLASS[algorithm]))
+                  if isinstance(module, branch_class(algorithm, weight_decompose)))
 
 
 def installed_branch(model, path):
@@ -197,24 +214,28 @@ def installed_branch(model, path):
     return composite.get_branch(names[0])
 
 
-@pytest.mark.parametrize("arch,algorithm", ROWS, ids=IDS)
-def test_the_row_this_file_gates_is_open(arch, algorithm):
-    """The table says these nine train; this file is what says so honestly."""
-    assert (algorithm, False) in TRAINABLE_ADAPTER_PAIRS[arch.name]
+@pytest.mark.parametrize("arch,algorithm,wd", ROWS, ids=IDS)
+def test_the_row_this_file_gates_is_open(arch, algorithm, wd):
+    """The table says these rows train; this file is what says so honestly."""
+    assert (algorithm, wd) in TRAINABLE_ADAPTER_PAIRS[arch.name]
 
 
-@pytest.mark.parametrize("arch,algorithm", ROWS, ids=IDS)
-def test_the_trainer_builds_the_algebra_the_run_asked_for(arch, algorithm):
-    _adapter, layers, _models = arch.train(algorithm)
+@pytest.mark.parametrize("arch,algorithm,wd", ROWS, ids=IDS)
+def test_the_trainer_builds_the_algebra_the_run_asked_for(arch, algorithm, wd):
+    _adapter, layers, _models = arch.train(algorithm, weight_decompose=wd)
+    expected = branch_class(algorithm, wd)
     wrong = {name: type(layer).__name__ for name, layer in layers.items()
-             if not isinstance(layer, BRANCH_CLASS[algorithm])}
+             if not isinstance(layer, expected)}
     assert not wrong, wrong
+    if wd:
+        inner = {type(layer.branch).__name__ for layer in layers.values()}
+        assert inner == {BRANCH_CLASS.get(algorithm, LoRALinearLayer).__name__}
 
 
-@pytest.mark.parametrize("arch,algorithm", ROWS, ids=IDS)
-def test_a_trained_checkpoint_loads_back_with_the_same_delta(arch, algorithm,
+@pytest.mark.parametrize("arch,algorithm,wd", ROWS, ids=IDS)
+def test_a_trained_checkpoint_loads_back_with_the_same_delta(arch, algorithm, wd,
                                                              tmp_path):
-    adapter, layers, models = arch.train(algorithm)
+    adapter, layers, models = arch.train(algorithm, weight_decompose=wd)
     path = str(tmp_path / f"{arch.name}_{algorithm}.safetensors")
     adapter.save_checkpoint(layers, 100, 1, path)
 
@@ -225,13 +246,13 @@ def test_a_trained_checkpoint_loads_back_with_the_same_delta(arch, algorithm,
     assert applied in (None, len(layers)), (applied, len(layers))
 
     trained_model = arch._primary(models)
-    paths = branch_paths(trained_model, algorithm)
+    paths = branch_paths(trained_model, algorithm, wd)
     assert paths, f"{arch.name}: the trainer wrapped nothing on the primary model"
     generator = torch.Generator().manual_seed(99)
     for module_path in paths:
         trained = trained_model.get_submodule(module_path)
         branch = installed_branch(arch._primary(fresh), module_path)
-        assert isinstance(branch, BRANCH_CLASS[algorithm]), type(branch).__name__
+        assert isinstance(branch, branch_class(algorithm, wd)), type(branch).__name__
         x = torch.randn(2, trained.original_module.in_features,
                         generator=generator)
         # torch.equal, not allclose: the file's tensors are the trained ones and
@@ -241,34 +262,44 @@ def test_a_trained_checkpoint_loads_back_with_the_same_delta(arch, algorithm,
             f"{arch.name}/{algorithm}: {module_path}"
 
 
-@pytest.mark.parametrize("arch,algorithm", ROWS, ids=IDS)
-def test_the_checkpoint_declares_its_own_algebra(arch, algorithm, tmp_path):
-    adapter, layers, _models = arch.train(algorithm)
+@pytest.mark.parametrize("arch,algorithm,wd", ROWS, ids=IDS)
+def test_the_checkpoint_declares_its_own_algebra(arch, algorithm, wd, tmp_path):
+    adapter, layers, _models = arch.train(algorithm, weight_decompose=wd)
     path = str(tmp_path / f"{arch.name}_{algorithm}.safetensors")
     adapter.save_checkpoint(layers, 100, 1, path)
     with safe_open(path, framework="pt", device="cpu") as f:
         metadata = f.metadata() or {}
     assert metadata.get("sushi.adapter.algorithm") == algorithm
-    assert metadata.get("sushi.adapter.weight_decompose") == "false"
+    assert metadata.get("sushi.adapter.weight_decompose") == ("true" if wd
+                                                              else "false")
     saved = load_file(path)
     # The live view's training-only key must not reach the file.
     assert not [k for k in saved if k.endswith(".scalar")]
-    assert any(k.endswith(".alpha") for k in saved), \
-        "a LyCORIS reader takes the scale from the per-key alpha"
+    if wd:
+        # One magnitude per wrapped target, in the LyCORIS spelling. Without
+        # this a run could train a magnitude it never wrote.
+        assert (len([k for k in saved if k.endswith(".dora_scale")])
+                == len(layers))
+    else:
+        assert any(k.endswith(".alpha") for k in saved), \
+            "a LyCORIS reader takes the scale from the per-key alpha"
 
 
-@pytest.mark.parametrize("arch,algorithm", ROWS, ids=IDS)
-def test_resume_restores_every_factor(arch, algorithm, tmp_path):
+@pytest.mark.parametrize("arch,algorithm,wd", ROWS, ids=IDS)
+def test_resume_restores_every_factor(arch, algorithm, wd, tmp_path):
     from core.training.lora_trainer import LoRATrainer
 
-    adapter, layers, _models = arch.train(algorithm, seed=7)
+    adapter, layers, _models = arch.train(algorithm, seed=7, weight_decompose=wd)
     path = str(tmp_path / f"{arch.name}_{algorithm}.safetensors")
     adapter.save_checkpoint(layers, 250, 3, path)
     saved = {name: {k: v.detach().clone()
                     for k, v in layer.branch_tensors().items()}
              for name, layer in layers.items()}
+    if wd:
+        assert all("dora_scale" in slice_ for slice_ in saved.values())
 
-    _resumed_adapter, resumed_layers, _m = arch.train(algorithm, seed=555)
+    _resumed_adapter, resumed_layers, _m = arch.train(algorithm, seed=555,
+                                                      weight_decompose=wd)
     trainer = SimpleNamespace(lora_layers=resumed_layers, log_prefix="[test]",
                               lora_rank=RANK, lora_alpha=ALPHA)
     assert LoRATrainer.load_checkpoint(trainer, path) == 250

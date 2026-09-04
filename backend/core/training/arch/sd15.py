@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, PHASE2_PENDING,
-    PHASE3_PENDING, QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
+    QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
 )
 from core.training.components.wiring import SD15_WIRING
 
@@ -23,7 +23,6 @@ class SD15ArchHandler(ArchHandler):
         additive_family=True,
         initial_dora="dense",
         additive_reason=PHASE2_PENDING,
-        dora_reason=PHASE3_PENDING,
         quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
     )
     wires_sample_step_progress = True

@@ -733,3 +733,125 @@ def test_a_built_branch_reproduces_the_source_layer_bit_for_bit(algebra):
     branch = build_adapter_branch(base, TensorGroup("gate", dict(layer.export_tensors())),
                                   metadata_alpha=ALPHA)
     assert torch.equal(_delta_weight(branch), expected)
+
+# -- the decomposition axis, past what the oracle can witness ---------------
+
+
+@pytest.mark.parametrize("algebra", DECOMPOSED, ids=lambda a: a.name)
+def test_a_decomposed_branch_cannot_ride_a_block_swap(algebra):
+    """``branch_survives_block_swap`` asks whether a block offloader's
+    name-based walk reaches every tensor the branch owns. For a DoRA over an
+    ordinary LoRA the answer must be NO for the right reason: the two factors
+    ARE ``nn.Linear`` weights and would ride, and ``dora_scale`` is a bare
+    parameter that would not -- so the wrapper is what makes the answer flip,
+    not the algebra underneath it."""
+    from core.adapters import branch_survives_block_swap
+
+    _base, layer = _build(algebra)
+    assert branch_survives_block_swap(layer) is False
+    assert branch_survives_block_swap(layer.branch) is (algebra.algorithm == "lora")
+
+    # And the magnitude is exactly the tensor left behind.
+    carried = {id(m.weight) for m in layer.modules()
+               if m.__class__.__name__.endswith("Linear")
+               and getattr(m, "weight", None) is not None}
+    base_ids = {id(p) for p in layer.original_module.parameters()}
+    stranded = [p for p in layer.parameters()
+                if id(p) not in carried and id(p) not in base_ids]
+    if algebra.algorithm == "lora":
+        assert [id(p) for p in stranded] == [id(layer.dora_scale)]
+    else:
+        assert id(layer.dora_scale) in {id(p) for p in stranded}
+
+
+@pytest.mark.parametrize("algebra", DECOMPOSED, ids=lambda a: a.name)
+@pytest.mark.parametrize("base_dtype", [torch.float16, torch.bfloat16])
+def test_the_magnitude_takes_the_branch_dtype_not_the_bases(algebra, base_dtype):
+    """A trained magnitude with no fp32 master, while its factors have one, is
+    the asymmetry this resolves: ``new_adapter_branch`` builds the whole branch
+    -- factors and magnitude -- in the run's ``lora_dtype``."""
+    from core.adapters import new_adapter_branch
+
+    base = _base_linear(base_dtype, torch.Generator().manual_seed(1))
+    layer = new_adapter_branch(algebra.algorithm, base, rank=RANK, alpha=ALPHA,
+                               dtype=torch.float32, weight_decompose=True)
+    assert layer.dora_scale.dtype == torch.float32
+    # Its own factors, not ``branch.parameters()`` -- that also yields the
+    # wrapped base's fp16 weight.
+    assert all(p.dtype == torch.float32
+               for p in layer.branch.trainable_parameters())
+
+    # A load-time build takes the branch dtype the LOADER chose. On ten of the
+    # eleven that is the base weight's own, so a generation load is unmoved;
+    # Lens's prefers the bias, so there it can differ. Either way the magnitude
+    # rides with the factors.
+    _b2, loaded = _build(algebra, base_dtype)
+    assert loaded.dora_scale.dtype == base_dtype
+
+
+@pytest.mark.parametrize("algebra", DECOMPOSED, ids=lambda a: a.name)
+def test_rank_alpha_and_name_delegate_through_the_wrapper(algebra):
+    """A loader reads and WRITES these off a built branch -- Z-Image logs
+    rank/alpha, MiniMax-H3's fused-QKV split assigns them -- and the wrapper has
+    none of its own. A write must reach the inner branch's own scale rule, not
+    a copy of it here."""
+    _base, layer = _build(algebra)
+    assert (layer.rank, layer.alpha) == (layer.branch.rank, layer.branch.alpha)
+    assert layer.lora_name == layer.branch.lora_name
+
+    layer.alpha = 2 * ALPHA
+    assert layer.alpha == layer.branch.alpha == 2 * ALPHA
+    # LoKr takes its rank off its tensors, so only its alpha is writable here.
+    if algebra.algorithm != "lokr":
+        assert layer.branch.scale == 2 * ALPHA / layer.branch.rank
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
+def test_the_row_magnitude_convention_agrees_with_peft(dtype):
+    """The one axis check that is NOT two mirrors of one convention.
+
+    ``layers.py`` and ``reference.py`` both read a ``(out, 1)`` ``dora_scale``
+    as per-output-row magnitudes, and ``reference.py``'s docstring discloses
+    that it SHARES that reading rather than deriving it -- so their agreement
+    proves nothing about the convention itself. PEFT is a third implementation,
+    installed in this venv and written by neither: ``DoraLinearLayer`` norms
+    ``W + scaling*dW`` along ``dim=1`` and stores one magnitude per output row,
+    and diffusers' Kohya converter maps ``dora_scale`` straight onto that
+    parameter (``lora_magnitude_vector``). Agreeing with it is evidence that a
+    real third-party DoRA file is read at the numbers it was trained for.
+
+    FORWARD ONLY, deliberately. PEFT detaches the weight norm from the graph
+    (DoRA paper section 4.3, a memory optimization), where this repo takes the
+    exact gradient of the stated function, so the two BACKWARDS differ by
+    construction. That difference is recorded in the design doc, not asserted
+    away here.
+    """
+    dora = pytest.importorskip("peft.tuners.lora.dora")
+
+    generator = torch.Generator().manual_seed(17)
+    base = nn.Linear(D_IN, D_OUT, bias=False)
+    with torch.no_grad():
+        base.weight.copy_(torch.randn(base.weight.shape, generator=generator) * 0.2)
+    base = base.to(dtype)
+    for parameter in base.parameters():
+        parameter.requires_grad_(False)
+
+    inner = LoRALinearLayer(base, rank=RANK, alpha=ALPHA, lora_name="peft",
+                            lora_dtype=dtype)
+    with torch.no_grad():
+        inner.lora_up.weight.copy_(
+            (torch.randn(inner.lora_up.weight.shape, generator=generator)
+             * FACTOR_STD).to(dtype))
+    magnitude = _dora_scale(base, "row", generator)
+    ours = DoRALinearLayer(base, inner, dora_scale=magnitude.clone())
+
+    theirs = dora.DoraLinearLayer(fan_in_fan_out=False)
+    theirs.weight = nn.Parameter(magnitude.detach().clone().to(dtype))
+
+    x = (torch.randn(4, D_IN, generator=generator) * 0.5).to(dtype)
+    _assert_delta_is_exercised(ours, base, x, f"peft/{dtype}")
+    with torch.no_grad():
+        expected = base(x) + theirs(x, lora_A=inner.lora_down, lora_B=inner.lora_up,
+                                    scaling=ALPHA / RANK, base_layer=base)
+        assert _relative_error(ours(x), expected) <= TOLERANCE[dtype]
+

@@ -1109,6 +1109,35 @@ class LoRAManager:
         print(f"[LoRAManager] Cache invalidated")
         self._lora_cache = None
 
+    def _refuse_weight_decomposed(self, lora_path, lora_file: str) -> None:
+        """Refuse a weight-decomposed adapter BEFORE it reaches diffusers.
+
+        `lora_state_dict` DROPS every `dora_scale` key with a log line and
+        nothing else, so a DoRA here applies and reports SUCCESS as an ordinary
+        LoRA -- the one silent-wrong-answer case on this path. LoHa/LoKr are
+        deliberately left alone: the Kohya converter already raises on their
+        unrenamed keys. Measured on diffusers 0.38.0; see the design doc,
+        phase 3.
+        """
+        from api.error_handlers import with_error_code
+
+        record = self._probe_lora_file(Path(lora_path))
+        adapter = (record or {}).get("adapter") or {}
+        if not adapter.get("weight_decompose"):
+            return
+        family = adapter.get("adapter_type") or "weight-decomposed"
+        message = (
+            f"LoRA '{lora_file}' is a {family} adapter (it carries per-target "
+            f"dora_scale magnitude vectors). This model loads adapters through "
+            f"diffusers, which discards every dora_scale key before applying "
+            f"the file -- it would run as an ordinary LoRA at the wrong "
+            f"numbers rather than fail. Use it on an architecture whose "
+            f"capability row enables it."
+        )
+        print(f"[LoRAManager] ERROR: {message}")
+        _lora_warn(message, code="lora_incompatible")
+        raise with_error_code(RuntimeError(message), "lora_incompatible")
+
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:
         """
         Load multiple LoRAs into the pipeline
@@ -1156,6 +1185,10 @@ class LoRAManager:
                 print(f"[LoRAManager]   Additional dirs: {self.additional_dirs}")
                 _lora_warn(message, code="lora_not_found")
                 raise with_error_code(FileNotFoundError(message), "lora_not_found")
+
+            # Outside the try below on purpose: that block re-wraps everything
+            # it catches as lora_load_failed, and this refusal has its own code.
+            self._refuse_weight_decomposed(lora_path, lora_file)
 
             adapter_name = f"lora_{i}"
             file_pairs = 0

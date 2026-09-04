@@ -20,9 +20,6 @@ class SenseNovaArchHandler(ArchHandler):
         additive_gated=True,
         initial_dora="deferred",
         additive_reason=PHASE2_PENDING,
-        dora_reason=(
-            "DoRA is deferred behind the two MoT halves, phase eviction and "
-            "the INT8/ConvRot policy"),
         quantized_base_additive_family=True,
         quantized_base_reason=(
             f"{QUANTIZED_ADDITIVE_SHIPPED}. Here that is ALL 294 targets per "

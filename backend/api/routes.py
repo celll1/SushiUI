@@ -15350,7 +15350,8 @@ class TrainingRunCreateRequest(BaseModel):
     adapter_algorithm: Literal["lora", "loha", "lokr"] = TRAINING_DEFAULTS[
         "adapter_algorithm"
     ]
-    # Accepted, refused: DoRA/DoHa/DoKr are Phase 3.
+    # The second axis (DoRA/DoHa/DoKr), enabled per architecture by
+    # core.adapters.capability.TRAINABLE_ADAPTER_PAIRS like the algebra above.
     weight_decompose: bool = TRAINING_DEFAULTS["weight_decompose"]
     # Algebra-specific options; LoKr takes "factor" and "decompose_both".
     # Optional because a YAML written before this key existed restores as None

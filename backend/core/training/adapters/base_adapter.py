@@ -16,7 +16,8 @@ from core.adapters import LoRALinearLayer, count_quantized_linears
 from core.adapters.capability import AXIS_TRAINING
 from core.adapters.layers import (new_adapter_branch,
                                   validate_adapter_options)
-from core.adapters.spec import (ALGORITHM_LORA, ALGORITHMS, FORMAT_SUSHIUI,
+from core.adapters.spec import (ALGORITHM_LORA, ALGORITHMS, FAMILY_NAMES,
+                                FORMAT_SUSHIUI,
                                 METADATA_ALGORITHM, METADATA_FORMAT,
                                 METADATA_OPTIONS, METADATA_SCHEMA_VERSION,
                                 METADATA_WEIGHT_DECOMPOSE,
@@ -197,10 +198,6 @@ class TrainingAdapterSpec:
         object.__setattr__(self, "weight_decompose", bool(self.weight_decompose))
         object.__setattr__(self, "options",
                            validate_adapter_options(algorithm, self.options))
-        if self.weight_decompose:
-            raise ValueError(
-                "weight_decompose is accepted but not implemented: DoRA/DoHa/"
-                "DoKr are Phase 3 (docs/guides/LYCORIS_ADAPTER_DESIGN.md)")
 
     @property
     def is_ordinary_lora(self) -> bool:
@@ -229,8 +226,10 @@ class TrainingAdapterSpec:
 
 
 def refuse_untrainable_algebra(spec: TrainingAdapterSpec, capability,
-                               blocks_to_swap: int = 0) -> None:
-    """Refuse an algebra this architecture cannot train, and block swap with it.
+                               blocks_to_swap: int = 0,
+                               fp8_base_dtype: Optional[str] = None) -> None:
+    """Refuse an algebra this architecture cannot train, and the two run
+    settings that contradict it.
 
     ONE implementation, two entry points: ``train_runner``'s config preflight
     (before the model loads) and ``LoRATrainer._create_adapter`` (the backstop
@@ -239,16 +238,30 @@ def refuse_untrainable_algebra(spec: TrainingAdapterSpec, capability,
     if spec.is_ordinary_lora:
         return
     capability.require(spec.algorithm, spec.weight_decompose, AXIS_TRAINING)
+    family = FAMILY_NAMES[(spec.algorithm, spec.weight_decompose)]
     if blocks_to_swap:
         # No offloader moves a bare parameter -- they select modules whose class
         # name ends in "Linear" -- and what that costs a training step is
-        # unmeasured.
+        # unmeasured. A decomposed branch owns one either way: dora_scale.
+        bare = ("dora_scale" if spec.weight_decompose
+                else f"a {spec.algorithm} branch's factors")
         raise ValueError(
             f"blocks_to_swap={blocks_to_swap} is not supported with "
-            f"adapter_algorithm={spec.algorithm}: the block offloader moves "
-            f"modules whose class name ends in 'Linear' and a {spec.algorithm} "
-            f"branch owns bare parameters instead, so its factors are invisible "
-            f"to the swap. Set blocks_to_swap=0, or train an ordinary LoRA.")
+            f"adapter_algorithm={spec.algorithm} "
+            f"(weight_decompose={spec.weight_decompose}): the block offloader "
+            f"moves modules whose class name ends in 'Linear' and {bare} is a "
+            f"bare parameter, so a {family} branch is invisible to the swap. "
+            f"Set blocks_to_swap=0, or train an ordinary LoRA.")
+    if spec.weight_decompose and fp8_base_dtype:
+        # Refused from the CONFIG rather than at the first target: the
+        # quantization runs in prepare_models_for_training, so new_adapter_branch
+        # would only see it after the whole checkpoint is resident.
+        raise ValueError(
+            f"fp8_base_dtype={fp8_base_dtype} is not supported with "
+            f"weight_decompose: a {family} branch reads the base weight's "
+            f"direction and norm every forward, and this setting quantizes that "
+            f"base before the adapter is injected. Clear fp8_base_dtype, or "
+            f"train an additive algebra.")
 
 
 def resolve_training_adapter_spec(trainer) -> TrainingAdapterSpec:

@@ -8,8 +8,12 @@ SenseNova. SD1.5 and SDXL load through diffusers and still take ordinary LoRA
 only. Generation by file path. They are also TRAINABLE, on the nine of those
 eleven whose training row is open (`network.adapter_algorithm: loha | lokr`,
 `training_method: lora`, `blocks_to_swap: 0`); MiniMax-H3 and SenseNova load one
-without training one. Weight decomposition (DoRA/DoHa/DoKr) is accepted as a
-field and refused as a value everywhere. Everything else here is plan.
+without training one. Dense DoRA (`weight_decompose: true` with
+`adapter_algorithm: lora`) now LOADS, GENERATES AND TRAINS on Z-Image, Lens and
+MiniT2I; DoHa and DoKr are refused everywhere, and DoRA is refused on the other
+ten architectures — SD1.5/SDXL because diffusers drops `dora_scale`, the rest
+because their base can be weight-only quantized or their row has no round trip.
+Everything else here is plan.
 
 This guide evaluates LyCORIS 4.0.0 for SushiUI and defines the work required to
 support LoHa, LoKr, and weight-decomposed adapters (DoRA, DoHa, and DoKr) in both
@@ -359,14 +363,14 @@ speed. LoCon/Conv targets are separate future scope.
 
 | Architecture | Additive family | Initial DoRA | Required architecture-specific work |
 |---|---|---|---|
-| SD1.5 | yes | dense Linear | Preserve U-Net and optional CLIP MLP groups |
-| SDXL | yes | dense Linear | Preserve U-Net and two text-encoder LR groups |
-| Z-Image | yes | dense Linear | Key codec and generation loader repaired (Phase 0) |
+| SD1.5 | yes | refused: diffusers drops `dora_scale` | Preserve U-Net and optional CLIP MLP groups |
+| SDXL | yes | refused: diffusers drops `dora_scale` | Preserve U-Net and two text-encoder LR groups |
+| Z-Image | yes | dense Linear (SHIPPED, phase 3) | Key codec and generation loader repaired (Phase 0) |
 | FLUX.2 | yes | dense only | Qwen targets now applied (Phase 0); gate quantized bases |
 | Anima | yes | dense only | Inference scope now equals training scope (Phase 0) |
-| Lens | yes | dense Linear | Retain fused-QKV path naming and frozen GPT-OSS encoder |
+| Lens | yes | dense Linear (SHIPPED, phase 3) | Retain fused-QKV path naming and frozen GPT-OSS encoder |
 | Ideogram4 | yes | deferred | Dual transformer can be FP8; start with DoRA refused |
-| MiniT2I | yes | dense Linear | Preserve transformer and optional FLAN-T5 scopes |
+| MiniT2I | yes | dense Linear (SHIPPED, phase 3) | Preserve transformer and optional FLAN-T5 scopes |
 | Krea2 | yes | deferred | Generation call added (Phase 0); INT8/FP8 bases need capability gates |
 | LTX-2.3 | yes | dense only | Generation loader added (Phase 0); Gemma-3 remains frozen |
 | MiniMax-H3 | yes | deferred | Fused-QKV row split landed (phase 2); FP8/ConvRot dtype policy preserved |
@@ -1599,12 +1603,175 @@ own LoRA gate by import rather than by copy.
   the way it already reads `declared_pairs`, so the handler and the payload
   cannot word the same refusal differently.
 
-### Phase 3: dense DoRA
+### Phase 3: dense DoRA — landed for `("lora", True)` on three architectures
 
 - Start with SD1.5, SDXL, Z-Image, Lens, and dense MiniT2I targets.
 - Enforce strength-zero identity and runtime/merge equivalence.
 - Include magnitude tensors in optimizer, fused-hook, save, and resume census.
 - Refuse weight-only quantized bases until a separate design is measured.
+
+**Landed: dense DoRA generates AND trains on Z-Image, Lens and MiniT2I.**
+`("lora", True)` is in both `ENABLED_ADAPTER_PAIRS` and
+`TRAINABLE_ADAPTER_PAIRS` for those three, and in neither for the other ten.
+`new_adapter_branch(weight_decompose=True)` wraps the algebra's own layer in
+`DoRALinearLayer`, `build_adapter_branch` already did the load-time half, and
+`BaseLoRAAdapter.build_branch` is the one construction seam, so no
+per-architecture adapter changed. Gates: the `dora` rows of
+`adapter_lycoris_roundtrip_cheap_test.py` (target-set equality, the installed
+delta against the fp32 oracle in fp32 and bf16, the magnitude-stripped
+comparison, strength-zero identity, and the eight architectures that must still
+refuse), the `+wd` rows of `adapter_lycoris_training_roundtrip_cheap_test.py`
+(trainer save → real generation loader → `torch.equal` per target, plus
+metadata and resume), and the decomposed rows of
+`adapter_training_algebra_cheap_test.py` and `adapter_oracle_gate_cheap_test.py`.
+
+- **The SD1.5/SDXL diffusers path refuses a weight-decomposed file itself.**
+  This flip WIDENED a gap it did not create: until it landed nothing in the
+  repo could produce a DoRA, and now three architectures write one into the
+  same directory the SD1.5/SDXL selector lists from — so "train a DoRA on
+  Z-Image, switch model, pick the file" reached a successful, numerically wrong
+  generation in three clicks. `LoRAManager._refuse_weight_decomposed` refuses it
+  as `lora_incompatible` before `pipeline.load_lora_weights` is called, reading
+  the SHARED header probe (`_probe_lora_file` → `detect_adapter_fields`, cached
+  on path/mtime/size) rather than a second sniffer; `CodecRegistry.detect` ORs
+  `weight_decompose` from the key presence, so a mislabelling metadata block
+  cannot slip past, and a detection failure reports `False`, keeping "unknown is
+  a report, never a refusal".
+
+  MEASURED, driving the real `load_loras` with the refusal removed: a DoRA
+  applied to **40 of 40** U-Net targets, returned normally, installed **no**
+  `lora_magnitude_vector`, and left weights `torch.equal` to the same file with
+  `dora_scale` stripped. That is the silent wrong answer, end to end.
+
+  **LoHa and LoKr are deliberately NOT refused there**, on the same probe: the
+  Kohya converter raises `ValueError` ("keys have not been correctly renamed")
+  on their unrenamed `hada_*` / `lokr_*` keys, on BOTH mixins, which
+  `load_loras` already turns into a `lora_load_failed` 400. Loud is enough, and
+  the broader SD1.5/SDXL adapter step stays deferred. Gates:
+  `test_{sd15,sdxl}_a_dora_file_refuses_before_diffusers_ever_sees_it` (asserts
+  the loader was never reached),
+  `..._loha_and_lokr_are_already_refused_by_diffusers_itself`, and
+  `..._an_ordinary_lora_is_byte_identical_with_the_gate_neutralised` — an A/B
+  against the same load with the new check stubbed out, every PEFT parameter
+  compared with `torch.equal`, because `load_loras` is the shipped path for two
+  architectures and this series has already had to undo one shared-load-path
+  change (`22f21078`).
+- **SD1.5 and SDXL are refused for TRAINING and GENERATION, on measurement
+  rather than on the "no session" rule.** `StableDiffusion(XL)LoraLoaderMixin.lora_state_dict` (diffusers
+  0.38.0, `loaders/lora_pipeline.py`) DROPS every `dora_scale` key with a
+  `logger.warning` and nothing else, BEFORE
+  `_convert_non_diffusers_lora_to_diffusers` — whose Kohya `dora_scale` →
+  `lora_magnitude_vector` branch is therefore dead on this path. A DoRA
+  selected for SD1.5/SDXL would apply as an ordinary LoRA at the wrong numbers
+  and report success. That is the sentence `DECOMPOSE_REFUSAL_REASONS` carries
+  for both, and it is why the training axis could not be opened either: the
+  import-time subset check refuses a pair that is trainable and not loadable.
+- **Only `("lora", True)`, deliberately.** The engine builds DoHa and DoKr
+  identically (`new_adapter_branch` wraps whichever layer the algebra names,
+  and the oracle gate has covered all three since Phase 1), so what keeps them
+  shut is the capability table plus the absence of a per-architecture round
+  trip — which is the enablement rule this series has run on. The refusal says
+  exactly that (`PHASE3_DECOMPOSED_PENDING`) rather than claiming decomposition
+  is unimplemented, and `test_a_flipped_architecture_takes_dora_and_still_refuses_doha_and_dokr`
+  pins the wording. One latent trap for whoever opens them:
+  `split_group_on_out_rows` refuses a weight-decomposed group outright, so a
+  fused-QKV DoHa is unrepresentable on MiniMax-H3 — irrelevant while that row
+  is closed for other reasons, and a silent zero-target file the moment it is not.
+- **The quantized-base refusal is enforced at three layers, on the OBJECT.**
+  `layers.weight_decompose_refusal(base)` is the one predicate and keys on the
+  weight's DTYPE, not on the quantized Linear classes, because the legacy fp8
+  pass leaves an ordinary `nn.Linear` holding a float8 weight and a class test
+  would miss it. Generation:
+  `AdapterSession._refuse_decomposed_over_quantized_base` runs after planning
+  (which mutates nothing) and before any install, asking each BUILT branch —
+  the same reason `_refuse_stranded_branches` does, since detection gives
+  metadata priority over keys and a `dora_scale` file labelled
+  `networks.lora` passes a label test. Training: `new_adapter_branch` raises,
+  and `refuse_untrainable_algebra` refuses `fp8_base_dtype` from the run's
+  CONFIG, before the model loads — that setting quantizes the frozen
+  transformer in `prepare_models_for_training`, i.e. before injection, so the
+  layer-level refusal would only fire with the whole checkpoint resident.
+- **A fourth layer, for the hazard no install-time check can see.** Z-Image
+  loads its LoRAs at line 700 of its generate function and reaches
+  `_quantize_transformer` at 812, which deep-copies the tree and casts every
+  `nn.Linear` weight — including the DoRA wrapper's own base, the weight its
+  epilogue divides by. `_refuse_fp8_over_decomposed_adapter` (in
+  `vram_optimization`, so `_quantize_transformer`, `_anima_quantize_fp8` and
+  every caller are covered at once) drops the quantization and warns
+  `quantization_fallback`, the same precedence
+  `_lens_quantization_with_lora` already applies. Keyed on the DECOMPOSED
+  family alone, so LoRA/LoHa/LoKr quantization behaviour is unchanged — gated
+  both ways. MEASURED on the gate's fixture: casting the base to
+  `float8_e4m3fn` moves the DoRA delta by **1.3% relative**, which is a quality
+  change with no error.
+- **The magnitude is in every census, and each half is gated separately.**
+  `trainable_parameters()` derives from `branch_tensors()`, which for a
+  decomposed branch is the inner algebra's tensors plus `dora_scale`, deduped
+  by identity — so a DoRA hands over 3 parameters per target, a DoHa 5 and a
+  DoKr 4, each exactly once, checked to EQUAL the layer's own `requires_grad`
+  set. Under the real `FusedOptimizerGroups` every factor gets one entry in
+  `parameter_optimizer_map`, `step_incomplete_groups()` is empty and every
+  factor moves; under the real fused backward pass with Adafactor `step_param`
+  fires once per factor. `export_state_dict` writes `<stem>.dora_scale` and
+  `LoRATrainer.load_checkpoint` iterates `branch_tensors()`, so a checkpoint
+  MISSING the magnitude is refused by name rather than silently restarting it
+  at the base's row norms — the specific failure mode, gated by
+  `test_a_decomposed_resume_moves_the_magnitude_and_refuses_without_it`.
+  `DoRALinearLayer.export_tensors` delegates to the inner branch so a `scalar`
+  is still folded away; the inherited default would have emitted it bare.
+- **`dora_scale`'s dtype is RESOLVED: it takes the BRANCH's dtype, not the
+  base's.** It was initialised in the base's dtype, so an fp16 run trained a
+  magnitude with no fp32 master while its factors kept one. `DoRALinearLayer`
+  now takes `dtype=`, defaulting to the inner branch's `lora_dtype`;
+  `new_adapter_branch` passes the run's, `build_adapter_branch` passes the
+  loader's. On ten of the eleven the loader's IS the base weight's own dtype, so
+  no generation load moved. **Lens is the exception, and it is a real one**: its
+  `branch_dtype` prefers the BIAS (`lens_lora.py`, so a biased fp8 target does
+  not fall to the bfloat16 default), so a dense Lens base carrying a bf16 weight
+  and an fp32 bias now gets an fp32 magnitude where HEAD gave bf16. No shipped
+  Lens checkpoint produces that pairing and the new dtype is the intended one —
+  the magnitude belongs with the factors it rides with — but the coincidence is
+  not by construction and should not be stated as if it were.
+- **The block-swap answer is right rather than accidentally right.**
+  `branch_survives_block_swap` returns False for a DoRA over an ordinary LoRA,
+  and for a DIFFERENT reason than for a LoHa: the two factors ARE `nn.Linear`
+  weights and would ride with their block, and `dora_scale` is the one bare
+  parameter left behind. The gate asserts exactly that tensor is the stranded
+  one. So Lens and MiniT2I (`AFTER_SPLIT`) refuse `lora_blockswap_unsupported`
+  naming "DoRA" from the built class, Z-Image (`BEFORE_SPLIT`) advises, and the
+  training-side refusal names `dora_scale` instead of "a lora branch's factors".
+- **The magnitude-axis blind spot is half closed, with a third
+  implementation.** `layers.py` and `reference.py` both read a `(out, 1)`
+  `dora_scale` as per-output-row magnitudes and `reference.py` discloses that
+  it SHARES that reading, so their agreement proved nothing about the
+  convention. PEFT's `DoraLinearLayer` is installed in this venv, was written
+  by neither, norms along `dim=1` and holds one magnitude per output row — and
+  diffusers maps a Kohya `dora_scale` straight onto its `lora_magnitude_vector`.
+  MEASURED agreement on the forward: **4.1e-7**; a reversed row order is
+  **1.04** off. The `(1, in)` column form has no such witness (PEFT does not
+  implement it) and remains two mirrors of one reading.
+  **FORWARD ONLY, and the difference is a real one:** PEFT DETACHES the weight
+  norm from the graph (DoRA paper §4.3, a memory optimization) where this repo
+  takes the exact gradient of the stated function, so the two BACKWARDS differ
+  by construction. Recorded, not resolved — switching is a numerics decision
+  with its own measurement.
+- **The decomposition-axis prose moved off the `ArchHandler`**, exactly as the
+  training prose did in Phase 2 and for the same reason:
+  `api/arch_capabilities.py` may not import the trainer stack, so a `dora_reason`
+  declared on a handler could not reach a client, and after this flip the
+  handler's refusal map and `adapter_refusal_reason` would have worded the same
+  refusal differently. `capability.DECOMPOSE_REFUSAL_REASONS` is the one table
+  and `declare_adapter_capability` READS it; the `dora_reason` argument is gone
+  from all thirteen handlers.
+- **Not done, deliberately:** the SD1.5/SDXL selector still LISTS a DoRA (it
+  reports `adapter_type: dora` on `GET /loras`, so a badge is available, but
+  nothing filters it) — the refusal is the load-time guarantee, and the
+  listing-side step stays deferred; no quality or speed measurement of DoRA
+  against ordinary LoRA; `wd_on_out=False` (the `(1, in)` column form) is READ but never
+  WRITTEN, so a run here always trains the row form; ReLoRA still takes the
+  ordinary branch only; and `_quantize_text_encoder` did not get the guard,
+  since no enabled architecture puts a DoRA target on a text encoder it
+  quantizes.
 
 ### Phase 4: experimental fused backend
 

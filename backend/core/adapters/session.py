@@ -59,8 +59,9 @@ from .capability import (ADAPTER_PAIRS, BLOCK_SWAP_REFUSAL_CODE,
                          adapter_refusal_reason, block_swap_refusal_reason,
                          block_swap_strands_branches, block_swap_warning_text)
 from .codec import CodecRegistry, CodecSpec
-from .layers import (CompositeAdapterLayer, branch_survives_block_swap,
-                     get_module_slot, set_module_slot)
+from .layers import (CompositeAdapterLayer, DoRALinearLayer,
+                     branch_survives_block_swap, get_module_slot,
+                     set_module_slot, weight_decompose_refusal)
 from .spec import (ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN,
                    AdapterSpec)
 
@@ -593,6 +594,36 @@ class AdapterSession:
         self._log(f"[{self._label}] ERROR: {error.message}")
         raise self._refuse(error)
 
+    def _refuse_decomposed_over_quantized_base(
+            self, file: AdapterFile,
+            planned: Sequence["_PlannedInstall"]) -> None:
+        """Refuse a weight-decomposed branch over a weight-only quantized base.
+
+        The magnitude epilogue divides by ``||W_base + delta||`` and subtracts
+        ``W_base``, so an int8/fp8 base would have to be dequantized every
+        forward and the fused base GEMM abandoned -- a separate design with its
+        own measurement (design doc, phase 3).
+
+        Asked of the BUILT branch and of the base it actually holds, for the
+        reason ``_refuse_stranded_branches`` is: detection gives metadata
+        priority over keys, so a file of ``dora_scale`` tensors labelled
+        ``networks.lora`` passes a label test and then installs a decomposed
+        branch anyway. Planning mutates nothing, so this still precedes every
+        install.
+        """
+        for item in planned:
+            if not isinstance(item.branch, DoRALinearLayer):
+                continue
+            refusal = weight_decompose_refusal(item.branch.original_module)
+            if refusal is None:
+                continue
+            error = AdapterIncompatible(
+                f"{self._message_label} '{file.name}': {self._architecture or 'this build'} "
+                f"cannot apply a weight-decomposed adapter at {item.module_path} -- "
+                f"{refusal}")
+            self._log(f"[{self._label}] ERROR: {error.message}")
+            raise self._refuse(error)
+
     def _refuse_stranded_branches(self, file: AdapterFile,
                                   planned: Sequence["_PlannedInstall"]) -> None:
         """Refuse a branch a live block offloader could not carry.
@@ -892,6 +923,7 @@ class AdapterSession:
                 raise
             except Exception as e:
                 raise self._load_failed(file.name, e) from e
+            self._refuse_decomposed_over_quantized_base(file, planned)
             self._refuse_stranded_branches(file, planned)
             self._account(file, counts)
             plan.extend(planned)

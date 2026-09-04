@@ -739,6 +739,36 @@ def dora_magnitude_axis(dora_scale: torch.Tensor, out_features: int,
         f"(1, {in_features}) for a [{out_features}, {in_features}] weight")
 
 
+def weight_decompose_refusal(base: nn.Module) -> Optional[str]:
+    """Why a weight-decomposed branch (DoRA/DoHa/DoKr) must not cover ``base``.
+
+    The magnitude epilogue reads the base weight's direction and norm on every
+    forward, so a weight-only quantized base would have to be dequantized per
+    call and the fused base GEMM abandoned. Refused until that has its own
+    design and measurement (design doc, phase 3).
+
+    Keyed on the weight's DTYPE, not on the quantized Linear classes: the legacy
+    fp8 path leaves an ordinary ``nn.Linear`` holding a float8 weight, and a
+    class test would miss it.
+
+    A POLICY predicate, not an invariant of the layer: ``new_adapter_branch``
+    raises on it and ``AdapterSession`` refuses on it, while ``DoRALinearLayer``
+    stays constructible so the session can ask the BUILT branch rather than the
+    file's label.
+    """
+    weight = getattr(base, "weight", None)
+    if weight is None:
+        return (f"{type(base).__name__} exposes no weight, so it has no "
+                f"direction or norm to decompose")
+    dtype = weight.dtype
+    if not dtype.is_floating_point or "float8" in str(dtype):
+        return (f"{type(base).__name__} holds a {dtype} weight; a "
+                f"weight-decomposed adapter needs the base weight's direction "
+                f"and norm, and reconstructing those over a weight-only "
+                f"quantized base is a separate design with its own measurement")
+    return None
+
+
 class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
     """DoRA (Weight-Decomposed Low-Rank Adaptation) wrapper for an adapter branch.
 
@@ -752,6 +782,7 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
         original_module: nn.Linear,
         branch: nn.Module,
         dora_scale: Optional[torch.Tensor] = None,
+        dtype: Optional[torch.dtype] = None,
     ):
         super().__init__()
         self.original_module = original_module
@@ -763,7 +794,16 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
             branch.set_adapter_strength(1.0)
 
         device = original_module.weight.device
-        dtype = original_module.weight.dtype
+        # The magnitude is a TRAINED tensor of the branch, so it takes the
+        # BRANCH's dtype: the base's would give an fp16 run an fp16 magnitude
+        # with no fp32 master while its factors kept one. At load time the two
+        # usually coincide (``lora_branch_dtype`` is the base's own float
+        # dtype) -- but not by construction: Lens's branch dtype prefers the
+        # BIAS, so a base whose bias dtype differs moves the magnitude with
+        # its factors, which is the intended dtype either way.
+        if dtype is None:
+            dtype = getattr(branch, "lora_dtype", None) or original_module.weight.dtype
+        self.lora_dtype = dtype
 
         if dora_scale is not None:
             dora_magnitude_axis(dora_scale, original_module.out_features,
@@ -782,6 +822,46 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
     @property
     def bias(self):
         return getattr(self.original_module, "bias", None)
+
+    # rank/alpha/lora_name delegate to the inner branch, both ways: a loader
+    # that reads them off a built branch (Z-Image logs them) or WRITES them
+    # after building (MiniMax-H3's fused-QKV split) must not meet a wrapper
+    # that has none of its own.
+    @property
+    def rank(self):
+        return getattr(self.branch, "rank", None)
+
+    @rank.setter
+    def rank(self, value):
+        self.branch.rank = value
+        self._refresh_inner_scale()
+
+    @property
+    def alpha(self):
+        return getattr(self.branch, "alpha", None)
+
+    @alpha.setter
+    def alpha(self, value):
+        self.branch.alpha = float(value)
+        self._refresh_inner_scale()
+
+    def _refresh_inner_scale(self) -> None:
+        """Re-derive the inner branch's scale through its OWN rule -- never a
+        copy of it here. ``set_alpha`` is that rule for LoHa (LoKr's scale is a
+        property off its tensors, so the call is a no-op there);
+        ``set_adapter_strength(1.0)`` is it for LoRA, and unit strength is
+        exactly what the epilogue holds the branch at.
+        """
+        for name, argument in (("set_alpha", self.branch.alpha),
+                               ("set_adapter_strength", 1.0)):
+            setter = getattr(self.branch, name, None)
+            if callable(setter):
+                setter(argument)
+                return
+
+    @property
+    def lora_name(self):
+        return getattr(self.branch, "lora_name", "")
 
     def set_adapter_strength(self, strength: float) -> None:
         """Owned here, not delegated to the branch -- see the class docstring."""
@@ -816,6 +896,14 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
         if callable(getattr(self.branch, "branch_tensors", None)):
             tensors.update(self.branch.branch_tensors())
         tensors["dora_scale"] = self.dora_scale
+        return tensors
+
+    def export_tensors(self) -> Dict[str, torch.Tensor]:
+        """The inner branch's export -- which folds a ``scalar`` and drops the
+        key -- plus the magnitude. The inherited default would emit ``scalar``
+        bare and leave every other reader ``1/scalar`` too strong."""
+        tensors = dict(self.branch.export_tensors())
+        tensors["dora_scale"] = self.dora_scale.detach().cpu()
         return tensors
 
     def spec_constants(self) -> Tuple[str, ...]:
@@ -874,20 +962,27 @@ def new_adapter_branch(algorithm: str, base: nn.Module, *, rank: int,
     it. ``lora_cls`` lets an architecture keep its own ordinary-LoRA subclass
     (MiniMax-H3 casts per call); the LyCORIS algebras have no such variant.
     """
-    if weight_decompose:
-        raise ValueError(
-            "weight_decompose (DoRA/DoHa/DoKr) is Phase 3: the magnitude vector "
-            "needs the base weight's direction and norm, which is a separate "
-            "design with its own quantized-base refusal")
     opts = validate_adapter_options(algorithm, options)
+    if weight_decompose:
+        refusal = weight_decompose_refusal(base)
+        if refusal is not None:
+            raise ValueError(
+                f"weight_decompose (DoRA/DoHa/DoKr) cannot be trained here: "
+                f"{refusal}")
     if algorithm == "lora":
         cls = lora_cls or LoRALinearLayer
-        return cls(base, rank, alpha, name, dtype)
-    if algorithm == "loha":
-        return LoHaLinearLayer(base, rank, alpha, name, dtype)
-    return LoKrLinearLayer(base, rank, alpha, name, dtype,
-                           factor=int(opts.get("factor", -1)),
-                           decompose_both=bool(opts.get("decompose_both", False)))
+        branch = cls(base, rank, alpha, name, dtype)
+    elif algorithm == "loha":
+        branch = LoHaLinearLayer(base, rank, alpha, name, dtype)
+    else:
+        branch = LoKrLinearLayer(base, rank, alpha, name, dtype,
+                                 factor=int(opts.get("factor", -1)),
+                                 decompose_both=bool(opts.get("decompose_both", False)))
+    if not weight_decompose:
+        return branch
+    # No dora_scale to seed from, so it starts at the base's own row norms --
+    # an identity up to fp32 rounding while the branch delta is still zero.
+    return DoRALinearLayer(base, branch, dtype=dtype)
 
 
 def get_module_slot(parent: nn.Module, slot: Union[str, int]) -> nn.Module:

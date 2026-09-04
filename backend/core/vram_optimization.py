@@ -622,6 +622,9 @@ def _quantize_transformer(transformer, quantization: str):
     """
     print(f"[Quantization] Applying {quantization} to Z-Image Transformer...")
 
+    if _refuse_fp8_over_decomposed_adapter(transformer, quantization, "Transformer"):
+        return transformer
+
     # FP8 quantization: weight-only conversion (manual)
     if quantization in ['fp8_e4m3fn', 'fp8_e5m2']:
         # Determine FP8 dtype
@@ -947,6 +950,44 @@ def _anima_patch_linear_fp8(linear, fp8_dtype):
         return F.linear(x, w, b)
 
     linear.forward = patched_forward
+
+
+def _decomposed_adapter_branches(model) -> int:
+    """Count weight-decomposed (DoRA/DoHa/DoKr) adapter branches under ``model``.
+
+    A legacy FP8 pass deep-copies the module and casts every ``nn.Linear``
+    weight, which over a wrapped tree includes the DoRA wrapper's BASE. That
+    base weight is the direction and norm the magnitude epilogue divides by, so
+    the adapter would silently apply over a quantized base -- the case
+    ``core.adapters`` refuses at install time and cannot see happening later.
+    """
+    try:
+        from core.adapters.layers import DoRALinearLayer
+    except Exception:
+        return 0
+    return sum(1 for m in model.modules() if isinstance(m, DoRALinearLayer))
+
+
+def _refuse_fp8_over_decomposed_adapter(model, quantization: str, label: str) -> bool:
+    """Drop an FP8 request whose target carries a weight-decomposed branch.
+
+    Same precedence as ``_lens_quantization_with_lora`` and
+    ``_flux2_te_quantization_with_lora``: the adapter wins and the request is
+    warned. Unlike those, this is keyed on the DECOMPOSED family alone, so
+    LoRA/LoHa/LoKr quantization behaviour is unchanged.
+    """
+    if not quantization or quantization == "none" or model is None:
+        return False
+    found = _decomposed_adapter_branches(model)
+    if not found:
+        return False
+    message = (f"{label} quantization '{quantization}' was ignored: "
+               f"{found} weight-decomposed adapter branch(es) are applied, and "
+               f"the quantizer would cast the base weight whose direction and "
+               f"norm they divide by")
+    print(f"[Quantization] {message}")
+    _add_generation_warning(message, code="quantization_fallback")
+    return True
 
 
 def _already_weight_only_quantized(model) -> int:
@@ -1603,6 +1644,9 @@ def _anima_quantize_fp8(model, quantization: str, label: str):
     # int8 is the in-place converter's value (RUNTIME_INT8_ARCHS); it never means anything
     # here (Lens and the text encoders have no int8 path).
     if _refuse_runtime_int8_elsewhere(quantization, f"Anima/Lens {label}"):
+        return model
+
+    if _refuse_fp8_over_decomposed_adapter(model, quantization, label):
         return model
 
     already = _already_weight_only_quantized(model)

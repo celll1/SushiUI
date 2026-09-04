@@ -50,7 +50,8 @@ from core.adapters.capability import (ADAPTER_PAIRS as _ADAPTER_PAIRS,
                                       PHASE3_PENDING_DENSE_ONLY,
                                       QUANTIZED_ADDITIVE_PENDING,
                                       QUANTIZED_ADDITIVE_SHIPPED,
-                                      declared_pairs, training_refusal_reason)
+                                      declared_pairs, decompose_refusal_reason,
+                                      training_refusal_reason)
 from core.adapters.spec import ALGORITHM_LORA, FAMILY_NAMES
 from core.adapters.spec import ALGORITHMS as ADAPTER_ALGORITHMS
 
@@ -320,7 +321,6 @@ def declare_adapter_capability(
     additive_family: bool,
     initial_dora: str,
     additive_reason: str,
-    dora_reason: str,
     quantized_base_reason: str,
     quantized_base_additive_family: bool = False,
     additive_gated: bool = False,
@@ -344,10 +344,12 @@ def declare_adapter_capability(
         # in which case saying so would be false.
         if not decompose:
             reason = additive_reason
-        elif algorithm != ALGORITHM_LORA and (algorithm, False) not in supported:
-            reason = f"{dora_reason}; and {additive_reason}"
         else:
-            reason = dora_reason
+            reason = decompose_refusal_reason(arch, algorithm)
+            if algorithm != ALGORITHM_LORA and (algorithm, False) not in supported:
+                # Blocked twice over: by the decomposition AND by the algebra
+                # under it.
+                reason = f"{reason}; and {additive_reason}"
         refusals[(algorithm, decompose)] = f"{arch}: {reason}"
 
     trainable_refusals: Dict[Tuple[str, bool], str] = {}
@@ -357,7 +359,8 @@ def declare_adapter_capability(
         # A pair that does not generate here cannot be trained here either, and
         # the generation reason is the one that actually blocks it.
         if pair in supported:
-            reason = dora_reason if pair[1] else training_refusal_reason(arch)
+            reason = (decompose_refusal_reason(arch, pair[0]) if pair[1]
+                      else training_refusal_reason(arch))
             trainable_refusals[pair] = (
                 f"{arch}: {FAMILY_NAMES[pair]} adapters cannot be trained -- "
                 f"{reason}")

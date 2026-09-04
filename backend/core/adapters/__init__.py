@@ -32,6 +32,7 @@ from .layers import (
     validate_adapter_options,
     refuse_tucker_tensors,
     set_module_slot,
+    weight_decompose_refusal,
 )
 from .session import (
     SHAPE_MISMATCH,
@@ -125,6 +126,7 @@ __all__ = [
     "validate_adapter_options",
     "refuse_tucker_tensors",
     "set_module_slot",
+    "weight_decompose_refusal",
     "AdapterTarget",
     "count_quantized_linears",
     "enumerate_adapter_targets",

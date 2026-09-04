@@ -40,9 +40,9 @@ from .capability import (ADAPTER_PAIRS, BLOCK_SWAP_REFUSAL_CODE,
                          adapter_refusal_reason, block_swap_refusal_reason,
                          block_swap_strands_branches, block_swap_warning_text)
 from .codec import CodecRegistry, CodecSpec
-from .layers import (CompositeAdapterLayer, DoRALinearLayer,
-                     branch_survives_block_swap, get_module_slot,
-                     set_module_slot, weight_decompose_refusal)
+from .composite import (CompositeAdapterLayer, branch_survives_block_swap,
+                        get_module_slot, set_module_slot)
+from .layers import DoRALinearLayer, weight_decompose_refusal
 from .spec import (ALGORITHM_UNKNOWN, FORMAT_PEFT, FORMAT_UNKNOWN,
                    AdapterSpec)
 

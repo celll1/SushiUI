@@ -29,7 +29,7 @@ from core.adapters import (  # noqa: E402
     DoRALinearLayer, LoHaLinearLayer, LoKrLinearLayer, LoRALinearLayer,
     TRAINABLE_ADAPTER_PAIRS,
 )
-from core.adapters.layers import is_adapter_wrapper  # noqa: E402
+from core.adapters.composite import is_adapter_wrapper  # noqa: E402
 
 import acestep_lora_roundtrip_cheap_test as acestep_gate  # noqa: E402
 import anima_lora_roundtrip_cheap_test as anima_gate  # noqa: E402

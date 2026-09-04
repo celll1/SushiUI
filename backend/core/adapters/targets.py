@@ -15,7 +15,7 @@ from typing import Callable, Iterator, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from .layers import is_adapter_covered
+from .composite import is_adapter_covered
 
 Slot = Union[str, int]
 

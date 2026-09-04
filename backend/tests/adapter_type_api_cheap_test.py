@@ -592,7 +592,8 @@ def test_the_training_preset_round_trips_every_adapter_algebra_field():
     `adapter_algorithm` is gated on `lora` alone, so a ReLoRA preset does not
     carry it, and only a gate-level assertion says that out loud.
     """
-    source = _read_frontend("components", "training", "TrainingConfig.tsx")
+    source = (_read_frontend("components", "training", "trainingParams.ts")
+              + _read_frontend("components", "training", "TrainingConfig.tsx"))
     param_keys = source.split(
         "const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [", 1)[1]
     param_keys = param_keys.split("];", 1)[0]

@@ -1,39 +1,28 @@
 """LoHa, LoKr and dense DoRA, applied by the architectures that enable them.
 
-The evidence for the ``core/adapters/capability.py`` flips. One row per enabled
-architecture -- all eleven that build an ``AdapterSession`` -- each driving that
-architecture's REAL generation loader over a synthetic LyCORIS checkpoint
-written in its own key spelling, on CPU in a couple of seconds. A flip is legal
-only when its architecture passes all five:
+The evidence for the ``core/adapters/capability.py`` flips: one row per enabled
+architecture, driving its real generation loader over a synthetic checkpoint in
+its own key spelling. A flip is legal only when its architecture passes all of
 
-1. the file's stems are EXACTLY the set the architecture's own target iterator
-   yields, and every one of them is covered -- set equality, since a count
-   matches while the sets differ (the Phase 0 lesson);
-2. the installed branch's ``compute_delta_weight()`` matches the fp32 oracle in
-   ``core/adapters/reference.py`` at the architecture's own branch dtype, with
-   ``alpha != rank`` so a regression to the rank fallback shows as a 3x scale;
-3. a wrong-shape group refuses ``lora_partial`` and a partial (truncated) group
-   refuses ``lora_incompatible``, on the architecture's real session;
-4. ``unload`` restores the pre-adapter module BY OBJECT IDENTITY after a
-   component swap performed BEFORE the unload -- the only ordering that catches
-   the stale-module splice, which is why it is not reordered here;
-5. plus, run separately: that architecture's own
-   ``<arch>_lora_roundtrip_cheap_test.py`` still passes unchanged.
+1. set equality between the file's stems and the architecture's own target
+   iterator -- a count matches while the sets differ;
+2. the installed delta against the fp32 oracle at that architecture's branch
+   dtype, with ``alpha != rank`` so a rank fallback shows as a 3x scale;
+3. ``lora_partial`` on a wrong-shape group and ``lora_incompatible`` on a
+   truncated one, through the real session;
+4. ``unload`` restoring by object identity after a component swap performed
+   first -- the only ordering that catches the stale-module splice;
+5. its own ``<arch>_lora_roundtrip_cheap_test.py`` still passing.
 
-The stub trees come from those sibling files rather than being copied, so the
-two cannot describe different models. Z-Image's is the production transformer.
+Stub trees are imported from those sibling files, so the two cannot describe
+different models.
 
-The last rows are the stacking property nothing had exercised with MIXED
-algebras -- one LoRA and one LoHa over the same module, summed at their own
-strengths, in either selection order -- FLUX.2's two components, whose
-text-encoder half takes the plain request strength while its transformer half
-multiplies the per-block weight into it, and MiniMax-H3's fused ``qkv_proj``,
-whose three row-sliced pieces must reconstruct the fused delta exactly and
-whose LoKr must be REFUSED, by name, when its ``w1`` rows do not divide by
-three.
-
-Run with:
-    venv/Scripts/python.exe -m pytest backend/tests/adapter_lycoris_roundtrip_cheap_test.py -v
+The last rows cover what nothing else exercises: a LoRA and a LoHa over one
+module in either order, FLUX.2's two components (the text-encoder half takes
+the plain strength, the transformer half multiplies the per-block weight), and
+MiniMax-H3's fused ``qkv_proj``, whose three pieces must reconstruct the fused
+delta and whose LoKr must be refused by name when ``w1``'s rows do not divide
+by three.
 """
 
 import os

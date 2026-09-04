@@ -456,6 +456,9 @@ const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "crop_position_mode", "crop_smaller_bucket_mode", "crop_smaller_scale_range",
   "full_crop_position_mode", "crop_microcond_mode", "crop_plan_seed",
   "cache_latents_to_disk", "force_recache",
+  // Restored from the run being edited; excluded from PRESETS only
+  // (a preset carries no dataset for a "force" to rescan).
+  "rescan_before_training",
   "use_reference_images", "train_vision_encoder", "gradient_routing_ve",
   "vision_encoder_lr", "param_tracking", "param_tracking_interval",
   "relora_merge_every", "relora_merge_unit", "restart_warmup_steps",
@@ -473,8 +476,10 @@ const PARAM_EXTRA_RESTORE_KEYS: string[] = [
 /**
  * What a preset deliberately does NOT carry. Excluded from SAVING only -- most
  * are still in PARAM_KEYS because edit mode must restore them from a run's own
- * YAML. Everything else in the request is saved; adding an entry is a visible
- * choice, pinned by training_preset_payload_test.py.
+ * YAML, and this list is not the restore list: a key here and NOWHERE else is
+ * silently lost on edit (that was rescan_before_training). Everything else in
+ * the request is saved; adding an entry is a visible choice, pinned by
+ * training_preset_payload_test.py and training_edit_restore_coverage_test.py.
  *
  * The auxiliary model paths (vision_encoder_path, repa_tagger_model_dir,
  * repa_siglip2_repo, minit2i_flan_t5_path, minit2i_scratch_init_from) are

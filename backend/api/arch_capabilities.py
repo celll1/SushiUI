@@ -1585,11 +1585,15 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
 def adapter_families_payload() -> Dict[str, Dict[str, Any]]:
     """The `adapter_families` block of GET /schema/arch-capabilities.
 
-    Read from `core.adapters.capability` -- `ENABLED_ADAPTER_PAIRS` is the ONE
-    place a family is enabled, and both the refusal text and the block-swap
-    verdict come from the functions the generation path refuses with, so this
-    cannot advertise a family the engine would refuse. There is no mirrored
-    table here to drift.
+    Read from `core.adapters.capability` -- its two tables are the ONE place a
+    family is enabled, and both the refusal text and the block-swap verdict come
+    from the functions the engine refuses with, so this cannot advertise a
+    family the engine would refuse. There is no mirrored table here to drift.
+
+    TWO AXES. `supported`/`unsupported` are what GENERATES; `trainable`/
+    `untrainable` are what a training run may construct and save. They differ,
+    and a UI that offered the generation set as training choices would offer
+    runs that are refused before the model loads.
     """
     from core.adapters.capability import (ADAPTER_PAIRS, AFTER_SPLIT,
                                           BEFORE_SPLIT,
@@ -1597,7 +1601,9 @@ def adapter_families_payload() -> Dict[str, Dict[str, Any]]:
                                           BLOCK_SWAP_REFUSAL_CODE,
                                           BLOCK_SWAP_WARNING_CODE,
                                           ENABLED_ADAPTER_PAIRS,
-                                          adapter_refusal_reason)
+                                          TRAINABLE_ADAPTER_PAIRS,
+                                          adapter_refusal_reason,
+                                          adapter_training_refusal_reason)
     from core.adapters.spec import FAMILY_NAMES
 
     # A LyCORIS branch's factors are bare parameters, which no offloader moves;
@@ -1619,6 +1625,13 @@ def adapter_families_payload() -> Dict[str, Dict[str, Any]]:
             "unsupported": {
                 FAMILY_NAMES[pair]: adapter_refusal_reason(arch, *pair)
                 for pair in ADAPTER_PAIRS if pair not in supported
+            },
+            "trainable": [FAMILY_NAMES[pair] for pair in ADAPTER_PAIRS
+                          if pair in TRAINABLE_ADAPTER_PAIRS.get(arch, ())],
+            "untrainable": {
+                FAMILY_NAMES[pair]: adapter_training_refusal_reason(arch, *pair)
+                for pair in ADAPTER_PAIRS
+                if pair not in TRAINABLE_ADAPTER_PAIRS.get(arch, ())
             },
         }
         order = BLOCK_SWAP_ADAPTER_ORDER.get(arch)

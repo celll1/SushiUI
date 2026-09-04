@@ -771,6 +771,56 @@ def _assert_training_scope_is_nonempty(
     )
 
 
+def _assert_adapter_algebra_contract(
+    network_type: str, network_config: Dict[str, Any], base_model_path: str,
+    train_config: Dict[str, Any]
+) -> None:
+    """Refuse an adapter algebra this run cannot train, before the model loads.
+
+    A missing field normalizes to ordinary LoRA without weight decomposition,
+    which is what every YAML written before this existed means. ``train_config``
+    is here for ``blocks_to_swap``, which lives in that section: without it the
+    refusal would land after the checkpoint is resident.
+    """
+    from core.adapters.spec import ALGORITHMS
+    from core.training.adapters.base_adapter import (
+        TrainingAdapterSpec, refuse_untrainable_algebra)
+    from core.training.arch import ARCH_REGISTRY
+
+    algorithm = str(network_config.get('adapter_algorithm') or 'lora').strip().lower()
+    if algorithm not in ALGORITHMS:
+        raise ValueError(
+            f"network.adapter_algorithm={algorithm!r} is not one of "
+            f"{list(ALGORITHMS)}")
+    if bool(network_config.get('weight_decompose', False)):
+        raise ValueError(
+            "network.weight_decompose is accepted but not implemented: DoRA, "
+            "DoHa and DoKr are Phase 3 (docs/guides/LYCORIS_ADAPTER_DESIGN.md). "
+            "Set weight_decompose: false.")
+    # Built before the arch lookup so a stale adapter_config is refused by name
+    # on an ORDINARY LoRA run too, where nothing else would ever read it.
+    spec = TrainingAdapterSpec(algorithm=algorithm,
+                               options=network_config.get('adapter_config') or {})
+    if spec.is_ordinary_lora:
+        return
+    if network_type != 'lora':
+        # ReLoRA merges and reinitializes the branch and resets optimizer state;
+        # neither is defined for a Hadamard or Kronecker factorization yet.
+        raise ValueError(
+            f"network.adapter_algorithm={algorithm!r} is supported for "
+            f"network.type='lora' only, not '{network_type}'. ReLoRA's merge / "
+            f"reinitialize and optimizer reset are defined for the ordinary "
+            f"low-rank branch alone.")
+    from core.model_loader import ModelLoader
+
+    architecture = ModelLoader.detect_model_type(base_model_path)
+    handler = ARCH_REGISTRY.get(architecture)
+    if handler is None:
+        return  # the trainer's own backstop answers for an unknown name
+    refuse_untrainable_algebra(spec, handler.adapter_capability,
+                               int(train_config.get('blocks_to_swap', 0) or 0))
+
+
 def _apply_reference_training_contract(
     base_model_path: str, train_config: Dict[str, Any]
 ) -> None:
@@ -814,6 +864,8 @@ def _prepare_training_process_config(
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
     _assert_training_scope_is_nonempty(network_type, train_config)
+    _assert_adapter_algebra_contract(network_type, network_config,
+                                     base_model_path, train_config)
     _apply_reference_training_contract(base_model_path, train_config)
     _apply_sensenova_training_contract(
         base_model_path, network_type, train_config, process_config
@@ -2475,6 +2527,9 @@ def main():
                 lora_rank=network_config.get('linear', 16),
                 lora_alpha=network_config.get('linear_alpha', 16),
                 lora_dtype=network_config.get('lora_dtype', 'fp32'),
+                adapter_algorithm=network_config.get('adapter_algorithm') or 'lora',
+                weight_decompose=bool(network_config.get('weight_decompose', False)),
+                adapter_config=network_config.get('adapter_config') or {},
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,

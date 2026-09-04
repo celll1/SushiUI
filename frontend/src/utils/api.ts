@@ -1704,6 +1704,11 @@ export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boo
 export interface ArchAdapterFamilies {
   supported: AdapterFamily[];
   unsupported: Partial<Record<AdapterFamily, string>>;
+  // The TRAINING axis, and it is a different list: an architecture may load a
+  // family whose trainer does not exist yet. A training UI must read this one.
+  // Optional so an older backend without the keys still type-checks.
+  trainable?: AdapterFamily[];
+  untrainable?: Partial<Record<AdapterFamily, string>>;
   block_swap?: {
     order: "before_split" | "after_split" | "no_block_swap";
     effect: "refused" | "not_offloaded" | "not_applicable";
@@ -1916,6 +1921,33 @@ export const chainContinuationOverlapLengths = (
     .map(([, end]) => end)
     .filter((end) => end >= min && end <= max);
 };
+
+// The adapter algebras a TRAINING run may pick for `arch`, in the spelling
+// `TrainingRunCreateRequest.adapter_algorithm` uses.
+//
+// Fails CLOSED, unlike the training-feature helpers below, and deliberately:
+// "lora" alone is what every architecture has always offered, so an unknown
+// arch or an unloaded matrix loses nothing, while the opposite direction would
+// offer an algebra the backend refuses before the model loads.
+export const trainableAdapterAlgorithms = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): Array<"lora" | "loha" | "lokr"> => {
+  const families = arch ? caps?.adapter_families?.[arch]?.trainable : undefined;
+  if (!families) return ["lora"];
+  const offered = ["lora", "loha", "lokr"] as const;
+  const trainable = offered.filter((name) => families.includes(name));
+  return trainable.length ? [...trainable] : ["lora"];
+};
+
+// The backend's own sentence for an algebra this architecture will not train,
+// for a tooltip beside a choice that is not offered.
+export const adapterTrainingRefusalReason = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  algorithm: AdapterFamily
+): string | undefined =>
+  arch ? caps?.adapter_families?.[arch]?.untrainable?.[algorithm] : undefined;
 
 // One training-config feature's refusal for one architecture.
 export interface TrainingFeatureRefusal {
@@ -7350,6 +7382,15 @@ export interface TrainingRunCreateRequest {
   lora_rank?: number;
   lora_alpha?: number;
   network_type?: string;
+  // Which adapter algebra the run trains. Enabled per architecture AND per
+  // axis -- `adapter_families[arch].trainable` in GET /schema/arch-capabilities,
+  // which is NOT the same list as `supported` (what that architecture can
+  // load). A run whose row is closed is refused before the model loads.
+  adapter_algorithm?: "lora" | "loha" | "lokr";
+  // DoRA/DoHa/DoKr. Accepted as a field and refused as a value (Phase 3).
+  weight_decompose?: boolean;
+  // Algebra-specific options; LoKr takes `factor` and `decompose_both`.
+  adapter_config?: Record<string, unknown> | null;
   save_every?: number;
   save_every_unit?: string;
   max_step_saves_to_keep?: number | null;

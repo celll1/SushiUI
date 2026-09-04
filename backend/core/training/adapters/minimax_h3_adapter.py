@@ -154,6 +154,9 @@ def iter_minimax_h3_lora_targets(
 class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for the MiniMax-H3 DiT."""
 
+    #: This arch's forward runs without autocast, so its branch casts per call.
+    LORA_LAYER_CLS = MiniMaxH3LoRALinearLayer
+
     def __init__(self, trainer, lora_rank: int, lora_alpha: int,
                  lora_dtype: torch.dtype = torch.float32,
                  scope: Optional[Dict[str, bool]] = None):
@@ -176,9 +179,7 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
                 continue  # idempotent / stacking-safe
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
-            lora_layer = MiniMaxH3LoRALinearLayer(
-                current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype,
-            )
+            lora_layer = self.build_branch(current, lora_name)
             if isinstance(attr, int):
                 parent[attr] = lora_layer
             else:

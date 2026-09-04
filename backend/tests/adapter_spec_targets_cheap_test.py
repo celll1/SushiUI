@@ -25,6 +25,7 @@ for _p in (_REPO, _BACKEND):
         sys.path.insert(0, _p)
 
 from core.adapters import (  # noqa: E402
+    AXIS_GENERATION,
     AdapterIncompatible,
     AdapterRefusal,
     AdapterSpec,
@@ -354,8 +355,8 @@ def test_enumeration_passes_the_branch_dtype_default_through():
 ORDINARY_ONLY = {("lora", False)}
 #: The architectures whose generation branch builders run on
 #: ``build_adapter_branch`` and which are gated by
-#: ``adapter_lycoris_roundtrip_cheap_test.py``. MiniMax-H3 and SenseNova are
-#: gated separately; SD1.5/SDXL never reach ``AdapterSession``.
+#: ``adapter_lycoris_roundtrip_cheap_test.py`` -- every one that builds an
+#: ``AdapterSession``. SD1.5/SDXL never reach one.
 ADDITIVE_LYCORIS = ORDINARY_ONLY | {("loha", False), ("lokr", False)}
 SHIPPED_PAIRS = {
     "sd15": ORDINARY_ONLY,
@@ -368,11 +369,11 @@ SHIPPED_PAIRS = {
     "krea2": ADDITIVE_LYCORIS,
     "flux2": ADDITIVE_LYCORIS,
     "ltx2": ADDITIVE_LYCORIS,
-    "minimax_h3": ORDINARY_ONLY,
+    "minimax_h3": ADDITIVE_LYCORIS,
     # sd-scripts codec only: the diffusers/PEFT branch bakes (lora_A|lora_B)
     # into its key regexes, so a LyCORIS file reaches no grouper there.
     "acestep": ADDITIVE_LYCORIS,
-    "sensenova": ORDINARY_ONLY,
+    "sensenova": ADDITIVE_LYCORIS,
 }
 
 
@@ -401,7 +402,7 @@ class TestArchAdapterCapability:
             capability = handler.adapter_capability
             assert set(capability.supported) == SHIPPED_PAIRS[name], name
             assert capability.supports("lora") is True, name
-            capability.require("lora", False)
+            capability.require("lora", False, AXIS_GENERATION)
 
     def test_no_architecture_enables_a_weight_decomposed_pair(self):
         """DoRA/DoHa/DoKr are Phase 3. A flip that reached the decomposition
@@ -425,12 +426,23 @@ class TestArchAdapterCapability:
                     reason = capability.refusal_reason(algorithm, decompose)
                     assert reason and name in reason, label
                     with pytest.raises(ValueError):
-                        capability.require(algorithm, decompose)
+                        capability.require(algorithm, decompose,
+                                           AXIS_GENERATION)
 
-    def test_no_architecture_carries_additive_branches_over_a_quantized_base(self):
+    #: The only two architectures with NO dense configuration: every LoRA target
+    #: SenseNova has is an ``Int8Linear`` and MiniMax-H3's whole DiT block stack
+    #: is ``Fp8Linear``, so their LoHa/LoKr rows ARE the quantized-base case and
+    #: declaring it pending would be false. Everywhere else a dense checkpoint
+    #: exists and nothing has measured the quantized one.
+    QUANTIZED_BASE_ADDITIVE = {"minimax_h3", "sensenova"}
+
+    def test_only_the_dense_less_architectures_carry_additive_over_a_quantized_base(self):
         for name, handler in self._registry().items():
             capability = handler.adapter_capability
-            assert capability.quantized_base_additive_family is False, name
+            assert capability.quantized_base_additive_family is (
+                name in self.QUANTIZED_BASE_ADDITIVE), name
+            # A reason either way: the refusal where it is False, the SCOPE of
+            # what is and is not claimed where it is True.
             assert capability.quantized_base_reason, name
 
     def test_every_registered_architecture_declares_the_additive_family(self):
@@ -457,9 +469,23 @@ class TestArchAdapterCapability:
                     assert additive.split(": ", 1)[1] in decomposed, label
 
     def test_the_two_later_gate_architectures_are_marked_as_such(self):
+        """``additive_gated`` reads on the TRAINING axis now: both generate a
+        LoHa/LoKr and neither trains one. Derived as well as named, so the flag
+        cannot stay behind when either axis moves."""
+        from core.adapters.capability import AXIS_TRAINING
+
         gated = {name for name, handler in self._registry().items()
                  if handler.adapter_capability.additive_gated}
         assert gated == {"minimax_h3", "sensenova"}
+        for name, handler in self._registry().items():
+            capability = handler.adapter_capability
+            additive = {("loha", False), ("lokr", False)}
+            generates = additive <= set(capability.supported)
+            trains = bool(additive & set(capability.trainable))
+            assert (generates and not trains) is (name in gated), name
+            if name in gated:
+                reason = capability.refusal_reason("loha", False, AXIS_TRAINING)
+                assert "training gate of their own" in reason, name
 
     def test_the_design_doc_dora_verdicts_are_declared_verbatim(self):
         expected = {
@@ -480,7 +506,7 @@ class TestArchAdapterCapability:
         assert set(capability.supported) == set()
         assert capability.supports("lora") is False
         with pytest.raises(ValueError):
-            capability.require("lora", False)
+            capability.require("lora", False, AXIS_GENERATION)
 
     def test_an_incomplete_declaration_is_rejected_at_construction(self):
         from core.training.arch.base_arch import AdapterCapability

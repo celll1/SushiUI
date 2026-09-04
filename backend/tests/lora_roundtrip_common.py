@@ -29,6 +29,7 @@ __all__ = [
     "LoRALinearLayer",  # re-exported: every architecture's wrapper class
     "lora_delta",
     "module_ids",
+    "randomise_branch_tensors",
     "randomise_lora_layers",
     "warning_codes",
     "warning_probe",
@@ -47,6 +48,23 @@ def randomise_lora_layers(layers, seed=1234, std=0.3):
         for layer in layers.values():
             for weight in (layer.lora_down.weight, layer.lora_up.weight):
                 weight.copy_(torch.randn(weight.shape, generator=generator) * std)
+    return layers
+
+
+def randomise_branch_tensors(layers, seed=1234, std=0.3):
+    """``randomise_lora_layers`` for any algebra, through ``branch_tensors()``.
+
+    LoHa's ``hada_w2_a`` and LoKr's zeroed operand start at zero for the same
+    reason ``lora_up`` does, so an untouched adapter's delta is identically zero
+    and every "the forward matched" claim would be vacuous.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for layer in layers.values():
+            for weight in layer.branch_tensors().values():
+                if isinstance(weight, torch.nn.Parameter):
+                    weight.copy_(
+                        torch.randn(weight.shape, generator=generator) * std)
     return layers
 
 

@@ -113,13 +113,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
 
         count = 0
         for module_path, parent, attr, current in unwrapped:
-            wrapper = LoRALinearLayer(
-                current,
-                self.lora_rank,
-                self.lora_alpha,
-                module_path,
-                self.lora_dtype,
-            )
+            wrapper = self.build_branch(current, module_path)
             setattr(parent, attr, wrapper)
             self.register_lora_layer(lora_layers, module_path, wrapper, component)
             count += 1

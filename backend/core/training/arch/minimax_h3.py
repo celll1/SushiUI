@@ -22,8 +22,8 @@ raises, and ``api.arch_capabilities.TRAINING_UNSUPPORTED`` declares it.
 from __future__ import annotations
 
 from core.training.arch.base_arch import (
-    ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
-    QUANTIZED_ADDITIVE_PENDING, declare_adapter_capability,
+    ArchHandler, PHASE2_PENDING, SampleContext, TrainStepContext,
+    QUANTIZED_ADDITIVE_SHIPPED, declare_adapter_capability, resolve_scope_csv,
 )
 from core.training.components.wiring import MINIMAX_H3_TEMPORAL, MINIMAX_H3_WIRING
 from core.training.ops.minimax_h3_ops import (
@@ -38,18 +38,19 @@ class MiniMaxH3ArchHandler(ArchHandler):
     adapter_capability = declare_adapter_capability(
         "minimax_h3",
         additive_family=True,
+        # Generation takes LoHa/LoKr; training does not, and the gate is this
+        # architecture's own rather than the general Phase 2 step.
         additive_gated=True,
         initial_dora="deferred",
-        additive_reason=(
-            "LoHa/LoKr need a gate of their own: the ConvRot training forward "
-            "and the activation dtype policy (this forward runs without "
-            "torch.autocast) dominate more of the step"),
+        additive_reason=PHASE2_PENDING,
         dora_reason=(
             "DoRA is deferred behind the FP8/ConvRot dtype policy and the "
             "custom QKV row mapping"),
+        quantized_base_additive_family=True,
         quantized_base_reason=(
-            f"{QUANTIZED_ADDITIVE_PENDING}; the FP8/ConvRot dtype policy "
-            f"governs it here"),
+            f"{QUANTIZED_ADDITIVE_SHIPPED}. Here that is the whole DiT block "
+            f"stack, whose attn/ff Linears are Fp8Linear; the fp32 AdaLN and "
+            f"head projections are the only dense targets"),
     )
     # 16x VAE spatial compression x the transformer's own 2x2 patchify => every
     # training canvas dimension must be a multiple of 32.

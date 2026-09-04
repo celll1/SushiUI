@@ -96,7 +96,7 @@ import torch
 from torch import nn
 from safetensors import safe_open
 
-from core.adapters.groups import (TensorGroup, declared_groups,
+from core.adapters.groups import (_LEGACY_ALIASES, TensorGroup, declared_groups,
                                   group_adapter_tensors, split_adapter_suffix)
 from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
 from core.models.ideogram4.vendor.int8_linear import Int8Linear
@@ -135,17 +135,15 @@ def declared_branch_count(raw: Dict[str, torch.Tensor]) -> int:
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
 ) -> Dict[str, TensorGroup]:
-    """Group raw LoRA tensors -> {module_path: TensorGroup}.
+    """COMPLETE factor groups by module path, whatever the algebra.
 
-    Groups missing a down/up pair are dropped, as is any other algebra
-    (``TensorGroup`` answers to ``["down"]``/``["up"]``/``.get("alpha")``, which
-    is what the builder reads). There is no cond/uncond split here (unlike
-    Ideogram 4's), so every key that parses is kept -- including
-    understanding-branch ones, which ``apply_lora_group`` reaches because it
-    enumerates both MoT halves.
+    ``group_adapter_tensors`` already drops the incomplete ones; a down/up
+    filter on top would silently drop every LoHa and LoKr group. There is no
+    cond/uncond split here (unlike Ideogram 4's), so every key that parses is
+    kept -- including understanding-branch ones, which ``apply_lora_group``
+    reaches because it enumerates both MoT halves.
     """
-    grouped = group_adapter_tensors(raw).groups
-    return {m: g for m, g in grouped.items() if "down" in g and "up" in g}
+    return group_adapter_tensors(raw).groups
 
 
 def _looks_like_sensenova_key(key: str) -> bool:
@@ -349,6 +347,59 @@ def metadata_alpha(metadata: Optional[Dict[str, str]]) -> Optional[float]:
     return None
 
 
+def branch_dtype(base: nn.Module) -> torch.dtype:
+    """SenseNova's own branch dtype: the base COMPUTE dtype (int8 base -> bf16).
+
+    Deliberately not ``core.adapters.lora_branch_dtype``, which has no bias
+    tier -- every one of the 294 targets is an ``Int8Linear`` whose weight is
+    not floating point at all, so the bias is the only real signal.
+    """
+    bias = getattr(base, "bias", None)
+    if bias is not None and bias.dtype.is_floating_point:
+        return bias.dtype
+    weight_dtype = base.weight.dtype
+    if weight_dtype.is_floating_point and "float8" not in str(weight_dtype):
+        return weight_dtype
+    return torch.bfloat16
+
+
+def _as_group(weights, module_path: str) -> TensorGroup:
+    """``apply_lora_group`` is a public helper (``smoke.py``, several tests)
+    whose signature predates the engine's canonical tensor names, so a plain
+    ``{"down", "up", "alpha"}`` mapping still has to work.
+
+    Reads the engine's own alias table rather than restating it: a second copy
+    of that vocabulary is what drifts, and a rename there breaks this import
+    loudly instead of silently dropping a factor.
+    """
+    if isinstance(weights, TensorGroup):
+        return weights
+    return TensorGroup(module_path,
+                       {_LEGACY_ALIASES.get(k, k): v for k, v in weights.items()})
+
+
+def build_lora_branch(
+    base: nn.Module,
+    group: TensorGroup,
+    module_path: str,
+    file_alpha: Optional[float] = None,
+) -> nn.Module:
+    """One branch over ``base``, or ``SHAPE_MISMATCH``.
+
+    The algebra is the group's: ``build_adapter_branch`` dispatches on the
+    tensor names. Alpha precedence is the per-key ``.alpha`` tensor, then the
+    file's metadata (``file_alpha``), then the rank. The request strength is
+    NOT folded here -- ``add_branch(strength=)`` refolds it into the branch's
+    own scale, and multiplying it onto the delta is different arithmetic.
+    """
+    from core.adapters import build_adapter_branch
+
+    return build_adapter_branch(base, _as_group(group, module_path),
+                                metadata_alpha=file_alpha,
+                                lora_dtype=branch_dtype(base),
+                                lora_name=module_path)
+
+
 def apply_lora_group(
     transformer: nn.Module,
     grouped: Dict[str, Dict[str, torch.Tensor]],
@@ -380,7 +431,7 @@ def apply_lora_group(
     ``file_alpha`` is the middle tier of the alpha precedence (see
     ``metadata_alpha``); it is used only for a module carrying no ``.alpha``.
     """
-    from core.adapters import CompositeAdapterLayer, LoRALinearLayer
+    from core.adapters import SHAPE_MISMATCH, CompositeAdapterLayer
 
     applied = 0
 
@@ -392,45 +443,16 @@ def apply_lora_group(
         if weights is None:
             continue
 
-        down = weights["down"]
-        up = weights["up"]
-        alpha_tensor = weights.get("alpha")
-
         # add_branch refuses a branch built against a different base object, so
         # the base is resolved through the composite rather than re-wrapped.
         true_original = (linear.original_module
                          if isinstance(linear, CompositeAdapterLayer) else linear)
+
+        branch_layer = build_lora_branch(true_original, weights, module_path,
+                                         file_alpha)
+        if branch_layer is SHAPE_MISMATCH:
+            continue
         lora_original_modules.setdefault(module_path, true_original)
-
-        rank = int(down.shape[0])
-        if alpha_tensor is not None:
-            alpha_value = float(alpha_tensor.item())
-        elif file_alpha is not None:
-            alpha_value = file_alpha
-        else:
-            alpha_value = float(rank)
-
-        branch_layer = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
-                                       lora_name=module_path)
-        device = true_original.weight.device
-
-        # Match the base compute dtype (int8 base -> bf16 compute), same
-        # fallback chain as ideogram4_lora.apply_lora_group: a real floating
-        # bias wins, else a real floating (non-quantized) weight dtype, else
-        # bf16 for a quantized-only base with no bias.
-        if getattr(true_original, "bias", None) is not None and true_original.bias.dtype.is_floating_point:
-            compute_dtype = true_original.bias.dtype
-        elif (true_original.weight.dtype.is_floating_point and
-              "float8" not in str(true_original.weight.dtype)):
-            compute_dtype = true_original.weight.dtype
-        else:
-            compute_dtype = torch.bfloat16
-
-        with torch.no_grad():
-            branch_layer.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
-            branch_layer.lora_up.weight.data = up.to(device=device, dtype=compute_dtype)
-        branch_layer.lora_down = branch_layer.lora_down.to(dtype=compute_dtype)
-        branch_layer.lora_up = branch_layer.lora_up.to(dtype=compute_dtype)
 
         # attach() is idempotent: a second LoRA over this slot gets the SAME
         # composite. add_branch refolds the strength into the branch's own

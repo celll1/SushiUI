@@ -18,6 +18,7 @@ Author: Claude (2026-01-04)
 
 from pathlib import Path
 from typing import Dict, List, Any
+import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 import math
@@ -128,9 +129,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     lora_name = f"lora_unet_{block_name}_{child_name}".replace(".", "_")
 
                     # Create LoRA layer
-                    lora_layer = LoRALinearLayer(
-                        child_module, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                    )
+                    lora_layer = self.build_branch(child_module, lora_name)
 
                     # Replace original Linear with LoRA layer
                     # Navigate to parent module and set attribute
@@ -185,9 +184,11 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     if is_adapter_covered(current):
                         continue
                     lora_name = f"lora_te1_text_model_encoder_layers_{layer_idx}_mlp_{leaf}"
-                    lora_layer = LoRALinearLayer(
-                        current, self.lora_rank, self.lora_alpha, lora_name
-                    )
+                    # fp32, not self.lora_dtype: both TE sites have always
+                    # used the constructor default, and routing them through it
+                    # would change what reaches the optimizer on a bf16 run.
+                    lora_layer = self.build_branch(current, lora_name,
+                                                   dtype=torch.float32)
                     setattr(layer.mlp, leaf, lora_layer)
                     self.register_lora_layer(lora_layers, lora_name, lora_layer,
                                              LORA_COMPONENT_TEXT_ENCODER_1)
@@ -202,9 +203,8 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     if is_adapter_covered(current):
                         continue
                     lora_name = f"lora_te2_text_model_encoder_layers_{layer_idx}_mlp_{leaf}"
-                    lora_layer = LoRALinearLayer(
-                        current, self.lora_rank, self.lora_alpha, lora_name
-                    )
+                    lora_layer = self.build_branch(current, lora_name,
+                                                   dtype=torch.float32)
                     setattr(layer.mlp, leaf, lora_layer)
                     self.register_lora_layer(lora_layers, lora_name, lora_layer,
                                              LORA_COMPONENT_TEXT_ENCODER_2)

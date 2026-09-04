@@ -855,6 +855,10 @@ def test_frozen_understanding_branch_conditioning_is_unchanged():
     class Frozen:
         train_text_encoder = False
         sensenova_four_phase = None
+        # What _encode_sensenova_batch_prefix stashes for a single item that
+        # drew no null label, and the per-batch alternate-prefix memo slot.
+        _sensenova_prefix_cfg_null = False
+        _sensenova_alt_cfg_null_prefix = None
 
         def encode_caption(self, *_a, **_k):
             raise AssertionError("the frozen branch must not re-encode")

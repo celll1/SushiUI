@@ -832,7 +832,14 @@ def test_mnt_recomputes_the_prefix_only_when_the_understanding_branch_trains():
     first = object()
     rebuilt = object()
 
-    frozen = SimpleNamespace(train_text_encoder=False)
+    # What the batch assembly stashes for a single item that drew no null
+    # label; the frozen branch reads it to decide whether the assembly prefix
+    # still carries this iteration's label.
+    frozen = SimpleNamespace(
+        train_text_encoder=False,
+        _sensenova_prefix_cfg_null=False,
+        _sensenova_alt_cfg_null_prefix=None,
+    )
     conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, frozen)
     assert conditioning(first, captions=["c"], mnt_index=0)[3] is first
     assert conditioning(first, captions=["c"], mnt_index=1)[3] is first
@@ -843,7 +850,12 @@ def test_mnt_recomputes_the_prefix_only_when_the_understanding_branch_trains():
         calls.append((caption, requires_grad))
         return rebuilt, None
 
-    trainable = SimpleNamespace(train_text_encoder=True, encode_caption=encode_caption)
+    trainable = SimpleNamespace(
+        train_text_encoder=True,
+        encode_caption=encode_caption,
+        _sensenova_prefix_cfg_null=False,
+        _sensenova_alt_cfg_null_prefix=None,
+    )
     conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, trainable)
     # Iteration 0 reuses the prefix the batch loop already built.
     assert conditioning(first, captions=["c"], mnt_index=0)[3] is first

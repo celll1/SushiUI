@@ -26,6 +26,8 @@ Run with:
     venv/Scripts/python.exe -m pytest backend/tests/ltx2_lora_roundtrip_cheap_test.py -v
 """
 
+import gc
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -150,6 +152,20 @@ def file_branch_tensors(path, target):
 @pytest.fixture
 def warnings_seen(monkeypatch):
     return warning_probe(monkeypatch)
+
+
+def assert_refusal_names_the_file(recorded, code, name, directory):
+    """One warning, the SHARED code, the basename -- and never the directory.
+
+    The message is returned raw in the response's ``warnings[]`` and written
+    into the PNG metadata chunk, so a resolved path in it is a leak; an
+    arch-prefixed code (``ltx2_lora_not_found``) is invisible to every client
+    that switches on the cross-architecture taxonomy.
+    """
+    assert warning_codes(recorded) == [code]
+    message = recorded[-1][1]
+    assert name in message, f"the refusal does not name the file: {message!r}"
+    assert str(directory) not in message, f"a resolved path leaked: {message!r}"
 
 
 def test_ltx2_generation_wraps_exactly_the_targets_the_trainer_wrapped(tmp_path):
@@ -419,10 +435,12 @@ def test_ltx2_a_second_request_does_not_stack_onto_a_leaked_wrapper(tmp_path):
         assert len(modules[target]) == 1, f"{target}: {modules[target].branch_names}"
 
 
-def test_ltx2_missing_file_refuses_and_warns(warnings_seen):
+def test_ltx2_missing_file_refuses_and_warns(tmp_path, warnings_seen):
+    absent = tmp_path / "no_such_ltx2_lora.safetensors"
     with pytest.raises((FileNotFoundError, ValidationError, RuntimeError)):
-        _Backend(build_dit())._load_lora_ltx2([{"path": "no_such_ltx2_lora.safetensors"}])
-    assert "lora_not_found" in warning_codes(warnings_seen)
+        _Backend(build_dit())._load_lora_ltx2([{"path": str(absent)}])
+    assert_refusal_names_the_file(
+        warnings_seen, "lora_not_found", absent.name, tmp_path)
 
 
 def test_ltx2_unreadable_file_refuses_and_warns(tmp_path, warnings_seen):
@@ -431,7 +449,8 @@ def test_ltx2_unreadable_file_refuses_and_warns(tmp_path, warnings_seen):
     dit = build_dit()
     with pytest.raises(RuntimeError):
         _Backend(dit)._load_lora_ltx2([{"path": str(broken)}])
-    assert "lora_load_failed" in warning_codes(warnings_seen)
+    assert_refusal_names_the_file(
+        warnings_seen, "lora_load_failed", broken.name, tmp_path)
     assert not wrapped_paths(dit)
 
 
@@ -445,7 +464,8 @@ def test_ltx2_zero_matched_targets_refuses_and_warns(tmp_path, warnings_seen):
     dit = build_dit()
     with pytest.raises((ValidationError, RuntimeError)):
         _Backend(dit)._load_lora_ltx2([{"path": str(ghost), "strength": 1.0}])
-    assert "lora_incompatible" in warning_codes(warnings_seen)
+    assert_refusal_names_the_file(
+        warnings_seen, "lora_incompatible", ghost.name, tmp_path)
     assert not wrapped_paths(dit), "a refused load left wrappers on the DiT"
 
 
@@ -465,7 +485,8 @@ def test_ltx2_partly_matching_file_is_refused_atomically(tmp_path, warnings_seen
         _Backend(dit)._load_lora_ltx2([{"path": str(partial)}])
     assert excinfo.value.code == "lora_partial"
     assert not wrapped_paths(dit)
-    assert "lora_partial" in warning_codes(warnings_seen)
+    assert_refusal_names_the_file(
+        warnings_seen, "lora_partial", partial.name, tmp_path)
 
 
 def test_ltx2_two_loras_over_the_same_targets_stack_instead_of_refusing(
@@ -617,6 +638,80 @@ def test_ltx2_evicted_model_drops_the_bookkeeping_before_the_next_load(tmp_path)
     b_ids_before = module_ids(dit_b)
     backend.ltx2_components = {"transformer": dit_b}
     backend._load_lora_ltx2([])  # a generation that installs no LoRA
+    backend._unload_lora_ltx2()
+    assert module_ids(dit_b) == b_ids_before
+    assert not (module_ids(dit_b) & a_ids)
+
+
+def test_ltx2_the_bookkeeping_key_dies_with_the_transformer_it_describes(tmp_path):
+    """The original-module map must not outlive the model it describes.
+
+    ``id()`` cannot express that: a freed object's address is REUSABLE, so a
+    reload landing on the dead transformer's address would read as the same
+    model and the next restore would splice model A's Linears into model B.
+    ``AdapterSession``'s ``_ComponentState`` keys on a weakref, which this drives
+    through LTX-2.3's real loader -- an arch that kept its own id-keyed map
+    beside the session would fail here.
+    """
+    path, trained_paths = train_and_save(tmp_path)
+
+    dit_a = build_dit()
+    backend = _Backend(dit_a)
+    backend._load_lora_ltx2([{"path": path, "strength": 1.0}])
+    state = backend._ltx2_lora_session.state("transformer")
+    assert isinstance(state.ref, weakref.ref) and state.ref() is dit_a
+    assert len(state.originals) == len(trained_paths)
+
+    backend.ltx2_components = {}
+    del dit_a
+    gc.collect()
+    assert state.ref() is None, (
+        "the bookkeeping holds the transformer alive, so its key outlives the "
+        "model and an address reuse reads as the same model")
+
+    dit_b = _Dit()
+    b_before = dict(dit_b.named_modules())
+    backend.ltx2_components = {"transformer": dit_b}
+    assert backend._load_lora_ltx2([{"path": path, "strength": 1.0}]) == len(trained_paths)
+    assert backend._unload_lora_ltx2() == len(trained_paths)
+    for target in trained_paths:
+        assert dict(dit_b.named_modules())[target] is b_before[target], target
+
+
+def test_ltx2_a_no_lora_request_still_restores_and_still_resets(tmp_path):
+    """The empty-config exit is not an exit from the reset.
+
+    ``_load_lora_ltx2`` unloads BEFORE it returns early on an empty request, and
+    ``AdapterSession.load`` binds before ITS empty-config return. Both halves
+    matter: a wrapper that outlived its request would otherwise generate on a
+    request that selected no LoRA, and an evicted model's bookkeeping would be
+    parked for whatever transformer is loaded next.
+    """
+    path, trained_paths = train_and_save(tmp_path)
+
+    dit = build_dit()
+    backend = _Backend(dit)
+    backend._load_lora_ltx2([{"path": path, "strength": 1.0}])
+    assert wrapped_paths(dit) == trained_paths
+    # The restore that never happened (a finally that itself raised, say).
+    assert backend._load_lora_ltx2([]) == 0
+    assert not wrapped_paths(dit), (
+        "a request that selected no LoRA generated with the previous request's "
+        "adapters still installed")
+    assert not backend._ltx2_lora_wrapped_keys
+
+    dit_a = build_dit()
+    backend = _Backend(dit_a)
+    backend._load_lora_ltx2([{"path": path, "strength": 1.0}])
+    a_ids = module_ids(dit_a) | {id(m) for m in backend._ltx2_lora_original_modules.values()}
+    dit_b = _Dit()
+    b_ids_before = module_ids(dit_b)
+
+    backend.ltx2_components = {"transformer": dit_b}
+    assert backend._load_lora_ltx2([]) == 0
+    assert not backend._ltx2_lora_wrapped_keys, (
+        "model A's map survived the no-LoRA request; the next restore would "
+        "splice it into model B")
     backend._unload_lora_ltx2()
     assert module_ids(dit_b) == b_ids_before
     assert not (module_ids(dit_b) & a_ids)

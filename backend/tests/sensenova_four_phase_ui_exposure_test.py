@@ -274,8 +274,11 @@ def test_the_flag_is_submitted_saved_and_restored():
     # not persist is a setting the user loses on the next run.
     assert '"sensenova_four_phase_eviction", "sensenova_four_phase_shared_prefix",' in tsx
     assert '"sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",' in tsx
-    assert "sensenovaFourPhaseEviction: params.sensenova_four_phase_eviction," in tsx
-    assert 'updateParam("sensenova_four_phase_eviction", config.sensenovaFourPhaseEviction)' in tsx
+    # The preset payload is derived from getRequestData() minus
+    # PRESET_EXCLUDED_KEYS, so the two assertions above cover it too; the flag
+    # is not excluded. training_preset_payload_test.py owns that gate.
+    assert "sensenova_four_phase_eviction" not in tsx[
+        tsx.index("const PRESET_EXCLUDED_KEYS"):tsx.index("const PRESET_RESTORABLE_KEYS")]
 
 
 def test_the_control_exists_and_states_each_precondition_the_backend_checks():

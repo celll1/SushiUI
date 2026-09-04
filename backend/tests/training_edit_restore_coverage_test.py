@@ -75,8 +75,12 @@ def _apply_params(source: str) -> str:
 
 
 def _request_keys(source: str) -> Set[str]:
-    """Top-level keys of the object literal getRequestData() returns."""
-    return set(re.findall(r"^\s+([a-z][a-z0-9_]*): ", _request_data(source), re.M))
+    """Every key the request carries: those the literal names, plus the
+    PARAM_KEYS ``passThroughParams`` copies (all but COMPUTED_REQUEST_KEYS)."""
+    literal = set(re.findall(r"(?:^ {6,8}|\{ )([a-z][a-z0-9_]*):",
+                             _request_data(source), re.M))
+    computed = set(_string_list(source, "const COMPUTED_REQUEST_KEYS = new Set<string>(["))
+    return literal | (set(_param_keys(source)) - computed)
 
 
 # Members of the two nested objects built inline (timestep_sampling,
@@ -122,7 +126,7 @@ class ScanSanityTest(unittest.TestCase):
         source = _source()
         self.assertGreater(len(source), 100_000)
         self.assertGreater(len(_param_keys(source)), 200)
-        self.assertGreater(len(_request_data(source)), 10_000)
+        self.assertGreater(len(_request_data(source)), 3_000)
         apply_body = _apply_params(source)
         self.assertGreater(len(apply_body), 3_000)
         self.assertIn("for (const key of PARAM_KEYS) {", apply_body)

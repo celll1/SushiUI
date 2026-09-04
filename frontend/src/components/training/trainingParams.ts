@@ -126,6 +126,43 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
 
 /** Request fields applyParamsToState() restores through its own coercion or
  *  nested-object branches instead of the PARAM_KEYS loop. */
+// Request keys getRequestData() builds itself -- from a local text state, an
+// either-or pair, a method gate or a derived flag -- rather than copying from
+// `params`. Everything else in PARAM_KEYS is copied verbatim, so the request
+// enumerates nothing: see `passThroughParams`.
+const COMPUTED_REQUEST_KEYS = new Set<string>([
+  "lora_rank", "lora_alpha", "lora_dtype",
+  "adapter_algorithm", "weight_decompose", "adapter_config",
+  "total_steps", "epochs", "learning_rate",
+  "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon",
+  "optimizer_weight_decay", "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
+  "resume_from_checkpoint", "unet_lr", "text_encoder_lr",
+  "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
+  "cfg_uncond_drop_rate", "minit2i_label_drop_rate", "controlnet_type",
+  "controlnet_init_from_unet", "lllite_conditioning_channels", "lllite_rank",
+  "condition_cache_mode", "conditioning_mode", "outpaint_crop_min_area",
+  "outpaint_crop_max_area", "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob",
+  "outpaint_mask_channel", "outpaint_known_loss_weight", "outpaint_seam_loss_boost",
+  "outpaint_seam_ring_width", "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
+  "bucket_strategy", "multi_resolution_mode", "crop_augment_enable",
+  "crop_smaller_scale_range", "cache_latents_to_disk", "force_recache",
+  "force", "rescan_before_training", "use_reference_images",
+  "train_vision_encoder", "gradient_routing_ve", "vision_encoder_lr",
+  "relora_merge_every", "relora_merge_unit", "restart_warmup_steps",
+  "optimizer_reset_strategy", "optimizer_pruning_ratio",
+]);
+
+/** The PARAM_KEYS the request copies straight from `params`. */
+export function passThroughParams(
+  params: Record<string, any>
+): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const key of PARAM_KEYS) {
+    if (!COMPUTED_REQUEST_KEYS.has(key)) out[key] = params[key];
+  }
+  return out;
+}
+
 const PARAM_EXTRA_RESTORE_KEYS: string[] = [
   "base_resolutions", "regularization_type", "vision_encoder_path",
   "controlnet_pretrained_path", "condition_preprocessors",

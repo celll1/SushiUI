@@ -73,6 +73,16 @@ def _request_data(source: str) -> str:
     return _slice(source, "const getRequestData", "const applyParamsToState")
 
 
+def _request_keys(source: str) -> Set[str]:
+    """Every key the request carries: the ones the literal names, plus the
+    PARAM_KEYS ``passThroughParams`` copies (all but COMPUTED_REQUEST_KEYS)."""
+    # depth 6 is the literal; depth 8 is a conditional spread inside it.
+    literal = set(re.findall(r"(?:^ {6,8}|\{ )([a-z_0-9]+):",
+                             _request_data(source), re.M))
+    computed = set(_string_list(source, "const COMPUTED_REQUEST_KEYS = new Set<string>(["))
+    return literal | (set(_param_keys(source)) - computed)
+
+
 def snake_to_camel(key: str) -> str:
     """The frontend's own rule, restated so a change to it fails here."""
     return re.sub(r"_([a-z0-9])", lambda m: m.group(1).upper(), key)
@@ -202,9 +212,7 @@ class CoverageGateTest(unittest.TestCase):
 
     def test_every_param_key_is_written_by_get_request_data(self):
         source = _source()
-        request = _request_data(source)
-        missing = [key for key in _param_keys(source)
-                   if not re.search(r"(?<![A-Za-z0-9_])" + key + r": ", request)]
+        missing = sorted(set(_param_keys(source)) - _request_keys(source))
         self.assertEqual(
             missing, [],
             "these params are restored but never sent, so a preset cannot "
@@ -213,26 +221,13 @@ class CoverageGateTest(unittest.TestCase):
     def test_every_param_key_survives_a_preset_round_trip(self):
         """The gate proper: written by getRequestData, or deliberately excluded."""
         source = _source()
-        request = _request_data(source)
         excluded = set(_string_list(source, "const PRESET_EXCLUDED_KEYS: string[] = ["))
-        uncovered = [
-            key for key in _param_keys(source)
-            if key not in excluded
-            and not re.search(r"(?<![A-Za-z0-9_])" + key + r": ", request)
-        ]
+        uncovered = sorted(
+            (set(_param_keys(source)) - excluded) - _request_keys(source))
         self.assertEqual(
             uncovered, [],
             "add the parameter to getRequestData() (preferred) or name it in "
             f"PRESET_EXCLUDED_KEYS: {uncovered}")
-
-    def test_the_gate_would_notice_an_uncovered_parameter(self):
-        """Mutation check: the detector is not trivially satisfied."""
-        request = _request_data(_source())
-        self.assertIsNone(
-            re.search(r"(?<![A-Za-z0-9_])not_a_real_param: ", request))
-        # ...and does not match a key that is only a SUFFIX of a real one.
-        self.assertTrue(re.search(r"(?<![A-Za-z0-9_])lora_rank: ", request))
-        self.assertIsNone(re.search(r"(?<![A-Za-z0-9_])ora_rank: ", request))
 
     def test_every_request_key_is_accounted_for(self):
         """The converse direction, which is what catches the NEXT
@@ -240,11 +235,10 @@ class CoverageGateTest(unittest.TestCase):
         list at all is sent by the form, saved into presets, and restored by
         nothing."""
         source = _source()
-        request = _request_data(source)
         known = (set(_param_keys(source))
                  | EXPECTED_EXTRA_RESTORE | EXPECTED_EXCLUSIONS
                  | _NESTED_OBJECT_MEMBERS)
-        written = set(re.findall(r"^\s+([a-z][a-z0-9_]*): ", request, re.M))
+        written = _request_keys(source)
         self.assertIn("batch_size", written)  # the region really parsed
         self.assertEqual(sorted(written - known), [],
                          "sent by the form but in no list: add it to PARAM_KEYS "

@@ -1,6 +1,6 @@
 # SushiUI Training Framework - API Reference
 
-**Last Updated**: 2025-12-15
+**Last Updated**: 2026-09-04
 
 This document provides a comprehensive API reference for all components, classes, methods, and functions in the `backend/core/training` module.
 
@@ -10,10 +10,11 @@ This document provides a comprehensive API reference for all components, classes
 
 1. [LatentCache](#latentcache)
 2. [BucketManager](#bucketmanager)
-3. [TagGroupManager](#taggroupmanager)
-4. [TrainingConfigGenerator](#trainingconfiggenerator)
-5. [Utility Functions](#utility-functions)
-6. [BaseTrainer](#basetrainer)
+3. [VideoBucketManager](#videobucketmanager)
+4. [TagGroupManager](#taggroupmanager)
+5. [TrainingConfigGenerator](#trainingconfiggenerator)
+6. [Utility Functions](#utility-functions)
+7. [BaseTrainer](#basetrainer)
 
 ---
 
@@ -728,6 +729,58 @@ print(f"Best bucket: {bucket.width}x{bucket.height}")
 
 ---
 
+## VideoBucketManager
+
+**File**: `bucketing.py`
+
+Temporal bucketing for video clips. A standalone sibling of `BucketManager`: it
+keys buckets by the pair `(spatial_bucket, clip_length)`, so a batch drawn from
+one bucket is uniform in both the spatial size and the frame count, which is
+what lets the 5D latents stack. It reuses a `BucketManager` internally for the
+spatial bucket lists only and never mutates the image path.
+
+### Constructor
+
+```python
+VideoBucketManager(
+    base_resolutions: List[int],
+    divisibility: Optional[int] = None,
+    allowed_clip_lengths: Optional[List[int]] = None,
+    stride: int = 1,
+    multi_resolution_mode: Literal["max", "random"] = "max",
+    temporal_spec: Optional[TemporalSpec] = None,
+)
+```
+
+**Parameters**:
+- `base_resolutions` (List[int]): Base resolutions for the spatial buckets
+- `divisibility` (int, optional): Spatial divisibility; defaults to the
+  `temporal_spec`'s `pixel_align`, or the LTX spatial divisibility when no spec
+  is given. Video callers pass 32.
+- `allowed_clip_lengths` (List[int], optional): Candidate frame counts. Filtered
+  through `is_valid_clip_length` against `temporal_spec`; defaults to the spec's
+  `default_clip_lengths`, or `DEFAULT_CLIP_LENGTHS` when no spec is given.
+- `stride` (int): Frame stride used when picking a clip length (minimum 1)
+- `multi_resolution_mode` (Literal): Passed through to the internal `BucketManager`
+- `temporal_spec` (TemporalSpec, optional): Per-architecture temporal rules.
+  `None` selects the LTX-2.3 index-sampled rule this class shipped with
+  (`core.models.components.wiring.TemporalSpec`).
+
+### Instance Methods
+
+| Method | Description |
+|---|---|
+| `select_spatial_bucket(width, height, target_resolution=None)` | Spatial `BucketResolution` for a clip; no state mutation |
+| `pick_clip_length(num_frames, stride=None, source_fps=None)` | Clip length from this manager's allowed set, stride and temporal spec |
+| `assign_video_to_bucket(video_path, width, height, num_frames, caption="", stride=None, fps=None, target_resolution=None, dataset_unique_id=None)` | Assigns an item and returns `((BucketResolution, clip_length), video_info)`; the chosen bucket and clip length are in the info dict so the caller can build the clip cache key from the actual window used |
+| `clip_cache_params(...)` | Keys matching `LatentCache.compute_clip_hash` / `save_clip_latent` |
+| `get_bucket_counts()`, `get_items_by_bucket()`, `shuffle_buckets()`, `build_batch_indices(batch_size)` | As on `BucketManager`, but keyed by `(BucketResolution, clip_length)` |
+
+Module-level helpers for the same rules: `is_valid_clip_length`, `clip_span`,
+`pick_clip_length`, `get_video_spatial_bucket`, `clip_cache_key_extras`.
+
+---
+
 ## TagGroupManager
 
 **File**: `tag_group_utils.py`
@@ -1283,42 +1336,33 @@ Abstract base class for all trainers (LoRA, Full Parameter).
 
 ### Constructor
 
-```python
-BaseTrainer(
-    model_path: str,
-    output_dir: str,
-    run_name: str = None,
-    learning_rate: float = 1e-4,
-    device: str = "cuda",
-    unet_lr: Optional[float] = None,
-    text_encoder_lr: Optional[float] = None,
-    weight_dtype: str = "fp16",
-    training_dtype: str = "fp16",
-    output_dtype: str = "fp32",
-    vae_dtype: str = "fp16",
-    mixed_precision: bool = True,
-    debug_vram: bool = False,
-    use_flash_attention: bool = False,
-    min_snr_gamma: float = 5.0,
-)
-```
+`BaseTrainer.__init__` takes **45 keyword parameters** (plus `self`); only
+`model_path` and `output_dir` are required. They are not reproduced here — read
+the signature in `base_trainer.py` (`def __init__` on `BaseTrainer`), which
+carries the per-argument docstring, and
+`backend/core/training/TRAINING_PARAMS_GUIDE.md` for what the YAML keys behind
+them mean. Defaults visible to the API come from
+`backend/api/param_defaults.py` (`TRAINING_DEFAULTS`), the single source of
+truth for them; the literal defaults in this signature are the in-process
+fallbacks and are not restated in this document.
 
-**Parameters**:
-- `model_path` (str): Path to base model (safetensors or diffusers directory)
-- `output_dir` (str): Output directory for checkpoints
-- `run_name` (str, optional): Training run identifier (defaults to output_dir name)
-- `learning_rate` (float): Learning rate (default: 1e-4)
-- `device` (str): Device to use ("cuda" or "cpu", default: "cuda")
-- `unet_lr` (float, optional): U-Net learning rate (defaults to `learning_rate`)
-- `text_encoder_lr` (float, optional): Text encoder learning rate (defaults to `learning_rate`)
-- `weight_dtype` (str): Model weight dtype ("fp16", "bf16", "fp32", default: "fp16")
-- `training_dtype` (str): Training/activation dtype (default: "fp16")
-- `output_dtype` (str): Output latent dtype (default: "fp32")
-- `vae_dtype` (str): VAE-specific dtype (default: "fp16")
-- `mixed_precision` (bool): Enable autocast for mixed precision (default: True)
-- `debug_vram` (bool): Enable VRAM debugging logs (default: False)
-- `use_flash_attention` (bool): Enable Flash Attention (default: False)
-- `min_snr_gamma` (float): Min-SNR gamma value for loss weighting (default: 5.0)
+Grouped by concern:
+
+| Concern | Parameters |
+|---|---|
+| Model and run identity | `model_path`, `output_dir`, `run_name`, `run_id` (DB run id for metrics logging), `resume_from_checkpoint`, `train_config` |
+| Precision | `weight_dtype`, `training_dtype`, `output_dtype`, `vae_dtype`, `mixed_precision` |
+| Learning rates | `learning_rate`, `unet_lr`, `text_encoder_lr`, `text_encoder_1_lr`, `text_encoder_2_lr`, `image_encoder_lr` (each falls back to `learning_rate`, and the numbered text-encoder rates fall back to `text_encoder_lr` first) |
+| Optimizer options | `num_optimizer_groups`, `optimizer_cautious`, `optimizer_beta1`, `optimizer_beta2`, `optimizer_epsilon`, `optimizer_weight_decay`, `optimizer_schedule_free`, `optimizer_warmup_steps`, `optimizer_schedule_free_r`, `optimizer_schedule_free_weight_lr_power`, `optimizer_use_radam`, `optimizer_stochastic_rounding`. There is no `optimizer_is_paged`: paging is selected by the optimizer type name (`paged_adamw`, `paged_adamw8bit`, `paged_lion8bit`). The Schedule-Free and stochastic-rounding options apply to the ring-buffer optimizers only (`optimizers/RINGBUFFER_OPTIMIZERS.md`) |
+| Memory | `blocks_to_swap`, `use_pinned_memory` (`backend/core/memory_management/BLOCK_SWAP.md`), `activation_dispatch_enable`, `activation_dispatch_margin_gb`, `activation_dispatch_seed_coef`, `activation_dispatch_residual_frac`, `activation_dispatch_threshold_mb` |
+| Attention | `attention_backend`, `attention_impl`, `use_flash_attention` (deprecated compat boolean; re-derived as `attention_backend != 'native'` when a backend is set) |
+| Loss | `min_snr_gamma`, `reconstruction_loss_weight` |
+| Prompt chunking (SD/SDXL long prompts) | `prompt_chunking_mode`, `max_prompt_chunks` |
+| Device and debug | `device`, `debug_vram` |
+
+Everything else an architecture needs is read out of the `train_config` dict
+stored as `self.config`, not from a dedicated parameter. For example:
+
 - `audio_loss_weight` (float, via `train_config`): MiniMax-H3 only — weight of the
   audio half of its joint objective, `loss = video_mean + audio_loss_weight *
   audio_mean` with each modality's velocity MSE averaged over tokens, channels and
@@ -1334,7 +1378,8 @@ particular architecture.
 
 **Important Notes**:
 - This is an **abstract class** - use `LoRATrainer` or `FullParameterTrainer` instead
-- Automatically detects model type (SD1.5, SDXL, Z-Image)
+- Detects the model type and dispatches to the matching architecture handler
+  (`backend/core/training/arch/__init__.py`, `ARCH_REGISTRY`)
 - Loads model components separately (VAE, U-Net/Transformer, Text Encoders, Scheduler)
 
 ### Instance Attributes
@@ -1376,63 +1421,49 @@ Subclasses must implement:
 
 ```python
 @abstractmethod
-def setup_trainable_parameters(self) -> Tuple[torch.nn.Module, ...]:
-    """Setup trainable parameters (LoRA modules, full model, etc.)"""
-    pass
+def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    """Setup trainable parameters; returns optimizer parameter groups."""
 
 @abstractmethod
-def save_checkpoint(self, step: int, epoch: int) -> str:
+def save_checkpoint(self, step: int, epoch: int):
     """Save checkpoint (LoRA weights, full model, etc.)"""
-    pass
+
+@abstractmethod
+def load_checkpoint(self, checkpoint_path: str) -> int:
+    """Load a checkpoint; returns the step to resume from."""
 ```
 
 ### Public Methods
 
 #### `train`
 
-```python
-def train(
-    self,
-    datasets: List[Any],
-    num_epochs: int = 10,
-    batch_size: int = 1,
-    save_every_n_steps: int = 500,
-    sample_every_n_steps: int = 500,
-    sample_prompt: str = "a beautiful landscape",
-    optimizer_type: str = "adamw",
-    lr_scheduler_type: str = "constant",
-    enable_bucketing: bool = True,
-    base_resolutions: Optional[List[int]] = None,
-    bucket_strategy: str = "resize",
-    multi_resolution_mode: str = "max",
-    gradient_accumulation_steps: int = 1,
-    max_grad_norm: float = 1.0,
-    debug_latents: bool = False,
-    debug_latents_every: int = 50,
-    progress_callback: Optional[Callable] = None,
-)
-```
+Main training loop. It takes **64 parameters** (plus `self`); only `datasets` is
+required. As with the constructor, read the signature in `base_trainer.py`
+(`def train` on `BaseTrainer`) rather than a copy here. All 25 sampling
+parameters default from `_TRAINING_DEFAULTS`, i.e.
+`TRAINING_DEFAULTS` in `backend/api/param_defaults.py`.
 
-Main training loop.
+Grouped by concern:
 
-**Parameters**:
-- `datasets` (List[Any]): List of dataset objects (from database)
-- `num_epochs` (int): Number of epochs (default: 10)
-- `batch_size` (int): Batch size (default: 1)
-- `save_every_n_steps` (int): Save checkpoint every N steps (default: 500)
-- `sample_every_n_steps` (int): Generate sample every N steps (default: 500)
-- `sample_prompt` (str): Prompt for sample generation (default: "a beautiful landscape")
-- `optimizer_type` (str): Optimizer type ("adamw", "adamw8bit", "sgd", etc.)
-- `lr_scheduler_type` (str): LR scheduler type ("constant", "cosine", "linear", etc.)
-- `enable_bucketing` (bool): Enable aspect ratio bucketing (default: True)
-- `base_resolutions` (List[int], optional): List of base resolutions for bucketing (e.g., `[1024]`)
-- `bucket_strategy` (str): Bucketing strategy ("resize", "crop", "random_crop")
-- `multi_resolution_mode` (str): Multi-resolution mode ("max", "random")
-- `gradient_accumulation_steps` (int): Gradient accumulation steps (default: 1)
-- `max_grad_norm` (float): Max gradient norm for clipping (default: 1.0)
-- `debug_latents` (bool): Enable debug latent saving (default: False)
-- `debug_latents_every` (int): Save debug latents every N steps (default: 50)
-- `progress_callback` (Callable, optional): Progress callback function
+| Concern | Parameters |
+|---|---|
+| Data and length | `datasets` (list of dataset objects from the database), `num_epochs`, `total_steps` (when set, overrides `num_epochs`), `batch_size` |
+| Checkpointing | `save_every_n_steps`, `max_step_saves_to_keep`, `max_optimizer_saves_to_keep`, `resume_from_checkpoint` |
+| Sampling during training | `sample_every_n_steps`, `sample_prompts` (`Optional[List[Dict[str, str]]]` — entries are `{positive, negative, condition_image_path?}`), `sample_guidance_scale`, `sample_steps`, `sample_width`, `sample_height`, `sample_seed`, `sample_sampler`, `sample_schedule_type`, the `sample_cfg_schedule_*` and `sample_dynamic_threshold_*` group, the `sample_nag_*` group, and `sensenova_sample_timestep_shift` / `sensenova_sample_img_cfg_scale` / `sensenova_sample_cfg_norm` |
+| Optimization | `optimizer_type`, `lr_scheduler_type`, `gradient_accumulation_steps`, `max_grad_norm`, `timestep_sampling_config`, `priority_training` |
+| Bucketing | `enable_bucketing`, `base_resolutions`, `bucket_strategy` (`"resize"`, `"crop"`, `"random_crop"`), `multi_resolution_mode` (`"max"`, `"random"`) |
+| Encoding residency | `text_encoding_mode`, `text_encoding_swap_interval`, `text_encoding_prefetch_depth`, `latent_encoding_mode`, `latent_encoding_swap_interval`, `force_recache` |
+| Reference / vision encoder | `use_reference_images`, `train_vision_encoder`, `vision_encoder_path`, `vision_encoder_lr`, `gradient_routing_ve` |
+| Callbacks and instrumentation | `progress_callback`, `update_total_steps_callback`, `run_id`, `debug_latents`, `debug_latents_every`, `param_tracking`, `param_tracking_interval` |
+| Accepted but unused | `multi_noise_timesteps`, `multi_noise_mode`, `trajectory_blend_alpha` — multi-noise timesteps are disabled; these are kept for call-site compatibility |
+
+`0` means "never" for every optional periodic action. `gradient_accumulation_steps`
+is not optional, so `0` folds to `1` rather than disabling the optimizer step.
+
+`text_encoding_mode` (Z-Image and other swap-capable architectures) accepts
+`"swap_onthefly"` (swap text encoder and transformer, encode on the fly),
+`"pre_encoded_cache"` (disk cache), and `"onthefly_gpu"` (encode on GPU without
+a cache).
 
 **Example**:
 ```python
@@ -1602,6 +1633,14 @@ bucket_manager = BucketManager(
 
 ## Version History
 
+- **2026-09-04**: Re-verified `BaseTrainer` against the code
+  - `BaseTrainer.__init__` (45 parameters) and `BaseTrainer.train` (64) are now
+    documented as grouped summaries pointing at the signatures, not as copies
+  - Removed `sample_prompt: str`, which does not exist; the real parameter is
+    `sample_prompts: Optional[List[Dict[str, str]]]`
+  - Corrected the abstract-method block (`setup_trainable_parameters` returns
+    parameter groups; `load_checkpoint` was missing)
+  - Added `VideoBucketManager`
 - **2025-12-15**: Updated to match current implementation
   - Added `LatentCache.has_latent()` method documentation
   - Removed obsolete error handling for `has_latent()` (method now exists)

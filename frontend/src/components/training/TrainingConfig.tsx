@@ -94,9 +94,8 @@ const OPTIMIZER_CONFIGS: Record<string, {
   }
 };
 
-// A conditional requirement's lift (`unless`), as a phrase. Every place that
-// renders a pinned value uses it, so a CONDITIONAL entry never reads as an
-// absolute one and the setting that releases it is named on screen.
+// A conditional requirement's lift, as a phrase, used wherever a pin is
+// rendered so a conditional entry never reads as an absolute one.
 const describeRequirementLift = (
   unless: Record<string, string | number | boolean>
 ): string =>
@@ -186,9 +185,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // No UI: accepted, refused (DoRA is Phase 3). Present so an edit-form PUT
   // round-trips the value the run was created with instead of dropping it.
   weight_decompose: false,
-  // No UI either -- LoKr's factor/decompose_both are API-only. Dropping it on a
-  // PUT reset a run's factorization to factor: -1, which changes every tensor
-  // shape and orphans its own checkpoints.
+  // API-only (LoKr's factor/decompose_both). Dropping it on a PUT reset the
+  // factorization to -1, changing every tensor shape and orphaning the run's
+  // own checkpoints.
   adapter_config: null,
   relora_merge_every: 500,
   relora_merge_unit: "steps",
@@ -474,12 +473,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // When true, optimizer useEffect will NOT reset hyperparameters to defaults
   const restoringFromYAMLRef = useRef(false);
 
-  // Narrower than the flag above, for a bulk restore that writes the optimizer
-  // AND its hyperparameters together (preset load): the optimizer effect keys on
-  // params.optimizer and would replace the restored betas with the new
-  // optimizer's defaults. Only the hyperparameter half is skipped -- the
-  // unsupported-option clearing below it still has to run, or the preset parks
-  // a ticked box the chosen optimizer ignores.
+  // A preset writes the optimizer and its hyperparameters together, and the
+  // optimizer effect would replace the restored betas with the new optimizer's
+  // defaults. Only that half is skipped: the option clearing below it must run,
+  // or the preset parks a ticked box the optimizer ignores.
   const skipOptimizerHyperparamResetRef = useRef(false);
 
   // Tracks the baseModelPath for which the per-arch default timestep_sampling has
@@ -1003,11 +1000,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     )).sort();
   }, [archCapabilities, baseModelArch]);
   // Keyed on the lift name=value pairs, never on `params`: the effect below
-  // compares `requiredValues` by identity to decide a new contract, so a fresh
-  // object per keystroke would wipe the "(changed from X)" record. A lift
-  // actually moving is a new contract, so that identity change is the wanted
-  // one. The names are in the signature, so it also covers `liftParams` itself
-  // changing.
+  // compares by identity, so a fresh object per keystroke would wipe the
+  // "(changed from X)" record -- while a lift actually moving is a new
+  // contract and should.
   const liftSignature = liftParams
     .map((param) => `${param}=${JSON.stringify((params as any)[param])}`)
     .join("&");

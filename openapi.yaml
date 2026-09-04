@@ -5448,7 +5448,14 @@ paths:
     get:
       tags: [training]
       summary: Get run parameters in TrainingRunCreateRequest format
-      description: Parses the run's stored YAML configuration back into request-shaped parameters for editing.
+      description: |
+        Parses the run's stored YAML configuration back into request-shaped parameters for editing.
+
+        A field the stored YAML does not mention comes back as its
+        `TrainingRunCreateRequest` default, except that `lora_rank`,
+        `lora_alpha` and `lora_dtype` are reported as `null` for a run whose
+        training method is not `lora`. Either way the returned body validates,
+        so it is accepted unchanged by `PUT /training/runs/{run_id}`.
       parameters:
         - name: run_id
           in: path

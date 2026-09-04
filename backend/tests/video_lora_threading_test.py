@@ -318,41 +318,11 @@ class Ltx2BackendLoraApplicationTest(unittest.TestCase):
             "then keeps staging buffers shaped for the wrapped tree",
         )
 
-    def test_lora_bookkeeping_is_weakref_keyed(self):
-        """S1: a reload can allocate the new transformer at the dead one's
-        address, so id() is not an identity."""
-        source = inspect.getsource(self.mixin._ltx2_lora_state)
-        self.assertIn("weakref.ref(transformer)", source)
-        self.assertNotIn("id(transformer)",
-                         inspect.getsource(self.mixin._load_lora_ltx2))
-        self.assertNotIn("id(transformer)",
-                         inspect.getsource(self.mixin._unload_lora_ltx2))
-
-    def test_state_is_reset_before_the_empty_config_exit(self):
-        source = inspect.getsource(self.mixin._load_lora_ltx2)
-        self.assertLess(
-            source.index("self._ltx2_lora_state(transformer)"),
-            source.index("if not lora_configs:"),
-            "an evicted model's bookkeeping survives a request that installs no "
-            "LoRA, and the next restore would splice it into the new transformer",
-        )
-
-    def test_warnings_carry_a_basename_and_the_shared_warning_codes(self):
-        """M2/M3: warnings ride into the PNG metadata chunk and the response's
-        warnings[], and their codes are the cross-architecture ones."""
-        source = inspect.getsource(self.mixin._load_lora_ltx2)
-        self.assertIn("os.path.basename(lora_path)", source)
-        self.assertNotIn("{lora_path}", source)
-        for code in ("lora_not_found", "lora_incompatible", "lora_partial"):
-            with self.subTest(code=code):
-                self.assertIn(f'"{code}"', source)
-        # LTX-2.3 is on CompositeAdapterLayer: two LoRAs over one module sum, so
-        # the refusal this used to require is gone rather than merely unreached.
-        self.assertNotIn('"lora_stacking_unsupported"', source)
-        for arch_prefixed in ("ltx2_lora_not_found", "ltx2_lora_incompatible",
-                              "ltx2_lora_targets_unresolved"):
-            with self.subTest(code=arch_prefixed):
-                self.assertNotIn(arch_prefixed, source)
+    # The LoRA LIFETIME invariants this class used to source-anchor -- the
+    # weakref-keyed original-module map, the reset that precedes the
+    # empty-config exit, and the basename/shared-code refusal wording -- moved
+    # into `AdapterSession` with a5e8ff6b and are now executed rather than
+    # read, in ltx2_lora_roundtrip_cheap_test.py.
 
 
 # ---------------------------------------------------------------------------

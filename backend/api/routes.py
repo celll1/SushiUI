@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFi
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
-from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal
+from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal, get_args
 from pydantic import BaseModel, Field, conint
 from datetime import datetime
 from pathlib import Path
@@ -16207,14 +16207,28 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
 
     LoRA-only fields are set to None when job != "lora".
     ControlNet-only fields are set to their defaults when job != "controlnet".
+
+    Whatever it returns has to validate as a TrainingRunCreateRequest -- that is
+    the /params -> edit -> PUT round trip -- so a field the schema declares
+    non-nullable never comes back None.
     """
-    train = process_config.get("train", {})
-    dtype_section = process_config.get("dtype", {}) if isinstance(process_config.get("dtype"), dict) else {}
-    save_section = process_config.get("save", {})
-    sample_section = process_config.get("sample", {})
-    network = process_config.get("network", {})
-    cn_network = network.get("controlnet", {}) if isinstance(network, dict) else {}
-    model_section = process_config.get("model", {})
+    def _accepts_none(annotation: Any) -> bool:
+        return (annotation is Any or annotation is None
+                or type(None) in get_args(annotation))
+
+    def _section(container: Any, key: str) -> dict:
+        # A key written as `sample:` with nothing under it parses to None, which
+        # is not a missing section but also not something .get() works on.
+        value = container.get(key) if isinstance(container, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    train = _section(process_config, "train")
+    dtype_section = _section(process_config, "dtype")
+    save_section = _section(process_config, "save")
+    sample_section = _section(process_config, "sample")
+    network = _section(process_config, "network")
+    cn_network = _section(network, "controlnet")
+    model_section = _section(process_config, "model")
 
     sections = {
         "train": train,
@@ -16236,8 +16250,10 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             result[field_name] = None
             continue
 
-        default = field_info.default
-        # Pydantic uses PydanticUndefined for required fields
+        # field_info.default is PydanticUndefined for a default_factory field
+        # exactly as it is for a required one; get_default() runs the factory.
+        default = field_info.get_default(call_default_factory=True)
+        # Genuinely required fields have no default; the route fills them.
         if default.__class__.__name__ == "PydanticUndefinedType":
             default = None
 
@@ -16246,10 +16262,16 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             section_path = spec[0]
             yaml_key = spec[1] if len(spec) > 1 else field_name
             section_dict = sections.get(section_path, {})
-            result[field_name] = section_dict.get(yaml_key, default)
+            value = section_dict.get(yaml_key, default)
         else:
             # Default: look up in train section with same name
-            result[field_name] = train.get(field_name, default)
+            value = train.get(field_name, default)
+
+        # An explicit `key:` with no value reads as null, which a non-nullable
+        # field rejects. Treat it as the absent key it is written like.
+        if value is None and not _accepts_none(field_info.annotation):
+            value = default
+        result[field_name] = value
 
     return result
 

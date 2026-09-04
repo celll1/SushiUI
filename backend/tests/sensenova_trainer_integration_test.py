@@ -529,11 +529,13 @@ def test_real_loop_helpers_keep_one_poison_prefix_identity_across_two_mnt_steps(
             return prefix, None
 
     # One item: the single-prompt encode, unchanged, and its identity is kept.
-    collected = BaseTrainer._encode_sensenova_batch_prefix(_Owner(), [("a cat", None, False)])
+    # The same owner then takes the MNT loop, so the conditioning reads the
+    # cfg-null label the assembly encode stashed -- as the real loop does.
+    owner = _Owner()
+    collected = BaseTrainer._encode_sensenova_batch_prefix(owner, [("a cat", None, False)])
     assert collected is prefix
     assert calls == [("a cat", False, None, False)]
 
-    owner = SimpleNamespace(train_text_encoder=False)
     conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, owner)
     first = conditioning(collected, captions=["a caption"], mnt_index=0)
     second = conditioning(collected, captions=["a caption"], mnt_index=1)
@@ -541,6 +543,9 @@ def test_real_loop_helpers_keep_one_poison_prefix_identity_across_two_mnt_steps(
     assert second[:3] == (None, None, None)
     assert first[3] is prefix
     assert second[3] is prefix
+    # The identity assertions above cannot see a re-encode -- this stub hands
+    # back the same object every time -- so pin the call log too.
+    assert calls == [("a cat", False, None, False)]
 
 
 def test_sensenova_prefix_reaches_minimal_batch_oom_path():

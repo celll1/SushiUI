@@ -49,6 +49,17 @@ touches, and mirror that shape for your new parameter.
      `generateImg2Img`/`generateInpaint` — this is a separate site from
      `stepParams` and is easy to miss.
 
+## Per-item `loras[]` fields are a different path
+
+A field that belongs to an individual LoRA rather than to the request (e.g.
+`adapter_type`) does **not** follow steps 3 and 7 above. Its default lives in
+`LORA_ITEM_DEFAULTS` in `param_defaults.py`, and both transports — the JSON
+routes' list of objects and the multipart routes' JSON string of the same
+objects — are read by the single parser
+`backend/api/adapter_types.py::parse_lora_items`, so there is no per-route
+`Form(...)` parameter or `FormData.append` to add. Add the field to the
+`LoRARequestItem` schema in `openapi.yaml` and to that parser.
+
 ## Common failure patterns
 
 | # | Missing site | Symptom |

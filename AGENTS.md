@@ -25,7 +25,15 @@ the model loads. `relora` and
 implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
 for the remaining training-out-of-scope architecture.
 Per-architecture facts are
-in `docs/guides/MODEL_FACTS.md`. Every capability is reachable through the
+in `docs/guides/MODEL_FACTS.md`. **Adapters (LoRA and the LyCORIS algebras)
+are an architecture-neutral subsystem of their own**, `backend/core/adapters/`:
+it owns the adapter spec, target topology, tensor grouping, checkpoint codecs,
+the `AdapterSession` runtime that eleven architectures install through, and an
+execution-backend registry. Which `(algorithm, weight_decompose)` pairs an
+architecture accepts is decided by the two tables in
+`backend/core/adapters/capability.py` — one for generation, one for training —
+and by nothing else; do not add a second place that decides it. See
+`docs/guides/LYCORIS_ADAPTER_DESIGN.md`. Every capability is reachable through the
 versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive
 and verify most changes without touching the UI. This file is the durable,
 checked-in subset of repo conventions for coding agents; read it before making
@@ -110,7 +118,7 @@ changes.
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
-| LoRA variants / LyCORIS fused adapter kernels | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` |
+| Anything adapter-related: LoRA variants (LoHa/LoKr/DoRA), the shared engine in `backend/core/adapters/`, `adapter_type`, adapter execution backends | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` |
 | Fine-tune a VAE (`training_method: vae_decoder`; decoder by default, encoder behind a double gate) | `docs/guides/VAE_TRAINING.md` |
 | VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |
 | Understand what a VAE fine-tune's crop policy and `resolution` feed the decoder, and how its memory/time scale (measured; checkpointing / activation offload / tiling are analysed, not all of them config keys) | `docs/guides/VAE_TRAINING_RESOLUTION.md` |

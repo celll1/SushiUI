@@ -317,15 +317,14 @@ export interface CurrentComponentsResponse {
   slots: ComponentSlotState[];
 }
 
-// The adapter family a checkpoint IS, as detected by the backend's one
-// detector (core/adapters/codec.py). "unknown" means detection could not name
-// the algebra -- reported as unknown rather than guessed as "lora", and not an
-// error: such a file is still listed and still applied.
+// The family a checkpoint IS, per core/adapters/codec.py. "unknown" is
+// reported rather than guessed as "lora", and is not an error: the file is
+// still listed and still applied.
 export type AdapterFamily = "lora" | "loha" | "lokr" | "dora" | "doha" | "dokr";
 export type DetectedAdapterType = AdapterFamily | "unknown";
-// What a request may ASSERT on a loras[] item. "auto" (the default) detects;
-// any other value must match the file or the request is refused 400 with
-// code "lora_adapter_type_mismatch" -- it never converts the file.
+// What a request may assert on a loras[] item. "auto" detects; any other
+// value must match the file (400 "lora_adapter_type_mismatch") and never
+// converts it.
 export type AdapterTypeAssertion = "auto" | AdapterFamily;
 export const ADAPTER_TYPE_AUTO = "auto";
 
@@ -349,8 +348,8 @@ export type LoRAArch =
   | "krea2" | "flux2" | "ltx2" | "minimax_h3" | "acestep" | "sensenova"
   | "unknown";
 
-// The adapter description GET /loras and GET /loras/{id} report per file.
-// All of it is detected from the file itself, never from the loaded model.
+// What GET /loras reports per file, detected from the file, never from the
+// loaded model.
 export interface LoRAAdapterDetection {
   adapter_type: DetectedAdapterType;
   adapter_algorithm: "lora" | "loha" | "lokr" | "unknown";
@@ -1694,13 +1693,11 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
 export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boolean>> =>
   (await api.get("/schema/bundle-vae-defaults-by-arch")).data;
 
-// One architecture's adapter-family enablement (ArchCapabilities.adapter_families).
-// `supported` lists the families that load and generate there; `unsupported`
-// maps every other family to the backend's own refusal text -- the same
-// sentence the request would come back with. `block_swap` is present only where
-// the architecture has declared its adapter-install order: a LoHa/LoKr branch's
-// factors are bare parameters that no block offloader moves, so the combination
-// is either refused up front or correct-but-not-offloaded.
+// One architecture's adapter-family enablement. `unsupported` carries the
+// backend's own refusal sentence. `block_swap` is present only where the
+// architecture declared its install order: a LoHa/LoKr branch's factors are
+// bare parameters no offloader moves, so the combination is refused up front
+// or correct-but-not-offloaded.
 export interface ArchAdapterFamilies {
   supported: AdapterFamily[];
   unsupported: Partial<Record<AdapterFamily, string>>;
@@ -1922,13 +1919,9 @@ export const chainContinuationOverlapLengths = (
     .filter((end) => end >= min && end <= max);
 };
 
-// The adapter algebras a TRAINING run may pick for `arch`, in the spelling
-// `TrainingRunCreateRequest.adapter_algorithm` uses.
-//
-// Fails CLOSED, unlike the training-feature helpers below, and deliberately:
-// "lora" alone is what every architecture has always offered, so an unknown
-// arch or an unloaded matrix loses nothing, while the opposite direction would
-// offer an algebra the backend refuses before the model loads.
+// The algebras a training run may pick for `arch`. Fails closed to "lora",
+// which every architecture has always offered, so an unknown arch loses
+// nothing; the other direction would offer one the backend refuses.
 export const trainableAdapterAlgorithms = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined
@@ -1940,10 +1933,8 @@ export const trainableAdapterAlgorithms = (
   return trainable.length ? [...trainable] : ["lora"];
 };
 
-// The decomposed family name for a base algebra, in the spelling
-// `adapter_families` uses: the backend keeps DoRA as an epilogue on three
-// algebras rather than as a fourth algorithm, so the pair is
-// (algorithm, weight_decompose) and this is its label.
+// The decomposed family name for a base algebra: DoRA is an epilogue on three
+// algebras, not a fourth, so the pair is (algorithm, weight_decompose).
 export const decomposedAdapterFamily = (
   algorithm: string | null | undefined
 ): AdapterFamily =>

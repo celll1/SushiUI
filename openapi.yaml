@@ -4622,54 +4622,62 @@ paths:
   /tipo/generate:
     post:
       tags: [tipo]
-      summary: Generate tags with TIPO
-      description: Generate tags from image using TIPO
-      operationId: generateTipoTags
+      summary: Expand a prompt with TIPO
+      description: |
+        Text in, text out. `input_prompt` is a comma-separated tag list by
+        default, or one natural-language passage when `treat_as_nl` is set.
+        No image is involved -- this is prompt expansion, not image tagging;
+        for that see `POST /tagger/predict`.
+
+        `model_name` is loaded on demand when it is not already the loaded
+        model, and the model is **always unloaded before the response
+        returns**, on the success and the failure path alike, so TIPO holds
+        no VRAM during image generation.
+
+        The tags of `input_prompt` are merged back into the result and take
+        priority over TIPO's own, then the merged categories are joined with
+        `, ` in `category_order`, skipping any that `enabled_categories`
+        marks false. Both fields are applied only when both are present;
+        with either missing, a built-in order is used.
+
+        Two backends exist. With the `tipo-kgen` package installed the model
+        returns a structured result, echoed as an object in `raw_output`.
+        Without it the endpoint falls back to plain `transformers`:
+        `raw_output` is then the generated string, and the response carries
+        an extra `parsed` object. `ban_tags` and `treat_as_nl` reach only
+        the tipo-kgen backend; `max_new_tokens` only the transformers one.
+      operationId: generateTipoPrompt
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
-              type: object
-              required: [image]
-              properties:
-                image:
-                  type: string
-                  format: binary
-                tag_length:
-                  type: string
-                  enum: [short, long, very_long]
-                  default: short
-                nl_length:
-                  type: string
-                  enum: [short, long]
-                  default: short
-                categories:
-                  type: array
-                  items:
-                    type: string
-                temperature:
-                  type: number
-                  default: 0.5
-                top_p:
-                  type: number
-                  default: 0.9
-                top_k:
-                  type: integer
-                  default: 40
-                max_new_tokens:
-                  type: integer
-                  default: 256
+              $ref: '#/components/schemas/TIPOGenerateRequest'
       responses:
         '200':
-          description: Generated tags
+          description: >-
+            Expanded prompt, with the raw model output it was built from.
+            Also the answer when generation fails or the model could not be
+            loaded: TIPO logs the failure, falls back to the input prompt as
+            its "output", and the endpoint formats that -- so a
+            `generated_prompt` that merely reorders `original_prompt` means
+            nothing was generated, not that the model had nothing to add.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tags:
-                    type: string
+                $ref: '#/components/schemas/TIPOGenerateResponse'
+        '422':
+          description: Request body failed validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: >-
+            Formatting the result failed, or the model manager raised outside
+            its own guards. The body is FastAPI's bare `detail` object, not
+            an ErrorResponse. Note that a failure inside generation itself is
+            not reported here -- see the 200 description.
 
   /tipo/status:
     get:
@@ -4683,11 +4691,19 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [loaded, model_name, device]
                 properties:
                   loaded:
                     type: boolean
                   model_name:
                     type: string
+                    nullable: true
+                    description: Null until a model has been loaded at least once.
+                    example: KBlueLeaf/TIPO-500M
+                  device:
+                    type: string
+                    description: Device TIPO loads onto.
+                    example: cuda
 
   /tipo/unload:
     post:
@@ -9382,6 +9398,181 @@ components:
           type: array
           items:
             type: string
+
+    TIPOGenerateRequest:
+      type: object
+      required: [input_prompt]
+      description: |
+        Body of `POST /tipo/generate`. Every field except `input_prompt` is
+        optional; the defaults below are the ones the endpoint applies.
+      properties:
+        input_prompt:
+          type: string
+          description: >-
+            Prompt to expand. Split on commas into tags unless `treat_as_nl`
+            is true, in which case it is used whole as a natural-language
+            prompt and contributes no input tags.
+          example: "1girl, cat ears, sitting"
+        model_name:
+          type: string
+          default: KBlueLeaf/TIPO-500M
+          description: >-
+            HuggingFace model id, loaded on demand when it differs from the
+            currently loaded model and unloaded again before the response.
+          example: KBlueLeaf/TIPO-500M
+        tag_length:
+          type: string
+          enum: [very_short, short, long, very_long]
+          default: short
+          description: >-
+            Target tag count, tipo-kgen backend only. Nothing validates it at
+            the API boundary: another value raises inside the generator,
+            which is swallowed, so the request answers 200 with the prompt
+            unexpanded.
+          example: short
+        nl_length:
+          type: string
+          enum: [very_short, short, long, very_long]
+          default: short
+          description: >-
+            Target length of the generated natural-language text. Same
+            backend restriction and same failure mode as `tag_length`.
+          example: short
+        temperature:
+          type: number
+          default: 0.5
+          example: 0.5
+        top_p:
+          type: number
+          default: 0.9
+          example: 0.9
+        top_k:
+          type: integer
+          default: 40
+          example: 40
+        max_new_tokens:
+          type: integer
+          default: 256
+          description: >-
+            Transformers-fallback only; the tipo-kgen backend derives its own
+            length budget from `tag_length` / `nl_length`.
+          example: 256
+        ban_tags:
+          type: string
+          default: ""
+          description: >-
+            Comma-separated tags TIPO must not emit. Honoured by the
+            tipo-kgen backend only.
+          example: "text, watermark"
+        category_order:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: |
+            Order the categories are concatenated in. Applied only when
+            `enabled_categories` is present too; otherwise the backend's own
+            default order is used. Recognised names are `special`,
+            `quality`, `rating`, `artist`, `copyright`, `characters`,
+            `meta`, `general`, `short_nl`, `long_nl`, plus the aliases
+            `count`, `copyrights`, and `character` on the tipo-kgen backend.
+            An unrecognised name is skipped silently rather than refused.
+          example: [special, quality, rating, artist, copyright, characters, meta, general]
+        enabled_categories:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: boolean
+          description: >-
+            Per-category switch, keyed as in `category_order`. A category
+            absent from the map counts as enabled.
+          example:
+            general: true
+            meta: false
+        treat_as_nl:
+          type: boolean
+          default: false
+          description: >-
+            Treat `input_prompt` as natural language instead of a tag list.
+            Honoured by the tipo-kgen backend only.
+
+    TIPOGenerateResponse:
+      type: object
+      required: [status, original_prompt, raw_output, generated_prompt]
+      properties:
+        status:
+          type: string
+          example: success
+        original_prompt:
+          type: string
+          description: Echo of the request's `input_prompt`.
+          example: "1girl, cat ears, sitting"
+        generated_prompt:
+          type: string
+          description: >-
+            The expanded prompt, categories joined in the requested order.
+            This is what a client writes back into its prompt field.
+          example: "1girl, masterpiece, general, cat ears, sitting, long hair, indoors"
+        raw_output:
+          description: >-
+            The model output before formatting: an object keyed by TIPO
+            category on the tipo-kgen backend, a plain string on the
+            transformers fallback.
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        parsed:
+          allOf:
+            - $ref: '#/components/schemas/TIPOParsedPrompt'
+          description: >-
+            Present only on the transformers fallback backend; with tipo-kgen
+            installed the same information is in `raw_output` and this field
+            is absent.
+
+    TIPOParsedPrompt:
+      type: object
+      description: >-
+        Input tags merged with TIPO's parsed output, one entry per category.
+        The string fields hold a single value or a comma-joined run; the
+        `*_tags` fields hold one tag per element.
+      properties:
+        rating:
+          type: string
+        artist:
+          type: string
+        copyright:
+          type: string
+        characters:
+          type: string
+        target:
+          type: string
+        short_nl:
+          type: string
+        long_nl:
+          type: string
+        special_tags:
+          type: array
+          items:
+            type: string
+          example: ["1girl"]
+        quality_tags:
+          type: array
+          items:
+            type: string
+        rating_tags:
+          type: array
+          items:
+            type: string
+        meta_tags:
+          type: array
+          items:
+            type: string
+        general_tags:
+          type: array
+          items:
+            type: string
+          example: ["cat ears", "sitting", "long hair"]
 
     QuantizedExportRequest:
       type: object

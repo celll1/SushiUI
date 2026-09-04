@@ -2101,8 +2101,8 @@ export const trainingRequiredValues = (
   for (const [param, entry] of Object.entries(entries)) {
     if (entry.methods && method && !entry.methods.includes(method)) continue;
     if (entry.unless) {
-      // Unreachable today: the one call site passes no params, so a
-      // conditional entry never reaches a control.
+      // No config to read the lift off: omit, rather than pin a control the
+      // run may already have lifted. TrainingConfig.tsx passes the lift params.
       if (!params) continue;
       if (Object.entries(entry.unless).every(([key, value]) => params[key] === value)) continue;
     }

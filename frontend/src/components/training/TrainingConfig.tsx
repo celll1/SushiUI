@@ -87,14 +87,30 @@ const OPTIMIZER_CONFIGS: Record<string, {
   }
 };
 
+// A conditional requirement's lift (`unless`), as a phrase. Every place that
+// renders a pinned value uses it, so a CONDITIONAL entry never reads as an
+// absolute one and the setting that releases it is named on screen.
+const describeRequirementLift = (
+  unless: Record<string, string | number | boolean>
+): string =>
+  Object.entries(unless)
+    .map(([param, value]) => (typeof value === "boolean"
+      ? `${param} is ${value ? "on" : "off"}`
+      : `${param} = ${String(value)}`))
+    .join(" and ");
+
 // A control whose value the backend's capability matrix FIXES for the selected
 // architecture and training method (`training_required_values`). Rendered under
 // the pinned control so the value and the backend's reason for it are visible
-// before submit rather than in a run-failed message afterwards.
+// before submit rather than in a run-failed message afterwards. An entry
+// carrying `unless` reached here only because the lift does NOT hold, so the
+// note says what would release the pin instead of claiming the value is fixed.
 const RequiredValueNote = ({ entry }: { entry?: TrainingRequiredValue }) =>
   entry ? (
     <p className="text-xs text-amber-400 mt-1">
-      Fixed at {String(entry.value)} for this architecture and training method: {entry.reason}
+      {entry.unless
+        ? `Fixed at ${String(entry.value)} unless ${describeRequirementLift(entry.unless)}: ${entry.reason}`
+        : `Fixed at ${String(entry.value)} for this architecture and training method: ${entry.reason}`}
     </p>
   ) : null;
 
@@ -1219,12 +1235,41 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // and accumulation). The backend refuses a run that violates
   // one, before the model loads, so the controls below are pinned to the value
   // rather than offering a default the run would be rejected for. Derived from
-  // arch + method, so switching either unpins whatever is no longer required.
+  // arch + method, so switching either unpins whatever is no longer required,
+  // and from the run's own lift params, so a CONDITIONAL entry (`unless`) is
+  // resolved rather than presented as an absolute pin.
   const baseModelArch = getModelArchitecture(baseModelPath) ?? "";
-  const requiredValues = useMemo(
-    () => trainingRequiredValues(archCapabilities, baseModelArch, trainingMethod),
+  // Which params can LIFT a conditional requirement here, read off the served
+  // table: the backend owns that list (SenseNova's batch_size names
+  // enable_bucketing), and a copy kept here would go stale silently.
+  const liftParams = useMemo(() => {
+    const entries: Record<string, TrainingRequiredValue> =
+      archCapabilities?.training_required_values?.[baseModelArch] ?? {};
+    return Array.from(new Set(
+      Object.values(entries).flatMap((entry) => Object.keys(entry.unless ?? {}))
+    )).sort();
+  }, [archCapabilities, baseModelArch]);
+  // Keyed on the lift name=value pairs, never on `params`: the effect below
+  // compares `requiredValues` by identity to decide a new contract, so a fresh
+  // object per keystroke would wipe the "(changed from X)" record. A lift
+  // actually moving is a new contract, so that identity change is the wanted
+  // one. The names are in the signature, so it also covers `liftParams` itself
+  // changing.
+  const liftSignature = liftParams
+    .map((param) => `${param}=${JSON.stringify((params as any)[param])}`)
+    .join("&");
+  const requiredValueConfig = useMemo<Record<string, any>>(
+    () => Object.fromEntries(
+      liftParams.map((param) => [param, (params as any)[param]])),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [archCapabilities, baseModelPath, trainingMethod, availableModels]
+    [liftSignature]
+  );
+  const requiredValues = useMemo(
+    () => trainingRequiredValues(archCapabilities, baseModelArch, trainingMethod,
+                                 requiredValueConfig),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [archCapabilities, baseModelPath, trainingMethod, availableModels,
+     requiredValueConfig]
   );
   const requiredValue = (param: string): TrainingRequiredValue | undefined =>
     requiredValues[param];
@@ -3025,6 +3070,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 {Object.entries(requiredValues).map(([param, entry]) => (
                   <li key={param}>
                     <span className="text-gray-200">{param} = {String(entry.value)}</span>
+                    {entry.unless && (
+                      <span className="text-amber-300"> unless {describeRequirementLift(entry.unless)}</span>
+                    )}
                     {contractAdjusted[param] !== undefined && (
                       <span className="text-amber-400"> (changed from {contractAdjusted[param]})</span>
                     )}

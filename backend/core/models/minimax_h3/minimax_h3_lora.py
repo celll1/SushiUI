@@ -763,7 +763,7 @@ def build_lora_branch(base: nn.Module, target: "ConvertedTarget",
     The algebra is the file's: ``build_adapter_branch`` dispatches on the tensor
     names. Only the LoRA branch takes this architecture's per-call activation
     cast -- MiniMax-H3's forward runs without ``torch.autocast``, and LoHa/LoKr
-    already cast their merged delta inside ``forward_delta``.
+    already cast their merged delta inside ``reference_delta``.
 
     The branch dtype is per target, never bf16 by hand: this tree is mixed
     precision (Fp8Linear block stack, fp32 AdaLN and head projections).

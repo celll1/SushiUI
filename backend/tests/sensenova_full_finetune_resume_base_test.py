@@ -27,6 +27,7 @@ name.
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,8 +63,23 @@ RUN_NAME = "20260825_120000_abc123"
 # A MoT-shaped tree, small enough to build 588 Linears of in the test process
 # ---------------------------------------------------------------------------
 
+_INT8_SEEDS = itertools.count()
+
+
 def _int8() -> Int8Linear:
-    return Int8Linear(8, 8, False, torch.bfloat16)
+    # Int8Linear registers both buffers with torch.empty and this file's
+    # dequantize cross-check READS them: an inf/NaN off the heap makes
+    # torch.equal false and the production refusal fires on a fixture that never
+    # had a value. The counter is module-global, so values depend on test
+    # selection order -- nothing compares two independently built trees today.
+    module = Int8Linear(8, 8, False, torch.bfloat16)
+    generator = torch.Generator().manual_seed(next(_INT8_SEEDS))
+    with torch.no_grad():
+        module.weight.copy_(torch.randint(-127, 128, (8, 8), generator=generator,
+                                          dtype=torch.int16).to(torch.int8))
+        module.weight_scale.copy_(
+            torch.rand(8, generator=generator, dtype=torch.float32) * 0.09 + 0.01)
+    return module
 
 
 def _float() -> nn.Linear:

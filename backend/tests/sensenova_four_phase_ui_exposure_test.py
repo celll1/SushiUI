@@ -240,7 +240,9 @@ def test_the_advisory_does_not_call_plain_eviction_the_unconstrained_flag(method
         "sensenova", method)["sensenova_mot_eviction"]["reason"]
     assert "is available under LoRA and full fine-tuning" not in reason
     assert "train_unet" in reason
-    assert "13.7" in reason
+    # The claim, not the section number it used to cite: that write-up was
+    # condensed out of the design doc, and pinning a dead pointer pins nothing.
+    assert "measured in both directions on the real checkpoint" in reason
 
 
 def test_the_openapi_description_no_longer_calls_eviction_lora_only():

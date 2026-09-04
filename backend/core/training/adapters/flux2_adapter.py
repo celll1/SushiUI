@@ -81,9 +81,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         original_linear = getattr(module, attr_name)
                         if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                            )
+                            lora_layer = self.build_branch(original_linear, lora_name)
                             setattr(module, attr_name, lora_layer)
                             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
@@ -92,9 +90,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
                     if len(module.to_out) > 0 and is_lora_wrappable_linear(module.to_out[0]):
                         lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
-                        lora_layer = LoRALinearLayer(
-                            module.to_out[0], self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                        )
+                        lora_layer = self.build_branch(module.to_out[0], lora_name)
                         module.to_out[0] = lora_layer
                         self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
@@ -105,9 +101,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         original_linear = getattr(module, attr_name)
                         if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                            )
+                            lora_layer = self.build_branch(original_linear, lora_name)
                             setattr(module, attr_name, lora_layer)
                             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
@@ -119,9 +113,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                     original_linear = module.to_qkv_mlp_proj
                     if is_lora_wrappable_linear(original_linear):
                         lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
-                        lora_layer = LoRALinearLayer(
-                            original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                        )
+                        lora_layer = self.build_branch(original_linear, lora_name)
                         module.to_qkv_mlp_proj = lora_layer
                         self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
@@ -129,9 +121,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 # Output projection (attention out + MLP out fused)
                 if hasattr(module, "to_out") and is_lora_wrappable_linear(module.to_out):
                     lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
-                    lora_layer = LoRALinearLayer(
-                        module.to_out, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                    )
+                    lora_layer = self.build_branch(module.to_out, lora_name)
                     module.to_out = lora_layer
                     self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
@@ -143,9 +133,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         original_linear = getattr(module, attr_name)
                         if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                            )
+                            lora_layer = self.build_branch(original_linear, lora_name)
                             setattr(module, attr_name, lora_layer)
                             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
@@ -207,9 +195,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         original_linear = getattr(layer.mlp, mlp_attr)
                         if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_te_model_layers_{layer_idx}_mlp_{mlp_attr}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                            )
+                            lora_layer = self.build_branch(original_linear, lora_name)
                             setattr(layer.mlp, mlp_attr, lora_layer)
                             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
                             count += 1
@@ -221,9 +207,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         original_linear = getattr(layer.self_attn, attn_attr)
                         if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_te_model_layers_{layer_idx}_self_attn_{attn_attr}"
-                            lora_layer = LoRALinearLayer(
-                                original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                            )
+                            lora_layer = self.build_branch(original_linear, lora_name)
                             setattr(layer.self_attn, attn_attr, lora_layer)
                             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
                             count += 1

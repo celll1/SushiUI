@@ -115,9 +115,7 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
                         continue
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
-            lora_layer = LoRALinearLayer(
-                current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype,
-            )
+            lora_layer = self.build_branch(current, lora_name)
 
             # parent.attr might be a normal attribute (str) or a Sequential /
             # ModuleList index (int) — handle both.

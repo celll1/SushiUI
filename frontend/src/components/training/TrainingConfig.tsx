@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -98,6 +98,20 @@ const RequiredValueNote = ({ entry }: { entry?: TrainingRequiredValue }) =>
     </p>
   ) : null;
 
+// Adapter algebras, in the spelling the API uses. Descriptions state the
+// tensor form only: what each costs or is worth is not measured here.
+const ADAPTER_ALGORITHM_LABELS: Record<string, string> = {
+  lora: "LoRA (low-rank)",
+  loha: "LoHa (Hadamard product)",
+  lokr: "LoKr (Kronecker product)",
+};
+
+const ADAPTER_ALGORITHM_NOTES: Record<string, string> = {
+  lora: "Two low-rank factors per target (lora_down, lora_up).",
+  loha: "Element-wise product of two low-rank factorizations.",
+  lokr: "Kronecker product of a full and a low-rank factor.",
+};
+
 // ============================================================
 // Single-state migration (Phase 3a foundation)
 // ============================================================
@@ -145,6 +159,14 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lora_rank: 16,
   lora_alpha: 16,
   lora_dtype: "fp32",
+  adapter_algorithm: "lora",
+  // No UI: accepted, refused (DoRA is Phase 3). Present so an edit-form PUT
+  // round-trips the value the run was created with instead of dropping it.
+  weight_decompose: false,
+  // No UI either -- LoKr's factor/decompose_both are API-only. Dropping it on a
+  // PUT reset a run's factorization to factor: -1, which changes every tensor
+  // shape and orphans its own checkpoints.
+  adapter_config: null,
   relora_merge_every: 500,
   relora_merge_unit: "steps",
   restart_warmup_steps: 100,
@@ -537,6 +559,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const loraRank = params.lora_rank ?? 16;
   const loraAlpha = params.lora_alpha ?? 16;
   const loraDtype = params.lora_dtype ?? "fp32";
+  const adapterAlgorithm = params.adapter_algorithm ?? "lora";
 
   // Advanced (Phase 3e: migrated to params)
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
@@ -941,6 +964,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   );
   const requiredValue = (param: string): TrainingRequiredValue | undefined =>
     requiredValues[param];
+
+  // Which adapter algebras this base model can actually TRAIN, from the
+  // backend's own table. ReLoRA takes the ordinary branch only (its merge and
+  // optimizer reset are not defined for the others), so the choice collapses
+  // there rather than offering a run the backend refuses. Block swap does the
+  // same: no offloader moves a LoHa/LoKr factor.
+  const adapterAlgorithmChoices = useMemo<Array<"lora" | "loha" | "lokr">>(
+    () => (
+      trainingMethod !== "lora" || blocksToSwap > 0
+        ? ["lora"]
+        : trainableAdapterAlgorithms(archCapabilities, baseModelArch)
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [archCapabilities, baseModelArch, trainingMethod, blocksToSwap]
+  );
+  // Why the choice collapsed, when it did. The two settings-driven causes are
+  // the non-obvious ones -- without this the control simply vanishes when block
+  // swap goes on or the method changes.
+  const adapterAlgorithmCollapsedNote: string | undefined = (
+    adapterAlgorithmChoices.length > 1 ? undefined
+    : trainingMethod !== "lora"
+      ? "ReLoRA trains the ordinary low-rank branch only: its merge, reinitialize and optimizer reset are not defined for LoHa or LoKr."
+    : blocksToSwap > 0
+      ? "Block swap is on, so only ordinary LoRA is offered: a LoHa or LoKr branch owns bare parameters, which no block offloader moves."
+    : adapterTrainingRefusalReason(archCapabilities, baseModelArch, "loha")
+  );
   // param -> the value it held before this component pinned it, so the banner
   // names what was replaced instead of just saying something was.
   const [contractAdjusted, setContractAdjusted] = useState<Record<string, string>>({});
@@ -1075,6 +1124,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_rank : undefined,
       lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_alpha : undefined,
       lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_dtype : undefined,
+      // ReLoRA is deliberately excluded: its merge/reinitialize and optimizer
+      // reset are defined for the ordinary low-rank branch alone, and the
+      // backend refuses the combination.
+      adapter_algorithm: trainingMethod === "lora" ? params.adapter_algorithm : undefined,
+      // Both methods write these into the YAML (the ReLoRA generator derives
+      // from the LoRA one), so both must send them back or the PUT resets them.
+      weight_decompose: (trainingMethod === "lora" || trainingMethod === "relora")
+        ? params.weight_decompose : undefined,
+      adapter_config: (trainingMethod === "lora" || trainingMethod === "relora")
+        ? params.adapter_config : undefined,
       ...(trainingMethod === "relora" ? {
         relora_merge_every: params.relora_merge_every,
         relora_merge_unit: params.relora_merge_unit,
@@ -1422,7 +1481,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Fields that need special defaulting/coercion are handled explicitly;
     // all others are forwarded when present (undefined means "don't touch").
     const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
-      "lora_rank", "lora_alpha", "lora_dtype",
+      "lora_rank", "lora_alpha", "lora_dtype", "adapter_algorithm",
+      "weight_decompose", "adapter_config",
       "total_steps", "epochs",
       "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
       "lr_decay_start_ratio", "lr_floor_ratio", "rewarmup_on_optimizer_reset",
@@ -1782,6 +1842,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, trainingMethod, archCapabilities, availableModels]);
+
+  // Same fallback for the algebra: a "loha" carried over from another base
+  // model, or left behind by switching to ReLoRA or turning block swap on,
+  // would be refused before the model loads.
+  //
+  // Both guards are load-bearing, not defensive. `adapterAlgorithmChoices`
+  // narrows to ["lora"] while `availableModels` is still empty, because
+  // `trainableAdapterAlgorithms` fails closed on an unresolved architecture --
+  // and edit mode restores the run's YAML BEFORE that list arrives (see the
+  // load order below), so without them this effect silently rewrote a restored
+  // LoKr run to ordinary LoRA and the next resume died on a missing
+  // `lora_down.weight`.
+  const capabilitiesReady = !!archCapabilities && !!baseModelArch;
+  useEffect(() => {
+    if (restoringFromYAMLRef.current || !capabilitiesReady) return;
+    if (!adapterAlgorithmChoices.includes(adapterAlgorithm)) {
+      updateParam("adapter_algorithm", "lora");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adapterAlgorithmChoices, adapterAlgorithm, capabilitiesReady]);
 
   // Clear the arming values of a feature this base model has no mechanism for,
   // so a value carried over from a previous model is not submitted and refused.
@@ -2299,6 +2379,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       loraRank: params.lora_rank,
       loraAlpha: params.lora_alpha,
       loraDtype: params.lora_dtype,
+      adapterAlgorithm: params.adapter_algorithm,
+      adapterConfig: params.adapter_config,
       saveEvery,
       saveEveryUnit,
       maxStepSavesToKeep,
@@ -2485,6 +2567,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.loraRank !== undefined) updateParam("lora_rank", config.loraRank);
     if (config.loraAlpha !== undefined) updateParam("lora_alpha", config.loraAlpha);
     if (config.loraDtype !== undefined) updateParam("lora_dtype", config.loraDtype);
+    if (config.adapterAlgorithm !== undefined) updateParam("adapter_algorithm", config.adapterAlgorithm);
+    if (config.adapterConfig !== undefined) updateParam("adapter_config", config.adapterConfig);
     if (config.saveEvery !== undefined) updateParam("save_every", config.saveEvery);
     if (config.saveEveryUnit !== undefined) updateParam("save_every_unit", config.saveEveryUnit);
     if (config.maxStepSavesToKeep !== undefined) updateParam("max_step_saves_to_keep", config.maxStepSavesToKeep);
@@ -3346,6 +3430,34 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="fp16">FP16 (Half Precision)</option>
               </select>
             </div>
+
+            {adapterAlgorithmChoices.length > 1 && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Adapter Algorithm</label>
+                <select
+                  value={adapterAlgorithm}
+                  onChange={(e) => updateParam("adapter_algorithm", e.target.value as "lora" | "loha" | "lokr")}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                >
+                  {adapterAlgorithmChoices.map((name) => (
+                    <option key={name} value={name}>
+                      {ADAPTER_ALGORITHM_LABELS[name]}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  {ADAPTER_ALGORITHM_NOTES[adapterAlgorithm]}
+                </p>
+                {adapterAlgorithm !== "lora" && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Block swap is not available with this algorithm.
+                  </p>
+                )}
+              </div>
+            )}
+            {adapterAlgorithmCollapsedNote && (
+              <p className="text-xs text-gray-500">{adapterAlgorithmCollapsedNote}</p>
+            )}
           </div>
         )}
 

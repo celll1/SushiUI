@@ -539,9 +539,10 @@ def test_a_loha_file_is_refused_before_any_target_is_walked(tmp_path, warned):
     """The whole point of the gate: the refusal arrives during ``_parse``, so
     no target was walked, no branch built and no slot touched.
 
-    ``sensenova`` rather than ``zimage``: nine architectures now ENABLE the
-    additive LyCORIS algebras (``core/adapters/capability.py``), so only one of
-    the two still behind their own gate exercises the refusal at all.
+    ``sd15`` rather than ``zimage``: every architecture that builds a session
+    now ENABLES the additive LyCORIS algebras
+    (``core/adapters/capability.py``), so the only rows that still refuse are
+    the two on the diffusers path, which never construct one for real.
 
     REVERT THAT PROVES THIS BITES: drop the ``_refuse_unsupported_algebra``
     call from ``_parse``. The file then reaches the architecture's builder and
@@ -552,14 +553,14 @@ def test_a_loha_file_is_refused_before_any_target_is_walked(tmp_path, warned):
     before = slots(model)
     visited = []
 
-    session = make_session(warned, architecture="sensenova")
+    session = make_session(warned, architecture="sd15")
     with pytest.raises(AdapterIncompatible) as excinfo:
         session.load([{"path": write_loha(tmp_path), "strength": STRENGTH}],
                      [_engine_component(model, visited)])
 
     assert excinfo.value.code == "lora_incompatible"
     assert [code for code, _m in warned] == ["lora_incompatible"]
-    assert "loha" in warned[0][1] and "sensenova" in warned[0][1]
+    assert "loha" in warned[0][1] and "sd15" in warned[0][1]
     assert visited == [], "a target was walked before the refusal"
     assert slots(model) == before
     assert not composites(model)
@@ -629,7 +630,7 @@ def test_both_lokr_forms_name_the_capability_reason_not_a_malformed_file(tmp_pat
         save_file({**tensors, "a.alpha": torch.tensor(ALPHA)}, str(path))
 
         del warned[:]
-        session = make_session(warned, architecture="sensenova")
+        session = make_session(warned, architecture="sd15")
         with pytest.raises(AdapterIncompatible) as excinfo:
             session.load([{"path": str(path)}], [component(model)])
 

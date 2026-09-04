@@ -45,11 +45,13 @@ import torch
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 # The phase-reason prose is re-exported: every arch module imports it from here.
 from core.adapters.capability import (ADAPTER_PAIRS as _ADAPTER_PAIRS,
+                                      AXIS_GENERATION, AXIS_TRAINING,
                                       PHASE2_PENDING, PHASE3_PENDING,
                                       PHASE3_PENDING_DENSE_ONLY,
                                       QUANTIZED_ADDITIVE_PENDING,
-                                      declared_pairs)
-from core.adapters.spec import ALGORITHM_LORA
+                                      QUANTIZED_ADDITIVE_SHIPPED,
+                                      declared_pairs, training_refusal_reason)
+from core.adapters.spec import ALGORITHM_LORA, FAMILY_NAMES
 from core.adapters.spec import ALGORITHMS as ADAPTER_ALGORITHMS
 
 
@@ -207,14 +209,14 @@ class AdapterCapability:
     """Which ``(algorithm, weight_decompose)`` pairs ONE architecture supports.
 
     A declaration WITH GATES, deliberately in two halves: ``additive_family``
-    and ``initial_dora`` record the design-doc verdict, while ``supported`` comes
-    from ``core.adapters.capability.ENABLED_ADAPTER_PAIRS``.
+    and ``initial_dora`` record the design-doc verdict, while ``supported`` and
+    ``trainable`` come from the two tables in
+    ``core.adapters.capability``.
 
-    ``supported`` IS THE GENERATION BOUNDARY, not the training one. Four
-    architectures enable LoHa and LoKr there; training builds ``LoRALinearLayer``
-    and only that, on all thirteen. Whoever wires ``require()`` into the trainer
-    needs a second axis first -- this one will answer True for a family no
-    trainer can construct.
+    TWO AXES. ``supported`` is what GENERATES here; ``trainable`` is what a
+    trainer may construct, save and resume here. ``require()`` takes the axis as
+    a mandatory argument so no caller can enable training by reading the
+    generation row.
     """
 
     additive_family: bool
@@ -224,13 +226,23 @@ class AdapterCapability:
     #: LoHa/LoKr/DoRA over a weight-only quantized base. Says nothing about
     #: ordinary LoRA, which IS allowed over one in both generation and training
     #: (``core.adapters.is_lora_wrappable_linear``; ``reject_quantized_base``
-    #: gates full fine-tuning and exempts LoRA on purpose).
+    #: gates full fine-tuning and exempts LoRA on purpose). True only where the
+    #: architecture has no dense configuration, so enabling the family at all
+    #: IS the quantized-base case; ``quantized_base_reason`` carries the scope
+    #: either way.
     quantized_base_additive_family: bool
     quantized_base_reason: str = ""
-    #: The table's third value on the additive axis, "yes, later gate": the
-    #: family is feasible here but needs its own gate rather than riding on the
-    #: general Phase 2 enablement (MiniMax-H3, SenseNova).
+    #: "Yes, later gate", read on the TRAINING axis: the family generates here
+    #: but a trainer may not construct it, because the gate is this
+    #: architecture's own rather than the general Phase 2 step. The sentence
+    #: saying which gate is ``capability.TRAINING_REFUSAL_REASONS``.
     additive_gated: bool = False
+    #: The TRAINING axis. Defaults to nothing trainable so a hand-built matrix
+    #: cannot open training by omission; ``declare_adapter_capability`` fills it
+    #: from ``TRAINABLE_ADAPTER_PAIRS``.
+    trainable: FrozenSet[Tuple[str, bool]] = frozenset()
+    trainable_refusals: Mapping[Tuple[str, bool], str] = field(
+        default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.initial_dora not in DORA_VERDICTS:
@@ -239,6 +251,20 @@ class AdapterCapability:
         object.__setattr__(self, "supported", frozenset(self.supported))
         object.__setattr__(self, "refusals",
                            MappingProxyType(dict(self.refusals)))
+        object.__setattr__(self, "trainable", frozenset(self.trainable))
+        trainable_refusals = dict(self.trainable_refusals)
+        for pair in _ADAPTER_PAIRS:
+            if pair not in self.trainable and not trainable_refusals.get(pair):
+                trainable_refusals[pair] = (
+                    f"{FAMILY_NAMES.get(pair, pair)} adapters cannot be trained "
+                    f"on this architecture")
+        object.__setattr__(self, "trainable_refusals",
+                           MappingProxyType(trainable_refusals))
+        untrainable = sorted(self.trainable - self.supported)
+        if untrainable:
+            raise ValueError(
+                f"adapter pairs {untrainable} are declared trainable but do not "
+                f"generate here; a checkpoint no loader accepts is not a feature")
         missing = [p for p in _ADAPTER_PAIRS
                    if p not in self.supported and not self.refusals.get(p)]
         if missing:
@@ -251,22 +277,39 @@ class AdapterCapability:
         if not self.quantized_base_additive_family and not self.quantized_base_reason:
             raise ValueError("quantized_base_additive_family=False needs a reason")
 
-    def supports(self, algorithm: str, weight_decompose: bool = False) -> bool:
-        return (algorithm, bool(weight_decompose)) in self.supported
+    def _axis(self, axis: str) -> Tuple[FrozenSet[Tuple[str, bool]],
+                                        Mapping[Tuple[str, bool], str]]:
+        if axis == AXIS_GENERATION:
+            return self.supported, self.refusals
+        if axis == AXIS_TRAINING:
+            return self.trainable, self.trainable_refusals
+        raise ValueError(
+            f"axis {axis!r} is not one of "
+            f"({AXIS_GENERATION!r}, {AXIS_TRAINING!r})")
 
-    def refusal_reason(self, algorithm: str,
-                       weight_decompose: bool = False) -> Optional[str]:
-        """Why the pair is refused, or ``None`` when it is supported."""
+    def supports(self, algorithm: str, weight_decompose: bool = False,
+                 axis: str = AXIS_GENERATION) -> bool:
+        pairs, _refusals = self._axis(axis)
+        return (algorithm, bool(weight_decompose)) in pairs
+
+    def refusal_reason(self, algorithm: str, weight_decompose: bool = False,
+                       axis: str = AXIS_GENERATION) -> Optional[str]:
+        """Why the pair is refused on ``axis``, or ``None`` when it is allowed."""
+        pairs, refusals = self._axis(axis)
         pair = (algorithm, bool(weight_decompose))
-        if pair in self.supported:
+        if pair in pairs:
             return None
-        return self.refusals.get(
+        return refusals.get(
             pair, f"adapter algorithm {algorithm!r} is not recognized")
 
-    def require(self, algorithm: str, weight_decompose: bool = False) -> None:
-        """Raise unless the pair is supported. No TRAINING caller yet (Phase
-        2/3); generation refuses through ``core.adapters.capability``."""
-        reason = self.refusal_reason(algorithm, weight_decompose)
+    def require(self, algorithm: str, weight_decompose: bool, axis: str) -> None:
+        """Raise unless the pair is allowed on ``axis``.
+
+        ``axis`` is mandatory: the generation and training rows open
+        separately, and defaulting to either is how a flip on one silently
+        becomes a flip on the other.
+        """
+        reason = self.refusal_reason(algorithm, weight_decompose, axis=axis)
         if reason is not None:
             raise ValueError(reason)
 
@@ -284,13 +327,14 @@ def declare_adapter_capability(
 ) -> AdapterCapability:
     """Build one architecture's matrix from its design-doc verdict.
 
-    What is ENABLED is not decided here: it is read from
-    ``core.adapters.capability.ENABLED_ADAPTER_PAIRS``, which generation reads
-    too (it may not import this package -- see that module). A flip is one edit
-    to that table; this refuses exactly what the table does not enable, so a
-    refusal cannot be dropped without the pair being enabled in the same edit.
+    What is ENABLED is not decided here: it is read from the two tables in
+    ``core.adapters.capability``, which generation reads too (it may not import
+    this package -- see that module). A flip is one edit to a table; this
+    refuses exactly what the table does not enable, so a refusal cannot be
+    dropped without the pair being enabled in the same edit.
     """
-    supported = declared_pairs(arch)
+    supported = declared_pairs(arch, AXIS_GENERATION)
+    trainable = declared_pairs(arch, AXIS_TRAINING)
     refusals: Dict[Tuple[str, bool], str] = {}
     for algorithm, decompose in _ADAPTER_PAIRS:
         if (algorithm, decompose) in supported:
@@ -305,6 +349,21 @@ def declare_adapter_capability(
         else:
             reason = dora_reason
         refusals[(algorithm, decompose)] = f"{arch}: {reason}"
+
+    trainable_refusals: Dict[Tuple[str, bool], str] = {}
+    for pair in _ADAPTER_PAIRS:
+        if pair in trainable:
+            continue
+        # A pair that does not generate here cannot be trained here either, and
+        # the generation reason is the one that actually blocks it.
+        if pair in supported:
+            reason = dora_reason if pair[1] else training_refusal_reason(arch)
+            trainable_refusals[pair] = (
+                f"{arch}: {FAMILY_NAMES[pair]} adapters cannot be trained -- "
+                f"{reason}")
+        else:
+            trainable_refusals[pair] = refusals[pair]
+
     return AdapterCapability(
         additive_family=additive_family,
         initial_dora=initial_dora,
@@ -313,6 +372,8 @@ def declare_adapter_capability(
         quantized_base_additive_family=quantized_base_additive_family,
         quantized_base_reason=f"{arch}: {quantized_base_reason}",
         additive_gated=additive_gated,
+        trainable=trainable,
+        trainable_refusals=trainable_refusals,
     )
 
 
@@ -326,6 +387,10 @@ NO_ADAPTER_CAPABILITY = AdapterCapability(
               for pair in _ADAPTER_PAIRS},
     quantized_base_additive_family=False,
     quantized_base_reason="this architecture declares no adapter capability matrix",
+    trainable=frozenset(),
+    trainable_refusals={
+        pair: "this architecture declares no adapter capability matrix"
+        for pair in _ADAPTER_PAIRS},
 )
 
 

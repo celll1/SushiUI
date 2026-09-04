@@ -61,7 +61,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
             if is_adapter_covered(current):
                 continue
             lora_name = flatten_to_key(module_path)  # "lora_unet_<flat>"
-            lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)
+            lora_layer = self.build_branch(current, lora_name)
             if isinstance(attr, int):
                 parent[attr] = lora_layer
             else:

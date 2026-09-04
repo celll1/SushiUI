@@ -5,13 +5,22 @@ Author: Claude (2026-01-04)
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Any, Optional
+from typing import Callable, Dict, List, Any, Mapping, Optional
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from core.adapters import count_quantized_linears
+from core.adapters import LoRALinearLayer, count_quantized_linears
+from core.adapters.capability import AXIS_TRAINING
+from core.adapters.layers import (new_adapter_branch,
+                                  validate_adapter_options)
+from core.adapters.spec import (ALGORITHM_LORA, ALGORITHMS, FORMAT_SUSHIUI,
+                                METADATA_ALGORITHM, METADATA_FORMAT,
+                                METADATA_OPTIONS, METADATA_SCHEMA_VERSION,
+                                METADATA_WEIGHT_DECOMPOSE,
+                                ADAPTER_SCHEMA_VERSION)
 
 
 LORA_COMPONENT_UNET = "unet"
@@ -166,6 +175,101 @@ def warn_quantized_base_without_checkpointing(
     return message
 
 
+@dataclass(frozen=True)
+class TrainingAdapterSpec:
+    """WHICH algebra this run trains, normalized from the run's ``network`` block.
+
+    A missing field is ordinary LoRA without weight decomposition, which is what
+    every YAML written before this existed means.
+    """
+
+    algorithm: str = ALGORITHM_LORA
+    weight_decompose: bool = False
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        algorithm = str(self.algorithm or ALGORITHM_LORA).strip().lower()
+        if algorithm not in ALGORITHMS:
+            raise ValueError(
+                f"adapter_algorithm={self.algorithm!r} is not one of "
+                f"{list(ALGORITHMS)}")
+        object.__setattr__(self, "algorithm", algorithm)
+        object.__setattr__(self, "weight_decompose", bool(self.weight_decompose))
+        object.__setattr__(self, "options",
+                           validate_adapter_options(algorithm, self.options))
+        if self.weight_decompose:
+            raise ValueError(
+                "weight_decompose is accepted but not implemented: DoRA/DoHa/"
+                "DoKr are Phase 3 (docs/guides/LYCORIS_ADAPTER_DESIGN.md)")
+
+    @property
+    def is_ordinary_lora(self) -> bool:
+        return self.algorithm == ALGORITHM_LORA and not self.weight_decompose
+
+    def metadata(self) -> Dict[str, str]:
+        """The ``sushi.adapter.*`` block, EMPTY for ordinary LoRA.
+
+        Empty on purpose: an ordinary LoRA checkpoint stays byte-identical to
+        the ones every architecture already writes and every reader already
+        detects from its keys.
+        """
+        if self.is_ordinary_lora:
+            return {}
+        meta = {
+            METADATA_SCHEMA_VERSION: str(ADAPTER_SCHEMA_VERSION),
+            METADATA_ALGORITHM: self.algorithm,
+            METADATA_WEIGHT_DECOMPOSE: "true" if self.weight_decompose else "false",
+            METADATA_FORMAT: FORMAT_SUSHIUI,
+        }
+        if self.options:
+            import json
+
+            meta[METADATA_OPTIONS] = json.dumps(dict(self.options), sort_keys=True)
+        return meta
+
+
+def refuse_untrainable_algebra(spec: TrainingAdapterSpec, capability,
+                               blocks_to_swap: int = 0) -> None:
+    """Refuse an algebra this architecture cannot train, and block swap with it.
+
+    ONE implementation, two entry points: ``train_runner``'s config preflight
+    (before the model loads) and ``LoRATrainer._create_adapter`` (the backstop
+    for a caller that skipped the preflight).
+    """
+    if spec.is_ordinary_lora:
+        return
+    capability.require(spec.algorithm, spec.weight_decompose, AXIS_TRAINING)
+    if blocks_to_swap:
+        # No offloader moves a bare parameter -- they select modules whose class
+        # name ends in "Linear" -- and what that costs a training step is
+        # unmeasured.
+        raise ValueError(
+            f"blocks_to_swap={blocks_to_swap} is not supported with "
+            f"adapter_algorithm={spec.algorithm}: the block offloader moves "
+            f"modules whose class name ends in 'Linear' and a {spec.algorithm} "
+            f"branch owns bare parameters instead, so its factors are invisible "
+            f"to the swap. Set blocks_to_swap=0, or train an ordinary LoRA.")
+
+
+def resolve_training_adapter_spec(trainer) -> TrainingAdapterSpec:
+    """The run's algebra, off the trainer's own attributes.
+
+    Deliberately NOT falling back to ``trainer.config``, unlike
+    ``resolve_scope_csv``: these arrive from the YAML's ``network`` block, which
+    ``train_runner`` preflights before the model loads, and a second source in
+    the ``train`` block would reach the layer without that check.
+    """
+    def pick(key, default):
+        value = getattr(trainer, key, None)
+        return default if value is None else value
+
+    return TrainingAdapterSpec(
+        algorithm=pick("adapter_algorithm", ALGORITHM_LORA),
+        weight_decompose=pick("weight_decompose", False),
+        options=pick("adapter_config", {}) or {},
+    )
+
+
 class BaseLoRAAdapter(ABC):
     """
     Abstract base class for model-specific LoRA adapters.
@@ -191,6 +295,16 @@ class BaseLoRAAdapter(ABC):
         self.lora_scale = lora_alpha / lora_rank
         self.lora_dtype = lora_dtype
         self._lora_components: Dict[str, str] = {}
+        self.adapter_spec = resolve_training_adapter_spec(trainer)
+        # A trainer that knows its architecture refuses an algebra that
+        # architecture cannot round-trip; LoRATrainer._create_adapter asks the
+        # same question earlier, where the message reaches the run's log.
+        handler = getattr(trainer, "arch", None)
+        capability = getattr(handler, "adapter_capability", None)
+        if capability is not None and not self.adapter_spec.is_ordinary_lora:
+            capability.require(self.adapter_spec.algorithm,
+                               self.adapter_spec.weight_decompose,
+                               AXIS_TRAINING)
 
     @property
     def lora_components(self) -> Dict[str, str]:
@@ -208,6 +322,27 @@ class BaseLoRAAdapter(ABC):
             comps = {}
             self.__dict__["_lora_components"] = comps
         return comps
+
+    #: This architecture's ordinary-LoRA branch class. MiniMax-H3 overrides it
+    #: (its forward runs without autocast, so the branch casts per call); the
+    #: LyCORIS algebras have no per-architecture variant.
+    LORA_LAYER_CLS = LoRALinearLayer
+
+    def build_branch(self, original_module: nn.Module, lora_name: str,
+                     dtype: Optional[torch.dtype] = None) -> nn.Module:
+        """THE construction seam: every architecture wraps a Linear through here.
+
+        What comes back is the algebra the run asked for, at the run's rank,
+        alpha and dtype. Constructing a layer class directly instead pins the
+        run to ordinary LoRA no matter what its config says.
+        """
+        return new_adapter_branch(
+            self.adapter_spec.algorithm, original_module,
+            rank=self.lora_rank, alpha=self.lora_alpha, name=lora_name,
+            dtype=self.lora_dtype if dtype is None else dtype,
+            weight_decompose=self.adapter_spec.weight_decompose,
+            options=self.adapter_spec.options,
+            lora_cls=self.LORA_LAYER_CLS)
 
     def register_lora_layer(
         self,
@@ -365,6 +500,9 @@ class BaseLoRAAdapter(ABC):
             output_path: Path to save checkpoint
         """
         metadata = self.checkpoint_metadata(lora_layers, step, epoch)
+        # The architecture's keys win a clash: they carry its own spelling of
+        # model_type/lora_alpha, and the spec block adds only sushi.adapter.*.
+        metadata = {**self.adapter_spec.metadata(), **metadata}
         save_file(self.export_state_dict(lora_layers), str(output_path), metadata=metadata)
         # Metadata fields are available to the log format (SenseNova names its
         # branch from lora_targets); the three below always win a name clash.

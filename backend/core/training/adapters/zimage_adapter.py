@@ -96,9 +96,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                     if is_lora_wrappable_linear(original_linear):
                         # Create LoRA layer
                         lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_{attr_name}"
-                        lora_layer = LoRALinearLayer(
-                            original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                        )
+                        lora_layer = self.build_branch(original_linear, lora_name)
 
                         # Replace in attention module
                         setattr(attn_module, attr_name, lora_layer)
@@ -114,9 +112,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
 
                     # Create LoRA layer
                     lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_to_out_0"
-                    lora_layer = LoRALinearLayer(
-                        original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
-                    )
+                    lora_layer = self.build_branch(original_linear, lora_name)
 
                     # Replace in ModuleList
                     attn_module.to_out[0] = lora_layer

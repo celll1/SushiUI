@@ -159,6 +159,21 @@ def _alpha_from_tensors(tensors: Mapping[str, torch.Tensor],
     return float(rank) if rank else 1.0
 
 
+def fold_scalar_for_export(layer, into: str) -> Dict[str, torch.Tensor]:
+    """``export_tensors`` for an algebra with a trained ``scalar``.
+
+    Upstream multiplies ``scalar`` into the saved first factor and writes no
+    ``scalar`` key; its reader then forces ``scalar := 1``. A serializer that
+    emitted the key bare would leave every other reader ``1/scalar`` too strong.
+    """
+    tensors = {name: weight.detach().cpu()
+               for name, weight in layer.branch_tensors().items()}
+    scalar = tensors.pop("scalar", None)
+    if scalar is not None:
+        tensors[into] = tensors[into] * scalar
+    return tensors
+
+
 def _refuse_use_scalar(cls_name: str) -> None:
     """No file carries ``scalar`` (see ``LoHaLinearLayer``), and a layer built
     from one would multiply the whole delta by zero."""
@@ -455,6 +470,9 @@ class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
         tensors["alpha"] = torch.tensor(self.alpha, dtype=torch.float32)
         return tensors
 
+    def export_tensors(self) -> Dict[str, torch.Tensor]:
+        return fold_scalar_for_export(self, "hada_w1_a")
+
 
 def factorization(dimension: int, factor: int = -1) -> Tuple[int, int]:
     """Upstream LyCORIS ``functional/general.py.factorization``: the most
@@ -694,6 +712,10 @@ class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
         tensors["alpha"] = torch.tensor(self.alpha, dtype=torch.float32)
         return tensors
 
+    def export_tensors(self) -> Dict[str, torch.Tensor]:
+        return fold_scalar_for_export(
+            self, "lokr_w1_a" if self.decompose_both else "lokr_w1")
+
 
 def dora_magnitude_axis(dora_scale: torch.Tensor, out_features: int,
                         in_features: int) -> int:
@@ -803,6 +825,69 @@ class DoRALinearLayer(_BranchTensorProtocol, nn.Module):
 
     def load_spec_constant(self, name: str, value: torch.Tensor) -> None:
         self.branch.load_spec_constant(name, value)
+
+
+#: Options ``new_adapter_branch`` forwards, per algebra. Anything else in a
+#: run's ``adapter_config`` is refused by name rather than ignored.
+FRESH_BRANCH_OPTIONS: Mapping[str, FrozenSet[str]] = {
+    "lora": frozenset(),
+    "loha": frozenset({"use_scalar"}),
+    "lokr": frozenset({"factor", "decompose_both", "use_scalar"}),
+}
+
+
+def validate_adapter_options(algorithm: str,
+                             options: Optional[Mapping[str, object]] = None
+                             ) -> Dict[str, object]:
+    """Refuse an option this algebra does not have, BY NAME rather than ignoring
+    it. Shared so a run is refused from its config, before the model loads, in
+    the same words the layer would have used."""
+    allowed = FRESH_BRANCH_OPTIONS.get(algorithm)
+    if allowed is None:
+        raise ValueError(f"unknown adapter algorithm {algorithm!r}")
+    opts = dict(options or {})
+    unknown = sorted(set(opts) - set(allowed))
+    if unknown:
+        raise ValueError(
+            f"adapter_config {unknown} is not an option of {algorithm} "
+            f"(accepted: {sorted(allowed) or 'none'})")
+    if opts.get("use_scalar"):
+        # from_tensors refuses it and no real file carries the key, so a
+        # checkpoint trained with one could not be loaded back.
+        raise ValueError(
+            "use_scalar cannot be trained here: the exporter folds scalar into "
+            "the first factor and every reader forces scalar := 1, so a resume "
+            "of the saved file would rebuild a different layer")
+    return opts
+
+
+def new_adapter_branch(algorithm: str, base: nn.Module, *, rank: int,
+                       alpha: float, name: str = "",
+                       dtype: torch.dtype = torch.float32,
+                       weight_decompose: bool = False,
+                       options: Optional[Mapping[str, object]] = None,
+                       lora_cls: Optional[type] = None) -> nn.Module:
+    """A FRESH branch of ``algorithm`` over ``base``, for training.
+
+    The load-time counterpart is ``groups.build_adapter_branch``, which reads
+    the geometry off a checkpoint's tensors; here the run's rank/alpha decide
+    it. ``lora_cls`` lets an architecture keep its own ordinary-LoRA subclass
+    (MiniMax-H3 casts per call); the LyCORIS algebras have no such variant.
+    """
+    if weight_decompose:
+        raise ValueError(
+            "weight_decompose (DoRA/DoHa/DoKr) is Phase 3: the magnitude vector "
+            "needs the base weight's direction and norm, which is a separate "
+            "design with its own quantized-base refusal")
+    opts = validate_adapter_options(algorithm, options)
+    if algorithm == "lora":
+        cls = lora_cls or LoRALinearLayer
+        return cls(base, rank, alpha, name, dtype)
+    if algorithm == "loha":
+        return LoHaLinearLayer(base, rank, alpha, name, dtype)
+    return LoKrLinearLayer(base, rank, alpha, name, dtype,
+                           factor=int(opts.get("factor", -1)),
+                           decompose_both=bool(opts.get("decompose_both", False)))
 
 
 def get_module_slot(parent: nn.Module, slot: Union[str, int]) -> nn.Module:

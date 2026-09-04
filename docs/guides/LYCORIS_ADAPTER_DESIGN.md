@@ -1,9 +1,15 @@
 # LyCORIS adapter integration design
 
 Status: investigation and implementation plan. Shipped so far: the additive
-LyCORIS algebras (LoHa, LoKr) LOAD AND GENERATE on Z-Image, Krea 2, MiniT2I,
-LTX-2.3, Anima, Lens, Ideogram 4, FLUX.2 and ACE-Step (sd-scripts codec only)
-— generation only, by file path. Everything else here is plan.
+LyCORIS algebras (LoHa, LoKr) LOAD AND GENERATE on all eleven architectures
+that build an `AdapterSession` — Z-Image, Krea 2, MiniT2I, LTX-2.3, Anima,
+Lens, Ideogram 4, FLUX.2, ACE-Step (sd-scripts codec only), MiniMax-H3 and
+SenseNova. SD1.5 and SDXL load through diffusers and still take ordinary LoRA
+only. Generation by file path. They are also TRAINABLE, on the nine of those
+eleven whose training row is open (`network.adapter_algorithm: loha | lokr`,
+`training_method: lora`, `blocks_to_swap: 0`); MiniMax-H3 and SenseNova load one
+without training one. Weight decomposition (DoRA/DoHa/DoKr) is accepted as a
+field and refused as a value everywhere. Everything else here is plan.
 
 This guide evaluates LyCORIS 4.0.0 for SushiUI and defines the work required to
 support LoHa, LoKr, and weight-decomposed adapters (DoRA, DoHa, and DoKr) in both
@@ -363,9 +369,9 @@ speed. LoCon/Conv targets are separate future scope.
 | MiniT2I | yes | dense Linear | Preserve transformer and optional FLAN-T5 scopes |
 | Krea2 | yes | deferred | Generation call added (Phase 0); INT8/FP8 bases need capability gates |
 | LTX-2.3 | yes | dense only | Generation loader added (Phase 0); Gemma-3 remains frozen |
-| MiniMax-H3 | yes, later gate | deferred | Preserve custom QKV mapping and FP8/ConvRot dtype policy |
+| MiniMax-H3 | yes | deferred | Fused-QKV row split landed (phase 2); FP8/ConvRot dtype policy preserved |
 | ACE-Step | yes | dense only | Opt-in MLP scope now round-trips through generation (Phase 0) |
-| SenseNova | yes, later gate | deferred | Preserve two MoT halves, phase eviction, and INT8/ConvRot policy |
+| SenseNova | yes | deferred | Two MoT halves, phase eviction and INT8 policy preserved (phase 2) |
 | MiniMax Music 3 | no training | no | Keep refused until the training input contract exists |
 
 ## Shared adapter engine
@@ -824,9 +830,9 @@ recorded below. Only the per-LoRA option unification is outstanding.
 
 **Not landed.**
 
-- Foreign LoHa/LoKr on the four architectures still refusing them: Tier 3 with
-  its own gate (MiniMax-H3, SenseNova), ACE-Step's diffusers/PEFT branch, and
-  SD1.5/SDXL, which never reach `AdapterSession` at all.
+- Foreign LoHa/LoKr on the two paths still refusing them: ACE-Step's
+  diffusers/PEFT branch, and SD1.5/SDXL, which never reach `AdapterSession`
+  at all.
 - The architecture-registry hooks that would carry generation TOPOLOGY -- target
   discovery, component policy, scope names, checkpoint-stem translation -- and
   the migration of the thirteen existing target iterators onto `AdapterTarget`.
@@ -946,8 +952,12 @@ per-architecture:**
 - Implement pure PyTorch fp32 oracles and mixed-dtype unfused paths.
 - Load, resume, save, and generate using LyCORIS-compatible tensor groups.
 - Enable dense targets first, then additive branches over INT8/FP8/W4A8 bases.
+  (Not separable for MiniMax-H3 and SenseNova, which have no dense
+  configuration; their flips are the quantized-base half for their targets --
+  see the Landed block below.)
 - Gate MiniMax-H3 and SenseNova separately because their ConvRot training
-  forward and activation dtype policy dominate more of the step.
+  forward and activation dtype policy dominate more of the step. (Done for
+  generation; their TRAINING rows are still ordinary LoRA.)
 
 **Landed: the tensor-group engine, with no production caller.**
 `backend/core/adapters/groups.py` owns the step between a checkpoint's keys and
@@ -1344,6 +1354,250 @@ and the sibling that makes it discriminating grew to nine.
   declares. `_account` only refuses on `applied < declared`, so this is silent
   — pre-existing, unreachable from anything this repo saves (the trainer's
   scope is decoder-only), and recorded rather than changed.
+
+**Landed: LoHa and LoKr generate on the last two, MiniMax-H3 and SenseNova.**
+Every architecture that builds an `AdapterSession` now carries `("loha", False)`
+and `("lokr", False)`. Both route their branch builders through
+`build_adapter_branch` and keep their own alpha precedence and branch dtype
+(SenseNova gains a named `sensenova_lora.branch_dtype`, the bias-first chain its
+`Int8Linear` targets need since their weight is not floating point at all;
+MiniMax-H3 keeps `lora_branch_dtype`, whose no-bias default is right for its
+mixed fp8/fp32 tree). No decomposed pair moved, and the training axis
+(`TRAINABLE_ADAPTER_PAIRS`) stays ordinary LoRA for both.
+
+- **MiniMax-H3's fused QKV is the actual work, and it is TWO split paths, not
+  one.** `split_group_on_out_rows` is wired into `_normalise_comfy` for LoHa and
+  LoKr only; ordinary LoRA keeps `_split_qkv`'s compact and shared-down paths
+  byte for byte, because the compact one slices `lora_down`'s RANK COLUMNS as
+  well as `lora_up`'s rows and the engine function deliberately does not. The
+  LyCORIS row split keeps the rank columns, so a piece's own `alpha/rank` is the
+  fused stem's and no scale override is needed downstream — which is why the
+  `scale_rank` the branch carries is only ever a LoRA correction.
+- **The three pieces are given their OWN storage.** `split_group_on_out_rows`
+  shares the non-sliced factors by reference and `from_tensors` ADOPTS rather
+  than copies (that is what keeps ordinary LoRA bit-identical), so three
+  independently strengthened branches would sit on one buffer. Strength alone is
+  safe — it is folded into `scale`/`strength`, never into a tensor — but a merge,
+  an export, a training resume's `copy_` or a quantizer writing in place would
+  reach all three, and `_split_qkv` already clones `lora_down` for exactly this
+  reason. `_own_shared_tensors` clones what the split shared, at the cost of two
+  extra copies of the `_b`/`w2` factors per fused stem. Gate:
+  `test_minimax_h3_qkv_pieces_do_not_share_one_storage`.
+- **A LoKr that straddles a block is refused BY NAME.** `w1` rows not divisible
+  by three is not a corrupt file, so the message says so: it names the
+  `kron(w1, w2)` row map, the actual row count, and "the file is well formed".
+  The same conditional at two pieces governs `_swap_fc1_halves`, generalized
+  from `lora_up` to any factor carrying the out axis — `hada_w1_a`/`hada_w2_a`
+  unconditionally, a LoKr's `w1` only when its rows are even. Both refusals are
+  `lora_incompatible` 400s, and both gates assert the wording is neither
+  "truncated or corrupt" nor "not enabled".
+- **A native LoHa was refused with the right verdict and the wrong sentence.**
+  `_normalise_native` tested `"down" not in weights or "up" not in weights`, so a
+  COMPLETE LyCORIS group landed in `incomplete` and was reported as a file
+  "truncated or corrupt". It now separates on `group_adapter_tensors`' own
+  complete/partial split, and the incomplete message names a factor group rather
+  than a down/up pair.
+- **MiniMax-H3's `prepare_file` ValueErrors now answer 400.** Mixed key
+  conventions, an unmappable stem, a truncated group and the two new split
+  refusals all mean "this file cannot be applied here", and reached the client as
+  an untagged 500 with the sentence in the detail. They are wrapped as
+  `lora_incompatible`, which is what makes the split refusals' wording reachable
+  at all.
+- **Neither architecture was missing a shape check** — the defect Krea 2, Anima,
+  Lens and Ideogram 4 had. MiniMax-H3 compared in/out features and the rank
+  agreement; SenseNova compared all three. Both now get the same checks from
+  `from_tensors`, plus the rank-0 and LoCon-`mid` refusals they did not have.
+- **Only MiniMax-H3's LoRA branch needs the per-call activation cast.**
+  `MiniMaxH3LoRALinearLayer` exists because this architecture's forward runs
+  without `torch.autocast` and the stock LoRA layer's `F.linear` would raise on
+  an fp32 master against a bf16 activation. `LoHaLinearLayer` and
+  `LoKrLinearLayer` already do `compute_delta_weight().to(x.dtype)` in
+  `forward_delta`, so `layer_cls` is passed for the LoRA algebra alone.
+- **Block swap, read from the generate functions.** `BEFORE_SPLIT` (advise):
+  MiniMax-H3 has ONE generate function — `_generate_minimax_h3`, which all five
+  entry points call — and it loads LoRAs at 3184, three lines before
+  `_ensure_minimax_h3_swap_and_offload` at 3187 builds the per-generation
+  `TransformerBlockOffloader`. There is no keep-models-hot resident branch to
+  check: this architecture is excluded from `keep_models_hot` outright, and its
+  offloader is per-generation for the same reason (the DiT leaves the GPU before
+  every decode). The advisory is called from its single
+  `prepare_block_devices_before_forward()` site. `NO_BLOCK_SWAP`: SenseNova's
+  `blocks_to_swap` is inert — its backend never reads it — and its MoT phase
+  evictor is not a `TransformerBlockOffloader`: `select_mot_weight_modules`
+  classifies by `_owns_persistent_tensor` and a `_mot_gen` path substring, and
+  `move_non_gen_to_device` / `on_phase` move a module's OWN `_parameters`, so a
+  LoHa's bare factors travel with the half they sit under. The
+  `.lora_down`/`.lora_up` marker in `_is_adapter` is training-only
+  (`require_exact_symmetry`), which generation never sets.
+- **SenseNova's opt-in key canonicalization carries LyCORIS unchanged.**
+  `normalize_keys` fires only for `FORMAT_PEFT`, which a LyCORIS file reaches
+  through the `base_model.model.` prefix rather than through `lora_A`/`lora_B`;
+  the suffix rewrites cannot match a `hada_*`/`lokr_*` key, and stripping the
+  prefix is exactly what a verbatim-module-path parser needs. Gate:
+  `test_sensenova_canonicalizes_a_peft_prefixed_lycoris_file`. The recorded
+  collision gap is unchanged and not algebra-specific: a file carrying both
+  `base_model.model.X` and a bare `X` still loses one tensor silently.
+- **These two flips ARE the quantized-base half of Phase 2, for these targets,
+  and the declaration now says so.** The phase order above puts dense targets
+  before "additive branches over INT8/FP8/W4A8", and every architecture declared
+  `quantized_base_additive_family=False` with `QUANTIZED_ADDITIVE_PENDING`. That
+  is not decidable per-phase for these two: SenseNova has **no dense
+  configuration at all** — all 294 targets per MoT half are `Int8Linear` — and
+  MiniMax-H3's whole DiT block stack is `Fp8Linear`, with only the fp32 AdaLN
+  and head projections dense. Enabling LoHa/LoKr on them *is* the quantized-base
+  case; declaring it pending alongside would have been a false statement in
+  code, not a conservative one. So the flag is `True` for exactly those two,
+  carrying `QUANTIZED_ADDITIVE_SHIPPED`, which states what is claimed (the
+  branches build and forward correctly over the real quantized layer) and what
+  is not (no quality or speed measurement; DoRA still refused, since it needs the
+  base weight's direction and norm). The other nine keep `False`: a dense
+  checkpoint exists for each, so the flag there is about a configuration nothing
+  has evidence for. `test_a_lycoris_branch_installs_over_a_quantized_base` is
+  the evidence — the same file over `Int8Linear` and `Fp8Linear`, with and
+  without a bias, reaching every target and matching the fp32 oracle. It also
+  covers the one thing that changed for these two beyond the algebra: the shape
+  check moved to `_base_geometry`, which RAISES on a base exposing neither
+  `in_features` nor `out_features`, and a raise there is caught as
+  `SHAPE_MISMATCH` — a silently skipped target, then `lora_partial` for the
+  file. Both quantized classes set both attributes, and reverting
+  `_is_lora_target` to bare `nn.Linear` fails six of the eight rows.
+- **`additive_gated` now reads on the TRAINING axis.** The design-doc table's
+  third additive value, "yes, later gate", was true of the generation axis until
+  these flips and is false there now. It is exactly true on the training axis:
+  `TRAINABLE_ADAPTER_PAIRS` leaves both ordinary-LoRA-only, and their gate is
+  their own (MiniMax-H3's fused-QKV split has no save side; SenseNova's two MoT
+  halves and phase eviction) rather than the general Phase 2 step. Repurposing
+  beat dropping because the two-table split had just made that fact expressible,
+  and dropping the flag would have discarded it one commit later. The
+  per-architecture `additive_reason` those two carried was dead text — with all
+  three non-decomposed pairs supported, `declare_adapter_capability` never
+  reaches it — so each moved its "gate of their own" sentence into
+  `training_reason`, where it renders, and took the shared `PHASE2_PENDING` for
+  the unreachable slot like every other enabled row. The pinning test asserts
+  the flag both by name and derived from the two axes, so it cannot stay behind
+  when either moves.
+- **`NOT_ENABLED` is now empty, and the boundary test is not vacuous.** It
+  asserts the two things still contingent: every architecture that builds an
+  `AdapterSession` is a row in the gate AND carries both families, and the only
+  capability rows without a session are SD1.5 and SDXL, still ordinary LoRA
+  because they load through diffusers. The discriminating negative moved with
+  it — a real session told it is loading for SD1.5 must still refuse, which is
+  what keeps the "an enabled architecture does not refuse" sibling from passing
+  on a dead check. `refusal_error_code_cheap_test` drives that same session over
+  a real ASGI round trip for the same reason.
+
+
+**Landed: LoHa and LoKr TRAIN, on nine architectures.**
+`TRAINABLE_ADAPTER_PAIRS` is a SECOND table beside `ENABLED_ADAPTER_PAIRS` in
+`core/adapters/capability.py`, keyed the same way, and
+`AdapterCapability.require(algorithm, weight_decompose, axis)` takes the axis as
+a MANDATORY argument -- reading the wrong row is the failure the split exists to
+prevent, and a generation flip must not open training by omission. The table is
+asserted to be a subset of the generation one at import: a checkpoint no loader
+accepts is not a trained adapter. zimage, krea2, minit2i, ltx2, anima, lens,
+ideogram4, flux2 and acestep carry `("loha", False)` and `("lokr", False)`;
+SD1.5/SDXL train through the same adapters but load through diffusers, and
+MiniMax-H3 and SenseNova generate a LyCORIS file without training one.
+
+`BaseLoRAAdapter.build_branch()` is the construction seam: all 25 sites across
+the thirteen adapters go through it (acestep 1, anima 1, flux2 8, ideogram4 1,
+krea2 1, lens 1, ltx2 1, minimax_h3 1, minit2i 2, sd15 2, sdxl 3, sensenova 1,
+zimage 2), and it returns
+`core.adapters.layers.new_adapter_branch(...)` for the algebra the run asked
+for. No per-architecture adapter needed anything else -- MiniMax-H3 declares its
+per-call-casting subclass as `LORA_LAYER_CLS` instead of naming it at the call
+site, and SDXL's two text-encoder sites pass `dtype=torch.float32` explicitly
+because they always did (routing them through `self.lora_dtype` would change
+what reaches the optimizer on a bf16 run, which is a numerics decision, not a
+migration). Ordinary LoRA is byte-unchanged: `TrainingAdapterSpec.metadata()`
+is EMPTY for it, so no `sushi.adapter.*` key appears in the files every
+architecture already writes, and all thirteen per-architecture LoRA gates pass
+untouched.
+
+Gates: `backend/tests/adapter_lycoris_training_roundtrip_cheap_test.py` (9
+architectures x LoHa/LoKr; the trainer builds the algebra, saves, the REAL
+generation loader reads it back on a fresh stub, and the installed branch's
+`forward_delta` is `torch.equal` to the trained layer's on EVERY wrapped
+target, plus metadata and a full resume) and
+`backend/tests/adapter_training_algebra_cheap_test.py` (the
+architecture-independent half). The stub trees come from each architecture's
+own LoRA gate by import rather than by copy.
+
+- **The optimizer census holds on both fused paths, measured rather than
+  asserted from a count.** `trainable_parameters()` derives from
+  `branch_tensors()` and dedupes by identity, so a LoHa hands over 4 factors and
+  a LoKr 3 (full `w1` plus a factored `w2`) per target, each exactly once, and
+  the set is checked to EQUAL the layer's own `requires_grad` parameters -- a
+  factor the census misses trains nothing while the loss falls normally. Under
+  the real `FusedOptimizerGroups`, `parameter_optimizer_map` has one entry per
+  factor, `step_incomplete_groups()` returns `[]` (every group completed inside
+  the backward), every `.grad` is cleared and every factor moved. Under the real
+  `BaseTrainer._setup_fused_backward_pass` with Adafactor, `step_param` is
+  called exactly once per factor.
+- **Both recorded traps were real, and both bit.** The exporter: `scalar` is
+  now folded into `hada_w1_a` / `lokr_w1` / `lokr_w1_a` and the key dropped
+  (`layers.fold_scalar_for_export`), because upstream folds at save and forces
+  `scalar := 1` at load. Training a `use_scalar` layer is refused outright on
+  top of that -- `from_tensors` cannot rebuild one, so the file would not
+  resume. The rollback: `lora_trainer.load_checkpoint`'s failure path
+  `copy_`-ed into the throwaway `alpha` that `branch_tensors()` rebuilds per
+  call, restoring nothing; it now routes a spec constant through
+  `load_spec_constant`, and a gate drives a mid-way failure and reads the
+  alphas back.
+- **Block swap is refused, not silently degraded.** No offloader carries a
+  branch whose factors are bare parameters (they select `*Linear` by class
+  name), and what that costs a TRAINING step -- residency, and which device a
+  factor is on when its fused hook fires -- is UNMEASURED. `blocks_to_swap > 0`
+  with a LyCORIS algebra is therefore refused by name, and the UI collapses the
+  choice to LoRA while block swap is on. Ordinary LoRA is unaffected.
+
+  **Every refusal is raised from the CONFIG, before the model loads.**
+  `refuse_untrainable_algebra` (`training/adapters/base_adapter.py`) is the one
+  implementation; `train_runner._assert_adapter_algebra_contract` calls it from
+  the process preflight and `lora_trainer.require_trainable_algebra` is the
+  backstop for a caller that skipped it. Two checks were late in the first
+  draft and are not any more: `blocks_to_swap` lives in `train_config`, which
+  the preflight was not passed, and an `adapter_config` key was validated per
+  layer -- so both loaded the whole checkpoint and then died. The option check
+  runs for `adapter_algorithm: lora` too, where nothing else would ever read
+  the key: a stale `{"factor": 8}` left behind by switching algorithm is a
+  refusal, not a silent no-op.
+- **ReLoRA takes the ordinary branch only**, refused in
+  `train_runner._assert_adapter_algebra_contract` before the model loads:
+  merge/reinitialize and optimizer reset are not defined for a Hadamard or
+  Kronecker factorization. `weight_decompose: true` is accepted as a field and
+  refused as a value at three layers (`TrainingAdapterSpec`,
+  `new_adapter_branch`, the run contract).
+- **Two traps left for whoever opens the next row.**
+  `sensenova_adapter.py` filters already-wrapped targets with
+  `isinstance(target[3], LoRALinearLayer)`, which does not recognise a LoHa --
+  harmless while SenseNova's training row is ordinary-LoRA-only, and it fails
+  loudly rather than double-wrapping, but it is wrong the moment that row
+  opens. And the ReLoRA trainer construction in `train_runner` never passes
+  `adapter_algorithm`, so even a YAML that bypassed the preflight would build
+  an ordinary LoRA -- defense in depth by accident, not by design.
+- **Config surface**, in the mandated order: `adapter_algorithm`,
+  `weight_decompose` and `adapter_config` in `TRAINING_DEFAULTS`; the schema and
+  descriptions in `openapi.yaml`; `TrainingRunCreateRequest` (whose
+  `training_method` is now a strict enum rather than a free-form string with an
+  unknown-method fallthrough to full fine-tuning); the `network` block of
+  `generate_lora_config`; `_YAML_FIELD_LOCATIONS` for the `/params` round trip;
+  and `TrainingConfig.tsx`. `adapter_config` is `Optional` for one reason: a
+  YAML written before the key existed restores as `None` through `/params`, and
+  every reader treats `None` as `{}`. `GET /schema/arch-capabilities` gains
+  `adapter_families[arch].trainable` / `untrainable`, and the UI's algorithm
+  select is built from THAT rather than from `supported` -- the two lists differ
+  by two architectures today.
+- **The prose for a closed training row lives in `core/adapters/capability.py`
+  (`TRAINING_REFUSAL_REASONS`), not on the `ArchHandler`.**
+  `api/arch_capabilities.py` may not import the trainer stack (its
+  `TRAINING_DECLARED_ARCHS` comment says why), so a sentence declared on the
+  handler cannot reach a client: MiniMax-H3's "the fused-QKV row split has no
+  save side yet" and SenseNova's "the two MoT halves, phase eviction and the
+  INT8/ConvRot policy" rendered as the generic text in every HTTP response and
+  in the run's own refusal. `declare_adapter_capability` now READS that table
+  the way it already reads `declared_pairs`, so the handler and the payload
+  cannot word the same refusal differently.
 
 ### Phase 3: dense DoRA
 

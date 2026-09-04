@@ -2247,6 +2247,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "lora_alpha": 16,
     "lora_dtype": "fp32",
     "network_type": "lora",
+    # Adapter algebra (network.adapter_algorithm). "lora" is the ordinary
+    # low-rank branch; "loha"/"lokr" are the LyCORIS additive families, enabled
+    # per architecture by core.adapters.capability.TRAINABLE_ADAPTER_PAIRS.
+    "adapter_algorithm": "lora",
+    # DoRA/DoHa/DoKr. Accepted and refused: Phase 3 of
+    # docs/guides/LYCORIS_ADAPTER_DESIGN.md.
+    "weight_decompose": False,
+    # Algebra-specific options; LoKr takes "factor" and "decompose_both".
+    "adapter_config": {},
     # ReLoRA
     "relora_merge_every": 500,
     "relora_merge_unit": "steps",

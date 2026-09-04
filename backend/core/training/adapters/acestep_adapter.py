@@ -151,9 +151,7 @@ class AceStepLoRAAdapter(BaseLoRAAdapter):
                 continue  # idempotent / stacking-safe
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
-            lora_layer = LoRALinearLayer(
-                current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype,
-            )
+            lora_layer = self.build_branch(current, lora_name)
             setattr(parent, attr, lora_layer)
 
             self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from core.training.arch.base_arch import (
-    ArchHandler, SampleContext, TrainStepContext, QUANTIZED_ADDITIVE_PENDING,
-    declare_adapter_capability,
+    ArchHandler, PHASE2_PENDING, SampleContext, TrainStepContext,
+    QUANTIZED_ADDITIVE_SHIPPED, declare_adapter_capability,
 )
 from core.training.components.wiring import SENSENOVA_WIRING
 
@@ -15,17 +15,18 @@ class SenseNovaArchHandler(ArchHandler):
     adapter_capability = declare_adapter_capability(
         "sensenova",
         additive_family=True,
+        # Generation takes LoHa/LoKr; training does not, and the gate is this
+        # architecture's own rather than the general Phase 2 step.
         additive_gated=True,
         initial_dora="deferred",
-        additive_reason=(
-            "LoHa/LoKr need a gate of their own: the two MoT halves, phase "
-            "eviction and the INT8/ConvRot policy"),
+        additive_reason=PHASE2_PENDING,
         dora_reason=(
             "DoRA is deferred behind the two MoT halves, phase eviction and "
             "the INT8/ConvRot policy"),
+        quantized_base_additive_family=True,
         quantized_base_reason=(
-            f"{QUANTIZED_ADDITIVE_PENDING}; the INT8/ConvRot policy governs it "
-            f"here"),
+            f"{QUANTIZED_ADDITIVE_SHIPPED}. Here that is ALL 294 targets per "
+            f"MoT half: every one is an Int8Linear"),
     )
     pixel_align = 32
     wires_sample_step_progress = True

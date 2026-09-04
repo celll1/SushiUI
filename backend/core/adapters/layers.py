@@ -1,19 +1,14 @@
 """Adapter leaf layers: the wrappers that carry the trainable branch.
 
-Several algebras live here, and the eventual ``AdapterLayer`` protocol has to
-accommodate all of them: the stock LoRA layer relies on an ambient
-``torch.autocast`` to reconcile its fp32 masters with a bf16 activation, the
-MiniMax-H3 subclass casts per call because that architecture's forward runs
-without autocast. All are usable as branches of ``CompositeAdapterLayer``,
-which is what lets two adapters share one base module. The LoHa/LoKr/DoRA
-LOAD conventions -- tensor set, scale, magnitude axis, factorization -- follow
-LyCORIS 4.0.0 at 03270a3839102e63b48578c80e7c024036de74d7. The INITIALISATIONS
-deliberately do not: upstream zeroes ``lokr_w2_b`` where this zeroes
-``lokr_w2_a``, and inits LoHa with ``normal_`` rather than kaiming. Equivalent
-as a "starts as a no-op", different training dynamics.
+The stock LoRA layer relies on ambient ``torch.autocast`` to reconcile its fp32
+masters with a bf16 activation; the MiniMax-H3 subclass casts per call because
+that architecture's forward runs without autocast. All are usable as branches
+of ``CompositeAdapterLayer``.
 
-Moved verbatim from ``core.training.adapters.{sd15,minimax_h3}_adapter``;
-those modules now import these classes from here like everyone else.
+LoHa/LoKr/DoRA LOAD conventions -- tensor set, scale, magnitude axis,
+factorization -- follow LyCORIS 4.0.0 at 03270a38. The initialisations
+deliberately do not (upstream zeroes ``lokr_w2_b`` where this zeroes
+``lokr_w2_a``): same no-op start, different training dynamics.
 """
 
 import math
@@ -297,18 +292,8 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
         return getattr(self.original_module, "bias", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass with LoRA adaptation.
-
-        Uses autocast to automatically handle mixed precision:
-        - LoRA weights (fp32) are automatically converted to training dtype during forward
-        - Gradients flow back to fp32 master weights correctly
-        - GradScaler handles gradient scaling for fp16/bf16 training
-
-        Goes through ``forward_delta`` so a bare branch (what training installs)
-        and a composite branch (what generation installs) share ONE delta site.
-        Same two operations in the same order as the inlined version it
-        replaced, hence bit-identical.
+        """Base plus branch, via ``forward_delta`` so a bare branch (training) and a
+        composite branch (generation) share one delta site.
         """
         return self.original_module(x) + self.forward_delta(x)
 
@@ -1048,41 +1033,28 @@ def set_module_slot(parent: nn.Module, slot: Union[str, int], module: nn.Module)
 
 
 class CompositeAdapterLayer(nn.Module):
-    """One wrapper per base module, holding an ordered set of NAMED branches.
+    """One wrapper per base module, holding an ordered set of named branches.
 
-    THE DEFECT THIS FIXES. ``LoRALinearLayer.__init__`` reads
-    ``original_module.in_features`` / ``out_features`` into locals and never
-    exposes them, so it cannot wrap a wrapper: a second adapter over the same
-    module raises ``AttributeError`` at construction, which is why every
-    architecture is first-wins or an honest refusal today. This class owns the
-    base ONCE and puts branches beside each other, so adding, removing,
-    restrengthening or deactivating one rewraps nothing.
+    ``LoRALinearLayer`` reads its base's ``in_features``/``out_features`` into
+    locals, so it cannot wrap a wrapper -- which is why stacking used to be
+    first-wins or a refusal. This owns the base once and puts branches beside
+    each other, so adding or restrengthening one rewraps nothing.
 
-    THE NAME ENDS IN ``Layer``, NOT ``Linear``, deliberately. Every offloader in
-    ``core.memory_management.block_offloading`` selects modules to move or swap
-    by ``__class__.__name__.endswith("Linear")`` plus a non-None ``.weight``
-    (``weighs_to_device``, ``_linear_weight_modules``, ``_build_weight_swap_jobs``).
-    The ``.weight`` delegate below would then enrol the base weight a SECOND
-    time -- once at this module's path, once at ``<path>.original_module`` --
-    and a paired staging swap applied twice restores the outgoing block's
-    weights with no error.
+    The name ends in ``Layer``, not ``Linear``: the offloaders in
+    ``core.memory_management.block_offloading`` select by
+    ``__class__.__name__.endswith("Linear")`` plus a non-None ``.weight``, and
+    the ``.weight`` delegate below would enrol the base weight twice -- once
+    here, once at ``<path>.original_module`` -- so a paired staging swap would
+    restore the outgoing block's weights, silently.
 
-    BRANCH PROTOCOL. A branch is any ``nn.Module`` with
-    ``forward_delta(x) -> Tensor`` returning its contribution ALONE, already
-    scaled; ``set_adapter_strength(strength)`` is required only of a branch
-    whose strength is changed after installation. ``LoRALinearLayer`` and
-    ``MiniMaxH3LoRALinearLayer`` differ in their forward (ambient autocast
-    versus a per-call activation cast) and both satisfy it, so the composite
-    never tests a branch's class. Saving, resuming and optimising a branch go
-    through the tensor protocol on the branch itself (``branch_tensors`` and
-    friends); the composite does not aggregate those, because naming tensors
-    across several branches in one file is the codec's job, not this class's.
+    A branch is any module with ``forward_delta(x)`` returning its already
+    scaled contribution, plus ``set_adapter_strength`` if its strength changes
+    after installation; the composite never tests a branch's class. Saving and
+    resuming go through the branch's own tensor protocol.
 
-    NUMERICS. With one active branch the output is ``base(x) + delta`` -- the
-    same two operations in the same order as ``LoRALinearLayer.forward``, hence
-    bit-identical. With several, the deltas are summed first and the base added
-    once, so two branches are order-independent EXACTLY (fp addition commutes)
-    and three or more only up to associativity.
+    One branch gives ``base(x) + delta`` in the same order as
+    ``LoRALinearLayer.forward``, so bit-identical. Several sum the deltas
+    first: two are order-independent exactly, three only up to associativity.
     """
 
     def __init__(self, base_module: nn.Module):

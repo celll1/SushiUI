@@ -1,45 +1,26 @@
-"""Atomic runtime adapter session: one lifetime, implemented once.
+"""Atomic runtime adapter session: one adapter lifetime, implemented once.
 
-Eleven generation backends hand-wrote the same lifetime -- resolve, parse,
-validate, wrap, account, refuse, restore -- and Phase 0 measured what that
-costs. The weakref-keyed original-module bookkeeping was written eleven times
-and the model-reload splice it exists to prevent was found on eight
-architectures, plus three more that only the checked-in gates caught. This
-module owns that lifetime; an architecture supplies target enumeration and
-branch construction and nothing else.
+Eleven backends hand-wrote resolve/parse/validate/wrap/account/refuse/restore.
+The weakref-keyed original-module bookkeeping was written eleven times and the
+model-reload splice it prevents was found on eight of them. An architecture
+supplies target enumeration and branch construction; the rest is here.
 
-WHAT IS ATOMIC, AND WHY IT IS NOT MERELY TIDY. Every file is resolved, parsed
-and PLANNED against the live module tree before a single slot is mutated, so a
-request whose second file is missing, corrupt or foreign leaves the model
-exactly as it found it instead of running with the first file half-applied.
-Installation itself rolls back to that state on any exception, so the invariant
-holds even for a failure only the install phase can produce.
+Atomic: every file is parsed and planned against the live tree before a slot is
+mutated, and install rolls back, so a request whose second file is bad leaves
+the model as it found it rather than half-applied.
 
-HOW IT REPORTS WITHOUT IMPORTING ``api``. Nothing under ``core.adapters`` may
-import ``api`` (``backend/tests/adapter_layering_test.py`` runs a subprocess
-probe and fails otherwise), yet a refusal has to reach the response and the PNG
-metadata chunk. So the session takes a ``warn(message, code)`` CALLBACK that the
-backend supplies -- the backend already owns the lazy ``api.generation_status``
-import -- and every refusal is an ``AdapterRefusal`` carrying its ``code`` AS
-DATA. The callback is the push half and the exception attribute is the pull
-half; a caller that wants the code on a 400 response reads ``exc.code`` and
-needs no warning channel at all.
+Reporting without importing ``api`` (``adapter_layering_test`` gates that): the
+backend passes a ``warn(message, code)`` callback, and every refusal is an
+``AdapterRefusal`` carrying its ``code`` as data, so a 400 can read
+``exc.code`` without the warning channel.
 
-WHAT AN ARCHITECTURE MAY OWN. Four decisions differ per architecture and are
-hooks rather than session policy: how a missing file is refused (the wording,
-the exception type, and whether it is refused at all -- Anima reports every
-missing file before refusing), what one file's keys mean (``prepare_file``, run
-once per file and BEFORE accounting, so a file that matches nothing still
-reports its dropped keys first), how many branches a file declares TO THIS PASS,
-and what a zero-target file means. ``parse()`` splits reading from installing
-for an architecture whose install is split in time (MiniT2I wraps its text
-encoder before the prompt is encoded and its transformer after staging), so a
-file handed to two passes is read once and keeps one branch name.
+Per-architecture hooks: how a missing file is refused, what one file's keys
+mean (``prepare_file``, before accounting), how many branches it declares to
+this pass, and what zero targets means. ``parse()`` is split from install for
+an architecture whose install is split in time (MiniT2I).
 
-MESSAGES CARRY A BASENAME AND AN EXCEPTION TYPE, NEVER A PATH. A warning is
-written into a PNG text chunk and returned raw in the response's ``warnings[]``;
-``PermissionError.__str__`` carries the absolute path the basename was there to
-remove. The resolved path stays in ``AdapterFile.path`` for the console log.
+Messages carry a basename, never a path: a warning is written into a PNG text
+chunk, and ``PermissionError.__str__`` would put the path back.
 """
 
 from __future__ import annotations
@@ -345,34 +326,22 @@ class AdapterSession:
                      Union[str, BaseException, None]]] = None,
         canonicalize_foreign_keys: bool = False,
     ):
-        """``label`` prefixes the console; ``message_label`` names the adapter in
-        a user-visible message and defaults to it. They are separate because one
-        architecture spells itself differently in the two places, and collapsing
-        them changes text a gate pins.
+        """``label`` prefixes the console, ``message_label`` names the adapter
+        to the user; separate because one architecture spells itself
+        differently and a gate pins that text.
 
-        ``missing_file(name, raw_path)`` returns the refusal for an unresolvable
-        path -- the session logs, warns and raises it -- or ``None`` to SKIP the
-        file, for an architecture that reports every miss before refusing.
+        ``missing_file(name, raw_path)`` returns the refusal for an
+        unresolvable path, or ``None`` to skip it (Anima reports every miss
+        before refusing). ``prepare_file(file)`` runs once per file, before
+        planning and so before any refusal. ``count_declared_branches`` is
+        asked per load, so a one-component pass declares only its own pairs.
+        ``describe_zero_targets`` returns refusal text, an exception, or
+        ``None`` when this pass simply covers none of this file.
 
-        ``prepare_file(file)`` runs once per file, before it is planned and
-        therefore before any refusal, and its result is on ``BranchRequest``.
-
-        ``count_declared_branches(tensors, components)`` is asked per LOAD, so a
-        pass covering one component can declare only its own pairs.
-
-        ``describe_zero_targets(file, counts)`` returns the refusal text, an
-        exception to refuse with (a second zero-target code), or ``None``: not a
-        refusal, because this pass covers no part of this file.
-
-        ``architecture`` is the ``ARCH_REGISTRY`` name of the model behind
-        these components; it keys the adapter capability table
-        (``core.adapters.capability``). Unset means "no architecture declared",
-        which enables nothing.
-
-        ``canonicalize_foreign_keys`` asks for Diffusers/PEFT spellings
-        (``lora_A``/``lora_B``, the ``base_model.model.`` prefix) to be rewritten
-        to ``lora_down``/``lora_up`` BEFORE this architecture parses. Off by
-        default: see ``_canonicalize``.
+        ``architecture`` is the ``ARCH_REGISTRY`` name; it keys
+        ``core.adapters.capability`` and unset enables nothing.
+        ``canonicalize_foreign_keys`` rewrites Diffusers/PEFT spellings before
+        this architecture parses -- off by default, see ``_canonicalize``.
         """
         self._resolve_path = resolve_path
         self._warn_callback = warn

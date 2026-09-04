@@ -283,15 +283,13 @@ class _PlannedInstall(NamedTuple):
 
 def _default_declared_branches(tensors: Mapping[str, torch.Tensor],
                                components: Tuple[str, ...]) -> int:
-    """Complete factor GROUPS, not ``.lora_down.weight`` keys: a LoHa/LoKr file
-    has none of the latter, would declare zero, and ``_account``'s
-    partial-application refusal would be inert for it.
+    """Complete factor groups, not ``.lora_down.weight`` keys: a LoHa/LoKr file has
+    none of the latter and would declare zero, leaving ``_account``'s
+    partial-application refusal inert for it.
 
-    Complete ones ONLY, unlike every architecture's own counter: with no
+    Complete ones only, unlike every architecture's own counter: with no
     ``stem_of`` this cannot tell a foreign half key from a truncated one of its
-    own, and over-declaring refuses a file that applied in full. An
-    architecture that wants a truncated file refused passes its own counter
-    over ``declared_groups`` -- all eleven do.
+    own, and over-declaring refuses a file that applied in full.
     """
     from .groups import group_adapter_tensors  # groups imports this module
 
@@ -569,16 +567,13 @@ class AdapterSession:
         """Refuse a weight-decomposed branch over a weight-only quantized base.
 
         The magnitude epilogue divides by ``||W_base + delta||`` and subtracts
-        ``W_base``, so an int8/fp8 base would have to be dequantized every
-        forward and the fused base GEMM abandoned -- a separate design with its
-        own measurement (design doc, phase 3).
+        ``W_base``, so an int8/fp8 base would be dequantized every forward and
+        the fused base GEMM abandoned (design doc phase 3).
 
-        Asked of the BUILT branch and of the base it actually holds, for the
-        reason ``_refuse_stranded_branches`` is: detection gives metadata
-        priority over keys, so a file of ``dora_scale`` tensors labelled
-        ``networks.lora`` passes a label test and then installs a decomposed
-        branch anyway. Planning mutates nothing, so this still precedes every
-        install.
+        Asked of the built branch, not the file's label: detection gives
+        metadata priority over keys, so ``dora_scale`` tensors labelled
+        ``networks.lora`` pass a label test. Planning mutates nothing, so this
+        still precedes every install.
         """
         for item in planned:
             if not isinstance(item.branch, DoRALinearLayer):

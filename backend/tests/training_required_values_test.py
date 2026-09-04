@@ -54,6 +54,8 @@ from core.training.train_runner import (  # noqa: E402
 
 RUNNER_PY = BACKEND / "core" / "training" / "train_runner.py"
 API_TS = REPO / "frontend" / "src" / "utils" / "api.ts"
+# The capability readers live beside the client; both files are the surface.
+CAPS_TS = REPO / "frontend" / "src" / "utils" / "trainingCapabilities.ts"
 
 
 def _sensenova():
@@ -336,7 +338,8 @@ def test_the_frontend_holds_no_copy_of_the_values(path):
 
 
 def test_the_client_reads_the_served_table_and_nothing_else():
-    text = API_TS.read_text(encoding="utf-8")
+    text = (API_TS.read_text(encoding="utf-8")
+                + CAPS_TS.read_text(encoding="utf-8"))
     assert "caps?.training_required_values?.[arch]" in text
 
 

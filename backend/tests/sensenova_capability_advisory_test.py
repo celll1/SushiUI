@@ -53,6 +53,8 @@ from core.training.train_runner import (  # noqa: E402
 
 CAPABILITIES_PY = BACKEND / "api" / "arch_capabilities.py"
 API_TS = REPO / "frontend" / "src" / "utils" / "api.ts"
+# The capability readers live beside the client; both files are the surface.
+CAPS_TS = REPO / "frontend" / "src" / "utils" / "trainingCapabilities.ts"
 TRAINING_CONFIG_TSX = REPO / "frontend" / "src" / "components" / "training" / "TrainingConfig.tsx"
 
 # The commit this work started from -- the state the audit reviewed.
@@ -286,7 +288,8 @@ def test_the_openapi_spec_documents_the_served_key():
 
 
 def test_the_client_reads_the_served_table_and_holds_no_copy():
-    ts = API_TS.read_text(encoding="utf-8")
+    ts = (API_TS.read_text(encoding="utf-8")
+              + CAPS_TS.read_text(encoding="utf-8"))
     assert "caps?.training_feature_advisory?.[arch]" in ts
     tsx = TRAINING_CONFIG_TSX.read_text(encoding="utf-8")
     for entry in TRAINING_FEATURE_ADVISORY["sensenova"].values():

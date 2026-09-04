@@ -245,10 +245,10 @@ def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
     by construction and carries upstream's ``lora_dim`` alpha, which read as
     "an alpha with no rank" and blamed the user for a valid file.
 
-    The additive rows run through a session declaring SD1.5, the only
-    architecture family the gate still refuses. The decomposition axis stays on
-    Z-Image and is the sharper case for it: the algebra underneath is enabled
-    and the refusal must still name DoRA alone."""
+    The additive rows and the DoRA row run through a session declaring SD1.5,
+    the only architecture family the gate still refuses. The DoHa row stays on
+    Z-Image and is the sharper case: DENSE DoRA ships there, so the refusal must
+    name the pair rather than claim decomposition is unimplemented."""
     stem = "lora_unet_layers_0_attn_to_q"
     alpha = {f"{stem}.alpha": torch.tensor(2.0)}
     cases = {
@@ -268,11 +268,18 @@ def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
                            f"{stem}.lokr_w2_a": torch.zeros(D // 2, 2),
                            f"{stem}.lokr_w2_b": torch.zeros(2, D // 2), **alpha},
                           "lokr adapters are not enabled"),
-        "dora": (_zimage_backend,
+        "dora": (_unenabled_backend,
                  {f"{stem}.lora_down.weight": torch.zeros(2, D),
                   f"{stem}.lora_up.weight": torch.zeros(D, 2),
                   f"{stem}.dora_scale": torch.ones(D), **alpha},
                  "dora adapters are not enabled"),
+        "doha": (_zimage_backend,
+                 {f"{stem}.hada_w1_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w1_b": torch.zeros(2, D),
+                  f"{stem}.hada_w2_a": torch.zeros(D, 2),
+                  f"{stem}.hada_w2_b": torch.zeros(2, D),
+                  f"{stem}.dora_scale": torch.ones(D), **alpha},
+                 "doha adapters are not enabled"),
     }
     loaders = {_unenabled_backend: lambda b, c: b._load_lora_zimage(c),
                _zimage_backend: lambda b, c: b._load_lora_zimage(c)}
@@ -289,9 +296,14 @@ def test_an_unenabled_algebra_answers_400_with_the_capability_reason(tmp_path):
         for malformed in ("scale is undefined", "is unusable", "not a known"):
             assert malformed not in message, (label, message)
         if label == "dora":
-            # Z-Image ENABLES the algebra underneath, so the refusal must name
-            # the decomposition alone rather than also claiming LoHa/LoKr are
-            # unimplemented there.
+            # SD1.5's row is closed for a MEASURED reason, not "not implemented":
+            # diffusers drops every dora_scale key before its Kohya converter
+            # sees them, so the file would apply as an ordinary LoRA.
+            assert "diffusers" in message, message
+        if label == "doha":
+            # Z-Image enables BOTH the algebra underneath and dense DoRA, so
+            # the refusal must name this pair alone.
+            assert "dense DoRA ships here" in message, message
             assert "Phase 2" not in message, message
 
 

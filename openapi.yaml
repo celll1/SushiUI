@@ -9605,7 +9605,7 @@ components:
           items:
             type: string
             enum: [lora, loha, lokr, dora, doha, dokr]
-          example: [lora, loha, lokr]
+          example: [lora, dora, loha, lokr]
         unsupported:
           type: object
           description: >-
@@ -9615,19 +9615,20 @@ components:
           additionalProperties:
             type: string
           example:
-            dora: "zimage: dora adapters are not enabled -- DoRA is planned for dense Linear targets but the dense-DoRA phase (Phase 3) has not landed"
+            doha: "zimage: doha adapters are not enabled -- dense DoRA ships here, but DoHa and DoKr do not: the engine builds all three the same way, and each decomposed pair still needs its own per-architecture round trip"
         trainable:
           type: array
           description: >-
             Families a TRAINING run may construct, save and resume here, in the
-            spelling `TrainingRunCreateRequest.adapter_algorithm` uses (the
-            weight-decomposed names are never trainable today). A separate axis
-            from `supported`: an architecture may load a family it cannot yet
-            train, so a training UI must read this one.
+            spelling `TrainingRunCreateRequest.adapter_algorithm` uses; a
+            weight-decomposed name means that algorithm with
+            `weight_decompose: true`. A separate axis from `supported`: an
+            architecture may load a family it cannot yet train, so a training UI
+            must read this one.
           items:
             type: string
             enum: [lora, loha, lokr, dora, doha, dokr]
-          example: [lora, loha, lokr]
+          example: [lora, dora, loha, lokr]
         untrainable:
           type: object
           description: >-
@@ -9637,7 +9638,7 @@ components:
           additionalProperties:
             type: string
           example:
-            dora: "zimage: dora adapters are not enabled -- DoRA is planned for dense Linear targets but the dense-DoRA phase (Phase 3) has not landed"
+            doha: "zimage: doha adapters are not enabled -- dense DoRA ships here, but DoHa and DoKr do not: the engine builds all three the same way, and each decomposed pair still needs its own per-architecture round trip"
         block_swap:
           type: object
           description: >-
@@ -9734,12 +9735,12 @@ components:
             $ref: '#/components/schemas/ArchAdapterFamilies'
           example:
             zimage:
-              supported: [lora, loha, lokr]
+              supported: [lora, dora, loha, lokr]
               unsupported:
-                dora: "zimage: dora adapters are not enabled -- DoRA is planned for dense Linear targets but the dense-DoRA phase (Phase 3) has not landed"
-              trainable: [lora, loha, lokr]
+                doha: "zimage: doha adapters are not enabled -- dense DoRA ships here, but DoHa and DoKr do not: the engine builds all three the same way, and each decomposed pair still needs its own per-architecture round trip"
+              trainable: [lora, dora, loha, lokr]
               untrainable:
-                dora: "zimage: dora adapters are not enabled -- DoRA is planned for dense Linear targets but the dense-DoRA phase (Phase 3) has not landed"
+                doha: "zimage: doha adapters are not enabled -- dense DoRA ships here, but DoHa and DoKr do not: the engine builds all three the same way, and each decomposed pair still needs its own per-architecture round trip"
               block_swap:
                 order: before_split
                 effect: not_offloaded
@@ -10799,7 +10800,11 @@ components:
             architecture instead of returning an image produced without it: a
             missing file (`lora_not_found`), a file
             that could not be read or applied (`lora_load_failed`), and a file
-            matching zero target modules (`lora_incompatible`).
+            matching zero target modules (`lora_incompatible`). A file whose
+            adapter family this architecture does not enable is refused under
+            that last code too — including a weight-decomposed (DoRA/DoHa/DoKr)
+            file on SD1.5/SDXL, where diffusers would otherwise discard its
+            `dora_scale` magnitudes and apply it as an ordinary LoRA.
 
             **Selecting two LoRAs over the same module SUMS them, on every
             architecture**; two LoRAs over DISJOINT modules always stacked, and
@@ -19412,10 +19417,18 @@ components:
           default: false
           description: |
             Weight-decomposed variant (DoRA over `lora`, DoHa over `loha`,
-            DoKr over `lokr`). ACCEPTED AND REFUSED: the magnitude vector needs
-            the base weight's direction and norm, which is a separate design
-            with its own quantized-base refusal, so `true` is answered with a
-            400 that says so.
+            DoKr over `lokr`): one magnitude vector per target, saved as
+            `dora_scale`, on top of the algebra's own factors.
+
+            Enabled for DoRA (`adapter_algorithm: lora`) on the architectures
+            whose row is open; DoHa and DoKr are still refused everywhere.
+            Refused together with `blocks_to_swap > 0` (no block offloader moves
+            a bare `dora_scale`) and with `fp8_base_dtype` (the epilogue reads
+            the base weight's direction and norm every forward, and that setting
+            quantizes the base before the adapter is injected). Every refusal is
+            raised from the run's config before the model loads. Query the
+            enabled set with `adapter_families[arch].trainable` of
+            `GET /schema/arch-capabilities`, which lists the pair as `dora`.
           example: false
         adapter_config:
           type: object

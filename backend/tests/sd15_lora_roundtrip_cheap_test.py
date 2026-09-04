@@ -378,6 +378,117 @@ def test_sd15_lora_for_another_architecture_refuses_and_warns(tmp_path,
     assert not peft_wrapped_paths(unet) and not peft_wrapped_paths(text_encoder)
 
 
+# ---------------------------------------------------------------------------
+# The decomposition axis: the ONE family this path applies silently and wrong.
+#
+# MEASURED on diffusers 0.38.0, driving the real ``lora_state_dict`` over
+# synthetic files: an ordinary LoRA and the SAME file plus ``dora_scale``
+# produce BYTE-IDENTICAL output (2 converted keys, no magnitude, no error),
+# while ``hada_*`` and ``lokr_*`` both raise ValueError out of the Kohya
+# converter's unrenamed-key check. So DoRA is refused here and LoHa/LoKr are
+# left to the error they already raise.
+# ---------------------------------------------------------------------------
+
+
+def sd15_write_dora(tmp_path, source_name, name="dora.safetensors"):
+    """The trained LoRA plus one magnitude vector per U-Net stem."""
+    tensors = dict(load_file(f"{tmp_path}/{source_name}"))
+    for key in [k for k in tensors if k.endswith(".lora_up.weight")]:
+        stem = key[: -len(".lora_up.weight")]
+        tensors[f"{stem}.dora_scale"] = torch.rand(tensors[key].shape[0]) + 0.5
+    save_file(tensors, f"{tmp_path}/{name}")
+    return name
+
+
+def sd15_recording_pipeline(monkeypatch, *models):
+    """A pipeline that records whether diffusers' loader was reached at all."""
+    reached = []
+    pipeline = Pipeline(*models)
+    original = type(pipeline).load_lora_weights
+
+    def record(self, *args, **kwargs):
+        reached.append(kwargs.get("weight_name"))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(pipeline), "load_lora_weights", record,
+                        raising=False)
+    return pipeline, reached
+
+
+def test_sd15_a_dora_file_refuses_before_diffusers_ever_sees_it(
+        tmp_path, monkeypatch, warnings_seen):
+    """The silent-wrong-answer case, closed. Without the refusal this file
+    loads, applies and reports SUCCESS with its magnitudes discarded -- the
+    only family on this path that does."""
+    _directory, name, _unet_paths, _te = train_and_save(tmp_path)
+    dora = sd15_write_dora(tmp_path, name)
+
+    models = (build_unet(), build_text_encoder())
+    pipeline, reached = sd15_recording_pipeline(monkeypatch, *models)
+    with pytest.raises(RuntimeError) as excinfo:
+        manager_for(tmp_path).load_loras(pipeline, [{"path": dora}])
+
+    assert "lora_incompatible" in warning_codes(warnings_seen)
+    message = str(excinfo.value)
+    assert "dora" in message and "dora_scale" in message
+    assert str(tmp_path) not in message           # no server path in the chunk
+    assert reached == [], "the file reached diffusers' loader"
+    assert all(not peft_wrapped_paths(m) for m in models)
+
+
+@pytest.mark.parametrize("algorithm", ["loha", "lokr"])
+def test_sd15_loha_and_lokr_are_already_refused_by_diffusers_itself(
+        tmp_path, algorithm, warnings_seen):
+    """Recorded rather than re-refused: the Kohya converter raises on their
+    unrenamed keys, which ``load_loras`` turns into a ``lora_load_failed`` 400.
+    Loud is enough, so this path is deliberately NOT widened for symmetry."""
+    stem = "lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_q"
+    if algorithm == "loha":
+        tensors = {f"{stem}.hada_w1_a": torch.zeros(8, RANK),
+                   f"{stem}.hada_w1_b": torch.zeros(RANK, 8),
+                   f"{stem}.hada_w2_a": torch.zeros(8, RANK),
+                   f"{stem}.hada_w2_b": torch.zeros(RANK, 8)}
+    else:
+        tensors = {f"{stem}.lokr_w1": torch.zeros(2, 2),
+                   f"{stem}.lokr_w2_a": torch.zeros(4, RANK),
+                   f"{stem}.lokr_w2_b": torch.zeros(RANK, 4)}
+    tensors[f"{stem}.alpha"] = torch.tensor(float(ALPHA))
+    save_file(tensors, str(tmp_path / f"{algorithm}.safetensors"))
+
+    models = (build_unet(), build_text_encoder())
+    with pytest.raises(RuntimeError):
+        load_through_manager(tmp_path, f"{algorithm}.safetensors", *models)
+    assert warning_codes(warnings_seen) == ["lora_load_failed"]
+    assert all(not peft_wrapped_paths(m) for m in models)
+
+
+def test_sd15_an_ordinary_lora_is_byte_identical_with_the_gate_neutralised(
+        tmp_path, monkeypatch, warnings_seen):
+    """The half that matters more: ``load_loras`` is the shipped path for two
+    architectures. A/B against the same load with the new check stubbed out --
+    every PEFT parameter compared with ``torch.equal``, not a count."""
+    _directory, name, _unet_paths, _te = train_and_save(tmp_path)
+
+    with_gate = (build_unet(), build_text_encoder())
+    pipeline, reached = sd15_recording_pipeline(monkeypatch, *with_gate)
+    manager_for(tmp_path).load_loras(pipeline, [{"path": name,
+                                                 "strength": STRENGTH}])
+    assert reached == [name], "the ordinary path no longer reaches diffusers"
+
+    monkeypatch.setattr(LoRAManager, "_refuse_weight_decomposed",
+                        lambda self, path, label: None)
+    without_gate = (build_unet(), build_text_encoder())
+    load_through_manager(tmp_path, name, *without_gate, strength=STRENGTH)
+
+    for a, b in zip(with_gate, without_gate):
+        left = dict(a.named_parameters())
+        right = dict(b.named_parameters())
+        assert set(left) == set(right) and left, "setup: nothing was wrapped"
+        for key, value in left.items():
+            assert torch.equal(value, right[key]), key
+    assert warning_codes(warnings_seen) == []
+
+
 def test_sd15_partly_matching_lora_applies_and_warns(tmp_path, warnings_seen):
     """Survivable: the real halves apply, the two invented stems do not."""
     directory, name, unet_paths, te_paths = train_and_save(tmp_path)

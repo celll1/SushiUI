@@ -516,3 +516,81 @@ def test_openapi_detected_enums_match_the_backend():
     assert set(properties["adapter_type"]["enum"]) == set(FAMILY_NAMES.values()) | {"unknown"}
     assert set(properties["arch"]["enum"]) == KNOWN_ARCHITECTURES | {"unknown"}
     assert set(properties["adapter_state"]["enum"]) == {"ok", "unknown", "invalid"}
+
+
+def _openapi_examples():
+    """The two places `adapter_families` is EXEMPLIFIED, both keyed on zimage."""
+    import yaml
+    with open(os.path.join(_REPO, "openapi.yaml"), encoding="utf-8") as f:
+        schemas = yaml.safe_load(f)["components"]["schemas"]
+    families = schemas["ArchAdapterFamilies"]["properties"]
+    return families, schemas["ArchCapabilities"]["properties"][
+        "adapter_families"]["example"]["zimage"]
+
+
+def test_openapi_adapter_family_examples_match_the_live_payload():
+    """The examples are a client's ONLY concrete picture of this block, and the
+    spec promises they let it predict a refusal before generating -- so a
+    capability flip that leaves them behind tells a client the opposite of the
+    truth. Nothing else covers them; this is what makes the next flip fail here
+    rather than in a user's UI.
+    """
+    from api.arch_capabilities import adapter_families_payload
+
+    live = adapter_families_payload()["zimage"]
+    families, example = _openapi_examples()
+
+    assert example["supported"] == live["supported"]
+    assert example["trainable"] == live["trainable"]
+    assert families["supported"]["example"] == live["supported"]
+    assert families["trainable"]["example"] == live["trainable"]
+
+    # A refusal example must be a family this architecture REALLY refuses, and
+    # must quote the reason verbatim: a stale sentence is the failure mode here,
+    # not a missing key.
+    for block, axis in (("unsupported", "unsupported"),
+                        ("untrainable", "untrainable")):
+        for source in (example[block], families[block]["example"]):
+            assert source, block
+            for family, reason in source.items():
+                assert family in live[axis], f"{family} is no longer refused"
+                assert reason == live[axis][family], family
+
+
+def test_openapi_weight_decompose_is_not_described_as_refused():
+    """This diff enabled it; three files said otherwise in three places."""
+    import yaml
+    with open(os.path.join(_REPO, "openapi.yaml"), encoding="utf-8") as f:
+        spec = yaml.safe_load(f)
+    description = spec["components"]["schemas"]["TrainingRunCreateRequest"][
+        "properties"]["weight_decompose"]["description"]
+    assert "ACCEPTED AND REFUSED" not in description
+    assert "adapter_families" in description
+
+
+#: The run's adapter algebra: three fields that decide WHICH adapter is built.
+#: They travel together or a restored run trains a different one than it says.
+_ADAPTER_ALGEBRA_PARAMS = {
+    "adapter_algorithm": "adapterAlgorithm",
+    "weight_decompose": "weightDecompose",
+    "adapter_config": "adapterConfig",
+}
+
+
+def test_the_training_preset_round_trips_every_adapter_algebra_field():
+    """Presets are a SUBSET of `PARAM_KEYS` by design, so a missing field is
+    invisible: it restores to the form default and the run trains an ordinary
+    LoRA that looks exactly like the DoRA the user saved. This pins the one
+    group where that is a wrong-adapter bug rather than a lost preference.
+    """
+    source = _read_frontend("components", "training", "TrainingConfig.tsx")
+    param_keys = source.split(
+        "const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [", 1)[1]
+    param_keys = param_keys.split("];", 1)[0]
+
+    for snake, camel in _ADAPTER_ALGEBRA_PARAMS.items():
+        assert f'"{snake}"' in param_keys, f"{snake} is not restored from YAML"
+        assert f"{camel}: params.{snake}," in source, \
+            f"the preset does not SAVE {snake}"
+        assert f'if (config.{camel} !== undefined) updateParam("{snake}",' in source, \
+            f"the preset does not RESTORE {snake}"

@@ -1940,6 +1940,30 @@ export const trainableAdapterAlgorithms = (
   return trainable.length ? [...trainable] : ["lora"];
 };
 
+// The decomposed family name for a base algebra, in the spelling
+// `adapter_families` uses: the backend keeps DoRA as an epilogue on three
+// algebras rather than as a fourth algorithm, so the pair is
+// (algorithm, weight_decompose) and this is its label.
+export const decomposedAdapterFamily = (
+  algorithm: string | null | undefined
+): AdapterFamily =>
+  ({ lora: "dora", loha: "doha", lokr: "dokr" } as Record<string, AdapterFamily>)[
+    algorithm ?? "lora"
+  ] ?? "dora";
+
+// Whether a TRAINING run on `arch` may set `weight_decompose` with this base
+// algebra. Fails CLOSED, like `trainableAdapterAlgorithms`: an unknown arch or
+// an unloaded matrix hides the control rather than offering a run the backend
+// refuses before the model loads.
+export const weightDecomposeTrainable = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  algorithm: string | null | undefined
+): boolean => {
+  const families = arch ? caps?.adapter_families?.[arch]?.trainable : undefined;
+  return !!families?.includes(decomposedAdapterFamily(algorithm));
+};
+
 // The backend's own sentence for an algebra this architecture will not train,
 // for a tooltip beside a choice that is not offered.
 export const adapterTrainingRefusalReason = (

@@ -23,9 +23,6 @@ class Ideogram4ArchHandler(ArchHandler):
         additive_family=True,
         initial_dora="deferred",
         additive_reason=PHASE2_PENDING,
-        dora_reason=(
-            "DoRA starts refused here: the dual transformer can be loaded FP8 "
-            "and DoRA needs the base weight's direction and norm"),
         quantized_base_reason=(
             f"{QUANTIZED_ADDITIVE_PENDING}; either transformer can be FP8"),
     )

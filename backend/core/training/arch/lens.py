@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from core.training.arch.base_arch import (
     ArchHandler, SampleContext, TrainStepContext, resolve_scope_csv,
-    PHASE2_PENDING, PHASE3_PENDING, QUANTIZED_ADDITIVE_PENDING,
+    PHASE2_PENDING, QUANTIZED_ADDITIVE_PENDING,
     declare_adapter_capability,
 )
 from core.training.components.wiring import LENS_WIRING
@@ -24,7 +24,6 @@ class LensArchHandler(ArchHandler):
         additive_family=True,
         initial_dora="dense",
         additive_reason=PHASE2_PENDING,
-        dora_reason=PHASE3_PENDING,
         quantized_base_reason=(
             f"{QUANTIZED_ADDITIVE_PENDING}; the FP8 gate drops the "
             f"transformer's quantization while wrappers are live rather than "

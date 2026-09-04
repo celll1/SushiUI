@@ -358,14 +358,17 @@ ORDINARY_ONLY = {("lora", False)}
 #: ``adapter_lycoris_roundtrip_cheap_test.py`` -- every one that builds an
 #: ``AdapterSession``. SD1.5/SDXL never reach one.
 ADDITIVE_LYCORIS = ORDINARY_ONLY | {("loha", False), ("lokr", False)}
+#: Phase 3's dense-DoRA start set that can be flipped from the table at all:
+#: SD1.5/SDXL load through diffusers, which drops every ``dora_scale`` key.
+WITH_DENSE_DORA = ADDITIVE_LYCORIS | {("lora", True)}
 SHIPPED_PAIRS = {
     "sd15": ORDINARY_ONLY,
     "sdxl": ORDINARY_ONLY,
-    "zimage": ADDITIVE_LYCORIS,
+    "zimage": WITH_DENSE_DORA,
     "anima": ADDITIVE_LYCORIS,
-    "lens": ADDITIVE_LYCORIS,
+    "lens": WITH_DENSE_DORA,
     "ideogram4": ADDITIVE_LYCORIS,
-    "minit2i": ADDITIVE_LYCORIS,
+    "minit2i": WITH_DENSE_DORA,
     "krea2": ADDITIVE_LYCORIS,
     "flux2": ADDITIVE_LYCORIS,
     "ltx2": ADDITIVE_LYCORIS,
@@ -404,13 +407,18 @@ class TestArchAdapterCapability:
             assert capability.supports("lora") is True, name
             capability.require("lora", False, AXIS_GENERATION)
 
-    def test_no_architecture_enables_a_weight_decomposed_pair(self):
-        """DoRA/DoHa/DoKr are Phase 3. A flip that reached the decomposition
-        axis would be caught here rather than by a mis-scaled image."""
+    def test_only_dense_dora_reaches_the_decomposition_axis(self):
+        """DoHa and DoKr build through the same engine as DoRA, so nothing in
+        the code stops them -- only this table plus the missing round trip
+        does. A flip that opened all three would be caught here rather than by
+        a mis-scaled image."""
         for name, handler in self._registry().items():
-            for algorithm in ("lora", "loha", "lokr"):
-                assert not handler.adapter_capability.supports(algorithm, True), \
+            capability = handler.adapter_capability
+            for algorithm in ("loha", "lokr"):
+                assert not capability.supports(algorithm, True), \
                     f"{name}/{algorithm}"
+            assert capability.supports("lora", True) is (
+                ("lora", True) in SHIPPED_PAIRS[name]), name
 
     def test_every_unsupported_pair_carries_a_reason_and_refuses(self):
         from core.training.arch.base_arch import ADAPTER_ALGORITHMS
@@ -462,6 +470,12 @@ class TestArchAdapterCapability:
                 additive = capability.refusal_reason(algorithm, False)
                 dora = capability.refusal_reason("lora", True)
                 label = f"{name}/{algorithm}"
+                if dora is None:
+                    # Dense DoRA SHIPS here, so the decomposed pair is refused
+                    # for its own reason and must not claim otherwise.
+                    assert "dense DoRA ships here" in decomposed, label
+                    assert additive is None, label
+                    continue
                 assert dora.split(": ", 1)[1] in decomposed, label
                 if additive is None:
                     assert decomposed == dora, label

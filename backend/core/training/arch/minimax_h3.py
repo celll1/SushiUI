@@ -43,9 +43,6 @@ class MiniMaxH3ArchHandler(ArchHandler):
         additive_gated=True,
         initial_dora="deferred",
         additive_reason=PHASE2_PENDING,
-        dora_reason=(
-            "DoRA is deferred behind the FP8/ConvRot dtype policy and the "
-            "custom QKV row mapping"),
         quantized_base_additive_family=True,
         quantized_base_reason=(
             f"{QUANTIZED_ADDITIVE_SHIPPED}. Here that is the whole DiT block "

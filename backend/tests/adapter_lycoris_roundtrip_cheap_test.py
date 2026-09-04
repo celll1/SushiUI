@@ -1,4 +1,4 @@
-"""LoHa and LoKr, loaded and applied by the architectures that enable them.
+"""LoHa, LoKr and dense DoRA, applied by the architectures that enable them.
 
 The evidence for the ``core/adapters/capability.py`` flips. One row per enabled
 architecture -- all eleven that build an ``AdapterSession`` -- each driving that
@@ -443,6 +443,17 @@ ARCHES = {a.name: a for a in (_zimage(), _krea2(), _minit2i(), _ltx2(),
 NAMES = sorted(ARCHES)
 ALGEBRAS = ("loha", "lokr")
 
+#: Phase 3's dense-DoRA rows. A subset of ``NAMES`` on purpose: the eight others
+#: must still REFUSE, which is the sibling that makes these rows mean something.
+#: SD1.5/SDXL are absent from ``ARCHES`` entirely -- they never build a session.
+DORA_NAMES = ("lens", "minit2i", "zimage")
+NOT_DORA = tuple(n for n in NAMES if n not in DORA_NAMES)
+
+#: Relative perturbation applied to ``dora_scale``, away from the base's own
+#: row norms -- which is exactly where the epilogue is an identity and every
+#: comparison would pass against any implementation at all.
+DORA_JITTER = 0.35
+
 
 # --------------------------------------------------------------------------
 # Fixtures and helpers
@@ -516,12 +527,18 @@ def factor_tensors(algorithm: str, out_features: int, in_features: int,
             "lokr_w2_b": _randn((RANK, in_n), generator),
             "alpha": torch.tensor(ALPHA),
         }
-    if algorithm == "lora":
-        return {
+    if algorithm in ("lora", "dora"):
+        tensors = {
             "lora_down.weight": _randn((RANK, in_features), generator),
             "lora_up.weight": _randn((out_features, RANK), generator),
             "alpha": torch.tensor(ALPHA),
         }
+        if algorithm == "dora":
+            # Positive and unrelated to any base's norms, so the epilogue is
+            # nowhere near an identity: see DORA_JITTER.
+            tensors["dora_scale"] = (
+                torch.rand(out_features, generator=generator) + 0.5)
+        return tensors
     raise AssertionError(algorithm)
 
 
@@ -743,6 +760,151 @@ def test_unload_after_a_component_swap_restores_by_object_identity(
         assert after[module_path] is b_before[module_path], (name, module_path)
     assert not composites(model_b)
     assert not (module_ids(model_b) & a_ids)
+
+
+# --------------------------------------------------------------------------
+# Dense DoRA, on the three architectures whose row Phase 3 opened
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", DORA_NAMES)
+def test_a_dora_file_covers_exactly_the_iterators_target_set(
+        name, tmp_path, warnings_seen):
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    expected = {p for p, _base in live_targets(arch, backend)}
+    assert expected, f"{name}: the stub yields no targets"
+
+    fresh = arch.backend(arch.build())
+    path, _tensors = write_checkpoint(arch, fresh, tmp_path, "dora")
+    load_one(arch, backend, path)
+
+    assert composites(backend_model(arch, backend)) == expected
+    assert not warning_codes(warnings_seen)
+
+
+@pytest.mark.parametrize("name", DORA_NAMES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_the_installed_dora_delta_matches_the_fp32_oracle(name, dtype, tmp_path,
+                                                          warnings_seen):
+    """``W_eff(s) = W_base + s * (W_adapter - W_base)`` against the oracle.
+
+    The magnitude epilogue also needs the BASE weight, which the additive rows
+    do not, so this reads it off the module the branch actually wrapped -- a
+    branch built against a stale base would land here rather than in a mangled
+    image."""
+    from core.adapters import DoRALinearLayer
+
+    arch = ARCHES[name]
+    model = arch.build().to(dtype)
+    backend = arch.backend(model)
+    path, per_target = write_checkpoint(arch, arch.backend(arch.build().to(dtype)),
+                                        tmp_path, "dora")
+    load_one(arch, backend, path)
+
+    modules = dict(model.named_modules())
+    rel = 1e-5 if dtype is torch.float32 else 3e-2
+    checked = 0
+    for module_path, tensors in per_target.items():
+        branch = sole_branch(modules[module_path])
+        assert isinstance(branch, DoRALinearLayer), (name, module_path)
+        base = modules[module_path].original_module
+        assert arch.branch_dtype(base) == dtype, name
+        assert branch.dora_scale.dtype == dtype, (name, module_path)
+
+        unit = reference.adapter_delta_weight("lora", tensors, rank=RANK,
+                                              alpha=ALPHA)
+        expected = reference.dora_effective_delta_weight(
+            base.weight, unit, tensors["dora_scale"], strength=STRENGTH)
+        actual = branch.compute_delta_weight().float()
+        assert actual.shape == expected.shape, (name, module_path)
+        expected = expected.detach()
+        tol = max(1e-6, float(expected.abs().max()) * rel)
+        assert torch.allclose(actual, expected, rtol=rel, atol=tol), (
+            name, dtype, module_path, float((actual - expected).abs().max()))
+
+        # NOT VACUOUS. A magnitude left at the base's own row norms makes the
+        # epilogue an identity, and then this comparison passes against any
+        # implementation; assert the delta is a real fraction of the base.
+        moved = float(expected.abs().max()) / max(
+            float(base.weight.float().abs().max()), 1e-12)
+        assert moved > DORA_JITTER, (name, module_path, moved)
+        checked += 1
+    assert checked == len(per_target)
+    assert not warning_codes(warnings_seen)
+
+
+@pytest.mark.parametrize("name", DORA_NAMES)
+def test_dropping_the_magnitude_makes_it_an_ordinary_lora(name, tmp_path,
+                                                          warnings_seen):
+    """The other half: strip ``dora_scale`` and the same file installs the
+    additive branch alone, at a different delta. Without this, a loader that
+    silently ignored the magnitude -- which is what diffusers does on the
+    SD1.5/SDXL path -- would pass every row above."""
+    from safetensors.torch import load_file
+    from core.adapters import DoRALinearLayer
+
+    arch = ARCHES[name]
+    decomposed = arch.backend(arch.build())
+    path, per_target = write_checkpoint(arch, decomposed, tmp_path, "dora")
+    load_one(arch, decomposed, path)
+
+    stripped = tmp_path / f"{arch.name}_dora_stripped.safetensors"
+    save_file({k: v for k, v in load_file(path).items()
+               if not k.endswith(".dora_scale")},
+              str(stripped), metadata=file_metadata(arch))
+    additive = arch.backend(arch.build())
+    load_one(arch, additive, str(stripped))
+
+    a = dict(backend_model(arch, decomposed).named_modules())
+    b = dict(backend_model(arch, additive).named_modules())
+    target = sorted(per_target)[0]
+    with_magnitude = sole_branch(a[target])
+    without = sole_branch(b[target])
+    assert isinstance(with_magnitude, DoRALinearLayer)
+    assert not isinstance(without, DoRALinearLayer)
+    assert not torch.allclose(with_magnitude.compute_delta_weight().float(),
+                              without.compute_delta_weight().float())
+
+
+@pytest.mark.parametrize("name", DORA_NAMES)
+def test_a_dora_branch_is_an_exact_identity_at_strength_zero(name, tmp_path,
+                                                             warnings_seen):
+    """Not "close to": the composite must return the bare base output.
+
+    The failure mode this pins is specific -- scaling the delta and THEN
+    renormalising leaves ``s = 0`` off the base by the renormalisation round
+    trip, which on a perturbed magnitude is a 10% error rather than a ULP."""
+    arch = ARCHES[name]
+    model = arch.build()
+    backend = arch.backend(model)
+    path, per_target = write_checkpoint(arch, arch.backend(arch.build()),
+                                        tmp_path, "dora")
+    load_one(arch, backend, path)
+
+    modules = dict(model.named_modules())
+    for module_path in per_target:
+        composite = modules[module_path]
+        base = composite.original_module
+        x = torch.randn(2, base.in_features, generator=torch.Generator().manual_seed(4))
+        assert float((composite(x) - base(x)).abs().max()) > 0, module_path
+        composite.set_strength(composite.branch_names[0], 0.0)
+        assert torch.equal(composite(x), base(x)), module_path
+
+
+@pytest.mark.parametrize("name", NOT_DORA)
+def test_an_unflipped_architecture_still_refuses_a_dora_file(name, tmp_path,
+                                                             warnings_seen):
+    """The sibling that makes the four rows above discriminating."""
+    arch = ARCHES[name]
+    backend = arch.backend(arch.build())
+    model = backend_model(arch, backend)
+    path, _tensors = write_checkpoint(arch, arch.backend(arch.build()),
+                                      tmp_path, "dora")
+    with pytest.raises(AdapterIncompatible) as excinfo:
+        load_one(arch, backend, path)
+    assert excinfo.value.code == "lora_incompatible"
+    assert "dora adapters are not enabled" in str(excinfo.value)
+    assert not composites(model)
 
 
 # --------------------------------------------------------------------------
@@ -990,24 +1152,55 @@ def test_every_session_architecture_is_on_exactly_one_side_of_the_boundary():
         assert ENABLED_ADAPTER_PAIRS[name] == frozenset({ORDINARY_LORA}), name
 
 
-@pytest.mark.parametrize("name", NAMES)
-def test_a_flipped_architecture_still_refuses_the_decomposition_axis(name):
-    """DoRA is Phase 3. Enabling the additive algebras must not open the second
-    axis, and the refusal must name the decomposition ALONE -- telling a
-    Z-Image user that LoHa is unimplemented is now false."""
+def _decomposed_codec(session, algorithm="lora"):
+    """A file of ``algorithm`` plus ``dora_scale``, as the codec sees it."""
+    stem = "lora_unet_probe"
+    if algorithm == "lora":
+        raw = {f"{stem}.lora_down.weight": torch.zeros(RANK, 8),
+               f"{stem}.lora_up.weight": torch.zeros(8, RANK)}
+    else:
+        raw = {f"{stem}.{k}": v for k, v in
+               factor_tensors(algorithm, 8, 8, torch.Generator().manual_seed(1)).items()
+               if k != "alpha"}
+    raw[f"{stem}.dora_scale"] = torch.ones(8)
+    _handed, codec = session._canonicalize(raw, {})
+    assert codec.weight_decompose is True
+    return codec
+
+
+@pytest.mark.parametrize("name", NOT_DORA)
+def test_an_unflipped_architectures_session_refuses_the_decomposition_axis(name):
+    """Enabling the additive algebras must not open the second axis, and the
+    refusal must name the decomposition ALONE -- telling a user that LoHa is
+    unimplemented on an architecture that generates one is false."""
     import adapter_key_normalization_gate_cheap_test as keys
 
     session = keys._session(name)
-    stem = "lora_unet_probe"
-    raw = {f"{stem}.lora_down.weight": torch.zeros(RANK, 8),
-           f"{stem}.lora_up.weight": torch.zeros(8, RANK),
-           f"{stem}.dora_scale": torch.ones(8)}
-    _handed, codec = session._canonicalize(raw, {})
-    assert codec.weight_decompose is True
     with pytest.raises(AdapterIncompatible) as excinfo:
-        session._refuse_unsupported_algebra("dora.safetensors", codec)
+        session._refuse_unsupported_algebra("dora.safetensors",
+                                            _decomposed_codec(session))
     assert "dora adapters are not enabled" in str(excinfo.value)
     assert "Phase 2" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", DORA_NAMES)
+def test_a_flipped_architecture_takes_dora_and_still_refuses_doha_and_dokr(name):
+    """Dense DoRA is the whole of Phase 3's flip: the engine builds DoHa and
+    DoKr identically, so what keeps them shut is the capability row plus the
+    missing round trip -- and the refusal must say THAT rather than claim
+    decomposition is unimplemented."""
+    import adapter_key_normalization_gate_cheap_test as keys
+
+    session = keys._session(name)
+    assert session._refuse_unsupported_algebra(
+        "dora.safetensors", _decomposed_codec(session)) is None
+    for algorithm in ALGEBRAS:
+        with pytest.raises(AdapterIncompatible) as excinfo:
+            session._refuse_unsupported_algebra(
+                f"{algorithm}.safetensors", _decomposed_codec(session, algorithm))
+        message = str(excinfo.value)
+        assert "dense DoRA ships here" in message, message
+        assert "Phase 2" not in message
 
 
 # --------------------------------------------------------------------------
@@ -1024,6 +1217,14 @@ SWEPT = ("zimage", "flux2", "minimax_h3")                   # BEFORE -> advise
 # carries a LyCORIS branch with the half it sits under.
 NO_SWAP = ("krea2", "acestep", "sensenova")
 
+#: (architecture, algebra) for the block-swap rows. The ``dora`` arm runs only
+#: where the decomposition row is open -- elsewhere the capability gate refuses
+#: the file first, and the row would pass on the wrong refusal.
+STRAND_CASES = [(n, a) for n in STRANDS
+                for a in ALGEBRAS + (("dora",) if n in DORA_NAMES else ())]
+SWEPT_CASES = [(n, a) for n in SWEPT
+               for a in ALGEBRAS + ("lora",) + (("dora",) if n in DORA_NAMES else ())]
+
 
 def _recording_backend(arch: Arch, monkeypatch, visited):
     """A backend whose session-level branch builder records every target it is
@@ -1039,8 +1240,8 @@ def _recording_backend(arch: Arch, monkeypatch, visited):
     return backend
 
 
-@pytest.mark.parametrize("name", STRANDS)
-@pytest.mark.parametrize("algorithm", ALGEBRAS)
+@pytest.mark.parametrize("name,algorithm", STRAND_CASES,
+                         ids=lambda v: v if isinstance(v, str) else str(v))
 def test_a_lycoris_file_is_refused_while_block_swap_is_live(
         name, algorithm, tmp_path, monkeypatch, warnings_seen):
     """LTX-2.3 and MiniT2I install adapters after their offloader has split the
@@ -1070,8 +1271,11 @@ def test_a_lycoris_file_is_refused_while_block_swap_is_live(
     assert excinfo.value.code == "lora_blockswap_unsupported"
     assert "lora_blockswap_unsupported" in warning_codes(warnings_seen)
     assert "block swap is active" in str(excinfo.value)
-    # Named from the class that was built, not from the file's label.
-    assert ("LoHa" if algorithm == "loha" else "LoKr") in str(excinfo.value)
+    # Named from the class that was built, not from the file's label. DoRA is
+    # stranded for a DIFFERENT reason than LoHa/LoKr -- its two factors ARE
+    # nn.Linear weights and would ride; ``dora_scale`` is the bare parameter.
+    assert {"loha": "LoHa", "lokr": "LoKr",
+            "dora": "DoRA"}[algorithm] in str(excinfo.value)
     assert set(visited) >= set(tensors), "planning did not reach the targets"
     assert not composites(model), "a branch was installed before the refusal"
     assert not arch.session(backend).state("transformer").wrapped
@@ -1097,8 +1301,8 @@ def test_ordinary_lora_still_loads_while_block_swap_is_live(
     assert "lora_blockswap_unsupported" not in warning_codes(warnings_seen)
 
 
-@pytest.mark.parametrize("name", SWEPT)
-@pytest.mark.parametrize("algorithm", ALGEBRAS + ("lora",))
+@pytest.mark.parametrize("name,algorithm", SWEPT_CASES,
+                         ids=lambda v: v if isinstance(v, str) else str(v))
 def test_a_swept_architecture_advises_instead_of_refusing(
         name, algorithm, tmp_path, warnings_seen):
     """Z-Image installs adapters BEFORE ``prepare_block_devices``, whose

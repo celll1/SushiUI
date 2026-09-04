@@ -23,9 +23,6 @@ class Krea2ArchHandler(ArchHandler):
         additive_family=True,
         initial_dora="deferred",
         additive_reason=PHASE2_PENDING,
-        dora_reason=(
-            "DoRA is deferred: INT8/FP8 bases need capability gates before the "
-            "base weight's direction and norm can be read"),
         quantized_base_reason=(
             f"{QUANTIZED_ADDITIVE_PENDING}; its INT8/FP8 bases need capability "
             f"gates"),

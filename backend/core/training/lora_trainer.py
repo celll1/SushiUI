@@ -33,9 +33,11 @@ def require_trainable_algebra(trainer, arch) -> None:
     from core.training.adapters.base_adapter import (
         refuse_untrainable_algebra, resolve_training_adapter_spec)
 
+    config = getattr(trainer, "config", None) or {}
     refuse_untrainable_algebra(resolve_training_adapter_spec(trainer),
                                arch.adapter_capability,
-                               getattr(trainer, "blocks_to_swap", 0) or 0)
+                               getattr(trainer, "blocks_to_swap", 0) or 0,
+                               config.get("fp8_base_dtype") or None)
 
 
 class LoRATrainer(BaseTrainer):
@@ -67,7 +69,8 @@ class LoRATrainer(BaseTrainer):
             lora_alpha: LoRA alpha (scaling factor = alpha / rank)
             lora_dtype: Data type for LoRA weights ('fp32', 'fp16', 'bf16')
             adapter_algorithm: Adapter algebra ('lora', 'loha', 'lokr')
-            weight_decompose: DoRA-style weight decomposition (Phase 3; refused)
+            weight_decompose: Weight decomposition (DoRA/DoHa/DoKr);
+                enabled per architecture by TRAINABLE_ADAPTER_PAIRS
             adapter_config: Algebra-specific options (LoKr factor / decompose_both)
             train_unet: Whether to train U-Net/Transformer
             train_text_encoder: Whether to train Text Encoder(s)

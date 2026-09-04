@@ -2251,8 +2251,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # low-rank branch; "loha"/"lokr" are the LyCORIS additive families, enabled
     # per architecture by core.adapters.capability.TRAINABLE_ADAPTER_PAIRS.
     "adapter_algorithm": "lora",
-    # DoRA/DoHa/DoKr. Accepted and refused: Phase 3 of
-    # docs/guides/LYCORIS_ADAPTER_DESIGN.md.
+    # DoRA/DoHa/DoKr: one dora_scale per target on top of the algebra's
+    # factors. Enabled per architecture by
+    # core.adapters.capability.TRAINABLE_ADAPTER_PAIRS, for
+    # adapter_algorithm "lora" only.
     "weight_decompose": False,
     # Algebra-specific options; LoKr takes "factor" and "decompose_both".
     "adapter_config": {},

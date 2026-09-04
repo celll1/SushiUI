@@ -30,7 +30,7 @@ machine-local working material.
 
 | Document | Purpose |
 |---|---|
-| `docs/guides/MODEL_FACTS.md` | Per-architecture generation and training facts. |
+| `docs/guides/MODEL_FACTS.md` | Per-architecture generation and training facts, including which adapter families (LoRA/LoHa/LoKr/DoRA) each architecture takes on each axis. |
 | `docs/guides/CFG_UNCONDITIONAL_TRAINING.md` | CFG and unconditional-training audit across all generation architectures. |
 | `docs/guides/FBCACHE.md` | FBCache acceptance rules and video safeguards. |
 | `docs/guides/NAG.md` | Normalized Attention Guidance behavior and architecture hooks. |
@@ -47,7 +47,7 @@ machine-local working material.
 | `docs/guides/SDXL_REGULARIZATION.md` | SD/SDXL regularization behavior. |
 | `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and implemented/pending boundary. |
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
-| `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | LyCORIS 4.0.0 assessment and the shared LoRA/LoHa/LoKr/DoRA training and inference plan. |
+| `docs/guides/LYCORIS_ADAPTER_DESIGN.md` | **The adapter subsystem's durable note.** LyCORIS 4.0.0 assessment, the shared LoRA/LoHa/LoKr/DoRA engine at `backend/core/adapters/` (spec, target topology, tensor grouping, codec registry, `AdapterSession`, execution-backend registry), the two capability axes, and the shipped boundary. Read it before touching anything adapter-, LoRA-variant- or `adapter_type`-related; per-architecture family enablement is summarised in `docs/guides/MODEL_FACTS.md`. |
 | `docs/guides/VAE_TRAINING.md` | VAE decoder training contract. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | VAE tiled-decode behavior and measured non-locality. |
 | `docs/guides/VAE_TRAINING_RESOLUTION.md` | VAE crop/resolution semantics and scaling measurements. |

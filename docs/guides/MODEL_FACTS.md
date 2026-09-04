@@ -58,6 +58,42 @@ them. No subjective performance claims.
 - Full derivations and per-architecture implementation evidence are in
   `docs/guides/CFG_UNCONDITIONAL_TRAINING.md`.
 
+## Adapter families per architecture (LoRA / LoHa / LoKr / DoRA)
+
+Which `(algorithm, weight_decompose)` pairs an architecture accepts is a
+per-architecture fact with **two independent axes**: *generation* (a checkpoint
+of that family loads and applies) and *training* (a run may construct, save and
+resume one). The tables that decide both are
+`ENABLED_ADAPTER_PAIRS` and `TRAINABLE_ADAPTER_PAIRS` in
+`backend/core/adapters/capability.py` — the only place a family is enabled;
+`declare_adapter_capability` and `GET /schema/arch-capabilities`
+(`adapter_families`) read them, so the code below is the source, not a mirror.
+Reasoning, the shipped boundary and the engine's design live in
+`docs/guides/LYCORIS_ADAPTER_DESIGN.md`.
+
+| arch | generation | training | notes |
+|---|---|---|---|
+| sd15, sdxl | LoRA | LoRA | Outside the engine: they load through diffusers/PEFT and never reach `AdapterSession`, so the LyCORIS rows cannot be flipped from the table. DoRA is refused because `lora_state_dict` drops every `dora_scale` key (measured on diffusers 0.38.0), which would apply the file as an ordinary LoRA at the wrong numbers. |
+| zimage, lens, minit2i | LoRA, LoHa, LoKr, **dense DoRA** | same | The three architectures with `("lora", True)` open on both axes. DoHa/DoKr are refused everywhere: each decomposed pair needs its own per-architecture round trip. |
+| anima, ideogram4, krea2, flux2, ltx2, acestep | LoRA, LoHa, LoKr | same | DoRA deferred on all six, because a weight-decomposed adapter needs the base weight's direction and norm and these bases may be weight-only quantized (`krea2` can load INT8/FP8; either `ideogram4` transformer can be FP8). ACE-Step carries LoHa/LoKr for its **sd-scripts codec only** — its diffusers/PEFT branch bakes `(lora_A\|lora_B)` into its key regexes, so a LyCORIS file resolves to zero targets there. |
+| minimax_h3, sensenova | LoRA, LoHa, LoKr | **LoRA only** | Both **load and generate** a LoHa/LoKr but do not train one; the training gate (H3's fused-QKV row split; SenseNova's two MoT halves and phase eviction) is separate work. Both are also the **quantized-base** case: every LoRA target is a quantized Linear (H3's DiT block stack is `Fp8Linear`, SenseNova's 294 targets per MoT half are `Int8Linear`), so enabling LoHa/LoKr here *is* enabling additive branches over a quantized base — claimed to build and forward correctly over the real quantized layer, with no quality or speed claim. It is also why DoRA is refused for them: a decomposed adapter needs the base weight's direction and norm. |
+
+- **Block-swap interaction** is a third per-architecture fact, in
+  `BLOCK_SWAP_ADAPTER_ORDER` (same file): architectures that install adapters
+  *before* their offloader splits blocks (`zimage`, `flux2`, `minimax_h3`)
+  carry a LyCORIS branch as a device-resident advisory
+  (`lora_blockswap_not_offloaded`); those that install *after*
+  (`minit2i`, `ltx2`, `anima`, `lens`, `ideogram4`) **refuse** it when block
+  swap is actually live (`lora_blockswap_unsupported`), because a branch whose factors are bare
+  parameters is not moved by an offloader that looks for `Linear` modules;
+  `krea2`, `acestep` and `sensenova` are `NO_BLOCK_SWAP`.
+- **Execution backend**: `backend/core/adapters/execution/` is a registry in
+  the shape of `core/attention/registry.py`, but `reference` is the only
+  registered backend and **nothing is auto-selected** — an unrecognised name is
+  refused rather than absorbed. Selection is per-process via
+  `SUSHI_ADAPTER_BACKEND`; there is deliberately no API parameter, and no
+  fused backend ships.
+
 ## VRAM management: keep_models_hot (opt-in, all image archs except sensenova; ltx2 is video)
 
 Post-load CPU offload and generation-time sequential component staging (text

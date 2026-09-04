@@ -6,14 +6,11 @@ also generate audio jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5,
 MiniMax Music 3). `ModelType` in `backend/core/model_loader.py` is the
 authoritative *generation* list — check it rather than this sentence if the
 two ever disagree. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py`
-is the authoritative *training-capable* list; it has 12 entries because
-MiniMax Music 3's training is out of scope (design forward-compatible, not
-implemented — see `docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training
-forward-compatibility" section) and SenseNova U1.5's training is a deliberately
-separate future phase (its base checkpoint is converted unmerged from the
-8-step distillation LoRA specifically to keep that lineage canonical — see the
-`sensenova` row in `docs/guides/MODEL_FACTS.md`, and
-`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for that phase's design). Do not assume the two lists
+is the authoritative *training-capable* list; it has 13 entries — every
+generation architecture except MiniMax Music 3, whose training is out of scope
+(design forward-compatible, not implemented — see
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training forward-compatibility"
+section). Do not assume the two lists
 are always the same size — they diverge further with each generation-only
 architecture added.
 
@@ -65,6 +62,40 @@ Add `<arch>_adapter.py` alongside the existing adapters (`sd15_adapter.py`,
 pattern and `backend/core/training/MODEL_ARCHITECTURES.md` for what an
 adapter must supply per architecture (text encoding shape, conditioning
 kwargs, time-ids/pooled-embedding handling, LoRA target modules).
+
+## 4b. Adapter capability — two table rows, and the branch builder
+
+A new architecture is not adapter-neutral: `core.adapters.capability`'s
+`declared_pairs` **raises** for an architecture with no row, so the arch
+handler's `declare_adapter_capability(...)` cannot be written until you have
+added one to *both* tables in `backend/core/adapters/capability.py`
+(`ENABLED_ADAPTER_PAIRS` for generation, `TRAINABLE_ADAPTER_PAIRS` for
+training; the trainable row must be a subset, asserted at import). Opening a
+row you have not exercised produces a capability surface that
+`GET /schema/arch-capabilities` advertises and the loader then refuses, so:
+
+- Start with `_ORDINARY_ONLY` on both axes, plus the `additive_reason` /
+  `quantized_base_reason` prose `declare_adapter_capability` requires. That is
+  an honest "ordinary LoRA only" surface.
+- Flip a LyCORIS pair on only after the architecture's generation branch
+  builder goes through `core.adapters.groups.build_adapter_branch` (rather
+  than parsing `lora_down`/`lora_up` itself) and its round-trip gate passes:
+  `backend/tests/adapter_lycoris_roundtrip_cheap_test.py` for the generation
+  axis, `adapter_lycoris_training_roundtrip_cheap_test.py` (trainer save →
+  the real generation loader → same delta, plus resume) for the training axis.
+  The two axes flip separately and on purpose.
+- Add a `BLOCK_SWAP_ADAPTER_ORDER` row in the same file before flipping a
+  LyCORIS pair: whether the backend installs adapters `BEFORE_SPLIT`,
+  `AFTER_SPLIT` or has `NO_BLOCK_SWAP` is not observable from a session, and
+  it decides whether a stranded branch is a refusal or an advisory.
+- If the architecture's targets sit behind quantized Linears, or it has a
+  non-trivial target topology (fused QKV, twinned halves), say so in the
+  refusal prose rather than leaving a generic sentence — those refusals are
+  returned to API clients verbatim.
+
+Read `docs/guides/LYCORIS_ADAPTER_DESIGN.md` (its shipped-boundary rule in
+particular) before opening any row, and record the outcome in the adapter
+section of `docs/guides/MODEL_FACTS.md`.
 
 ## 5. Single-file format — `backend/core/models/common/single_file_format.py`
 

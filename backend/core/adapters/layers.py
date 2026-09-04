@@ -38,17 +38,16 @@ def refuse_tucker_tensors(names: Iterable[str], where: str = "") -> None:
 
 
 class _BranchTensorProtocol:
-    """save / resume / optimise, all derived from ``branch_tensors()`` alone,
-    plus the execution seam every algebra shares.
+    """save / resume / optimise, all derived from ``branch_tensors()``, plus the
+    execution seam every algebra shares.
 
     ``branch_tensors`` is the single extension point: an algebra with a
-    different tensor set overrides that one and inherits the four below.
+    different tensor set overrides it and inherits the rest.
 
-    THE EXECUTION SEAM. ``forward_delta`` is the branch protocol the composite
-    executes and is therefore where an execution backend belongs; each algebra
-    implements ``reference_delta`` and inherits the dispatch, so registering a
-    fused backend changes no algebra and no architecture. With nothing selected
-    the conduit calls ``reference_delta`` directly (``execution/dispatch.py``).
+    ``forward_delta`` is the branch protocol the composite executes, so it is
+    where an execution backend belongs; each algebra implements
+    ``reference_delta`` and inherits the dispatch, and with nothing selected the
+    conduit calls ``reference_delta`` directly.
     """
 
     #: The branch's two-axis algebra identity, for the execution registry and
@@ -332,22 +331,17 @@ class LoRALinearLayer(_BranchTensorProtocol, nn.Module):
 
 
 class MiniMaxH3LoRALinearLayer(LoRALinearLayer):
-    """``LoRALinearLayer`` with the LoRA branch cast to the ACTIVATION dtype.
+    """``LoRALinearLayer`` with the branch cast to the activation dtype.
 
-    MiniMax-H3's training forward runs WITHOUT ``torch.autocast``: the vendored
-    transformer owns its own mixed-precision policy (fp32 I/O heads and AdaLN
-    projections, bf16 block stack, each activation aligned to its projection's
-    parameter dtype), and an autocast context would override those casts and make
-    training a different function from generation.
+    MiniMax-H3's forward runs without ``torch.autocast`` -- the vendored
+    transformer owns its own policy (fp32 I/O heads and AdaLN, bf16 blocks) and
+    an autocast context would override it, making training a different function
+    from generation.
 
-    The stock layer relies on autocast to reconcile its fp32 master weights with
-    a bf16 activation. Without autocast that is not a style difference, it is a
-    ``RuntimeError`` on the first ``F.linear`` -- and, if the branch happened to
-    be built in the activation dtype instead, a silent loss of the fp32 master.
-    So the masters stay fp32 and are cast per call; the gradient flows back
-    through the cast to the fp32 parameters unchanged. This is exactly the LoRA
-    shape Phase 0T measured (bitwise save->reload, 600/600 tensors receiving
-    finite gradients).
+    The stock layer needs autocast to reconcile fp32 masters with a bf16
+    activation. Without it that is a ``RuntimeError`` on the first
+    ``F.linear``; building the branch in the activation dtype instead would
+    lose the fp32 master silently. So masters stay fp32 and are cast per call.
     """
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -493,20 +487,16 @@ class LoHaLinearLayer(_AlphaIsASpecConstant, nn.Module):
 
 
 def factorization(dimension: int, factor: int = -1) -> Tuple[int, int]:
-    """Upstream LyCORIS ``functional/general.py.factorization``: the most
-    balanced divisor pair ``(m, n)`` with ``m <= n``, with the divisor search
-    capped at ``factor``.
+    """Upstream LyCORIS ``factorization``: the most balanced divisor pair
+    ``(m, n)`` with ``m <= n``, search capped at ``factor``.
 
-    ``factor=-1`` agrees with the balanced ``isqrt`` search it replaces on every
-    dimension tested (2..20000), so adopting upstream's algorithm moves no
-    existing LoKr. Upstream's own docstring table is stale: the CODE gives
-    360 -> (18, 20), not the (8, 45) it documents.
+    ``factor=-1`` agrees with the balanced ``isqrt`` search it replaced on every
+    dimension 2..20000, so adopting it moves no existing LoKr. Upstream's own
+    docstring table is stale: the code gives 360 -> (18, 20).
 
-    A LOADER MUST NOT CALL THIS. ``factor`` is not stored in the checkpoint, so
-    a file's ``(m1, n1)`` comes from the ``lokr_w1`` shape (or
-    ``w1_a.shape[0]`` / ``w1_b.shape[1]``) with ``m2 = out/m1``, ``n2 = in/n1``.
-    That derivation also absorbs upstream's ``unbalanced_factorization``, which
-    swaps ``out_l``/``out_k`` and which no tensor records.
+    A loader must not call this. ``factor`` is not stored in a checkpoint, so a
+    file's ``(m1, n1)`` comes from the ``lokr_w1`` shape -- which also absorbs
+    upstream's ``unbalanced_factorization``, recorded by no tensor.
     """
     if factor > 0 and (dimension % factor) == 0:
         m, n = factor, dimension // factor
@@ -666,18 +656,17 @@ class LoKrLinearLayer(_AlphaIsASpecConstant, nn.Module):
 
     @property
     def scale(self) -> float:
-        """Upstream's ``rank_scale`` (``kernels/autograd/lokr.py``): a FUNCTION
-        OF THE TENSOR SET, not of a constructor argument.
+        """Upstream's ``rank_scale``: a function of the tensor set, not of a
+        constructor argument.
 
         The divisor is the rank of whichever operand is factored, so the
         full/full form scales by exactly 1 -- upstream reaches that by
-        overriding ``alpha = lora_dim`` in that branch, which is also what it
-        writes into the file. Reading that stored ``alpha`` as ``alpha/rank``
-        scales the whole adapter by ``lora_dim``.
+        overriding ``alpha = lora_dim``, which is also what it writes into the
+        file. Reading that stored ``alpha`` as ``alpha/rank`` scales the whole
+        adapter by ``lora_dim``.
 
-        w1 is consulted first, as upstream does. No representable checkpoint can
-        tell the two orders apart (one ``lora_dim`` serves both operands), but a
-        future asymmetric writer would, silently.
+        w1 is consulted first, as upstream does: no representable checkpoint
+        tells the orders apart, but an asymmetric writer would, silently.
         """
         w1_a = getattr(self, "lokr_w1_a", None)
         if w1_a is not None:
@@ -760,20 +749,17 @@ def dora_magnitude_axis(dora_scale: torch.Tensor, out_features: int,
 
 
 def weight_decompose_refusal(base: nn.Module) -> Optional[str]:
-    """Why a weight-decomposed branch (DoRA/DoHa/DoKr) must not cover ``base``.
+    """Why a weight-decomposed branch must not cover ``base``.
 
-    The magnitude epilogue reads the base weight's direction and norm on every
-    forward, so a weight-only quantized base would have to be dequantized per
-    call and the fused base GEMM abandoned. Refused until that has its own
-    design and measurement (design doc, phase 3).
+    The magnitude epilogue reads the base weight's direction and norm every
+    forward, so a weight-only quantized base would be dequantized per call and
+    the fused base GEMM abandoned. Refused until measured (design doc phase 3).
 
-    Keyed on the weight's DTYPE, not on the quantized Linear classes: the legacy
-    fp8 path leaves an ordinary ``nn.Linear`` holding a float8 weight, and a
-    class test would miss it.
+    Keyed on the weight's dtype, not the quantized Linear classes: the legacy
+    fp8 path leaves an ordinary ``nn.Linear`` holding a float8 weight.
 
-    A POLICY predicate, not an invariant of the layer: ``new_adapter_branch``
-    raises on it and ``AdapterSession`` refuses on it, while ``DoRALinearLayer``
-    stays constructible so the session can ask the BUILT branch rather than the
+    A policy predicate, not an invariant: ``DoRALinearLayer`` stays
+    constructible so the session can ask the built branch rather than the
     file's label.
     """
     weight = getattr(base, "weight", None)
@@ -1271,18 +1257,18 @@ def named_modules_outside_adapters(
 
 
 def branch_survives_block_swap(branch: nn.Module) -> bool:
-    """Whether a block offloader's name-based walk reaches every tensor
-    ``branch`` OWNS.
+    """Whether a block offloader's name-based walk reaches every tensor ``branch``
+    owns.
 
-    The offloaders move ``module.weight`` for modules whose class name ends in
-    "Linear", so a LoRA branch's ``lora_down``/``lora_up`` ride with their block
-    and a LoHa/LoKr layer's bare ``nn.Parameter`` factors are left behind. Asked
-    of the OBJECT, so an algebra added later is classified without a table -- and
-    so a checkpoint whose metadata MISLABELS its algebra cannot bypass it.
+    The offloaders move ``module.weight`` for classes whose name ends in
+    "Linear", so a LoRA branch's factors ride with their block while a
+    LoHa/LoKr layer's bare parameters are left behind. Asked of the object, so
+    a later algebra needs no table entry and a checkpoint whose metadata
+    mislabels its algebra cannot bypass it.
 
-    The wrapped base is excluded: its weight is the block's own, moved exactly as
-    it was before any adapter existed, and a Linear ``bias`` is not moved by that
-    walk either -- requiring it here would refuse every LoRA over a biased base.
+    The wrapped base is excluded (its weight is the block's own), and a Linear
+    ``bias`` is not moved by that walk either -- requiring it would refuse
+    every LoRA over a biased base.
     """
     base = getattr(branch, "original_module", None)
     skip = {id(p) for p in base.parameters()} if isinstance(base, nn.Module) else set()

@@ -202,25 +202,19 @@ def warm_up_adapter_backend(
 ) -> WarmUpReport:
     """Probe the regions these branches are expected to use, before the step.
 
-    Called from the trainer's startup path (see ``base_trainer``): a fused
-    backend's first-use search inside step 1 is indistinguishable from a hung
-    run.
+    Called from the trainer's startup path: a fused backend's first-use search
+    inside step 1 is indistinguishable from a hung run.
 
-    ``activation_dtypes`` is a HINT, not the whole truth, and is UNIONED with
-    each branch's own base dtype rather than replacing it. A run's training
-    dtype is not what every branch sees: MiniMax-H3 runs bf16 blocks with fp32
-    I/O heads and AdaLN projections and no ``autocast``, so the run dtype alone
-    both fabricates a bf16 region for an fp32 head (whose probe fails on a
-    genuine dtype mismatch) and leaves the fp32 region that head really uses
-    unwarmed -- which is the stall warm-up exists to prevent. A branch's device
-    can move after this too (block swap), so the set is expected, not certain;
-    ``adapter_forward_delta`` probes an unwarmed region on first sight.
+    ``activation_dtypes`` is unioned with each branch's own base dtype, not
+    substituted for it. MiniMax-H3 runs bf16 blocks with fp32 I/O heads and no
+    autocast, so the run dtype alone both fabricates a bf16 region for an fp32
+    head and leaves that head's real region unwarmed. A branch's device can
+    still move afterwards (block swap), so the set is expected, not certain.
 
-    ``strict`` raises when some branch has NO admitted region, not when one
-    member of the union fails: a branch served in fp32 and refused in bf16 is
-    served. KNOWN GAP: a backend admitted here and latched on a later region
-    leaves ``usable > 0``, so strict does not raise and the run continues on the
-    reference path with a ``lora_backend_latched`` warning only.
+    ``strict`` raises when a branch has NO admitted region, not when one member
+    of its union fails. Known gap: a backend admitted here and latched later
+    leaves ``usable > 0``, so the run continues on the reference path with a
+    ``lora_backend_latched`` warning only.
     """
     global _warmed, _warn_callback, _log
     if warn is not None:

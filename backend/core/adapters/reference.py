@@ -1,11 +1,19 @@
-"""fp32 reference oracle for the adapter algebras (test-only).
+"""fp32 reference oracle for the adapter algebras.
 
 An oracle that shares code with the thing it validates proves nothing, so
 nothing here calls into ``layers.py``: each delta weight is written from its
 algebraic definition -- an explicit sum of outer products for a low-rank
 product, an explicit block assembly for the Kronecker product -- in fp32, at
-whatever cost. It is imported by ``backend/tests/*`` only; no runtime path may
-depend on it.
+whatever cost.
+
+WHO MAY IMPORT IT. ``backend/tests/*``, and one production module:
+``core.adapters.execution.probe``, whose job is to compare a candidate
+execution backend against this file before that backend may serve a region.
+The import there is deferred to the function that runs it, so a process that
+imports ``core.adapters`` does not load the oracle, and no shipped forward can
+reach it -- ``adapter_layering_test`` gates both halves. Nothing else may
+import it: an oracle a shipped path depends on stops being an independent
+check of that path.
 
 The functions take the branch tensors under the names ``branch_tensors()``
 produces, so a layer's live state can be handed straight over. Extra keys

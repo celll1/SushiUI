@@ -12,6 +12,23 @@ Every importer -- generation, training and tests -- reaches these names here;
 see ``docs/guides/LYCORIS_ADAPTER_DESIGN.md``.
 """
 
+from .execution import (
+    BACKEND_ENV_VAR,
+    BACKEND_UNAVAILABLE_CODE,
+    LATCH_CODE,
+    REFERENCE,
+    AdapterBackend,
+    AdapterRegion,
+    ProbeResult,
+    WarmUpReport,
+    adapter_forward_delta,
+    apply_configured_backend,
+    known_adapter_backends,
+    select_adapter_backend,
+    selected_adapter_backend,
+    validate_adapter_backend,
+    warm_up_adapter_backend,
+)
 from .layers import (
     TUCKER_TENSOR_NAMES,
     CompositeAdapterLayer,
@@ -95,6 +112,21 @@ from .targets import (
 )
 
 __all__ = [
+    "BACKEND_ENV_VAR",
+    "BACKEND_UNAVAILABLE_CODE",
+    "LATCH_CODE",
+    "REFERENCE",
+    "AdapterBackend",
+    "AdapterRegion",
+    "ProbeResult",
+    "WarmUpReport",
+    "adapter_forward_delta",
+    "apply_configured_backend",
+    "known_adapter_backends",
+    "select_adapter_backend",
+    "selected_adapter_backend",
+    "validate_adapter_backend",
+    "warm_up_adapter_backend",
     "SHAPE_MISMATCH",
     "AdapterComponent",
     "AdapterFile",

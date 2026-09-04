@@ -53,6 +53,7 @@ print("__PROBE__" + json.dumps({{
     "api_routes": "api.routes" in sys.modules,
     "api_param_defaults": "api.param_defaults" in sys.modules,
     "cuda_initialized": torch.cuda.is_initialized(),
+    "oracle": "core.adapters.reference" in sys.modules,
 }}))
 """
 
@@ -112,6 +113,10 @@ class AdapterPackageLayeringTest(unittest.TestCase):
                          "core.adapters must not import api.param_defaults")
         self.assertFalse(new["cuda_initialized"],
                          "importing core.adapters must not initialise CUDA")
+        self.assertFalse(
+            new["oracle"],
+            "importing core.adapters must not load the fp32 oracle; the probe's "
+            "import of it is deferred to the one function that runs it")
 
 
 class CanonicalObjectIdentityTest(unittest.TestCase):
@@ -208,9 +213,24 @@ class ShimRemovalTest(unittest.TestCase):
 
     def test_no_runtime_module_imports_the_test_only_oracle(self):
         """``core.adapters.reference`` is the fp32 oracle the adapter gates
-        compare against. It is test-only by contract but ships inside the
-        production package, and an oracle that a runtime path can reach stops
-        being an independent check of that path."""
+        compare against. It ships inside the production package, and an oracle
+        that a shipped forward can reach stops being an independent check of
+        that forward.
+
+        ONE production module is allowed to reach it, and only from inside a
+        function: ``core/adapters/execution/probe.py``, which is the executed
+        admission check phase 4 requires -- a candidate backend is compared
+        against the oracle before it may serve a region. That comparison is not
+        on any shipped path (nothing but ``reference`` is registered, and
+        ``reference`` is never probed), and the deferred import keeps the oracle
+        out of a process that merely imports ``core.adapters``.
+
+        THIS ARM IS HALF THE GATE. ``module_scope`` holds only top-level
+        statements, so an import nested in a module-level ``if`` or ``try``
+        would read as deferred here; the fresh-process assertion in
+        ``AdapterPackageLayeringTest`` is what catches that, by observing
+        ``sys.modules``. Neither arm is sufficient alone."""
+        allowed = os.path.join(_BACKEND, "core", "adapters", "execution", "probe.py")
         offenders = []
         for path in sorted(pathlib.Path(_BACKEND).rglob("*.py")):
             if path.parent.name == "tests":
@@ -219,6 +239,8 @@ class ShimRemovalTest(unittest.TestCase):
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except (SyntaxError, UnicodeDecodeError):
                 continue
+            module_scope = {id(node) for node in tree.body}
+            is_allowed = os.path.abspath(str(path)) == os.path.abspath(allowed)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     hit = any(a.name == _ORACLE_MODULE for a in node.names)
@@ -229,11 +251,17 @@ class ShimRemovalTest(unittest.TestCase):
                                and any(a.name == "reference" for a in node.names)))
                 else:
                     continue
-                if hit:
-                    offenders.append(f"{os.path.relpath(path, _REPO)}:{node.lineno}")
+                if not hit:
+                    continue
+                where = f"{os.path.relpath(path, _REPO)}:{node.lineno}"
+                if not is_allowed:
+                    offenders.append(where)
+                elif id(node) in module_scope:
+                    offenders.append(f"{where} (must stay deferred)")
         self.assertEqual(
             offenders, [],
-            f"{_ORACLE_MODULE} is test-only: " + "; ".join(offenders))
+            f"{_ORACLE_MODULE} is reachable only from the probe, deferred: "
+            + "; ".join(offenders))
 
     def test_base_adapter_no_longer_re_exports_the_target_helpers(self):
         from core.training.adapters import base_adapter

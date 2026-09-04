@@ -56,6 +56,26 @@ changes.
   changed files and a real import** (e.g.
   `venv/Scripts/python.exe -c "import backend.api.routes"`) — `py_compile`
   alone misses module-load-time `NameError`s and similar failures.
+
+  Importing the trainer or pipeline stack normally creates a CUDA context,
+  which is unwelcome while the owner's training run holds the GPU. It is not a
+  reason to skip the import: the single trigger is
+  `diffusers.models.autoencoders.autoencoder_kl` calling
+  `torch.cuda.get_device_capability("cuda")` at import time, so stubbing that
+  one function plus no-oping `torch.cuda._lazy_init` and `torch._C._cuda_init`
+  before the import lets it complete with `torch.cuda.is_initialized() == False`
+  and the GPU untouched (measured: ~1.0 GB RSS for
+  `core.training.base_trainer`). `CUDA_VISIBLE_DEVICES=""` does NOT work —
+  diffusers raises `Invalid device id` instead.
+
+  ```python
+  import torch
+  torch.cuda.get_device_capability = lambda *a, **k: (8, 9)
+  torch.cuda._lazy_init = lambda *a, **k: None
+  torch._C._cuda_init = lambda *a, **k: None
+  import core.training.base_trainer  # cwd backend/, or PYTHONPATH=backend
+  assert not torch.cuda.is_initialized()
+  ```
 - **Frontend build and type-checking are run by the repository owner, not by
   agents.** Do not run `npm run build` or `npm run type-check`; rely on
   careful reading of `frontend/src/utils/api.ts` and the generation panels

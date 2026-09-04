@@ -1,27 +1,17 @@
 """Correctness gates for the adapter algebras against the fp32 oracle. CPU, ~10 s.
 
-The layer classes in ``core.adapters.layers`` were written without a reference
-to check them against, so this file supplies one: ``core.adapters.reference``
-is an INDEPENDENT fp32 implementation (explicit outer-product sums, explicit
-Kronecker block assembly) that shares no code with the layers, and every case
-below compares a layer's forward, its input gradient and EVERY one of its
-parameter gradients against it.
+The layers were written without a reference to check them against.
+``core.adapters.reference`` is that reference -- an independent fp32
+implementation sharing no code with them -- and every case compares a forward,
+its input gradient and every parameter gradient against it.
 
-Covers the "Correctness gates" bullets of
-``docs/guides/LYCORIS_ADAPTER_DESIGN.md`` that a CPU test can reach: fp32 /
-fp16 / bf16, strengths 0 / 1 / fractional / >1 / negative, runtime versus
-merge/unmerge including ``alpha != rank``, and gradient checkpointing on/off.
-Block swap, the fused-optimizer census, quantized bases and the per-arch round
-trip are gated elsewhere.
+Covers the design doc's correctness gates a CPU test can reach: fp32/fp16/bf16,
+strengths 0 / 1 / fractional / >1 / negative, runtime versus merge including
+``alpha != rank``, and gradient checkpointing on and off.
 
-THE FAKE-ASSERTION TRAP. Every algebra zero-initialises one factor so its
-initial delta is exactly zero -- and a zero delta makes every equivalence
-assertion here pass no matter how wrong the algebra is. ``_build`` therefore
-randomises that factor, and ``_assert_delta_is_exercised`` runs before each
-equivalence assertion.
-
-Run with:
-    venv/Scripts/python.exe -m pytest backend/tests/adapter_oracle_gate_cheap_test.py -v
+Every algebra zero-initialises one factor, so its initial delta is zero and
+every equivalence assertion here would pass however wrong the algebra is.
+``_build`` randomises that factor and ``_assert_delta_is_exercised`` runs first.
 """
 
 import ast
@@ -813,23 +803,18 @@ def test_rank_alpha_and_name_delegate_through_the_wrapper(algebra):
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
 def test_the_row_magnitude_convention_agrees_with_peft(dtype):
-    """The one axis check that is NOT two mirrors of one convention.
+    """The one axis check that is not two mirrors of one convention.
 
     ``layers.py`` and ``reference.py`` both read a ``(out, 1)`` ``dora_scale``
-    as per-output-row magnitudes, and ``reference.py``'s docstring discloses
-    that it SHARES that reading rather than deriving it -- so their agreement
-    proves nothing about the convention itself. PEFT is a third implementation,
-    installed in this venv and written by neither: ``DoraLinearLayer`` norms
-    ``W + scaling*dW`` along ``dim=1`` and stores one magnitude per output row,
-    and diffusers' Kohya converter maps ``dora_scale`` straight onto that
-    parameter (``lora_magnitude_vector``). Agreeing with it is evidence that a
-    real third-party DoRA file is read at the numbers it was trained for.
+    as per-output-row magnitudes, and the oracle discloses that it shares that
+    reading rather than deriving it, so their agreement proves nothing. PEFT is
+    a third implementation written by neither: it norms along ``dim=1``, stores
+    one magnitude per output row, and diffusers' Kohya converter maps
+    ``dora_scale`` straight onto it.
 
-    FORWARD ONLY, deliberately. PEFT detaches the weight norm from the graph
-    (DoRA paper section 4.3, a memory optimization), where this repo takes the
-    exact gradient of the stated function, so the two BACKWARDS differ by
-    construction. That difference is recorded in the design doc, not asserted
-    away here.
+    Forward only: PEFT detaches the weight norm from the graph (DoRA paper 4.3)
+    where this repo takes the exact gradient, so the backwards differ by
+    construction. Recorded in the design doc, not asserted away here.
     """
     dora = pytest.importorskip("peft.tuners.lora.dora")
 

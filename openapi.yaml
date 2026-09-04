@@ -12079,6 +12079,20 @@ components:
             `image` is required on LTX-2.3, whose image-to-video pipeline has
             no other conditioning input.
           properties:
+            controlnets:
+              type: string
+              default: "[]"
+              description: |
+                JSON-encoded string (sent via multipart Form) containing an
+                array of ControlNet / reference-guide / style-transfer config
+                objects. OVERRIDES the inherited `Txt2VidRequest.controlnets`,
+                which is an array because that endpoint takes a JSON body; this
+                one is multipart, so the same entries arrive as a JSON string in
+                one form field. Only `is_style_transfer: true` entries are
+                meaningful here, and only on LTX-2.3 -- see
+                `Txt2VidRequest.controlnets` for the mechanism and its
+                mutual exclusions.
+              example: '[]'
             loras:
               type: string
               default: "[]"
@@ -12201,7 +12215,11 @@ components:
 
             `controlnets` is inherited from `Txt2VidRequest` but is not read by
             this endpoint: its only video use is LTX-2.3 style transfer, and
-            this endpoint serves MiniMax-H3 alone.
+            this endpoint serves MiniMax-H3 alone. Unlike `loras` below it is
+            therefore NOT overridden into the multipart string form -- this
+            route declares no matching form field at all, so FastAPI drops
+            whatever arrives under that name without a warning (no 400, no
+            effect), exactly as it drops `minimax_h3_debug_skip_blocks` here.
           properties:
             loras:
               type: string

@@ -1082,6 +1082,82 @@ yaml_config = TrainingConfigGenerator.generate_lora_config(
 )
 ```
 
+#### The `network` block (adapter algebra)
+
+`generate_lora_config` writes the run's adapter algebra into
+`config.process[0].network`:
+
+```yaml
+network:
+  type: lora            # "relora" after generate_relora_config rewrites it
+  adapter_algorithm: lora   # lora | loha | lokr
+  weight_decompose: false   # DoRA/DoHa/DoKr magnitude vector
+  linear: 16                # from lora_rank
+  linear_alpha: 16          # from lora_alpha
+  lora_dtype: fp32
+  adapter_config: {}        # algebra-specific options
+```
+
+Defaults live only in `backend/api/param_defaults.py` (`TRAINING_DEFAULTS`):
+`adapter_algorithm: "lora"`, `weight_decompose: False`, `adapter_config: {}`,
+`lora_rank: 16`, `lora_alpha: 16`, `lora_dtype: "fp32"`. A YAML written before
+these keys existed — or any run that omits them — normalizes to ordinary LoRA
+without weight decomposition (`TrainingAdapterSpec`, `adapters/base_adapter.py`),
+and an ordinary-LoRA checkpoint stays byte-identical to what every architecture
+already writes: `TrainingAdapterSpec.metadata()` emits the `sushi.adapter.*`
+block only for a non-ordinary algebra.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `adapter_algorithm` | `"lora"` \| `"loha"` \| `"lokr"` | `"lora"` | The algebra the branch is built from. Any other value is refused by name. |
+| `weight_decompose` | bool | `false` | Adds one `dora_scale` per target on top of the algebra (DoRA / DoHa / DoKr). |
+| `adapter_config` | dict | `{}` | Algebra-specific options. **API-only — no UI control writes it.** |
+
+**Which architecture may train which pair** is decided by
+`TRAINABLE_ADAPTER_PAIRS` in `backend/core/adapters/capability.py` and by
+nothing else. It is a *different table* from the generation one
+(`ENABLED_ADAPTER_PAIRS`) in the same file: an architecture can load and
+generate an algebra it cannot train. The per-architecture summary is the table
+in `docs/guides/MODEL_FACTS.md` ("Adapter families per architecture"); the
+subsystem's durable note is `docs/guides/LYCORIS_ADAPTER_DESIGN.md`.
+
+`adapter_config` options, per algebra (`FRESH_BRANCH_OPTIONS` in
+`core/adapters/layers.py`); an option the algebra does not have is refused by
+name rather than ignored:
+
+- `lora`: none.
+- `loha`: `use_scalar` only — and a `use_scalar` layer **cannot be trained**
+  (`validate_adapter_options` refuses it: the exporter folds `scalar` into the
+  first factor and every reader forces `scalar := 1`, so resuming the saved
+  file would rebuild a different layer). So LoHa has no usable option today.
+- `lokr`: `factor` (Kronecker factorization applied to both dimensions,
+  `-1` = auto) and `decompose_both` (stores `w1` low-rank as well, and requires
+  `lora_rank > 0`); plus the same refused `use_scalar`.
+
+**Refusals.** `_assert_adapter_algebra_contract` (`train_runner.py`) checks all
+of these from the config, before the checkpoint loads;
+`require_trainable_algebra` in `lora_trainer.py` is the backstop for a caller
+that skipped the preflight. An ordinary-LoRA run is unaffected by all but the
+first.
+
+- An `adapter_config` key the algorithm does not accept — including a leftover
+  `factor` on an ordinary LoRA run, which is validated even though nothing
+  would read it.
+- A non-ordinary algebra with `network.type != "lora"`: ReLoRA takes ordinary
+  LoRA only, because its merge / reinitialize and optimizer reset are not
+  defined for a Hadamard or Kronecker factorization, nor for a magnitude vector
+  whose meaning depends on the base it was merged into.
+- A pair the detected architecture's training row does not carry
+  (`capability.require(..., AXIS_TRAINING)`), with that architecture's own
+  reason.
+- `blocks_to_swap > 0` with any non-ordinary algebra: the block offloader
+  selects modules whose class name ends in `Linear`, and a LyCORIS branch's
+  factors (and `dora_scale`) are bare parameters, so the branch is invisible to
+  the swap. Set `blocks_to_swap: 0`, or train an ordinary LoRA.
+- `weight_decompose` together with `fp8_base_dtype`: a decomposed branch reads
+  the base weight's direction and norm every forward, and that setting
+  quantizes the base before the adapter is injected.
+
 #### `generate_full_finetune_config`
 
 ```python

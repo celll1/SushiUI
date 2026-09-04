@@ -174,6 +174,70 @@ _YAML_FIELD_LOCATIONS = {
 
 ---
 
+## `network` ブロック: アダプタ代数パラメータ
+
+LoRAランのYAMLは `config.process[0].network` にアダプタ代数を書き出します
+（`training_config.py` の `generate_lora_config`）。`_YAML_FIELD_LOCATIONS` で
+`("network",)` と宣言されているため、読み戻しは自動です。
+
+```yaml
+network:
+  type: lora            # generate_relora_config は type だけを "relora" に書き換える
+  adapter_algorithm: lora   # lora | loha | lokr
+  weight_decompose: false   # DoRA/DoHa/DoKr（targetごとの dora_scale）
+  linear: 16                # lora_rank
+  linear_alpha: 16          # lora_alpha
+  lora_dtype: fp32
+  adapter_config: {}        # 代数ごとのオプション
+```
+
+| キー | デフォルト（`param_defaults.py` の `TRAINING_DEFAULTS`） | 説明 |
+|---|---|---|
+| `adapter_algorithm` | `"lora"` | ブランチの代数。`lora` / `loha` / `lokr` 以外は名前を挙げて拒否される |
+| `weight_decompose` | `False` | 代数の上に `dora_scale` を1本追加（DoRA/DoHa/DoKr） |
+| `adapter_config` | `{}` | 代数固有のオプション。**API専用で、UIに入力欄はありません**（プリセットの保存・復元経路のみ） |
+
+キーが1つも無い旧YAMLは「重み分解なしの通常LoRA」に正規化されます
+（`adapters/base_adapter.py` の `TrainingAdapterSpec`）。通常LoRAの
+チェックポイントは従来とバイト一致で、`sushi.adapter.*` メタデータは
+非通常の代数のときだけ書かれます。
+
+`adapter_config` のオプション（`core/adapters/layers.py` の
+`FRESH_BRANCH_OPTIONS`）:
+
+- `lora`: なし
+- `loha`: `use_scalar` のみ。ただし `use_scalar` レイヤは**学習できません**
+  （保存時に `scalar` が第1因子へ畳み込まれ、読み側は `scalar := 1` を強制する
+  ため、resumeすると別のレイヤになる）。実質的に指定できるものはありません
+- `lokr`: `factor`（両次元に適用されるKronecker分解、`-1` で自動）と
+  `decompose_both`（`w1` も低ランク化、`lora_rank > 0` が必要）
+
+**どのアーキテクチャがどの組み合わせを学習できるか**は
+`backend/core/adapters/capability.py` の `TRAINABLE_ADAPTER_PAIRS` だけが決めます。
+同ファイルの生成側テーブル（`ENABLED_ADAPTER_PAIRS`）とは**別のテーブル**で、
+ロード・生成はできるが学習はできないアーキテクチャがあります。
+アーキテクチャ別の一覧は `docs/guides/MODEL_FACTS.md`（Adapter families per
+architecture）を参照してください（ここには複製しません）。設計上の背景は
+`docs/guides/LYCORIS_ADAPTER_DESIGN.md`。
+
+拒否されるケース（`train_runner.py` の `_assert_adapter_algebra_contract` が
+モデルロード前に検査。`lora_trainer.py` の `require_trainable_algebra` は
+プリフライトを通らなかった呼び出し元向けのバックストップ）:
+
+1. その代数が持たない `adapter_config` キー。通常LoRAランに残った `factor` も
+   （誰も読まないにもかかわらず）名前を挙げて拒否されます
+2. `network.type != "lora"` との併用。ReLoRAのmerge/再初期化とoptimizerリセットは
+   通常の低ランクブランチにしか定義がないため、非通常代数は通常LoRA専用です
+3. 検出されたアーキテクチャの学習行に無い組み合わせ（そのアーキテクチャ固有の
+   理由文が返る）
+4. 非通常代数 + `blocks_to_swap > 0`。block offloaderはクラス名が `Linear` で
+   終わるモジュールを動かすもので、LyCORIS系の因子や `dora_scale` は素の
+   Parameterのためswapから見えません。`blocks_to_swap: 0` にするか通常LoRAへ
+5. `weight_decompose` + `fp8_base_dtype`。重み分解ブランチは毎forwardでベース
+   重みの方向とノルムを読むが、この設定はアダプタ注入前にベースを量子化する
+
+---
+
 ## 参考: 関連ファイル一覧
 
 ### バックエンド

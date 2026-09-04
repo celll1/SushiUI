@@ -37,12 +37,16 @@ from typing import Dict, List, Set
 
 _REPO = Path(__file__).resolve().parents[2]
 _PANEL = _REPO / "frontend/src/components/training/TrainingConfig.tsx"
+# The parameter surface moved to its own module; the panel keeps the code that
+# reads it. These assertions are about the pair, so they read the pair.
+_PARAMS = _REPO / "frontend/src/components/training/trainingParams.ts"
 _ROUTES = _REPO / "backend/api/routes.py"
 _CONFIG_GEN = _REPO / "backend/core/training/training_config.py"
 
 
 def _source() -> str:
-    return _PANEL.read_text(encoding="utf-8")
+    return (_PARAMS.read_text(encoding="utf-8")
+            + _PANEL.read_text(encoding="utf-8"))
 
 
 def _slice(source: str, start: str, end: str) -> str:

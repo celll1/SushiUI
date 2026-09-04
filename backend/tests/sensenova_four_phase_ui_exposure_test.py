@@ -53,6 +53,7 @@ from core.training.train_runner import _apply_sensenova_training_contract  # noq
 
 API_TS = REPO / "frontend" / "src" / "utils" / "api.ts"
 TRAINING_CONFIG_TSX = REPO / "frontend" / "src" / "components" / "training" / "TrainingConfig.tsx"
+TRAINING_PARAMS_TS = REPO / "frontend" / "src" / "components" / "training" / "trainingParams.ts"
 SHIPPED_COMMIT = "ce713b58"
 
 
@@ -269,7 +270,10 @@ def test_the_flag_has_a_frontend_type_and_a_default():
 
 
 def test_the_flag_is_submitted_saved_and_restored():
-    tsx = TRAINING_CONFIG_TSX.read_text(encoding="utf-8")
+    # The key lists live in trainingParams.ts, the code that reads
+    # them in the panel; this assertion spans both.
+    tsx = (TRAINING_PARAMS_TS.read_text(encoding="utf-8")
+           + TRAINING_CONFIG_TSX.read_text(encoding="utf-8"))
     # Request payload.
     assert "sensenova_four_phase_eviction: params.sensenova_four_phase_eviction," in tsx
     # YAML round trip and preset round trip -- a control that submits but does

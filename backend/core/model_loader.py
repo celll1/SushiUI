@@ -2362,8 +2362,10 @@ class ModelLoader:
         """Reconstruct an SD1.5 / SDXL pipeline from a single-file checkpoint.
 
         Honors SushiUI custom-arch metadata:
-        - sushi.vae_type / sushi.in_channels -> swap to a non-standard latent VAE
-          (e.g. FLUX.1 16ch) and resize the U-Net conv_in/conv_out to match.
+        - component.vae.* (or the legacy sushi.vae_type / sushi.in_channels) ->
+          build the U-Net at the declared latent channel count and load the VAE
+          the checkpoint was trained with, bundled or resolved through its
+          locator. See VAE_SWAP_MIGRATION_DESIGN.md §9.1.
         - sushi.te_type (+ sushi.te_*) -> rebuild a swapped text encoder and its
           bridge adapters and attach them to the pipeline.
         Absent => standard SD1.5/SDXL via diffusers from_single_file (byte-identical
@@ -2375,25 +2377,43 @@ class ModelLoader:
         pipeline._sushi_te / _sushi_te_tokenizer / _sushi_te_adapters /
         _sushi_te_max_len / _sushi_te_hidden_layer (used by the inference encode
         path). A summary of the reconstructed architecture is always attached as
-        pipeline._sushi_arch for callers that must rebuild trainer state.
+        pipeline._sushi_arch, and the resolved latent identity (or None) as
+        pipeline._sushi_vae_identity, for callers that must rebuild trainer state.
         """
-        # Custom SDXL architecture (SushiUI): non-standard latent VAE (e.g. FLUX.1 16ch).
-        # Read sushi.vae_type / sushi.in_channels so the U-Net conv_in/out and the VAE
-        # are reconstructed after load. Absent => standard SDXL (unchanged path).
-        custom_vae_type = None
-        custom_in_channels = None
+        # A swapped-VAE checkpoint declares itself through component.vae.* (or the
+        # legacy sushi.vae_type pair). Read it with the SAME function the training
+        # loader uses: a declaration that resolves differently on the two sides is
+        # a checkpoint that trains in one latent space and generates in another
+        # (design §9.1). A declaration that cannot be honoured -- no resolvable
+        # locator, or a locator whose content hash moved -- is a refusal here, not
+        # a silent load at the architecture's native channel count.
+        declared_vae = None       # ResolvedVAE, or None for a native checkpoint
+        custom_vae_type = None    # legacy registry family, when that is what it is
+        custom_in_channels = None  # set only when the backbone must be rebuilt
         custom_te = None  # dict(te_type, hidden_layer, max_len, dim, embedded) when custom TE
         if model_type in ("sd15", "sdxl"):
+            from core.models.common.vae_source import (
+                VaeSourceError, arch_native_vae, load_declared_latent_io,
+            )
+            try:
+                declared_vae = load_declared_latent_io(file_path, arch=model_type)
+            except VaeSourceError:
+                raise
+            except Exception as _de:
+                print(f"[ModelLoader] VAE declaration read failed (standard load): {_de}")
+            if declared_vae is not None:
+                if declared_vae.form == "registry":
+                    custom_vae_type = declared_vae.family
+                native_channels = (arch_native_vae(model_type) or {}).get("latent_channels")
+                if declared_vae.latent_channels != native_channels:
+                    custom_in_channels = declared_vae.latent_channels
+                print(f"[ModelLoader] Checkpoint declares VAE {declared_vae.provenance} "
+                      f"({declared_vae.latent_channels}ch, {declared_vae.vae_class}, "
+                      f"hash={declared_vae.content_hash})")
             try:
                 from safetensors import safe_open
                 with safe_open(file_path, framework="pt") as _f:
                     _md = _f.metadata() or {}
-                _vt = (_md.get("sushi.vae_type") or "").strip().lower()
-                if _vt and _vt not in ("none", "sdxl"):
-                    custom_vae_type = _vt
-                    custom_in_channels = int(_md.get("sushi.in_channels", "0") or 0) or None
-                    print(f"[ModelLoader] Custom SDXL arch: vae_type={custom_vae_type}, "
-                          f"in_channels={custom_in_channels}")
                 _tt = (_md.get("sushi.te_type") or "").strip().lower()
                 if _tt and _tt not in ("none", "clip"):
                     custom_te = {
@@ -2405,7 +2425,7 @@ class ModelLoader:
                     }
                     print(f"[ModelLoader] Custom SDXL text encoder: {custom_te}")
             except Exception as _e:
-                print(f"[ModelLoader] custom-arch metadata read failed (standard load): {_e}")
+                print(f"[ModelLoader] custom-TE metadata read failed (standard load): {_e}")
 
         # Check if VAE is embedded
         print(f"[ModelLoader] Checking if model has embedded VAE...")
@@ -2415,13 +2435,13 @@ class ModelLoader:
         # Load external VAE only if not embedded
         external_vae = None
         sushi_vae_source = None  # VAE identity string for generation metadata
-        if custom_vae_type:
-            # Custom high-spec VAE is registry-referenced (not embedded); load it here.
-            from core.models.sdxl_custom_arch import load_alt_vae
-            print(f"[ModelLoader] Loading custom registry VAE: {custom_vae_type}")
-            external_vae = load_alt_vae(custom_vae_type, torch_dtype=torch_dtype)
+        if declared_vae is not None:
+            # Bundled (from the checkpoint's own vae. section) or resolved through
+            # the declared locator; either way the weights are already in hand.
+            print(f"[ModelLoader] Loading declared VAE: {declared_vae.provenance}")
+            external_vae = declared_vae.load_module(torch_dtype=torch_dtype)
             has_vae = False
-            sushi_vae_source = f"custom registry VAE ({custom_vae_type})"
+            sushi_vae_source = declared_vae.provenance
         elif not has_vae:
             if model_type == "sdxl":
                 vae_repo = "madebyollin/sdxl-vae-fp16-fix"
@@ -2485,7 +2505,7 @@ class ModelLoader:
                     **_sf_kw,
                     torch_dtype=torch_dtype,
                     use_safetensors=True,
-                    **({"vae": external_vae} if custom_in_channels and external_vae is not None else {}),
+                    **({"vae": external_vae} if declared_vae is not None and external_vae is not None else {}),
                 )
         except Exception as e:
             # Fallback: try with float32
@@ -2514,22 +2534,22 @@ class ModelLoader:
                     **_sf_kw,
                     torch_dtype=torch.float32,
                     use_safetensors=True,
-                    **({"vae": external_vae} if custom_in_channels and external_vae is not None else {}),
+                    **({"vae": external_vae} if declared_vae is not None and external_vae is not None else {}),
                 )
 
         # Custom SDXL arch: ensure conv_in/conv_out match the custom latent channels and
         # carry the trained weights (from_single_file overrides in_channels but not
         # out_channels). num_in_channels above loaded conv_in; resize fixes conv_out, then
         # both convs are assigned directly from the file for correctness.
-        if custom_vae_type and custom_in_channels and hasattr(pipeline, "unet"):
+        if custom_in_channels and hasattr(pipeline, "unet"):
             try:
                 from core.models.sdxl_custom_arch import (
                     resize_unet_in_out, load_custom_convs_from_single_file,
                 )
                 resize_unet_in_out(pipeline.unet, custom_in_channels)
                 load_custom_convs_from_single_file(pipeline.unet, file_path)
-                print(f"[ModelLoader] Custom SDXL reconstructed: {custom_in_channels}ch latents "
-                      f"({custom_vae_type} VAE)")
+                print(f"[ModelLoader] Custom arch reconstructed: {custom_in_channels}ch latents "
+                      f"({declared_vae.provenance})")
             except Exception as _re:
                 # Continuing here used to hand back a pipeline whose latent
                 # convs were the resize's zero init, i.e. a model that loads and
@@ -2581,11 +2601,20 @@ class ModelLoader:
         # embedded-VAE checkpoint leaves sushi_vae_source None -> record "embedded".
         pipeline._sushi_vae_source = sushi_vae_source or "embedded (checkpoint)"
 
+        # The full latent identity of the loaded model, or None when it runs in the
+        # architecture's own latent space. Facts only -- holding the ResolvedVAE
+        # would keep a second copy of the VAE weights alive for the session.
+        pipeline._sushi_vae_identity = (
+            declared_vae.facts() if declared_vae is not None else None)
+
         # Architecture summary for callers that must rebuild trainer state (resume).
-        # None for a standard SD1.5/SDXL checkpoint.
+        # None for a standard SD1.5/SDXL checkpoint. `vae_type` keeps its legacy
+        # meaning (a registry family, the only thing sushi.vae_type could name);
+        # a file:/model: VAE is only in _sushi_vae_identity.
         pipeline._sushi_arch = {
             "vae_type": custom_vae_type,
-            "in_channels": custom_in_channels,
+            "in_channels": (declared_vae.latent_channels
+                            if declared_vae is not None else None),
             "te_type": (custom_te or {}).get("te_type"),
             "te_dim": getattr(pipeline, "_sushi_te_dim", None),
             "te_max_len": (custom_te or {}).get("max_len"),

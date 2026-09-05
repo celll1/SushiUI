@@ -10,6 +10,7 @@ import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import GpuSelect from "./GpuSelect";
+import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
 import {
   PARAM_KEYS,
   PRESET_EXCLUDED_KEYS,
@@ -321,6 +322,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
   bundle_vae: false,
+  vae_swap_source: "",
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
   activation_dispatch_seed_coef: 0.000024,
@@ -880,6 +882,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     archCapabilities, trainingSampleArch, "sensenova_sample_cfg_norm");
   const selectedTrainingSampleNote = trainingSampleNote(archCapabilities, trainingSampleArch);
   const vaeUnsupported = unsupportedTrainingFeature("vae");
+  const vaeSwapUnsupported = unsupportedTrainingFeature("vae_swap");
   // Aligned CFG null-condition training. A string here means the backend cannot
   // build this architecture's inference uncond condition, and answers 400 for
   // any explicit rate -- 0 included -- so the control must not be offered.
@@ -1688,6 +1691,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (trainingSamplesUnsupported && params.sample_every) {
       updateParam("sample_every", 0);
     }
+    if (vaeSwapUnsupported && params.vae_swap_source) {
+      updateParam("vae_swap_source", "");
+    }
     if (motEvictionUnsupported) {
       if (params.sensenova_mot_phase_eviction) updateParam("sensenova_mot_phase_eviction", false);
       if (params.sensenova_four_phase_eviction) updateParam("sensenova_four_phase_eviction", false);
@@ -1730,7 +1736,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [baseModelPath, trainingMethod, archCapabilities, availableModels,
       blockSwapUnsupported, fusedGroupsUnsupported, referenceImagesUnsupported,
       textEncoderTrainingUnsupported, trainingSamplesUnsupported,
-      motEvictionUnsupported, fourPhaseBlockedReason,
+      vaeSwapUnsupported, motEvictionUnsupported, fourPhaseBlockedReason,
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
       params.sensenova_four_phase_shared_prefix, params.sensenova_mot_pageable_staging,
       params.sensenova_mot_overlap_transfer,
@@ -3949,24 +3955,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </p>
                   </div>
 
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">
-                      SDXL VAE Migration (SDXL only)
-                    </label>
-                    <select
-                      value={params.sdxl_vae_type ?? "none"}
-                      onChange={(e) => updateParam("sdxl_vae_type", e.target.value)}
-                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="none">None (standard SDXL VAE, 4ch)</option>
-                      <option value="flux1">FLUX.1 VAE (16ch)</option>
-                    </select>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Swaps the VAE and resizes the U-Net conv_in/out to the new latent
-                      channel count (body kept; in/out re-adapt during training). Produces a
-                      non-standard &quot;sdxl-custom&quot; checkpoint.
-                    </p>
-                  </div>
+                  {!vaeSwapUnsupported && trainingMethod === "full_finetune" && (
+                    <VaeSwapSourceSelector
+                      value={params.vae_swap_source ?? ""}
+                      onChange={(source) => updateParam("vae_swap_source", source)}
+                      arch={baseModelArch || null}
+                    />
+                  )}
 
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">

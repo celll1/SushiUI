@@ -259,6 +259,10 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     "text_encoder_training": ["train_text_encoder"],
     "training_samples": ["sample_every", "sample_prompts"],
     "vae": ["vae_dtype", "bundle_vae"],
+    # Train into ANOTHER VAE's latent space: the swap resizes the backbone's
+    # latent-facing layers, so it needs both a LatentIOSpec for the architecture
+    # and an arch handler that applies it (VAE_SWAP_MIGRATION_DESIGN.md §8.1).
+    "vae_swap": ["vae_swap_source"],
     # ONE feature, two keys, because they are one interlocked setting rather
     # than two: `sensenova_four_phase_eviction` is only ever legal on top of
     # `sensenova_mot_phase_eviction`, and only then to keep a TRAINED
@@ -303,6 +307,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "text_encoder_training": "text encoder training",
     "training_samples": "sample generation during training",
     "vae": "VAE settings",
+    "vae_swap": "VAE swap (training into another VAE's latent space)",
     "sensenova_mot_eviction": "SenseNova MoT phase eviction (with the four-phase backward split)",
     "sensenova_sample_kv_streaming": "SenseNova training-time sample KV cache streaming",
     "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
@@ -1169,6 +1174,39 @@ _add_training_feature_unsupported(
     "step-0 and periodic audio previews are not wired for ACE-Step; its training sample handler warns and returns None")
 
 # --- VAE --------------------------------------------------------------------
+# --- VAE swap ---------------------------------------------------------------
+# The mechanism is ArchHandler.apply_vae_swap driven by the architecture's
+# LatentIOSpec (VAE_SWAP_MIGRATION_DESIGN.md §5.1, §8.1). sd15 and sdxl declare
+# one; every entry below names what the architecture is still missing, and the
+# commit that lands that wave removes its entry.
+for _a in ("zimage", "krea2", "ltx2"):
+    _add_training_feature_unsupported(
+        _a, "vae_swap",
+        "this architecture declares no LatentIOSpec and its loader does not rebuild a backbone at a declared channel count, so a swap would leave the latent-facing layers at the native VAE's channel count (design phase P6)")
+for _a in ("anima", "flux2", "lens", "minit2i"):
+    _add_training_feature_unsupported(
+        _a, "vae_swap",
+        "this architecture declares no LatentIOSpec; flux2 and lens additionally normalise latents through the VAE's own BatchNorm, which the shared normalisation layer has to land before a swap can cross normalisation domains (design phases P5, P7)")
+_add_training_feature_unsupported(
+    "ideogram4", "vae_swap",
+    "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for Ideogram 4")
+_add_training_feature_unsupported(
+    "minimax_h3", "vae_swap",
+    "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for MiniMax-H3")
+_add_training_feature_unsupported(
+    "acestep", "vae_swap",
+    "ACE-Step's latent path runs through a frozen RVQ with a silence latent and per-chunk masks; replacing its autoencoder is outside the migration design's scope (§12)")
+# §10: SenseNova is the pixel -> latent case, and this entry does not come off
+# until that wave's acceptance conditions (§10.6) are met.
+_add_training_feature_unsupported(
+    "sensenova", "vae_swap",
+    "SenseNova is pixel-space, so a swap moves it INTO a latent space rather than between two: it changes the generation patch geometry and the fm_head, which is a research-stage change (design §10) and is refused until its acceptance conditions are met")
+for _a in ("sd15", "sdxl"):
+    _add_training_feature_unsupported(
+        _a, "vae_swap",
+        "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",
+        methods=["lora", "relora", "controlnet"])
+
 # --- Required config values -------------------------------------------------
 # SenseNova's training contract (SENSENOVA_TRAINING_DESIGN.md, "Full-parameter
 # preflight contract" and "Packed batches"), applied by train_runner from the

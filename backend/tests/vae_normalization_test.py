@@ -325,11 +325,9 @@ def test_the_normalisation_domains_may_now_be_crossed():
     assert vs.check_vae_compatibility(dict(bn, norm="shift_scale"), "flux2") == (True, None)
     assert vs.check_vae_compatibility(bn, "flux2") == (True, None)
 
-    # sd15/sdxl still render through custom_sampling's scalar scaling_factor,
-    # so the swap is refused for a GENERATION reason, not a normalisation one:
-    # the run would train for hours and then be unrenderable (P7 lifts this).
-    ok, reason = vs.check_vae_compatibility(bn, "sdxl")
-    assert ok is False and "cannot generate" in reason
+    # And into sd15/sdxl, whose sampler goes through it since P7.
+    assert vs.check_vae_compatibility(bn, "sdxl") == (True, None)
+    assert vs.check_vae_compatibility(dict(bn, norm="per_channel"), "sd15") == (True, None)
 
 
 # --- "no scaling factor" means unknown, never 1.0 ---------------------------

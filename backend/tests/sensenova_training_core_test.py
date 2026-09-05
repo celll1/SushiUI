@@ -102,6 +102,8 @@ def test_load_components_keeps_training_runtime_minimal():
         weight_dtype=torch.bfloat16,
         device=torch.device("cpu"),
         attention_backend="native",
+        # Read by the shared VAE-swap fold load_components now runs.
+        config={},
     )
     components = {
         "transformer": transformer,
@@ -316,7 +318,10 @@ def test_encode_prompt_phase_retry_and_success_transition():
 
 
 def test_pixel_encode_is_cpu_and_requires_32_alignment():
-    trainer = SimpleNamespace(training_dtype=torch.float32)
+    # The alignment is the tree's own token width (32px on the pixel model),
+    # not a constant, so the encode needs the transformer.
+    trainer = SimpleNamespace(training_dtype=torch.float32,
+                              transformer=_Transformer())
     encoded = vae_encode(trainer, torch.zeros(1, 3, 32, 64))
     assert encoded.device.type == "cpu"
     assert encoded.shape == (1, 3, 32, 64)

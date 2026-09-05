@@ -16185,6 +16185,17 @@ components:
             `vae_struct_native` does not distinguish. Present only when the
             checkpoint declares a swapped VAE.
           example: false
+        token_pixel_width:
+          type: integer
+          nullable: true
+          description: |
+            SenseNova U1.5 only: the pixel width one generation token covers,
+            which every canvas dimension must be a multiple of. 32 for the
+            pixel-space model; `4 * vae_scale_factor` for a checkpoint that
+            declares a swapped VAE, whose recommended token band therefore sits
+            at `(token_pixel_width / 32)^2` times the documented 3-5 MP.
+            Absent for every other architecture.
+          example: 32
         text_encoder_file:
           type: string
           nullable: true

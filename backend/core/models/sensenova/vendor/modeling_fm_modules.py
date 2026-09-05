@@ -1,4 +1,7 @@
-# SushiUI vendored copy — UNMODIFIED.
+# SushiUI vendored copy — MODIFIED: `ConvDecoder` takes its output channel count
+# and final PixelShuffle factor as arguments (docs/guides/VAE_SWAP_MIGRATION_DESIGN.md
+# §10.2). The defaults reproduce the upstream pixel head exactly (3 channels,
+# factor 8, conv2 out 192).
 #
 # Source: https://github.com/OpenSenseNova/SenseNova-U1, branch `feat/u1.5`
 #         (commit a1ce053d25835e0785a0869ca1c97e717212ef64), file
@@ -578,7 +581,7 @@ class PatchDecoder_preps1(nn.Module):
         return x
 
 class ConvDecoder(nn.Module):
-    def __init__(self, input_dim=4096, hidden_dim=1024):
+    def __init__(self, input_dim=4096, hidden_dim=1024, out_channels=3, shuffle=8):
         super().__init__()
         # layer 1: H/32 -> H/16 (2x upscale)
         self.ps1 = nn.PixelShuffle(2)
@@ -587,10 +590,12 @@ class ConvDecoder(nn.Module):
 
         # layer 2: H/16 -> H/8 (2x upscale)
         self.ps2 = nn.PixelShuffle(2)
-        self.conv2 = nn.Conv2d(hidden_dim // 4, 192, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(hidden_dim // 4, out_channels * shuffle * shuffle,
+                               kernel_size=3, padding=1)
 
-        # layer 3: H/8 -> H (8x upscale)
-        self.ps3 = nn.PixelShuffle(8)
+        # layer 3: the remaining k = gen_patch_size/4 upscale (8 in pixel space,
+        # 1 -- identity -- at the P=4 latent patch).
+        self.ps3 = nn.PixelShuffle(shuffle)
 
     def forward(self, x):
         x = self.act1(self.conv1(self.ps1((x))))

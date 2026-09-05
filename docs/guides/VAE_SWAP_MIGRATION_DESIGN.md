@@ -1,7 +1,9 @@
 # VAE差し替えフルFT（latent移行）設計
 
-Status: **P0〜P4 実装済み**（sd15/sdxl で学習・保存・再開・生成・アダプタゲートまで動作）。
-P5 以降は未実装。フェーズごとの到達点は §11 の表を参照。
+Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）だけは
+`TRAINING_FEATURE_UNSUPPORTED["sensenova"]["vae_swap"]` を閉じたままにしてあり、
+§10.6 の受け入れ条件のうち実重みを要する 2 つ（3 ステップ smoke と 1 枚生成）は未実施である。
+フェーズごとの到達点は §11 の表を参照。
 
 本書は §11 のフェーズ単位で実装・検証・コミットする
 前提で書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て
@@ -994,6 +996,40 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 - ViT `patch_embedding` のカーネルを 2、`fm_head.conv2` の出力を `C` で構築する（§10.2、
   `vae_scale_factor` に依らない）。`dense_embedding` と `ps1`/`ps2` は触らない。
 
+**実装で確定した点（P8）**: 実装が §10.5 の想定と食い違った箇所を、後続の実験が
+前提にできる形で残す。
+
+1. **共有 `resize_latent_io` は使えない。** 変形はチャネル軸のスライスではなく
+   *再構築*（ViT patch-embed はカーネルも 16×16 → 2×2 に変わる）なので、
+   `SENSENOVA_WIRING.latent_io` は `None` のままで、`SenseNovaArchHandler.apply_vae_swap`
+   が丸ごと override し `core/models/sensenova/latent_space.apply_latent_geometry` を呼ぶ。
+   `SENSENOVA_WIRING` の `latent_channels=0` / `vae_scale_factor=1` も pixel 版の記述として
+   残し、run 固有の値は P7 の minit2i と同じく `resolve_wiring` が答える（§10.5 は
+   「`latent_channels=0` を緩める」と書いていたが、緩めるのは定数ではなく解決経路である）。
+2. **`ComponentWiringSpec.pixel_align` は存在しない。** `pixel_align` は `ArchHandler` の
+   クラス属性で、still 画像の bucketing は `arch.pixel_align` だけを読む。SenseNova は
+   これをロード済みツリーから読む property にした（`gen_patch_size × gen_vae_scale_factor`）。
+3. **`vae_scale_factor` は config キーではなくスタンプ。** 数値の住所は
+   `component.vae.scale_factor`（§5.2）1 箇所であるべきなので、`NeoChatConfig` に足したのは
+   `gen_patch_size`/`gen_in_channels` の 2 つだけで、縮小率はローダが
+   `transformer.gen_vae_scale_factor` に書く。ローダは config ブロックと component ブロックの
+   不一致（チャネル数・patch）をロード前に拒否する（`_assert_declared_latent_geometry`）。
+4. **`_assert_pixel_head_fm_decoder` は緩める必要が無かった。** これはヘッドの*種類*
+   （ConvDecoder か deep/plain か）を見ており、latent 版も ConvDecoder のままである。
+5. **`_t2i_predict_v` は `image_size` の意味を変えず、任意引数 `token_hw` を足した。**
+   `image_size` は画素、生成格子は潜在なので、両者を同じ引数で表すと黙って形が狂う。
+   `SenseNovaPrefix` は `gen_size`（潜在格子の W,H）を持ち、denoise ループはそれを使う。
+6. **`sensenova_train_fm_modules` の required value を宣言するには `arch_capabilities` の
+   不変条件を method 単位にする必要があった。** 同じキーが LoRA では
+   `TRAINING_FEATURE_UNSUPPORTED` に載っており、旧来の assert は method スコープを見ずに
+   両表の同居を禁じていた。スコープが交わらないなら同居できる、に直した。
+   要求は「rebuild が実際に走るとき」だけで、既に latent 版の base を学習し直す run
+   （層は学習済み）には課さない。
+7. RePaint のマスクは画素解像度でぼかしてから潜在格子へ area-average する
+   （§10.5 の「s 倍縮小」の具体化）。羽根の*画素*幅が要求どおりに保たれる。
+8. 推奨解像度帯のリテラル（3〜5 MP）は `latent_space.resolution_band_mp` に移し、
+   生成側の警告とテストが同じ式を読む。
+
 ### 10.6 受け入れ条件（研究段階のゲート）
 
 1. §6.6 相当の性質テストは適用不能（変形が部分コピーでない）。代わりに「形状不変テンソル
@@ -1032,7 +1068,7 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 | ✅ **P5 共有正規化層**（93a73f93 / 556febc6）| `normalize(spec)` 3 方式と正規化領域 `vae_norm_pack`（§8.4）、flux2/lens ops の「normalize → backbone patchify」2 段化、anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除、§7.4 の BN 系ゲート解除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype）。sdxl に flux2 由来の 32ch BN VAE（`registry`/`file`）を当てて `normalize` の出力が 32ch で、flux2 経路で BN 適用後に unpack した値と一致 | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
 | ✅ **P6 第2波（zimage/krea2）**（ltx2 は別理由で拒否継続）| `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除。**ltx2 は解除しない**: full FT 保存が `net.` prefix の safetensors を書くが、これを読むローダが無い（`detect_model_type` は ltx2 を diffusers ディレクトリとしてのみ認識する）ため、学習できて生成できない成果物になる（556febc6 と同じ判断）。`ComponentWiringSpec.vae_scale_temporal`（P2a が保留した判断）は本波で追加し、ltx2=8 / minimax_h3=4 を宣言する — 宣言の無い 5-D arch（anima）は従来どおり拒否する。krea2 は `in_channels` がパック後の幅（C·p²）なので `LatentIOSpec.config_channels_packed` で区別する | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は入出力とも `inner` 順の唯一の実例 |
 | ✅ **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合。実装で 3 点が設計と食い違った: (a) `config_channels_packed` は**入出力で別フラグ**が要る（lens は `in_channels=128` がパック後・`out_channels=32` が生、`vendor/transformer.py:426-451`）ので `config_in_channels_packed` / `config_out_channels_packed` に分割した。flux2 は両側パック（`patch_size=1`、2×2 パックは transformer の外）。(b) anima の `vae_scale_temporal` を 4 と宣言（`QWEN_IMAGE_VAE_CONFIG.temperal_downsample` の True 2 個）。宣言前は全候補が「比較対象が無い」で拒否されていた。(c) **minit2i の潜在ジオメトリは arch 定数ではなくチェックポイント単位の config 値**（pixel 3ch/patch16 と latent 4-or-16ch/patch2）なので、`MINIT2I_WIRING` を読む `vae_source.arch_native_vae` は latent 版にも pixel の拒否を返す。`ArchHandler.resolve_wiring` / `ArchHandler.check_vae_compatibility` の 2 フックを足し、minit2i だけが base の config（`minit2i_loader.peek_io_config`、preflight では `base_model_path` から）で答える。pixel → latent は patch_size も変わるので従来どおり拒否 | `tests/vae_swap_wave3_test.py`（CPU のみ、実重み不要）: 4 arch の両方向 resize、anima の padding-mask 行移動・`pos_embedder` 不変・**両側同順序なら落ちるケース**、lens の非対称 config 往復、minit2i の P 解決（pixel の 768=256·3 が P=4 でも割り切れることを含む）、各 arch の保存 → `load_declared_latent_io` 再読、preflight の capability 強制 | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
-| **P8 SenseNova** | §10 全体（`P = 4` 固定、任意の `vae_scale_factor`。トークン幅 `4 × vae_scale_factor` 由来の配線 §10.5 を含む） | §10.6（8× と 16× の VAE それぞれで） | 高。研究段階 |
+| **P8 SenseNova**（実装済み・ゲートは閉じたまま）| §10 全体（`P = 4` 固定、任意の `vae_scale_factor`。トークン幅 `4 × vae_scale_factor` 由来の配線 §10.5 を含む）。実装と設計の食い違いは §10.5 末尾の 8 点 | `tests/sensenova_latent_migration_test.py`（CPU のみ、実重み不要）: 形が変わるのは 2 テンソルだけで 8×/16× で同形状、他の全テンソルが bit 同一、ゼロヘッドと切断正規分布、128 セル格子＝1024 トークンで `fm_head` 出力が潜在格子、保存→再ロードで形状不変テンソルが bit 同一＋VAE 同梱、`t` 両端の `v` ノルム、step 0 の上流勾配ゼロ／step 1 で有限非ゼロ、ゲートが閉じていること。**未達**: §10.6-3 の 3 ステップ smoke と §10.6-4 の 1 枚生成は 16.2B の実重みと GPU が要る | 高。研究段階 |
 | 保留 | acestep（§6.4） | — | RVQ 再学習を含み本書の範囲外 |
 
 各フェーズのコミット前に `git diff --cached` の比較レビュー（CLAUDE.md 大規模変更手順）と、

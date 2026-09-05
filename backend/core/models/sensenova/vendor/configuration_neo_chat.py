@@ -1,4 +1,7 @@
-# SushiUI vendored copy — UNMODIFIED.
+# SushiUI vendored copy — MODIFIED: `NEOChatConfig` accepts `gen_patch_size` and
+# `gen_in_channels`, the generation branch's own patch width and channel count
+# (docs/guides/VAE_SWAP_MIGRATION_DESIGN.md §10.2). `None` reproduces the
+# upstream pixel geometry exactly.
 #
 # Source: https://github.com/OpenSenseNova/SenseNova-U1, branch `feat/u1.5`
 #         (commit a1ce053d25835e0785a0869ca1c97e717212ef64), file
@@ -154,6 +157,8 @@ class NEOChatConfig(PretrainedConfig):
         use_llm_lora=0,
         downsample_ratio=0.5,
         template=None,
+        gen_patch_size=None,
+        gen_in_channels=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -178,6 +183,13 @@ class NEOChatConfig(PretrainedConfig):
         self.use_llm_lora = use_llm_lora
         self.downsample_ratio = downsample_ratio
         self.template = template
+        # SushiUI: the GENERATION branch's patch width and channel count, read
+        # only by the generation patchify/unpatchify, the gen ViT patch embed and
+        # the fm_head. `None` = the pixel geometry (patch_size*merge_size, 3).
+        # `patch_size`/`downsample_ratio` stay the understanding tower's and the
+        # reference path's (design §10.1-10.2).
+        self.gen_patch_size = None if gen_patch_size is None else int(gen_patch_size)
+        self.gen_in_channels = None if gen_in_channels is None else int(gen_in_channels)
         self.tie_word_embeddings = self.llm_config.tie_word_embeddings
 
     @property

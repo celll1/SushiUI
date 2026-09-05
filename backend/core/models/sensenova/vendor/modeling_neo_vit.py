@@ -1,4 +1,11 @@
-# SushiUI vendored copy — UNMODIFIED.
+# SushiUI vendored copy — MODIFIED: two changes.
+#   1. `NEOVisionEmbeddings.forward` reshapes its flat patches with
+#      `config.num_channels` instead of a literal 3, so the generation branch's
+#      copy can face a latent (docs/guides/VAE_SWAP_MIGRATION_DESIGN.md §10.2).
+#      Identical for the shipped 3-channel config.
+#   2. The RoPE caches are non-persistent buffers built lazily on the first real
+#      device (see `_ensure_rope_cache`), because Transformers 5 constructs on
+#      the meta device.
 #
 # Source: https://github.com/OpenSenseNova/SenseNova-U1, branch `feat/u1.5`
 #         (commit a1ce053d25835e0785a0869ca1c97e717212ef64), file
@@ -182,9 +189,9 @@ class NEOVisionEmbeddings(nn.Module):
         
     def forward(self, pixel_values: torch.FloatTensor, grid_hw=None) -> torch.Tensor:
         
-        pixel_values = pixel_values.view(  # 
+        pixel_values = pixel_values.view(  #
             -1,
-            3,
+            self.config.num_channels,
             self.patch_size,
             self.patch_size,
         )   #  [28072, 768] -> [28072, 3, 16, 16]

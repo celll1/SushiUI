@@ -207,6 +207,16 @@ def prepare_style_reference(
     return ref_x0, eps_ref
 
 
+def vae_pixel_ndim(vae) -> int:
+    """Rank of the pixel tensor this VAE's encoder takes: 5 for the Qwen-Image
+    VAE's causal 3-D convolutions, 4 for a replacement 2-D image VAE (§7.4 only
+    admits one whose LATENT is 4-D, and Krea 2 works on a 4-D latent either way)."""
+    for module in getattr(vae, "encoder", vae).modules():
+        if isinstance(module, torch.nn.modules.conv._ConvNd):
+            return int(module.weight.ndim)
+    raise ValueError("cannot determine the pixel rank this VAE encodes")
+
+
 @torch.no_grad()
 def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int, device, dtype) -> torch.Tensor:
     """Encode a PIL image -> packed normalized latent (1, grid_h*grid_w, C*p*p)."""
@@ -214,14 +224,17 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int
         image = image.convert("RGB")
     image = image.resize((width, height), Image.LANCZOS)
     img_np = np.array(image).astype(np.float32) / 127.5 - 1.0
-    img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).unsqueeze(2)  # (1,3,1,H,W)
+    img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)  # (1,3,H,W)
+    if vae_pixel_ndim(vae) == 5:
+        img_t = img_t.unsqueeze(2)  # (1,3,1,H,W)
     img_t = img_t.to(device=device, dtype=vae.dtype)
 
     from core.models.components.vae_registry import normalize
 
-    latent = vae.encode(img_t).latent_dist.mode()  # (1, z_dim, 1, h, w)
+    latent = vae.encode(img_t).latent_dist.mode()  # (1, z_dim, [1,] h, w)
     latent = normalize(latent, vae)
-    latent = latent[:, :, 0]  # (1, z_dim, h, w)
+    if latent.ndim == 5:
+        latent = latent[:, :, 0]  # (1, z_dim, h, w)
     return pack_latents(latent, patch_size).to(dtype)
 
 
@@ -232,8 +245,12 @@ def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int, patch_size:
     from core.models.components.vae_registry import denormalize
 
     z = unpack_latents(latents, grid_h, grid_w, patch_size).to(vae.dtype)
+    if vae_pixel_ndim(vae) != 5:
+        z = z[:, :, 0]  # unpack_latents always returns (B, C, 1, H, W)
     z = denormalize(z, vae)
-    image = vae.decode(z, return_dict=False)[0][:, :, 0]  # (1, 3, H, W)
+    image = vae.decode(z, return_dict=False)[0]
+    if image.ndim == 5:
+        image = image[:, :, 0]  # (1, 3, H, W)
     image = image.clamp(-1.0, 1.0)
     image01 = (image + 1.0) / 2.0
     if color_flatten_strength and color_flatten_strength > 0:

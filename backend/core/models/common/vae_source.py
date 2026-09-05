@@ -385,7 +385,9 @@ def arch_native_vae(arch: Optional[str]) -> Optional[Dict[str, Any]]:
         "vae_class": VAE_CLASS_BY_ARCH.get(arch),
         "pixel_space": spec.latent_channels == 0,
     }
-    if spec.latent_ndim == 4:
+    if spec.vae_scale_temporal is not None:
+        native["scale_temporal"] = int(spec.vae_scale_temporal)
+    elif spec.latent_ndim == 4:
         native["scale_temporal"] = 1
     return native
 

@@ -89,11 +89,15 @@ def resize_latent_io(
             fresh += f
 
     if replaced:
+        # An arch whose in_channels/out_channels count PACKED features gets the
+        # packed number; writing the raw one rebuilds the layer P times too narrow.
+        declared = (new_channels * max(1, spec.pack_elems)
+                    if spec.config_channels_packed else new_channels)
         kwargs = {}
         if spec.in_module:
-            kwargs["in_channels"] = new_channels
+            kwargs["in_channels"] = declared
         if spec.out_module:
-            kwargs["out_channels"] = new_channels
+            kwargs["out_channels"] = declared
         for target in _sync_targets(module_root, replaced):
             _sync_channels(target, kwargs)
 

@@ -26,6 +26,9 @@ class ZImageArchHandler(ArchHandler):
         quantized_base_reason=QUANTIZED_ADDITIVE_PENDING,
     )
     wires_sample_step_progress = True
+    # trainer.transformer is BatchedZImageWrapperOptimized; all_x_embedder and the
+    # out_channels that unpatchify reads live on the wrapped module.
+    latent_io_root_attr = "transformer_original"
     pixel_align = 16  # vae_scale(8) * patch(2)
     # noisy = (1-t)*latents + t*noise via add_noise_unified(noise_process="flow")
     # (ops/zimage_ops.py train_step; default and only supported noise_process).

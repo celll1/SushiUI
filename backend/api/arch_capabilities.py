@@ -1176,13 +1176,13 @@ _add_training_feature_unsupported(
 # --- VAE --------------------------------------------------------------------
 # --- VAE swap ---------------------------------------------------------------
 # The mechanism is ArchHandler.apply_vae_swap driven by the architecture's
-# LatentIOSpec (VAE_SWAP_MIGRATION_DESIGN.md §5.1, §8.1). sd15 and sdxl declare
-# one; every entry below names what the architecture is still missing, and the
-# commit that lands that wave removes its entry.
-for _a in ("zimage", "krea2", "ltx2"):
-    _add_training_feature_unsupported(
-        _a, "vae_swap",
-        "this architecture declares no LatentIOSpec and its loader does not rebuild a backbone at a declared channel count, so a swap would leave the latent-facing layers at the native VAE's channel count (design phase P6)")
+# LatentIOSpec (VAE_SWAP_MIGRATION_DESIGN.md §5.1, §8.1). sd15, sdxl, zimage and
+# krea2 declare one and their loaders rebuild at a declared channel count; every
+# entry below names what the architecture is still missing, and the commit that
+# lands that wave removes its entry.
+_add_training_feature_unsupported(
+    "ltx2", "vae_swap",
+    "a swapped LTX-2.3 checkpoint could be trained but not rendered: the full fine-tune save writes net.*-prefixed weights that no loader reads back (detect_model_type recognises LTX-2.3 only as a diffusers directory), and there is no 5D VAE at LTX-2.3's 32x spatial / 8x temporal ratios to swap to. Its LatentIOSpec and temporal declaration are in place; the refusal is the missing reader, not the resize")
 for _a in ("anima", "flux2", "lens", "minit2i"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
@@ -1201,7 +1201,7 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "sensenova", "vae_swap",
     "SenseNova is pixel-space, so a swap moves it INTO a latent space rather than between two: it changes the generation patch geometry and the fm_head, which is a research-stage change (design §10) and is refused until its acceptance conditions are met")
-for _a in ("sd15", "sdxl"):
+for _a in ("sd15", "sdxl", "zimage", "krea2"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",

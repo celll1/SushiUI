@@ -10731,6 +10731,23 @@ class BaseTrainer(ABC):
         # Count total items
         total_items = sum(len(dataset.items) for dataset in datasets)
         processed_items = 0
+        last_progress_step = -1
+
+        def emit_progress(force: bool = False) -> None:
+            """Tick for every item, including the three that skip the encode below
+            (video clip, audio clip, already cached) -- a fully cached resume reaches
+            none of it. Throttled: a skip is fast and each tick commits a DB row."""
+            nonlocal last_progress_step
+            if progress_callback is None or processed_items == last_progress_step:
+                return
+            if not force and processed_items % 10:
+                return
+            last_progress_step = processed_items
+            progress_callback(
+                phase="latent_cache",
+                step=processed_items,
+                total=total_items,
+            )
 
         # This pre-training VAE encode phase does not need the training stack. If the
         # main model (U-Net/Transformer) + text encoders are left GPU-resident here they
@@ -10825,6 +10842,7 @@ class BaseTrainer(ABC):
                         except Exception as e:  # noqa: BLE001
                             print(f"{self.log_prefix} WARNING: video clip encode failed "
                                   f"({os.path.basename(str(item.get('video_path', '')))}): {e}")
+                        emit_progress()
                         continue
 
                     # Audio-clip item (Phase 8a, ACE-Step): item_type=="audio"
@@ -10854,6 +10872,7 @@ class BaseTrainer(ABC):
                         except Exception as e:  # noqa: BLE001
                             print(f"{self.log_prefix} WARNING: audio clip encode failed "
                                   f"({os.path.basename(str(item.get('audio_path', '')))}): {e}")
+                        emit_progress()
                         continue
 
                     # Check if already cached (skip if force_recache is False)
@@ -10863,6 +10882,7 @@ class BaseTrainer(ABC):
 
                     if not force_recache and cache.has_latent(image_path, width, height):
                         processed_items += 1
+                        emit_progress()
                         continue
 
                     # Load and encode image
@@ -10905,15 +10925,9 @@ class BaseTrainer(ABC):
                             torch.cuda.empty_cache()
 
                     processed_items += 1
+                    emit_progress()
 
-                    # Progress callback
-                    if progress_callback:
-                        progress_callback(
-                            phase="latent_cache",
-                            step=processed_items,
-                            total=total_items,
-                        )
-
+            emit_progress(force=True)
             # VAE stays on CPU (already there)
             log_verbose(f"[Latent Cache] Generation complete ({iteration_count} images encoded)")
         finally:
@@ -13933,6 +13947,15 @@ class BaseTrainer(ABC):
                                     step=idx,
                                     total=len(buffer_items)
                                 )
+
+                        # Terminal tick: the loop ticks on idx % 10 from a last
+                        # index of len - 1, so the bar stalls short of 100%.
+                        if progress_callback:
+                            progress_callback(
+                                phase="latent_cache",
+                                step=len(buffer_items),
+                                total=len(buffer_items)
+                            )
                     finally:
                         # Restore the training stack in a finally so an encode failure can
                         # never strand the model / TEs on CPU. Main model always returns to
@@ -14367,6 +14390,14 @@ class BaseTrainer(ABC):
                                     step=idx,
                                     total=len(buffer_items)
                                 )
+
+                        # Terminal tick: same idx % 10 shortfall as the prefill.
+                        if progress_callback:
+                            progress_callback(
+                                phase="latent_cache",
+                                step=len(buffer_items),
+                                total=len(buffer_items)
+                            )
 
                         # Log summary of corrupted images
                         if corrupted_images:

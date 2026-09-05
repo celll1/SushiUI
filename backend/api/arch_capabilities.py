@@ -1235,7 +1235,7 @@ _add_training_required_value(
     "overwritten rather than refused: SenseNova's prompt encoder is the understanding branch of the same LLM that denoises, so the prompt prefix is built inside the training step and there is no separate encoder to swap or cache")
 _add_training_required_value(
     "sensenova", "latent_encoding_mode", "onthefly_gpu",
-    "overwritten rather than refused: SenseNova is pixel-space and has no VAE, so there are no latents to cache or swap for")
+    "overwritten rather than refused: natively the sample IS the [-1,1] RGB image and there is no VAE, so a disk cache or a swap buffer would only park full-resolution pixels. After a VAE swap there ARE latents to buffer, and the overwrite holds for a second reason instead: both buffered modes run their encode with the main model offloaded and then call _relocate_main_model_optimizer_state(device), which moves every optimizer state tensor of a trained parameter onto the GPU -- including the pinned host buffers optimizer_state_host_resident allocates, which is the condition the two ring-buffer optimizers are admitted under at all (a measured 15.09 / 30.19 GiB over both MoT halves) -- and, with sensenova_mot_phase_eviction off, would additionally move the 16.2B MoT model itself host-ward once per epoch and once per swap refill. Neither excursion has been measured on this route, and the run it would break is the only one that can carry a swap (vae_swap is full_finetune-only here)")
 
 _add_training_required_value(
     "sensenova", "sensenova_train_fm_modules", True,

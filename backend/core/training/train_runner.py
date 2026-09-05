@@ -2071,7 +2071,10 @@ def update_training_progress(
         elif phase == "crop_precompute":
             run.phase_detail = f"Planning crop schedule: {step}/{total} images"
         elif phase == "latent_cache":
-            run.phase_detail = f"Generating latent cache: {step}/{total} items"
+            # The phase KEY is stable, the wording is not a cache claim: only
+            # pre_encoded_cache writes one. swap_onthefly emits this phase for an
+            # in-memory buffer it discards every interval.
+            run.phase_detail = f"Encoding latents: {step}/{total} items"
         elif phase == "text_encoder_cache":
             run.phase_detail = f"Encoding captions: {step}/{total} captions"
         elif phase == "sampling":

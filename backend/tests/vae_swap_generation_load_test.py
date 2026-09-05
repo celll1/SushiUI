@@ -177,7 +177,7 @@ def test_the_loaded_identity_reaches_current_model_info(tmp_path, loader):
     assert fields["vae_provenance"] == "file:flux1_vae.safetensors"
     assert fields["vae_identity_native"] is False
     assert fields["vae_struct_native"] is False
-    assert fields["vae_hash"] == vs.content_hash_for_state_dict(vae.state_dict())
+    assert fields["vae_hash"] == vs.load_declared_latent_io(path, arch="sdxl").latent_hash
     # What the sampler, the override gate and /models/current all read.
     assert manager._sushi_wiring.latent_channels == 16
 
@@ -327,13 +327,12 @@ def test_the_feature_is_declared_with_its_arming_key_and_a_label():
 
 
 def test_only_the_landed_waves_can_swap_and_only_by_full_finetune():
-    """Waves 1 (sd15/sdxl), 2 (zimage/krea2) and 3 (anima/flux2/lens/minit2i).
-    ltx2 is wave 2's refusal."""
+    """All landed waves, including SenseNova; LTX2 remains refused."""
     from api.arch_capabilities import (
         TRAINING_DECLARED_ARCHS, training_feature_unsupported_reason,
     )
     landed = {"sd15", "sdxl", "zimage", "krea2",
-              "anima", "flux2", "lens", "minit2i"}
+              "anima", "flux2", "lens", "minit2i", "sensenova"}
     for arch in sorted(landed):
         assert training_feature_unsupported_reason(
             arch, "vae_swap", "full_finetune") is None

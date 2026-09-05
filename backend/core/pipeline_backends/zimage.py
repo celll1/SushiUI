@@ -26,6 +26,7 @@ from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 import time as _time
 from core.inference.generation_timing import generation_timer
+from core.models.components.vae_registry import normalize, denormalize
 
 
 def _is_lora_target(module) -> bool:
@@ -1193,12 +1194,7 @@ class ZImageMixin:
                 noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
                 init_latents = mean + std * noise
 
-                # Z-Image VAE scaling factor (apply scaling and shift)
-                if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
-                    init_latents = init_latents * vae.config.scaling_factor
-                else:
-                    # Fallback: assume standard scaling
-                    init_latents = init_latents * 0.13025
+                init_latents = normalize(init_latents, vae)
 
                 # Clean up intermediate tensors
                 del h, mean, logvar, std
@@ -1633,11 +1629,7 @@ class ZImageMixin:
                 noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
                 init_latents = mean + std * noise
 
-                # Z-Image VAE scaling factor
-                if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
-                    init_latents = init_latents * vae.config.scaling_factor
-                else:
-                    init_latents = init_latents * 0.13025
+                init_latents = normalize(init_latents, vae)
 
                 # Store original latents for mask blending
                 original_latents = init_latents.clone()
@@ -2064,7 +2056,7 @@ class ZImageMixin:
         """VAE-encode a style reference image to the SAME (non-packed) latent shape used by
         the Z-Image denoising loop's own ``latents`` tensor -- ``(1, C, H_lat, W_lat)`` -- using
         the identical encode path as img2img/inpaint's own init-image encoding (encoder ->
-        quant_conv -> mean/logvar reparameterize -> scaling_factor). Returns a float32 tensor
+        quant_conv -> mean/logvar reparameterize -> normalisation). Returns a float32 tensor
         (the "clean" x0 reference latent, re-noised per-step by ``_zimage_style_step``)."""
         import numpy as np
         from PIL import Image as PILImage
@@ -2086,10 +2078,7 @@ class ZImageMixin:
             std = torch.exp(0.5 * logvar)
             noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
             ref_x0 = mean + std * noise
-            if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
-                ref_x0 = ref_x0 * vae.config.scaling_factor
-            else:
-                ref_x0 = ref_x0 * 0.13025
+            ref_x0 = normalize(ref_x0, vae)
             del h, mean, logvar, std
         return ref_x0.float()
 
@@ -2914,9 +2903,7 @@ class ZImageMixin:
         print(f"[Z-Image] Decoding latents with VAE on {device}")
         self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
 
-        # Apply VAE scaling and shift
-        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
-        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        latents = denormalize(latents.to(vae.dtype), vae)
 
         # Decode latents
         with torch.no_grad():

@@ -103,7 +103,7 @@ class BaseLatentIdentity:
         return cls(
             latent_channels=_channels(facts.get("latent_channels")),
             vae_type=facts.get("family") or facts.get("vae_type") or None,
-            vae_hash=facts.get("content_hash") or facts.get("vae_hash") or None,
+            vae_hash=facts.get("latent_hash") or facts.get("content_hash") or facts.get("vae_hash") or None,
             struct_native=_flag(facts.get("struct_native",
                                           facts.get("vae_struct_native"))),
             identity_native=_flag(facts.get("identity_native",

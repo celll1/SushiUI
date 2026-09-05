@@ -3778,7 +3778,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if identity:
                 fields.update({
                     "vae_type": swap_vae_type,
-                    "vae_hash": identity.get("content_hash"),
+                    "vae_hash": identity.get("latent_hash") or identity.get("content_hash"),
                     "vae_provenance": identity.get("provenance"),
                     "vae_struct_native": bool(identity.get("struct_native")),
                     "vae_identity_native": bool(identity.get("identity_native")),

@@ -39,7 +39,8 @@ from core.attention import AttentionMode, to_diffusers_backend
 from core.models.common.vae_source import load_declared_latent_io
 from core.training.arch import get_arch_handler
 from core.training.vae_swap import (
-    apply_configured_vae_swap, check_swap_method, resolve_vae_swap_source,
+    apply_configured_vae_swap, check_swap_method, legacy_vae_type_marker,
+    resolve_vae_swap_source,
 )
 
 from .training_method import is_full_finetune, resolve_training_method
@@ -199,7 +200,6 @@ def load_components(trainer) -> None:
     # The base's own declaration first (it defines the latent space the weights
     # already live in), then this run's swap on top of it.
     trainer.base_vae_identity = declared
-    trainer.sdxl_vae_type = "sdxl"
     if declared is not None:
         get_arch_handler(trainer).apply_vae_swap(trainer, declared,
                                                  module=declared_module)
@@ -211,12 +211,8 @@ def load_components(trainer) -> None:
     if swap_source:
         apply_configured_vae_swap(trainer, swap_source)
 
-    _identity = getattr(trainer, "vae_identity", None)
-    if _identity is not None and not _identity.identity_native:
-        # Legacy marker the SDXL adapter still writes (sushi.vae_type) and the
-        # inference loader still reads; only a registry family is expressible.
-        if _identity.form == "registry":
-            trainer.sdxl_vae_type = _identity.family
+    trainer.sdxl_vae_type = legacy_vae_type_marker(
+        getattr(trainer, "vae_identity", None))
     try:
         trainer.vae_latent_channels = int(trainer.vae.config.latent_channels)
     except Exception:

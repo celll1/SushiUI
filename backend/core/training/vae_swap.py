@@ -30,6 +30,21 @@ def resolve_vae_swap_source(config: Dict[str, Any]) -> str:
     return source or legacy_source_from_config(config)
 
 
+def legacy_vae_type_marker(resolved: Optional[Any]) -> str:
+    """What ``sdxl_vae_type`` may hold for this identity (``"sdxl"`` = no swap).
+
+    The SDXL adapter writes this value straight back out as ``sushi.vae_type``,
+    which can only name a registry family: a ``file:``/``model:`` VAE has no
+    legacy spelling, and writing ``"custom"`` there would make the next load
+    resolve ``registry:custom``. Such a run declares itself through
+    ``component.vae.*`` alone.
+    """
+    if (resolved is None or resolved.identity_native
+            or resolved.form != "registry"):
+        return "sdxl"
+    return str(resolved.family)
+
+
 def check_swap_method(source: str, method: str) -> None:
     """§8.3: a swap rebuilds the latent-facing layers, which only a full
     fine-tune trains and saves. Refuse every other method."""

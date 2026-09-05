@@ -42,15 +42,20 @@ resume exists to preserve.
 
 Why replacing ``base_lrs`` is schedule-preserving
 -------------------------------------------------
-Every scheduler this project builds is a ``LambdaLR``: all seven types from
-``diffusers.optimization.get_scheduler`` are, and so is the in-house
-``plateau_cosine_floor`` (``BaseTrainer._build_plateau_cosine_floor_scheduler``).
-For a ``LambdaLR``, ``lr = base_lr * f(last_epoch)`` -- ``base_lrs`` is purely a
-scale, so replacing it rescales the schedule without moving along it. No
-adaptive scheduler (``ReduceLROnPlateau``-style), whose state would legitimately
-carry the LR itself, is constructed anywhere in this codebase. For anything that
-is not a ``LambdaLR`` the multiplier is skipped and the plain base LR is written,
-which is the pre-existing behaviour.
+``BaseTrainer`` builds every schedule through
+``lr_schedules.build_lr_scheduler``, which always returns a ``LambdaLR``, and
+``VaeTrainer`` uses ``diffusers.optimization.get_scheduler``, all of whose types
+are one too. For a ``LambdaLR``, ``lr = base_lr * f(last_epoch)`` -- ``base_lrs``
+is purely a scale, so replacing it rescales the schedule without moving along
+it. No adaptive scheduler (``ReduceLROnPlateau``-style), whose state would
+legitimately carry the LR itself, is constructed anywhere in this codebase.
+
+One exception survives P0: ``ReLoRATrainer.setup_optimizer`` discards what it
+just built and installs ``CosineWithMultipleWarmups``, an ``_LRScheduler``
+subclass with no ``lr_lambdas``. There the multiplier is skipped and the plain
+base LR is written -- the pre-existing behaviour, and the same fallback any
+other non-``LambdaLR`` would get. P4 of docs/guides/LR_SCHEDULER_DESIGN.md
+brings ReLoRA into the registry and removes the exception.
 """
 
 from __future__ import annotations

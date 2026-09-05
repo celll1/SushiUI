@@ -162,7 +162,7 @@ def _resume_raw(opt_state, sched_state, cfg_lr, lr_lambda=_constant_lambda,
 
 def _plateau_cosine_floor_lambda(W=WARMUP, T=TOTAL, floor_ratio=0.25,
                                  decay_start_ratio=0.85):
-    """The multiplier of BaseTrainer._build_plateau_cosine_floor_scheduler.
+    """The plateau_cosine_floor multiplier (now lr_schedules.make_lambda).
 
     Kept as a literal copy rather than imported: the point of the numbers below
     is that they are the real shape run112-class configs use, and a silent

@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **設計のみ。未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 実装済み（§18）。P1 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -849,3 +849,46 @@ VAE の `lr_scheduler.pt` 方式は維持し、その中に version / events / s
 保存する。復元は timeline→scheduler state→LR 再表明の順とし、旧形式は移行する。
 拒否行列のうち constant + warmup の拒否だけは §4.2 の新仕様に合わせて外す。
 P7 を語彙の import 変更だけで済ませず、resume と延長の実経路テストを必要条件とする。
+
+---
+
+## 18. P0 で出荷した挙動変更（2026-09-06）
+
+P0 は `backend/core/training/lr_schedules.py` を新設し、`base_trainer.py` の 2 構築点を
+`build_lr_scheduler()` に置き換え、`_build_plateau_cosine_floor_scheduler` を削除した。
+互換ケース（§17.2）の乗数は diffusers `get_scheduler` の `lr_lambdas[0]` と bit 同一で、
+`plateau_cosine_floor` は削除した実装と bit 同一（`backend/tests/lr_schedules_test.py`）。
+以下は**意図した挙動変更**であり、bit 同一の対象外である。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| `constant` + `lr_warmup_steps > 0` | warmup しない（diffusers の `constant` 分岐は `num_warmup_steps` を受け取らない、`optimization.py:323-324`） | `constant_with_warmup` と同一曲線で warmup する | `lr_scheduler: constant` かつ `lr_warmup_steps > 0`。既定は `constant` / `0` なので既定 run は不変 |
+| スケジューラ軸 | 構築 `T` は global_step 単位、resume は `last_epoch = global_step`。`gas > 1` では scheduler が `T/gas` 回しか進まないのに曲線は `T` で定義されていた（§1-3） | `T_sched = floor(T/gas)`。resume 位置は state.json の `scheduler_step`（無い旧 state のみ `global_step // gas` 推定＋警告 `lr_schedule_position_estimated`） | `gradient_accumulation_steps > 1` の run。resume 後の位置と減衰の速さが変わる |
+| `total_steps < gradient_accumulation_steps` | optimizer が一度も step せず、無言で「何も学習しない run」になる | `setup_optimizer` で `ValueError`（開始前） | 該当設定のみ |
+| `cosine` の `s > T` | 余弦が再上昇する（`optimization.py:178-182`） | 終端値 0 を保持 | 延長や MNT 再計算で `T_sched` を越えて走る run |
+| `polynomial` の床 | `1e-7 / optimizer.defaults['lr']`（実装の帰結で、設計上の選択ではなかった） | **同じ値をそのまま移植**（変更ではない。明示床への移行は P3） | なし |
+
+state.json に 4 キーを追加した（読み側は欠落を後方互換に扱う）:
+`lr_schedule_version`, `scheduler_step`, `gradient_accumulation_steps`,
+`lr_scheduler_advance_interval`。新しい警告コードは
+`lr_schedule_position_estimated` と `lr_schedule_accumulation_changed`。
+
+P0 が**やっていない**こと: 実行時タイムライン（`ScheduleTimeline` は
+`total_steps(at=0)` だけの stub で、2 件目の `total_steps` は `NotImplementedError`）、
+延長耐性、床の一般化、`wsd`/`rex`/in-house restart、ReLoRA の統合、API・UI・YAML の変更。
+`lr_scheduler` の語彙検証（D18）も P3 のままなので、未知名は `resolve_spec` の
+`ValueError` として構築時に落ちる（従来は diffusers の `SchedulerType` が落としていた）。
+
+### 18.1 §17 が実コードと合わなかった点
+
+- **fused backward / fused optimizer groups の有効間隔は 1 ではない。** §17.1 は
+  「蓄積を無視するので有効間隔は 1、scheduler も各 backward で 1 回進める」としているが、
+  実際の `scheduler.step()` は fused でも `global_step % gas == 0` の seam の中にある
+  （`base_trainer.py` の optimizer step 分岐）。既存の警告文（`_warn_gradient_accumulation_ignored_under_fused`）も
+  「LR schedule still advances once per {accum} backward passes」と明言している。
+  したがって `T_sched = floor(T/gas)` は fused 経路でも同じであり、P0 は間隔を
+  1 に変えていない。変えるなら `scheduler.step()` の呼び出し位置を動かす別の挙動変更になる。
+- **`global_step // gas` は「移行推定」であって旧挙動そのものではない。** 旧 fast-forward は
+  `last_epoch = global_step` を書いていたので、`gas > 1` の旧チェックポイントは
+  推定値でも旧値でもない位置から再開する。これは §1-3 の不一致の解消であり、
+  上表 2 行目に含まれる。

@@ -91,13 +91,13 @@ def resize_latent_io(
     if replaced:
         # An arch whose in_channels/out_channels count PACKED features gets the
         # packed number; writing the raw one rebuilds the layer P times too narrow.
-        declared = (new_channels * max(1, spec.pack_elems)
-                    if spec.config_channels_packed else new_channels)
+        # The two sides are asked separately: lens counts one of them each way.
+        packed = new_channels * max(1, spec.pack_elems)
         kwargs = {}
         if spec.in_module:
-            kwargs["in_channels"] = declared
+            kwargs["in_channels"] = packed if spec.config_in_channels_packed else new_channels
         if spec.out_module:
-            kwargs["out_channels"] = declared
+            kwargs["out_channels"] = packed if spec.config_out_channels_packed else new_channels
         for target in _sync_targets(module_root, replaced):
             _sync_channels(target, kwargs)
 
@@ -157,40 +157,52 @@ def _resolve(root: Any, path: str) -> Tuple[Any, str, nn.Module]:
 
 
 def _sync_targets(root: Any, replaced: List[str]) -> List[Any]:
-    """``root`` plus each replaced module's parent, deduped by identity.
+    """``root`` plus every module on the path to each replaced layer, deduped by
+    identity.
 
-    The parent matters because some archs keep the channel count next to the
-    layer (minit2i's ``FinalLayer.out_channels``) and some at the root
-    (zimage's ``out_channels``, read by ``unpatchify``).
+    Archs keep the channel count at different depths: next to the layer
+    (minit2i's ``FinalLayer.out_channels``), at the root (zimage's
+    ``out_channels``, read by ``unpatchify``), or on an intermediate module
+    (minit2i's ``model.net.cfg.in_channels``, also read by ``unpatchify``, which
+    is neither the root nor a parent of either replaced layer).
     """
     targets: List[Any] = [root]
     for path in replaced:
-        parent, _attr, _mod = _resolve(root, path)
-        if not any(parent is t for t in targets):
-            targets.append(parent)
+        node = root
+        for part in path.split(".")[:-1]:
+            node = getattr(node, part)
+            if not any(node is t for t in targets):
+                targets.append(node)
     return targets
 
 
 def _sync_channels(target: Any, kwargs: dict) -> None:
     if hasattr(target, "register_to_config"):
         target.register_to_config(**kwargs)
-        return
-    for key, value in kwargs.items():
-        if hasattr(target, key):
-            try:
-                setattr(target, key, value)
-            except Exception:
-                pass
-    # "cfg" as well as "config": minit2i's MMJiT keeps its channel count in
-    # `self.cfg.in_channels`, which `unpatchify` reads.
-    for config_attr in ("config", "cfg"):
-        config = getattr(target, config_attr, None)
-        if config is None:
-            continue
+    else:
         for key, value in kwargs.items():
-            if hasattr(config, key):
+            if hasattr(target, key):
                 try:
-                    setattr(config, key, value)
+                    setattr(target, key, value)
+                except Exception:
+                    pass
+        config = getattr(target, "config", None)
+        if config is not None:
+            for key, value in kwargs.items():
+                if hasattr(config, key):
+                    try:
+                        setattr(config, key, value)
+                    except Exception:
+                        pass
+    # `cfg` as well: minit2i keeps a SECOND copy of the channel count in
+    # `MMJiT.cfg`, which `unpatchify` reads, and its ConfigMixin wrapper carries
+    # both. Syncing only the diffusers config leaves the reshape at the old C.
+    cfg = getattr(target, "cfg", None)
+    if cfg is not None:
+        for key, value in kwargs.items():
+            if hasattr(cfg, key):
+                try:
+                    setattr(cfg, key, value)
                 except Exception:
                     pass
 

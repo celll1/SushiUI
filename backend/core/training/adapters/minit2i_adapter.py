@@ -235,11 +235,19 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
         # (vae_type="none") has no VAE, so this is a no-op there. Uses the sushiUI-v2
         # common ``vae.`` prefix (VAE_PREFIX).
         from api.param_defaults import resolve_bundle_vae
-        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "minit2i")
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
+        bundle_vae = (swap_bundled if swapped is not None else resolve_bundle_vae(
+            getattr(trainer, "bundle_vae", None), "minit2i"))
         vae_to_bundle = trainer.vae if (bundle_vae and getattr(trainer, "vae", None) is not None) else None
+        if swapped is not None and not swap_bundled:
+            print(f"[MiniT2IFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                  f"not bundled; resolved on load via {swapped.locator}")
+        extra = {"step": str(step), "epoch": str(epoch)}
+        extra.update(swap_md)
         save_single_file(str(output_path), trainer.transformer, variant=variant,
                          text_encoder=text_encoder, vae=vae_to_bundle,
-                         extra_metadata={"step": str(step), "epoch": str(epoch)})
+                         extra_metadata=extra)
         print(f"[MiniT2IFullParameterAdapter] Saved single-file "
               f"({'transformer+FLAN-T5' if text_encoder is not None else 'transformer'}) -> {output_path}")
 

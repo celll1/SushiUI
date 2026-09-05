@@ -297,12 +297,17 @@ def _unpatchify(latents: torch.Tensor) -> torch.Tensor:
 
 
 def prepare_latents(
-    height: int, width: int, dtype: torch.dtype, device, seed: Optional[int] = None
+    height: int, width: int, dtype: torch.dtype, device, seed: Optional[int] = None,
+    channels: int = 32,
 ) -> torch.Tensor:
-    """Random noise latents for txt2img.  Shape: (1, latent_h * latent_w, 128)."""
+    """Random noise latents for txt2img. Shape: (1, latent_h * latent_w, C * 4).
+
+    ``channels`` is the RAW latent channel count; a VAE-swapped checkpoint's is
+    not Lens's native 32, and the sequence width is 4x it (2x2 packing).
+    """
     latent_h = height // 16
     latent_w = width // 16
-    shape = (1, latent_h * latent_w, 128)
+    shape = (1, latent_h * latent_w, channels * 4)
     generator = None
     if seed is not None and seed >= 0:
         generator = torch.Generator(device=device).manual_seed(seed)

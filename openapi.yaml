@@ -6333,6 +6333,21 @@ paths:
           schema:
             type: string
           example: sdxl
+        - name: base_model_path
+          in: query
+          required: false
+          description: |
+            The run's base checkpoint, for an architecture whose latent geometry
+            is a per-checkpoint config value rather than an architecture
+            constant. `minit2i` is the one such architecture: the same
+            architecture ships pixel-space checkpoints (3 channels, patch 16)
+            and latent ones (4 or 16 channels, patch 2), and only the file says
+            which. Omitted, every `minit2i` candidate comes back
+            `compatible: false` with that as the reason; every other
+            architecture answers identically with or without it.
+          schema:
+            type: string
+          example: 'M:/model/minit2i/b16_flux1.safetensors'
       responses:
         '200':
           description: Candidate VAE sources, grouped by form

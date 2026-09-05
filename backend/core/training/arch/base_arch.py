@@ -598,6 +598,28 @@ class ArchHandler(ABC):
         """Was ``_load_<arch>_components`` (base_trainer.py:1122+)."""
         raise NotImplementedError
 
+    def resolve_wiring(self, trainer) -> "ComponentWiringSpec":
+        """This RUN's wiring, before any swap is folded in.
+
+        The arch constant for every architecture whose latent geometry is fixed
+        by the architecture. MiniT2I overrides it because ITS geometry is a
+        per-checkpoint config value (pixel 3ch/patch 16 vs latent 4-or-16ch/patch
+        2), so the constant describes only one of its two shapes.
+        """
+        return self.wiring
+
+    def check_vae_compatibility(self, facts, *, trainer=None,
+                                base_model_path=None):
+        """``(compatible, reason)`` for a candidate VAE against this arch (§7.4).
+
+        Delegates to the shared gate, which answers from the arch's declared
+        wiring. Overridden only by an arch whose declaration cannot answer for
+        the checkpoint in hand.
+        """
+        from core.models.common.vae_source import check_vae_compatibility
+
+        return check_vae_compatibility(facts, self.name)
+
     def apply_vae_swap(self, trainer, resolved, module=None) -> Any:
         """Install ``resolved`` (a ``ResolvedVAE``) as this run's VAE and resize
         the backbone's latent I/O to its channel count. Returns a ``ResizeReport``.
@@ -613,7 +635,8 @@ class ArchHandler(ABC):
         """
         from core.models.components.latent_io import resize_latent_io
 
-        spec = getattr(self.wiring, "latent_io", None)
+        wiring = self.resolve_wiring(trainer)
+        spec = getattr(wiring, "latent_io", None)
         if spec is None:
             raise ValueError(
                 f"arch '{self.name}' declares no latent I/O, so its VAE cannot "
@@ -628,7 +651,7 @@ class ArchHandler(ABC):
                 else getattr(trainer, self.latent_io_root_attr))
         report = resize_latent_io(root, spec, resolved.latent_channels,
                                   new_channel_init=init)
-        trainer.wiring = self.wiring.replace(
+        trainer.wiring = wiring.replace(
             latent_channels=resolved.latent_channels,
             vae_norm=resolved.norm,
             vae_norm_pack=resolved.norm_pack,

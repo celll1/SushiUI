@@ -38,6 +38,98 @@ class MiniT2IArchHandler(ArchHandler):
     # inverse of the SD3/FLUX-style default.
     timestep_convention = "t1"
 
+    def resolve_wiring(self, trainer):
+        """MINIT2I_WIRING describes the PIXEL variant; a latent checkpoint has a
+        different channel count, patch size and compression ratio, all of which
+        are config values in the file (``vendor/mmjit.MMJiTConfig``). Read them,
+        so the resize slices with the checkpoint's own P and the run's wiring
+        reports its own geometry.
+        """
+        from core.models.minit2i.minit2i_vae import VAE_SCALE_FACTOR
+
+        cfg = getattr(getattr(trainer, "transformer", None), "mmjit_config", None)
+        if cfg is None:
+            return self.wiring
+        channels, patch = int(cfg.in_channels), int(cfg.patch_size)
+        latent_io = self.wiring.latent_io.replace(pack_elems=patch * patch)
+        if str(getattr(cfg, "vae_type", "none")) == "none":
+            return self.wiring.replace(latent_io=latent_io)
+        return self.wiring.replace(
+            latent_channels=channels, vae_scale_factor=VAE_SCALE_FACTOR,
+            vae_norm="shift_scale", latent_io=latent_io)
+
+    def apply_vae_swap(self, trainer, resolved, module=None):
+        """The shared resize, plus MiniT2I's own record of which VAE it uses.
+
+        ``vae_type`` is a config field of the checkpoint (``MMJiTConfig``), and
+        the loader reads it to decide whether the model is latent at all, so a
+        swap that moved only the weights would reload as pixel-space. A source
+        with no registry family is recorded as ``"custom"``; the checkpoint's
+        ``component.vae.*`` block is what resolves it on the next load.
+        """
+        from core.models.minit2i.minit2i_vae import is_latent_vae
+
+        report = super().apply_vae_swap(trainer, resolved, module=module)
+        cfg = getattr(trainer.transformer, "mmjit_config", None)
+        if cfg is not None:
+            family = str(resolved.family or "")
+            cfg.vae_type = family if is_latent_vae(family) else "custom"
+        return report
+
+    def check_vae_compatibility(self, facts, *, trainer=None,
+                                base_model_path=None):
+        """The family gate against THIS checkpoint's geometry.
+
+        ``vae_source.check_vae_compatibility`` answers from the arch's wiring
+        constant, which for MiniT2I is the pixel variant -- so it refuses every
+        candidate for every checkpoint, including the latent ones a swap is for.
+        The pixel refusal is real and stays: moving a pixel checkpoint into a
+        latent space changes patch_size as well as the channel count, which is
+        not a channel resize (design 5.1, and 10 for the arch that does it).
+        """
+        io_config = self._io_config(trainer, base_model_path)
+        if not io_config:
+            return False, ("MiniT2I's latent geometry is a per-checkpoint config "
+                           "value and this base's could not be read, so a "
+                           "replacement VAE cannot be checked against it")
+        if str(io_config.get("vae_type", "none")) == "none":
+            return False, (
+                "this MiniT2I checkpoint is pixel-space (in_channels=3, "
+                "patch_size=16); moving it into a latent space changes the patch "
+                "geometry as well as the channel count, which is not a channel "
+                "resize. Train a latent variant (scratch:minit2i:<variant>:sdxl "
+                "or :flux1) and swap that")
+
+        # The same three structural questions the shared gate asks, against the
+        # checkpoint's geometry instead of the arch table it cannot express.
+        from core.models.minit2i.minit2i_vae import VAE_SCALE_FACTOR
+
+        ndim = facts.get("ndim")
+        if ndim is not None and ndim != 4:
+            return False, (f"{ndim}-D latents cannot drive minit2i, which expects "
+                           f"4-D")
+        scale = facts.get("scale_factor")
+        if scale is not None and int(scale) != VAE_SCALE_FACTOR:
+            return False, (f"spatial compression {scale}x differs from MiniT2I's "
+                           f"{VAE_SCALE_FACTOR}x")
+        temporal = facts.get("scale_temporal")
+        if temporal is not None and int(temporal) != 1:
+            return False, (f"temporal compression {temporal}x differs from "
+                           f"MiniT2I's 1x")
+        return True, None
+
+    @staticmethod
+    def _io_config(trainer, base_model_path):
+        from core.models.minit2i.minit2i_loader import peek_io_config
+
+        cfg = getattr(getattr(trainer, "transformer", None), "mmjit_config", None)
+        if cfg is not None:
+            return {"in_channels": int(cfg.in_channels),
+                    "patch_size": int(cfg.patch_size),
+                    "vae_type": str(getattr(cfg, "vae_type", "none"))}
+        path = base_model_path or getattr(trainer, "model_path", None)
+        return peek_io_config(str(path or ""))
+
     def lora_adapter_class(self):
         from core.training.adapters import MiniT2ILoRAAdapter
         return MiniT2ILoRAAdapter

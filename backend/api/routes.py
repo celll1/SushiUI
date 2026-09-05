@@ -16043,7 +16043,8 @@ async def create_training_run(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/training/vae-sources")
-def list_vae_sources(arch: str, db: Session = Depends(get_gallery_db)):
+def list_vae_sources(arch: str, base_model_path: Optional[str] = None,
+                     db: Session = Depends(get_gallery_db)):
     """Candidate VAEs a VAE-swap full fine-tune can migrate ``arch`` to.
 
     Three groups (design doc VAE_SWAP_MIGRATION_DESIGN.md §7.1): shared-table
@@ -16053,13 +16054,16 @@ def list_vae_sources(arch: str, db: Session = Depends(get_gallery_db)):
 
     Header/config reads only: no tensor data and no content hash, so listing a
     directory of multi-GB checkpoints stays cheap. The per-candidate
-    ``compatible``/``reason`` is the server-side family gate (§7.4).
+    ``compatible``/``reason`` is the server-side family gate (§7.4), asked
+    through the arch handler so ``minit2i`` -- whose latent geometry is a
+    per-checkpoint config value -- answers from ``base_model_path``.
     """
     from api.generation_overrides import (
         _friendly_component_name, classify_vae_candidate, describe_vae,
     )
     from core.models.common.vae_source import VAE_REGISTRY, describe_vae_source
     from core.models.component_registry import _WIRING_BY_ARCH
+    from core.training.vae_swap import check_arch_vae_compatibility
 
     if arch not in _WIRING_BY_ARCH:
         raise CustomValidationError(
@@ -16070,6 +16074,11 @@ def list_vae_sources(arch: str, db: Session = Depends(get_gallery_db)):
         described = describe_vae_source(source, arch=arch)
         described["name"] = name
         described.setdefault("form", source.split(":", 1)[0])
+        if described.get("ndim") is not None:
+            compatible, reason = check_arch_vae_compatibility(
+                described, arch, base_model_path=base_model_path)
+            described["compatible"] = compatible
+            described["reason"] = reason
         return described
 
     registry = [_describe(f"registry:{key}", key) for key in VAE_REGISTRY]

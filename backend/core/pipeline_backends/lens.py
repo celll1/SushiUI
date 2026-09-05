@@ -795,7 +795,9 @@ class LensMixin:
             torch.cuda.empty_cache()
 
             # Stage 2: Prepare latents
-            latents = prepare_latents(height, width, dtype=dtype, device=device, seed=seed)
+            latents = prepare_latents(
+                height, width, dtype=dtype, device=device, seed=seed,
+                channels=int(transformer.config.out_channels))
 
             # Training-free reference-style transfer setup (no-op / None when no style
             # reference is attached -- byte-identical default path below). VAE-encodes

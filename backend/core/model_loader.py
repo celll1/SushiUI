@@ -1808,7 +1808,8 @@ class ModelLoader:
         """Split a sushiUI FLUX.2 full-FT save into transformer / VAE / TE sub-dicts.
 
         The adapter writes transformer keys under ``model.diffusion_model.``, VAE
-        under ``first_stage_model.`` and TE under ``text_encoders.qwen3.``. Returns
+        under ``first_stage_model.`` (or ``vae.`` for a swapped one) and TE under
+        ``text_encoders.qwen3.``. Returns
         ``(transformer_sd, vae_sd, te_sd)`` with the section prefixes stripped;
         ``vae_sd`` / ``te_sd`` are empty dicts when absent.
         """
@@ -1820,6 +1821,9 @@ class ModelLoader:
                 transformer_sd[key[len('model.diffusion_model.'):]] = value
             elif key.startswith('first_stage_model.'):
                 vae_sd[key[len('first_stage_model.'):]] = value
+            elif key.startswith('vae.'):
+                # A VAE-swap save bundles under the unified prefix (design §8.7).
+                vae_sd[key[len('vae.'):]] = value
             elif key.startswith('text_encoders.qwen3.'):
                 te_sd[key[len('text_encoders.qwen3.'):]] = value
             elif key.startswith('text_encoders.'):
@@ -1924,6 +1928,12 @@ class ModelLoader:
             # full state dict (CPU) plus the metadata block. All subsequent
             # key/metadata probes reuse these instead of re-opening the file.
             from core.models.common.single_file_format import read_state_dict
+            from core.models.common.vae_source import load_declared_latent_io
+            # The VAE this checkpoint was trained with, when it is not FLUX.2's
+            # own. Read BEFORE construction so the declared channel count is what
+            # the transformer is built at (design §8.2, §9.1). An unresolvable
+            # declaration raises rather than falling back to the FLUX.2 VAE.
+            declared_vae = load_declared_latent_io(file_path, arch="flux2")
             transformer_state_dict, metadata = read_state_dict(file_path)
             all_keys = list(transformer_state_dict.keys())
             print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
@@ -2103,6 +2113,22 @@ class ModelLoader:
                 print(f"[ModelLoader] State dict is already in diffusers format")
 
             # Create transformer model
+            if declared_vae is not None:
+                # in_channels/out_channels are the PACKED width (C * 2 * 2): the
+                # 2x2 pack happens outside the transformer, patch_size is 1.
+                packed = declared_vae.latent_channels * 4
+                print(f"[ModelLoader] FLUX.2 declares a non-native VAE "
+                      f"({declared_vae.provenance}, {declared_vae.latent_channels}ch, "
+                      f"{declared_vae.vae_class}); building at {packed} packed features")
+                transformer_config["in_channels"] = packed
+                transformer_config["out_channels"] = packed
+                saved = transformer_state_dict.get("x_embedder.weight")
+                if saved is not None and int(saved.shape[1]) != packed:
+                    raise ValueError(
+                        f"{file_path}: x_embedder faces {int(saved.shape[1])} packed "
+                        f"features but its declaration says {declared_vae.latent_channels} "
+                        f"latent channels ({packed}); refusing to load a checkpoint "
+                        f"whose declaration and weights disagree about the latent space")
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
             transformer = Flux2Transformer2DModel(**transformer_config)
 
@@ -2151,37 +2177,49 @@ class ModelLoader:
             # (black-forest-labs/FLUX.2-klein-4B subfolder vae), NEVER from the
             # (possibly 9B) transformer variant repo. Falls back to the 4B repo
             # subfolder directly if the store cannot be resolved.
-            print(f"[ModelLoader] Loading FLUX.2 VAE (Apache-2.0 store)...")
             flux2_vae_dir = None
-            try:
-                from core.models.common.vae_store import resolve_vae_dir
-                flux2_vae_dir = resolve_vae_dir("flux2")
-            except Exception as _e:
-                print(f"[ModelLoader] FLUX.2 VAE store resolution failed: {_e}")
-            if flux2_vae_dir and os.path.isdir(flux2_vae_dir):
-                vae = AutoencoderKLFlux2.from_pretrained(
-                    flux2_vae_dir, torch_dtype=torch.float32
-                )
+            if declared_vae is not None:
+                # The declared VAE carries its own class and config; the store
+                # rebuild below only knows how to reattach AutoencoderKLFlux2.
+                vae = declared_vae.load_module(torch_dtype=torch.float32)
+                vae.eval()
+                flux2_vae_source = declared_vae.provenance
+                flux2_vae_path = declared_vae.path if (
+                    declared_vae.path and os.path.isdir(str(declared_vae.path))) else None
+                print(f"[ModelLoader] Declared VAE loaded: "
+                      f"latent_channels={declared_vae.latent_channels}, "
+                      f"norm={declared_vae.norm}")
             else:
-                vae = AutoencoderKLFlux2.from_pretrained(
-                    "black-forest-labs/FLUX.2-klein-4B", subfolder="vae",
-                    torch_dtype=torch.float32,  # VAE in fp32 for quality
-                )
-            print(f"[ModelLoader] VAE loaded: latent_channels={vae.config.latent_channels}")
+                print(f"[ModelLoader] Loading FLUX.2 VAE (Apache-2.0 store)...")
+                try:
+                    from core.models.common.vae_store import resolve_vae_dir
+                    flux2_vae_dir = resolve_vae_dir("flux2")
+                except Exception as _e:
+                    print(f"[ModelLoader] FLUX.2 VAE store resolution failed: {_e}")
+                if flux2_vae_dir and os.path.isdir(flux2_vae_dir):
+                    vae = AutoencoderKLFlux2.from_pretrained(
+                        flux2_vae_dir, torch_dtype=torch.float32
+                    )
+                else:
+                    vae = AutoencoderKLFlux2.from_pretrained(
+                        "black-forest-labs/FLUX.2-klein-4B", subfolder="vae",
+                        torch_dtype=torch.float32,  # VAE in fp32 for quality
+                    )
+                print(f"[ModelLoader] VAE loaded: latent_channels={vae.config.latent_channels}")
 
-            # Reattach the embedded (trained) VAE weights when present, overriding
-            # the base VAE. Absent => keep the downloaded base VAE.
-            if embedded_vae_state_dict:
-                ModelLoader._reattach_embedded_weights(vae, embedded_vae_state_dict, "VAE")
-                vae = vae.to(dtype=torch.float32)
-                flux2_vae_source = "embedded (checkpoint)"
-                flux2_vae_path = None
-            elif flux2_vae_dir and os.path.isdir(flux2_vae_dir):
-                flux2_vae_source = str(flux2_vae_dir)
-                flux2_vae_path = str(flux2_vae_dir)
-            else:
-                flux2_vae_source = "black-forest-labs/FLUX.2-klein-4B (vae)"
-                flux2_vae_path = None
+                # Reattach the embedded (trained) VAE weights when present, overriding
+                # the base VAE. Absent => keep the downloaded base VAE.
+                if embedded_vae_state_dict:
+                    ModelLoader._reattach_embedded_weights(vae, embedded_vae_state_dict, "VAE")
+                    vae = vae.to(dtype=torch.float32)
+                    flux2_vae_source = "embedded (checkpoint)"
+                    flux2_vae_path = None
+                elif flux2_vae_dir and os.path.isdir(flux2_vae_dir):
+                    flux2_vae_source = str(flux2_vae_dir)
+                    flux2_vae_path = str(flux2_vae_dir)
+                else:
+                    flux2_vae_source = "black-forest-labs/FLUX.2-klein-4B (vae)"
+                    flux2_vae_path = None
 
             # Step 5: Load Text Encoder (Qwen3)
             print(f"[ModelLoader] Loading Qwen3 text encoder...")
@@ -2235,6 +2273,11 @@ class ModelLoader:
                 "scheduler": scheduler,
                 "config": config_dict,
                 "model_type": "flux2",  # Distinguish from Z-Image
+                # None for a native checkpoint; the resolved component.vae.* block
+                # otherwise, for the trainer's swap fold and the pipeline's report.
+                "declared_vae": declared_vae,
+                "vae_identity": (None if declared_vae is None
+                                 else declared_vae.facts()),
             }
 
         except Exception as e:

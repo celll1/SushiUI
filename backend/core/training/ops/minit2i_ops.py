@@ -81,6 +81,18 @@ def load_components(trainer) -> None:
                 except Exception as _e:
                     print(f"{trainer.log_prefix} VAE {_m} failed: {_e}")
         print(f"{trainer.log_prefix} MiniT2I VAE tiling/slicing enabled (bounds high-res encode VRAM)")
+
+    # Latent space: the base's own declaration first (the loader already built the
+    # transformer at its channel count), then this run's swap on top of it. Before
+    # the freeze below, so the resize's new Parameters take the same grad flags.
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("declared_vae"))
+    # A swap moves all four: the transformer's config, the VAE, the channel count
+    # generate_sample seeds noise with, and whether this run is latent at all.
+    _mt_cfg = trainer.transformer.mmjit_config
+    trainer.minit2i_vae_type = str(getattr(_mt_cfg, "vae_type", "none"))
+    trainer.minit2i_latent = trainer.minit2i_vae_type != "none"
+
     trainer.text_encoder_2 = None
     trainer.tokenizer_2 = None
     trainer.t5_tokenizer = None
@@ -230,12 +242,12 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         # Latent-space: VAE-encode the [-1,1] RGB image to a normalized latent
         # [1, C, H/vsf, W/vsf]. The frozen VAE is moved to GPU for caching by the
         # latent-cache pre-pass (move_vae_to_gpu).
-        from core.models.minit2i.minit2i_vae import normalize_latent
+        from core.models.components.vae_registry import normalize
         vae_device = next(trainer.vae.parameters()).device
         px = image_tensor.to(device=vae_device, dtype=trainer.vae_dtype)
         with torch.no_grad():
             sample = trainer.vae.encode(px).latent_dist.sample()
-            latent = normalize_latent(sample, trainer.vae)
+            latent = normalize(sample, trainer.vae, getattr(trainer, "wiring", None))
         return latent.to(device="cpu", dtype=trainer.training_dtype)
 
 

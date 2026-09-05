@@ -2897,6 +2897,12 @@ class BaseTrainer(ABC):
             # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
+            # Same latent-identity reinstatement as the SD/SDXL resume below: a
+            # resume that leaves vae_identity unset writes a degraded declaration
+            # over a correct one on the next save.
+            from core.training.vae_swap import apply_latent_space
+            apply_latent_space(self, components.get("declared_vae"))
+
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
             if not self.gradient_checkpointing:
                 print(f"{self.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")
@@ -14568,11 +14574,15 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 else:
-                                    # Lens: [1, latent_h*latent_w, 128]
+                                    # Lens: [1, latent_h*latent_w, C*4]; C is 32
+                                    # unless this run swapped its VAE.
                                     expected_seq_len = (height // 16) * (width // 16)
-                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 128:
+                                    expected_width = 4 * int(getattr(
+                                        getattr(self, "wiring", None),
+                                        "latent_channels", 0) or 32)
+                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != expected_width:
                                         print(f"{self.log_prefix} WARNING: Lens latent shape mismatch for {item['image_path']}")
-                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 128]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, {expected_width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 

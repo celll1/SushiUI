@@ -23,29 +23,10 @@ from tqdm import tqdm
 
 
 def _apply_latent_space(trainer, declared) -> None:
-    """Fold the base's declared VAE and this run's ``vae_swap_source`` into the
-    trainer (design §8.1-8.3). ``declared`` is what the loader resolved from
-    ``component.vae.*``, or None for a native checkpoint."""
-    from core.training.arch import get_arch_handler
-    from core.training.ops.training_method import resolve_training_method
-    from core.training.vae_swap import (
-        apply_configured_vae_swap, check_swap_method, resolve_vae_swap_source,
-    )
-
-    swap_source = resolve_vae_swap_source(trainer.config)
-    check_swap_method(swap_source, resolve_training_method(trainer))
-
-    if declared is not None:
-        # The loader already built the module from these weights; keeping the
-        # resolver's copy would hold a second VAE in host memory for the run.
-        from dataclasses import replace as _dc_replace
-        declared = _dc_replace(declared, state_dict=None)
-    trainer.base_vae_identity = declared
-    if declared is not None:
-        get_arch_handler(trainer).apply_vae_swap(trainer, declared,
-                                                 module=trainer.vae)
-    if swap_source:
-        apply_configured_vae_swap(trainer, swap_source)
+    """Named call site for the shared fold (core/training/vae_swap.py); kept
+    because base_trainer's resume path calls it by this name."""
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, declared)
 
 
 def load_components(trainer) -> None:

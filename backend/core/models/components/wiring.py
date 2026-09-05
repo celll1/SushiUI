@@ -145,6 +145,12 @@ class ComponentWiringSpec:
     # None = the arch declares no latent I/O (pixel-space, or out of scope for
     # the VAE-swap resize; see the design's §2 table).
     latent_io: Optional[LatentIOSpec] = None
+    # Spatial pack factor of the domain the VAE's normalisation statistics are
+    # defined over: 1 = the raw C channels, 2 = the 2x2-packed 4C channels
+    # (flux2/lens BatchNorm). A property of the VAE, NOT of the backbone's own
+    # packing (LatentIOSpec.pack_elems); only the shared normalise/denormalise
+    # layer reads it (design §8.4).
+    vae_norm_pack: int = 1
 
     def replace(self, **changes) -> "ComponentWiringSpec":
         """Return a copy with fields overridden (the graft-expression helper,
@@ -186,7 +192,7 @@ LENS_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
     vae_scale_factor=8, vae_norm="shift_scale",
-    latent_io=LENS_LATENT_IO,
+    latent_io=LENS_LATENT_IO, vae_norm_pack=2,
 )
 
 IDEOGRAM4_WIRING = ComponentWiringSpec(
@@ -213,7 +219,7 @@ FLUX2_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="flux_pack",  # AutoencoderKLFlux2 (vae_store flux2=32)
     vae_scale_factor=8, vae_norm="batchnorm",
-    latent_io=FLUX2_LATENT_IO,
+    latent_io=FLUX2_LATENT_IO, vae_norm_pack=2,
 )
 
 # LTX-2.3 video: 128ch 5D latents (spatial /32, temporal /8), Gemma3 TE (3840)

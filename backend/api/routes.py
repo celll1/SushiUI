@@ -15697,6 +15697,12 @@ class TrainingRunCreateRequest(BaseModel):
     prediction_target: str = "auto"  # "auto", "epsilon", "velocity", "sample"
     strict_validation: bool = False  # Abort training if mismatch detected
     sdxl_micro_conditioning: bool = TRAINING_DEFAULTS["sdxl_micro_conditioning"]
+    # VAE swap (arch-independent; full fine-tune only). sdxl_vae_type below is a
+    # read-only alias kept so an existing run's config still loads.
+    vae_swap_source: str = TRAINING_DEFAULTS["vae_swap_source"]
+    vae_swap_new_channel_init: Literal["zero"] = TRAINING_DEFAULTS[
+        "vae_swap_new_channel_init"
+    ]
     sdxl_vae_type: str = TRAINING_DEFAULTS["sdxl_vae_type"]
     sdxl_te_type: str = TRAINING_DEFAULTS["sdxl_te_type"]
     sdxl_te_hidden_layer: int = TRAINING_DEFAULTS["sdxl_te_hidden_layer"]
@@ -15794,6 +15800,30 @@ def _check_cfg_null_params(request: "TrainingRunCreateRequest",
         print(f"[Training] WARNING: {warning}")
 
 
+def _check_vae_swap_params(request: "TrainingRunCreateRequest") -> None:
+    """Refuse an impossible VAE swap before the run row is written (§7.4, §8.7).
+
+    Raises HTTPException(400). `bundle_vae` keys on ``model_fields_set``: a
+    ``model_dump()`` materialises every default, so value presence alone cannot
+    tell "the caller asked for no bundling" from "the caller said nothing".
+    """
+    from core.training.training_config import _detect_arch
+    from core.training.vae_swap import preflight_vae_swap
+
+    explicit_no_bundle = ("bundle_vae" in request.model_fields_set
+                          and request.bundle_vae is False)
+    try:
+        preflight_vae_swap(
+            request.model_dump(),
+            arch=_detect_arch(request.base_model_path),
+            method=request.training_method,
+            bundle_vae_explicit_false=explicit_no_bundle,
+            base_model_path=request.base_model_path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
     request: TrainingRunCreateRequest,
@@ -15841,6 +15871,7 @@ async def create_training_run(
                 Dataset.id == c["dataset_id"]).first()
             for c in dataset_configs
         ])
+        _check_vae_swap_params(request)
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
         # NOTE: caption_processing is NOT saved to YAML - read from database at training time
@@ -16528,6 +16559,7 @@ async def update_training_run(
                 Dataset.id == c.dataset_id).first()
             for c in (request.dataset_configs or [])
         ])
+        _check_vae_swap_params(request)
 
         # Resolve temp_img:// references in sample_prompts condition_image_path
         resolved_sample_prompts = []

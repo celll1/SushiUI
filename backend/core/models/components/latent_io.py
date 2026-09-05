@@ -107,6 +107,31 @@ def resize_latent_io(
     )
 
 
+def verify_latent_io(module_root: nn.Module, spec: LatentIOSpec,
+                     channels: int) -> List[str]:
+    """What is wrong with the latent-facing modules' widths; empty when they
+    match ``channels`` (design §8.6 item 1).
+
+    Same algebra as the resize, so a packed layer is judged by the channel count
+    its packed axis encodes, not by its raw feature count.
+    """
+    problems: List[str] = []
+    for path, reader, side in ((spec.in_module, _in_channels, "input"),
+                               (spec.out_module, _out_channels, "output")):
+        if not path:
+            continue
+        try:
+            _parent, _attr, module = _resolve(module_root, path)
+            found = reader(module, spec)
+        except (AttributeError, ValueError) as exc:
+            problems.append(f"latent {side} '{path}': {exc}")
+            continue
+        if found != channels:
+            problems.append(
+                f"latent {side} '{path}' faces {found} channels, expected {channels}")
+    return problems
+
+
 # --- module path resolution -------------------------------------------------
 
 def _resolve(root: Any, path: str) -> Tuple[Any, str, nn.Module]:

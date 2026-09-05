@@ -87,7 +87,7 @@ def load_custom_convs_from_single_file(unet, file_path: str) -> bool:
     out_channels, so the file's channel-resized convs are not loaded reliably. After
     resize_unet_in_out, this assigns both convs directly from the CompVis-format file,
     guaranteeing the trained weights regardless of from_single_file's behavior.
-    Returns True if both convs were found and loaded.
+    Raises when the file cannot supply either conv (design §8.6.3).
     """
     from safetensors import safe_open
 
@@ -98,17 +98,24 @@ def load_custom_convs_from_single_file(unet, file_path: str) -> bool:
             if ldm_k in keys:
                 found[diff_k] = f.get_tensor(ldm_k)
 
-    ok = True
+    missing = []
     with torch.no_grad():
         for name, conv in (("conv_in", unet.conv_in), ("conv_out", unet.conv_out)):
             wk, bk = f"{name}.weight", f"{name}.bias"
             if wk in found and tuple(found[wk].shape) == tuple(conv.weight.shape):
                 conv.weight.copy_(found[wk].to(conv.weight.device, conv.weight.dtype))
             else:
-                ok = False
+                shape = tuple(found[wk].shape) if wk in found else None
+                missing.append(f"{name}.weight ({'shape ' + str(shape) if shape else 'absent'}, "
+                               f"expected {tuple(conv.weight.shape)})")
             if conv.bias is not None and bk in found and tuple(found[bk].shape) == tuple(conv.bias.shape):
                 conv.bias.copy_(found[bk].to(conv.bias.device, conv.bias.dtype))
-    print(f"[SDXLCustomArch] Loaded trained conv_in/conv_out from single-file "
-          f"({'ok' if ok else 'partial/missing — left at resize init'})")
-    return ok
+    if missing:
+        # Leaving these at the resize's zero init produces a model that loads
+        # and generates noise; that failure used to be a print (design §8.6.3).
+        raise RuntimeError(
+            f"custom-arch checkpoint {file_path} does not supply its trained "
+            f"latent convs: {', '.join(missing)}")
+    print("[SDXLCustomArch] Loaded trained conv_in/conv_out from single-file")
+    return True
 

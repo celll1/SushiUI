@@ -2531,9 +2531,12 @@ class ModelLoader:
                 print(f"[ModelLoader] Custom SDXL reconstructed: {custom_in_channels}ch latents "
                       f"({custom_vae_type} VAE)")
             except Exception as _re:
-                print(f"[ModelLoader] ERROR reconstructing custom SDXL: {_re}")
-                import traceback
-                traceback.print_exc()
+                # Continuing here used to hand back a pipeline whose latent
+                # convs were the resize's zero init, i.e. a model that loads and
+                # generates noise (design §8.6 item 3).
+                raise RuntimeError(
+                    f"Custom SDXL reconstruction failed for {file_path}: {_re}"
+                ) from _re
 
         # Custom SDXL text encoder: rebuild the swapped encoder + bridge adapters and
         # attach to the pipeline (the inference encode path uses them in place of CLIP).

@@ -316,13 +316,15 @@ def test_a_different_geometry_is_refused_with_a_reason():
         assert compatible is False and reason
 
 
-def test_crossing_the_normalisation_domain_is_refused_until_that_layer_lands():
+def test_crossing_the_normalisation_domain_is_allowed_once_that_layer_lands():
+    """P5 built it: ``vae_registry.normalize`` packs into the VAE's own
+    statistics domain and unpacks back, so neither direction is refused."""
     bn = {"latent_channels": 32, "scale_factor": 8, "scale_temporal": 1,
           "ndim": 4, "norm": "batchnorm"}
-    assert vs.check_vae_compatibility(bn, "sdxl")[0] is False
+    assert vs.check_vae_compatibility(bn, "sdxl") == (True, None)
     plain = dict(bn, norm="shift_scale")
-    assert vs.check_vae_compatibility(plain, "flux2")[0] is False
-    assert vs.check_vae_compatibility(bn, "flux2")[0] is True
+    assert vs.check_vae_compatibility(plain, "flux2") == (True, None)
+    assert vs.check_vae_compatibility(bn, "flux2") == (True, None)
 
 
 def test_sensenova_accepts_any_ratio_and_says_what_it_costs():

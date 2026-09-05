@@ -141,7 +141,9 @@ class ComponentWiringSpec:
     latent_ndim: int                 # 4 or 5 (anima 5D)
     latent_packing: str              # "none" | "flux_pack" | "krea_norm"
     vae_scale_factor: int
-    vae_norm: str                    # "shift_scale" | "batchnorm" | "identity"
+    # "shift_scale" | "per_channel" | "batchnorm" | "identity" -- the vocabulary
+    # vae_source's resolver reports and components/vae_registry implements.
+    vae_norm: str
     # None = the arch declares no latent I/O (pixel-space, or out of scope for
     # the VAE-swap resize; see the design's §2 table).
     latent_io: Optional[LatentIOSpec] = None
@@ -184,21 +186,21 @@ ZIMAGE_WIRING = ComponentWiringSpec(
 ANIMA_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=16, latent_ndim=5, latent_packing="none",
-    vae_scale_factor=8, vae_norm="shift_scale",
+    vae_scale_factor=8, vae_norm="per_channel",
     latent_io=ANIMA_LATENT_IO,
 )
 
 LENS_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
-    vae_scale_factor=8, vae_norm="shift_scale",
+    vae_scale_factor=8, vae_norm="batchnorm",
     latent_io=LENS_LATENT_IO, vae_norm_pack=2,
 )
 
 IDEOGRAM4_WIRING = ComponentWiringSpec(
     te_out_dim=4096, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
-    vae_scale_factor=8, vae_norm="shift_scale",
+    vae_scale_factor=8, vae_norm="batchnorm", vae_norm_pack=2,
 )
 
 MINIT2I_WIRING = ComponentWiringSpec(
@@ -211,7 +213,7 @@ MINIT2I_WIRING = ComponentWiringSpec(
 KREA2_WIRING = ComponentWiringSpec(
     te_out_dim=2560, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=16, latent_ndim=4, latent_packing="krea_norm",
-    vae_scale_factor=8, vae_norm="shift_scale",
+    vae_scale_factor=8, vae_norm="per_channel",
     latent_io=KREA2_LATENT_IO,
 )
 
@@ -227,7 +229,7 @@ FLUX2_WIRING = ComponentWiringSpec(
 LTX2_WIRING = ComponentWiringSpec(
     te_out_dim=3840, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=128, latent_ndim=5, latent_packing="none",
-    vae_scale_factor=32, vae_norm="identity",
+    vae_scale_factor=32, vae_norm="per_channel",
     latent_io=LTX2_LATENT_IO,
 )
 
@@ -260,14 +262,14 @@ ACESTEP_WIRING = ComponentWiringSpec(
 # the file's own embedded source_config says `"vae_ratio": 16, "vae_ratio_t": 4`
 # and the loaded module agrees.
 #
-# `vae_norm` is "shift_scale": 24 per-channel mean/std vectors, `(x - mean) / std`
-# on encode. NOT "identity" like LTX-2.3 -- and note the pixel convention on the
-# other side of the VAE is ImageNet-normalised RGB over [0, 1], not [-1, 1],
-# which no field of this spec expresses (see `minimax_h3.loader`).
+# `vae_norm` is "per_channel": 24 per-channel mean/std vectors, `(x - mean) / std`
+# on encode. Note the pixel convention on the other side of the VAE is
+# ImageNet-normalised RGB over [0, 1], not [-1, 1], which no field of this spec
+# expresses (see `minimax_h3.loader`).
 MINIMAX_H3_WIRING = ComponentWiringSpec(
     te_out_dim=5120, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=24, latent_ndim=5, latent_packing="none",
-    vae_scale_factor=16, vae_norm="shift_scale",
+    vae_scale_factor=16, vae_norm="per_channel",
 )
 
 # MiniMax Music 3: [B, T, 128] 1D flow-matching latents at 86.13 Hz, decoded to

@@ -296,26 +296,6 @@ def _unpatchify(latents: torch.Tensor) -> torch.Tensor:
     return x.reshape(b, c4 // 4, h * 2, w * 2)
 
 
-def _bn_normalize(x: torch.Tensor, vae) -> torch.Tensor:
-    """Normalize patchified VAE latents using VAE BatchNorm running statistics."""
-    bn = vae.bn
-    mean = bn.running_mean.view(1, -1, 1, 1).to(device=x.device, dtype=x.dtype)
-    var = bn.running_var.view(1, -1, 1, 1).to(device=x.device, dtype=x.dtype)
-    std = torch.sqrt(var + vae.config.batch_norm_eps)
-    return (x - mean) / std
-
-
-def _bn_denormalize(x: torch.Tensor, vae) -> torch.Tensor:
-    """Denormalize patchified latents (inverse of _bn_normalize)."""
-    bn = vae.bn
-    mean = bn.running_mean.view(1, -1, 1, 1)
-    var = bn.running_var.view(1, -1, 1, 1)
-    std = torch.sqrt(var + vae.config.batch_norm_eps)
-    shift = (-mean).to(device=x.device, dtype=x.dtype)
-    scale = (1.0 / std).to(device=x.device, dtype=x.dtype)
-    return x / scale - shift  # = x * std + mean
-
-
 def prepare_latents(
     height: int, width: int, dtype: torch.dtype, device, seed: Optional[int] = None
 ) -> torch.Tensor:
@@ -333,12 +313,9 @@ def prepare_latents(
 def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) -> torch.Tensor:
     """Encode PIL image → Lens flat-sequence latent  (1, latent_h * latent_w, 128).
 
-    The normalization mirrors the inverse of _decode() in vendor/pipeline.py:
-      raw = vae.encode(img)             # (1, 32, H//8, W//8)
-      patchified = _patchify(raw)       # (1, 128, H//16, W//16)
-      normalized = (p - mean) / std    # BN normalize
-      unpatch = _unpatchify(normalized) # (1, 32, H//8, W//8)
-      flat = rearrange to (1, latent_h*latent_w, 128)
+    ``normalize`` applies the VAE's BatchNorm on its own 2x2-packed domain and
+    hands back a raw 32ch latent (design §8.4); the rearrange below is the
+    backbone's separate packing.
     """
     image = image.resize((width, height), Image.LANCZOS)
     if image.mode != "RGB":
@@ -350,16 +327,10 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
     latent_w = width // 16
 
     # Encode: (1, 32, H//8, W//8)
+    from core.models.components.vae_registry import normalize
+
     raw = vae.encode(img_tensor).latent_dist.mode()
-
-    # Patchify → (1, 128, latent_h, latent_w)
-    x = _patchify(raw)
-
-    # BN normalize
-    x = _bn_normalize(x, vae)
-
-    # Unpatchify → (1, 32, latent_h*2, latent_w*2)
-    x = _unpatchify(x)
+    x = normalize(raw, vae)
 
     # Rearrange to transformer flat-sequence format
     x = rearrange(x, "b c (h p1) (w p2) -> b (h w) (c p1 p2)", p1=2, p2=2, h=latent_h, w=latent_w)
@@ -382,10 +353,9 @@ def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int, color_f
     )
     x = x.to(vae.dtype)
 
-    # Patchify → (1, 128, latent_h, latent_w), denormalize, unpatchify
-    x = _patchify(x)
-    x = _bn_denormalize(x, vae)
-    x = _unpatchify(x)
+    from core.models.components.vae_registry import denormalize
+
+    x = denormalize(x, vae)
 
     # VAE decode → (1, 3, H, W)
     decoded = vae.decode(x).sample

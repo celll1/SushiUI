@@ -1192,12 +1192,11 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "acestep", "vae_swap",
     "ACE-Step's latent path runs through a frozen RVQ with a silence latent and per-chunk masks; replacing its autoencoder is outside the migration design's scope (§12)")
-# §10: SenseNova is the pixel -> latent case, and this entry does not come off
-# until that wave's acceptance conditions (§10.6) are met.
-_add_training_feature_unsupported(
-    "sensenova", "vae_swap",
-    "SenseNova is pixel-space, so a swap moves it INTO a latent space rather than between two: it rebuilds the generation ViT's patch embed and the fm_head's output convolution instead of resizing a channel axis. The migration is implemented (design §10) and stays refused until §10.6's acceptance conditions are measured on the real checkpoint -- a 3-step smoke and one generation through the VAE decode, neither of which has been run")
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i"):
+_add_training_feature_advisory(
+    "sensenova", "vae_swap", "experimental",
+    "SenseNova is the pixel -> latent case: the swap moves it INTO a latent space rather than between two, rebuilding the generation ViT's patch embed and the fm_head's output convolution instead of resizing a channel axis. Two tensors change shape, about 1.2M parameters of 16.2B; the 42-layer decoder, both towers, the reference path and the embedders are untouched. The generation patch is 4 for every compression ratio, so a token covers 4*vae_scale_factor pixels and the token count is preserved at a resolution that scales with the VAE -- picking a VAE therefore moves the resolution band, which the selector and the load-time warning both state. The design's acceptance conditions were measured on the real checkpoint at 4 and at 16 latent channels, both 8x (VAE_SWAP_MIGRATION_DESIGN.md 10.6): finite loss over 3 steps, noise_scale 4.0 at 1024 tokens, a velocity near t=1 bounded only by the epsilon clamp, exactly-zero gradient above the zero-initialised head at step 0 and finite non-zero from step 1, and one generation reaching vae.decode with no NaN. Peaks were 32.36 GiB host RSS, 65.6 GiB commit and 27.80 GiB VRAM, on the full-fine-tune route that materializes the generation half into bf16. NOT measured: any 16x image VAE (none exists in this tree, so that half of the resolution-band check is covered only by unit tests), the checkpoint round trip through the generation loader (covered by tests, not by the smoke), and every gen decoder Linear unfrozen at once. A 3-step smoke says nothing about how this trains, and no quality claim is attached to it or to the choice of compression ratio",
+    methods=["full_finetune"])
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",
@@ -1378,11 +1377,21 @@ for _arch, _features in TRAINING_FEATURE_ADVISORY.items():
             f"TRAINING_FEATURE_ADVISORY[{_arch}][{_feature}] scopes unknown "
             f"training methods")
         # THE PARTITION. "the mechanism is absent" and "the mechanism is here,
-        # and here is what it costs" are opposite claims about the same pair;
-        # holding both is the three-answers-to-one-question failure this axis
-        # was added to end.
-        assert _feature not in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {}), (
-            f"{_arch}/{_feature} is declared both unsupported and advisory")
+        # and here is what it costs" are opposite claims about the same
+        # question; holding both is the three-answers-to-one-question failure
+        # this axis was added to end. Both tables scope by method, so the
+        # question is (arch, feature, METHOD): sensenova's vae_swap is absent
+        # under LoRA -- which trains and saves none of the layers it rebuilds --
+        # and present-with-costs under a full fine-tune. The assertion fires
+        # when the two scopes actually intersect.
+        _unsupported = TRAINING_FEATURE_UNSUPPORTED.get(_arch, {}).get(_feature)
+        if _unsupported is not None:
+            _adv_methods = set(_entry.get("methods", TRAINING_METHODS))
+            _uns_methods = set(_unsupported.get("methods", TRAINING_METHODS)
+                               if isinstance(_unsupported, dict) else TRAINING_METHODS)
+            assert not (_adv_methods & _uns_methods), (
+                f"{_arch}/{_feature} is declared both unsupported and advisory "
+                f"for {sorted(_adv_methods & _uns_methods)}")
 assert set(CFG_NULL_STAGE_BY_ARCH) == set(TRAINING_DECLARED_ARCHS), (
     "CFG_NULL_STAGE_BY_ARCH must answer for every declared architecture: an "
     "arch missing from it would silently read as 'no stage' with no entry in "

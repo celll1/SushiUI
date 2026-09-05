@@ -1844,9 +1844,13 @@ def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tens
 
     from core.models.sensenova.latent_space import encode
 
-    latents = encode(vae, image_tensor.to(dtype=next(vae.parameters()).dtype,
-                                          device=next(vae.parameters()).device),
-                     spec=getattr(trainer, "wiring", None))
+    # This branch returns BEFORE encode_image's shared `with torch.no_grad()`,
+    # and the VAE is only .eval()'d, never frozen -- so without this the encoder
+    # builds a full graph per image that the detach below throws away.
+    with torch.no_grad():
+        latents = encode(vae, image_tensor.to(dtype=next(vae.parameters()).dtype,
+                                              device=next(vae.parameters()).device),
+                         spec=getattr(trainer, "wiring", None))
     return latents.detach().to(dtype=trainer.training_dtype, device="cpu")
 
 
@@ -1880,6 +1884,7 @@ def _save_pixel_debug(
     reference_image_paths: Optional[List[Optional[str]]],
     batch_size: int = 1,
     vae: Any = None,
+    spec: Any = None,
 ) -> None:
     """Dump this step's pixel tensors, the pixel-space analogue of the latent
     archs' debug latents: ``target`` is their ``latents`` (the clean sample),
@@ -1923,7 +1928,9 @@ def _save_pixel_debug(
         if vae is not None:
             from core.models.sensenova.latent_space import decode as _decode
 
-            preview = _decode(vae, preview)
+            # spec, not auto-detection: vae_decode passes the run's wiring and
+            # these previews must resolve the same normalisation it does.
+            preview = _decode(vae, preview, spec=spec)
         tensor_to_image(preview.float()).save(
             debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
             "WEBP",
@@ -2128,6 +2135,7 @@ def train_step(
                 reference_image_paths=debug_reference_image_paths,
                 batch_size=batch,
                 vae=getattr(trainer, "vae", None),
+                spec=getattr(trainer, "wiring", None),
             )
         except Exception as debug_error:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")

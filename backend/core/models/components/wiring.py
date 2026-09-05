@@ -58,6 +58,11 @@ class LatentIOSpec:
     extra_in_channels: int    # non-latent input channels (anima padding mask: 1)
     in_repeat: int            # how many times C is repeated on the input side (acestep: 3)
     out_bias: bool
+    # Whether this arch's own ``in_channels``/``out_channels`` attributes count
+    # PACKED features rather than latent channels. Krea 2's are 64 = C*p^2, so
+    # writing the raw 16 back into its config would rebuild ``img_in`` four times
+    # too narrow on the next load.
+    config_channels_packed: bool = False
 
 
 # The path root is the U-Net's OWNER, matching the "unet.conv_in" spelling of
@@ -82,6 +87,9 @@ KREA2_LATENT_IO = LatentIOSpec(
     in_kind="packed_linear", out_kind="packed_linear",
     in_channel_order="outer", out_channel_order="outer",
     pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+    # Krea2Transformer2DModel(in_channels=64) builds img_in/final_layer at the
+    # packed width (vendor/transformer.py), and krea2_config carries that number.
+    config_channels_packed=True,
 )
 
 # patch_size=1: the packed axis is C alone, so "outer" and "inner" are the same
@@ -153,6 +161,11 @@ class ComponentWiringSpec:
     # packing (LatentIOSpec.pack_elems); only the shared normalise/denormalise
     # layer reads it (design §8.4).
     vae_norm_pack: int = 1
+    # Temporal compression of a 5-D arch's VAE. None = NOT DECLARED, which
+    # `vae_source.check_vae_compatibility` treats as "no candidate can be checked
+    # against it" and refuses -- a 4-D arch needs no declaration (there is no
+    # temporal axis, so the ratio is 1 by construction).
+    vae_scale_temporal: Optional[int] = None
 
     def replace(self, **changes) -> "ComponentWiringSpec":
         """Return a copy with fields overridden (the graft-expression helper,
@@ -231,6 +244,9 @@ LTX2_WIRING = ComponentWiringSpec(
     latent_channels=128, latent_ndim=5, latent_packing="none",
     vae_scale_factor=32, vae_norm="per_channel",
     latent_io=LTX2_LATENT_IO,
+    # 8: the transformer config's vae_scale_factors[0] (models/ltx2/loader.py)
+    # and LTX2_TEMPORAL's latent_frames = (t-1)//8 + 1 agree.
+    vae_scale_temporal=8,
 )
 
 # ACE-Step 1.5 (turbo): 64ch TEMPORAL-ONLY latents [B, T, 64] (Oobleck VAE,
@@ -270,6 +286,7 @@ MINIMAX_H3_WIRING = ComponentWiringSpec(
     te_out_dim=5120, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=24, latent_ndim=5, latent_packing="none",
     vae_scale_factor=16, vae_norm="per_channel",
+    vae_scale_temporal=4,  # the file's own source_config: "vae_ratio_t": 4
 )
 
 # MiniMax Music 3: [B, T, 128] 1D flow-matching latents at 86.13 Hz, decoded to

@@ -156,11 +156,19 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
         # (default off -> loader resolves the default Qwen-Image VAE). Krea 2 uses the
         # sushiUI-v2 common ``vae.`` prefix (VAE_PREFIX).
         from api.param_defaults import resolve_bundle_vae
-        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "krea2")
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
+        bundle_vae = (swap_bundled if swapped is not None else resolve_bundle_vae(
+            getattr(trainer, "bundle_vae", None), "krea2"))
         vae_to_bundle = trainer.vae if (bundle_vae and getattr(trainer, "vae", None) is not None) else None
+        if swapped is not None and not swap_bundled:
+            print(f"[Krea2FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                  f"not bundled; resolved on load via {swapped.locator}")
+        extra = {"step": str(step), "epoch": str(epoch)}
+        extra.update(swap_md)
         save_single_file(
             str(output_path), trainer.transformer, is_distilled=is_distilled,
             text_encoder=None, vae=vae_to_bundle,
-            extra_metadata={"step": str(step), "epoch": str(epoch)},
+            extra_metadata=extra,
         )
         print(f"[Krea2FullParameterAdapter] Saved single-file (transformer) -> {output_path}")

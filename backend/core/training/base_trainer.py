@@ -3075,6 +3075,12 @@ class BaseTrainer(ABC):
             self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
             print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing")
 
+            # Same latent-identity reinstatement as the SD/SDXL resume below: a
+            # resume that leaves vae_identity unset writes a degraded declaration
+            # over a correct one on the next save.
+            from core.training.ops import zimage_ops as _zimage_ops
+            _zimage_ops._apply_latent_space(self, components.get("declared_vae"))
+
             # Setup attention backend if non-native (Z-Image checkpoint resume)
             if self.use_flash_attention:
                 self._setup_attention_backend_zimage(self.attention_backend)

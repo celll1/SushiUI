@@ -326,16 +326,18 @@ def test_the_feature_is_declared_with_its_arming_key_and_a_label():
     assert TRAINING_FEATURE_LABELS["vae_swap"]
 
 
-def test_only_sd15_and_sdxl_can_swap_and_only_by_full_finetune():
+def test_only_the_landed_waves_can_swap_and_only_by_full_finetune():
+    """Waves 1 (sd15/sdxl) and 2 (zimage/krea2). ltx2 is wave 2's refusal."""
     from api.arch_capabilities import (
         TRAINING_DECLARED_ARCHS, training_feature_unsupported_reason,
     )
-    for arch in ("sd15", "sdxl"):
+    landed = {"sd15", "sdxl", "zimage", "krea2"}
+    for arch in sorted(landed):
         assert training_feature_unsupported_reason(
             arch, "vae_swap", "full_finetune") is None
         for method in ("lora", "relora", "controlnet"):
             assert training_feature_unsupported_reason(arch, "vae_swap", method)
-    for arch in sorted(TRAINING_DECLARED_ARCHS - {"sd15", "sdxl"}):
+    for arch in sorted(TRAINING_DECLARED_ARCHS - landed):
         assert training_feature_unsupported_reason(
             arch, "vae_swap", "full_finetune"), arch
 

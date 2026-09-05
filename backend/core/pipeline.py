@@ -890,6 +890,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     "is_distilled": self.krea2_components.get("is_distilled", False),
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "krea2"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Krea 2 model loaded successfully")
                 return
@@ -1260,6 +1262,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     "vae_type": zimage_vae_type  # "flux" (16ch) or "sdxl" (4ch)
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "zimage"))
 
                 # Save this model as the last loaded model
                 self._save_last_model(source_type, source, pipeline_type)
@@ -3687,6 +3691,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         buffer = getattr(self, "_sushi_load_warnings", None) or []
         self._sushi_load_warnings = []
         return list(buffer)
+
+    def _fold_component_latent_identity(self, components, arch: str) -> Dict[str, Any]:
+        """``_fold_sd_latent_identity`` for a component-dict architecture, whose
+        loader reports the same facts through the dict instead of attributes.
+
+        A checkpoint that declares NOTHING is left alone, rather than folded to
+        its wiring constant: Z-Image ships a 4-channel variant whose loader
+        detects the count from x_embedder, and every adapter trained against it
+        recorded the wiring's 16 -- so publishing the honest 4 here would refuse
+        those adapters (D10's channel row) over a declaration neither side made.
+        """
+        from types import SimpleNamespace
+
+        identity = (components or {}).get("vae_identity")
+        if not identity:
+            return {}
+        return self._fold_sd_latent_identity(
+            SimpleNamespace(_sushi_vae_identity=identity), arch)
 
     def _fold_sd_latent_identity(self, pipeline, arch: str) -> Dict[str, Any]:
         """Set ``_sushi_wiring`` for a loaded SD1.5/SDXL pipeline; return the

@@ -590,7 +590,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                   {/* Phase-based display */}
                   {currentRun.phase === "bucketing" && "Assigning buckets"}
                   {currentRun.phase === "crop_precompute" && "Planning crop schedule"}
-                  {currentRun.phase === "latent_cache" && "Latent Cache"}
+                  {currentRun.phase === "latent_cache" && "Encoding latents"}
                   {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
                   {currentRun.phase === "training" && `Iteration ${currentRun.current_step} / ${currentRun.total_steps}`}
                   {currentRun.phase === "sampling" && "Rendering sample"}

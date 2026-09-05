@@ -10,6 +10,11 @@ interface VaeSwapSourceSelectorProps {
   /** Architecture of the selected base model; candidates and their
    *  compatibility are answered per architecture by the backend. */
   arch: string | null;
+  /** The base checkpoint itself. Required for an architecture whose latent
+   *  geometry is a per-checkpoint config value rather than an architecture
+   *  constant (minit2i: pixel 3ch/patch 16 vs latent 4-or-16ch/patch 2) —
+   *  without it every minit2i candidate comes back incompatible. */
+  baseModelPath?: string | null;
   disabled?: boolean;
 }
 
@@ -49,7 +54,7 @@ const facts = (candidate: VaeSwapCandidate): string => {
 };
 
 export default function VaeSwapSourceSelector({
-  value, onChange, arch, disabled,
+  value, onChange, arch, baseModelPath, disabled,
 }: VaeSwapSourceSelectorProps) {
   const [groups, setGroups] = useState<VaeSwapSourcesGroups>(EMPTY);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +68,7 @@ export default function VaeSwapSourceSelector({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    listTrainingVaeSources(arch)
+    listTrainingVaeSources(arch, baseModelPath)
       .then((data) => {
         if (!cancelled) setGroups({ ...EMPTY, ...(data.sources || {}) });
       })
@@ -77,7 +82,7 @@ export default function VaeSwapSourceSelector({
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [arch]);
+  }, [arch, baseModelPath]);
 
   const selected = useMemo(() => {
     for (const group of GROUPS) {

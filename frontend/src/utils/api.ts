@@ -6976,8 +6976,15 @@ export interface VaeSwapSourcesResponse {
   };
 }
 
-export const listTrainingVaeSources = async (arch: string): Promise<VaeSwapSourcesResponse> => {
-  const response = await api.get("/training/vae-sources", { params: { arch } });
+export const listTrainingVaeSources = async (
+  arch: string,
+  baseModelPath?: string | null,
+): Promise<VaeSwapSourcesResponse> => {
+  // base_model_path answers for an arch whose latent geometry is a per-checkpoint
+  // config value (minit2i); every other arch answers the same either way.
+  const params: Record<string, string> = { arch };
+  if (baseModelPath) params.base_model_path = baseModelPath;
+  const response = await api.get("/training/vae-sources", { params });
   return response.data;
 };
 

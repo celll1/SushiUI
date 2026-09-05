@@ -400,6 +400,15 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
             f"({config['in_channels']} latent channels + padding mask); the "
             f"checkpoint's declared latent space and its weights disagree")
 
+    # assign=True leaves anything the state dict does not supply on the meta
+    # device, so a file that is not a DiT at all (a LoRA reached through the
+    # resume path, whose metadata declares the same architecture) would return a
+    # model that only fails later, on the first .to(device).
+    if not any(k in sd for k in model.state_dict()):
+        raise ValueError(
+            f"{dit_path}: contributes no Anima DiT weights; it declares the "
+            f"architecture but carries none of its keys (an adapter file?)")
+
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).
     expected_missing_substrings = ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq")
@@ -596,15 +605,23 @@ def load_anima_components(
     te_dtype: torch.dtype = torch.bfloat16,
     vae_dtype: torch.dtype = torch.bfloat16,
     qwen3_config_dir: Optional[str] = None,
+    companion_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """High-level entry point: discover companion files (if needed), load all components,
     return a dict ready for the pipeline manager.
+
+    ``companion_path``: where to look for the Qwen3 TE / Qwen-Image VAE when they
+    do not live beside ``dit_path``. A training resume passes the run's BASE
+    model here, because its checkpoint sits in the output directory, where the
+    only ``.safetensors`` files are other checkpoints — and the discovery's last
+    resort would hand one of those back as the text encoder.
     """
     discovered = discover_anima_components(
-        dit_path, models_root=models_root,
+        companion_path or dit_path, models_root=models_root,
         text_encoder_override=text_encoder_path,
         vae_override=vae_path,
     )
+    discovered["dit"] = dit_path
 
     # The VAE this checkpoint was trained with, when it is not Anima's own. Read
     # BEFORE the DiT is built (design §8.2, §9.1); an unresolvable declaration

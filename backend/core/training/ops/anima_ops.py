@@ -43,6 +43,9 @@ def load_components(trainer) -> None:
         path=trainer.model_path,
         device="cpu",
         torch_dtype=trainer.weight_dtype,
+        # Set only on a resume, where model_path is the checkpoint and the Qwen3
+        # TE / VAE companions live next to the base model instead.
+        companion_path=getattr(trainer, "anima_companion_path", None),
     )
 
     # Store components on the trainer in the standard slots.
@@ -173,7 +176,8 @@ def load_components(trainer) -> None:
 
     print(f"{trainer.log_prefix} Anima model loaded successfully")
     print(f"{trainer.log_prefix} Scheduler: {trainer.scheduler.__class__.__name__}, "
-          f"latent_channels=16")
+          f"latent_channels="
+          f"{getattr(trainer, 'vae_latent_channels', None) or components.get('latent_channels')}")
 
 
 def setup_block_swap(trainer) -> None:

@@ -353,6 +353,10 @@ class ZImageMixin:
                 resolve_path=self._zimage_resolve_lora_path,
                 warn=self._zimage_lora_warn,
                 architecture="zimage",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="Z-Image LoRA",
                 count_declared_branches=_zimage_declared_branches,
                 describe_zero_targets=_zimage_zero_target_message,

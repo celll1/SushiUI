@@ -376,6 +376,18 @@ export interface LoRAAdapterDetection {
   adapter_state_reason: string | null;
   adapter_rank: number | null;
   adapter_alpha: number | null;
+  // Which latent space the file was trained in, read from its own
+  // `sushi.base.*` metadata; all null when the file declares none (every
+  // adapter SushiUI trains does, a third-party one generally does not). A VAE
+  // swap resizes only conv_in/conv_out or the patch embedder, which no adapter
+  // targets, so a mismatch here is invisible to every shape-based check --
+  // applying one whose base_latent_channels disagrees with the loaded model's
+  // latent_channels is refused with `lora_incompatible`.
+  base_latent_channels: number | null;
+  base_vae_type: string | null;
+  base_vae_hash: string | null;
+  base_vae_struct_native: boolean | null;
+  base_vae_identity_native: boolean | null;
 }
 
 export interface LoRAListEntry extends Partial<LoRAAdapterDetection> {

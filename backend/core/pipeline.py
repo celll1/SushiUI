@@ -1346,6 +1346,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             else:
                 self.inpaint_pipeline = StableDiffusionInpaintPipeline(**base_pipeline.components)
 
+            self._carry_latent_identity(base_pipeline, self.img2img_pipeline,
+                                        self.inpaint_pipeline)
+
             print(f"[Pipeline] All pipelines created successfully on device: {self.device}")
 
             # Initialize VRAM optimization: Move all components to CPU except what's immediately needed
@@ -1705,6 +1708,48 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             setattr(container, key, value)
         else:
             container[key] = value
+
+    @staticmethod
+    def _carry_latent_identity(source, *variants) -> None:
+        """Copy the loader's ``_sushi_vae_identity`` onto pipelines built from
+        ``source.components``.
+
+        A variant is a NEW object, so the loader's attributes do not come with
+        the components. The D10 adapter gate reads this off whichever pipeline
+        serves the request; without the copy img2img and inpaint read a
+        swapped-VAE model as native and admit an adapter txt2img refuses.
+        """
+        identity = getattr(source, "_sushi_vae_identity", None)
+        for variant in variants:
+            if variant is not None:
+                variant._sushi_vae_identity = identity
+
+    def base_latent_identity(self):
+        """The loaded model's latent space, for the D10 adapter gate (§9.4).
+
+        ``current_model_info`` is where the fold puts the resolved
+        ``component.vae.*`` block; the wiring spec is the fallback for a
+        backend that has not folded one. ``latent_channels == 0`` is the
+        pixel-space architectures' wiring constant and reaches
+        ``BaseLatentIdentity`` as "unknown", never as zero channels.
+        """
+        from core.adapters.base_identity import BaseLatentIdentity
+
+        info = dict(self.current_model_info or {})
+        channels = info.get("latent_channels")
+        if not channels:
+            wiring = getattr(self, "_sushi_wiring", None)
+            if wiring is None:
+                from core.models.component_registry import _WIRING_BY_ARCH
+                wiring = _WIRING_BY_ARCH.get(str(info.get("type") or "").lower())
+            channels = getattr(wiring, "latent_channels", None)
+        return BaseLatentIdentity.from_facts({
+            "latent_channels": channels,
+            "vae_type": info.get("vae_type"),
+            "vae_hash": info.get("vae_hash"),
+            "struct_native": info.get("vae_struct_native"),
+            "identity_native": info.get("vae_identity_native"),
+        }) or BaseLatentIdentity()
 
     def override_vae_identity(self) -> tuple:
         """Return (source, path) describing the active override VAE, for metadata."""
@@ -4735,6 +4780,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     self.img2img_pipeline = StableDiffusionImg2ImgPipeline(**self.txt2img_pipeline.components)
 
+                self._carry_latent_identity(self.txt2img_pipeline, self.img2img_pipeline)
                 self.img2img_pipeline = self.img2img_pipeline.to(self.device)
                 print("img2img pipeline created successfully")
 
@@ -5514,6 +5560,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     self.inpaint_pipeline = StableDiffusionInpaintPipeline(**self.txt2img_pipeline.components)
 
+                self._carry_latent_identity(self.txt2img_pipeline, self.inpaint_pipeline)
                 self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
 
             return self._generate_inpaint_sd(params, init_image, mask_image, progress_callback, step_callback)

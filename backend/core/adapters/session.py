@@ -35,6 +35,7 @@ from typing import (Any, Callable, Dict, Iterable, List, Mapping, NamedTuple,
 import torch
 import torch.nn as nn
 
+from .base_identity import BaseLatentIdentity, check_base_latent
 from .capability import (ADAPTER_PAIRS, BLOCK_SWAP_REFUSAL_CODE,
                          BLOCK_SWAP_WARNING_CODE, ORDINARY_LORA,
                          adapter_refusal_reason, block_swap_refusal_reason,
@@ -185,6 +186,8 @@ class AdapterSession:
             Callable[["AdapterFile", "ApplyCounts"],
                      Union[str, BaseException, None]]] = None,
         canonicalize_foreign_keys: bool = False,
+        base_latent: Optional[
+            Callable[[], Optional[BaseLatentIdentity]]] = None,
     ):
         """``label`` prefixes the console, ``message_label`` names the adapter
         to the user; separate because one architecture spells itself
@@ -202,6 +205,10 @@ class AdapterSession:
         ``core.adapters.capability`` and unset enables nothing.
         ``canonicalize_foreign_keys`` rewrites Diffusers/PEFT spellings before
         this architecture parses -- off by default, see ``_canonicalize``.
+
+        ``base_latent()`` returns the LOADED model's latent identity, asked per
+        file so a model reload is seen; unset leaves the D10 latent-space gate
+        inert.
         """
         self._resolve_path = resolve_path
         self._warn_callback = warn
@@ -214,6 +221,7 @@ class AdapterSession:
         self._prepare_file = prepare_file
         self._describe_zero_targets = describe_zero_targets
         self._canonicalize_foreign_keys = canonicalize_foreign_keys
+        self._base_latent = base_latent
         self._states: Dict[str, _ComponentState] = {}
 
     # -- bookkeeping -------------------------------------------------------
@@ -372,6 +380,7 @@ class AdapterSession:
         step_range = tuple(int(x) for x in raw_range) if raw_range is not None else None
 
         tensors, codec = self._canonicalize(tensors, metadata)
+        self._refuse_foreign_latent_space(name, metadata)
         self._refuse_unsupported_algebra(name, codec)
 
         self._log(f"[{self._label}] Loaded {len(tensors)} tensors from {raw_path}")
@@ -393,6 +402,39 @@ class AdapterSession:
             step_range=step_range,
             codec=codec,
         )
+
+    def _refuse_foreign_latent_space(self, name: str,
+                                     metadata: Mapping[str, str]) -> None:
+        """The D10 gate: refuse an adapter trained in another latent space.
+
+        BEFORE the shape gate on purpose (design §9.4). On the architectures
+        that do target the patch embedder a VAE swap also moves shapes, and
+        ``SHAPE_MISMATCH`` would report that as partial application; on the
+        rest nothing moves at all, which is the case this gate exists for.
+        Inert while ``base_latent`` is unset -- the session cannot invent the
+        loaded model's latent space.
+        """
+        if self._base_latent is None:
+            return
+        try:
+            model = self._base_latent()
+        except Exception as e:
+            self._log(f"[{self._label}] base latent identity unavailable "
+                      f"({type(e).__name__}); skipping the latent-space check")
+            return
+        verdict = check_base_latent(BaseLatentIdentity.from_metadata(metadata),
+                                    model, name=name)
+        if verdict.ok:
+            return
+        if not verdict.refuse:
+            self._log(f"[{self._label}] WARNING: {verdict.message}")
+            self.warn(verdict.message, verdict.code)
+            return
+        # No `message_label` prefix: the shared verdict text already names the
+        # file, and a second name reads as two different adapters.
+        error = AdapterIncompatible(verdict.message, code=verdict.code)
+        self._log(f"[{self._label}] ERROR: {error.message}")
+        raise self._refuse(error)
 
     def _refuse_unsupported_algebra(self, name: str, codec: CodecSpec) -> None:
         """Refuse a LoHa/LoKr/DoRA file HERE, before any slot is mutated.

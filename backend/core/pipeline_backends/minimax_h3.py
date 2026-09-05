@@ -655,6 +655,10 @@ class MiniMaxH3Mixin:
                 resolve_path=self._minimax_h3_resolve_lora_path,
                 warn=self._minimax_h3_lora_warn,
                 architecture="minimax_h3",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="MiniMax-H3 LoRA",
                 message_label="MiniMax-H3 LoRA",
                 count_declared_branches=self._minimax_h3_count_declared_branches,

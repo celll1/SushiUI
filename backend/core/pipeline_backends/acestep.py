@@ -788,6 +788,10 @@ class AceStepMixin:
                 resolve_path=self._acestep_resolve_lora_path,
                 warn=self._acestep_lora_warn,
                 architecture="acestep",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="AceStep LoRA",
                 message_label="ACE-Step LoRA",
                 count_declared_branches=self._acestep_count_declared_branches,

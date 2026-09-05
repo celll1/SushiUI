@@ -406,6 +406,10 @@ class Flux2Mixin:
                 resolve_path=self._flux2_resolve_lora_path,
                 warn=self._flux2_lora_warn,
                 architecture="flux2",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="FLUX.2 LoRA",
                 count_declared_branches=self._flux2_declared_branches,
                 missing_file=self._flux2_missing_lora,

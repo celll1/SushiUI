@@ -290,6 +290,10 @@ class LTX2Mixin:
                 resolve_path=self._ltx2_resolve_lora_path,
                 warn=self._ltx2_lora_warn,
                 architecture="ltx2",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="LTX-2.3 LoRA",
                 message_label="LTX-2.3 LoRA",
                 count_declared_branches=self._ltx2_count_declared_branches,

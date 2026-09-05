@@ -136,6 +136,10 @@ class Ideogram4Mixin:
                 resolve_path=self._ideogram4_resolve_lora_path,
                 warn=self._ideogram4_lora_warn,
                 architecture="ideogram4",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="Ideogram 4 LoRA",
                 count_declared_branches=self._ideogram4_declared_branches,
                 missing_file=self._ideogram4_missing_lora,

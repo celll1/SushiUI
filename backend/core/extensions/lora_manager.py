@@ -409,7 +409,9 @@ def _header_shape(handle, key: str):
         return ()
 
 
-def _unknown_adapter_fields(reason: str) -> Dict[str, Any]:
+def _unknown_adapter_fields(reason: str, metadata=None) -> Dict[str, Any]:
+    from core.adapters.base_identity import BaseLatentIdentity, report_fields
+
     return {
         "adapter_type": "unknown",
         "adapter_algorithm": "unknown",
@@ -419,6 +421,9 @@ def _unknown_adapter_fields(reason: str) -> Dict[str, Any]:
         "adapter_state_reason": reason,
         "adapter_rank": None,
         "adapter_alpha": None,
+        # Failed ALGEBRA detection says nothing about the file's declared
+        # latent space, which is read from the metadata block directly.
+        **report_fields(BaseLatentIdentity.from_metadata(metadata)),
     }
 
 
@@ -431,6 +436,7 @@ def detect_adapter_fields(tensors, metadata,
     "unknown" out of the spec; the ARCHITECTURE axis of ``validate()`` is
     neutralised below, and only the ALGEBRA axes decide `adapter_state`.
     """
+    from core.adapters.base_identity import report_fields
     from core.adapters.codec import CodecRegistry
     from core.adapters.session import AdapterRefusal
     from core.adapters.spec import (ALGORITHM_UNKNOWN, AdapterSpec,
@@ -444,7 +450,7 @@ def detect_adapter_fields(tensors, metadata,
         # PEFT export's 1-D `.lora_A.bias` used to raise here. Unknown is a
         # report, never a refusal.
         return _unknown_adapter_fields(
-            f"adapter detection failed ({type(e).__name__})")
+            f"adapter detection failed ({type(e).__name__})", metadata)
 
     fields = {
         "adapter_algorithm": codec.algorithm,
@@ -458,6 +464,9 @@ def detect_adapter_fields(tensors, metadata,
         architecture = None
     spec = AdapterSpec.from_codec(codec, architecture=architecture)
     fields["adapter_type"] = spec.family
+    # Which latent space the file was trained in (design §9.4). Reported, not
+    # judged: the listing has no loaded model to compare against.
+    fields.update(report_fields(spec.base_latent_identity()))
 
     state, reason = ADAPTER_STATE_OK, None
     if codec.algorithm == ALGORITHM_UNKNOWN:
@@ -610,6 +619,39 @@ _LORA_COMPONENT_ATTRS = ("unet", "transformer", "text_encoder",
 # Where a PEFT layer keeps its per-adapter branch: `lora_A` for Linear/Conv
 # targets, `lora_embedding_A` for Embedding ones.
 _LORA_BRANCH_ATTRS = ("lora_A", "lora_embedding_A")
+
+
+def adapter_latent_facts(adapter: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The `base_*` half of a `detect_adapter_fields` record, in the spelling
+    `BaseLatentIdentity.from_facts` reads. None when the file declared none."""
+    if not adapter or adapter.get("base_latent_channels") is None:
+        return None
+    return {
+        "latent_channels": adapter.get("base_latent_channels"),
+        "vae_type": adapter.get("base_vae_type"),
+        "vae_hash": adapter.get("base_vae_hash"),
+        "struct_native": adapter.get("base_vae_struct_native"),
+        "identity_native": adapter.get("base_vae_identity_native"),
+    }
+
+
+def pipeline_latent_identity(pipeline: Any):
+    """The latent identity of a loaded diffusers pipeline (design §9.1).
+
+    ``_sushi_vae_identity`` is the resolved ``component.vae.*`` block, set only
+    for a checkpoint that declares a swap; a native checkpoint has none, and its
+    channel count comes from the VAE it actually carries.
+    """
+    from core.adapters.base_identity import BaseLatentIdentity
+
+    facts = getattr(pipeline, "_sushi_vae_identity", None)
+    identity = BaseLatentIdentity.from_facts(facts)
+    if identity is not None:
+        return identity
+    channels = getattr(getattr(getattr(pipeline, "vae", None), "config", None),
+                       "latent_channels", None)
+    return BaseLatentIdentity(
+        latent_channels=channels if isinstance(channels, int) else None)
 
 
 def _lora_warn(message: str, code: str) -> None:
@@ -1138,6 +1180,36 @@ class LoRAManager:
         _lora_warn(message, code="lora_incompatible")
         raise with_error_code(RuntimeError(message), "lora_incompatible")
 
+    def _check_base_latent(self, pipeline: Any, lora_path, lora_file: str) -> None:
+        """The D10 gate on the diffusers path (design §9.4).
+
+        Sits beside `_refuse_weight_decomposed` for the same reason, and is
+        raised the same way: a VAE swap resizes conv_in/conv_out only, which no
+        adapter targets, so a LoRA from another latent space applies at 100%
+        with zero shape mismatches. The `lora_incompatible` tag is what makes
+        the refusal a 400 rather than a 500 (`generation_status.error_context`).
+        """
+        from api.error_handlers import with_error_code
+        from core.adapters.base_identity import (BaseLatentIdentity,
+                                                 check_base_latent)
+
+        record = self._probe_lora_file(Path(lora_path))
+        if record is None:
+            # Unreadable: `lora_load_failed` names that cause a moment later,
+            # and "declares no latent identity" would name the wrong one.
+            return
+        verdict = check_base_latent(
+            BaseLatentIdentity.from_facts(
+                adapter_latent_facts(record.get("adapter") or {})),
+            pipeline_latent_identity(pipeline), name=lora_file)
+        if verdict.ok:
+            return
+        print(f"[LoRAManager] {'ERROR' if verdict.refuse else 'WARNING'}: "
+              f"{verdict.message}")
+        _lora_warn(verdict.message, code=verdict.code)
+        if verdict.refuse:
+            raise with_error_code(RuntimeError(verdict.message), verdict.code)
+
     def load_loras(self, pipeline: Any, lora_configs: List[Dict[str, Any]]) -> Any:
         """
         Load multiple LoRAs into the pipeline
@@ -1187,8 +1259,10 @@ class LoRAManager:
                 raise with_error_code(FileNotFoundError(message), "lora_not_found")
 
             # Outside the try below on purpose: that block re-wraps everything
-            # it catches as lora_load_failed, and this refusal has its own code.
+            # it catches as lora_load_failed, and these refusals have their own
+            # codes.
             self._refuse_weight_decomposed(lora_path, lora_file)
+            self._check_base_latent(pipeline, lora_path, lora_file)
 
             adapter_name = f"lora_{i}"
             file_pairs = 0

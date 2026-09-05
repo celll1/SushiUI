@@ -18,7 +18,7 @@ import {
   getLoraInfo,
   archDisplayName,
 } from "@/utils/api";
-import { useStartup } from "@/contexts/StartupContext";
+import { ModelInfo, useStartup } from "@/contexts/StartupContext";
 
 // Display spelling only; the VALUES come from the backend detector
 // (GET /loras -> adapter_type). An unmapped value renders as itself, so a
@@ -41,6 +41,28 @@ const ADAPTER_TYPE_ASSERTIONS: AdapterTypeAssertion[] = [
 
 function adapterTypeLabel(value: string): string {
   return ADAPTER_TYPE_LABELS[value] || value;
+}
+
+// The loaded model's latent space, as GET /models/current reports it. A VAE
+// swap is invisible to every shape-based check (it resizes conv_in/conv_out or
+// the patch embedder, which no adapter targets), so this comparison is the only
+// thing that can tell the user in advance. The BACKEND is authoritative and
+// refuses the request with `lora_incompatible`; this only greys the option so
+// the refusal is not a surprise.
+function latentRefusalReason(
+  entry: LoRAListEntry | undefined,
+  model: ModelInfo | null | undefined,
+): string | null {
+  if (!entry || !model) return null;
+  const modelChannels = model.latent_channels ?? null;
+  const entryChannels = entry.base_latent_channels ?? null;
+  if (entryChannels != null && modelChannels != null && entryChannels !== modelChannels) {
+    return `Trained against a ${entryChannels}-channel latent space; this model has ${modelChannels}.`;
+  }
+  if (entryChannels == null && model.vae_struct_native === false) {
+    return "Declares no base latent identity, and this model runs on a swapped VAE with a different channel layout.";
+  }
+  return null;
 }
 
 // Display order for LoRA architecture groups. "unknown" is a first-class
@@ -99,6 +121,7 @@ interface LoRAAdapterNoteProps {
   onAssert: (adapter_type: AdapterTypeAssertion) => void;
   families?: ArchAdapterFamilies;
   disabled?: boolean;
+  latentReason?: string | null;
 }
 
 // What the FILE is (detected by the backend), and -- separately -- whether the
@@ -107,7 +130,7 @@ interface LoRAAdapterNoteProps {
 // `GET /schema/arch-capabilities`. The reason shown for a family the
 // architecture refuses is the backend's own sentence, so what the user reads
 // here is what the request would answer with.
-function LoRAAdapterNote({ entry, asserted, onAssert, families, disabled }: LoRAAdapterNoteProps) {
+function LoRAAdapterNote({ entry, asserted, onAssert, families, disabled, latentReason }: LoRAAdapterNoteProps) {
   const detected = (entry?.adapter_type ?? undefined) as DetectedAdapterType | undefined;
   if (!detected) return null;
 
@@ -144,6 +167,12 @@ function LoRAAdapterNote({ entry, asserted, onAssert, families, disabled }: LoRA
       </div>
 
       {invalidReason && <div className="text-amber-400">{invalidReason}</div>}
+
+      {latentReason && (
+        <div className="text-red-400">
+          This model would refuse this LoRA -- {latentReason}
+        </div>
+      )}
 
       {unsupportedReason && (
         <div className="text-amber-400">
@@ -287,7 +316,10 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
 }
 
 export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed", simpleMode = false, loadedArch = null, onApplyRecommended }: LoRASelectorProps) {
-  const { isBackendReady, modelLoaded, archCapabilities, generationDefaults } = useStartup();
+  // `modelInfo` is read here for its LATENT IDENTITY only. Taken from the
+  // shared context rather than a prop so no call site can forget it and
+  // silently lose the gate's advance notice.
+  const { isBackendReady, modelLoaded, archCapabilities, generationDefaults, modelInfo } = useStartup();
   const [availableLoras, setAvailableLoras] = useState<Array<LoRAListEntry>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
   const mountedRef = useRef(true);
@@ -419,11 +451,20 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
                     key={archKey}
                     label={`${archKey === "unknown" ? "Unknown" : (archDisplayName(archKey) || archKey)}${archKey === loadedArch ? " (loaded)" : ""}`}
                   >
-                    {archGroups.get(archKey)!.map((availLora) => (
-                      <option key={availLora.path} value={availLora.path}>
-                        {availLora.name}
-                      </option>
-                    ))}
+                    {archGroups.get(archKey)!.map((availLora) => {
+                      // Greyed, not filtered: an already-selected LoRA must
+                      // still render its own name in the closed select.
+                      const refused = latentRefusalReason(availLora, modelInfo);
+                      return (
+                        <option
+                          key={availLora.path}
+                          value={availLora.path}
+                          disabled={!!refused && availLora.path !== lora.path}
+                        >
+                          {availLora.name}{refused ? " (different latent space)" : ""}
+                        </option>
+                      );
+                    })}
                   </optgroup>
                 ))}
               </select>
@@ -443,6 +484,7 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
               onAssert={(adapter_type) => updateLora(index, { adapter_type })}
               families={adapterFamilies}
               disabled={disabled}
+              latentReason={latentRefusalReason(detectionByPath.get(lora.path), modelInfo)}
             />
 
             <LoRARecommendedNote

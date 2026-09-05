@@ -90,6 +90,10 @@ class AnimaMixin:
                 resolve_path=self._anima_resolve_lora_path,
                 warn=self._anima_lora_warn,
                 architecture="anima",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="Anima LoRA",
                 count_declared_branches=self._anima_declared_branches,
                 missing_file=self._anima_missing_lora,

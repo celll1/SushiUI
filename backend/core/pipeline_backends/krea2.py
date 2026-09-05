@@ -211,6 +211,10 @@ class Krea2Mixin:
                 resolve_path=self._krea2_resolve_lora_path,
                 warn=self._krea2_lora_warn,
                 architecture="krea2",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 # The console prefix this backend has always used, and the
                 # noun its user-visible failure text spells with a space.
                 label="Krea2 LoRA",

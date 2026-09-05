@@ -13,6 +13,7 @@ import torch.nn as nn
 from safetensors.torch import save_file
 
 from core.adapters import LoRALinearLayer, count_quantized_linears
+from core.adapters.base_identity import BaseLatentIdentity
 from core.adapters.capability import AXIS_TRAINING
 from core.adapters.layers import (new_adapter_branch,
                                   validate_adapter_options)
@@ -262,6 +263,48 @@ def refuse_untrainable_algebra(spec: TrainingAdapterSpec, capability,
             f"direction and norm every forward, and this setting quantizes that "
             f"base before the adapter is injected. Clear fp8_base_dtype, or "
             f"train an additive algebra.")
+
+
+def base_latent_channels(trainer) -> Optional[int]:
+    """The channel count of the latent space this run trains in, or None.
+
+    The run's own resolved wiring first (a VAE swap rewrites it), then the
+    architecture's constant. ``0`` is the pixel-space architectures' wiring
+    value and reads as "states nothing", never as zero channels.
+    """
+    for spec in (getattr(trainer, "wiring", None),
+                 getattr(getattr(trainer, "arch", None), "wiring", None)):
+        channels = getattr(spec, "latent_channels", None)
+        if channels:
+            return int(channels)
+    channels = getattr(trainer, "vae_latent_channels", None)
+    return int(channels) if channels else None
+
+
+def base_latent_metadata(trainer) -> Dict[str, str]:
+    """The ``sushi.base.*`` block: which latent space this adapter was trained
+    in (design §9.4 / D10).
+
+    Written by every architecture's LoRA save through ``save_checkpoint``,
+    because a VAE swap resizes only ``Conv2d``/patch-embed modules that no
+    adapter targets -- so without this block a checkpoint trained in another
+    latent space applies with zero shape mismatches. Empty when the run's
+    channel count is unresolvable: a wrong number here would refuse a good
+    adapter, and absence is a D10 row of its own.
+    """
+    channels = base_latent_channels(trainer)
+    if channels is None:
+        return {}
+    identity = getattr(trainer, "vae_identity", None)
+    if identity is None or getattr(identity, "identity_native", True):
+        return BaseLatentIdentity(latent_channels=channels).to_metadata()
+    return BaseLatentIdentity(
+        latent_channels=int(getattr(identity, "latent_channels", 0) or channels),
+        vae_type=getattr(identity, "family", None),
+        vae_hash=getattr(identity, "content_hash", None),
+        struct_native=bool(getattr(identity, "struct_native", False)),
+        identity_native=False,
+    ).to_metadata()
 
 
 def resolve_training_adapter_spec(trainer) -> TrainingAdapterSpec:
@@ -514,8 +557,10 @@ class BaseLoRAAdapter(ABC):
         """
         metadata = self.checkpoint_metadata(lora_layers, step, epoch)
         # The architecture's keys win a clash: they carry its own spelling of
-        # model_type/lora_alpha, and the spec block adds only sushi.adapter.*.
-        metadata = {**self.adapter_spec.metadata(), **metadata}
+        # model_type/lora_alpha, and the two shared blocks add only
+        # sushi.adapter.* and sushi.base.*.
+        metadata = {**self.adapter_spec.metadata(),
+                    **base_latent_metadata(self.trainer), **metadata}
         save_file(self.export_state_dict(lora_layers), str(output_path), metadata=metadata)
         # Metadata fields are available to the log format (SenseNova names its
         # branch from lora_targets); the three below always win a name clash.

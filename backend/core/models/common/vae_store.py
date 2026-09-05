@@ -50,7 +50,10 @@ from typing import Dict, Optional
 #   diffusers_repo   : default_repo is a diffusers-layout directory (config.json +
 #                      weights). False = original/LDM single-file release, which
 #                      `from_pretrained` cannot open.
-#   preview          : TAESD preview-decoder kind, or None for the generic path
+#   preview          : live-preview decoder kind for this latent space
+#                      ("taesd"/"taesdxl"/"taef1" tiny autoencoders, "matrix16"/
+#                      "matrix32" linear latent->RGB projections), or None when
+#                      nothing in core/utils/taesd.py can decode it
 #   license          : SPDX-ish license string of the default repo
 #   scaling_factor   : the family's canonical latent scaling factor, or None when
 #                      the family does not have a single scalar one (see below)
@@ -111,7 +114,7 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "norm_pack": 1,
         # Original/LDM single-file release (a bare .safetensors, no config.json).
         "diffusers_repo": False,
-        "preview": None,
+        "preview": "taesd",     # taesd.py generic (SD1.5) path
     },
     "flux1": {
         "class": "AutoencoderKL",
@@ -146,7 +149,7 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "norm": "batchnorm",
         "norm_pack": 2,
         "diffusers_repo": True,
-        "preview": None,
+        "preview": "matrix32",  # taesd.py FLUX.2 32ch latent->RGB projection
     },
     "qwen_image": {
         "class": "AutoencoderKLQwenImage",
@@ -163,7 +166,7 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "norm": "per_channel",
         "norm_pack": 1,
         "diffusers_repo": True,
-        "preview": None,
+        "preview": "matrix16",  # taesd.py Wan21 16ch latent->RGB projection
     },
 }
 

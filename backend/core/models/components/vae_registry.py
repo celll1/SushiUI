@@ -66,8 +66,26 @@ def vae_latent_channels(vae_type: str) -> int:
     return VAE_REGISTRY[vae_type]["channels"]
 
 
-def preview_decoder_for(vae_type: str) -> str:
-    return VAE_REGISTRY.get(vae_type, {}).get("preview") or "matrix"
+#: Linear latent->RGB projection tables `taesd.py` carries, by channel count.
+#: The fallback for a VAE that names no family (a ``file:``/``model:`` source
+#: resolves to family "custom"), where the channel count is all there is to go on.
+_PROJECTION_PREVIEW_BY_CHANNELS = {16: "matrix16", 32: "matrix32"}
+
+
+def preview_decoder_for(vae_type: Optional[str],
+                        latent_channels: Optional[int] = None) -> str:
+    """Live-preview decoder kind for a VAE family, or "" when none can decode it.
+
+    Reads the family table rather than this module's loader projection, which
+    drops the families it cannot ``from_pretrained`` (sd15, flux2, qwen_image)
+    — those still have a preview decoder.
+    """
+    entry = _VAE_FAMILIES.get(vae_type or "")
+    if entry is not None:
+        return str(entry.get("preview") or "")
+    if latent_channels is None:
+        return ""
+    return _PROJECTION_PREVIEW_BY_CHANNELS.get(int(latent_channels), "")
 
 
 def _local_candidates(vae_type: str, local_dir: Optional[str]) -> list:

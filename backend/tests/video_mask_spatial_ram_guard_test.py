@@ -69,6 +69,17 @@ def _routes_source() -> str:
         return f.read()
 
 
+def _endpoint_section(source: str, signature: str) -> str:
+    """The endpoint's own source, bounded by the next route decorator.
+
+    A fixed character window silently shrinks the section as routes.py grows,
+    and an assertion then fails on a substring that is merely out of frame.
+    """
+    anchor = source.index(signature)
+    end = source.find("\n@router.", anchor)
+    return source[anchor:end if end != -1 else len(source)]
+
+
 def _make_timeline(width: int, height: int, clip_frames: int) -> MaskTimelineManifest:
     canvas = MaskCanvas(width=width, height=height)
     kf0 = MaskKeyframe(id="k0", frame=0, mask_id="m", interpolation_to_next="hold", transform=MaskTransform())
@@ -131,9 +142,7 @@ def test_build_spatial_mask_plan_peak_stays_within_the_documented_multiplier(cli
 # 2. The route's own guard: wiring, not behavior (see module docstring for why).
 # ---------------------------------------------------------------------------
 def test_the_route_defines_and_calls_the_spatial_mask_ram_guard():
-    source = _routes_source()
-    anchor = source.index("def generate_inpaint_video(")
-    section = source[anchor:anchor + 40000]
+    section = _endpoint_section(_routes_source(), "def generate_inpaint_video(")
 
     assert "def _refuse_if_spatial_mask_generation_too_large(" in section, (
         "generate_inpaint_video must define a dedicated RAM guard for the "
@@ -148,9 +157,7 @@ def test_the_route_defines_and_calls_the_spatial_mask_ram_guard():
 
 
 def test_the_guard_is_called_only_when_a_spatial_mask_is_present_and_before_the_gpu_slot():
-    source = _routes_source()
-    anchor = source.index("def generate_inpaint_video(")
-    section = source[anchor:anchor + 40000]
+    section = _endpoint_section(_routes_source(), "def generate_inpaint_video(")
 
     guard_call_pos = section.index("_refuse_if_spatial_mask_generation_too_large(\n            clip_frames=")
     # Guarded by `if spatial_mask_timeline is not None:` immediately above the

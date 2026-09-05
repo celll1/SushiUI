@@ -44,6 +44,36 @@ def _make_pid_decode_progress(progress_callback):
     return _decode_cb
 
 
+def _loaded_wiring():
+    """The loaded model's resolved ComponentWiringSpec, or None.
+
+    Lives on the pipeline manager (`_fold_sd_latent_identity`), not on the
+    diffusers pipeline this module is handed, and is absent inside a training
+    subprocess -- both callers below fall back to the pipeline's own VAE.
+    """
+    try:
+        from core.pipeline import pipeline_manager
+        return getattr(pipeline_manager, "_sushi_wiring", None)
+    except Exception:
+        return None
+
+
+def latent_scale_factor(pipeline) -> int:
+    """Spatial compression of the VAE this generation runs on."""
+    factor = getattr(_loaded_wiring(), "vae_scale_factor", None)
+    return int(factor or getattr(pipeline, "vae_scale_factor", 8))
+
+
+def latent_channels_for(pipeline) -> int:
+    """Latent channel count this generation runs on -- the checkpoint's own
+    number when it declared a replaced VAE, else the architecture's."""
+    channels = getattr(_loaded_wiring(), "latent_channels", None)
+    if not channels:
+        vae = getattr(pipeline, "vae", None)
+        channels = getattr(getattr(vae, "config", None), "latent_channels", None)
+    return int(channels or 4)
+
+
 def get_inpaint_use_dedicated_model_setting() -> bool:
     """Get the inpaint_use_dedicated_model setting from database.
 
@@ -2172,8 +2202,9 @@ def custom_sampling_loop(
     # Prepare latents
     if latents is None:
         latent_channels = unet.config.in_channels
-        latent_height = height // 8
-        latent_width = width // 8
+        _scale = latent_scale_factor(pipeline)
+        latent_height = height // _scale
+        latent_width = width // _scale
 
         # Ensure generator is on the correct device
         if generator.device.type != device:
@@ -4525,13 +4556,14 @@ def custom_inpaint_sampling_loop(
             print(f"[CustomSampling] Resizing mask_image from {mask_image.size} to ({width}, {height})")
             mask_image = mask_image.resize((width, height), Image.Resampling.LANCZOS)
 
-    # Check if this is an inpaint-specific UNet (9 channels) or regular UNet (4 channels)
-    # Regular UNets cannot accept concatenated mask+image, so we'll use img2img-style masking
+    # Check if this is an inpaint-specific UNet (latent + masked latent + 1 mask
+    # channel) or a regular one. Regular UNets cannot accept the concatenated
+    # mask+image, so we'll use img2img-style masking.
     #
-    # NEW: User setting controls whether to use dedicated 9ch inpaint model or mask blending
+    # NEW: User setting controls whether to use dedicated inpaint model or mask blending
     # - inpaint_use_dedicated_model=False (default): Always use mask blending (like Z-Image/FLUX.2)
-    # - inpaint_use_dedicated_model=True: Use 9ch inpaint model if available (legacy SD/SDXL method)
-    unet_supports_9ch = unet.config.in_channels == 9
+    # - inpaint_use_dedicated_model=True: Use the dedicated inpaint model if available (legacy SD/SDXL method)
+    unet_supports_9ch = unet.config.in_channels == 2 * latent_channels_for(pipeline) + 1
     use_dedicated_model_setting = get_inpaint_use_dedicated_model_setting()
 
     # Only use 9ch inpaint mode if BOTH: setting is enabled AND UNet supports it

@@ -167,6 +167,31 @@ _PRED_X0_PREVIEW_ARCHS = frozenset({
 })
 
 
+def _preview_vae_kind(info: dict) -> Optional[str]:
+    """Preview-decoder kind for a checkpoint whose VAE is not its architecture's
+    own, or None to leave the architecture's own routing alone.
+
+    Only a model that DECLARED a replaced VAE is re-routed (`identity_native`
+    is False, VAE_SWAP_MIGRATION_DESIGN.md §5.2), so a native checkpoint never
+    reaches the second half of this and keeps the is_* flags above verbatim.
+    An empty string means no decoder exists for that latent space.
+    """
+    if info.get("vae_identity_native") is not False:
+        return None
+    from core.models.components.vae_registry import preview_decoder_for
+
+    channels = info.get("latent_channels")
+    kind = preview_decoder_for(info.get("vae_type"), channels)
+    if kind:
+        return kind
+    from core.models.component_registry import _WIRING_BY_ARCH
+    spec = _WIRING_BY_ARCH.get(str(info.get("type") or "").lower())
+    if channels is not None and channels == getattr(spec, "latent_channels", None):
+        # Same shape as the architecture's own latent: its decoder still fits.
+        return None
+    return "none"
+
+
 def preview_arch_kwargs(
     pipeline_manager,
     pipeline,
@@ -189,7 +214,22 @@ def preview_arch_kwargs(
     is_zimage = model_type == "zimage"
     is_minit2i = model_type == "minit2i"
 
+    vae_preview_kind = _preview_vae_kind(info)
+    if vae_preview_kind == "none":
+        try:
+            from api.generation_status import add_warning
+            add_warning(
+                f"Live preview is off for this generation: the loaded checkpoint runs on a "
+                f"replaced VAE ({info.get('latent_channels')}-channel, "
+                f"{info.get('vae_provenance') or info.get('vae_type')}) that no preview "
+                f"decoder covers.",
+                code="preview_unavailable",
+            )
+        except Exception:
+            pass
+
     return {
+        "vae_preview_kind": vae_preview_kind,
         "is_sdxl": pipeline is not None and "XL" in pipeline.__class__.__name__,
         "is_zimage": is_zimage,
         "is_deus": model_type == "deus",
@@ -228,6 +268,7 @@ def create_progress_callback_factory(
     is_minit2i: bool = False,
     minit2i_vae_type: str = "none",
     is_krea2: bool = False,
+    vae_preview_kind: Optional[str] = None,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
@@ -250,6 +291,8 @@ def create_progress_callback_factory(
         is_deus: DEUSモデルかどうか
         is_zimage_sdxl_vae: Z-ImageでSDXL VAE（4ch）を使用しているかどうか
         is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
+        vae_preview_kind: VAEを差し替えたチェックポイントのプレビューデコーダ種別
+            （`_preview_vae_kind`が決定）。Noneならarch既定の経路のまま
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
         image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
@@ -303,7 +346,7 @@ def create_progress_callback_factory(
             try:
                 # Debug: Log model type being used for preview
                 if step == -1 or step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, vae_preview_kind={vae_preview_kind}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
 
                 # Choose which latent to decode based on preview_predicted_x0 option
                 # If preview_predicted_x0 is True and pred_original_sample is available, use it
@@ -328,7 +371,8 @@ def create_progress_callback_factory(
                     is_krea2=is_krea2,
                     image_width=image_width,
                     image_height=image_height,
-                    preview_decoder=preview_decoder
+                    preview_decoder=preview_decoder,
+                    vae_preview_kind=vae_preview_kind,
                 )
                 if preview_pil:
                     buffered = BytesIO()

@@ -138,6 +138,15 @@ def start_generation(generation_type: str) -> int:
         # the live warnings of the newest generation.
         _state["warnings"] = _buckets[gen_id]
     _current_generation.set(gen_id)
+    # Replay what the MODEL LOAD had to say. A loader runs outside any
+    # generation, so its own add_warning() calls land nowhere; the manager
+    # queues them instead and this is the first moment there is a bucket.
+    # Drained, not copied: they describe the load, not this generation.
+    try:
+        for entry in pipeline_manager.consume_load_warnings():
+            add_warning(entry.get("message", ""), code=entry.get("code"))
+    except Exception:
+        pass
     # Start recording which attention backend(s) this generation actually runs
     # (see core/attention/observed.py). Best-effort and lazily imported: the
     # status store must not hard-depend on the attention conduit, and a build

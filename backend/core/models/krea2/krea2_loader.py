@@ -234,6 +234,14 @@ def load_krea2_components(
         model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
     )
 
+    # The VAE this checkpoint was trained with, when it is not Krea 2's own. Read
+    # BEFORE the transformer is built (design §8.2, §9.1); an unresolvable
+    # declaration raises rather than falling back to the Qwen-Image VAE.
+    declared_vae = None
+    if is_single_file:
+        from core.models.common.vae_source import load_declared_latent_io
+        declared_vae = load_declared_latent_io(model_path, arch="krea2")
+
     embedded_te_sd = None
     embedded_vae_sd = None
     if is_single_file:
@@ -249,6 +257,20 @@ def load_krea2_components(
         transformer = _build_transformer_from_dir(model_path, torch_dtype)
         is_distilled = _detect_is_distilled_dir(model_path)
         config = dict(getattr(transformer, "config", KREA2_DEFAULT_CONFIG))
+
+    if declared_vae is not None:
+        # in_channels is the PACKED width (C * patch^2), which is what
+        # Krea2Transformer2DModel's config means and what the resize wrote back.
+        expected = declared_vae.latent_channels * 4
+        built = int(getattr(transformer.img_in, "in_features", 0))
+        if built != expected:
+            raise ValueError(
+                f"{model_path} declares {declared_vae.latent_channels} latent "
+                f"channels (img_in should face {expected} packed features) but was "
+                f"built facing {built}; refusing to load a checkpoint whose "
+                f"declaration and weights disagree about the latent space")
+        print(f"[Krea2Loader] Declares a non-native VAE ({declared_vae.provenance}, "
+              f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
 
     scheduler = _load_scheduler(model_path)
 
@@ -278,15 +300,23 @@ def load_krea2_components(
 
     # Embedded (trained) VAE from a bundle_vae single-file overrides default
     # resolution; absent -> resolve companion/store VAE as before.
-    if embedded_vae_sd is not None:
+    if declared_vae is not None:
+        # The declared VAE carries its own class and config; the Qwen-Image
+        # rebuild above only knows how to reattach Qwen-Image weights.
+        vae = declared_vae.load_module(torch_dtype=torch_dtype)
+        vae.to("cpu")
+        vae_embedded = bool(embedded_vae_sd is not None)
+        vae_source, vae_path = declared_vae.provenance, declared_vae.path
+    elif embedded_vae_sd is not None:
         print("[Krea2Loader] Using embedded VAE weights from single-file bundle")
         vae = _build_embedded_qwen_image_vae(embedded_vae_sd, torch_dtype)
         vae_embedded = True
     else:
         vae = _load_qwen_image_vae(resolved_vae, torch_dtype)
         vae_embedded = False
-    from core.models.common.vae_store import vae_identity
-    vae_source, vae_path = vae_identity(vae, embedded=vae_embedded)
+    if declared_vae is None:
+        from core.models.common.vae_store import vae_identity
+        vae_source, vae_path = vae_identity(vae, embedded=vae_embedded)
     vae_scale_factor = 2 ** len(vae.temperal_downsample) if hasattr(vae, "temperal_downsample") else 8
 
     select_layers = config.get("text_encoder_select_layers") or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
@@ -302,6 +332,8 @@ def load_krea2_components(
         "vae_source": vae_source,
         "vae_path": vae_path,
         "vae_scale_factor": vae_scale_factor,
+        "declared_vae": declared_vae,
+        "vae_identity": (None if declared_vae is None else declared_vae.facts()),
         "is_distilled": bool(is_distilled),
         "text_encoder_select_layers": list(select_layers),
         "patch_size": 2,

@@ -58,6 +58,19 @@ def check_swap_method(source: str, method: str) -> None:
         )
 
 
+def check_capability(source: str, arch: Optional[str], method: str) -> None:
+    """The served refusal, enforced. An architecture whose wave has not landed
+    is listed in ``api/arch_capabilities`` -- the only place that decision lives
+    -- and the frontend hides the control; this is the same answer for a caller
+    that posts the field anyway or hand-writes the YAML."""
+    from api.arch_capabilities import training_feature_unsupported_reason
+
+    reason = training_feature_unsupported_reason(arch, "vae_swap", method)
+    if reason:
+        raise ValueError(f"vae_swap_source={source!r} is not supported for "
+                         f"{arch or 'this model'}: {reason}")
+
+
 def check_bundling(source: str, bundle_vae_explicit_false: bool) -> None:
     """D7 / §8.7: an extracted VAE has no locator a reader could resolve, so a
     ``model:`` swap that refuses to bundle would produce a checkpoint nothing can
@@ -117,6 +130,7 @@ def preflight_vae_swap(
         check_inherited_bundling(base_model_path, arch, bundle_vae_explicit_false)
         return ""
     check_swap_method(source, method)
+    check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
 
     try:

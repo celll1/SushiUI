@@ -1317,6 +1317,10 @@ class ModelLoader:
         Returns ``(transformer_sd, vae_sd, te_sd, layout)`` where ``layout`` is
         ``"official"`` or ``"comfy"``; ``vae_sd`` / ``te_sd`` are ``None`` when the
         corresponding section is absent (genuine Comfy files have neither).
+
+        A VAE-swap save bundles under the unified ``vae.`` prefix instead of
+        ``first_stage_model.`` (design §8.7); both are split off here so neither
+        can reach the strict transformer load.
         """
         vae_sd: dict = {}
         te_sd: dict = {}
@@ -1324,6 +1328,8 @@ class ModelLoader:
         for k, v in raw.items():
             if k.startswith("first_stage_model."):
                 vae_sd[k[len("first_stage_model."):]] = v
+            elif k.startswith("vae."):
+                vae_sd[k[len("vae."):]] = v
             elif k.startswith("text_encoders."):
                 # Strip ``text_encoders.<name>.`` (e.g. text_encoders.qwen3.).
                 rest = k[len("text_encoders."):]
@@ -1451,6 +1457,13 @@ class ModelLoader:
             # single-file save.
             print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
             from core.models.common.single_file_format import read_state_dict
+            from core.models.common.vae_source import load_declared_latent_io
+            # The VAE this checkpoint was trained with, when it is not Z-Image's
+            # own. Read BEFORE construction so the declared channel count is what
+            # the transformer is built at (design §8.2, §9.1). A declaration that
+            # cannot be resolved raises rather than falling back to a VAE the
+            # weights were never trained against.
+            declared_vae = load_declared_latent_io(file_path, arch="zimage")
             raw_state_dict, _raw_metadata = read_state_dict(file_path)
 
             # Normalize: both genuine Comfy checkpoints AND sushiUI full-FT saves
@@ -1532,6 +1545,17 @@ class ModelLoader:
                             actual_in_channels = detected_in_channels
                     break
 
+            if declared_vae is not None:
+                if declared_vae.latent_channels != actual_in_channels:
+                    raise ValueError(
+                        f"{file_path} declares {declared_vae.latent_channels} latent "
+                        f"channels but its x_embedder faces {actual_in_channels}; "
+                        f"refusing to load a checkpoint whose declaration and weights "
+                        f"disagree about the latent space")
+                print(f"[ModelLoader] Z-Image declares a non-native VAE "
+                      f"({declared_vae.provenance}, {declared_vae.latent_channels}ch, "
+                      f"{declared_vae.vae_class})")
+
             # Determine VAE type based on in_channels
             use_sdxl_vae = (actual_in_channels == 4)
             if use_sdxl_vae:
@@ -1556,7 +1580,17 @@ class ModelLoader:
             transformer.eval()
 
             # Step 6: Load VAE based on in_channels
-            if use_sdxl_vae:
+            if declared_vae is not None:
+                vae = declared_vae.load_module(torch_dtype=torch.float32)
+                vae.to(device=device)
+                vae.eval()
+                zimage_vae_source = declared_vae.provenance
+                zimage_vae_path = declared_vae.path if (
+                    declared_vae.path and os.path.isdir(str(declared_vae.path))) else None
+                print(f"[ModelLoader] Declared VAE loaded: "
+                      f"latent_channels={declared_vae.latent_channels}, "
+                      f"norm={declared_vae.norm}")
+            elif use_sdxl_vae:
                 # Load SDXL VAE (4-channel latents)
                 print("[ModelLoader] Loading SDXL VAE (4-channel latents)...")
                 sdxl_vae_repo = "madebyollin/sdxl-vae-fp16-fix"
@@ -1619,7 +1653,7 @@ class ModelLoader:
 
             # Reattach the embedded (trained) VAE weights when present, overriding
             # the base VAE downloaded above. Absent => keep the base VAE.
-            if embedded_vae_sd is not None:
+            if embedded_vae_sd is not None and declared_vae is None:
                 ModelLoader._reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
                 vae.to(device=device, dtype=torch.float32)
                 vae.eval()
@@ -1670,7 +1704,8 @@ class ModelLoader:
                 use_dynamic_shifting=scheduler_config.get("use_dynamic_shifting", False),
             )
 
-            vae_type = "sdxl" if use_sdxl_vae else "flux"
+            vae_type = (declared_vae.family if declared_vae is not None
+                        else ("sdxl" if use_sdxl_vae else "flux"))
             print("[ModelLoader] Z-Image Comfy format loaded successfully")
             print(f"  - Transformer: {actual_n_layers} layers, in_channels={actual_in_channels}")
             print(f"  - VAE: {vae_type.upper()} (latent_channels={vae.config.latent_channels})")
@@ -1685,6 +1720,11 @@ class ModelLoader:
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
                 "vae_type": vae_type,  # "sdxl" or "flux" - for TAESD preview selection
+                # None for a native checkpoint; the resolved component.vae.* block
+                # otherwise, for the trainer's swap fold and the pipeline's report.
+                "declared_vae": declared_vae,
+                "vae_identity": (None if declared_vae is None
+                                 else declared_vae.facts()),
             }
 
         except Exception as e:

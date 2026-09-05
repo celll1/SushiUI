@@ -951,16 +951,23 @@ def check_vae_compatibility(facts: Dict[str, Any],
     return True, None
 
 
-def sensenova_token_geometry(scale_factor: int) -> Dict[str, Any]:
-    """SenseNova's token width and recommended resolution band for a VAE (§10.2).
+def sensenova_token_geometry(scale_factor: int,
+                             patch: Optional[int] = None) -> Dict[str, Any]:
+    """SenseNova's token width and recommended resolution band for a VAE.
 
-    The generation-side patch is fixed at P=4 on the latent grid, so one token
-    covers ``4 * scale_factor`` pixels and the current 3-5 MP band moves with
-    ``(scale_factor / 8) ** 2``.
+    One token covers ``patch * scale_factor`` pixels and the 3-5 MP band moves
+    with the square of that. ``patch`` defaults to the served
+    ``sensenova_gen_patch``: the candidate listing is not told which patch the
+    run will use, so what it shows is the default-patch width.
     """
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.models.sensenova.latent_space import validate_gen_patch
+
     scale = int(scale_factor or 1)
-    ratio = (scale / 8.0) ** 2
+    cells = validate_gen_patch(
+        TRAINING_DEFAULTS["sensenova_gen_patch"] if patch is None else patch)
+    ratio = (cells * scale / 32.0) ** 2
     return {
-        "token_pixel_width": 4 * scale,
+        "token_pixel_width": cells * scale,
         "resolution_band_px": [round(3.0e6 * ratio), round(5.0e6 * ratio)],
     }

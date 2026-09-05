@@ -21386,6 +21386,41 @@ components:
           enum: ['zero']
           default: 'zero'
           description: How channels the previous VAE did not have are initialised in the resized latent input/output layers.
+        sensenova_gen_patch:
+          type: 'integer'
+          minimum: 4
+          default: 4
+          description: |
+            SenseNova U1.5 VAE swap only: the generation branch's patch, in
+            LATENT cells. Ignored by every other architecture, and by a
+            SenseNova run with no `vae_swap_source` (a non-default value there
+            is refused rather than silently dropped, since nothing rebuilds the
+            grid).
+
+            Must be a positive multiple of 4: the fm_head's `ps1(2)` and
+            `ps2(2)` leave its final PixelShuffle a factor of `patch/4`, which
+            has to be a positive integer. Tokens can therefore be made COARSER
+            than the pixel model's, never finer.
+
+            One token covers `sensenova_gen_patch * vae_scale_factor` pixels.
+            At the default 4 on an 8x VAE that is 32px — exactly the pixel
+            model's own geometry, so the token count, and with it the
+            transformer's work, is unchanged by the swap. At 8 it is 64px:
+            a quarter of the tokens at the same resolution.
+
+            NOTHING IS RECALIBRATED for a non-default value. `compute_noise_scale`
+            is `sqrt(token_count / base) * noise_scale`, so a coarser patch
+            lowers the initial noise scale — which is also fed to the model
+            through its own `noise_scale_embedder` — by the same factor the
+            patch grows. A `sensenova_gen_patch_off_calibration` warning is
+            emitted on the training_log channel at swap time, carrying the token
+            count and the resulting noise scale. Whether a coarser token trains
+            or generates well is unmeasured.
+
+            The value is written into the saved checkpoint's `gen_patch_size`,
+            and the generation loader rebuilds the tree from it, so a checkpoint
+            trained at 8 reloads at 8.
+          example: 4
         sdxl_vae_type:
           type: 'string'
           default: 'none'

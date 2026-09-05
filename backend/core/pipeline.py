@@ -3706,7 +3706,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """SenseNova's token width, and the one-off notice that it moved.
 
         The pixel model's 32px token grid is what every resolution habit is
-        built on; a swapped checkpoint's is ``4 * vae_scale_factor``, which
+        built on; a swapped checkpoint's is ``gen_patch_size * vae_scale_factor``, which
         changes the resolution a given token count corresponds to. Announced
         once per load rather than left to be discovered (design §10.2).
         """

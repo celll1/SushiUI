@@ -594,7 +594,7 @@ class ConvDecoder(nn.Module):
                                kernel_size=3, padding=1)
 
         # layer 3: the remaining k = gen_patch_size/4 upscale (8 in pixel space,
-        # 1 -- identity -- at the P=4 latent patch).
+        # 1 -- identity -- at the default latent patch of 4).
         self.ps3 = nn.PixelShuffle(shuffle)
 
     def forward(self, x):

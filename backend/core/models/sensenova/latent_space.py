@@ -8,21 +8,22 @@ is unaffected by a swap and must not read from here.
 
 The geometry, in one place:
 
-* the generation patch is ``P = 4`` latent cells, for EVERY compression ratio.
-  The fm_head's ``ps1(2) -> conv1 -> ps2(2) -> ps3(k)`` has total gain ``4k``
-  with ``k`` a positive integer, so 4 is the smallest legal patch;
-* one token therefore covers ``P * vae_scale_factor`` PIXELS -- 32 with an 8x
-  VAE, which is the pixel model's own geometry, and 64 with a 16x one. The
-  token COUNT is preserved at a resolution that scales with the VAE, so at 8x
-  the resolution does not scale at all and the transformer does IDENTICAL work:
-  a swap at 8x costs a VAE encode and buys no compute back. Token count falls
-  as ``1/s**2`` only above 8x;
-* the gen ViT's patch embed faces ``P / merge_size = 2`` latent cells, and the
-  fm_head's final PixelShuffle factor is ``k = P / 4 = 1``. Neither depends on
-  the compression ratio, so no 16x VAE needs extra weight surgery.
+* the generation patch ``P`` is measured in LATENT cells and is a per-run
+  choice, not a structure. The fm_head's ``ps1(2) -> conv1 -> ps2(2) -> ps3(k)``
+  has total gain ``4k`` with ``k`` a positive integer, so the only rule is that
+  ``P`` is a positive multiple of 4 -- tokens can be made coarser, never finer.
+  The default is ``P = 4`` (``TRAINING_DEFAULTS["sensenova_gen_patch"]``);
+* one token covers ``P * vae_scale_factor`` PIXELS -- 32 at ``P=4`` on an 8x
+  VAE, which is the pixel model's own geometry, so a swap there preserves the
+  token count exactly and the transformer does IDENTICAL work (§10.6 measured
+  it 8% slower for the added encode). The token count falls as ``1/P**2``:
+  ``P=8`` on an 8x VAE is 64px per token, a quarter of the tokens;
+* the gen ViT's patch embed faces ``P / merge_size`` latent cells and the
+  fm_head's final PixelShuffle factor is ``k = P / 4``. Neither depends on the
+  compression ratio, so no 16x VAE needs extra weight surgery.
 
-This module makes no claim about whether a swapped model trains or generates
-well; §10.6 leaves that to measurement on real data.
+This module makes no claim about whether any ``P`` or any ``vae_scale_factor``
+trains or generates well; §10.6 leaves that to measurement on real data.
 """
 
 from __future__ import annotations
@@ -36,9 +37,22 @@ from torch import nn
 
 from core.models.components.latent_io import ResizeReport
 
-#: The generation patch, on the LATENT grid. Fixed for every ``vae_scale_factor``
-#: (§10.2); the pixel model's own patch is 32 and is read off the checkpoint.
-GEN_LATENT_PATCH = 4
+#: The smallest legal generation patch on the LATENT grid: ``ps1(2)*ps2(2)``
+#: leaves ``ps3 = P/4``, which has to be a positive integer. NOT a default --
+#: the run's patch is ``TRAINING_DEFAULTS["sensenova_gen_patch"]`` and the
+#: checkpoint's is ``config.gen_patch_size``.
+MIN_GEN_LATENT_PATCH = 4
+
+
+def validate_gen_patch(patch: Any, *, label: str = "generation patch") -> int:
+    """The one rule on ``P``, asked in one place. Returns it as an int."""
+    value = int(patch)
+    if value <= 0 or value % MIN_GEN_LATENT_PATCH:
+        raise ValueError(
+            f"{label} {patch!r} must be a positive multiple of "
+            f"{MIN_GEN_LATENT_PATCH}: the fm_head's ps1(2)/ps2(2) leave ps3 a "
+            f"factor of patch/4, which has to be a positive integer")
+    return value
 
 
 @dataclass(frozen=True)
@@ -56,7 +70,7 @@ class GenGeometry:
 
     @property
     def token_pixel_width(self) -> int:
-        """Pixels one token covers: 32 natively, ``4 * scale`` after a swap."""
+        """Pixels one token covers: 32 natively, ``patch * scale`` after a swap."""
         return self.patch * self.vae_scale_factor
 
     @property
@@ -126,7 +140,7 @@ def apply_latent_geometry(
     *,
     channels: int,
     vae_scale_factor: int,
-    patch: int = GEN_LATENT_PATCH,
+    patch: int,
     head_init: str = "zero",
     generator: Optional[torch.Generator] = None,
 ) -> ResizeReport:
@@ -135,8 +149,12 @@ def apply_latent_geometry(
     Rebuilds the only two tensors whose SHAPE changes (§10.1): the gen ViT's
     patch embed and the fm_head's ``conv2``. Every other tensor -- the 588
     decoder Linears, ``conv1``, ``dense_embedding``, both embedders, both RoPE
-    mechanisms and the entire understanding tower -- is left untouched, which is
-    what fixing ``P = 4`` buys.
+    mechanisms and the entire understanding tower -- is left untouched, at any
+    ``patch``: only these two face the grid.
+
+    ``patch`` has no default. A caller that let one apply would build a tree
+    whose geometry disagrees with the config block it writes, which loads clean
+    and generates noise.
 
     Initialisation is §10.3's: the patch embed from a truncated normal at
     ``std = 1/sqrt(fan_in)`` (anima's ``PatchEmbed.init_weights`` convention) so
@@ -156,11 +174,7 @@ def apply_latent_geometry(
             f"only 'zero' is accepted")
     if channels <= 0:
         raise ValueError(f"latent channel count must be positive, got {channels}")
-    if patch <= 0 or patch % 4:
-        raise ValueError(
-            f"generation patch {patch} must be a positive multiple of 4: the "
-            f"fm_head's ps1(2)/ps2(2) leave ps3 a factor of patch/4, which has "
-            f"to be a positive integer")
+    patch = validate_gen_patch(patch)
     if not getattr(transformer, "use_pixel_head", False):
         raise RuntimeError(
             "SenseNova's latent migration rebuilds the ConvDecoder (pixel-head) "
@@ -232,17 +246,21 @@ def apply_latent_geometry(
 
 
 def latent_config_dict(config_dict: Optional[Dict[str, Any]], *, channels: int,
-                       patch: int = GEN_LATENT_PATCH) -> Dict[str, Any]:
+                       patch: int) -> Dict[str, Any]:
     """The checkpoint's geometry block, carrying this run's generation grid.
 
     The export re-embeds the block THIS load accepted verbatim
     (``loader._embeddable_sensenova_config``), so a swapped run has to write its
     two keys into it or the saved file rebuilds as a pixel model and fails its
     strict load.
+
+    ``patch`` has no default and must come from the tree that was actually
+    built: a defaulted 4 written by a ``P=8`` run would rebuild as the wrong
+    geometry on the next load, silently.
     """
     out = dict(config_dict or {})
     out["gen_in_channels"] = int(channels)
-    out["gen_patch_size"] = int(patch)
+    out["gen_patch_size"] = validate_gen_patch(patch)
     return out
 
 

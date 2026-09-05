@@ -941,6 +941,34 @@ ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを�
   初回生成で再生する（`add_warning` を再利用し、新しい配達機構は作らない）。
   `current_model_info`（§9.1）に `token_pixel_width` を載せ、`ModelLoadSection` のバッジに出す。
 
+**改訂（P8 後）: `P` は固定値ではなく run パラメータ `sensenova_gen_patch`（既定 4）である。**
+上の「`P = 4` で固定」は決定ではなく既定値であり、既定のままなら本節の記述は全て
+そのまま成り立つ。構造的な制約は「`P` は 4 の正の倍数」1 つだけで、これは
+`latent_space.validate_gen_patch` が唯一の判定箇所である。既定値は
+`api/param_defaults.py` の `TRAINING_DEFAULTS["sensenova_gen_patch"]` にのみ置く
+（`latent_space.MIN_GEN_LATENT_PATCH` は「最小の合法値」であって既定値ではない）。
+
+- 8× VAE で `P = 8` はトークン幅 64px。1536px で 576 トークン（`P = 4` の 2304 に対し 1/4）。
+- `compute_noise_scale` は `sqrt(トークン数/64) × noise_scale` なので、1536px で
+  6.0 → 3.0 に下がる。**再較正はしない**（§10.4 の判断は据え置き）。swap 時に
+  `code="sensenova_gen_patch_off_calibration"` の警告を 1 件出し、トークン数と
+  `noise_scale` の実値を文面に載せる。
+- `_calculate_dynamic_mu` は影響を受けない。`_apply_time_schedule` は入口で
+  `self.time_schedule = "standard"` を代入するため `dynamic` 分岐は到達不能で、
+  出荷経路のタイムステップ列はトークン数に依存しない（実測確認済み）。
+- `pixel_align` / `resolution_band_mp` / `assert_pixel_aligned` / `normalize_resolution` は
+  すべて `token_pixel_width`（= `gen_patch_size × vae_scale_factor`）由来なので追加変更は不要。
+  ただし帯は `(トークン幅/32)²` 倍で動くため、`P = 8` では推奨帯が 12〜20 MP になり、
+  通常解像度の生成は毎回 `sensenova_resolution` 警告の対象になる。
+- チェックポイントは `gen_patch_size` に実値を書き、ローダは宣言値を（4 の倍数である限り）
+  受理し、構築後のツリーと一致することを検査する（`_assert_built_latent_geometry`）。
+  `latent_config_dict` / `apply_latent_geometry` の `patch` は既定引数を持たない:
+  既定 4 が紛れ込むと `P = 8` の run が自分の config に 4 を書き、次のロードで
+  別の幾何として再構築される（無音の破壊）。
+- **フロントエンドには未配線**。UI から run を編集すると、`update_training_run` が
+  Pydantic 既定の 4 で上書きする。`vae_swap` の capability ゲートを開ける前に
+  `TrainingConfig.tsx` の state / `getRequestData` / `applyParamsToState` へ追加すること。
+
 ### 10.3 決定: 初期化
 
 - **patch-embed `[1024, C, 2, 2]`（`P/2 = 2`、`vae_scale_factor` に依らない）: 切断正規分布、

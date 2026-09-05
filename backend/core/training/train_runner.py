@@ -412,8 +412,21 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             "is attached to the single optimizer.step() call site, which this "
             "route never reaches, so the shadow would silently never update."
         )
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.models.sensenova.latent_space import validate_gen_patch
     from core.training.vae_swap import resolve_vae_swap_source
 
+    default_patch = int(TRAINING_DEFAULTS["sensenova_gen_patch"])
+    gen_patch = validate_gen_patch(
+        _normalize_sensenova_integer(train_config, "sensenova_gen_patch",
+                                     default_patch),
+        label="sensenova_gen_patch")
+    if gen_patch != default_patch and not resolve_vae_swap_source(train_config):
+        raise ValueError(
+            f"SenseNova sensenova_gen_patch={gen_patch} requires a "
+            f"vae_swap_source: the generation grid is only rebuilt by a swap, "
+            f"so without one the run would train at the base checkpoint's own "
+            f"patch and the setting would be silently ignored.")
     if resolve_vae_swap_source(train_config) and not _normalize_sensenova_bool(
             train_config, "sensenova_train_fm_modules", False):
         # The served requirement (arch_capabilities: required value, lifted when

@@ -447,8 +447,8 @@ class SenseNovaMixin:
         req_w = int(params.get("width") or default_w)
         req_h = int(params.get("height") or default_h)
         transformer = (self.sensenova_components or {})["transformer"]
-        # One token's pixel width: 32 in pixel space, 4 * vae_scale_factor after
-        # a swap (design §10.2). Everything below scales with it.
+        # One token's pixel width: 32 in pixel space, gen_patch_size *
+        # vae_scale_factor after a swap. Everything below scales with it.
         align = ops.token_pixel_width(transformer)
         width, height = ops.normalize_resolution(req_w, req_h, align)
         if (width, height) != (req_w, req_h):

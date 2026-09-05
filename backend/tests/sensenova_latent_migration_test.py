@@ -2,8 +2,10 @@
 
 What these cover, and what they deliberately do not:
 
-* the geometry §10.2 fixes (P = 4, one token = 4 * vae_scale_factor pixels,
-  exactly two tensors change shape, identically at 8x and 16x);
+* the geometry (one token = P * vae_scale_factor pixels, exactly two tensors
+  change shape, identically at 8x and 16x) and the fact that P is a per-run
+  parameter -- `sensenova_gen_patch`, default 4 -- rather than the constant
+  §10.2 wrote it as;
 * §10.3's initialisation and its consequences -- including the one the design
   is explicit is NOT avoided: with a zero head ``v = -z/(1-t)`` still grows as
   ``t -> 1`` and is bounded only by ``(1-t).clamp_min(t_eps)``;
@@ -29,13 +31,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sensenova_training_core_test import _Cache, _Layer  # noqa: E402
 
+from api.param_defaults import TRAINING_DEFAULTS  # noqa: E402
 from core.models.sensenova.latent_space import (  # noqa: E402
-    GEN_LATENT_PATCH,
+    MIN_GEN_LATENT_PATCH,
     apply_latent_geometry,
     gen_geometry,
     latent_config_dict,
     resolution_band_mp,
     token_pixel_width,
+    validate_gen_patch,
 )
 from core.models.sensenova.sensenova_pipeline_ops import (  # noqa: E402
     align_to_grid, normalize_resolution,
@@ -56,6 +60,8 @@ HIDDEN = 64          # llm hidden; ConvDecoder needs it divisible by 4 twice
 VIT_HIDDEN = 32
 CHANNELS = 16
 T_EPS = 0.02
+#: The served default, so a change to it fails here rather than in a run.
+PATCH = TRAINING_DEFAULTS["sensenova_gen_patch"]
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +91,12 @@ class _PixelTree(nn.Module):
         self.gen_patch_size = 32
         self.gen_vit_patch_size = 16
         self.gen_vae_scale_factor = 1
+        # The real checkpoint's own noise-scale block (M:/model/sensenova/
+        # config.json), so compute_noise_scale returns production numbers here.
+        self.noise_scale = 1.0
+        self.noise_scale_mode = "resolution"
+        self.noise_scale_base_image_seq_len = 64
+        self.noise_scale_max_value = 16.0
         self.fm_modules = nn.ModuleDict({
             "vision_model_mot_gen": _vision(3, 16),
             "timestep_embedder": TimestepEmbedder(HIDDEN),
@@ -118,7 +130,8 @@ def test_the_pixel_head_is_what_it_always_was():
 def test_exactly_two_tensors_change_and_they_are_the_same_at_8x_and_16x(scale):
     tree = _PixelTree()
     before = _params(tree)
-    report = apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=scale)
+    report = apply_latent_geometry(tree, channels=CHANNELS,
+                                   vae_scale_factor=scale, patch=PATCH)
     after = _params(tree)
 
     changed = {name for name in before
@@ -143,12 +156,12 @@ def test_exactly_two_tensors_change_and_they_are_the_same_at_8x_and_16x(scale):
     assert tuple(tree.fm_modules.fm_head.conv2.weight.shape) == (CHANNELS, HIDDEN // 4, 3, 3)
     assert tree.fm_modules.fm_head.ps3.upscale_factor == 1
     assert report.copied_elements == 0 and report.new_channels == CHANNELS
-    assert token_pixel_width(tree) == 4 * scale
+    assert token_pixel_width(tree) == PATCH * scale
 
 
 def test_head_is_zero_and_patch_embed_is_a_bounded_small_normal():
     tree = _PixelTree()
-    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8)
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=PATCH)
     head = tree.fm_modules.fm_head
     assert torch.count_nonzero(head.conv2.weight) == 0
     assert torch.count_nonzero(head.conv2.bias) == 0
@@ -164,7 +177,8 @@ def test_head_is_zero_and_patch_embed_is_a_bounded_small_normal():
 def test_a_128_cell_latent_grid_is_1024_tokens_and_the_head_returns_that_grid(scale):
     """§10.6-2, at ``128 * vae_scale_factor`` px (1024px at 8x, 2048px at 16x)."""
     tree = _PixelTree()
-    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=scale)
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=scale,
+                          patch=PATCH)
     geometry = gen_geometry(tree)
     latent = torch.randn(1, CHANNELS, 128, 128)
     pixels = 128 * scale
@@ -187,9 +201,9 @@ def test_a_128_cell_latent_grid_is_1024_tokens_and_the_head_returns_that_grid(sc
 def test_patchify_round_trips_at_any_channel_count():
     tree = _PixelTree()
     latent = torch.randn(1, CHANNELS, 16, 16)
-    tokens = NEOChatModel.patchify(tree, latent, GEN_LATENT_PATCH)
-    assert tokens.shape == (1, 16, GEN_LATENT_PATCH ** 2 * CHANNELS)
-    back = NEOChatModel.unpatchify(tree, tokens, GEN_LATENT_PATCH, 16, 16)
+    tokens = NEOChatModel.patchify(tree, latent, PATCH)
+    assert tokens.shape == (1, 16, PATCH ** 2 * CHANNELS)
+    back = NEOChatModel.unpatchify(tree, tokens, PATCH, 16, 16)
     assert torch.equal(back, latent)
 
 
@@ -242,8 +256,8 @@ class _LatentTree(nn.Module):
         self.noise_scale_base_image_seq_len = 1.0
         self.noise_scale_max_value = 3.0
         self.gen_in_channels = channels
-        self.gen_patch_size = GEN_LATENT_PATCH
-        self.gen_vit_patch_size = GEN_LATENT_PATCH // 2
+        self.gen_patch_size = PATCH
+        self.gen_vit_patch_size = PATCH // 2
         self.gen_vae_scale_factor = scale
         model = nn.Module()
         model.layers = nn.ModuleList([_Layer()])
@@ -325,7 +339,7 @@ def test_velocity_stays_finite_at_both_t_endpoints():
         # The zero head, observed rather than assumed: x_pred is 0, so the
         # reconstruction loss is exactly the target's own mean square, and the
         # velocity is exactly -z / (1-t).clamp_min(t_eps).
-        tokens = NEOChatModel.patchify(tree, x0, GEN_LATENT_PATCH)
+        tokens = NEOChatModel.patchify(tree, x0, PATCH)
         assert recon == pytest.approx(float((tokens ** 2).mean()), rel=1e-5)
         z = seen[0]
         velocity = -z / max(1.0 - t, T_EPS)
@@ -419,7 +433,8 @@ def test_shape_invariant_tensors_and_the_bundled_vae_survive_a_round_trip(tmp_pa
 
     tree, decoder_cls = _decoder_with_fm_modules()
     vae = nn.Sequential(nn.Conv2d(3, CHANNELS, 3), nn.Conv2d(CHANNELS, 3, 3))
-    raw_config = latent_config_dict({"downsample_ratio": 0.5}, channels=CHANNELS)
+    raw_config = latent_config_dict({"downsample_ratio": 0.5}, channels=CHANNELS,
+                                    patch=PATCH)
     written, _census = save_sensenova_full_finetune_checkpoint(
         tree, str(tmp_path / "swapped_step_000100"), branch="gen",
         save_format="mixed", config=None, raw_config=raw_config, vae=vae)
@@ -475,9 +490,10 @@ def test_the_swap_requires_fm_modules_training():
 def test_the_config_block_carries_the_generation_grid():
     """The export re-embeds the block the load accepted, so a swap has to write
     its two keys into it or the file rebuilds as a pixel model."""
-    out = latent_config_dict({"downsample_ratio": 0.5}, channels=CHANNELS)
+    out = latent_config_dict({"downsample_ratio": 0.5}, channels=CHANNELS,
+                             patch=PATCH)
     assert out["gen_in_channels"] == CHANNELS
-    assert out["gen_patch_size"] == GEN_LATENT_PATCH
+    assert out["gen_patch_size"] == PATCH
     assert out["downsample_ratio"] == 0.5
 
 
@@ -501,3 +517,196 @@ def test_a_config_and_component_block_that_disagree_are_refused():
     _assert_declared_latent_geometry(
         SimpleNamespace(gen_in_channels=16, gen_patch_size=4), declared, path="x")
     _assert_declared_latent_geometry(pixel_config, None, path="x")
+
+
+# ---------------------------------------------------------------------------
+# The patch is a parameter (`sensenova_gen_patch`), not a structure
+# ---------------------------------------------------------------------------
+
+def _swap_trainer(tree, config):
+    return SimpleNamespace(
+        transformer=tree, config=config, network_type="full_finetune",
+        sensenova_train_fm_modules=True, train_unet=True,
+        train_text_encoder=False, vae=None)
+
+
+_RESOLVED_16CH_8X = SimpleNamespace(latent_channels=CHANNELS, scale_factor=8,
+                                    norm="shift_scale", norm_pack=1)
+
+
+def test_only_a_positive_multiple_of_four_is_a_legal_patch():
+    """ps1(2)*ps2(2) leaves ps3 = P/4, and a PixelShuffle factor is an integer."""
+    for legal in (4, 8, 12, 64):
+        assert validate_gen_patch(legal) == legal
+    for illegal in (0, -4, 2, 6, 10):
+        with pytest.raises(ValueError, match="positive multiple of 4"):
+            validate_gen_patch(illegal)
+    assert MIN_GEN_LATENT_PATCH == 4
+
+
+def test_a_coarser_patch_rebuilds_a_coarser_grid():
+    """P=8 on an 8x VAE: 64px per token, ps3(2), a 4x4 patch-embed kernel."""
+    tree = _PixelTree()
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=8)
+
+    geometry = gen_geometry(tree)
+    assert (geometry.patch, geometry.vit_patch, geometry.head_shuffle) == (8, 4, 2)
+    assert geometry.token_pixel_width == 64
+    embed = tree.fm_modules.vision_model_mot_gen.embeddings.patch_embedding
+    assert tuple(embed.weight.shape) == (VIT_HIDDEN, CHANNELS, 4, 4)
+    # conv2 fans out C*k^2 and ps3(k) folds it back to C on a k-times finer grid.
+    assert tuple(tree.fm_modules.fm_head.conv2.weight.shape) == (
+        CHANNELS * 4, HIDDEN // 4, 3, 3)
+    assert tree.fm_modules.fm_head.ps3.upscale_factor == 2
+    assert tree.fm_modules.fm_head(torch.randn(1, HIDDEN, 16, 16)).shape == (
+        1, CHANNELS, 128, 128)
+
+
+@pytest.mark.parametrize("patch,tokens,noise_scale", [(4, 2304, 6.0), (8, 576, 3.0)])
+def test_token_count_and_noise_scale_at_1536px(patch, tokens, noise_scale):
+    """What a coarser patch actually changes, at the checkpoint's own constants.
+
+    ``compute_noise_scale`` is ``sqrt(tokens / 64) * 1.0``, so it follows the
+    token count and falls by the factor the patch grows. NOTHING recalibrates
+    it -- that is the warning's subject, not a bug.
+    """
+    from core.models.sensenova.sensenova_pipeline_ops import compute_noise_scale
+
+    tree = _PixelTree()
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=patch)
+    side = 1536 // token_pixel_width(tree)
+    assert side * side == tokens
+
+    merge = int(1 / tree.downsample_ratio)
+    assert compute_noise_scale(tree, side * merge, side * merge,
+                               merge) == pytest.approx(noise_scale)
+
+
+def test_the_default_patch_is_the_pixel_model_geometry_and_its_init_is_unchanged():
+    """P=4 at 8x is 32px per token -- the pixel model's own -- and the truncated
+    normal is drawn exactly as before this parameter existed."""
+    assert PATCH == MIN_GEN_LATENT_PATCH == 4
+
+    tree = _PixelTree()
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=PATCH,
+                          generator=torch.Generator().manual_seed(0))
+    assert token_pixel_width(tree) == 32
+
+    # The draw itself, spelled out: fp32 on CPU, std = 1/sqrt(C * (P/merge)^2),
+    # truncated at 3 std. Only the trunc_normal reads the passed generator.
+    std = 1.0 / (CHANNELS * 2 * 2) ** 0.5
+    expected = torch.empty(VIT_HIDDEN, CHANNELS, 2, 2, dtype=torch.float32)
+    nn.init.trunc_normal_(expected, std=std, a=-3 * std, b=3 * std,
+                          generator=torch.Generator().manual_seed(0))
+    weight = tree.fm_modules.vision_model_mot_gen.embeddings.patch_embedding.weight
+    assert torch.equal(weight, expected)
+
+
+def test_the_run_patch_reaches_the_rebuild_and_the_config_block(capsys):
+    """The blocker: a P=8 run must not write ``gen_patch_size: 4`` into its own
+    config block, which would rebuild as a different geometry on the next load."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _PixelTree()
+    trainer = _swap_trainer(tree, {"training_method": "full_finetune",
+                                   "sensenova_gen_patch": 8,
+                                   "base_resolutions": [1536]})
+    SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert gen_geometry(tree).patch == 8
+    assert trainer.sensenova_config_dict["gen_patch_size"] == 8
+    assert trainer.sensenova_config_dict["gen_in_channels"] == CHANNELS
+    # The un-recalibrated schedule is announced, with the numbers.
+    out = capsys.readouterr().out
+    assert "sensenova_gen_patch_off_calibration" in out
+    assert "576 tokens against 2304" in out
+    assert "3.0000" in out
+
+
+def test_the_default_patch_swaps_exactly_as_before_and_warns_about_nothing(capsys):
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _PixelTree()
+    trainer = _swap_trainer(tree, {"training_method": "full_finetune"})
+    SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert gen_geometry(tree).patch == PATCH
+    assert trainer.sensenova_config_dict["gen_patch_size"] == PATCH
+    assert "sensenova_gen_patch_off_calibration" not in capsys.readouterr().out
+
+
+def test_a_latent_base_at_its_own_patch_is_not_rebuilt():
+    """Re-training a P=8 checkpoint keeps its trained layers, and its own patch
+    is what gets written back."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _PixelTree()
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=8)
+    before = _params(tree)
+    trainer = _swap_trainer(tree, {"training_method": "full_finetune",
+                                   "sensenova_gen_patch": 8})
+    report = SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert report.replaced == ()
+    after = _params(tree)
+    for name, tensor in before.items():
+        assert torch.equal(tensor, after[name]), name
+    assert trainer.sensenova_config_dict["gen_patch_size"] == 8
+
+
+def test_the_loader_accepts_the_patch_the_checkpoint_declares():
+    """A P=8 checkpoint has to be reloadable, or the parameter is useless."""
+    from core.models.sensenova.loader import (
+        _assert_built_latent_geometry, _assert_declared_latent_geometry,
+    )
+
+    declared = SimpleNamespace(latent_channels=CHANNELS, scale_factor=8,
+                               provenance="registry:flux1")
+    for patch in (4, 8, 64):
+        _assert_declared_latent_geometry(
+            SimpleNamespace(gen_in_channels=CHANNELS, gen_patch_size=patch),
+            declared, path="x.safetensors")
+    with pytest.raises(ValueError, match="positive multiple of 4"):
+        _assert_declared_latent_geometry(
+            SimpleNamespace(gen_in_channels=CHANNELS, gen_patch_size=6),
+            declared, path="x.safetensors")
+
+    # And the tree that was built has to face the grid the file declared.
+    config = SimpleNamespace(gen_in_channels=CHANNELS, gen_patch_size=8)
+    _assert_built_latent_geometry(
+        SimpleNamespace(gen_in_channels=CHANNELS, gen_patch_size=8),
+        config, path="x.safetensors")
+    with pytest.raises(ValueError, match="patch 4"):
+        _assert_built_latent_geometry(
+            SimpleNamespace(gen_in_channels=CHANNELS, gen_patch_size=4),
+            config, path="x.safetensors")
+
+
+def test_a_p8_config_block_survives_the_metadata_codec(tmp_path):
+    """Write -> read -> same geometry, through the save path's own embedder."""
+    import json
+
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.sensenova.loader import (
+        _assert_declared_latent_geometry, save_sensenova_full_finetune_checkpoint,
+    )
+
+    tree, _decoder_cls = _decoder_with_fm_modules()
+    raw_config = latent_config_dict({"downsample_ratio": 0.5},
+                                    channels=CHANNELS, patch=8)
+    written, _census = save_sensenova_full_finetune_checkpoint(
+        tree, str(tmp_path / "p8_step_000100"), branch="gen",
+        save_format="mixed", config=None, raw_config=raw_config, vae=None)
+
+    _raw, metadata = read_state_dict(written)
+    reread = json.loads(metadata["sensenova_config"])
+    assert reread["gen_patch_size"] == 8 and reread["gen_in_channels"] == CHANNELS
+    _assert_declared_latent_geometry(
+        SimpleNamespace(gen_in_channels=reread["gen_in_channels"],
+                        gen_patch_size=reread["gen_patch_size"]),
+        SimpleNamespace(latent_channels=CHANNELS, scale_factor=8,
+                        provenance="registry:flux1"),
+        path=written)

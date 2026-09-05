@@ -15703,6 +15703,9 @@ class TrainingRunCreateRequest(BaseModel):
     vae_swap_new_channel_init: Literal["zero"] = TRAINING_DEFAULTS[
         "vae_swap_new_channel_init"
     ]
+    sensenova_gen_patch: int = Field(
+        default=TRAINING_DEFAULTS["sensenova_gen_patch"], ge=4
+    )
     sdxl_vae_type: str = TRAINING_DEFAULTS["sdxl_vae_type"]
     sdxl_te_type: str = TRAINING_DEFAULTS["sdxl_te_type"]
     sdxl_te_hidden_layer: int = TRAINING_DEFAULTS["sdxl_te_hidden_layer"]

@@ -1116,7 +1116,7 @@ def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None
     which is what the latents are made by. A file where they disagree loads
     clean and generates noise.
     """
-    from .latent_space import GEN_LATENT_PATCH
+    from .latent_space import validate_gen_patch
 
     gen_channels = getattr(config, "gen_in_channels", None)
     gen_patch = getattr(config, "gen_patch_size", None)
@@ -1136,10 +1136,31 @@ def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None
         raise ValueError(
             f"{path} builds a {gen_channels}-channel generation grid but declares "
             f"a {declared_vae.latent_channels}-channel VAE")
-    if int(gen_patch) != GEN_LATENT_PATCH:
+    # Whatever the file declares, as long as the head can be built from it: the
+    # patch is a per-run choice (sensenova_gen_patch), not a repo constant.
+    validate_gen_patch(gen_patch, label=f"{path}: declared generation patch")
+
+
+def _assert_built_latent_geometry(model, config, *, path: str) -> None:
+    """The tree that was built has to face the grid the config declared.
+
+    Separate from ``_assert_declared_latent_geometry`` because it can only be
+    asked after construction: ``NEOChatModel`` derives ``gen_vit_patch_size``
+    and the fm_head's PixelShuffle from the config, and a disagreement here
+    means the weights about to be loaded do not fit the grid the checkpoint's
+    latents live on.
+    """
+    declared_patch = getattr(config, "gen_patch_size", None)
+    if declared_patch is None:
+        return
+    built_patch = int(getattr(model, "gen_patch_size", 0))
+    built_channels = int(getattr(model, "gen_in_channels", 0))
+    declared_channels = int(getattr(config, "gen_in_channels", 0) or 0)
+    if built_patch != int(declared_patch) or built_channels != declared_channels:
         raise ValueError(
-            f"{path} declares a generation patch of {gen_patch} latent cells; "
-            f"this repo writes and reads {GEN_LATENT_PATCH} (design §10.2)")
+            f"{path} declares a {declared_channels}-channel grid at patch "
+            f"{declared_patch}, but the tree was built at {built_channels} "
+            f"channels / patch {built_patch}")
 
 
 def load_sensenova_from_path(
@@ -1192,6 +1213,8 @@ def load_sensenova_from_path(
     with init_empty_weights():
         model = NEOChatModel(config)
         model.to(torch_dtype)
+
+    _assert_built_latent_geometry(model, config, path=model_path)
 
     swapped = install_sensenova_state_dict(
         model, sd, int8_convrot_source_layers, torch_dtype, path=model_path

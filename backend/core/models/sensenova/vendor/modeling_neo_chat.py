@@ -203,11 +203,11 @@ class NEOChatModel(PreTrainedModel):
 
         # SushiUI: the generation branch's own geometry. One token covers
         # `gen_patch_size` cells of whatever grid the branch faces -- 32 pixels
-        # natively, 4 latent cells after a VAE swap (design §10.2). The ViT half
-        # of that is `gen_patch_size // merge_size`, and the fm_head's final
+        # natively, `sensenova_gen_patch` latent cells after a VAE swap. The ViT
+        # half of that is `gen_patch_size // merge_size`, and the fm_head's final
         # PixelShuffle absorbs the rest: k = gen_patch_size // 4, since ps1 and
-        # ps2 already contribute 2x2. k must be a positive integer, which is what
-        # fixes the latent patch at 4.
+        # ps2 already contribute 2x2. k must be a positive integer, which is the
+        # only rule on the patch (4, 8, 12, ...).
         _merge = int(1 / self.downsample_ratio)
         self.gen_in_channels = int(getattr(config, "gen_in_channels", None) or 3)
         self.gen_patch_size = int(getattr(config, "gen_patch_size", None)

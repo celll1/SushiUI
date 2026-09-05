@@ -77,7 +77,7 @@ def normalize_resolution(width: int, height: int, align: int) -> Tuple[int, int]
     """Snap to the token grid -- SenseNova refuses nothing, callers round instead.
 
     ``align`` is one token's pixel width (``token_pixel_width``): 32 in pixel
-    space, ``4 * vae_scale_factor`` after a swap. No default: a wrong grid snaps
+    space, ``gen_patch_size * vae_scale_factor`` after a swap. No default: a wrong grid snaps
     silently to a size the model cannot tokenise (design §10.5).
     """
     return align_to_grid(width, align), align_to_grid(height, align)

@@ -167,6 +167,8 @@ def _build_train_section(
         "vae_swap_source": p.get("vae_swap_source", _TD["vae_swap_source"]),
         "vae_swap_new_channel_init": p.get("vae_swap_new_channel_init",
                                            _TD["vae_swap_new_channel_init"]),
+        "sensenova_gen_patch": p.get("sensenova_gen_patch",
+                                     _TD["sensenova_gen_patch"]),
         "sdxl_vae_type": p.get("sdxl_vae_type", "none"),
         "sdxl_te_type": p.get("sdxl_te_type", "none"),
         "sdxl_te_hidden_layer": p.get("sdxl_te_hidden_layer", -2),

@@ -2572,6 +2572,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # How channels the old VAE did not have are initialised in the resized latent
     # I/O layers. "zero" is the only accepted value (design D3).
     "vae_swap_new_channel_init": "zero",
+    # SenseNova VAE swap only: the generation patch in LATENT cells. Must be a
+    # positive multiple of 4 (the fm_head's ps1(2)/ps2(2) leave ps3 = P/4). One
+    # token covers P * vae_scale_factor pixels, so 4 on an 8x VAE is the pixel
+    # model's own 32px geometry and preserves its token count; 8 is 64px per
+    # token and a quarter of the tokens. Nothing recalibrates the noise-scale
+    # schedule for a non-default value (warned at swap time).
+    "sensenova_gen_patch": 4,
     # Read-only back-compat alias of vae_swap_source, SDXL-only, registry keys
     # ("flux1"). Kept so an existing run's YAML still loads; nothing writes it.
     "sdxl_vae_type": "none",

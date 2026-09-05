@@ -172,6 +172,12 @@ def load_components(trainer) -> None:
     # Convert VAE to vae_dtype
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # Latent space: the base's own declaration first (the loader already built the
+    # backbone at its channel count), then this run's swap on top of it. Before
+    # the freeze below, so the resize's new Parameters take the same grad flags.
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("declared_vae"))
+
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). FLUX.2 is in RUNTIME_INT8_ARCHS and its loader now
     # swaps Int8Linear / Fp8Linear in for a weight-only quantized checkpoint, so a

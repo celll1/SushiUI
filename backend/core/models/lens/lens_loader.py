@@ -242,18 +242,42 @@ def load_lens_single_file(
 
     components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype)
 
-    # Split off an embedded VAE section (bundle_vae saves under first_stage_model.*).
+    # Split off an embedded VAE section. A native bundle_vae save writes
+    # first_stage_model.*; a VAE-swap save uses the unified vae.* prefix (§8.7).
+    _vae_prefixes = ("first_stage_model.", "vae.")
     embedded_vae_sd = {
-        k[len("first_stage_model."):]: v
-        for k, v in raw.items() if k.startswith("first_stage_model.")
+        k[len(p):]: v for k, v in raw.items()
+        for p in _vae_prefixes if k.startswith(p)
     } or None
 
     # Override the base transformer weights with the trained single-file DiT
-    # (net.*-stripped; the first_stage_model.* VAE keys are excluded here).
+    # (net.*-stripped; the VAE sections are excluded here).
     dit_sd = {
         (k[len("net."):] if k.startswith("net.") else k): v
-        for k, v in raw.items() if not k.startswith("first_stage_model.")
+        for k, v in raw.items() if not k.startswith(_vae_prefixes)
     }
+
+    # The VAE this checkpoint was trained with, when it is not Lens's own. The
+    # base directory built the transformer at Lens's native 32 channels, so the
+    # latent faces are resized to the declared count BEFORE the strict-ish load
+    # below installs the trained weights over them (design §8.2, §9.1).
+    from core.models.common.vae_source import load_declared_latent_io
+    declared_vae = load_declared_latent_io(dit_path, arch="lens")
+    if declared_vae is not None:
+        from core.models.components.latent_io import resize_latent_io
+        from core.models.components.wiring import LENS_WIRING
+        print(f"[LensLoader] Declares a non-native VAE ({declared_vae.provenance}, "
+              f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
+        resize_latent_io(components["transformer"], LENS_WIRING.latent_io,
+                         declared_vae.latent_channels)
+        expected = declared_vae.latent_channels * 4
+        saved = dit_sd.get("img_in.weight")
+        if saved is not None and int(saved.shape[1]) != expected:
+            raise ValueError(
+                f"{dit_path}: img_in faces {int(saved.shape[1])} packed features but "
+                f"its declaration says {declared_vae.latent_channels} latent channels "
+                f"({expected}); refusing to load a checkpoint whose declaration and "
+                f"weights disagree about the latent space")
     # strict=False is right here (the base transformer is being OVERRIDDEN, and a
     # bundle may legitimately omit sections) and fatal for one input: a
     # weight-only quantized DiT would land every .weight_scale in unexpected_keys
@@ -271,14 +295,26 @@ def load_lens_single_file(
         print(f"[LensLoader]   unexpected (first 5): {list(unexpected)[:5]}")
     components["transformer"].to(torch_dtype).to("cpu").eval()
 
+    if declared_vae is not None:
+        # The declared VAE carries its own class and config; reattaching its
+        # weights onto the base AutoencoderKLFlux2 only works for that class.
+        vae = declared_vae.load_module(torch_dtype=torch_dtype)
+        vae.to("cpu").eval()
+        components["vae"] = vae
+        components["vae_source"] = declared_vae.provenance
+        components["vae_path"] = (declared_vae.path if (
+            declared_vae.path and os.path.isdir(str(declared_vae.path))) else None)
     # Embedded (trained) VAE overrides the base-dir VAE. Absent -> keep base VAE.
-    if embedded_vae_sd is not None and components.get("vae") is not None:
+    elif embedded_vae_sd is not None and components.get("vae") is not None:
         print("[LensLoader] Reattaching embedded VAE weights from single-file bundle")
         reattach_embedded_weights(components["vae"], embedded_vae_sd, "VAE")
         components["vae"].to(torch_dtype).to("cpu").eval()
         components["vae_source"] = "embedded (checkpoint)"
         components["vae_path"] = None
 
+    components["declared_vae"] = declared_vae
+    components["vae_identity"] = (None if declared_vae is None
+                                  else declared_vae.facts())
     return components
 
 

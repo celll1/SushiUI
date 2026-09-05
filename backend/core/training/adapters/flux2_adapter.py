@@ -366,9 +366,22 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         # Save VAE weights (only when bundle_vae is enabled; default off -> the loader
         # falls back to the default FLUX.2 VAE resolution when the section is absent).
         from api.param_defaults import resolve_bundle_vae
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "flux2")
-        vae_embedded = bundle_vae and trainer.vae is not None
-        if vae_embedded:
+        vae_embedded = bundle_vae and trainer.vae is not None and swapped is None
+        if swapped is not None:
+            # A swapped VAE goes under the unified `vae.` prefix (design §8.7):
+            # first_stage_model. is where a reader looks for FLUX.2's OWN VAE.
+            if swap_bundled and trainer.vae is not None:
+                print(f"[FLUX2FullParameterAdapter] Bundling swapped VAE "
+                      f"({swapped.provenance}) under 'vae.' ...")
+                for key, value in trainer.vae.state_dict().items():
+                    combined_state_dict[f"vae.{key}"] = value.cpu()
+            else:
+                print(f"[FLUX2FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                      f"not bundled; resolved on load via {swapped.locator}")
+        elif vae_embedded:
             print(f"[FLUX2FullParameterAdapter] Collecting VAE weights (bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             for key, value in vae_state.items():
@@ -416,6 +429,8 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
                 te_type="qwen3", te_embedded=te_embedded,
                 vae_type="flux2", vae_embedded=vae_embedded,
             ))
+            # The swap's own block replaces every component.vae.* key above.
+            metadata.update(swap_md)
         except Exception as _e:
             print(f"[FLUX2FullParameterAdapter] component metadata skipped: {_e}")
 

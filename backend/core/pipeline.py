@@ -704,6 +704,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "anima"))
                 self._save_last_model(
                     source_type, source, pipeline_type,
                     text_encoder_path=kwargs.get("text_encoder_path"),
@@ -754,6 +756,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,
                     "model_hash": model_hash,
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "lens"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Lens model loaded successfully")
                 return
@@ -844,6 +848,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     "variant": self.minit2i_components.get("variant"),
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "minit2i"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] MiniT2I model loaded successfully")
                 return
@@ -1316,6 +1322,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "is_v_prediction": is_v_prediction,
                         "model_hash": model_hash
                     }
+                    self.current_model_info.update(
+                        self._fold_component_latent_identity(model_result, "flux2"))
 
                     # Save this model as the last loaded model
                     self._save_last_model(source_type, source, pipeline_type)

@@ -30,9 +30,11 @@ def load_components(trainer) -> None:
     print(f"{trainer.log_prefix} Detected Lens model")
     print(f"{trainer.log_prefix} Loading Lens components from {trainer.model_path}")
 
-    from core.models.lens.lens_loader import load_lens_components
-    components = load_lens_components(
-        model_path=trainer.model_path,
+    # load_lens_from_path, not load_lens_components: a full-FT save is a
+    # single file, and only that branch reads back its declared latent space.
+    from core.model_loader import ModelLoader
+    components = ModelLoader.load_lens_from_path(
+        path=trainer.model_path,
         torch_dtype=trainer.weight_dtype,
     )
 
@@ -43,6 +45,9 @@ def load_components(trainer) -> None:
     trainer.text_encoder = components["text_encoder"]
     trainer.tokenizer = components["tokenizer"]
     trainer.scheduler = components["scheduler"]
+    # The diffusers directory the TE/tokenizer/scheduler came from. A single-file
+    # base resolves one; the save writes it as the next load's hint.
+    trainer.lens_base_dir = components.get("base_dir")
 
     # Lens specific: no dual TE / no U-Net.
     trainer.text_encoder_2 = None
@@ -52,6 +57,12 @@ def load_components(trainer) -> None:
     trainer.noise_scheduler = trainer.scheduler
 
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
+
+    # Latent space: the base's own declaration first (the loader already built the
+    # backbone at its channel count), then this run's swap on top of it. Before
+    # the freeze below, so the resize's new Parameters take the same grad flags.
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("declared_vae"))
 
     # Gradient checkpointing.
     cpu_offload_ckpt  = bool(trainer.config.get("cpu_offload_checkpointing", False))
@@ -450,7 +461,9 @@ def generate_sample(
         # never stepped here); it returns to GPU only at the final restore.
         trainer.move_main_model_to_gpu()
         seed_val = seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1)
-        latents = _lens_prepare_latents(height, width, dtype=dtype, device=device, seed=seed_val)
+        latents = _lens_prepare_latents(
+            height, width, dtype=dtype, device=device, seed=seed_val,
+            channels=int(trainer.transformer.config.out_channels))
         sample_scheduler = _copy.deepcopy(trainer.scheduler)
         # Autocast the denoise loop to the sampling compute dtype (bf16). This is
         # unconditional (NOT gated on trainer.mixed_precision): sampling always

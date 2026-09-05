@@ -58,11 +58,19 @@ class LatentIOSpec:
     extra_in_channels: int    # non-latent input channels (anima padding mask: 1)
     in_repeat: int            # how many times C is repeated on the input side (acestep: 3)
     out_bias: bool
-    # Whether this arch's own ``in_channels``/``out_channels`` attributes count
-    # PACKED features rather than latent channels. Krea 2's are 64 = C*p^2, so
-    # writing the raw 16 back into its config would rebuild ``img_in`` four times
-    # too narrow on the next load.
-    config_channels_packed: bool = False
+    # Whether this arch's own ``in_channels`` / ``out_channels`` attributes count
+    # PACKED features rather than latent channels. Krea 2's in_channels is 64 =
+    # C*p^2, so writing the raw 16 back into its config would rebuild ``img_in``
+    # four times too narrow on the next load. Declared per SIDE because lens
+    # disagrees with itself: ``in_channels=128`` is packed and ``out_channels=32``
+    # is raw, and one flag for both rebuilds one of the two wrong.
+    config_in_channels_packed: bool = False
+    config_out_channels_packed: bool = False
+
+    def replace(self, **changes) -> "LatentIOSpec":
+        """A copy with fields overridden, for an arch whose declaration is only
+        complete once its checkpoint is loaded (minit2i's ``pack_elems``)."""
+        return replace(self, **changes)
 
 
 # The path root is the U-Net's OWNER, matching the "unet.conv_in" spelling of
@@ -87,9 +95,10 @@ KREA2_LATENT_IO = LatentIOSpec(
     in_kind="packed_linear", out_kind="packed_linear",
     in_channel_order="outer", out_channel_order="outer",
     pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
-    # Krea2Transformer2DModel(in_channels=64) builds img_in/final_layer at the
-    # packed width (vendor/transformer.py), and krea2_config carries that number.
-    config_channels_packed=True,
+    # Krea2Transformer2DModel(in_channels=64) builds img_in AND final_layer at the
+    # packed width (vendor/transformer.py sets out_channels = in_channels), and
+    # krea2_config carries that number.
+    config_in_channels_packed=True, config_out_channels_packed=True,
 )
 
 # patch_size=1: the packed axis is C alone, so "outer" and "inner" are the same
@@ -115,6 +124,9 @@ FLUX2_LATENT_IO = LatentIOSpec(
     in_kind="packed_linear", out_kind="packed_linear",
     in_channel_order="outer", out_channel_order="outer",
     pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=False,
+    # Flux2Transformer2DModel has patch_size=1 and in_channels=128: the 2x2 pack
+    # happens OUTSIDE the transformer, so both of its config numbers are packed.
+    config_in_channels_packed=True, config_out_channels_packed=True,
 )
 
 LENS_LATENT_IO = LatentIOSpec(
@@ -122,15 +134,23 @@ LENS_LATENT_IO = LatentIOSpec(
     in_kind="packed_linear", out_kind="packed_linear",
     in_channel_order="outer", out_channel_order="outer",
     pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+    # LensTransformer2DModel(in_channels=128, out_channels=32, patch_size=2):
+    # img_in faces the packed width, proj_out multiplies out_channels by
+    # patch_size^2 itself (vendor/transformer.py:426-451).
+    config_in_channels_packed=True, config_out_channels_packed=False,
 )
 
 # pack_elems is P^2 with P = cfg.patch_size, which is a per-checkpoint config
-# value: 2 in latent `vae_type`, 16 in the pixel one. 4 is the latent value; a
-# pixel checkpoint's P=16 layer is not a channel resize at all (in_channels 3 and
-# patch_size both change), so callers cross-check ResizeReport.old_*_channels
-# against the wiring's latent_channels before trusting a resize here.
+# value: 2 in latent `vae_type`, 16 in the pixel one. 4 is the latent value;
+# MiniT2IArchHandler.resolve_wiring replaces it with the LOADED config's P before
+# any resize runs, because the pixel variant's final_layer.linear (768 = 256*3)
+# divides evenly by 4 and would mis-slice in silence.
+# Paths are rooted at MiniT2IMMJiTModel (the ConfigMixin wrapper the loader and
+# the trainer hold), not at the inner MMJiT: the wrapper's diffusers config and
+# MMJiT.cfg both record in_channels and both have to move with a resize.
 MINIT2I_LATENT_IO = LatentIOSpec(
-    in_module="img_embedder.proj1", out_module="final_layer.linear",
+    in_module="model.net.img_embedder.proj1",
+    out_module="model.net.final_layer.linear",
     in_kind="conv", out_kind="packed_linear",
     in_channel_order="", out_channel_order="inner",
     pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
@@ -201,6 +221,10 @@ ANIMA_WIRING = ComponentWiringSpec(
     latent_channels=16, latent_ndim=5, latent_packing="none",
     vae_scale_factor=8, vae_norm="per_channel",
     latent_io=ANIMA_LATENT_IO,
+    # 4: one temporal halving per True in the Qwen-Image VAE's
+    # temperal_downsample=[False, True, True] (anima_loader.QWEN_IMAGE_VAE_CONFIG),
+    # which is what the vae_store "qwen_image" family also records.
+    vae_scale_temporal=4,
 )
 
 LENS_WIRING = ComponentWiringSpec(

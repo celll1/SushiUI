@@ -226,9 +226,23 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         # ``first_stage_model.*`` prefix; the single-file loader splits + reattaches
         # it into the AutoencoderKLFlux2. Absent -> loader resolves base-dir/store VAE.
         from api.param_defaults import resolve_bundle_vae
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "lens")
-        vae_embedded = bundle_vae and getattr(trainer, "vae", None) is not None
-        if vae_embedded:
+        vae_embedded = (bundle_vae and getattr(trainer, "vae", None) is not None
+                        and swapped is None)
+        if swapped is not None:
+            # A swapped VAE goes under the unified `vae.` prefix (design §8.7):
+            # first_stage_model. is where a reader looks for Lens's OWN VAE.
+            if swap_bundled and getattr(trainer, "vae", None) is not None:
+                print(f"[LensFullParameterAdapter] Bundling swapped VAE "
+                      f"({swapped.provenance}) under 'vae.' ...")
+                for k, v in trainer.vae.state_dict().items():
+                    combined[f"vae.{k}"] = v.detach().to("cpu").contiguous()
+            else:
+                print(f"[LensFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                      f"not bundled; resolved on load via {swapped.locator}")
+        elif vae_embedded:
             print(f"[LensFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
             for k, v in trainer.vae.state_dict().items():
                 combined[f"first_stage_model.{k}"] = v.detach().to("cpu").contiguous()
@@ -242,7 +256,8 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         }
 
         # Base Lens directory hint so single-file reload can resolve TE/VAE/tokenizer.
-        base_dir = str(getattr(trainer, "model_path", "") or "")
+        base_dir = str(getattr(trainer, "lens_base_dir", None)
+                       or getattr(trainer, "model_path", "") or "")
         if base_dir:
             metadata["component.base_dir"] = base_dir
 
@@ -261,6 +276,8 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
                 te_type="lens_gpt_oss", te_embedded=False,
                 vae_type="flux2", vae_embedded=vae_embedded,
             ))
+            # The swap's own block replaces every component.vae.* key above.
+            metadata.update(swap_md)
         except Exception as _e:
             print(f"[LensFullParameterAdapter] component metadata skipped: {_e}")
 

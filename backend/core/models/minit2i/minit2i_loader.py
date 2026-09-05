@@ -19,7 +19,9 @@ import torch
 from ..common.model_root import external_model_path
 from .vendor import MiniT2IMMJiTModel, MiniT2IFlowMatchScheduler
 from .vendor.single_file import load_single_file, detect_variant_from_state_dict
-from .minit2i_vae import is_latent_vae, load_minit2i_vae, VAE_SCALE_FACTOR
+from .minit2i_vae import (
+    is_latent_vae, load_minit2i_vae, vae_latent_channels, VAE_SCALE_FACTOR,
+)
 
 
 def _looks_like_flan_t5(d: str) -> bool:
@@ -146,6 +148,61 @@ def _detect_variant_name(transformer: MiniT2IMMJiTModel) -> str:
     return "b16"
 
 
+def peek_io_config(model_path: str) -> dict:
+    """``{in_channels, patch_size, vae_type}`` of a MiniT2I checkpoint, read from
+    its header/config alone (no tensors, no VAE, no FLAN-T5).
+
+    MiniT2I's latent geometry is a per-CHECKPOINT config value, not an arch
+    constant, so the VAE-swap gate has to ask the base file. Empty dict when the
+    path names nothing readable -- the caller decides what an unknown base means.
+    """
+    import json as _json
+
+    if not model_path or is_scratch_spec(model_path):
+        if is_scratch_spec(model_path):
+            _variant, vae_type = parse_scratch_spec(model_path)
+            in_ch = 3 if vae_type == "none" else vae_latent_channels(vae_type)
+            return {"in_channels": in_ch,
+                    "patch_size": 16 if vae_type == "none" else 2,
+                    "vae_type": vae_type}
+        return {}
+
+    config = None
+    if os.path.isfile(model_path) and (model_path.endswith(".safetensors")
+                                       or model_path.endswith(".safetensors.index.json")):
+        try:
+            from core.models.common.single_file_format import is_index_path
+            path = model_path
+            if is_index_path(model_path):
+                with open(model_path, "r", encoding="utf-8") as f:
+                    index = _json.load(f)
+                first = next(iter(index.get("weight_map", {}).values()), None)
+                path = os.path.join(os.path.dirname(model_path), first) if first else model_path
+            from safetensors import safe_open
+            with safe_open(path, framework="pt") as f:
+                metadata = f.metadata() or {}
+            if metadata.get("mmjit_config"):
+                config = _json.loads(metadata["mmjit_config"])
+        except Exception as e:
+            print(f"[MiniT2ILoader] io config peek failed for {model_path}: {e}")
+            return {}
+    elif os.path.isdir(model_path):
+        for candidate in (os.path.join(model_path, "transformer", "config.json"),
+                          os.path.join(model_path, "config.json")):
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        config = _json.load(f)
+                except Exception:
+                    config = None
+                break
+    if not config:
+        return {}
+    return {"in_channels": int(config.get("in_channels", 3)),
+            "patch_size": int(config.get("patch_size", 16)),
+            "vae_type": str(config.get("vae_type", "none"))}
+
+
 def load_minit2i_components(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -213,6 +270,14 @@ def load_minit2i_components(
         model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
     )
 
+    # The VAE this checkpoint was trained with, when it is not the one its
+    # vae_type names. Read BEFORE the transformer is built (design §8.2, §9.1);
+    # an unresolvable declaration raises rather than falling back to vae_type.
+    declared_vae = None
+    if is_single_file:
+        from core.models.common.vae_source import load_declared_latent_io
+        declared_vae = load_declared_latent_io(model_path, arch="minit2i")
+
     embedded_vae_sd = None
     if is_single_file:
         print(f"[MiniT2ILoader] Loading single-file: {model_path}")
@@ -269,7 +334,21 @@ def load_minit2i_components(
     # (vae_type="none") keeps vae=None and decodes RGB directly.
     vae = None
     vae_type = getattr(transformer.mmjit_config, "vae_type", "none")
-    if is_latent_vae(vae_type):
+    if declared_vae is not None:
+        # A swapped VAE need not belong to a registry family at all, so
+        # `is_latent_vae(vae_type)` is not the question here -- the declaration is.
+        expected = int(transformer.mmjit_config.in_channels)
+        if declared_vae.latent_channels != expected:
+            raise ValueError(
+                f"{model_path} declares {declared_vae.latent_channels} latent "
+                f"channels but its transformer config says {expected}; refusing to "
+                f"load a checkpoint whose declaration and weights disagree about "
+                f"the latent space")
+        print(f"[MiniT2ILoader] Declares a non-native VAE ({declared_vae.provenance}, "
+              f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
+        vae = declared_vae.load_module(torch_dtype=vae_dtype)
+        vae.to("cpu")
+    elif is_latent_vae(vae_type):
         vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
         # Embedded (trained) VAE from a bundle_vae single-file overrides the base
         # weights. Absent -> keep the resolved default VAE. Pixel-space never bundles.
@@ -278,10 +357,15 @@ def load_minit2i_components(
             reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
             vae.to(vae_dtype)
         vae.to("cpu")
-    from core.models.common.vae_store import vae_identity
-    vae_source, vae_path = vae_identity(
-        vae, embedded=(embedded_vae_sd is not None), pixel_space=(vae is None)
-    )
+    if declared_vae is not None:
+        vae_source = declared_vae.provenance
+        vae_path = (declared_vae.path if (
+            declared_vae.path and os.path.isdir(str(declared_vae.path))) else None)
+    else:
+        from core.models.common.vae_store import vae_identity
+        vae_source, vae_path = vae_identity(
+            vae, embedded=(embedded_vae_sd is not None), pixel_space=(vae is None)
+        )
     print(f"[MiniT2ILoader] Loaded MiniT2I variant={variant} vae_type={vae_type} (FLAN-T5 from {flan_loc})")
 
     return {
@@ -296,6 +380,8 @@ def load_minit2i_components(
         "vae_path": vae_path,
         "vae_type": vae_type,
         "vae_scale_factor": VAE_SCALE_FACTOR,
+        "declared_vae": declared_vae,
+        "vae_identity": (None if declared_vae is None else declared_vae.facts()),
     }
 
 

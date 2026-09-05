@@ -291,7 +291,7 @@ class MiniT2ICase(Case):
     name = "minit2i"
     spec = MINIT2I_LATENT_IO
 
-    class _Root(nn.Module):
+    class _Net(nn.Module):
         def __init__(self, c):
             super().__init__()
             from core.models.minit2i.vendor.mmjit import BottleneckPatchEmbed, FinalLayer
@@ -299,16 +299,25 @@ class MiniT2ICase(Case):
             self.final_layer = FinalLayer(HIDDEN, 2, c)
             self.cfg = SimpleNamespace(patch_size=2, in_channels=c)
 
+    class _Root(nn.Module):
+        """The spec's paths are rooted at the ConfigMixin wrapper, so the two
+        latent layers sit under ``model.net``."""
+
+        def __init__(self, c, net_cls):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.net = net_cls(c)
+
     def build(self, c):
-        return self._Root(c)
+        return self._Root(c, self._Net)
 
     def encode(self, root, x):
-        return root.img_embedder(x)[0]
+        return root.model.net.img_embedder(x)[0]
 
     def decode(self, root, h):
         from core.models.minit2i.vendor.mmjit import MMJiT
-        packed = root.final_layer.linear(h)
-        return MMJiT.unpatchify(SimpleNamespace(cfg=root.cfg), packed, 2, 2)
+        packed = root.model.net.final_layer.linear(h)
+        return MMJiT.unpatchify(SimpleNamespace(cfg=root.model.net.cfg), packed, 2, 2)
 
 
 class Ltx2Case(Case):

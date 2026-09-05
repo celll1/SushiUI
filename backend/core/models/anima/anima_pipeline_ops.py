@@ -606,9 +606,11 @@ def sample_txt2img(
     shift = calculate_shift_anima(seq_len)
     scheduler.set_timesteps(num_inference_steps, device=torch.device(device), shift=shift)
 
-    # Initial noise [B, 16, 1, latent_h, latent_w]
+    # Initial noise [B, C, 1, latent_h, latent_w]. C is the DiT's own count, not
+    # the 16 of Anima's shipped VAE: a VAE-swapped checkpoint carries another.
+    latent_channels = int(getattr(_unwrap_transformer(transformer), "in_channels", 16))
     latents = torch.randn(
-        (1, 16, 1, latent_h, latent_w), generator=generator,
+        (1, latent_channels, 1, latent_h, latent_w), generator=generator,
         device=device, dtype=dtype,
     )
 

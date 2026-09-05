@@ -312,7 +312,8 @@ def _swap_quantized_linears(model, sd: Dict[str, torch.Tensor], dtype: torch.dty
 
 def load_anima_dit(dit_path: str, device: str = "cpu",
                    dtype: torch.dtype = torch.bfloat16,
-                   state_dict: Optional[dict] = None) -> Anima:
+                   state_dict: Optional[dict] = None,
+                   latent_channels: Optional[int] = None) -> Anima:
     """Instantiate the Anima DiT and load weights from a single safetensors file.
 
     Handles the optional `net.` prefix that some third-party Anima DiT
@@ -340,8 +341,12 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     """
     from accelerate import init_empty_weights
 
+    config = dict(ANIMA_DIT_CONFIG)
+    if latent_channels:
+        config["in_channels"] = int(latent_channels)
+        config["out_channels"] = int(latent_channels)
     with init_empty_weights():
-        model = Anima(**ANIMA_DIT_CONFIG)
+        model = Anima(**config)
         model.to(dtype)
 
     if state_dict is not None:
@@ -381,6 +386,19 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     swapped = _swap_quantized_linears(model, sd, dtype)
     verify_quantized_swap(quant_report, swapped, arch="Anima", path=dit_path,
                           label="DiT")
+
+    # assign=True installs the checkpoint's tensors AS the parameters, shape
+    # check included -- so a DiT built at the wrong channel count loads without a
+    # word and then reshapes garbage in unpatchify. Compare the two widths first.
+    expected_in = ((config["in_channels"] + (1 if config["concat_padding_mask"] else 0))
+                   * config["patch_spatial"] ** 2 * config["patch_temporal"])
+    saved_in = sd.get("x_embedder.proj.1.weight")
+    if saved_in is not None and int(saved_in.shape[1]) != expected_in:
+        raise ValueError(
+            f"{dit_path}: x_embedder faces {int(saved_in.shape[1])} packed features "
+            f"but this DiT was built for {expected_in} "
+            f"({config['in_channels']} latent channels + padding mask); the "
+            f"checkpoint's declared latent space and its weights disagree")
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).
@@ -588,15 +606,25 @@ def load_anima_components(
         vae_override=vae_path,
     )
 
-    # Read the DiT single-file once and split off any embedded VAE section
-    # (bundle_vae saves under ``first_stage_model.*``). Absent -> companion/store VAE.
+    # The VAE this checkpoint was trained with, when it is not Anima's own. Read
+    # BEFORE the DiT is built (design §8.2, §9.1); an unresolvable declaration
+    # raises rather than falling back to the Qwen-Image VAE.
+    from core.models.common.vae_source import load_declared_latent_io
+    declared_vae = load_declared_latent_io(discovered["dit"], arch="anima")
+
+    # Read the DiT single-file once and split off any embedded VAE section. A
+    # native bundle_vae save writes ``first_stage_model.``; a VAE-swap save uses
+    # the unified ``vae.`` prefix (design §8.7). Both are split off here so
+    # neither reaches the DiT load.
     from core.models.common.single_file_format import read_state_dict
     raw_dit_sd, _dit_md = read_state_dict(discovered["dit"])
+    _VAE_PREFIXES = ("first_stage_model.", "vae.")
     embedded_vae_sd = {
-        k[len("first_stage_model."):]: v
-        for k, v in raw_dit_sd.items() if k.startswith("first_stage_model.")
+        k[len(p):]: v for k, v in raw_dit_sd.items()
+        for p in _VAE_PREFIXES if k.startswith(p)
     } or None
-    dit_only_sd = {k: v for k, v in raw_dit_sd.items() if not k.startswith("first_stage_model.")}
+    dit_only_sd = {k: v for k, v in raw_dit_sd.items()
+                   if not k.startswith(_VAE_PREFIXES)}
 
     # TE is always a companion; VAE may be embedded OR (new) resolved from the store.
     if not discovered.get("text_encoder"):
@@ -617,8 +645,16 @@ def load_anima_components(
     print(f"[AnimaLoader] VAE          : "
           + ("embedded (bundle_vae)" if embedded_vae_sd else str(discovered['vae'])))
 
+    if declared_vae is not None:
+        print(f"[AnimaLoader] Declares a non-native VAE ({declared_vae.provenance}, "
+              f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
+        if discovered.get("vae"):
+            print(f"[AnimaLoader] Ignoring companion VAE {discovered['vae']}: the "
+                  f"checkpoint was trained in the declared VAE's latent space")
+    latent_channels = (declared_vae.latent_channels if declared_vae is not None
+                       else ANIMA_DIT_CONFIG["in_channels"])
     dit = load_anima_dit(discovered["dit"], device="cpu", dtype=dit_dtype,
-                         state_dict=dit_only_sd)
+                         state_dict=dit_only_sd, latent_channels=latent_channels)
     text_encoder, qwen3_tokenizer = load_qwen3_text_encoder(
         discovered["text_encoder"], config_dir=qwen3_config_dir,
         device="cpu", dtype=te_dtype,
@@ -627,7 +663,15 @@ def load_anima_components(
 
     vae_source = None
     vae_path = None
-    if embedded_vae_sd is not None:
+    if declared_vae is not None:
+        # The declared VAE carries its own class and config; the Qwen-Image
+        # rebuild below only knows how to reattach Qwen-Image weights.
+        vae = declared_vae.load_module(torch_dtype=vae_dtype)
+        vae.to("cpu").eval().requires_grad_(False)
+        vae_source = declared_vae.provenance
+        vae_path = declared_vae.path if (
+            declared_vae.path and os.path.isdir(str(declared_vae.path))) else None
+    elif embedded_vae_sd is not None:
         vae = build_qwen_image_vae_from_embedded(embedded_vae_sd, device="cpu", dtype=vae_dtype)
         vae_source = "embedded (checkpoint)"
     elif discovered.get("vae"):
@@ -670,6 +714,8 @@ def load_anima_components(
         "vae_path": vae_path,
         "scheduler": scheduler,
         "vae_scale_factor": 8,
-        "latent_channels": 16,
+        "latent_channels": latent_channels,
+        "declared_vae": declared_vae,
+        "vae_identity": (None if declared_vae is None else declared_vae.facts()),
         "paths": discovered,
     }

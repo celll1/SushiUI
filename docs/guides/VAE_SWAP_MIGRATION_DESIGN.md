@@ -1,9 +1,16 @@
 # VAE差し替えフルFT（latent移行）設計
 
-Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位で実装・検証・コミットする
+Status: **P0〜P4 実装済み**（sd15/sdxl で学習・保存・再開・生成・アダプタゲートまで動作）。
+P5 以降は未実装。フェーズごとの到達点は §11 の表を参照。
+
+本書は §11 のフェーズ単位で実装・検証・コミットする
 前提で書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て
 `file:line` を付す。引用のない記述は設計上の決定であり、「要検証」と付したものは
 実装前に確認が必要な事実主張である。
+
+**実装が設計を上書きした箇所は、本文の該当節を実装後の姿に書き換えてある。**
+設計時の想定と実装が食い違った点のうち、後続フェーズの前提になるものは
+各節に注記として残す（§5.1 末尾の3点、§8.4 末尾の lens、§10.5 など）。
 
 要求（リポジトリ所有者）:
 
@@ -1004,11 +1011,11 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 
 | Phase | 内容 | 検証 | リスク |
 |---|---|---|---|
-| **P0 宣言と正直な伝播** | `component.vae.*` 拡張キー（§5.2、`struct_native`/`identity_native`/`provenance`/`locator`/`norm_pack` を含む）、`_apply_component_hints` の `sushi.*` フォールバック、`current_model_info` / `pipeline._sushi_wiring`、`/models/current`・`describe_vae`・`_fold_baseline` の読み替え、arch 判定の順序変更（§9.2）、`ModelInfo` 型宣言 | 既存の swap 済み SDXL チェックポイントで `/models/current.latent_channels == 16`、`_check_vae_compat` が 4ch override を 400、native モデルで全応答が不変。§9.2-2 の `label_emb` キーは実チェックポイントのヘッダで確認できた場合のみ有効化 | 低。読み取り経路のみ。SD/SDXL 判定の新シグナルは実機未検証（確認できなければ入れない） |
-| **P1 変形の一般化** | `latent_io.py` + `LatentIOSpec`（入出力別の kind/order、§5.1, §6）、性質テスト（§6.6）、`resize_unet_in_out` を委譲に変更、新規チャネルゼロ初期化 | `tests/latent_io_test.py`: 入力側は各 arch の実 pack 関数、出力側は実 unpack 関数で**別ケース**として等価性（anima の入力 outer / 出力 inner を含む）、SDXL 回帰 bit 同一、swap 済みチェックポイントの再ロードで `in_module`/`out_module` の重みが保存値と bit 同一（§6.2 の回帰条件） | 低〜中。SDXL の初期化変更は挙動変更（CHANGELOG）。既存 run の再現性は変わる、再ロード・再開は不変 |
-| **P2 出所と第1波（sd15/sdxl）** | `vae_source.py`（registry/file/model、§7）、表B → 表A 統合、`vae_swap_source` の全層配線（§5.3、TRAINING_PARAMS_GUIDE Case B）、`GET /training/vae-sources`（openapi 先行）、`apply_vae_swap`（§8.1）、cache namespace（§8.5）、`strict_validation` 拡張（§8.6）、同梱 `vae.` と locator（§8.7）、生成ロードの同梱読み・locator 解決（§9.1）、swap 済み base の学習ロード（§8.2）、capability 登録と `VaeSwapSourceSelector`（§9.7）。**`shift_scale` 系 VAE のみ**を対象にし、BN 系（`norm=batchnorm`）は §7.4 で拒否 | sdxl: `registry:flux1`（16ch）/ `file:`（16ch standalone）/ `model:` で 3 ステップ smoke → 保存 → 生成ロード → 1 枚生成。`model:` の初回検証は (i) zimage フルモデルから抽出した 16ch `first_stage_model.`（`shift_scale`、C 変更あり）と (ii) 別の SDXL フルモデルから抽出した 4ch VAE（同 C・別 hash: `struct_native="1"`, `identity_native="0"`、resize はコピーのみ、cache namespace が分離、生成ロードで抽出 VAE が使われる）の 2 本。sd15 同様。`registry:`/`file:` + `bundle_vae=False` で locator 解決と hash 不一致時の拒否、`model:` + `bundle_vae=False` が preflight で拒否。flux2 フルモデルからの抽出は §7.4 で拒否されることを確認（解除は P7） | 中。配線層が多い。`model_fields_set` 判定の漏れ、old YAML の `sdxl_vae_type` エイリアス |
-| **P3 アダプタ整合** | 書き側 identity（全 arch）、diffusers 経路ゲート、`AdapterSession` ゲート、`GET /loras` 拡張、フロント灰色表示（§9.4） | 標準 SDXL LoRA を swap 済み SDXL に当てて `lora_incompatible`; swap 済み base で学習した LoRA が通る; 同 C 別 hash で warning | 中。無メタデータ refusal は既存ユーザーの LoRA を swap 済みモデルで拒否する（設計意図） |
-| **P4 生成側の残り** | TAESD ルーティング、inpaint `2C+1`、`keep_hot` キー、`height//8` 読み替え、ロード時警告の再生（§9.3, §9.6） | 16ch SDXL でプレビューが RGB 射影/`taef1` に切替、inpaint が 33ch ゲートを正しく判定、`vae_path` 変更で hot VAE が無効化 | 低 |
+| ✅ **P0 宣言と正直な伝播**（dc686c0b）| `component.vae.*` 拡張キー（§5.2、`struct_native`/`identity_native`/`provenance`/`locator`/`norm_pack` を含む）、`_apply_component_hints` の `sushi.*` フォールバック、`current_model_info` / `pipeline._sushi_wiring`、`/models/current`・`describe_vae`・`_fold_baseline` の読み替え、arch 判定の順序変更（§9.2）、`ModelInfo` 型宣言 | 既存の swap 済み SDXL チェックポイントで `/models/current.latent_channels == 16`、`_check_vae_compat` が 4ch override を 400、native モデルで全応答が不変。§9.2-2 の `label_emb` キーは実チェックポイントのヘッダで確認できた場合のみ有効化 | 低。読み取り経路のみ。SD/SDXL 判定の新シグナルは実機未検証（確認できなければ入れない） |
+| ✅ **P1 変形の一般化**（2aa48f4f）| `latent_io.py` + `LatentIOSpec`（入出力別の kind/order、§5.1, §6）、性質テスト（§6.6）、`resize_unet_in_out` を委譲に変更、新規チャネルゼロ初期化 | `tests/latent_io_test.py`: 入力側は各 arch の実 pack 関数、出力側は実 unpack 関数で**別ケース**として等価性（anima の入力 outer / 出力 inner を含む）、SDXL 回帰 bit 同一、swap 済みチェックポイントの再ロードで `in_module`/`out_module` の重みが保存値と bit 同一（§6.2 の回帰条件） | 低〜中。SDXL の初期化変更は挙動変更（CHANGELOG）。既存 run の再現性は変わる、再ロード・再開は不変 |
+| ✅ **P2 出所と第1波（sd15/sdxl）**（eedaf45b / 475b801b / bb884f2f / bf917adb）| `vae_source.py`（registry/file/model、§7）、表B → 表A 統合、`vae_swap_source` の全層配線（§5.3、TRAINING_PARAMS_GUIDE Case B）、`GET /training/vae-sources`（openapi 先行）、`apply_vae_swap`（§8.1）、cache namespace（§8.5）、`strict_validation` 拡張（§8.6）、同梱 `vae.` と locator（§8.7）、生成ロードの同梱読み・locator 解決（§9.1）、swap 済み base の学習ロード（§8.2）、capability 登録と `VaeSwapSourceSelector`（§9.7）。**`shift_scale` 系 VAE のみ**を対象にし、BN 系（`norm=batchnorm`）は §7.4 で拒否 | sdxl: `registry:flux1`（16ch）/ `file:`（16ch standalone）/ `model:` で 3 ステップ smoke → 保存 → 生成ロード → 1 枚生成。`model:` の初回検証は (i) zimage フルモデルから抽出した 16ch `first_stage_model.`（`shift_scale`、C 変更あり）と (ii) 別の SDXL フルモデルから抽出した 4ch VAE（同 C・別 hash: `struct_native="1"`, `identity_native="0"`、resize はコピーのみ、cache namespace が分離、生成ロードで抽出 VAE が使われる）の 2 本。sd15 同様。`registry:`/`file:` + `bundle_vae=False` で locator 解決と hash 不一致時の拒否、`model:` + `bundle_vae=False` が preflight で拒否。flux2 フルモデルからの抽出は §7.4 で拒否されることを確認（解除は P7） | 中。配線層が多い。`model_fields_set` 判定の漏れ、old YAML の `sdxl_vae_type` エイリアス |
+| ✅ **P3 アダプタ整合**（db99085e）| 書き側 identity（全 arch）、diffusers 経路ゲート、`AdapterSession` ゲート、`GET /loras` 拡張、フロント灰色表示（§9.4） | 標準 SDXL LoRA を swap 済み SDXL に当てて `lora_incompatible`; swap 済み base で学習した LoRA が通る; 同 C 別 hash で warning | 中。無メタデータ refusal は既存ユーザーの LoRA を swap 済みモデルで拒否する（設計意図） |
+| ✅ **P4 生成側の残り**（146ea21b）| TAESD ルーティング、inpaint `2C+1`、`keep_hot` キー、`height//8` 読み替え、ロード時警告の再生（§9.3, §9.6） | 16ch SDXL でプレビューが RGB 射影/`taef1` に切替、inpaint が 33ch ゲートを正しく判定、`vae_path` 変更で hot VAE が無効化 | 低 |
 | **P5 共有正規化層** | `normalize(spec)` 3 方式と正規化領域 `vae_norm_pack`（§8.4）、flux2/lens ops の「normalize → backbone patchify」2 段化、anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除、§7.4 の BN 系ゲート解除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype）。sdxl に flux2 由来の 32ch BN VAE（`registry`/`file`）を当てて `normalize` の出力が 32ch で、flux2 経路で BN 適用後に unpack した値と一致 | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
 | **P6 第2波（zimage/krea2/ltx2）** | `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除 | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は入出力とも `inner` 順の唯一の実例 |
 | **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合 | 同上。anima は padding-mask 行の移動と、出力側が入力側と異なる順序で変形されることをテストで確認。flux2 フルモデルから抽出した 32ch BN VAE を sdxl で smoke → 保存 → 生成（P2 で拒否していた組合せの解除確認） | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |

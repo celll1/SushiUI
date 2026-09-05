@@ -42,6 +42,12 @@ from core.attention import (
     to_diffusers_backend,
 )
 from core.training import training_sample_rpc as sample_rpc
+from core.training.lr_schedules import (
+    ScheduleTimeline,
+    build_lr_scheduler,
+    describe_spec,
+    resolve_spec,
+)
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_warning
 from core.training.image_preprocessing import flatten_to_rgb
@@ -286,6 +292,93 @@ def all_lr_schedulers(trainer) -> List[Any]:
         if schedulers:
             return schedulers
     return [getattr(trainer, "lr_scheduler", None)]
+
+
+def lr_scheduler_advance_interval(trainer) -> int:
+    """global_steps per ``scheduler.step()`` (D9/§17.1).
+
+    The loop advances the scheduler where ``global_step %
+    gradient_accumulation_steps == 0`` -- under the fused paths too, even
+    though those apply an optimizer update per backward pass instead.
+    """
+    return max(1, int(getattr(trainer, "_grad_accum_steps", 1) or 1))
+
+
+def scheduler_total_steps(trainer, total_steps: int) -> int:
+    """``T`` (global_step axis) -> ``T_sched`` (scheduler axis).
+
+    floor, not ceil: a trailing partial accumulation window is never flushed,
+    so T=10 with gas=4 is 2 advances. T < gas means no update ever happens,
+    which is refused here rather than discovered later as a run that trained
+    nothing.
+    """
+    interval = lr_scheduler_advance_interval(trainer)
+    sched_total = int(total_steps) // interval
+    if sched_total < 1:
+        raise ValueError(
+            f"total_steps={total_steps} is smaller than "
+            f"gradient_accumulation_steps={interval}: the optimizer would never "
+            f"step (it steps where global_step % gradient_accumulation_steps == "
+            f"0) and the LR schedule would never advance. Raise total_steps to "
+            f"at least {interval}, or lower gradient_accumulation_steps."
+        )
+    return sched_total
+
+
+def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
+    return resolve_spec(
+        getattr(trainer, "config", None) or {},
+        warmup_steps=getattr(trainer, "optimizer_warmup_steps", 0),
+        total_steps=scheduler_total_steps(trainer, total_steps),
+        name=lr_scheduler_type,
+    )
+
+
+def live_scheduler_step(trainer) -> int:
+    """Where the schedule actually is, on the scheduler axis."""
+    for scheduler in all_lr_schedulers(trainer):
+        if scheduler is not None:
+            return int(getattr(scheduler, "last_epoch", 0) or 0)
+    return 0
+
+
+def resume_scheduler_position(trainer, global_step: int) -> int:
+    """The scheduler-axis position a resume must restore (D9/§17.1).
+
+    The saved ``scheduler_step`` is authoritative. ``global_step // interval``
+    is a MIGRATION estimate for state files written before that key existed; it
+    is exact only for a run that skipped no batch and kept the same
+    accumulation, so it says so when it is used.
+    """
+    saved = getattr(trainer, "_resume_scheduler_step", None)
+    interval = lr_scheduler_advance_interval(trainer)
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+
+    if saved is not None:
+        saved_interval = getattr(trainer, "_resume_scheduler_interval", None)
+        if (saved_interval is not None and int(saved_interval) != interval
+                and not getattr(trainer, "_lr_axis_resume_warned", False)):
+            trainer._lr_axis_resume_warned = True
+            emit_training_warning(
+                f"gradient_accumulation_steps changed since the checkpoint "
+                f"({saved_interval} -> {interval}). The LR schedule resumes at its "
+                f"saved position ({int(saved)}), but its total is now total_steps "
+                f"// {interval} instead of total_steps // {saved_interval}, so the "
+                f"remaining shape is stretched or compressed.",
+                code="lr_schedule_accumulation_changed", prefix=prefix)
+        return int(saved)
+
+    estimate = int(global_step) // interval
+    if interval > 1 and not getattr(trainer, "_lr_axis_resume_warned", False):
+        trainer._lr_axis_resume_warned = True
+        emit_training_warning(
+            f"This checkpoint predates the saved LR scheduler position, so it is "
+            f"estimated as global_step // gradient_accumulation_steps = "
+            f"{global_step} // {interval} = {estimate}. That is exact only if the "
+            f"run skipped no batches and kept the same accumulation throughout; "
+            f"otherwise the schedule resumes slightly off its real position.",
+            code="lr_schedule_position_estimated", prefix=prefix)
+    return estimate
 
 
 def setup_fused_grad_norm(trainer, optimizers):
@@ -3808,6 +3901,16 @@ class BaseTrainer(ABC):
             # Crop-plan fingerprint: a change in crop augmentation params (or num_epochs)
             # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
             "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
+            # LR schedule position on ITS OWN axis (D9/§17.1 of
+            # docs/guides/LR_SCHEDULER_DESIGN.md). global_step // gas does not
+            # reproduce it: a skipped batch advances global_step without
+            # advancing the scheduler, and the CUDA-recovery path advances the
+            # scheduler with no optimizer update. The read side prefers this
+            # over any division.
+            "lr_schedule_version": 1,
+            "scheduler_step": live_scheduler_step(self),
+            "gradient_accumulation_steps": int(getattr(self, "_grad_accum_steps", 1) or 1),
+            "lr_scheduler_advance_interval": lr_scheduler_advance_interval(self),
         }
 
         with open(state_file, 'w') as f:
@@ -3853,10 +3956,17 @@ class BaseTrainer(ABC):
 
         if not state_file.exists():
             print(f"{self.log_prefix} No training state file found: {state_file.name}")
+            self._resume_scheduler_step = None
+            self._resume_scheduler_interval = None
             return None
 
         with open(state_file, 'r') as f:
             state = json.load(f)
+
+        # Captured here rather than in train()'s two resume branches: both call
+        # this, and both then reach the fast-forward through the same helper.
+        self._resume_scheduler_step = state.get("scheduler_step")
+        self._resume_scheduler_interval = state.get("lr_scheduler_advance_interval")
 
         # Restore random_state from serialized format
         random_state_dict = state["random_state"]
@@ -3879,19 +3989,23 @@ class BaseTrainer(ABC):
         Under fused optimizer groups each optimizer has its own scheduler and
         the training loop steps them all; advancing only ``self.lr_scheduler``
         would resume groups 1..N-1 at schedule position 0.
+
+        ``global_step`` is converted to the scheduler axis first -- the two are
+        the same thing only at gradient_accumulation_steps=1.
         """
+        position = resume_scheduler_position(self, global_step)
         for scheduler in all_lr_schedulers(self):
             if scheduler is None:
                 continue
-            self._fast_forward_one_lr_scheduler(scheduler, global_step)
+            self._fast_forward_one_lr_scheduler(scheduler, position)
 
     @staticmethod
-    def _fast_forward_one_lr_scheduler(scheduler, global_step: int) -> None:
-        """Move a fresh scheduler to ``global_step`` without needless replay."""
+    def _fast_forward_one_lr_scheduler(scheduler, position: int) -> None:
+        """Move a fresh scheduler to ``position`` (scheduler axis) without replay."""
         from torch.optim.lr_scheduler import LambdaLR
 
         if isinstance(scheduler, LambdaLR):
-            step = int(global_step)
+            step = int(position)
             values = [
                 base_lr * lr_lambda(step)
                 for base_lr, lr_lambda in zip(
@@ -3907,7 +4021,7 @@ class BaseTrainer(ABC):
 
         # ReLoRA's scheduler has restart history and cannot be positioned from
         # the final step alone.
-        for _ in range(global_step):
+        for _ in range(int(position)):
             scheduler.step()
 
     def save_optimizer_state(self, step: int):
@@ -5493,9 +5607,9 @@ class BaseTrainer(ABC):
 
         so the underlying schedule keeps its absolute position and only the
         first ``W`` post-reset steps are attenuated. Every scheduler this
-        project builds is a ``LambdaLR`` (all seven diffusers types plus the
-        in-house ``plateau_cosine_floor``; see lr_utils), and each is wrapped,
-        not just ``self.lr_scheduler``, so fused optimizer groups re-arm too.
+        project builds is a ``LambdaLR`` (``lr_schedules.build_lr_scheduler``),
+        and each is wrapped, not just ``self.lr_scheduler``, so fused optimizer
+        groups re-arm too.
 
         Must run BEFORE ``_reassert_config_lr_on_resume()``: that method
         evaluates the live lambdas to write each param group's LR, so installing
@@ -5527,7 +5641,9 @@ class BaseTrainer(ABC):
                   f"full scheduled LR.")
             return False
 
-        anchor = int(global_step)
+        # The composed ramp is evaluated by the lambdas, so its anchor is a
+        # scheduler-axis step like every other argument they take (§17.1).
+        anchor = resume_scheduler_position(self, global_step)
         rearmed = 0
         skipped = 0
         for scheduler in all_lr_schedulers(self):
@@ -5998,18 +6114,14 @@ class BaseTrainer(ABC):
         requested_group_lrs = [g.get('lr') for g in self.optimizer.param_groups]
 
         # Setup LR scheduler
-        if str(lr_scheduler_type).lower() == "plateau_cosine_floor":
-            self.lr_scheduler = self._build_plateau_cosine_floor_scheduler(
-                self.optimizer, total_steps
-            )
-        else:
-            from diffusers.optimization import get_scheduler as get_diffusers_scheduler
-            self.lr_scheduler = get_diffusers_scheduler(
-                lr_scheduler_type,
-                optimizer=self.optimizer,
-                num_warmup_steps=self.optimizer_warmup_steps,
-                num_training_steps=total_steps,
-            )
+        self.lr_schedule_spec = resolve_lr_schedule_spec(
+            self, lr_scheduler_type, total_steps)
+        self.lr_timeline = ScheduleTimeline()
+        self.lr_timeline.set_total_steps(self.lr_schedule_spec.total_steps)
+        print(f"{self.log_prefix} LR scheduler: "
+              f"{describe_spec(self.lr_schedule_spec)}")
+        self.lr_scheduler = build_lr_scheduler(
+            self.optimizer, self.lr_schedule_spec, self.lr_timeline)
 
         # Initialize weight EMA (opt-in, default off). Must run after the
         # optimizer (and therefore the trainable param groups) exists.
@@ -6501,25 +6613,19 @@ class BaseTrainer(ABC):
                 optimizer.train()
         print(f"{self.log_prefix} All {len(optimizers)} optimizers set to train mode")
 
-        # Create LR schedulers for all optimizers
-        lr_schedulers = []
-        if str(lr_scheduler_type).lower() == "plateau_cosine_floor":
-            # Same lambda applied independently to each optimizer group so all
-            # groups stay in lockstep (matches the main-path behavior).
-            for optimizer in optimizers:
-                lr_schedulers.append(
-                    self._build_plateau_cosine_floor_scheduler(optimizer, total_steps)
-                )
-        else:
-            from diffusers.optimization import get_scheduler as get_diffusers_scheduler
-            for optimizer in optimizers:
-                lr_scheduler = get_diffusers_scheduler(
-                    lr_scheduler_type,
-                    optimizer=optimizer,
-                    num_warmup_steps=self.optimizer_warmup_steps,
-                    num_training_steps=total_steps,
-                )
-                lr_schedulers.append(lr_scheduler)
+        # Create LR schedulers for all optimizers. One spec and ONE timeline
+        # shared by all N, so a runtime event can never desynchronize them
+        # (§3.3); the same lambda then keeps every group in lockstep.
+        spec = getattr(self, "lr_schedule_spec", None)
+        if spec is None:  # direct call, without setup_optimizer's build
+            spec = resolve_lr_schedule_spec(self, lr_scheduler_type, total_steps)
+            self.lr_schedule_spec = spec
+            self.lr_timeline = ScheduleTimeline()
+            self.lr_timeline.set_total_steps(spec.total_steps)
+        lr_schedulers = [
+            build_lr_scheduler(optimizer, spec, self.lr_timeline)
+            for optimizer in optimizers
+        ]
 
         # Replace self.lr_scheduler with first scheduler (for compatibility)
         self.lr_scheduler = lr_schedulers[0]
@@ -6543,49 +6649,6 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Fused optimizer groups setup complete")
         print(f"{self.log_prefix} Optimizer.step() and zero_grad() will be called by hooks automatically")
-
-    def _build_plateau_cosine_floor_scheduler(self, optimizer, total_steps: int):
-        """Build a warmup -> plateau -> cosine-decay-to-floor LambdaLR.
-
-        multiplier(step):
-          - step < W (warmup): linear ramp step/W, 0 -> 1 (skipped if W == 0)
-          - W <= step < D (plateau): 1.0
-          - D <= step < T (cosine decay): F + 0.5*(1-F)*(1 + cos(pi*(step-D)/(T-D)))
-          - step >= T: F (hold floor forever, never decays to 0)
-
-        W = self.optimizer_warmup_steps, D = round(lr_decay_start_ratio * T),
-        T = total_steps (the same value passed as num_training_steps to
-        diffusers' get_scheduler() at this call site), F = lr_floor_ratio.
-
-        Built as a plain torch.optim.lr_scheduler.LambdaLR (not a diffusers
-        scheduler) so the resume fast-forward (`_fast_forward_lr_schedulers`)
-        advances it correctly via last_epoch, exactly like diffusers' own
-        LambdaLR-based schedulers.
-        """
-        from torch.optim.lr_scheduler import LambdaLR
-
-        W = max(0, int(self.optimizer_warmup_steps))
-        T = max(1, int(total_steps))
-        decay_start_ratio = float(self.config.get("lr_decay_start_ratio", 0.85))
-        floor_ratio = float(self.config.get("lr_floor_ratio", 0.25))
-        D = round(decay_start_ratio * T)
-        # Keep the three segments well-formed even at extreme ratio values.
-        D = max(W, min(D, T))
-
-        def lr_lambda(step: int) -> float:
-            if W > 0 and step < W:
-                return step / float(W)
-            if step < D:
-                return 1.0
-            if step < T:
-                span = max(1, T - D)
-                progress = (step - D) / float(span)
-                return floor_ratio + 0.5 * (1.0 - floor_ratio) * (1.0 + math.cos(math.pi * progress))
-            return floor_ratio
-
-        print(f"{self.log_prefix} LR scheduler: plateau_cosine_floor "
-              f"(warmup={W}, plateau_end={D}, total={T}, floor_ratio={floor_ratio})")
-        return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     # ============================================================
     # Weight EMA (opt-in, default off)

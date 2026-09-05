@@ -169,10 +169,14 @@ def test_no_unguarded_periodic_division_remains_in_base_trainer():
         "debug_latents_every",         # guarded by `debug_latents_every > 0`
         "ema_update_every",            # clamped max(1, ...) at construction
         "gradient_accumulation_steps",  # normalize_interval(..., minimum=1)
+        "interval",                    # LR scheduler advance interval, clamped
+                                       # max(1, ...) in
+                                       # lr_scheduler_advance_interval()
         "lh",                          # latent dims, guarded by `lh <= 0 or lw <= 0`
         "lw",
         "mnt",                         # multi_noise_timesteps, structural
         "sample_every_n_steps",        # guarded by `sample_every_n_steps > 0`
+        "step_throttle",               # clamped max(1, total_steps // 10) where defined
         "steps_per_epoch",             # structural divisor
         "vsf",                         # VAE scale factor, structural
     ], divisors
@@ -194,6 +198,7 @@ def test_no_interval_named_divisor_escapes_via_true_division():
         "_danbooru_inj_interval",
         "debug_latents_every",
         "ema_update_every",
+        "interval",                    # lr_scheduler_advance_interval(), max(1, ...)
         "sample_every_n_steps",
     ], divisors
 

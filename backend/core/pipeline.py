@@ -5168,9 +5168,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 image_tensor = image_tensor.to(device=self.device, dtype=self.img2img_pipeline.vae.dtype)
 
                 # Encode to latent
+                from core.models.components.vae_registry import (
+                    denormalize as vae_denormalize, normalize as vae_normalize)
                 with torch.no_grad():
                     latent = self.img2img_pipeline.vae.encode(image_tensor).latent_dist.sample()
-                    latent = latent * self.img2img_pipeline.vae.config.scaling_factor
+                    latent = vae_normalize(latent, self.img2img_pipeline.vae)
 
                 # Calculate target latent size (VAE downsamples by 8x)
                 latent_height = target_height // 8
@@ -5180,7 +5182,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
                 # Decode latent back to image
                 with torch.no_grad():
-                    resized_latent = resized_latent / self.img2img_pipeline.vae.config.scaling_factor
+                    resized_latent = vae_denormalize(resized_latent, self.img2img_pipeline.vae)
                     decoded = self.img2img_pipeline.vae.decode(resized_latent).sample
 
                 # Convert back to PIL Image

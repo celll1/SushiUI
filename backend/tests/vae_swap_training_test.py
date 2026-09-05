@@ -250,12 +250,11 @@ def test_preflight_refuses_a_structurally_incompatible_family():
     with pytest.raises(ValueError, match="cannot drive sdxl"):
         preflight_vae_swap({"vae_swap_source": "registry:qwen_image"}, arch="sdxl",
                            method="full_finetune", bundle_vae_explicit_false=False)
-    # P5's shared normalisation layer handles the BatchNorm domain, but sdxl
-    # renders through custom_sampling's scalar scaling_factor, so the run is
-    # refused before it starts rather than after it cannot generate (P7 lifts).
-    with pytest.raises(ValueError, match="cannot generate"):
-        preflight_vae_swap({"vae_swap_source": "registry:flux2"}, arch="sdxl",
-                           method="full_finetune", bundle_vae_explicit_false=False)
+    # A BatchNorm VAE on sdxl is accepted since P7: P5's shared normalisation
+    # layer handles the domain and custom_sampling now renders through it.
+    assert preflight_vae_swap({"vae_swap_source": "registry:flux2"}, arch="sdxl",
+                              method="full_finetune",
+                              bundle_vae_explicit_false=False) == "registry:flux2"
 
 
 def test_a_run_without_a_swap_is_not_checked_at_all():

@@ -30,15 +30,15 @@ Status: **設計のみ。未実装。** 本書は §14 のフェーズ単位で�
 | # | 論点 | 決定 |
 |---|---|---|
 | D1 | 集約先 | 新規モジュール **`backend/core/training/lr_schedules.py`** に「スケジュール定義（純関数）・レジストリ・構築・実行時タイムライン・直列化」を置く。`lr_utils.py` は再表明専用のまま残し（docstring `lr_utils.py:1-9` の役割分担どおり）、不変条件 `:44-53` を真に戻す。`base_trainer.py` 内の 2 構築点（`:6001-6012`, `:6506-6522`）と `_build_plateau_cosine_floor_scheduler`（`:6547-6588`）は `lr_schedules.build_lr_scheduler()` 呼び出しに置き換える。**`base_trainer.py` にスケジュール式を残さない** |
-| D2 | `LambdaLR` 不変条件 | 本プロジェクトが作る LR スケジューラは**例外なく `torch.optim.lr_scheduler.LambdaLR`**。ReLoRA の `CosineWithMultipleWarmups`（`relora_scheduler.py:33`、`_LRScheduler` 直系）はレジストリの `LambdaLR` 実装に置き換え、`_fast_forward_one_lr_scheduler` の O(step) リプレイ（`base_trainer.py:3908-3911`）と re-warmup の無言スキップ（`:5536-5541`）を到達不能にする |
+| D2 | `LambdaLR` 不変条件 | 本書の対象（BaseTrainer / ReLoRA / P7 の VAE）が作る LR スケジューラは**例外なく `torch.optim.lr_scheduler.LambdaLR`**。ReLoRA の `CosineWithMultipleWarmups`（`relora_scheduler.py:33`、`_LRScheduler` 直系）はレジストリの `LambdaLR` 実装に置き換え、`_fast_forward_one_lr_scheduler` の O(step) リプレイ（`base_trainer.py:3908-3911`）と re-warmup の無言スキップ（`:5536-5541`）を到達不能にする |
 | D3 | lambda の純粋性 | lambda は「**step 整数**と、**seam でしか書き換わらないタイムライン**」の純関数。評価は状態を変えない（順不同・複数回評価可、`lr_utils.py:174` / `base_trainer.py:3896` / `:5572` の 3 経路要件）。タイムラインを書き換えてよい seam は (a) 構築時、(b) resume の状態読み込み直後、(c) 制御コマンドの適用点、(d) ReLoRA merge の 3+1 箇所のみ（§5.2） |
 | D4 | 実行時状態の置き場 | **`save_training_state` の新キー `lr_schedule_events`**（`base_trainer.py:3793-3811` に追加、`at <= step` に切り詰めて保存）。別 artifact（VAE の `lr_scheduler.pt` 方式）は採らない: refusal matrix（`vae_trainer.py:1355-1378`）のコストと、チェックポイント step より後の事象を resume で捨てなければならない要件（`_cleanup_future_metrics` `:13085` と同じ意味論）を state.json の切り詰めが自然に満たすため。config への書き戻しも採らない（実行時事象は config ではない） |
 | D5 | 取り消しの形 | **base curve へ線形に復帰**する。復帰長 `R = lr_warmup_steps`、`R = 0` なら不連続復帰。逆向き補間（減衰に費やした step 数で戻す）は採らない: 所要 step 数が無制限で「元の LR で続けたい」という意図と逆行する。「現在値で保持」は取り消しではないので採らない（§5.4） |
 | D6 | 制御経路 | **sample RPC と同形の新モジュール `training_control_rpc.py`**（ファイル RPC、run スコープ、claim-delete）。sample RPC のペイロード流用はしない（schema・上限 3・「1 バッチ 1 件」・stop 時に claim しない `:10255` が全て sample 専用の意味論）。共有プリミティブ（atomic write / read / owns / age sort）は `training_file_rpc.py` に移して両者が import する。config 経由（stop→edit→resume）は**併存**するが主経路ではない（§6） |
 | D7 | 延長耐性の暗黙化 | **時間軸の warp**。最初に構築されたときの `total_steps` を名目軸とし、以後の `total_steps` 変化は `(anchor=resume step, new_total)` 事象として state.json に記録、resume 点より前の形は不変、残りの区間を新しい残り step 数に線形写像する。**再構築の引数は変わらず、形は再構築のたびに事象列から再導出される**。設定キーは増やさない。旧挙動（無言の再伸長 §5 の危険）は消える。すでに減衰中の run の扱いは §7.3 |
 | D8 | 軸の定義 | 「絶対 step で書かれたものは実軸、`total_steps` 相対で書かれたものは名目軸（warp 後）」。warmup `W`、`lr_decay_steps`、`lr_cycle_steps`、復帰長 `R`、事象の `at` は実軸。`cosine`/`linear`/`polynomial` の進行度、「終端まで」の減衰、「1 サイクル＝全体」は名目軸 |
-| D9 | スケジューラ軸と `gradient_accumulation_steps` | スケジューラの位置は**optimizer step 数**で数える。現状は構築 `T` が `global_step` 単位（`:12557-12561` → `:6011`）、`scheduler.step()` は optimizer step ごと（`:15933`, `:15987-15992`）、resume は `last_epoch = global_step`（`:3901`）で、`gradient_accumulation_steps > 1` では三者が一致しない（§1-3）。`T_sched = ceil(T / gas)`、fast-forward 位置 `global_step // gas` に統一する。P0 で直す（先に直さないとタイムラインの `at` が壊れる） |
-| D10 | 床の一般化 | `lr_floor_ratio` を**レジストリの全スケジュールに適用**（`m = warmup(step) · (F + (1−F)·shape)`）。`constant` は不変。既定値は `param_defaults.py:2193` の `0.25` のまま。YAML には**無条件に書く**（`rewarmup_on_optimizer_reset` と同じ、`training_config.py:198-202`）。**YAML にキーが無い旧 run は `plateau_cosine_floor` のみ 0.25、他は 0.0** と読む（旧挙動の保存。§12.2） |
+| D9 | スケジューラ軸と `gradient_accumulation_steps` | スケジューラの位置は**更新境界での advance 数**で数える（保存契約は §17.1）。現状は構築 `T` が `global_step` 単位（`:12557-12561` → `:6011`）、`scheduler.step()` は optimizer step ごと（`:15933`, `:15987-15992`）、resume は `last_epoch = global_step`（`:3901`）で、`gradient_accumulation_steps > 1` では三者が一致しない（§1-3）。`T_sched = floor(T / gas)`、fast-forward は保存した scheduler_step に統一する（旧状態のみ `global_step // gas` 推定）。P0 で直す（先に直さないとタイムラインの `at` が壊れる） |
+| D10 | 床の一般化 | `lr_floor_ratio` を**レジストリの全スケジュールに適用**（`m = warmup(step) · (F + (1−F)·shape)`）。`constant` の床は効かないが、warmup は §4.2 の挙動変更対象。既定値は `param_defaults.py:2193` の `0.25` のまま。YAML には**無条件に書く**（`rewarmup_on_optimizer_reset` と同じ、`training_config.py:198-202`）。**YAML にキーが無い旧 run は `plateau_cosine_floor` のみ 0.25、他は 0.0** と読む（polynomial を除く旧床の保存（§4.2）。§12.2） |
 | D11 | `plateau_cosine_floor` | 名前は残し、レジストリでは **`wsd` の別名**（`decay_start = round(ratio·T_sched)`、長さ「終端まで」、形 `cosine`）。同一 `T` で現行実装と bit 同一の乗数（P0 の回帰条件）。別名化により D7 の延長耐性と §6 のコマンドが自動で効く |
 | D12 | 新スケジュール名 | `wsd`（設定で減衰開始 step を持てる WSD）、`rex`（`wsd` の別名: 減衰開始 = warmup 終了、形 `rex`）。`cosine_with_restarts` は**名前を保ち in-house 実装に置換**（絶対サイクル長 `lr_cycle_steps`、annealing `lr_cycle_peak_decay`、床）。現状この名前は `num_cycles` を渡していないため（`:6007-6012`、diffusers 既定 `1`、`optimization.py:294`）**単一 cosine と同一**であり、`lr_cycle_steps = 0`（既定）を「1 サイクル＝全体」と定義すれば既存 run の形は変わらない |
 | D13 | 減衰オーバーレイの適用範囲 | 「今から減衰」「取り消し」は **レジストリの全スケジュールに対する共通オーバーレイ**（base curve の上に乗る）。`wsd` は「config で開始 step を書ける」点だけが特別。`constant` + 「今から減衰」は手動 WSD そのものになる |
@@ -182,7 +182,7 @@ def sample_curve(spec, timeline, n_points: int) -> list[tuple[int, float]]   # �
 | `relora_trainer.py:147-181` の差し替え | 削除。`lr_scheduler_type` を `"relora"` に正規化して親の構築に任せる（`lr_scheduler` 設定は従来どおり無視されるが、無視することを `resolve_spec` が 1 行ログに出す） |
 | `relora_trainer.py:325-338` `_add_lr_restart` | `self.lr_timeline.add("restart", at=last_epoch)` |
 | `relora_trainer.py:395-421` `_restore_scheduler_restarts` | 事象が state.json から戻るので原則不要。事象キーの無い旧チェックポイントに対する後方互換としてのみ残す（`steps` 単位の再計算 `:408`） |
-| `vae_trainer.py:663-674` | P7 で `build_lr_scheduler` に置換。`lr_scheduler.pt` の保存・復元と refusal matrix は**変更しない**（`LambdaLR.state_dict()` は `last_epoch`/`base_lrs` を持ち、callable は含まない。既存の復元コードはそのまま動く） |
+| `vae_trainer.py:663-674` | P7 で `build_lr_scheduler` に置換。`lr_scheduler.pt` の方式を維持し、timeline の保存と constant + warmup 拒否の撤去を行う（`LambdaLR.state_dict()` は `last_epoch`/`base_lrs` を持ち、通常の関数 closure の内容は保存されない。タイムラインは別途保存・復元が必要（§17）） |
 | `tagger_trainer.py:1001-1009` | 対象外（§15） |
 
 `lr_utils.py` に構築を置かない理由: docstring `:1-9` が「再表明のためのモジュール、両トレーナーが import し
@@ -195,7 +195,7 @@ def sample_curve(spec, timeline, n_points: int) -> list[tuple[int, float]]   # �
 ## 4. スケジュール定義（純関数）
 
 記法: `s` = scheduler 軸の step（optimizer step、D9）、`W` = warmup、`T` = `T_sched`、`F` = 床、
-`τ(s)` = 名目軸への写像（§7、事象が無ければ恒等）、`p = (τ(s) − W) / max(1, T − W)` を名目進行度とする。
+`τ(s)` = 名目軸への写像（§7、事象が無ければ恒等）、`T` は最初の total_steps 事象の名目終端、`p = clamp((τ(s) − τ(W)) / max(1, T − τ(W)), 0, 1)` を名目進行度とする。
 
 ### 4.1 共通形
 
@@ -206,7 +206,7 @@ ramp(s) = s / W   (W > 0 かつ s < W)、それ以外 1
 
 warmup は床の**外**に掛ける（0 から立ち上がる）。これは現行 `plateau_cosine_floor` の
 「warmup 0→1、減衰は床まで」（`:6575-6584`）と同じ配置であり、`constant`（`shape ≡ 1`）では
-`m = ramp` となって現行 diffusers `constant` / `constant_with_warmup` と一致する。
+`m = ramp` となる。現行 `constant_with_warmup` と一致し、`constant` は §4.2 の変更となる。warmup 中は shape = 1 を先に返し、減衰式を評価しない。
 
 ### 4.2 base curve `shape(s)` の表
 
@@ -221,7 +221,7 @@ warmup は床の**外**に掛ける（0 から立ち上がる）。これは現�
 | `wsd` | `s < D` で `1`、`D ≤ s < D + L` で `k(q)`、以後 `0`。`q = (s − D)/L`、`k` は `decay_shape` | `D = lr_decay_start_step`（`0` = 手動、config では減衰しない）。`L = lr_decay_steps`、`0` なら終端まで（名目軸） |
 | `plateau_cosine_floor` | `wsd` の別名: `D = clamp(round(ratio·T), W, T)`、`L = T − D`、`k = cosine` | `:6571-6573` と同じクランプ。同一 `T` で `:6575-6584` と bit 同一（P0 回帰条件） |
 | `rex` | `wsd` の別名: `D = W`、`L = T − W`、`k = rex`、床は `F` | §8 |
-| `relora` | サイクル `i`（開始 `r_i` = 事象 `restart` の `at`、`r_0 = 0`）で `r_i ≤ s < r_i + W_r` は `(s − r_i)/W_r`、以後 cosine で次の restart または `T` まで | `relora_scheduler.py:90-139` と同式。`W_r = restart_warmup_steps`（初回は `W`）。`min_lr_ratio = 0.0` 固定（`relora_trainer.py:162, 175`）は `F` に置き換わる（旧 YAML は D10 の規則で `0.0`） |
+| `relora` | サイクル `i`（開始 `r_i` = 事象 `restart` の `at`、`r_0 = 0`）で `r_i ≤ s < r_i + W_r` は `(s − r_i)/W_r`、以後 cosine でその時点の `T` まで（未来 restart を参照しない、§17.3） | `relora_scheduler.py:90-139` と同式。`W_r = restart_warmup_steps`（初回は `W`）。`min_lr_ratio = 0.0` 固定（`relora_trainer.py:162, 175`）は `F` に置き換わる（旧 YAML は D10 の規則で `0.0`） |
 
 減衰形 `k(q)`（`q ∈ [0,1]`、`k(0) = 1`、`k(1) = 0`）:
 
@@ -260,8 +260,8 @@ warmup は床の**外**に掛ける（0 から立ち上がる）。これは現�
 {"kind": "restart",     "at": 500}                             // ReLoRA merge
 ```
 
-`at` は scheduler 軸（D9）。事象列は `at` 昇順に保たれ、同じ `at` に複数の事象は置けない
-（後着を `ignored_same_step` で拒否する）。`decay` の `length`/`shape` は事象に**焼き込む**
+`at` は scheduler 軸（D9）。事象列は `(at, seq)` 昇順に保ち、同じ `at` の事象も許可する
+（単調な `seq` と request_id で順序と再送の冪等性を保証する）。`decay` の `length`/`shape` は事象に**焼き込む**
 （あとで config が変わっても、開始済みの減衰の形は変わらない）。
 
 ### 5.2 書き換えてよい seam
@@ -274,7 +274,7 @@ warmup は床の**外**に掛ける（0 から立ち上がる）。これは現�
 | (d) ReLoRA merge | `restart` | `_add_lr_restart`（`relora_trainer.py:325-338`） |
 
 (b) が `setup_optimizer`（`:12557`）より後になる点が、ブリーフ §9 制約 3（構築時に resume step を知る
-手段が無い）への答えである: **構築は事象列が空のまま行い、事象は後から注入する**。lambda は
+手段が無い）への答えである: **構築は暫定 total_steps(at=0) で行い、resume で保存済み事象列に置換する**。lambda は
 タイムライン**オブジェクト**を閉じ込めているので、注入後の評価は注入後の値を返す。
 
 ### 5.3 状態機械
@@ -291,14 +291,14 @@ warmup は床の**外**に掛ける（0 から立ち上がる）。これは現�
 | `DECAYING` / `FLOOR` | `cancel` | `RECOVERING`（開始乗数 `m_c = m(at)`、長さ `R = W`） | `applied` |
 | `RECOVERING` | `decay` | `DECAYING`（`m_start = m(at)`、復帰途中の値から） | `applied` |
 | `RECOVERING` | `cancel` | 変化なし | `ignored_already_recovering` |
-| `DECAYING` かつ `s ≥ at + L` | （時間経過） | `FLOOR` | — |
+| `DECAYING` かつ `q ≥ 1` | （時間経過） | `FLOOR` | — |
 | `RECOVERING` かつ `s ≥ at + R` | （時間経過） | `BASE` | — |
 
 乗数:
 
 ```
-DECAYING:   m(s) = ramp(s) · ( F + (m_start/ramp(at) − F) · k((s − at) / L) )
-FLOOR:      m(s) = ramp(s) · F
+DECAYING:   m(s) = F + (m_start − F) · k(q)   # start は warmup 終了以後のみ受理
+FLOOR:      m(s) = F
 RECOVERING: m(s) = m_c + (m_base(s) − m_c) · (s − at) / R        (R > 0)
             m(s) = m_base(s)                                      (R = 0)
 BASE:       m(s) = m_base(s)                                      # §4 の曲線（config の D を含む）
@@ -307,10 +307,10 @@ BASE:       m(s) = m_base(s)                                      # §4 の曲�
 `m_base` は `wsd` なら（config 減衰が無効化されていなければ）config の `D` を含む曲線、
 `cosine_with_restarts` なら restart 曲線（D15）、`constant` なら `ramp`。**復帰先は常に base curve**
 なので、`cosine` の途中で減衰→取り消しをしても cosine の「その時点の値」へ戻る（元の LR ＝ config の
-スケジュールが指す LR、と定義する）。`wsd`/`constant` では base curve が `1` なので所有者の言う
+スケジュールが指す LR、と定義する）。`wsd` では cancel 時に config 減衰も無効化する。warmup 後の `wsd`/`constant` では base curve が `1` なので所有者の言う
 「元の LR」に一致する。
 
-`decay` の `length = null`（終端まで）は名目軸で `L = T_nominal − τ(at)`、明示の `length` は実軸（D8）。
+`decay` の `length = null` は `q = clamp((τ(s) − τ(at))/(T_nominal − τ(at)), 0, 1)`、明示長 L は `q = clamp((s − at)/L, 0, 1)`（D8）。分母が 0 以下なら開始要求を拒否する。warmup 中の start は `rejected_during_warmup` とし、ゼロ除算と「減衰なのに LR が増える」挙動を避ける。cancel には復帰長 R を焼き込む。開始乗数と状態はグループごとに評価する。
 
 ### 5.4 取り消しの形（D5）
 
@@ -364,7 +364,7 @@ sample RPC（`training_sample_rpc.py`）は機構としては汎用（任意 JSO
 atomic write `:83-86`、claim-delete `:183-203`）だが、次が全て sample 固有である:
 
 - 上限 `MAX_PENDING_REQUESTS = 3`（`:38`）と「1 バッチ 1 件」（`base_trainer.py:16167-16172`）— 生成を
-  伴うから。コマンドは軽く、逆に「最後の 1 件だけが意味を持つ」（減衰→取り消し→減衰は最後の減衰が勝つ）。
+  伴うから。コマンドは軽く、到着順の状態遷移を全件評価する（同一 step の減衰→取り消し→減衰も順序どおり評価する）。
 - stop 要求中は claim しない（`:10255`）— 生成が stop を遅らせるから。コマンドは stop 中でも適用してよい
   （直後の保存に事象が乗る）。
 - claim 位置がサンプリングブロック内（`:16167-16172`）— 減衰は forward 前に効かせたい（§5.6）。
@@ -390,7 +390,7 @@ atomic write `:83-86`、claim-delete `:183-203`）だが、次が全て sample �
   （`:16167`）とは別。1 バッチにつき 1 回、`claim_all` → 各コマンドを `timeline.add(kind, at=last_epoch, ...)`
   → 1 件でも `applied`/`disarmed_*` なら全スケジューラに §5.6 の即時反映 → 各結果を書く →
   `.lr_schedule.json` を書く → `emit_training_event("info", code="lr_schedule_command")`。
-- `at` は `all_lr_schedulers(self)[0].last_epoch`（`:281`）。D9 により `global_step // gas` と一致する。
+- `at` は `all_lr_schedulers(self)[0].last_epoch`（`:281`）。保存した scheduler_step を根拠とする（§17）。単純な global_step の除算は旧状態の移行に限る。
 - 例外を投げない（sample の `_claim_on_demand_sample_request` `:10248-10260` と同じ方針）。
 
 ### 6.4 API（openapi 先行）
@@ -440,8 +440,8 @@ config 経由の減衰開始（`lr_decay_start_step` の編集）は stop→edit
 τ(s)   = τ_1(τ_2(…τ_n(s)))
 ```
 
-`τ` は連続・単調非減少で、`τ(a_i) = a_i`（各 anchor で恒等）。名目軸で定義された曲線 `shape(τ(s))` は
-**anchor より前では以前と bit 同一**（`τ` が恒等）であり、anchor で連続、`s = T_n` で名目 `T_0` に達する。
+`a_i < T_{i−1}` かつ `a_i < T_i` の変更では `τ` は連続・単調非減少。合成後は `τ_new(a_i) = τ_old(a_i)` であり、複数回変更後に `τ(a_i) = a_i` とは限らない。名目軸で定義された曲線 `shape(τ(s))` は
+**anchor より前では以前と bit 同一**（新しい写像だけが恒等）であり、anchor で連続、`s = T_n` で名目 `T_0` に達する。
 例: `T_0 = 10000`、step 9000 で 20000 に延長 → `τ_1(s) = 9000 + (s − 9000)/11`、`τ_1(20000) = 10000`。
 さらに 15000 で 30000 に延長 → `τ_2(s) = 15000 + (s − 15000)/3`、`τ_1(τ_2(30000)) = τ_1(20000) = 10000`。
 
@@ -466,13 +466,13 @@ config 経由の減衰開始（`lr_decay_start_step` の編集）は stop→edit
 - 旧チェックポイント（事象キー無し）の**最初の** resume は、以前の `T` を知る術が無いので現在の `T` を
   名目軸とする（§5.5）。この 1 回だけは旧挙動と同じ形になる。以後は保護される。
 - `total_steps` を変えずに `gradient_accumulation_steps` を変えると `T_sched` が変わる。D9 の帰結であり
-  上と同じ経路で warp される。警告のメッセージに `gas` の変化を含める。
+  過去の scheduler 軸を再換算してはならない。保存済み scheduler_step を anchor とし、残り更新回数から新終端を求めて warp する（§17）。警告に `gas` の変化を含める。
 
 ---
 
 ## 8. REX の検証（要求 6、D14）
 
-REX（Chen, Wong, Beam 2021, arXiv:2107.04197。式は実装時に原典で再確認すること — 要検証）の乗数は
+REX（Chen, Wolfe, Kyrillidis 2021, [原典 §4.1](https://arxiv.org/html/2107.04197#S4.SS1) の式を監査時に確認済み）の乗数は
 進行度 `p ∈ [0, 1]` に対して
 
 ```
@@ -488,7 +488,7 @@ k_rex(p) = (1 − p) / (1 − p/2) = 2(1 − p) / (2 − p)
 | `k(½)` | 0.5 | `0.5^n` | 2/3 ≈ 0.667 | 0.5 |
 | `k(1)` | 0 | 0 | 0 | 0 |
 | `k'(0)` | 0 | 0（`n·k^{n−1}·k'`、`k'(0) = 0`） | −1/2 | −1 |
-| `k'(1)` | 0 | 0（`n ≥ 1`）/ 発散（`n < 1`） | −2 | −1 |
+| `k'(1)` | 0 | 0（`n > 1/2`）/ −π/2（`n = 1/2`）/ −∞（`0 < n < 1/2`） | −2 | −1 |
 
 導出: `k_rex'(p) = −2 / (2 − p)²`。`p = 0` で `−1/2`、`p = 1` で `−2`。
 
@@ -522,7 +522,7 @@ shape(s) = peak_i · ½(1 + cos(π · (s − c_i)/C))
 m(s)   = ramp(s) · (F + (1 − F) · shape(s))
 ```
 
-- 各サイクルは床 `F` まで下がり、次サイクル開始で `peak_i` まで**不連続に**上がる（hard restart。
+- 各サイクルは床 `F` まで下がり、次サイクル開始で `F + (1−F)·peak_i` まで**不連続に**上がる（hard restart。
   diffusers の `cosine_with_restarts` も不連続、`optimization.py:217`）。サイクル先頭の再 warmup は
   持たせない（それは `relora` の形。ReLoRA を使わないなら warmup 無しの hard restart が diffusers 互換）。
 - `C = 0` のとき `i ≡ 0`、`peak_0 = 1` なので `cosine` と一致し、現行の `cosine_with_restarts`（§1-1）と
@@ -561,7 +561,7 @@ D13 のオーバーレイがそのまま効く。`start_decay` は `m_start = m(
 | 箇所 | 現状 | 対応 |
 |---|---|---|
 | `:6588` 単一 lambda | `LambdaLR(optimizer, lr_lambda=fn)` | `build_lr_scheduler` が `group_names` と `group_schedules` からグループごとの lambda リストを作る。名前の無いグループは run 既定 |
-| `:6007` / `:6516` 単一型 | 同一 `name` | `spec` はグループごとに `name` だけ差し替えた派生 `spec` を作る（`dataclasses.replace`） |
+| `:6007` / `:6516` 単一型 | 同一 `name` | グループごとの名前で resolve_spec を呼び、alias の開始軸・終端種別も再解決する（§17.3） |
 | `lr_utils.py:173-179` | `len(lambdas) == n_groups` | `LambdaLR` はリスト長 = グループ数を要求するので常に真 |
 | `:3895-3900` zip | `base_lrs` と `lr_lambdas` | 長さが一致するので不変 |
 | `:5542-5544` re-warmup | 全 lambda に同一 anchor/warmup | グループ別でも「resume 時の再 warmup は全員同じ」で正しい。不変 |
@@ -606,7 +606,7 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
      どのブロックにも属さない params（embedder、final layer、TE など）は `depth = n − 1`（係数 1.0）。
    - 分割後グループの `name` は `f"{name}.d{depth:02d}"`。
 3. `_record_configured_group_lrs`（`:5172-5214`）は分割後の各グループの基準 LR をそのまま記録するので、
-   resume 再表明（`:5576-5639`）は index で正しく戻る。追加の配線は要らない。
+   resume 再表明（`:5576-5639`）は同じ分割構造なら index で戻る。component 名は name と別に保持し、.dNN 追加後もグループ別スケジュールへ正しく対応させる。深さ・trainable params・LLRD の変更で optimizer のグループ構造が変わる resume は状態復元を拒否して既存の optimizer reset 経路へ送る。
 
 ### 11.3 プリセット
 
@@ -627,7 +627,7 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
   できないので unsupported として登録する（理由文は構造の事実のみ）。
 - **メトリクス**: `:15760-15765` は `len(param_groups) > 1` で全グループを emit するが、名前は
   `_build_component_lr_list` 由来で、長さ不一致なら `g{i}` になる。LLRD で 30 グループになると
-  `lr_g0..lr_g29` が出る。`_configured_group_names` を使い、`.dNN` 付きは `d00`（係数 1.0 のグループ）
+  `lr_g0..lr_g29` が出る。`_configured_group_names` を使い、`.dNN` 付きは `d(n−1)`（最終深度、係数 1.0 のグループ）
   だけ emit するよう変更する（`lr_<component>` の系列は現状の意味を保つ）。
 
 ---
@@ -729,18 +729,18 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
 ## 14. 実装フェーズ
 
 各フェーズは独立に検証・コミット可能で、前フェーズの上に積む。**既存 run の同一 `T` での乗数が
-bit 同一であること**を P0〜P3 の回帰条件とする。
+bit 同一であること**は互換条件を満たすケースだけの回帰条件とする。constant の warmup、gas 軸修正、polynomial の床、新しい床指定、終端後の cosine 固定は意図した変更として別テストにする（§17）。
 
 | Phase | 内容 | 検証 | リスク |
 |---|---|---|---|
-| **P0 集約と等価移植** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = ceil(T/gas)`、fast-forward `global_step // gas`）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 6 名 × `W ∈ {0, 100}` × `T ∈ {1, 1000, 12345}` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
+| **P0 集約と等価移植** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = floor(T/gas)`、fast-forward は保存した scheduler_step、旧状態のみ除算推定、詳細は §17.1）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 互換条件（§17）を満たす名前と床、`0 ≤ W < T`、`0 ≤ s ≤ T` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
 | **P1 タイムラインと延長耐性** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
 | **P2 実行時コマンド** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
 | **P3 新スケジュールと床の一般化** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
-| **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
+| **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
 | **P5 LLRD** | `ArchHandler.depth_blocks`（DiT 第 1 波）、`apply_layer_decay`、グループ `name` 必須化（§10.3、LLRD でも必要）、メトリクス emit の変更、capability 登録、UI | テスト: 合成モデルで `depth_of` の被覆（全 trainable param がどこかに入る）、係数の等比、非ブロック param が 1.0、`_record_configured_group_lrs` が分割後を記録、fused 併用が `ValueError`。実 arch は 3 step smoke（有限 loss）で足りる | 中。arch ごとのブロック属性（要検証）。sd15/sdxl は unsupported |
 | **P6 グループ別スケジュール** | `lr_group_schedules`、`build_lr_scheduler` の lambda リスト、fused 併用拒否、Advanced UI | テスト: 2 グループで異なる名前、`reassert_config_lr` と fast-forward が各グループの lambda を使う、無名グループの警告 | 低〜中。既定オフ |
-| **P7 VAE トレーナー語彙統合** | `vae_trainer.py:663-674` を `build_lr_scheduler` に、`VALID_LR_SCHEDULERS` を import に、`constant` + warmup 拒否の撤去、openapi `:21653` の enum 更新 | 既存 VAE テストが通る。`lr_scheduler.pt` の保存・復元・refusal matrix が不変 | 低。任意（後回し可） |
+| **P7 VAE トレーナー語彙統合** | `vae_trainer.py:663-674` を `build_lr_scheduler` に、`VALID_LR_SCHEDULERS` を import に、`constant` + warmup 拒否の撤去、openapi `:21653` の enum 更新 | 既存 VAE テストが通る。`lr_scheduler.pt` の新旧形式復元と timeline の延長耐性、constant + warmup 以外の refusal matrix を検証（§17.4） | 低。任意（後回し可） |
 
 各フェーズのコミット前に `git diff --cached` の比較レビュー（CLAUDE.md 大規模変更手順）と、
 `py_compile` に加えて実 import（`python -c "import core.training.lr_schedules"` 等）を行う。
@@ -765,10 +765,10 @@ bit 同一であること**を P0〜P3 の回帰条件とする。
 
 ## 16. 不変条件（実装者向け）
 
-1. LR スケジューラは全て `LambdaLR`。`lr_schedules.build_lr_scheduler` 以外で作らない。
+1. 本書の対象（tagger を除く）の LR スケジューラは全て `LambdaLR`。`lr_schedules.build_lr_scheduler` 以外で作らない。
 2. lambda は `(step, timeline.events)` の純関数。評価で書かない。書くのは §5.2 の 4 seam のみ。
 3. `total_steps` 相対の量は名目軸 `τ(s)`、絶対 step の量は実軸（D8）。新しい量を足すときはどちらかを明記する。
-4. scheduler 軸は optimizer step（D9）。`at`、`last_epoch`、`T_sched` は全てこの軸。
+4. scheduler 軸は更新境界での advance 数（D9 / §17.1）。`at`、`last_epoch`、`T_sched` は全てこの軸。
 5. 事象の焼き込み: `decay` は `length`/`shape` を持つ。config の後変更で開始済みの減衰を変えない。
 6. state.json への保存は `at <= step` に切り詰める。表示ファイルを resume の根拠にしない。
 7. 既定値は `api/param_defaults.py` にのみ置く。Pydantic は参照する。
@@ -780,3 +780,72 @@ bit 同一であること**を P0〜P3 の回帰条件とする。
 12. UI・コミットメッセージ・本書に主観的形容詞と未測定の数値を書かない。LLRD のプリセット値も同様。
 13. スケジュールの品質を主張しない。主張してよいのは「config どおりの乗数」「再開・延長で形が保たれる」
     「状態が観測できる」の 3 点だけ。
+
+## 17. 監査で確定した実装契約（2026-09-06）
+
+以下は D1–D20 の補足条件であり、各フェーズの受け入れゲートに含める。
+
+### 17.1 scheduler 軸は保存する（P0 / P1）
+
+現行ループは `global_step % gas == 0` のときだけ scheduler を進める
+（`base_trainer.py:15933-15947`, `:15987-15992`）。末尾の端数を flush しないので
+通常経路の新規 run は `T_sched = floor(T/gas)`。`T=10, gas=4` は 2 回であり 3 回ではない。
+`T < gas` は更新が一度も無いので開始前に拒否する。scheduler は更新後に進み、最後の更新が
+使用する位置は `T_sched−1`、位置 `T_sched` の床はその更新後の値である。
+
+ただし global_step はスキップでも増える（`:14990`, `:15198`, `:15242`）。CUDA 復旧では
+optimizer 更新無しに scheduler を進める（`:15935-15947`）。従って「成功した optimizer 更新数」
+と同義にはしない。state.json に version、`scheduler_step`、`gradient_accumulation_steps`、
+有効な更新間隔を保存し、実際の scheduler advance 数を再開位置とする。通常の同一 gas で
+スキップ無しの場合だけ `global_step//gas` と一致する。旧状態からの推定は警告する。
+fused backward/groups は蓄積を無視する（`:6275-6314`）ので有効間隔は 1 とし、
+scheduler も各 backward の共通 seam で 1 回進める。パラメータ hook ごとには進めない。
+
+gas 変更後は過去の事象位置を変えず、保存位置 S に残りの更新回数を足した値を新終端とする。
+残り回数は実ループの境界条件から求める（通常の modulo 継続なら `floor(T/gas)−floor(global_step/gas)`）。
+部分蓄積の勾配を保存していない再開、スキップ、MNT、fused を個別にテストする。
+resume 直後の re-warmup anchor も scheduler 軸に変換する。D9 は除算 2 箇所だけの変更ではない。
+
+### 17.2 曲線の境界と互換条件（P0 / P3）
+
+- 新規設定は `0 ≤ W < T_sched`、`0 ≤ F ≤ 1`、`0 < cycle_peak_decay ≤ 1`、長さは非負整数。
+  手動を表す外部 `D=0` は内部では None に解決する。REX の `W=0` の自動開始と区別する。
+  旧 plateau の `D=T` は旧式の `max(1, T−D)` を保つ互換ケースとして個別検証する。
+- polynomial の旧床は 0 ではなく `1e-7 / optimizer.defaults['lr']`
+  （diffusers `optimization.py:226`, `:252-270`）。P0 はそのまま移植し、P3 の欠落床 0 への変更は
+  CHANGELOG と警告対象にする。明示 F への移行後は linear と同形になる。
+- cosine は現行式では T を越えると再上昇する（diffusers `optimization.py:178-182`）。
+  本書の終端保持は変更点。未開始の手動 WSD / constant は終端でも 1 を保持し、
+  明示長 WSD は指定区間に従う。「全スケジュールが T で床」とはしない。
+- `C=0` は modulo を使わず名目進行度 p の単一 cosine とする。`C>0` のみ実軸のサイクル式を使う。
+  alias の導出値は名目 T から解決する。再開時の新 T を分母や D に再投入しない。内部 spec に start_axis と end_kind を持たせる。plateau の D は名目軸（τ(s) と比較）、rex の D=W は実軸。両 alias は end_kind=nominal_total / length=None とし、T−D を明示実軸長として格納しない。§4 / §8 の L=T−D は名目区間の説明である。
+  明示実軸 D から終端への WSD は `(τ(s)−τ(D))/(T_nominal−τ(D))` を使う。
+- `T_new ≤ anchor` の縮小は意図的な不連続終端処理。旧終端に到達済みの場合は床を保持し、
+  負の傾きを作る warp は追加しない。warmup 中の延長、二重延長、終了後の延長も検証する。
+
+### 17.3 事象の因果性とグループ（P1 / P2 / P4 / P6）
+
+同一 step の total_steps / restart / command を拒否すると、再開時の MNT 再計算や取り消しが
+失われる。保存順 seq で適用し、コマンド結果を各 request_id に返す。取り消しは config WSD の
+予定・進行中の減衰も無効化し、再減衰は新しい start 事象から始める。内部状態はグループ別に持ち、
+共有するのは事象列だけ。`state_at` は spec/group を引数に受け、開始乗数・復帰先を各曲線から求める。
+`lr_group_schedules` は名前だけ replace した未解決 spec ではなく、名前ごとに alias を再解決する。
+単一状態の UI / metric は代表グループを明示し、API にはグループ別状態も返す。
+
+ReLoRA の現行 `get_lr` は登録済みの未来 restart を次の終端に使う
+（`relora_scheduler.py:111-117`）。実行中に後着した restart を再開時に全件渡すと、
+過去の cosine が後から短くなる。新式は「評価位置 s 以下の restart だけ」を選び、各区間の
+減衰終端はその時点の total とする。未来 restart を参照しない。従来との比較も逐次到着で行う。
+ReLoRA の再 warmup は共通 ramp と二重に掛けず、区間式として直接乗数を返す。
+F > 0 での再 warmup は F から 1 と定義する（初回のみ 0 から 1）。
+
+`.lr_schedule.json` を事象時だけ更新しても時間経過で DECAYING→FLOOR になる。
+状態遷移時にも更新し、GET が古い状態を返さないことをテストする。
+
+### 17.4 VAE と再開の保存範囲（P7）
+
+通常の lambda closure が閉じ込めた timeline は `LambdaLR.state_dict()` に保存されない。
+VAE の `lr_scheduler.pt` 方式は維持し、その中に version / events / scheduler_step を明示的に
+保存する。復元は timeline→scheduler state→LR 再表明の順とし、旧形式は移行する。
+拒否行列のうち constant + warmup の拒否だけは §4.2 の新仕様に合わせて外す。
+P7 を語彙の import 変更だけで済ませず、resume と延長の実経路テストを必要条件とする。

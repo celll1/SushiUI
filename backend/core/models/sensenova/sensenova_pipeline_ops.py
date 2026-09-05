@@ -31,11 +31,13 @@ from PIL import Image, ImageFilter
 from core.inference.cancellation import raise_if_cancelled
 from core.inference.generation_timing import time_phase
 
+from .latent_space import decode as latent_decode
+from .latent_space import encode as latent_encode
+from .latent_space import gen_geometry, resolution_band_mp, token_pixel_width
 from .vendor.modeling_neo_chat import clear_flash_kv_cache, optimized_scale, prepare_flash_kv_cache
 from .vendor.utils import SYSTEM_MESSAGE_FOR_GEN, load_image_native
 
 LABEL = "SenseNova"
-TOKEN_GRID_ALIGN = 32  # patch_size(16) * merge_size(2) -- the token patch, not the raw ViT patch_size.
 
 # cfg_scale/timestep_shift/cfg_norm/num_inference_steps have NO module-level
 # default (AGENTS.md: never hardcode a default outside
@@ -65,15 +67,20 @@ _IMG_CONTEXT_TOKEN = "<IMG_CONTEXT>"
 REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024 * 1024
 
 
-def align_to_grid(value: int, align: int = TOKEN_GRID_ALIGN) -> int:
+def align_to_grid(value: int, align: int) -> int:
     if value <= 0:
         return align
     return max(align, round(value / align) * align)
 
 
-def normalize_resolution(width: int, height: int) -> Tuple[int, int]:
-    """Snap to the 32px token grid -- SenseNova refuses nothing, callers round instead."""
-    return align_to_grid(width), align_to_grid(height)
+def normalize_resolution(width: int, height: int, align: int) -> Tuple[int, int]:
+    """Snap to the token grid -- SenseNova refuses nothing, callers round instead.
+
+    ``align`` is one token's pixel width (``token_pixel_width``): 32 in pixel
+    space, ``4 * vae_scale_factor`` after a swap. No default: a wrong grid snaps
+    silently to a size the model cannot tokenise (design §10.5).
+    """
+    return align_to_grid(width, align), align_to_grid(height, align)
 
 
 def image_to_tensor(image: Image.Image, height: int, width: int, device, dtype) -> torch.Tensor:
@@ -93,7 +100,7 @@ def tensor_to_image(x: torch.Tensor) -> Image.Image:
 
 
 def prepare_mask(mask_image: Image.Image, height: int, width: int, device, dtype,
-                 mask_blur: int = 0) -> torch.Tensor:
+                 mask_blur: int = 0, scale: int = 1) -> torch.Tensor:
     """PIL mask (white=inpaint) -> [1,1,H,W] in [0,1], pixel-space (RePaint blend
     happens in pixel space, see ``_euler_run``). Resize FIRST (BILINEAR), THEN
     blur -- every other inpaint path in this repo does it in this order
@@ -106,27 +113,64 @@ def prepare_mask(mask_image: Image.Image, height: int, width: int, device, dtype
     if mask_blur and mask_blur > 0:
         m = m.filter(ImageFilter.GaussianBlur(radius=mask_blur))
     arr = np.asarray(m).astype(np.float32) / 255.0
-    return torch.from_numpy(arr)[None, None].to(device=device, dtype=dtype)
+    mask = torch.from_numpy(arr)[None, None].to(device=device, dtype=dtype)
+    if scale > 1:
+        # The blend runs on the generation grid; area-average down rather than
+        # blurring at latent resolution, so the feather keeps the pixel width
+        # the request asked for.
+        mask = torch.nn.functional.adaptive_avg_pool2d(
+            mask.float(), (height // scale, width // scale)).to(dtype)
+    return mask
 
 
 def prepare_noise(height: int, width: int, device, dtype, seed: Optional[int], noise_scale: float,
-                  batch_size: int = 1) -> torch.Tensor:
+                  batch_size: int = 1, channels: int = 3) -> torch.Tensor:
+    """Noise on the GENERATION grid: ``[B, 3, H, W]`` natively, ``[B, C, H/s, W/s]``
+    after a VAE swap. Callers pass ``prefix.gen_size`` and the geometry's channels."""
     gen = None
     if seed is not None and seed >= 0:
         gen = torch.Generator(device=device).manual_seed(seed)
-    return noise_scale * torch.randn(batch_size, 3, height, width, generator=gen, device=device, dtype=dtype)
+    return noise_scale * torch.randn(batch_size, channels, height, width, generator=gen, device=device, dtype=dtype)
+
+
+def to_gen_space(image: Image.Image, height: int, width: int, device, dtype,
+                 vae=None, spec=None) -> torch.Tensor:
+    """PIL -> the tensor the denoise loop runs on: [-1,1] RGB, or a VAE latent.
+
+    ``height``/``width`` are PIXELS either way; the encode divides them.
+    """
+    pixels = image_to_tensor(image, height, width, device, dtype)
+    if vae is None:
+        return pixels
+    return latent_encode(vae, pixels, spec=spec).to(dtype=dtype)
+
+
+def from_gen_space(x: torch.Tensor, vae=None, spec=None) -> Image.Image:
+    """The denoise loop's output -> PIL. Decodes first when the model is latent.
+
+    The pixel path clamps to [-1,1] (upstream's own decode); the latent path
+    does not clamp the LATENT -- ``tensor_to_image`` clamps the decoded RGB,
+    which is where the range actually means something.
+    """
+    if vae is not None:
+        x = latent_decode(vae, x, spec=spec)
+    return tensor_to_image(x)
 
 
 def prepare_style_reference(
-    image: Image.Image, height: int, width: int, device, dtype, seed: Optional[int], noise_scale: float,
+    transformer, image: Image.Image, height: int, width: int, device, dtype,
+    seed: Optional[int], noise_scale: float, vae=None, spec=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Build the ``(ref_x0, eps_ref)`` pair for reference-style transfer. Pixel
-    space, no VAE. The resize to the exact target size is required: capture and
+    """Build the ``(ref_x0, eps_ref)`` pair for reference-style transfer, on the
+    generation grid. The resize to the exact target size is required: capture and
     inject must produce the same image-token count. ``eps_ref`` is drawn ONCE
     per generation -- re-noising with fresh noise each step would make the
     captured K/V flicker."""
-    ref_x0 = image_to_tensor(image, height, width, device, dtype)
-    eps_ref = prepare_noise(height, width, device, dtype, seed, noise_scale, batch_size=1)
+    geometry = gen_geometry(transformer)
+    scale = geometry.vae_scale_factor
+    ref_x0 = to_gen_space(image, height, width, device, dtype, vae=vae, spec=spec)
+    eps_ref = prepare_noise(height // scale, width // scale, device, dtype, seed,
+                            noise_scale, batch_size=1, channels=geometry.channels)
     return ref_x0, eps_ref
 
 
@@ -199,6 +243,9 @@ class SenseNovaPrefix:
     grid_w: int
     merge_size: int
     image_size: Tuple[int, int]  # (W, H) -- matches upstream's tuple order.
+    # (W, H) of the grid the DENOISE loop runs on: the image itself in pixel
+    # space, the latent grid (image / vae_scale_factor) after a swap.
+    gen_size: Tuple[int, int]
     cond_past_key_values: Any
     cond_indexes_image: torch.Tensor
     cond_attention_mask: Dict[str, Any]
@@ -408,9 +455,10 @@ def encode_prompt(
     (the blend's baseline at the default ``img_cfg_scale=1``) -- SushiUI's own
     extension, upstream conditions img_cond on the images alone.
     """
-    if height % TOKEN_GRID_ALIGN != 0 or width % TOKEN_GRID_ALIGN != 0:
+    align = token_pixel_width(transformer)
+    if height % align != 0 or width % align != 0:
         raise ValueError(
-            f"{LABEL}: {width}x{height} is not aligned to the {TOKEN_GRID_ALIGN}px token grid -- "
+            f"{LABEL}: {width}x{height} is not aligned to the {align}px token grid -- "
             f"callers must snap through normalize_resolution()/align_to_grid() first.")
 
     if prefill_callback is not None:
@@ -423,12 +471,12 @@ def encode_prompt(
 
     transformer._notify_layer_offload_phase("prefix")
     merge_size = int(1 / transformer.downsample_ratio)
-    patch = transformer.patch_size * merge_size
+    geometry = gen_geometry(transformer)
     ref_images = list(ref_images) if ref_images else []
     negative_prompt = (negative_prompt or "").strip()
     sys_msg = SYSTEM_MESSAGE_FOR_GEN if system_message is None else system_message
-    token_h = height // patch
-    token_w = width // patch
+    token_h = height // align
+    token_w = width // align
 
     past_kv_cond = None
     past_kv_uncond = None
@@ -569,13 +617,17 @@ def encode_prompt(
             clear_flash_kv_cache(past_kv_img_cond)
         raise
 
-    grid_h = height // transformer.patch_size
-    grid_w = width // transformer.patch_size
+    # The gen ViT's grid, on the grid the generation branch faces: 16px patches
+    # of the image natively, `gen_vit_patch_size` cells of the latent otherwise.
+    grid_h = token_h * merge_size
+    grid_w = token_w * merge_size
 
     return SenseNovaPrefix(
         device=device, dtype=dtype, batch_size=batch_size,
         token_h=token_h, token_w=token_w, grid_h=grid_h, grid_w=grid_w, merge_size=merge_size,
         image_size=(width, height),
+        gen_size=(width // geometry.vae_scale_factor,
+                  height // geometry.vae_scale_factor),
         cond_past_key_values=past_kv_cond,
         cond_indexes_image=indexes_image_cond,
         cond_attention_mask={"full_attention": None},
@@ -618,9 +670,9 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
     Returns ``(z, image_embeds, timestep_embeddings)``."""
     with torch.set_grad_enabled(enable_grad):
         batch_size = prefix.batch_size
-        patch = transformer.patch_size * prefix.merge_size
-        z = transformer.patchify(image_prediction, patch)
-        image_input = transformer.patchify(image_prediction, transformer.patch_size, channel_first=True)
+        geometry = gen_geometry(transformer)
+        z = transformer.patchify(image_prediction, geometry.patch)
+        image_input = transformer.patchify(image_prediction, geometry.vit_patch, channel_first=True)
         grid_hw = torch.tensor([[prefix.grid_h, prefix.grid_w]] * batch_size, device=image_prediction.device)
         image_embeds = transformer.extract_feature(
             image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,
@@ -682,6 +734,7 @@ def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.
         image_embeds, indexes_image, attn_mask, past_kv, t, z,
         image_token_num=prefix.token_h * prefix.token_w,
         timestep_embeddings=timestep_embeddings, image_size=prefix.image_size,
+        token_hw=(prefix.token_h, prefix.token_w),
     )
 
 
@@ -988,7 +1041,8 @@ def _euler_run(
 
     n = len(ts) - 1
     total = n - start_idx
-    patch = transformer.patch_size * prefix.merge_size
+    patch = gen_geometry(transformer).patch
+    gen_w, gen_h = prefix.gen_size
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     try:
         for j, i in enumerate(range(start_idx, n)):
@@ -1106,10 +1160,10 @@ def _euler_run(
                 t_eps = float(getattr(transformer.config, "t_eps", 0.02))
                 x0_patch = z + (1.0 - t).clamp_min(t_eps) * v_pred
                 pred_x0 = transformer.unpatchify(
-                    x0_patch, patch, prefix.image_size[1], prefix.image_size[0]).detach()
+                    x0_patch, patch, gen_h, gen_w).detach()
 
             z = z + (t_next - t) * v_pred
-            image_prediction = transformer.unpatchify(z, patch, prefix.image_size[1], prefix.image_size[0])
+            image_prediction = transformer.unpatchify(z, patch, gen_h, gen_w)
 
             if mask_latent is not None:
                 known = init_image * t_next + fixed_noise * (1.0 - t_next)
@@ -1138,7 +1192,11 @@ def _euler_run(
             except Exception:
                 pass
 
-    return image_prediction.clamp(-1, 1) if clamp_output else image_prediction
+    # The [-1,1] clamp is upstream's RGB decode convention; a latent has no such
+    # range, and clamping one would silently truncate it (design §10.5).
+    if clamp_output and not gen_geometry(transformer).is_latent:
+        return image_prediction.clamp(-1, 1)
+    return image_prediction
 
 
 @torch.no_grad()
@@ -1172,9 +1230,11 @@ def denoise_loop(
     if num_inference_steps < 1:
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
-    width, height = prefix.image_size
+    gen_w, gen_h = prefix.gen_size
+    geometry = gen_geometry(transformer)
     noise_scale = compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
-    x = prepare_noise(height, width, device, dtype, seed, noise_scale, batch_size=prefix.batch_size)
+    x = prepare_noise(gen_h, gen_w, device, dtype, seed, noise_scale,
+                      batch_size=prefix.batch_size, channels=geometry.channels)
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device)
     ts = transformer._apply_time_schedule(ts, prefix.token_h * prefix.token_w, timestep_shift)
     with _t_eps_override(transformer, t_eps):
@@ -1193,6 +1253,8 @@ def denoise_loop_img2img(
     init_image: Image.Image,
     denoising_strength: float,
     *,
+    vae=None,
+    spec=None,
     cfg_scale: float,
     timestep_shift: float,
     num_inference_steps: int,
@@ -1220,14 +1282,17 @@ def denoise_loop_img2img(
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
     width, height = prefix.image_size
+    gen_w, gen_h = prefix.gen_size
+    geometry = gen_geometry(transformer)
     noise_scale = compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
-    x0 = image_to_tensor(init_image, height, width, device, dtype)
+    x0 = to_gen_space(init_image, height, width, device, dtype, vae=vae, spec=spec)
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device)
     ts = transformer._apply_time_schedule(ts, prefix.token_h * prefix.token_w, timestep_shift)
     t_start = max(0.0, min(1.0, 1.0 - float(denoising_strength)))
     start_idx = int((ts <= t_start).sum().item()) - 1
     start_idx = max(0, min(start_idx, num_inference_steps - 1))
-    noise = prepare_noise(height, width, device, dtype, seed, noise_scale, batch_size=prefix.batch_size)
+    noise = prepare_noise(gen_h, gen_w, device, dtype, seed, noise_scale,
+                          batch_size=prefix.batch_size, channels=geometry.channels)
     ti = ts[start_idx]
     x = x0 * ti + noise * (1.0 - ti)
     with _t_eps_override(transformer, t_eps):
@@ -1247,6 +1312,8 @@ def denoise_loop_inpaint(
     mask_image: Image.Image,
     denoising_strength: float,
     *,
+    vae=None,
+    spec=None,
     cfg_scale: float,
     timestep_shift: float,
     num_inference_steps: int,
@@ -1280,15 +1347,19 @@ def denoise_loop_inpaint(
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
     width, height = prefix.image_size
+    gen_w, gen_h = prefix.gen_size
+    geometry = gen_geometry(transformer)
     noise_scale = compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
-    x0 = image_to_tensor(init_image, height, width, device, dtype)
-    mask = prepare_mask(mask_image, height, width, device, dtype, mask_blur=mask_blur)
+    x0 = to_gen_space(init_image, height, width, device, dtype, vae=vae, spec=spec)
+    mask = prepare_mask(mask_image, height, width, device, dtype, mask_blur=mask_blur,
+                        scale=geometry.vae_scale_factor)
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device)
     ts = transformer._apply_time_schedule(ts, prefix.token_h * prefix.token_w, timestep_shift)
     t_start = max(0.0, min(1.0, 1.0 - float(denoising_strength)))
     start_idx = int((ts <= t_start).sum().item()) - 1
     start_idx = max(0, min(start_idx, num_inference_steps - 1))
-    fixed_noise = prepare_noise(height, width, device, dtype, seed, noise_scale, batch_size=prefix.batch_size)
+    fixed_noise = prepare_noise(gen_h, gen_w, device, dtype, seed, noise_scale,
+                                batch_size=prefix.batch_size, channels=geometry.channels)
     ti = ts[start_idx]
     x = x0 * ti + fixed_noise * (1.0 - ti)
     with _t_eps_override(transformer, t_eps):

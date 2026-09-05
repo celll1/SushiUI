@@ -100,7 +100,7 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
 #   adafactor             0.002991 B/param (shape-dependent), no condition.
 #
 # G-RB1's transfer-hiding threshold does not exclude either ring-buffer optimizer
-# at this route's resolution. The token grid is /32 (TOKEN_GRID_ALIGN), so 2048px
+# at this route's resolution. The token grid is /32 in pixel space, so 2048px
 # is 4096 image tokens, against thresholds of 2038 (AdamW) / 1019 (Lion); under
 # MoT with both halves trainable only the gen half computes over image tokens
 # while both halves' state transfers, which roughly doubles the effective
@@ -1152,11 +1152,23 @@ def load_components(trainer: Any) -> None:
     trainer.text_encoder_2 = None
     trainer.tokenizer_2 = None
     trainer.t5_tokenizer = None
-    trainer.vae = None
+    # None for the pixel model; a real module when the base declares a swapped
+    # VAE, which `apply_latent_space` below folds into the run's wiring.
+    trainer.vae = components.get("vae")
     trainer.unet = None
     trainer.scheduler = None
     trainer.noise_scheduler = None
     trainer.layer_offload_conductor = None
+    # The base's declared latent space, then this run's own `vae_swap_source`.
+    # BEFORE the freeze: a swap rebinds two Parameters, and fresh ones default
+    # to requires_grad=True, so the freeze has to see them.
+    from core.training.vae_swap import apply_latent_space
+
+    apply_latent_space(trainer, components.get("declared_vae"))
+    if getattr(trainer, "vae", None) is not None:
+        trainer.vae.requires_grad_(False)
+        trainer.vae.eval()
+        trainer.vae.to(trainer.device)
     # Materialized full-FT weights are frozen here too; unfreezing them is the
     # adapter's job, as it is for every other architecture.
     trainer.transformer.requires_grad_(False)
@@ -1812,12 +1824,42 @@ def encode_prompt(
 
 
 def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tensor:
-    """Return normalized RGB directly; SenseNova is a pixel-space model."""
+    """Normalized RGB straight through, or one VAE encode after a swap (§10.5).
+
+    Natively there is no VAE and the "latent" IS the [-1,1] RGB image. After a
+    swap the same call returns a normalised latent; both are what train_step's
+    ``images`` argument means.
+    """
+    from core.models.sensenova.latent_space import token_pixel_width
+
     if image_tensor.ndim != 4 or image_tensor.shape[1] != 3:
         raise ValueError("SenseNova expects BCHW RGB training images")
-    if image_tensor.shape[-2] % 32 or image_tensor.shape[-1] % 32:
-        raise ValueError("SenseNova image height and width must be divisible by 32")
-    return image_tensor.detach().to(dtype=trainer.training_dtype, device="cpu")
+    align = token_pixel_width(trainer.transformer)
+    if image_tensor.shape[-2] % align or image_tensor.shape[-1] % align:
+        raise ValueError(
+            f"SenseNova image height and width must be divisible by {align}")
+    vae = getattr(trainer, "vae", None)
+    if vae is None:
+        return image_tensor.detach().to(dtype=trainer.training_dtype, device="cpu")
+
+    from core.models.sensenova.latent_space import encode
+
+    latents = encode(vae, image_tensor.to(dtype=next(vae.parameters()).dtype,
+                                          device=next(vae.parameters()).device),
+                     spec=getattr(trainer, "wiring", None))
+    return latents.detach().to(dtype=trainer.training_dtype, device="cpu")
+
+
+def vae_decode(trainer: Any, latents: torch.Tensor) -> torch.Tensor:
+    """Latent -> [-1,1] RGB. Pixel-space runs are already RGB and pass through."""
+    vae = getattr(trainer, "vae", None)
+    if vae is None:
+        return latents
+    from core.models.sensenova.latent_space import decode
+
+    return decode(vae, latents.to(dtype=next(vae.parameters()).dtype,
+                                  device=next(vae.parameters()).device),
+                  spec=getattr(trainer, "wiring", None))
 
 
 def _save_pixel_debug(
@@ -1837,6 +1879,7 @@ def _save_pixel_debug(
     captions: Optional[List[str]],
     reference_image_paths: Optional[List[Optional[str]]],
     batch_size: int = 1,
+    vae: Any = None,
 ) -> None:
     """Dump this step's pixel tensors, the pixel-space analogue of the latent
     archs' debug latents: ``target`` is their ``latents`` (the clean sample),
@@ -1854,7 +1897,7 @@ def _save_pixel_debug(
         "timestep": t_val,
         "noise_scale": noise_scale,
         "model_type": "sensenova",
-        "is_latent": False,
+        "is_latent": vae is not None,
         "loss": loss_value,
         "recon_loss": recon_loss_value,
         "batch_size": int(batch_size),
@@ -1874,8 +1917,14 @@ def _save_pixel_debug(
         ("pred_x0", x0_pred_image),
     ):
         # tensor_to_image clamps to [-1,1]: the noised map saturates at low t,
-        # which is the same convention the VAE archs' decoded previews use.
-        tensor_to_image(tensor.detach().float()).save(
+        # which is the same convention the VAE archs' decoded previews use. A
+        # swapped run decodes first, so the three previews stay comparable.
+        preview = tensor.detach()
+        if vae is not None:
+            from core.models.sensenova.latent_space import decode as _decode
+
+            preview = _decode(vae, preview)
+        tensor_to_image(preview.float()).save(
             debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
             "WEBP",
             quality=80,
@@ -1902,8 +1951,14 @@ def train_step(
     if phase_evictor is not None:
         phase_evictor.enter_denoise()
         phase_evictor.assert_generation_resident()
-    if images.ndim != 4 or images.shape[1] != 3:
-        raise ValueError("SenseNova training requires BCHW RGB images")
+    from core.models.sensenova.latent_space import gen_geometry
+
+    geometry = gen_geometry(trainer.transformer)
+    if images.ndim != 4 or images.shape[1] != geometry.channels:
+        raise ValueError(
+            f"SenseNova training requires BCHW samples with "
+            f"{geometry.channels} channel(s)"
+            + ("" if geometry.is_latent else " (RGB)"))
     batch = int(images.shape[0])
     if batch != prefix.batch_size:
         raise ValueError(
@@ -1911,8 +1966,13 @@ def train_step(
             f"{prefix.batch_size} prompt(s)"
         )
     height, width = images.shape[-2:]
-    if height % 32 or width % 32:
-        raise ValueError("SenseNova image height and width must be divisible by 32")
+    # Divisibility is asked of the grid the SAMPLE is on: pixels natively, the
+    # latent grid after a swap (where the pixel canvas was already checked by
+    # vae_encode against 4*scale).
+    if height % geometry.patch or width % geometry.patch:
+        raise ValueError(
+            f"SenseNova sample height and width must be divisible by "
+            f"{geometry.patch}")
 
     transformer = trainer.transformer
     _assert_pixel_head_fm_decoder(transformer)
@@ -1948,7 +2008,10 @@ def train_step(
     )
 
     merge_size = int(1 / transformer.downsample_ratio)
-    grid_h, grid_w = height // transformer.patch_size, width // transformer.patch_size
+    # The gen ViT's patch, not the understanding tower's: the two are the same
+    # 16 natively and differ after a swap (design §10.2).
+    grid_h = height // geometry.vit_patch
+    grid_w = width // geometry.vit_patch
     if grid_h % merge_size or grid_w % merge_size:
         raise ValueError("SenseNova image does not align to the merged token grid")
     token_h, token_w = grid_h // merge_size, grid_w // merge_size
@@ -2026,12 +2089,12 @@ def train_step(
         decoded = transformer.fm_modules["fm_head"](
             hidden.view(batch, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
         )
-        patch = transformer.patch_size * merge_size
+        patch, channels = geometry.patch, geometry.channels
         x0_pred = (
-            decoded.view(batch, 3, token_h, patch, token_w, patch)
+            decoded.view(batch, channels, token_h, patch, token_w, patch)
             .permute(0, 2, 4, 3, 5, 1)
             .contiguous()
-            .view(batch, token_h * token_w, patch * patch * 3)
+            .view(batch, token_h * token_w, patch * patch * channels)
         )
         x0_tokens = transformer.patchify(x0, patch)
         # fp32 t here lifts v into fp32, which the MSE below wanted anyway --
@@ -2064,6 +2127,7 @@ def train_step(
                 captions=debug_captions,
                 reference_image_paths=debug_reference_image_paths,
                 batch_size=batch,
+                vae=getattr(trainer, "vae", None),
             )
         except Exception as debug_error:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
@@ -2183,11 +2247,12 @@ def generate_sample(
             f"(ControlNet is not supported for SenseNova U1.5)"
         )
 
-    snapped_width, snapped_height = ops.normalize_resolution(width, height)
+    align = ops.token_pixel_width(transformer)
+    snapped_width, snapped_height = ops.normalize_resolution(width, height, align)
     if (snapped_width, snapped_height) != (width, height):
         print(
             f"{trainer.log_prefix} SenseNova sample resolution snapped to the "
-            f"{ops.TOKEN_GRID_ALIGN}px token grid: {width}x{height} -> "
+            f"{align}px token grid: {width}x{height} -> "
             f"{snapped_width}x{snapped_height}"
         )
 
@@ -2253,7 +2318,9 @@ def generate_sample(
                     progress_callback=step_progress_callback,
                 )
             _log_sample_guidance(trainer, guidance_steps)
-        image = ops.tensor_to_image(image_tensor.float())
+        image = ops.from_gen_space(
+            image_tensor.float(), vae=getattr(trainer, "vae", None),
+            spec=getattr(trainer, "wiring", None))
         del image_tensor
         return image
     except Exception as sample_error:

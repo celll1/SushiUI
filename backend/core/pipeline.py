@@ -1219,6 +1219,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "type": "sensenova",
                     "is_v_prediction": False,  # flow matching, x0-parameterized
                     "model_hash": model_hash,
+                    **self._fold_component_latent_identity(model_result, "sensenova"),
+                    **self._sensenova_token_grid_info(model_result),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] SenseNova model loaded successfully")
@@ -3699,6 +3701,37 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         buffer = getattr(self, "_sushi_load_warnings", None) or []
         self._sushi_load_warnings = []
         return list(buffer)
+
+    def _sensenova_token_grid_info(self, components) -> Dict[str, Any]:
+        """SenseNova's token width, and the one-off notice that it moved.
+
+        The pixel model's 32px token grid is what every resolution habit is
+        built on; a swapped checkpoint's is ``4 * vae_scale_factor``, which
+        changes the resolution a given token count corresponds to. Announced
+        once per load rather than left to be discovered (design §10.2).
+        """
+        transformer = (components or {}).get("transformer")
+        wiring = (components or {}).get("wiring")
+        if transformer is None or wiring is None:
+            return {}
+        try:
+            from core.models.sensenova.latent_space import token_pixel_width
+
+            width = int(token_pixel_width(transformer))
+        except Exception as e:
+            print(f"[Pipeline] SenseNova token grid unavailable: {e}")
+            return {}
+        # Supersedes the generic fold above, which can only reach the arch
+        # constant's compression ratio (1, pixel space).
+        self._sushi_wiring = wiring
+        self.record_load_warning(
+            f"This SenseNova checkpoint generates on a {wiring.latent_channels}-channel "
+            f"latent grid at {wiring.vae_scale_factor}x compression, so one token covers "
+            f"{width}px instead of 32px. Resolutions are snapped to a /{width} grid and the "
+            f"documented token band sits at {3.0 * (width / 32.0) ** 2:.1f}-"
+            f"{5.0 * (width / 32.0) ** 2:.1f} MP.",
+            code="sensenova_token_grid")
+        return {"token_pixel_width": width}
 
     def _fold_component_latent_identity(self, components, arch: str) -> Dict[str, Any]:
         """``_fold_sd_latent_identity`` for a component-dict architecture, whose

@@ -109,7 +109,7 @@ from safetensors import safe_open
 from torch import nn
 
 from core.models.common.single_file_format import (
-    is_index_path, read_state_dict, strip_prefix, TRANSFORMER_PREFIX,
+    is_index_path, read_state_dict, strip_prefix, TRANSFORMER_PREFIX, VAE_PREFIX,
 )
 from core.models.common.convrot_marker import int8_convrot_layers_from_markers
 from core.models.common.quantized_checkpoint_guard import (
@@ -830,6 +830,7 @@ def save_sensenova_full_finetune_checkpoint(
     extra_metadata: Optional[Dict[str, str]] = None,
     source_dir: Optional[str] = None,
     max_shard_bytes: Optional[int] = None,
+    vae: Optional[nn.Module] = None,
 ) -> "tuple[str, Dict[str, Any]]":
     """Write a full-fine-tuned SenseNova model this loader can read back.
 
@@ -1026,6 +1027,12 @@ def save_sensenova_full_finetune_checkpoint(
                 f"for branch {branch!r}. A partial half loads without a warning, so "
                 f"the write is refused instead of committed."
             )
+        if vae is not None:
+            # Diffusers key layout under the shared `vae.` prefix, never the LDM
+            # conversion (§8.7): the reader resolves it through
+            # component.vae.class + component.vae.config.
+            for key, tensor in vae.state_dict().items():
+                writer.add(f"{VAE_PREFIX}{key}", tensor.detach().cpu().contiguous())
         _assert_scale_weight_conjunction(weight_dtypes, scale_stems)
     except BaseException:
         writer.abort()
@@ -1100,6 +1107,41 @@ def install_sensenova_state_dict(
     return swapped
 
 
+def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None:
+    """The config's generation geometry and ``component.vae.*`` must agree.
+
+    Two independent records of one fact (§10.5): the config block carries
+    ``gen_in_channels``/``gen_patch_size``, which is what the tree is BUILT from,
+    and the component block carries the VAE's channel count and compression,
+    which is what the latents are made by. A file where they disagree loads
+    clean and generates noise.
+    """
+    from .latent_space import GEN_LATENT_PATCH
+
+    gen_channels = getattr(config, "gen_in_channels", None)
+    gen_patch = getattr(config, "gen_patch_size", None)
+    if declared_vae is None:
+        if gen_channels is not None or gen_patch is not None:
+            raise ValueError(
+                f"{path} declares a generation grid of {gen_channels} channel(s) "
+                f"at patch {gen_patch} but carries no component.vae.* block, so "
+                f"the VAE that grid belongs to cannot be resolved")
+        return
+    if gen_channels is None or gen_patch is None:
+        raise ValueError(
+            f"{path} carries a component.vae.* block ({declared_vae.latent_channels}ch) "
+            f"but its config block has no gen_in_channels/gen_patch_size, so the "
+            f"tree would be rebuilt as a pixel model and the weights would not fit")
+    if int(gen_channels) != int(declared_vae.latent_channels):
+        raise ValueError(
+            f"{path} builds a {gen_channels}-channel generation grid but declares "
+            f"a {declared_vae.latent_channels}-channel VAE")
+    if int(gen_patch) != GEN_LATENT_PATCH:
+        raise ValueError(
+            f"{path} declares a generation patch of {gen_patch} latent cells; "
+            f"this repo writes and reads {GEN_LATENT_PATCH} (design §10.2)")
+
+
 def load_sensenova_from_path(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -1127,6 +1169,15 @@ def load_sensenova_from_path(
 
     config, config_dict = _load_sensenova_config(metadata, model_dir)
 
+    # The VAE this checkpoint was trained into, when it is not pixel-space. Read
+    # BEFORE the tree is built (design §8.2, §9.1): the generation geometry the
+    # constructor needs is in the config block, and this is what proves the two
+    # agree.
+    from core.models.common.vae_source import load_declared_latent_io
+
+    declared_vae = load_declared_latent_io(model_path, arch="sensenova")
+    _assert_declared_latent_geometry(config, declared_vae, path=model_path)
+
     # ConvRot markers, read from the still-plain state dict before anything is
     # installed (mirrors MiniMax-H3 DiT loader.py's ordering: the runtime
     # requirement is checked before any payload is swapped in or loaded).
@@ -1152,6 +1203,32 @@ def load_sensenova_from_path(
 
     tokenizer = _load_sensenova_tokenizer(model_dir)
 
+    vae = None
+    wiring = None
+    if declared_vae is not None:
+        from core.models.components.wiring import SENSENOVA_WIRING
+        from core.models.sensenova.latent_space import stamp_vae_scale_factor
+
+        from dataclasses import replace as _dc_replace
+
+        vae = declared_vae.load_module(torch_dtype=torch_dtype)
+        vae.eval()
+        vae.requires_grad_(False)
+        vae.to("cpu")
+        # The module holds these weights now; the resolver's copy would keep a
+        # second VAE in host memory for the life of the load.
+        declared_vae = _dc_replace(declared_vae, state_dict=None)
+        stamp_vae_scale_factor(model, declared_vae.scale_factor)
+        wiring = SENSENOVA_WIRING.replace(
+            latent_channels=declared_vae.latent_channels,
+            vae_scale_factor=declared_vae.scale_factor,
+            vae_norm=declared_vae.norm,
+            vae_norm_pack=declared_vae.norm_pack,
+        )
+        print(f"[SenseNovaLoader] Latent checkpoint: {declared_vae.provenance}, "
+              f"{declared_vae.latent_channels}ch, {declared_vae.scale_factor}x spatial, "
+              f"{model.gen_patch_size * declared_vae.scale_factor}px per token")
+
     print(f"[SenseNovaLoader] Loaded SenseNova-U1.5-8B-MoT ({swapped} int8 Linear(s); CPU-resident).")
 
     return {
@@ -1159,6 +1236,10 @@ def load_sensenova_from_path(
         "transformer": model,
         "config": config,
         "tokenizer": tokenizer,
+        "vae": vae,
+        "wiring": wiring,
+        "declared_vae": declared_vae,
+        "vae_identity": (None if declared_vae is None else declared_vae.facts()),
         # Additive, for two callers that need the file's own words rather than a
         # re-derivation: the training guard names the save format a refused tree
         # was written with, and an export re-embeds the exact geometry block this

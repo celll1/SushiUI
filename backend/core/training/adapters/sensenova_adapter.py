@@ -523,6 +523,18 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
 
         extra_metadata = {"step": str(step), "epoch": str(epoch)}
+        # A run in another VAE's latent space declares it, and bundles the VAE
+        # unless it named a resolvable locator (design §8.7). The pixel run's
+        # metadata and file are unchanged: swap_metadata returns nothing.
+        from core.training.vae_swap import swap_metadata
+
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
+        extra_metadata.update(swap_md)
+        vae_to_bundle = (getattr(trainer, "vae", None)
+                         if (swapped is not None and swap_bundled) else None)
+        if swapped is not None and not swap_bundled:
+            print(f"[SenseNovaFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                  f"not bundled; resolved on load via {swapped.locator}")
         # Self-describing: a later bf16 resume can name its base without this
         # run's config. Identity is a cheap size check; the resume path is
         # what actually proves the content matches.
@@ -547,6 +559,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             raw_config=getattr(trainer, "sensenova_config_dict", None),
             source_dir=source_dir,
             extra_metadata=extra_metadata,
+            vae=vae_to_bundle,
         )
         print(
             f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "

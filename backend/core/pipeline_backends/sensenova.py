@@ -252,6 +252,34 @@ class SenseNovaMixin:
             print(f"[SenseNova] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
 
+    def _sensenova_latent(self):
+        """``(vae, wiring)`` for a checkpoint that declares a swapped VAE, else
+        ``(None, None)``. The pixel model has no VAE and every latent-space step
+        below is skipped by that pair alone."""
+        components = self.sensenova_components or {}
+        return components.get("vae"), components.get("wiring")
+
+    def _sensenova_to_image(self, x):
+        """The denoise loop's output as a PIL image.
+
+        Pixel space is a clamp and a cast. A swapped checkpoint decodes, with
+        the VAE staged in and back out on its own -- the callers run this AFTER
+        their finally has returned the transformer to the CPU, so the decode
+        does not sit beside 16 GiB of resident weights.
+        """
+        from core.models.sensenova import sensenova_pipeline_ops as ops
+
+        vae, spec = self._sensenova_latent()
+        if vae is None:
+            return ops.tensor_to_image(x)
+        try:
+            self._sensenova_move("vae", self.device)
+            return ops.from_gen_space(x.to(self.device), vae=vae, spec=spec)
+        finally:
+            self._sensenova_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
     def _sensenova_apply_attention_backend(self, transformer, params: Dict[str, Any]):
         """Stamp the conduit attention backend (native/flash/sage/tq) onto every
         Qwen3Attention module, mirroring the other DiT mixins' attention_type
@@ -366,8 +394,10 @@ class SenseNovaMixin:
 
         noise_scale = ops.compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
         ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)
+        style_vae, style_spec = self._sensenova_latent()
         ref_x0, eps_ref = ops.prepare_style_reference(
-            image, height, width, device, prefix.dtype, ref_seed, noise_scale)
+            transformer, image, height, width, device, prefix.dtype, ref_seed,
+            noise_scale, vae=style_vae, spec=style_spec)
         return cfg, ref_x0, eps_ref
 
     def _sensenova_style_config(self, params: Dict[str, Any], transformer, device, prefix, seed: Optional[int]):
@@ -416,9 +446,13 @@ class SenseNovaMixin:
             seed = random.randint(0, 2**32 - 1)
         req_w = int(params.get("width") or default_w)
         req_h = int(params.get("height") or default_h)
-        width, height = ops.normalize_resolution(req_w, req_h)
+        transformer = (self.sensenova_components or {})["transformer"]
+        # One token's pixel width: 32 in pixel space, 4 * vae_scale_factor after
+        # a swap (design §10.2). Everything below scales with it.
+        align = ops.token_pixel_width(transformer)
+        width, height = ops.normalize_resolution(req_w, req_h, align)
         if (width, height) != (req_w, req_h):
-            print(f"[SenseNova] Resolution aligned to the /32 token grid: {req_w}x{req_h} -> {width}x{height}")
+            print(f"[SenseNova] Resolution aligned to the /{align} token grid: {req_w}x{req_h} -> {width}x{height}")
             # Write the snapped size back: `params` is what the route later hands
             # to prepare_params_for_db() and the PNG metadata writer, so leaving
             # the request size here would record a resolution that was never
@@ -431,12 +465,18 @@ class SenseNovaMixin:
         # informational only (upstream's own examples/t2i/inference.py only
         # warns on an off-bucket size too; see SENSENOVA_FACTS scratchpad note).
         area_mp = (width * height) / 1_000_000.0
-        if area_mp < 3.0 or area_mp > 5.0:
+        # The band is a TOKEN-COUNT band, quoted in pixels. A swapped VAE moves
+        # the same token count to (align/32)^2 times the pixels, so the band
+        # moves with it -- otherwise every in-range 16x generation would warn.
+        low, high = ops.resolution_band_mp(align)
+        if area_mp < low or area_mp > high:
             try:
                 from api.generation_status import add_warning
                 add_warning(
-                    f"{width}x{height} ({area_mp:.2f} MP) is outside SenseNova U1.5's documented "
-                    f"~4 MP resolution buckets. The request is not refused (the model's own "
+                    f"{width}x{height} ({area_mp:.2f} MP, {(width // align) * (height // align)} "
+                    f"tokens at {align}px per token) is outside SenseNova U1.5's documented "
+                    f"~4 MP resolution buckets, scaled to this checkpoint's token width "
+                    f"({low:.1f}-{high:.1f} MP). The request is not refused (the model's own "
                     f"structural range is ~256x256 to ~16.7 MP), but this size is untested.",
                     code="sensenova_resolution",
                 )
@@ -511,6 +551,8 @@ class SenseNovaMixin:
             # Independent of MoT eviction (disjoint tensors/hooks); must be
             # installed before encode_prompt() so _finalize_prefix_caches sees it.
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
+            # A no-op unless this checkpoint declares a swapped VAE.
+            self._sensenova_move("vae", device)
 
             def _prefill_note():
                 # A real, multi-second stall (the prefix KV-cache forward pass)
@@ -592,12 +634,13 @@ class SenseNovaMixin:
             # `_sensenova_lora_keys` is empty.
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_move("vae", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        image = ops.tensor_to_image(x)
+        image = self._sensenova_to_image(x)
         print("[SenseNova] txt2img completed")
         return image, cfg["seed"], 0
 
@@ -614,6 +657,8 @@ class SenseNovaMixin:
         denoising_strength = float(params.get("denoising_strength", GENERATION_DEFAULTS["denoising_strength"]))
         transformer = self.sensenova_components["transformer"]
         tokenizer = self.sensenova_components["tokenizer"]
+        # None on the pixel model; the init image is encoded through it otherwise.
+        vae, vae_spec = self._sensenova_latent()
 
         self._sensenova_apply_attention_backend(transformer, params)
         prefix = None
@@ -631,6 +676,8 @@ class SenseNovaMixin:
             else:
                 self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
+            # A no-op unless this checkpoint declares a swapped VAE.
+            self._sensenova_move("vae", device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -665,6 +712,7 @@ class SenseNovaMixin:
 
             x = ops.denoise_loop_img2img(
                 transformer, prefix, init_image, denoising_strength,
+                vae=vae, spec=vae_spec,
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
                 cfg_norm=cfg["cfg_norm"],
                 num_inference_steps=cfg["num_inference_steps"],
@@ -690,12 +738,13 @@ class SenseNovaMixin:
             # `_sensenova_lora_keys` is empty.
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_move("vae", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        image = ops.tensor_to_image(x)
+        image = self._sensenova_to_image(x)
         print("[SenseNova] img2img completed")
         return image, cfg["seed"], 0
 
@@ -714,6 +763,7 @@ class SenseNovaMixin:
         mask_blur = int(params.get("mask_blur", GENERATION_DEFAULTS["mask_blur"]) or 0)
         transformer = self.sensenova_components["transformer"]
         tokenizer = self.sensenova_components["tokenizer"]
+        vae, vae_spec = self._sensenova_latent()
 
         self._sensenova_apply_attention_backend(transformer, params)
         prefix = None
@@ -731,6 +781,8 @@ class SenseNovaMixin:
             else:
                 self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
+            # A no-op unless this checkpoint declares a swapped VAE.
+            self._sensenova_move("vae", device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -767,6 +819,7 @@ class SenseNovaMixin:
 
             x = ops.denoise_loop_inpaint(
                 transformer, prefix, init_image, mask_image, denoising_strength,
+                vae=vae, spec=vae_spec,
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
                 cfg_norm=cfg["cfg_norm"],
                 num_inference_steps=cfg["num_inference_steps"], mask_blur=mask_blur,
@@ -790,11 +843,12 @@ class SenseNovaMixin:
             # `_sensenova_lora_keys` is empty.
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_move("vae", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
             self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        image = ops.tensor_to_image(x)
+        image = self._sensenova_to_image(x)
         print("[SenseNova] inpaint completed")
         return image, cfg["seed"], 0

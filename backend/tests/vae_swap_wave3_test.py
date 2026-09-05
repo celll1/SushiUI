@@ -387,7 +387,9 @@ def test_wave_three_lifts_all_four_for_a_full_finetune():
 
 def test_the_waves_that_have_not_landed_are_still_refused():
     from api.arch_capabilities import training_feature_unsupported_reason
-    for arch in ("ltx2", "sensenova", "ideogram4", "minimax_h3", "acestep"):
+    # sensenova landed once §10.6's conditions were measured on the real
+    # checkpoint; it is advisory now, not refused.
+    for arch in ("ltx2", "ideogram4", "minimax_h3", "acestep"):
         assert training_feature_unsupported_reason(
             arch, "vae_swap", "full_finetune"), arch
 

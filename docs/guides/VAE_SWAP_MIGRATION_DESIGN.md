@@ -1,8 +1,9 @@
 # VAE差し替えフルFT（latent移行）設計
 
-Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）だけは
-`TRAINING_FEATURE_UNSUPPORTED["sensenova"]["vae_swap"]` を閉じたままにしてあり、
-§10.6 の受け入れ条件のうち実重みを要する 2 つ（3 ステップ smoke と 1 枚生成）は未実施である。
+Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
+実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し
+`TRAINING_FEATURE_ADVISORY["sensenova"]["vae_swap"] = "experimental"` に移した。
+LoRA 系での拒否は他 arch と同様に残る。
 フェーズごとの到達点は §11 の表を参照。
 
 本書は §11 のフェーズ単位で実装・検証・コミットする

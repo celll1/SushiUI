@@ -15703,8 +15703,10 @@ class TrainingRunCreateRequest(BaseModel):
     vae_swap_new_channel_init: Literal["zero"] = TRAINING_DEFAULTS[
         "vae_swap_new_channel_init"
     ]
+    # 0 = inherit the base checkpoint's own generation patch (4 for a
+    # pixel-space base); a positive multiple of 4 rebuilds the grid.
     sensenova_gen_patch: int = Field(
-        default=TRAINING_DEFAULTS["sensenova_gen_patch"], ge=4
+        default=TRAINING_DEFAULTS["sensenova_gen_patch"], ge=0
     )
     sdxl_vae_type: str = TRAINING_DEFAULTS["sdxl_vae_type"]
     sdxl_te_type: str = TRAINING_DEFAULTS["sdxl_te_type"]

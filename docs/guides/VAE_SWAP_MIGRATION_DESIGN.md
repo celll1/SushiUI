@@ -941,12 +941,27 @@ ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを�
   初回生成で再生する（`add_warning` を再利用し、新しい配達機構は作らない）。
   `current_model_info`（§9.1）に `token_pixel_width` を載せ、`ModelLoadSection` のバッジに出す。
 
-**改訂（P8 後）: `P` は固定値ではなく run パラメータ `sensenova_gen_patch`（既定 4）である。**
-上の「`P = 4` で固定」は決定ではなく既定値であり、既定のままなら本節の記述は全て
-そのまま成り立つ。構造的な制約は「`P` は 4 の正の倍数」1 つだけで、これは
+**改訂（P8 後）: `P` は固定値ではなく run パラメータ `sensenova_gen_patch`（既定 `0` = 継承）である。**
+上の「`P = 4` で固定」は決定ではなく、いまは「継承先が無いとき（pixel base）の値」である。
+構造的な制約は「`P` は 4 の正の倍数」1 つだけで、これは
 `latent_space.validate_gen_patch` が唯一の判定箇所である。既定値は
 `api/param_defaults.py` の `TRAINING_DEFAULTS["sensenova_gen_patch"]` にのみ置く
 （`latent_space.MIN_GEN_LATENT_PATCH` は「最小の合法値」であって既定値ではない）。
+
+- **`0` は「継承」**（`latent_space.INHERIT_GEN_PATCH`）: base が既に latent なら
+  その `gen_patch_size` を、pixel base なら `NATIVE_GEN_LATENT_PATCH`（4）を使う。
+  解決は `latent_space.resolve_gen_patch` 一箇所で、`validate_gen_patch` は
+  解決済みの値しか受けない（`0` は拒否）。既定を `0` にしたのは、
+  `update_training_run` が Pydantic 既定を全部送るため、正の既定値だと
+  「UI で run を編集しただけ」が学習済み 2 層の再構築要求として読まれるからである。
+  正の値だけが明示要求であり、再構築する。
+- **再構築は full fine-tune 専用**。`SenseNovaArchHandler.apply_vae_swap` は
+  `training_method` が full 以外の run の再構築を拒否する（LoRA は
+  patch embed も `fm_head.conv2` も学習せず保存もせず、ゼロ初期化された head が
+  その上流全ての勾配を run 中ずっと 0 にする）。`vae_swap_source` を持たない
+  LoRA run でも、base 自身の `component.vae.*` 宣言経由でこの経路に入るため、
+  capability 表の `vae_swap`（キーは `vae_swap_source`）だけでは塞げない。
+  幾何が一致していれば再構築は起きないので、latent base の通常の LoRA は素通りする。
 
 - 8× VAE で `P = 8` はトークン幅 64px。1536px で 576 トークン（`P = 4` の 2304 に対し 1/4）。
 - `compute_noise_scale` は `sqrt(トークン数/64) × noise_scale` なので、1536px で
@@ -965,8 +980,9 @@ ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを�
   `latent_config_dict` / `apply_latent_geometry` の `patch` は既定引数を持たない:
   既定 4 が紛れ込むと `P = 8` の run が自分の config に 4 を書き、次のロードで
   別の幾何として再構築される（無音の破壊）。
-- **フロントエンドには未配線**。UI から run を編集すると、`update_training_run` が
-  Pydantic 既定の 4 で上書きする。`vae_swap` の capability ゲートを開ける前に
+- **フロントエンドには未配線**（`TrainingConfig.tsx` の既定値と `PARAM_KEYS` にのみ存在）。
+  UI から run を編集すると `update_training_run` が Pydantic 既定で上書きするが、
+  その既定は `0`（継承）なので base の幾何は保たれる。UI に入力欄を出すときは
   `TrainingConfig.tsx` の state / `getRequestData` / `applyParamsToState` へ追加すること。
 
 ### 10.3 決定: 初期化

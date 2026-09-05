@@ -12,7 +12,8 @@ The geometry, in one place:
   choice, not a structure. The fm_head's ``ps1(2) -> conv1 -> ps2(2) -> ps3(k)``
   has total gain ``4k`` with ``k`` a positive integer, so the only rule is that
   ``P`` is a positive multiple of 4 -- tokens can be made coarser, never finer.
-  The default is ``P = 4`` (``TRAINING_DEFAULTS["sensenova_gen_patch"]``);
+  ``TRAINING_DEFAULTS["sensenova_gen_patch"]`` is ``0``, which means INHERIT
+  (``resolve_gen_patch``), not ``P = 4``;
 * one token covers ``P * vae_scale_factor`` PIXELS -- 32 at ``P=4`` on an 8x
   VAE, which is the pixel model's own geometry, so a swap there preserves the
   token count exactly and the transformer does IDENTICAL work (§10.6 measured
@@ -39,13 +40,30 @@ from core.models.components.latent_io import ResizeReport
 
 #: The smallest legal generation patch on the LATENT grid: ``ps1(2)*ps2(2)``
 #: leaves ``ps3 = P/4``, which has to be a positive integer. NOT a default --
-#: the run's patch is ``TRAINING_DEFAULTS["sensenova_gen_patch"]`` and the
-#: checkpoint's is ``config.gen_patch_size``.
+#: the run's patch is ``resolve_gen_patch(TRAINING_DEFAULTS["sensenova_gen_patch"])``
+#: and the checkpoint's is ``config.gen_patch_size``.
 MIN_GEN_LATENT_PATCH = 4
+
+#: ``sensenova_gen_patch = 0`` means INHERIT: keep the patch the base checkpoint
+#: was built at, or take ``NATIVE_GEN_LATENT_PATCH`` when the base is
+#: pixel-space. It is the served default because rebuilding the two latent I/O
+#: layers must be something a caller ASKS for: ``update_training_run``
+#: materialises every Pydantic default, so any positive default would make a
+#: plain UI edit of a coarse-patch run read as a request to replace them.
+INHERIT_GEN_PATCH = 0
+
+#: The patch a pixel-space base is migrated at when the run inherits: one token
+#: on 32px at an 8x VAE, which is the pixel model's own grid. Not an API
+#: default (that is the sentinel above) -- the architecture's own value.
+NATIVE_GEN_LATENT_PATCH = 4
 
 
 def validate_gen_patch(patch: Any, *, label: str = "generation patch") -> int:
-    """The one rule on ``P``, asked in one place. Returns it as an int."""
+    """The one rule on ``P``, asked in one place. Returns it as an int.
+
+    Takes a RESOLVED patch: ``INHERIT_GEN_PATCH`` is refused here, so a caller
+    holding a raw config value goes through ``resolve_gen_patch`` first.
+    """
     value = int(patch)
     if value <= 0 or value % MIN_GEN_LATENT_PATCH:
         raise ValueError(
@@ -53,6 +71,21 @@ def validate_gen_patch(patch: Any, *, label: str = "generation patch") -> int:
             f"{MIN_GEN_LATENT_PATCH}: the fm_head's ps1(2)/ps2(2) leave ps3 a "
             f"factor of patch/4, which has to be a positive integer")
     return value
+
+
+def resolve_gen_patch(patch: Any, *, base_patch: Optional[int] = None,
+                      label: str = "generation patch") -> int:
+    """A raw ``sensenova_gen_patch`` as a real patch (``INHERIT_GEN_PATCH`` = 0).
+
+    ``0``/``None`` resolves to ``base_patch`` -- the patch the loaded checkpoint
+    was BUILT at -- or to ``NATIVE_GEN_LATENT_PATCH`` when the caller has none
+    (a pixel-space base, or a listing that does not know the base yet). Any
+    other value is an explicit request and must pass ``validate_gen_patch``.
+    """
+    if patch is None or int(patch) == INHERIT_GEN_PATCH:
+        return validate_gen_patch(base_patch or NATIVE_GEN_LATENT_PATCH,
+                                  label=label)
+    return validate_gen_patch(patch, label=label)
 
 
 @dataclass(frozen=True)

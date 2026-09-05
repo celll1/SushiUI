@@ -606,6 +606,13 @@ flux2/lens/anima/krea2/ltx2 の ops は自前の式をこの関数呼び出し�
 `or 1.0`（`vae_store.py:55-58` が禁じる読み）は削除し、`scaling_factor is None and norm == "shift_scale"`
 を例外にする。これは swap の有無に関係なく正しくなる変更で、単独コミットにする。
 
+**`LENS_WIRING.vae_norm` は現状 `"shift_scale"` だが、lens の実装は BatchNorm である**
+（`lens_pipeline_ops.py:299-310, 359`）。宣言が実装と食い違っているため、§7.4 の BN ゲートは
+lens に対して発火せず、BN を持たない VAE が構造検査を通過して encode 経路で落ちる。
+P5 で `vae_norm="batchnorm"` に直す（`vae_norm_pack=2` は P2b で宣言済み）。それまで lens は
+§7.4 の arch ゲートで swap 自体を拒否しているので実害は無いが、wave 3 で lens を開放する前に
+必ず直すこと。
+
 この節は **P5** で実装する。P2〜P4 では BN 系 VAE を非 BN arch に当てる swap（およびその逆）を
 §7.4 で拒否するので、P2 の第1波は `shift_scale` 系 VAE のみで検証する（§11）。
 

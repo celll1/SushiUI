@@ -18,6 +18,9 @@ from core.training.components.wiring import SDXL_WIRING
 class SDXLArchHandler(ArchHandler):
     name = "sdxl"
     wiring = SDXL_WIRING
+    # SD_UNET_LATENT_IO spells its paths "unet.conv_in"/"unet.conv_out",
+    # i.e. rooted at the U-Net's owner rather than at the U-Net.
+    latent_io_root_attr = None
     adapter_capability = declare_adapter_capability(
         "sdxl",
         additive_family=True,

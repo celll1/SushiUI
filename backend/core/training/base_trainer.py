@@ -10551,9 +10551,21 @@ class BaseTrainer(ABC):
         # byte-identical to the pre-P8 chain for every arch/config.
         arch = self.arch.name
 
-        # VAE / TE identity only vary within SDXL (custom-arch swaps); other
-        # architectures have an arch-determined VAE and TE.
-        vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
+        # VAE identity: a run whose latents come from a VAE that is not this
+        # architecture's own gets a `vae-<family>-<hash8>` token, so caches
+        # written in two different latent spaces can never be read back for one
+        # another. Keys on identity_native (the latent space), NOT struct_native
+        # (the shape): a fine-tuned copy of the native VAE has the same shape and
+        # different latents. A native run adds no token, which is what keeps
+        # every existing cache addressable (base_arch.py cache-stability
+        # invariant).
+        identity = getattr(self, "vae_identity", None)
+        if identity is not None and identity.identity_native is False:
+            vae_type = f"{identity.family}-{identity.content_hash[:8]}"
+        else:
+            # The custom-arch resume path (reconstruct_sd_sdxl_pipeline) still
+            # answers only through this attribute; "sdxl"/None add no token.
+            vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
         te_type = getattr(self, "sdxl_te_type", None) if arch == "sdxl" else None
 
         # Latent channel count directly encodes the shape that triggered the

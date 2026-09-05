@@ -2566,8 +2566,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # target_size) from the real source image + bucketing/crop, instead of the legacy
     # all-equal-to-latent-size, crop=(0,0). Default on; off restores legacy behavior.
     "sdxl_micro_conditioning": True,
-    # SDXL high-spec VAE migration: swap the VAE + resize U-Net conv_in/out to the new
-    # latent channel count. "none"/"sdxl" = standard 4ch (unchanged). e.g. "flux1" (16ch).
+    # VAE swap (arch-independent, full fine-tune only): "" = no swap, else
+    # "registry:<key>" / "file:<path>" / "model:<path>" (design §7.1).
+    "vae_swap_source": "",
+    # How channels the old VAE did not have are initialised in the resized latent
+    # I/O layers. "zero" is the only accepted value (design D3).
+    "vae_swap_new_channel_init": "zero",
+    # Read-only back-compat alias of vae_swap_source, SDXL-only, registry keys
+    # ("flux1"). Kept so an existing run's YAML still loads; nothing writes it.
     "sdxl_vae_type": "none",
     # SDXL Text Encoder swap: replace CLIP with an alternative encoder + trainable
     # bridge adapters. "none" = standard CLIP. e.g. "siglip2_text".
@@ -3045,13 +3051,18 @@ def full_finetune_forces_stochastic_rounding(arch: str) -> bool:
 SENSENOVA_FULL_FINETUNE_SAVE_FORMATS = ("mixed", "bf16", "int8")
 
 
-def resolve_bundle_vae(value, arch: str) -> bool:
+def resolve_bundle_vae(value, arch: str, vae_swapped: bool = False) -> bool:
     """Resolve a possibly-None bundle_vae config value to the per-arch default.
 
-    An explicit user boolean always wins; None looks up BUNDLE_VAE_DEFAULTS_BY_ARCH.
+    An explicit user boolean always wins; None looks up BUNDLE_VAE_DEFAULTS_BY_ARCH,
+    except on a VAE-swap run, where the default is True for every arch (design D7):
+    a swapped checkpoint that does not carry its VAE can only be loaded through a
+    locator, and the `model:` source has none.
     """
     if value is not None:
         return bool(value)
+    if vae_swapped:
+        return True
     return bool(BUNDLE_VAE_DEFAULTS_BY_ARCH.get(
         arch, BUNDLE_VAE_DEFAULTS_BY_ARCH["_default"]))
 

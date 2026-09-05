@@ -869,6 +869,7 @@ def _prepare_training_process_config(
     _assert_adapter_algebra_contract(network_type, network_config,
                                      base_model_path, train_config)
     _apply_reference_training_contract(base_model_path, train_config)
+    _preflight_vae_swap(train_config, base_model_path, network_type)
     _apply_sensenova_training_contract(
         base_model_path, network_type, train_config, process_config
     )
@@ -920,6 +921,58 @@ def _preflight_cfg_null_caption_conflict(
     except ValidationError as exc:
         raise ValueError(f"{exc.message}: {exc.detail}" if exc.detail
                          else exc.message)
+
+
+def _validate_latent_io(trainer, train_config: Dict[str, Any]) -> None:
+    """Check the loaded backbone and VAE agree on the latent space (§8.6).
+
+    A mismatch here means the run would train the wrong shape or encode into a
+    latent space the backbone does not read. ``strict_validation`` (forced True
+    for a full fine-tune) makes it fatal; otherwise it is a warning, like the
+    prediction-config check above.
+    """
+    from core.training.vae_swap import validate_latent_io
+
+    try:
+        problems = validate_latent_io(trainer)
+    except Exception as e:
+        problems = [f"latent I/O validation itself failed: {type(e).__name__}: {e}"]
+    if not problems:
+        return
+    strict = bool(train_config.get('strict_validation', False))
+    print(f"\n{'='*60}")
+    print("[TrainRunner] LATENT I/O MISMATCH DETECTED")
+    print(f"{'='*60}")
+    for problem in problems:
+        print(f"  - {problem}")
+    if strict:
+        print("\nERROR: strict_validation=True: Aborting training.")
+        print(f"{'='*60}\n")
+        sys.exit(1)
+    print("\nWARNING: strict_validation=False: Continuing with warning.")
+    print(f"{'='*60}\n")
+
+
+def _preflight_vae_swap(train_config: Dict[str, Any], base_model_path: str,
+                        network_type: str) -> None:
+    """Refuse an impossible VAE swap where training actually starts.
+
+    The route runs the same check on POST/PUT /training/runs, which a
+    hand-authored or hand-edited YAML never touches.
+    """
+    from core.training.training_config import _detect_arch
+    from core.training.vae_swap import preflight_vae_swap, resolve_vae_swap_source
+
+    if (not resolve_vae_swap_source(train_config)
+            and train_config.get("bundle_vae") is not False):
+        return  # nothing to check, and arch detection reads the checkpoint
+    preflight_vae_swap(
+        train_config,
+        arch=_detect_arch(base_model_path),
+        method=str(network_type or "lora"),
+        bundle_vae_explicit_false=train_config.get("bundle_vae") is False,
+        base_model_path=base_model_path,
+    )
 
 
 def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
@@ -2646,6 +2699,8 @@ def main():
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
+            _validate_latent_io(trainer, train_config)
+
             # ============================================================
             # Setup Regularization Loss (SNR or Energy)
             # ============================================================
@@ -3101,6 +3156,8 @@ def main():
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
+            _validate_latent_io(trainer, train_config)
+
             # ============================================================
             # Setup Regularization Loss (same as LoRA)
             # ============================================================
@@ -3546,6 +3603,8 @@ def main():
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
 
+            _validate_latent_io(trainer, train_config)
+
             # ============================================================
             # Setup Regularization Loss (SNR or Energy)
             # ============================================================
@@ -3941,6 +4000,8 @@ def main():
 
             trainer.noise_process = training_noise_process
             trainer.prediction_target = training_prediction_target
+
+            _validate_latent_io(trainer, train_config)
 
             # Determine epochs or steps
             num_epochs = train_config.get('epochs', None)

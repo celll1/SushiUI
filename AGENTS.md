@@ -9,33 +9,18 @@ training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` (13 entries — every generation
-architecture except MiniMax Music 3). SenseNova U1.5 supports LoRA (generation
-branch, plus the understanding branch when `train_text_encoder` is set),
-reference-conditioned datasets, and — since U-2-2 step 3 — **full-parameter
-training of either MoT half or both** (`train_unet` / `train_text_encoder`
-select them; both halves is measured but expensive, and the capability table
-says so on its advisory axis rather than pretending it is unsupported), under a
-per-run contract that is not
-negotiable (bf16, no gradient accumulation, no EMA,
-`blocks_to_swap=0`, and one of three optimizers — `adafactor`, or either
-ring-buffer optimizer with `optimizer_state_host_resident`) and refused before
-the model loads. Physical batch is 1 **unless `enable_bucketing` is on**
-(a batch is one pixel tensor at one resolution; the prompts are packed, not
-padded) — that one is conditional, applies to LoRA too, and the capability
-surface expresses it with an `unless` clause rather than as an absolute.
-`relora` and `controlnet` are still refused for it. See
-`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
-implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
-for the remaining training-out-of-scope architecture.
+architecture except MiniMax Music 3). SenseNova U1.5 trains LoRA and either
+MoT half by full parameter, refuses `relora` and `controlnet`, and carries a
+per-run contract enforced before the model loads — the contract itself lives in
+`docs/guides/SENSENOVA_TRAINING_DESIGN.md`, and a copy here has already drifted
+once. `docs/guides/MINIMAX_MUSIC3_DESIGN.md` covers the one architecture that
+does not train at all.
 Per-architecture facts are
-in `docs/guides/MODEL_FACTS.md`. **Adapters (LoRA and the LyCORIS algebras)
-are an architecture-neutral subsystem of their own**, `backend/core/adapters/`:
-it owns the adapter spec, target topology, tensor grouping, checkpoint codecs,
-the `AdapterSession` runtime that eleven architectures install through, and an
-execution-backend registry. Which `(algorithm, weight_decompose)` pairs an
-architecture accepts is decided by the two tables in
-`backend/core/adapters/capability.py` — one for generation, one for training —
-and by nothing else; do not add a second place that decides it. See
+in `docs/guides/MODEL_FACTS.md`. **Adapters are an architecture-neutral
+subsystem**, `backend/core/adapters/`, which eleven architectures install
+through. Which `(algorithm, weight_decompose)` pairs an architecture accepts is
+decided by the two tables in `backend/core/adapters/capability.py` — one for
+generation, one for training — and nowhere else. See
 `docs/guides/LYCORIS_ADAPTER_DESIGN.md`. Every capability is reachable through the
 versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive
 and verify most changes without touching the UI. This file is the durable,
@@ -68,16 +53,11 @@ changes.
   `venv/Scripts/python.exe -c "import backend.api.routes"`) — `py_compile`
   alone misses module-load-time `NameError`s and similar failures.
 
-  Importing the trainer or pipeline stack normally creates a CUDA context,
-  which is unwelcome while the owner's training run holds the GPU. It is not a
-  reason to skip the import: the single trigger is
-  `diffusers.models.autoencoders.autoencoder_kl` calling
-  `torch.cuda.get_device_capability("cuda")` at import time, so stubbing that
-  one function plus no-oping `torch.cuda._lazy_init` and `torch._C._cuda_init`
-  before the import lets it complete with `torch.cuda.is_initialized() == False`
-  and the GPU untouched (measured: ~1.0 GB RSS for
-  `core.training.base_trainer`). `CUDA_VISIBLE_DEVICES=""` does NOT work —
-  diffusers raises `Invalid device id` instead.
+  Importing the trainer or pipeline stack creates a CUDA context, which is
+  unwelcome while the owner's run holds the GPU — but that is not a reason to
+  skip the import. Stub the one trigger and it completes with the GPU
+  untouched. `CUDA_VISIBLE_DEVICES=""` does not work: diffusers raises
+  `Invalid device id`.
 
   ```python
   import torch
@@ -94,19 +74,13 @@ changes.
 - **Commit style:** a concise, imperative summary line, optional body
   explaining the "why", and a `Co-Authored-By:` trailer identifying the
   agent. Follow the existing history (`git log --oneline`) for tone.
-- **Keep comments short.** A comment earns its place by saying something the
-  code cannot: a non-obvious constraint, a measured number, a trap that a
-  plausible "simplification" would walk into. It does not earn its place by
-  restating the code, narrating the investigation that produced it, or
-  reproducing an argument that belongs in the commit message or a scratchpad
-  note. Prefer one sentence to a paragraph and a paragraph to a block; link to
-  the durable note rather than inlining it. If a comment needs more than a few
-  lines to justify the code beneath it, that is a signal to name things better
-  or to put the reasoning where reasoning lives. **Before finishing, re-read
-  what you wrote and cut it down** — the cost of a comment is paid by every
-  future reader, not by the author. Older files carry comments written before
-  this rule: **trim them when you are editing that file anyway**, as part of
-  the change, rather than in a separate sweep.
+- **Keep comments short.** Reading one is a cost paid by every future reader.
+  A comment earns its place by stating a constraint, a measured number, or a
+  trap a plausible simplification walks into — not by restating the code,
+  narrating the investigation, or reproducing what a design doc owns. Link to
+  the durable note instead. Prefer one sentence; re-read and cut before you
+  finish. Trim older over-written comments when you are editing that file
+  anyway, not in a separate sweep.
 
 ## Where to look for a given task
 
@@ -121,7 +95,7 @@ changes.
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
-| Anything adapter-related: LoRA variants (LoHa/LoKr/DoRA), the shared engine in `backend/core/adapters/`, `adapter_type`, adapter execution backends | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` |
+| Anything adapter-related: LoRA variants, `backend/core/adapters/`, `adapter_type`, execution backends | `docs/guides/LYCORIS_ADAPTER_DESIGN.md` |
 | Fine-tune a VAE (`training_method: vae_decoder`; decoder by default, encoder behind a double gate) | `docs/guides/VAE_TRAINING.md` |
 | VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |
 | Understand what a VAE fine-tune's crop policy and `resolution` feed the decoder, and how its memory/time scale (measured; checkpointing / activation offload / tiling are analysed, not all of them config keys) | `docs/guides/VAE_TRAINING_RESOLUTION.md` |

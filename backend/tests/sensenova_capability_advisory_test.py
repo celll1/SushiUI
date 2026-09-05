@@ -203,9 +203,22 @@ def test_the_table_names_known_archs_features_methods_and_levels():
 
 
 def test_no_pair_is_both_unsupported_and_advisory():
+    """Both tables scope by method, so the question the partition protects is
+    (arch, feature, METHOD). sensenova's vae_swap is absent under LoRA and
+    present-with-costs under a full fine-tune, which is one answer each."""
+    from api.arch_capabilities import TRAINING_METHODS
+
     for arch, features in TRAINING_FEATURE_ADVISORY.items():
-        for feature in features:
-            assert feature not in TRAINING_FEATURE_UNSUPPORTED.get(arch, {}), (arch, feature)
+        for feature, entry in features.items():
+            unsupported = TRAINING_FEATURE_UNSUPPORTED.get(arch, {}).get(feature)
+            if unsupported is None:
+                continue
+            advisory_methods = set(entry.get("methods", TRAINING_METHODS))
+            unsupported_methods = set(
+                unsupported.get("methods", TRAINING_METHODS)
+                if isinstance(unsupported, dict) else TRAINING_METHODS)
+            assert not (advisory_methods & unsupported_methods), (
+                arch, feature, sorted(advisory_methods & unsupported_methods))
 
 
 def test_advisories_are_empty_for_an_unknown_arch():

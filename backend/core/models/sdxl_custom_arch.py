@@ -12,10 +12,14 @@ load/normalize/denormalize are identical regardless of the host architecture.
 
 from __future__ import annotations
 
+from dataclasses import replace as _dc_replace
+from types import SimpleNamespace
 from typing import Optional
 
 import torch
-import torch.nn as nn
+
+from core.models.components.latent_io import resize_latent_io
+from core.models.components.wiring import SD_UNET_LATENT_IO
 
 # Reuse the generic AutoencoderKL registry (sdxl 4ch / flux1 16ch; scale/shift from
 # the VAE config). The "minit2i" name is historical — the helpers are arch-agnostic.
@@ -34,71 +38,36 @@ def resize_unet_in_out(unet, in_channels: int, out_channels: Optional[int] = Non
     channel count, channel-partial copying the overlapping weights (warm start).
 
     - conv_in:  Conv2d(old_in, hidden, k, ...) -> Conv2d(in_channels, hidden, k, ...);
-      copy the overlapping INPUT channels, leave the rest at fresh init.
+      copy the overlapping INPUT channels, new channels are ZERO.
     - conv_out: Conv2d(hidden, old_out, k, ...) -> Conv2d(hidden, out_channels, k, ...);
-      copy the overlapping OUTPUT channels (weight rows + bias).
+      copy the overlapping OUTPUT channels (weight rows + bias), new channels are ZERO.
     - unet.config.in_channels / out_channels updated via register_to_config so downstream
       code that reads them (latent shape, custom sampler) stays consistent.
 
     No-op when channels already match. The body (all blocks) is untouched.
+
+    The channel algebra lives in ``components.latent_io`` (design §6), shared with
+    every other arch. New channels used to be Kaiming-initialised here; they are
+    zero as of the shared helper, so a rerun of an old SDXL VAE-swap run does not
+    reproduce its earlier result. Reloading a saved swapped checkpoint is
+    unaffected: the saved convs overwrite these after the resize.
     """
     out_channels = int(out_channels if out_channels is not None else in_channels)
     in_channels = int(in_channels)
 
-    conv_in = unet.conv_in
-    conv_out = unet.conv_out
-    cur_in = conv_in.in_channels
-    cur_out = conv_out.out_channels
-    if cur_in == in_channels and cur_out == out_channels:
+    if unet.conv_in.in_channels == in_channels and unet.conv_out.out_channels == out_channels:
         return
 
-    dev = conv_in.weight.device
-    dtype = conv_in.weight.dtype
-
-    # --- conv_in: change input channels, keep hidden (out) ---
-    if cur_in != in_channels:
-        new_in = nn.Conv2d(
-            in_channels, conv_in.out_channels,
-            kernel_size=conv_in.kernel_size, stride=conv_in.stride,
-            padding=conv_in.padding, dilation=conv_in.dilation,
-            groups=conv_in.groups, bias=conv_in.bias is not None,
-            padding_mode=conv_in.padding_mode,
-        ).to(device=dev, dtype=dtype)
-        with torch.no_grad():
-            n = min(cur_in, in_channels)
-            new_in.weight[:, :n] = conv_in.weight[:, :n]
-            if conv_in.bias is not None and new_in.bias is not None:
-                new_in.bias.copy_(conv_in.bias)
-        unet.conv_in = new_in
-
-    # --- conv_out: change output channels, keep hidden (in) ---
-    if cur_out != out_channels:
-        new_out = nn.Conv2d(
-            conv_out.in_channels, out_channels,
-            kernel_size=conv_out.kernel_size, stride=conv_out.stride,
-            padding=conv_out.padding, dilation=conv_out.dilation,
-            groups=conv_out.groups, bias=conv_out.bias is not None,
-            padding_mode=conv_out.padding_mode,
-        ).to(device=dev, dtype=dtype)
-        with torch.no_grad():
-            m = min(cur_out, out_channels)
-            new_out.weight[:m] = conv_out.weight[:m]
-            if conv_out.bias is not None and new_out.bias is not None:
-                new_out.bias[:m] = conv_out.bias[:m]
-        unet.conv_out = new_out
-
-    # Keep config in sync (read by latent-shape checks and the custom sampler).
-    if hasattr(unet, "register_to_config"):
-        unet.register_to_config(in_channels=in_channels, out_channels=out_channels)
-    else:  # fallback: best-effort mutate
-        try:
-            unet.config.in_channels = in_channels
-            unet.config.out_channels = out_channels
-        except Exception:
-            pass
+    # SD_UNET_LATENT_IO's paths are "unet.conv_*", so the root is the U-Net's owner.
+    root = SimpleNamespace(unet=unet)
+    if in_channels == out_channels:
+        resize_latent_io(root, SD_UNET_LATENT_IO, in_channels)
+    else:
+        resize_latent_io(root, _dc_replace(SD_UNET_LATENT_IO, out_module=""), in_channels)
+        resize_latent_io(root, _dc_replace(SD_UNET_LATENT_IO, in_module=""), out_channels)
 
     print(f"[SDXLCustomArch] Resized U-Net conv_in->{in_channels}ch, conv_out->{out_channels}ch "
-          f"(channel-partial copy; body unchanged)")
+          f"(channel-partial copy, new channels zero; body unchanged)")
 
 
 # CompVis/LDM keys for the two channel-dependent conv layers (the save side uses

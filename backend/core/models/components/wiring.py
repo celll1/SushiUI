@@ -33,6 +33,103 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
+class LatentIOSpec:
+    """The two modules that face the latent, and how each folds C into its packed axis.
+
+    Input and output are declared SEPARATELY, and never share a `kind`/`order`
+    field, because the two sides are packed by different functions and are not
+    always in the same order: anima packs the input with C OUTERMOST
+    (``anima_models.py:485-489``) and unpacks the output with C INNERMOST
+    (``:1208-1212``). See ``docs/guides/VAE_SWAP_MIGRATION_DESIGN.md`` §5.1 for
+    the per-side code citation behind every value below; a new arch adds its two
+    citations there before it declares anything here.
+
+    Module paths are resolved relative to the root passed to
+    ``latent_io.resize_latent_io``.
+    """
+
+    in_module: str
+    out_module: str
+    in_kind: str              # "conv" | "packed_linear"
+    out_kind: str             # "conv" | "packed_linear"
+    in_channel_order: str     # in_kind == packed_linear only: "outer" | "inner"
+    out_channel_order: str    # out_kind == packed_linear only: "outer" | "inner"
+    pack_elems: int           # packed_linear only: p^2 (*t) (*f)
+    extra_in_channels: int    # non-latent input channels (anima padding mask: 1)
+    in_repeat: int            # how many times C is repeated on the input side (acestep: 3)
+    out_bias: bool
+
+
+# The path root is the U-Net's OWNER, matching the "unet.conv_in" spelling of
+# the design's declaration table (§5.1).
+SD_UNET_LATENT_IO = LatentIOSpec(
+    in_module="unet.conv_in", out_module="unet.conv_out",
+    in_kind="conv", out_kind="conv",
+    in_channel_order="", out_channel_order="",
+    pack_elems=1, extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+ZIMAGE_LATENT_IO = LatentIOSpec(
+    in_module="all_x_embedder.2-1", out_module="all_final_layer.2-1.linear",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="inner", out_channel_order="inner",
+    pack_elems=4,  # pF*pH*pW = 1*2*2, the only "2-1" entry built
+    extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+KREA2_LATENT_IO = LatentIOSpec(
+    in_module="img_in", out_module="final_layer.linear",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="outer",
+    pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+# patch_size=1: the packed axis is C alone, so "outer" and "inner" are the same
+# permutation here and the declaration carries no information.
+LTX2_LATENT_IO = LatentIOSpec(
+    in_module="proj_in", out_module="proj_out",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="outer",
+    pack_elems=1, extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+ANIMA_LATENT_IO = LatentIOSpec(
+    in_module="x_embedder.proj.1", out_module="final_layer.linear",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="inner",
+    pack_elems=4,  # spatial 2*2 * temporal 1
+    extra_in_channels=1,  # concat_padding_mask
+    in_repeat=1, out_bias=False,
+)
+
+FLUX2_LATENT_IO = LatentIOSpec(
+    in_module="x_embedder", out_module="proj_out",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="outer",
+    pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=False,
+)
+
+LENS_LATENT_IO = LatentIOSpec(
+    in_module="img_in", out_module="proj_out",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="outer", out_channel_order="outer",
+    pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+# pack_elems is P^2 with P = cfg.patch_size, which is a per-checkpoint config
+# value: 2 in latent `vae_type`, 16 in the pixel one. 4 is the latent value; a
+# pixel checkpoint's P=16 layer is not a channel resize at all (in_channels 3 and
+# patch_size both change), so callers cross-check ResizeReport.old_*_channels
+# against the wiring's latent_channels before trusting a resize here.
+MINIT2I_LATENT_IO = LatentIOSpec(
+    in_module="img_embedder.proj1", out_module="final_layer.linear",
+    in_kind="conv", out_kind="packed_linear",
+    in_channel_order="", out_channel_order="inner",
+    pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+)
+
+
+@dataclass(frozen=True)
 class ComponentWiringSpec:
     # --- text-encoder side ---
     te_out_dim: Optional[int]        # encoder_hidden_states dim into the backbone
@@ -45,6 +142,9 @@ class ComponentWiringSpec:
     latent_packing: str              # "none" | "flux_pack" | "krea_norm"
     vae_scale_factor: int
     vae_norm: str                    # "shift_scale" | "batchnorm" | "identity"
+    # None = the arch declares no latent I/O (pixel-space, or out of scope for
+    # the VAE-swap resize; see the design's §2 table).
+    latent_io: Optional[LatentIOSpec] = None
 
     def replace(self, **changes) -> "ComponentWiringSpec":
         """Return a copy with fields overridden (the graft-expression helper,
@@ -58,30 +158,35 @@ SD15_WIRING = ComponentWiringSpec(
     te_out_dim=768, te_pooled_dim=None, te_seq_packing="clip77", added_cond=None,
     latent_channels=4, latent_ndim=4, latent_packing="none",
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=SD_UNET_LATENT_IO,
 )
 
 SDXL_WIRING = ComponentWiringSpec(
     te_out_dim=2048, te_pooled_dim=1280, te_seq_packing="clip77", added_cond="sdxl_time_ids",
     latent_channels=4, latent_ndim=4, latent_packing="none",
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=SD_UNET_LATENT_IO,
 )
 
 ZIMAGE_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=16, latent_ndim=4, latent_packing="none",
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=ZIMAGE_LATENT_IO,
 )
 
 ANIMA_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=16, latent_ndim=5, latent_packing="none",
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=ANIMA_LATENT_IO,
 )
 
 LENS_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=LENS_LATENT_IO,
 )
 
 IDEOGRAM4_WIRING = ComponentWiringSpec(
@@ -94,18 +199,21 @@ MINIT2I_WIRING = ComponentWiringSpec(
     te_out_dim=1024, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=0, latent_ndim=4, latent_packing="none",   # pixel-space, no VAE
     vae_scale_factor=1, vae_norm="identity",
+    latent_io=MINIT2I_LATENT_IO,
 )
 
 KREA2_WIRING = ComponentWiringSpec(
     te_out_dim=2560, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=16, latent_ndim=4, latent_packing="krea_norm",
     vae_scale_factor=8, vae_norm="shift_scale",
+    latent_io=KREA2_LATENT_IO,
 )
 
 FLUX2_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="flux_pack",  # AutoencoderKLFlux2 (vae_store flux2=32)
     vae_scale_factor=8, vae_norm="batchnorm",
+    latent_io=FLUX2_LATENT_IO,
 )
 
 # LTX-2.3 video: 128ch 5D latents (spatial /32, temporal /8), Gemma3 TE (3840)
@@ -114,6 +222,7 @@ LTX2_WIRING = ComponentWiringSpec(
     te_out_dim=3840, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=128, latent_ndim=5, latent_packing="none",
     vae_scale_factor=32, vae_norm="identity",
+    latent_io=LTX2_LATENT_IO,
 )
 
 # ACE-Step 1.5 (turbo): 64ch TEMPORAL-ONLY latents [B, T, 64] (Oobleck VAE,

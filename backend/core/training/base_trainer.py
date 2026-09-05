@@ -3154,6 +3154,34 @@ class BaseTrainer(ABC):
             krea2_ops.load_components(self)
             print(f"{self.log_prefix} Krea 2 checkpoint loaded successfully as base model")
 
+        elif self.is_anima:
+            # Anima checkpoint resume: the save carries the DiT under `net.`, its
+            # transformer_config, and the VAE only when the run bundled or declared
+            # one. The Qwen3 text encoder is never in it — it is a companion the
+            # loader discovers, and the checkpoint's own directory holds nothing but
+            # other checkpoints, so companion discovery is aimed at the base model.
+            print(f"{self.log_prefix} Loading Anima checkpoint as base model: {checkpoint_path}")
+            # Keep the FIRST value: the corrupted-checkpoint fallback re-enters
+            # this branch, by which time model_path is the checkpoint that failed.
+            self.anima_companion_path = (getattr(self, "anima_companion_path", None)
+                                         or str(self.model_path))
+            self.model_path = checkpoint_path
+            from core.training.ops import anima_ops
+            anima_ops.load_components(self)
+            print(f"{self.log_prefix} Anima checkpoint loaded successfully as base model")
+
+        elif self.is_lens:
+            # Lens checkpoint resume: the single-file save carries the DiT under
+            # `net.` plus a `component.base_dir` hint, from which the loader rebuilds
+            # the TE / tokenizer / scheduler (and the VAE, unless the save bundled or
+            # declared one). load_lens_from_path routes a .safetensors to that
+            # single-file branch, which is also the branch that reads the declaration.
+            print(f"{self.log_prefix} Loading Lens checkpoint as base model: {checkpoint_path}")
+            self.model_path = checkpoint_path
+            from core.training.ops import lens_ops
+            lens_ops.load_components(self)
+            print(f"{self.log_prefix} Lens checkpoint loaded successfully as base model")
+
         else:
             # SD/SDXL checkpoint resume
             print(f"{self.log_prefix} Loading SD/SDXL checkpoint as base model")
@@ -14543,11 +14571,15 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 elif self.is_krea2:
-                                    # Krea 2: packed latent [1, (H//16)*(W//16), 64].
+                                    # Krea 2: packed latent [1, (H//16)*(W//16), C*4];
+                                    # C is 16 unless this run swapped its VAE.
                                     expected_seq_len = (height // 16) * (width // 16)
-                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 64:
+                                    expected_width = 4 * int(getattr(
+                                        getattr(self, "wiring", None),
+                                        "latent_channels", 0) or 16)
+                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != expected_width:
                                         print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
-                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 64]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, {expected_width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 elif latent.ndim == 5:

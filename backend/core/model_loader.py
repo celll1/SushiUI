@@ -3111,9 +3111,14 @@ class ModelLoader:
         text_encoder_path: Optional[str] = None,
         vae_path: Optional[str] = None,
         models_root: Optional[str] = None,
+        companion_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Load Anima (DiT + Qwen3 + Qwen-Image VAE) from either a single DiT
         safetensors file or a split-files directory layout.
+
+        ``companion_path`` moves the Qwen3 TE / Qwen-Image VAE search (and the
+        models_root walk) to another path — a training resume points it at the
+        base model, since a checkpoint has no companions beside it.
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
@@ -3147,7 +3152,7 @@ class ModelLoader:
                 models_root = None
             if models_root is None:
                 # Walk up to find a `models` directory ancestor
-                p = os.path.abspath(dit_path)
+                p = os.path.abspath(companion_path or dit_path)
                 for _ in range(6):
                     p = os.path.dirname(p)
                     if not p:
@@ -3165,6 +3170,7 @@ class ModelLoader:
             dit_dtype=torch_dtype,
             te_dtype=torch_dtype,
             vae_dtype=torch_dtype,
+            companion_path=companion_path,
         )
         components["text_encoder_origin"] = (
             "selected_external" if explicit_text_encoder else "architecture_default"

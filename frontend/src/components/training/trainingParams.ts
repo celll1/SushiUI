@@ -93,7 +93,10 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
   "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
   "energy_normalize_by_pixels",
-  "noise_process", "prediction_target", "strict_validation", "sdxl_vae_type",
+  "noise_process", "prediction_target", "strict_validation",
+  // vae_swap_source is the current key; sdxl_vae_type stays listed so an older
+  // run still restores its (read-only) alias.
+  "vae_swap_source", "sdxl_vae_type",
   "sdxl_te_type", "sdxl_te_hidden_layer", "sdxl_te_max_len", "sdxl_te_train_encoder",
   "controlnet_type", "controlnet_init_from_unet",
   "lllite_conditioning_channels", "lllite_rank",

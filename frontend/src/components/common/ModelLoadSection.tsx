@@ -331,6 +331,17 @@ export default function ModelLoadSection({
             onSelectionChange={handleSelectionChange}
             onLoadingChange={setModelLoading}
           />
+          {/* The loaded checkpoint runs in a latent space that is not this
+              architecture's own: LoRAs and VAE overrides built for the
+              baseline do not fit it. */}
+          {modelInfo?.vae_identity_native === false && (
+            <p className="mt-2 text-xs text-violet-300">
+              VAE: {modelInfo.vae_provenance || modelInfo.vae_type || "declared by the checkpoint"}
+              {loadedLatentChannels !== null ? ` (${loadedLatentChannels}ch)` : ""}
+              {modelInfo.vae_struct_native === false
+                && " — not the architecture's latent structure"}
+            </p>
+          )}
         </div>
 
         {activeTab === "components" && <div

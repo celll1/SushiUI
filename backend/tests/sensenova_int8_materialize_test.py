@@ -356,7 +356,9 @@ def _load_with(trainer_extra: dict, transformer: nn.Module):
         weight_dtype=torch.bfloat16,
         device=torch.device("cpu"),
         attention_backend="native",
-        **trainer_extra,
+        # Read by the shared VAE-swap fold load_components now runs; a caller
+        # that names its own training method supplies its own.
+        **{"config": {}, **trainer_extra},
     )
     components = {"transformer": transformer, "tokenizer": object(), "config": object()}
     with patch(

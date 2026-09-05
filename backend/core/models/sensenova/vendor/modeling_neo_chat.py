@@ -1,5 +1,11 @@
-# SushiUI vendored copy — UNMODIFIED (this file's own logic; its `_flash_or_sdpa`
-# dependency is repointed in `modeling_qwen3.py`, not here).
+# SushiUI vendored copy — MODIFIED: the GENERATION branch's patch width and
+# channel count come from `config.gen_patch_size` / `config.gen_in_channels`
+# instead of the understanding tower's `patch_size`*`merge_size` and a literal 3
+# (docs/guides/VAE_SWAP_MIGRATION_DESIGN.md §10.2). Affects the constructor (gen
+# ViT patch embed, fm_head), `patchify`/`unpatchify` and `_t2i_predict_v`'s
+# pixel-head branch. The defaults reproduce the upstream pixel geometry exactly.
+# Otherwise this file's own logic is unmodified; its `_flash_or_sdpa` dependency
+# is repointed in `modeling_qwen3.py`, not here.
 #
 # `t2i_generate` (below) is kept as the ORIGINAL REFERENCE implementation and is
 # not SushiUI's denoise loop entry point: a later unit drives this model's own
@@ -16,6 +22,7 @@
 # Upstream license: Apache-2.0 (see `backend/core/models/sensenova/vendor/__init__.py`).
 
 from typing import List, Optional, Tuple, Union
+import copy
 import math
 import os
 import torch.utils.checkpoint
@@ -194,11 +201,42 @@ class NEOChatModel(PreTrainedModel):
         self.downsample_ratio = config.downsample_ratio
         config.llm_config._attn_implementation = 'eager'
 
+        # SushiUI: the generation branch's own geometry. One token covers
+        # `gen_patch_size` cells of whatever grid the branch faces -- 32 pixels
+        # natively, 4 latent cells after a VAE swap (design §10.2). The ViT half
+        # of that is `gen_patch_size // merge_size`, and the fm_head's final
+        # PixelShuffle absorbs the rest: k = gen_patch_size // 4, since ps1 and
+        # ps2 already contribute 2x2. k must be a positive integer, which is what
+        # fixes the latent patch at 4.
+        _merge = int(1 / self.downsample_ratio)
+        self.gen_in_channels = int(getattr(config, "gen_in_channels", None) or 3)
+        self.gen_patch_size = int(getattr(config, "gen_patch_size", None)
+                                  or patch_size * _merge)
+        self.gen_vit_patch_size = self.gen_patch_size // _merge
+        if (self.gen_vit_patch_size * _merge != self.gen_patch_size
+                or self.gen_patch_size % 4 or self.gen_patch_size <= 0):
+            raise ValueError(
+                f"gen_patch_size={self.gen_patch_size} must be a positive "
+                f"multiple of 4 and of the merge size {_merge}; the fm_head's "
+                f"ps1(2)/ps2(2) fix the first and its ps3 factor must be a "
+                f"positive integer")
+        # Spatial compression of the VAE this checkpoint's latents come from; 1
+        # is pixel space. A STAMP, not config: the number's home is
+        # `component.vae.scale_factor`, and the loader writes it here so every
+        # alignment site can read one place (design §10.5).
+        self.gen_vae_scale_factor = 1
+
         if vision_model is not None:
             self.vision_model = vision_model
         else:
             self.vision_model = NEOVisionModel(config.vision_config)
-            vision_model_mot_gen = NEOVisionModel(config.vision_config)
+            gen_vision_config = copy.deepcopy(config.vision_config)
+            # Rebuilt from the object, never from `to_dict()`: NEOVisionConfig
+            # stores `llm_hidden_size`/`downsample_ratio` as 1-tuples, so a
+            # round trip through a dict nests them one level deeper.
+            gen_vision_config.num_channels = self.gen_in_channels
+            gen_vision_config.patch_size = self.gen_vit_patch_size
+            vision_model_mot_gen = NEOVisionModel(gen_vision_config)
         if language_model is not None:
             self.language_model = language_model
         else:
@@ -212,7 +250,7 @@ class NEOChatModel(PreTrainedModel):
                 self.language_model = Qwen3ForCausalLM(config.llm_config)
 
         merge_size = int(1 / self.downsample_ratio)
-        output_dim = 3*(patch_size*merge_size)**2
+        output_dim = self.gen_in_channels*self.gen_patch_size**2
         llm_hidden_size = self.config.llm_config.hidden_size
         self.use_deep_fm_head = self.config.fm_head_layers > 2
         self.use_pixel_head = self.config.use_pixel_head
@@ -235,7 +273,9 @@ class NEOChatModel(PreTrainedModel):
                 )
 
         if self.use_pixel_head:
-            self.fm_modules["fm_head"] = ConvDecoder(llm_hidden_size)
+            self.fm_modules["fm_head"] = ConvDecoder(
+                llm_hidden_size, out_channels=self.gen_in_channels,
+                shuffle=self.gen_patch_size // 4)
 
         self.concat_time_token_num = config.concat_time_token_num
         self.noise_scale = config.noise_scale
@@ -415,33 +455,35 @@ class NEOChatModel(PreTrainedModel):
     
     def patchify(self, images, patch_size, channel_first=False):
         """
-        images: (N, 3, H, W)
-        x: (N, L, patch_size**2 *3)
+        images: (N, C, H, W)   C = gen_in_channels (3 in pixel space)
+        x: (N, L, patch_size**2 *C)
         """
+        c = images.shape[1]
         h, w = images.shape[2] // patch_size, images.shape[3] // patch_size
-        x = images.reshape(shape=(images.shape[0], 3, h, patch_size, w, patch_size))
+        x = images.reshape(shape=(images.shape[0], c, h, patch_size, w, patch_size))
 
         if channel_first:
             x = torch.einsum('nchpwq->nhwcpq', x)
         else:
             x = torch.einsum('nchpwq->nhwpqc', x)
-        
-        x = x.reshape(shape=(images.shape[0], h * w, patch_size**2 * 3))
+
+        x = x.reshape(shape=(images.shape[0], h * w, patch_size**2 * c))
         return x
-    
+
     def unpatchify(sle, x, patch_size, h=None, w=None):
         """
-        x: (N, L, patch_size**2 *3)
-        images: (N, 3, H, W)
+        x: (N, L, patch_size**2 *C)
+        images: (N, C, H, W)
         """
         if h is None or w is None:
             h = w = int(x.shape[1]**.5)
         else:
             h = h // patch_size
-            w = w // patch_size        
-        x = x.reshape(shape=(x.shape[0], h, w, patch_size, patch_size, 3))
+            w = w // patch_size
+        c = x.shape[2] // (patch_size * patch_size)
+        x = x.reshape(shape=(x.shape[0], h, w, patch_size, patch_size, c))
         x = torch.einsum('nhwpqc->nchpwq', x)
-        images = x.reshape(shape=(x.shape[0], 3, h * patch_size, w * patch_size))
+        images = x.reshape(shape=(x.shape[0], c, h * patch_size, w * patch_size))
         return images
     
     def _euler_step(self, v_pred, z, t, t_next):
@@ -613,7 +655,10 @@ class NEOChatModel(PreTrainedModel):
 
         return past_key_values, t_idx, think_text
     
-    def _t2i_predict_v(self, input_embeds, indexes_image, attn_mask, past_key_values, t, z, image_token_num, timestep_embeddings=None, image_size=None):
+    def _t2i_predict_v(self, input_embeds, indexes_image, attn_mask, past_key_values, t, z, image_token_num, timestep_embeddings=None, image_size=None, token_hw=None):
+        # SushiUI: `token_hw` is the (token_h, token_w) the caller already knows.
+        # `image_size` only ever answered the same question, and it cannot once
+        # the generation grid is a latent rather than the image (design §10.2).
         B, L = z.shape[0], z.shape[1]
 
         outputs = self.language_model.model(
@@ -627,19 +672,23 @@ class NEOChatModel(PreTrainedModel):
         )
 
         if self.use_pixel_head:
-            merge_size = int(1 / self.downsample_ratio)
-            token_h = image_size[1] // (self.patch_size * merge_size)
-            token_w = image_size[0] // (self.patch_size * merge_size)
+            patch = self.gen_patch_size
+            if token_hw is not None:
+                token_h, token_w = int(token_hw[0]), int(token_hw[1])
+            else:
+                token_h = image_size[1] // patch
+                token_w = image_size[0] // patch
+            channels = self.gen_in_channels
 
             img_reshaped = outputs.last_hidden_state[:, -image_token_num:].view(B, token_h, token_w, -1)
             img_2d = torch.einsum("b h w c -> b c h w", img_reshaped)
             img_2d = img_2d.contiguous().view(B, -1, token_h, token_w)
-                
+
             smoothed_img_2d = self.fm_modules['fm_head'](img_2d)
-                
-            smoothed_reshaped = smoothed_img_2d.view(B, 3, token_h, self.patch_size * merge_size, token_w, self.patch_size * merge_size)
+
+            smoothed_reshaped = smoothed_img_2d.view(B, channels, token_h, patch, token_w, patch)
             smoothed_reshaped = torch.einsum("b c h p w q -> b h w p q c", smoothed_reshaped)
-            out_1d = smoothed_reshaped.contiguous().view(B, L, self.patch_size * merge_size * self.patch_size * merge_size * 3)
+            out_1d = smoothed_reshaped.contiguous().view(B, L, patch * patch * channels)
             x_pred = out_1d
         else:
             if self.use_deep_fm_head:

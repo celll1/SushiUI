@@ -259,6 +259,10 @@ export interface ModelInfo {
   vae_identity_native?: boolean;
   vae_provenance?: string | null;
   vae_hash?: string | null;
+  // SenseNova only: pixel width of one generation token, which the canvas must
+  // be a multiple of. 32 in pixel space; 4 * vae_scale_factor once the
+  // checkpoint declares a VAE. Absent for every other architecture.
+  token_pixel_width?: number | null;
   // MiniMax-H3: "fl2va" | "ref2va" for a single checkpoint, "hybrid" for a
   // merged pair. Only a hybrid carries the three provenance fields after it.
   variant?: string | null;

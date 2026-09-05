@@ -269,7 +269,14 @@ def test_reference_encode_still_drives_the_phase_evictor(tmp_path):
 
 
 class _SampleTransformer(nn.Module):
-    """Only the state generate_sample touches: training flag + eval()/train()."""
+    """Only the state generate_sample touches: training flag + eval()/train().
+
+    Plus the two geometry fields every NEOChatModel carries, which the sample's
+    resolution snap reads to get this tree's token width.
+    """
+
+    patch_size = 16
+    downsample_ratio = 0.5
 
     def forward(self):  # pragma: no cover - never called
         raise AssertionError

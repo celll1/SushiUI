@@ -412,6 +412,20 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             "is attached to the single optimizer.step() call site, which this "
             "route never reaches, so the shadow would silently never update."
         )
+    from core.training.vae_swap import resolve_vae_swap_source
+
+    if resolve_vae_swap_source(train_config) and not _normalize_sensenova_bool(
+            train_config, "sensenova_train_fm_modules", False):
+        # The served requirement (arch_capabilities: required value, lifted when
+        # vae_swap_source is empty), enforced before the load rather than only
+        # when the resize runs.
+        raise ValueError(
+            "SenseNova vae_swap_source requires sensenova_train_fm_modules: the "
+            "swap rebuilds the generation ViT's patch embed and the fm_head's "
+            "output convolution, both of which live in transformer.fm_modules "
+            "and are outside the default full fine-tune scope, so without it "
+            "they would stay at their initialisation for the whole run."
+        )
     if train_config.get("optimizer_stochastic_rounding") is False:
         # Only reachable for an explicit False; a None (unset) is forced on
         # silently by enforce_full_finetune_stochastic_rounding instead.

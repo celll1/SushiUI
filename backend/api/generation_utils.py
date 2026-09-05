@@ -243,7 +243,10 @@ def preview_arch_kwargs(
         "is_ideogram4": model_type == "ideogram4",
         # SenseNova is pixel-space (no VAE), same [-1,1] RGB [B,3,H,W] convention
         # as MiniT2I -- reuse decode_latent's is_minit2i raw-RGB passthrough
-        # rather than adding an identical branch under a new flag.
+        # rather than adding an identical branch under a new flag. A SenseNova
+        # checkpoint that declares a VAE emits latents instead, and
+        # `vae_preview_kind` (set just above, non-None exactly then) clears this
+        # flag inside decode_latent.
         "is_minit2i": is_minit2i or model_type == "sensenova",
         "minit2i_vae_type": (
             (pipeline_manager.minit2i_components or {}).get("vae_type", "none")

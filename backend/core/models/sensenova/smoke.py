@@ -225,7 +225,8 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
     from core.models.sensenova import sensenova_pipeline_ops as ops
 
     device = next(model.parameters()).device
-    width, height = ops.normalize_resolution(width, height)
+    width, height = ops.normalize_resolution(
+        width, height, ops.token_pixel_width(model))
 
     # This helper is also used by the training exit-smoke's fresh runtime arm.
     # Generation must never inherit TRAINING mode merely because the caller is
@@ -423,9 +424,12 @@ def _run_single_arm_subprocess(args, width: int, height: int, load_timeout_s: fl
     return {"status": reported_status, "raw_status": status, "result": result, "vram_used_mib": vram_used_mib}
 
 
-_TOKEN_GRID_ALIGN = 32  # duplicated from sensenova_pipeline_ops.TOKEN_GRID_ALIGN -- this script
-                        # must not import torch-touching modules at parse time (_assert_venv_interpreter
-                        # runs before any heavy import), so the constant is a bare literal here too.
+# The PIXEL model's token width. This ladder is a pixel-model probe (it loads a
+# path and reports s/step), and this script must not import torch-touching
+# modules at parse time (_assert_venv_interpreter runs before any heavy import),
+# so it stays a literal; a latent checkpoint's own width is
+# `latent_space.token_pixel_width`, which the generation above already uses.
+_TOKEN_GRID_ALIGN = 32
 
 
 def _normalized_s_per_step(s_per_step: float, width: int, height: int) -> float:

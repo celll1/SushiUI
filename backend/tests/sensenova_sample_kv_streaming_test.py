@@ -25,6 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class _SampleTransformer(nn.Module):
+    # The two geometry fields every NEOChatModel carries; the sample's
+    # resolution snap reads them for this tree's token width.
+    patch_size = 16
+    downsample_ratio = 0.5
+
     def forward(self):  # pragma: no cover - never called
         raise AssertionError
 

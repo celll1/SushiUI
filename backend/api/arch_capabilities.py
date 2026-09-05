@@ -1196,7 +1196,7 @@ _add_training_feature_unsupported(
 # until that wave's acceptance conditions (§10.6) are met.
 _add_training_feature_unsupported(
     "sensenova", "vae_swap",
-    "SenseNova is pixel-space, so a swap moves it INTO a latent space rather than between two: it changes the generation patch geometry and the fm_head, which is a research-stage change (design §10) and is refused until its acceptance conditions are met")
+    "SenseNova is pixel-space, so a swap moves it INTO a latent space rather than between two: it rebuilds the generation ViT's patch embed and the fm_head's output convolution instead of resizing a channel axis. The migration is implemented (design §10) and stays refused until §10.6's acceptance conditions are measured on the real checkpoint -- a 3-step smoke and one generation through the VAE decode, neither of which has been run")
 for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
@@ -1237,6 +1237,12 @@ _add_training_required_value(
 _add_training_required_value(
     "sensenova", "latent_encoding_mode", "onthefly_gpu",
     "overwritten rather than refused: SenseNova is pixel-space and has no VAE, so there are no latents to cache or swap for")
+
+_add_training_required_value(
+    "sensenova", "sensenova_train_fm_modules", True,
+    "a VAE swap rebuilds the generation ViT's patch embed and the fm_head's output convolution, and both live in transformer.fm_modules -- which the default full fine-tune scope (the 294 decoder Linears per half) never optimises. Measured on two checkpoints of one run 4,960 steps apart, all 16 fm_modules tensors were byte-identical, so without this the two new layers would stay at their initialisation for the whole run",
+    methods=["full_finetune"],
+    unless={"vae_swap_source": ""})
 
 _add_training_feature_unsupported(
     "sensenova", "vae",
@@ -1341,10 +1347,16 @@ for _arch, _params in TRAINING_REQUIRED_VALUES.items():
                 f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}]['unless'] "
                 f"conditions the parameter on itself")
         # A parameter whose whole mechanism is declared missing must not also be
-        # given a required value: the two tables would then both own it.
+        # given a required value: the two tables would then both own it. Asked
+        # per METHOD, because both tables scope by method and disjoint scopes own
+        # nothing in common -- SenseNova's fm_modules option is refused for LoRA
+        # (nothing to act on) and required for a full fine-tune that swaps VAE.
+        _req_methods = set(_entry.get("methods", TRAINING_METHODS))
         for _feature, _keys in TRAINING_FEATURE_PARAMS.items():
-            assert not (_param in _keys
-                        and _feature in TRAINING_FEATURE_UNSUPPORTED.get(_arch, {})), (
+            _unsupported = TRAINING_FEATURE_UNSUPPORTED.get(_arch, {}).get(_feature)
+            assert not (_param in _keys and _unsupported is not None
+                        and _req_methods & set(_unsupported.get(
+                            "methods", TRAINING_METHODS))), (
                 f"TRAINING_REQUIRED_VALUES[{_arch}][{_param}] restates "
                 f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}]")
             assert not (_param in _keys

@@ -342,6 +342,13 @@ export default function ModelLoadSection({
                 && " — not the architecture's latent structure"}
             </p>
           )}
+          {/* SenseNova's token grid moves with the VAE: the canvas snaps to
+              this multiple and the documented token band moves with it. */}
+          {modelInfo?.token_pixel_width != null && (
+            <p className="mt-1 text-xs text-violet-300">
+              Token grid: {modelInfo.token_pixel_width}px per token
+            </p>
+          )}
         </div>
 
         {activeTab === "components" && <div

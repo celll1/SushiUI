@@ -3158,14 +3158,23 @@ class BaseTrainer(ABC):
             # SDXL has text_encoder_2 keys
             is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in checkpoint_keys)
 
-            # Detect a SushiUI custom architecture (non-standard latent VAE / swapped
+            # Detect a SushiUI custom architecture (non-native latent VAE / swapped
             # text encoder). Plain from_single_file cannot reconstruct those (conv
             # channel mismatch / missing TE), so route them through the same
-            # sushi.*-aware reconstruction the inference loader uses.
-            _cvt = (checkpoint_metadata.get("sushi.vae_type") or "").strip().lower()
+            # reconstruction the inference loader uses.
+            #
+            # The VAE half is answered by the shared reader, never by
+            # sushi.vae_type alone: that key can only name a REGISTRY family, so a
+            # file:/model: swap — and every sd15 swap — declares itself through
+            # component.vae.* only (design §8.2). Reading it here also verifies a
+            # non-bundled VAE's locator hash; an unresolvable declaration raises
+            # rather than resuming in the architecture's native latent space.
+            from core.models.common.vae_source import load_declared_latent_io
+            _arch_name = "sdxl" if is_sdxl_model else "sd15"
+            _declared_vae = load_declared_latent_io(checkpoint_path, arch=_arch_name)
             _ctt = (checkpoint_metadata.get("sushi.te_type") or "").strip().lower()
             is_custom_arch = (
-                (_cvt and _cvt not in ("none", "sdxl"))
+                _declared_vae is not None
                 or (_ctt and _ctt not in ("none", "clip"))
             )
 
@@ -3193,12 +3202,13 @@ class BaseTrainer(ABC):
             self.sdxl_te_type = "none"
 
             if is_custom_arch:
-                print(f"{self.log_prefix} Detected SushiUI custom-arch SDXL checkpoint "
-                      f"(vae_type={_cvt or 'sdxl'}, te_type={_ctt or 'clip'}); "
-                      f"reconstructing via inference loader")
+                print(f"{self.log_prefix} Detected SushiUI custom-arch "
+                      f"{_arch_name.upper()} checkpoint "
+                      f"(vae={_declared_vae.provenance if _declared_vae else 'native'}, "
+                      f"te_type={_ctt or 'clip'}); reconstructing via inference loader")
                 temp_pipeline = ModelLoader.reconstruct_sd_sdxl_pipeline(
                     checkpoint_path,
-                    "sdxl" if is_sdxl_model else "sd15",
+                    _arch_name,
                     self.weight_dtype,
                     self.device,
                 )
@@ -3217,9 +3227,11 @@ class BaseTrainer(ABC):
                     self.text_encoder_2 = None
                     self.tokenizer_2 = None
 
-                # Rebuild custom-VAE state
-                if arch.get("vae_type"):
-                    self.sdxl_vae_type = arch["vae_type"]
+                # Rebuild custom-VAE state. The legacy marker keeps its legacy
+                # meaning: the SDXL adapter writes it back out as sushi.vae_type
+                # on the next save, where only a registry family is expressible.
+                from core.training.vae_swap import legacy_vae_type_marker
+                self.sdxl_vae_type = legacy_vae_type_marker(_declared_vae)
                 try:
                     self.vae_latent_channels = int(self.vae.config.latent_channels)
                 except Exception:
@@ -3305,6 +3317,22 @@ class BaseTrainer(ABC):
 
             # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
+
+            if _declared_vae is not None:
+                # Reinstate the run's latent identity from the checkpoint's own
+                # declaration. The latent cache namespace, strict_validation and
+                # the NEXT save's component.vae.* block all read vae_identity /
+                # wiring, so a resume that leaves them unset writes a degraded
+                # declaration over a correct one. The convs already carry the
+                # declared channel count (the loader built them there), so the
+                # resize inside apply_vae_swap is a no-op; the weights are
+                # dropped because only the facts are wanted for the session.
+                from dataclasses import replace as _dc_replace
+                from core.training.arch import get_arch_handler
+                _identity = _dc_replace(_declared_vae, state_dict=None)
+                self.base_vae_identity = _identity
+                get_arch_handler(self).apply_vae_swap(self, _identity,
+                                                      module=self.vae)
 
             # Setup attention backend if non-native (use_flash_attention is derived from it)
             if self.use_flash_attention:
@@ -10563,8 +10591,8 @@ class BaseTrainer(ABC):
         if identity is not None and identity.identity_native is False:
             vae_type = f"{identity.family}-{identity.content_hash[:8]}"
         else:
-            # The custom-arch resume path (reconstruct_sd_sdxl_pipeline) still
-            # answers only through this attribute; "sdxl"/None add no token.
+            # Pre-P2 fallback for a trainer that never resolved an identity;
+            # "sdxl"/None add no token.
             vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
         te_type = getattr(self, "sdxl_te_type", None) if arch == "sdxl" else None
 

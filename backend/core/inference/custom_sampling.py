@@ -11,6 +11,17 @@ Based on diffusers' pipeline implementation but with added flexibility.
 import os
 import torch
 
+# Every latent normalisation below goes through the shared layer, deliberately
+# WITHOUT a wiring spec: `_loaded_wiring()` still reports sd15/sdxl's own
+# vae_norm="shift_scale" after a VAE swap (`_fold_sd_latent_identity` replaces
+# only latent_channels), so a BatchNorm VAE would be normalised by the wrong
+# formula. With no spec the method is observed off the VAE itself
+# (VAE_SWAP_MIGRATION_DESIGN.md §7.3/§8.4).
+from core.models.components.vae_registry import (
+    denormalize as vae_denormalize,
+    normalize as vae_normalize,
+)
+
 
 def _add_generation_warning(message: str, code: str = None) -> None:
     """Best-effort: record a feature-degradation warning for the current generation.
@@ -159,7 +170,7 @@ def prepare_reference_guide_latents(
             clean_latent = pipeline.vae.encode(
                 img_tensor.to(device=device, dtype=vae_dtype)
             ).latent_dist.sample(generator)
-            clean_latent = (clean_latent - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
+            clean_latent = vae_normalize(clean_latent, pipeline.vae)
             clean_latent = clean_latent.to(dtype=dtype)
 
         # Generate noise for re-noising at each step
@@ -236,7 +247,7 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
     the ONE fixed reference noise tensor used for every active step's
     re-noising (drawing fresh noise per step would make the injected reference
     K/V flicker step to step). Mirrors `prepare_reference_guide_latents`'
-    VAE-encode convention (shift_factor + scaling_factor) and Krea2's
+    VAE-encode convention (the shared latent normalisation) and Krea2's
     `prepare_style_reference` fixed-seed-offset convention.
 
     Resizing the reference image to the exact target (width, height) is what
@@ -276,7 +287,7 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
             vae.to(_target_device)
         with torch.no_grad():
             ref_x0 = vae.encode(img_tensor.to(device=_target_device, dtype=vae_dtype)).latent_dist.mode()
-            ref_x0 = (ref_x0 - (getattr(vae.config, "shift_factor", None) or 0.0)) * vae.config.scaling_factor
+            ref_x0 = vae_normalize(ref_x0, vae)
             ref_x0 = ref_x0.to(device=_target_device, dtype=dtype)
     finally:
         if _staged:
@@ -426,18 +437,18 @@ def vae_output_to_pil(
     return Image.fromarray(image[0])
 
 
-def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.Tensor, vae_shift: float) -> Optional[torch.Tensor]:
+def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.Tensor) -> Optional[torch.Tensor]:
     """Per-channel VAE DC-drift bias = mean(decode(encode(input))) - mean(input), in [0,1].
 
-    ``ref_latents`` are the SCALED init latents (== encode(input), as used for
-    denoising); this reverses the scaling and runs ONE extra reference decode with
-    the VAE still on GPU. Returns a [1,C,1,1] bias to subtract from the final
+    ``ref_latents`` are the NORMALISED init latents (== encode(input), as used for
+    denoising); this reverses the normalisation and runs ONE extra reference decode
+    with the VAE still on GPU. Returns a [1,C,1,1] bias to subtract from the final
     decode, or None on failure. Strength-independent (corrects a VAE property).
     """
     if ref_latents is None or input_mean is None:
         return None
     try:
-        lat = ref_latents / pipeline.vae.config.scaling_factor + vae_shift
+        lat = vae_denormalize(ref_latents, pipeline.vae)
         lat = lat.to(dtype=pipeline.vae.dtype)
         with torch.no_grad():
             ref = pipeline.vae.decode(lat, return_dict=True).sample
@@ -454,13 +465,13 @@ def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.T
 _HF_RESTORE_TAPER_PX = 16
 
 
-def compute_outpaint_hf_roundtrip(pipeline, image_latents: torch.Tensor, vae_shift: float) -> Optional[torch.Tensor]:
+def compute_outpaint_hf_roundtrip(pipeline, image_latents: torch.Tensor) -> Optional[torch.Tensor]:
     """VAE roundtrip reference decode = decode(encode(raw)) of the outpaint
     canvas's own (unnoised) init latents, for the "vae_reconstruct_hf"
     preserve mode's high-frequency-restore composite.
 
     ``image_latents`` is the STATIC, already-computed unnoised encode of
-    ``init_image`` (== the SCALED init latents; see the "STATIC inputs"
+    ``init_image`` (== the NORMALISED init latents; see the "STATIC inputs"
     comment near where it is built) -- reusing it costs one extra reference
     DECODE only (no extra encode), mirroring ``compute_vae_dc_bias``'s own
     pattern, and must be called while the VAE is still resident on GPU (i.e.
@@ -470,7 +481,7 @@ def compute_outpaint_hf_roundtrip(pipeline, image_latents: torch.Tensor, vae_shi
     if image_latents is None:
         return None
     try:
-        lat = image_latents / pipeline.vae.config.scaling_factor + vae_shift
+        lat = vae_denormalize(image_latents, pipeline.vae)
         lat = lat.to(dtype=pipeline.vae.dtype)
         with torch.no_grad():
             roundtrip = pipeline.vae.decode(lat, return_dict=True).sample
@@ -546,19 +557,18 @@ def _setup_inloop_flatten(pipeline, timesteps, spectrum, fbcache_ctrl,
     passes, so with default spectrum the last ~3-4 of 28 steps are real anyway;
     this guard covers larger N, lower spectrum_tail, and FBCache (no tail).
 
-    Returns ``(inject_steps:set, vae_shift:float)``.
+    Returns the ``inject_steps`` set.
     """
     if not flatten_in_loop:
-        return set(), 0.0
+        return set()
     inject = compute_flatten_inject_steps(len(timesteps), last_steps)
-    vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
     if spectrum is not None:
         spectrum.anchors = set(spectrum.anchors) | inject
     if fbcache_ctrl is not None:
         fbcache_ctrl.force_real_steps = set(fbcache_ctrl.force_real_steps) | inject
     print(f"[InLoopFlatten] enabled: inject on steps {sorted(inject)} of "
           f"{len(timesteps)} (min_region={min_region})")
-    return inject, vae_shift
+    return inject
 
 
 def inloop_hard_flatten_step(
@@ -566,11 +576,10 @@ def inloop_hard_flatten_step(
     latents: torch.Tensor,
     pred_original_sample: torch.Tensor,
     min_region_frac: float,
-    vae_shift: float,
 ) -> Tuple[torch.Tensor, bool]:
     """In-loop hard-flatten latent injection (SD1.5/SDXL, validated in proto2).
 
-    Decode the current x0 prediction (``pred_original_sample``, a SCALED latent) to
+    Decode the current x0 prediction (``pred_original_sample``, a NORMALISED latent) to
     pixels, detect + hard-replace the flat background region with its dominant
     colour (feathered - see ``core.inference.inloop_flatten.hard_flatten``), encode
     the corrected image back, and inject the x0-space delta into the running
@@ -587,10 +596,9 @@ def inloop_hard_flatten_step(
         return latents, False
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
     from core.inference.inloop_flatten import hard_flatten
-    scaling = pipeline.vae.config.scaling_factor
     try:
         move_vae_to_gpu(pipeline)
-        lat = (pred_original_sample / scaling + vae_shift).to(dtype=pipeline.vae.dtype)
+        lat = vae_denormalize(pred_original_sample, pipeline.vae).to(dtype=pipeline.vae.dtype)
         with torch.no_grad():
             img = pipeline.vae.decode(lat, return_dict=True).sample
         img01 = (img.float() / 2 + 0.5).clamp(0, 1)
@@ -603,7 +611,7 @@ def inloop_hard_flatten_step(
         x = t * 2.0 - 1.0
         with torch.no_grad():
             enc = pipeline.vae.encode(x).latent_dist.mode()
-        x0c = ((enc - vae_shift) * scaling)
+        x0c = vae_normalize(enc, pipeline.vae)
         delta = (x0c - pred_original_sample.to(x0c.device, x0c.dtype))
         latents = latents + delta.to(latents.device, latents.dtype)
         return latents, True
@@ -2268,7 +2276,7 @@ def custom_sampling_loop(
     first_iteration_debug = True
 
     # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
-    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+    _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
@@ -2897,7 +2905,7 @@ def custom_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region, _flatten_vae_shift)
+                flatten_in_loop_min_region)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -2959,11 +2967,11 @@ def custom_sampling_loop(
     move_unet_to_cpu(pipeline)
 
     # loop_decode="none": latent passthrough for loop generation. Skip VAE/PiD
-    # entirely and hand back the clean scaled latent (pre-unscale -- the SAME
-    # frame img2img's init_latents encode path produces:
-    # (vae.encode(img) - shift_factor) * scaling_factor), so a later img2img/
-    # inpaint step can feed it directly as init_latents_override with no VAE
-    # round-trip. pipeline.py distinguishes this from an Image.Image return.
+    # entirely and hand back the clean normalised latent (pre-denormalize -- the
+    # SAME frame img2img's init_latents encode path produces,
+    # vae_normalize(vae.encode(img))), so a later img2img/inpaint step can feed
+    # it directly as init_latents_override with no VAE round-trip. pipeline.py
+    # distinguishes this from an Image.Image return.
     if loop_decode == "none":
         print("[CustomSampling] loop_decode='none': skipping VAE decode (latent passthrough)")
         return latents
@@ -2985,8 +2993,7 @@ def custom_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
-    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
+    latents = vae_denormalize(latents, pipeline.vae)
     if not _pid_active or _use_real_vae_only:
         # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents).
         # PiD re-normalizes in fp32 internally, so keep full precision for it.
@@ -3098,9 +3105,9 @@ def custom_img2img_sampling_loop(
     style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
     init_latents_override: Optional[torch.Tensor] = None,  # Loop-generation latent passthrough: when
                                 # set, SKIPS the init_image VAE-encode entirely and uses this tensor
-                                # directly as init_latents (already in the (encode(img) - shift) *
-                                # scaling_factor frame -- the SAME frame this function's own encode
-                                # block produces). init_image is then only a size placeholder (its
+                                # directly as init_latents (already in the vae_normalize(encode(img))
+                                # frame -- the SAME frame this function's own encode block
+                                # produces). init_image is then only a size placeholder (its
                                 # pixels are never read/encoded) -- see pipeline.py's generate_img2img.
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
@@ -3255,11 +3262,11 @@ def custom_img2img_sampling_loop(
 
     if init_latents_override is not None:
         # Loop-generation latent passthrough (loop_decode="none" chaining): the
-        # cached latent is ALREADY in the (encode(img) - shift_factor) *
-        # scaling_factor frame -- the SAME frame this block's own encode
-        # produces below -- so it is used directly, with no re-scaling and no
-        # VAE encode/staging at all. init_image (a size-only placeholder in
-        # this path -- see pipeline.py's generate_img2img) is never read.
+        # cached latent is ALREADY in the vae_normalize(encode(img)) frame --
+        # the SAME frame this block's own encode produces below -- so it is used
+        # directly, with no re-normalisation and no VAE encode/staging at all.
+        # init_image (a size-only placeholder in this path -- see pipeline.py's
+        # generate_img2img) is never read.
         print(f"[CustomSampling] Using cached init latents (latent passthrough), shape: {init_latents_override.shape}")
         init_latents = init_latents_override.to(device=device, dtype=dtype)
         if vae_drift_correction:
@@ -3285,7 +3292,7 @@ def custom_img2img_sampling_loop(
             init_latents = pipeline.vae.encode(
                 init_image.to(device=device, dtype=vae_dtype)
             ).latent_dist.sample(generator)
-            init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
+            init_latents = vae_normalize(init_latents, pipeline.vae)
             # Convert latents back to U-Net dtype for denoising
             init_latents = init_latents.to(dtype=dtype)
 
@@ -3455,7 +3462,7 @@ def custom_img2img_sampling_loop(
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
     # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
-    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+    _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
@@ -4084,7 +4091,7 @@ def custom_img2img_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region, _flatten_vae_shift)
+                flatten_in_loop_min_region)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -4158,8 +4165,7 @@ def custom_img2img_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
-    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
+    latents = vae_denormalize(latents, pipeline.vae)
     if not _pid_active or _use_real_vae_only:
         # Convert latents to VAE dtype (fp16 VAE + fp32 latents); PiD re-normalizes
         # in fp32 internally so keep full precision for it.
@@ -4186,7 +4192,7 @@ def custom_img2img_sampling_loop(
     # path -- no source image to measure the round-trip bias against).
     _dc_bias = None
     if vae_drift_correction and not _pid_active and _drift_ref_latents is not None:
-        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
+        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean)
 
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
     if not _pid_active or _use_real_vae_only:
@@ -4799,7 +4805,7 @@ def custom_inpaint_sampling_loop(
         init_latents = pipeline.vae.encode(
             init_image_tensor.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
-        init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
+        init_latents = vae_normalize(init_latents, pipeline.vae)
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
 
@@ -4906,7 +4912,7 @@ def custom_inpaint_sampling_loop(
 
             with torch.no_grad():
                 blurred_latents = pipeline.vae.encode(blurred).latent_dist.sample(generator)
-                blurred_latents = (blurred_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
+                blurred_latents = vae_normalize(blurred_latents, pipeline.vae)
                 blurred_latents = blurred_latents.to(dtype=dtype)
 
             # Mix blurred latents into masked region (mask=1 is inpaint area)
@@ -5341,7 +5347,7 @@ def custom_inpaint_sampling_loop(
         progress_callback(-1, len(_outpaint_visit_schedule), latents, cfg_metrics=None)
 
     # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
-    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+    _flatten_inject_steps = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
@@ -6628,7 +6634,7 @@ def custom_inpaint_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region, _flatten_vae_shift)
+                flatten_in_loop_min_region)
 
         # HONEST OUTPAINT PREVIEW (display-only; scratchpad/
         # outpaint_seam_latent_stage.md section 4.1 Phase 2): snapshot the
@@ -6802,8 +6808,7 @@ def custom_inpaint_sampling_loop(
     log_device_status("Ready for VAE decode (inpaint)", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
-    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
+    latents = vae_denormalize(latents, pipeline.vae)
     if not _pid_active or _use_real_vae_only:
         # Convert latents to VAE dtype (fp16 VAE + fp32 latents); PiD re-normalizes
         # in fp32 internally so keep full precision for it.
@@ -6826,7 +6831,7 @@ def custom_inpaint_sampling_loop(
     # PiD has no encoder-based drift-correction path (accepted but not applied).
     _dc_bias = None
     if vae_drift_correction and not _pid_active and _drift_ref_latents is not None:
-        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
+        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean)
 
     # Outpaint HF-restore reference roundtrip (one extra reference decode,
     # VAE still on GPU -- see compute_outpaint_hf_roundtrip /
@@ -6844,7 +6849,7 @@ def custom_inpaint_sampling_loop(
         and t_start_override == 0
         and not _pid_active
     ):
-        _outpaint_hf_roundtrip = compute_outpaint_hf_roundtrip(pipeline, image_latents, _vae_shift)
+        _outpaint_hf_roundtrip = compute_outpaint_hf_roundtrip(pipeline, image_latents)
 
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
     if not _pid_active or _use_real_vae_only:

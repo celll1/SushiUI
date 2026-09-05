@@ -870,10 +870,6 @@ def describe_vae_source(source: str, *, arch: Optional[str] = None,
 #: other pixel-space arch has no latent geometry to check a candidate against.
 _PIXEL_SPACE_EXEMPT = ("sensenova",)
 
-# Architectures whose inference path is core/inference/custom_sampling.py, which
-# still divides by a scalar vae.config.scaling_factor.
-_SCALAR_SCALING_SAMPLER_ARCHS = ("sd15", "sdxl")
-
 
 def check_vae_compatibility(facts: Dict[str, Any],
                             arch: Optional[str]) -> Tuple[bool, Optional[str]]:
@@ -915,19 +911,8 @@ def check_vae_compatibility(facts: Dict[str, Any],
     # Crossing a normalisation domain in either direction is supported since P5:
     # components/vae_registry.normalize packs into the VAE's own statistics
     # domain and unpacks back, independently of the backbone's patchify (§8.4).
-    #
-    # Training it is not enough to offer it. core/inference/custom_sampling.py
-    # -- the sd15/sdxl sampler -- reads vae.config.scaling_factor in 11 places
-    # and raises on a VAE that has none, so such a run would train for hours and
-    # then be unrenderable. Refused here until those sites go through
-    # components/vae_registry.normalize (design §11, P7).
-    if (arch in _SCALAR_SCALING_SAMPLER_ARCHS
-            and facts.get("norm") not in (None, "shift_scale")):
-        return False, (
-            f"{arch} generates through the scalar-scaling sampler, which cannot "
-            f"render a '{facts.get('norm')}' VAE yet; training it would produce "
-            "a checkpoint that cannot generate")
-
+    # The sd15/sdxl sampler goes through it since P7, so a run trained on a
+    # per-channel/BatchNorm VAE also renders.
     return True, None
 
 

@@ -264,9 +264,9 @@ ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_l
 | `component.vae.norm_pack` | int（`"1"` or `"2"`） | 正規化統計が定義される領域の空間パック係数。`"1"` = 生の C ch、`"2"` = 2×2 パック後の 4C ch（flux2/lens の BN）。backbone 側の `pack_elems` とは独立（§8.4） |
 | `component.vae.provenance` | 文字列 | 出所の**表示用**文字列（`registry:flux1`, `file:<basename>`, `extracted:<model stem>`）。解決には使わない |
 | `component.vae.locator` | 文字列 or 空 | 非同梱時の**解決用**参照。`registry:<key>` または `path:<絶対パス>`。同梱時は空。ロード時は locator 先の内容ハッシュを再計算して `component.vae.hash` と照合し、不一致・不在は拒否（§8.7, §9.1） |
-| `component.vae.hash` | sha256 先頭 16 hex | 同梱/参照 VAE の**テンソル内容ハッシュ**。cache namespace とアダプタ identity、locator 検証に使う |
+| `component.vae.hash` | sha256 先頭 16 hex | 同梱/参照 VAE の**テンソル内容ハッシュ**。locator の重み検証に使う。cache / adapter は正規化設定を加えた `ResolvedVAE.latent_hash` を使う |
 | `component.vae.struct_native` | `"1"/"0"` | **構造互換**: `channels` / `scale_factor` / `scale_temporal` / `latent_ndim` / `class` が arch 既定 VAE と全て一致するか。capability 判定、LoRA の hard refusal 境界、生成側 `_check_vae_compat` の hard/soft 判定に使う |
-| `component.vae.identity_native` | `"1"/"0"` | **潜在空間の同一性**: `hash` が arch 既定 VAE のハッシュと一致するか。`"0"` が「swap 済み」の定義。cache namespace、アダプタ identity、warning 境界に使う。`struct_native="0"` ⇒ `identity_native="0"` は不変条件（逆は成り立たない: 同構造の fine-tune 版 VAE は `struct_native="1"`, `identity_native="0"`） |
+| `component.vae.identity_native` | `"1"/"0"` | **潜在空間の同一性**: 重みと正規化設定が base の VAE と一致するか。`"0"` が「swap 済み」の定義。cache namespace、アダプタ identity、warning 境界に使う。`struct_native="0"` ⇒ `identity_native="0"` は不変条件（逆は成り立たない） |
 
 - 「arch 既定 VAE」は、その base を swap 無しでロードしたときに使われる VAE を指す
   （sd15/sdxl は base に同梱された `first_stage_model.`、他 arch は同梱 VAE またはレジストリ既定）。
@@ -275,7 +275,13 @@ ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_l
 - ハッシュは学習側の VAE 解決時に 1 回だけ、state_dict のテンソルバイト列を安定順序で
   sha256 して得る。同梱時は生成側で再計算せずメタデータを信じる（改竄されない前提）。
   非同梱時は locator 先を読んだ時点で再計算し、`component.vae.hash` と一致しなければロード拒否する
-  （表示用 `provenance` は解決に使わない）。
+  正規化設定も保存時の config と照合する（表示用 `provenance` は解決に使わない）。
+- `ResolvedVAE.latent_hash` はテンソルハッシュに `scaling_factor` / `shift_factor` /
+  `latents_mean` / `latents_std` / `batch_norm_eps` を加えて導出する。cache の `hash8` と
+  アダプタ・ロード済みモデルの `vae_hash` はこの値を使う。既存の非nativeキャッシュは
+  再生成され、旧アダプタのテンソルのみのhashとの差は警告となる。nativeキャッシュは不変。
+- 同梱する config は出所の config ではなく、ロード後の VAE モジュールの完全な config。
+  これにより config を持たない LDM 形式から変換した VAE も再構築できる。
 - `sushi.vae_type` / `sushi.in_channels` は SDXL アダプタが引き続き書く（`sdxl_adapter.py:58-62`）。
   `component_registry._apply_component_hints`（`:375-408`）はこの 2 キーも読むように拡張し、
   `component.vae.*` を優先、`sushi.*` にフォールバックする。ブリーフ §5.3 が指摘する
@@ -524,7 +530,7 @@ sdxl/sd15/zimage/flux2/anima/lens は `first_stage_model.`、ブリーフ §3.5�
 | krea2 で `latents_mean/std` も `scaling_factor` も無い | 拒否 |
 | sensenova で `scale_factor` が任意の値 | 受理（D13。`P = 4` 固定なので重み形状は `scale_factor` に依らない。トークン幅 `4 × scale_factor` と推奨解像度帯を候補に添えて返す、§10.2） |
 | `vae_swap_source` が `model:` かつ `bundle_vae` が明示 False | 拒否（D7、§8.7。生成時に解決できない成果物を作らない） |
-| `latent_channels` が現状と同じかつ `content_hash` が同じ | 「差し替え無し」として no-op（swap 扱いにしない、`identity_native="1"`） |
+| `latent_channels` が現状と同じかつ重み・正規化設定が同じ | 「差し替え無し」として no-op（swap 扱いにしない、`identity_native="1"`） |
 | `latent_channels` が現状と同じで `content_hash` が異なる | swap として扱う。`resize_latent_io` はコピーのみ（新規チャネル無し）、`struct_native="1"`, `identity_native="0"` |
 
 ---
@@ -761,7 +767,7 @@ sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `res
 |---|---|
 | `sushi.base.latent_channels` | int |
 | `sushi.base.vae_type` | family |
-| `sushi.base.vae_hash` | `component.vae.hash` と同じ 16 hex（`identity_native="1"` なら arch 既定 VAE のハッシュ。生成時に既定 VAE をロードした時点で 1 回計算しキャッシュする） |
+| `sushi.base.vae_hash` | 重みidentityと正規化設定から導出する `ResolvedVAE.latent_hash`（16 hex）。旧アダプタはテンソルハッシュのみを持つ場合があり、その差は警告となる |
 | `sushi.base.vae_struct_native` | `"1"/"0"`（§5.2） |
 | `sushi.base.vae_identity_native` | `"1"/"0"`（§5.2） |
 

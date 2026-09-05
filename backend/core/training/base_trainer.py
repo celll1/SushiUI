@@ -10629,7 +10629,7 @@ class BaseTrainer(ABC):
         # invariant).
         identity = getattr(self, "vae_identity", None)
         if identity is not None and identity.identity_native is False:
-            vae_type = f"{identity.family}-{identity.content_hash[:8]}"
+            vae_type = f"{identity.family}-{identity.latent_hash[:8]}"
         else:
             # Pre-P2 fallback for a trainer that never resolved an identity;
             # "sdxl"/None add no token.

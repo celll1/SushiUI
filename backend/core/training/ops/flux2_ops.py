@@ -856,7 +856,13 @@ def generate_sample(
                         np.array(ref_img).astype(np.float32) / 127.5 - 1.0
                     ).permute(2, 0, 1).unsqueeze(0).to(trainer.device, dtype=trainer.vae.dtype)
                     ref_latent = trainer.vae.encode(ref_tensor).latent_dist.sample()
-                    ref_latent = ref_latent * trainer.vae.config.scaling_factor
+                    # Same two steps as the training encode: normalise on the
+                    # VAE's own domain, then the backbone's patchify. FLUX.2's
+                    # VAE has no scaling_factor (it is BatchNorm), and the noise
+                    # this is concatenated with is 128ch at half resolution.
+                    ref_latent = normalize(ref_latent, trainer.vae,
+                                           getattr(trainer, "wiring", None))
+                    ref_latent = trainer._flux2_patchify_latents_for_training(ref_latent)
                 trainer.vae.to("cpu")
                 torch.cuda.empty_cache()
                 packed_reference_latents = _flux2_pack_latents_for_sample(ref_latent)

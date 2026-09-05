@@ -137,7 +137,7 @@ def test_krea2_writes_the_packed_channel_count_back_into_its_config():
     krea2_config carries it: writing the raw 4 there rebuilds img_in four times
     too narrow on the next load."""
     model = _krea2(64)
-    assert KREA2_WIRING.latent_io.config_channels_packed is True
+    assert KREA2_WIRING.latent_io.config_in_channels_packed is True
 
     resize_latent_io(model, KREA2_WIRING.latent_io, 4)
 
@@ -156,7 +156,7 @@ def test_krea2s_native_config_agrees_with_its_declared_packing():
 
 
 def test_a_raw_config_arch_is_untouched_by_the_packed_declaration():
-    assert ZIMAGE_WIRING.latent_io.config_channels_packed is False
+    assert ZIMAGE_WIRING.latent_io.config_in_channels_packed is False
     model = _zimage(16)
     resize_latent_io(model, ZIMAGE_WIRING.latent_io, 32)
     assert model.in_channels == 32  # raw, not 32*4
@@ -213,11 +213,21 @@ def test_ltx2_answers_on_its_temporal_ratio_instead_of_the_missing_field():
 
 
 def test_an_arch_that_declares_no_temporal_ratio_still_refuses():
-    """anima's wave has not read its VAE's temporal ratio; declaring 1 by
-    default would have been a false structural claim."""
-    from core.models.components.wiring import ANIMA_WIRING
-    assert ANIMA_WIRING.vae_scale_temporal is None
-    refused, why = vs.check_vae_compatibility(_facts(ndim=5), "anima")
+    """Declaring 1 by default for a 5-D arch would be a false structural claim,
+    so an undeclared ratio refuses every candidate. Every 5-D arch in the table
+    now declares one (anima's came with wave 3), which is why this asks the
+    gate directly rather than through an architecture."""
+    from core.models.component_registry import _WIRING_BY_ARCH
+
+    for name, spec in _WIRING_BY_ARCH.items():
+        if spec.latent_ndim == 5:
+            assert spec.vae_scale_temporal, name
+
+    native = {"latent_channels": 16, "scale_factor": 8, "ndim": 5,
+              "vae_class": "AutoencoderKLQwenImage", "pixel_space": False}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(vs, "arch_native_vae", lambda _arch: dict(native))
+        refused, why = vs.check_vae_compatibility(_facts(ndim=5), "anima")
     assert not refused and "temporal compression ratio is not declared" in why
 
 

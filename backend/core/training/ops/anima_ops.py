@@ -63,6 +63,12 @@ def load_components(trainer) -> None:
     # Cast VAE to the desired dtype.
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # Latent space: the base's own declaration first (the loader already built the
+    # backbone at its channel count), then this run's swap on top of it. Before
+    # the freeze below, so the resize's new Parameters take the same grad flags.
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("declared_vae"))
+
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). An Anima DiT loaded from a weight-only int8/fp8
     # checkpoint owns Int8Linear / Fp8Linear modules whose W8A8 fast paths are

@@ -233,8 +233,10 @@ ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_l
    `C_old = in_features / P − e` で復元するため、`P` が誤っていると黙って別の要素を切り出す。
    **minit2i の `P` はチェックポイント単位の config 値**（latent 2 / pixel 16）であって定数ではなく、
    pixel 版の `final_layer.linear`（768 = 256·3）は `P=4` でも割り切れてしまうので誤りが表に出ない。
-   P7 で minit2i を通すときに、`ComponentWiringSpec` の固定値ではなく
-   ロード済み config から `pack_elems` を解決する経路を用意すること。
+   P7 で解決済み: `MiniT2IArchHandler.resolve_wiring` がロード済み config
+   （trainer 不在の preflight では `peek_io_config`）から `pack_elems`・
+   `latent_channels`・`vae_scale_factor` を解決し、`apply_vae_swap` はその
+   run 固有 spec を使う。`ComponentWiringSpec` の固定値は pixel 版のままである。
    `ResizeReport.old_in_channels` / `old_out_channels` を `wiring.latent_channels` と
    突き合わせる検算はその補助であって、代替にはならない。
 3. `core/training/components/wiring.py`（再エクスポートのシム）は `LatentIOSpec` を
@@ -515,7 +517,7 @@ sdxl/sd15/zimage/flux2/anima/lens は `first_stage_model.`、ブリーフ §3.5�
 | `ndim` が wiring の `latent_ndim` と異なる（画像 VAE を anima/ltx2 に等） | 拒否 |
 | `scale_factor` / `scale_temporal` が wiring と異なる | 拒否（D5、SenseNova 除く） |
 | wiring `vae_norm="batchnorm"`（flux2/lens）で置換 VAE が BN を持たない | P5（§8.4）まで拒否、P5 以降は解除 |
-| 置換 VAE が `norm="batchnorm"`（`norm_pack=2`）で、置換先 arch の wiring が `batchnorm` でない（sd15/sdxl/zimage 等に flux2/lens 由来 VAE） | P5（§8.4 の正規化領域）まで拒否、P5 以降は解除 |
+| 置換 VAE が `norm="batchnorm"`（`norm_pack=2`）で、置換先 arch の wiring が `batchnorm` でない（sd15/sdxl/zimage 等に flux2/lens 由来 VAE） | P5（§8.4）で学習側を解除。sd15/sdxl は生成側 `custom_sampling.py` のスカラ読みのため 556febc6 で一時的に拒否が残っていたが、efe85eda で 12 箇所が共有 `normalize`/`denormalize` 経由になり解除済み（P7 の受入行が挙げていた「sdxl に 32ch BN VAE」はそのコミットが担当した） |
 | krea2 で `latents_mean/std` も `scaling_factor` も無い | 拒否 |
 | sensenova で `scale_factor` が任意の値 | 受理（D13。`P = 4` 固定なので重み形状は `scale_factor` に依らない。トークン幅 `4 × scale_factor` と推奨解像度帯を候補に添えて返す、§10.2） |
 | `vae_swap_source` が `model:` かつ `bundle_vae` が明示 False | 拒否（D7、§8.7。生成時に解決できない成果物を作らない） |
@@ -1029,7 +1031,7 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 | ✅ **P4 生成側の残り**（146ea21b）| TAESD ルーティング、inpaint `2C+1`、`keep_hot` キー、`height//8` 読み替え、ロード時警告の再生（§9.3, §9.6） | 16ch SDXL でプレビューが RGB 射影/`taef1` に切替、inpaint が 33ch ゲートを正しく判定、`vae_path` 変更で hot VAE が無効化 | 低 |
 | ✅ **P5 共有正規化層**（93a73f93 / 556febc6）| `normalize(spec)` 3 方式と正規化領域 `vae_norm_pack`（§8.4）、flux2/lens ops の「normalize → backbone patchify」2 段化、anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除、§7.4 の BN 系ゲート解除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype）。sdxl に flux2 由来の 32ch BN VAE（`registry`/`file`）を当てて `normalize` の出力が 32ch で、flux2 経路で BN 適用後に unpack した値と一致 | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
 | ✅ **P6 第2波（zimage/krea2）**（ltx2 は別理由で拒否継続）| `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除。**ltx2 は解除しない**: full FT 保存が `net.` prefix の safetensors を書くが、これを読むローダが無い（`detect_model_type` は ltx2 を diffusers ディレクトリとしてのみ認識する）ため、学習できて生成できない成果物になる（556febc6 と同じ判断）。`ComponentWiringSpec.vae_scale_temporal`（P2a が保留した判断）は本波で追加し、ltx2=8 / minimax_h3=4 を宣言する — 宣言の無い 5-D arch（anima）は従来どおり拒否する。krea2 は `in_channels` がパック後の幅（C·p²）なので `LatentIOSpec.config_channels_packed` で区別する | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は入出力とも `inner` 順の唯一の実例 |
-| **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合 | 同上。anima は padding-mask 行の移動と、出力側が入力側と異なる順序で変形されることをテストで確認。flux2 フルモデルから抽出した 32ch BN VAE を sdxl で smoke → 保存 → 生成（P2 で拒否していた組合せの解除確認） | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
+| ✅ **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合。実装で 3 点が設計と食い違った: (a) `config_channels_packed` は**入出力で別フラグ**が要る（lens は `in_channels=128` がパック後・`out_channels=32` が生、`vendor/transformer.py:426-451`）ので `config_in_channels_packed` / `config_out_channels_packed` に分割した。flux2 は両側パック（`patch_size=1`、2×2 パックは transformer の外）。(b) anima の `vae_scale_temporal` を 4 と宣言（`QWEN_IMAGE_VAE_CONFIG.temperal_downsample` の True 2 個）。宣言前は全候補が「比較対象が無い」で拒否されていた。(c) **minit2i の潜在ジオメトリは arch 定数ではなくチェックポイント単位の config 値**（pixel 3ch/patch16 と latent 4-or-16ch/patch2）なので、`MINIT2I_WIRING` を読む `vae_source.arch_native_vae` は latent 版にも pixel の拒否を返す。`ArchHandler.resolve_wiring` / `ArchHandler.check_vae_compatibility` の 2 フックを足し、minit2i だけが base の config（`minit2i_loader.peek_io_config`、preflight では `base_model_path` から）で答える。pixel → latent は patch_size も変わるので従来どおり拒否 | `tests/vae_swap_wave3_test.py`（CPU のみ、実重み不要）: 4 arch の両方向 resize、anima の padding-mask 行移動・`pos_embedder` 不変・**両側同順序なら落ちるケース**、lens の非対称 config 往復、minit2i の P 解決（pixel の 768=256·3 が P=4 でも割り切れることを含む）、各 arch の保存 → `load_declared_latent_io` 再読、preflight の capability 強制 | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
 | **P8 SenseNova** | §10 全体（`P = 4` 固定、任意の `vae_scale_factor`。トークン幅 `4 × vae_scale_factor` 由来の配線 §10.5 を含む） | §10.6（8× と 16× の VAE それぞれで） | 高。研究段階 |
 | 保留 | acestep（§6.4） | — | RVQ 再学習を含み本書の範囲外 |
 

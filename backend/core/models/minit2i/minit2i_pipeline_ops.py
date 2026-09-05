@@ -82,18 +82,20 @@ def prepare_noise(height, width, device, dtype, seed: Optional[int] = None,
 @torch.no_grad()
 def vae_encode_image(vae, image: Image.Image, height: int, width: int, device, dtype) -> torch.Tensor:
     """PIL -> normalized VAE latent [1, C, H/8, W/8] (for latent-space MiniT2I)."""
-    from .minit2i_vae import normalize_latent
+    from core.models.components.vae_registry import normalize
     px = image_to_tensor(image, height, width, device, dtype)  # [1,3,H,W] in [-1,1]
     sample = vae.encode(px).latent_dist.sample()
-    return normalize_latent(sample, vae)
+    # Spec-free: the method is observed off the VAE, so a swapped one that
+    # normalises per channel or through a BatchNorm is handled too (design §8.4).
+    return normalize(sample, vae)
 
 
 @torch.no_grad()
 @time_phase("vae_decode")
 def vae_decode_latent(vae, latent: torch.Tensor, color_flatten_strength: int = 0) -> Image.Image:
     """Normalized VAE latent [1, C, h, w] -> PIL image."""
-    from .minit2i_vae import denormalize_latent
-    sample = denormalize_latent(latent.to(vae.dtype), vae)
+    from core.models.components.vae_registry import denormalize
+    sample = denormalize(latent.to(vae.dtype), vae)
     img = vae.decode(sample).sample  # [1,3,H,W] in ~[-1,1]
     return tensor_to_image(img.float(), color_flatten_strength=color_flatten_strength)
 

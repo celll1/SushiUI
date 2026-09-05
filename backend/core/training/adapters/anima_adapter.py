@@ -348,9 +348,23 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         # ``first_stage_model.*`` prefix; the loader splits + reattaches it into the
         # AutoencoderKLQwenImage. Absent -> loader resolves the companion/store VAE.
         from api.param_defaults import resolve_bundle_vae
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "anima")
-        vae_embedded = bundle_vae and getattr(trainer, "vae", None) is not None
-        if vae_embedded:
+        vae_embedded = (bundle_vae and getattr(trainer, "vae", None) is not None
+                        and swapped is None)
+        if swapped is not None:
+            # A swapped VAE goes under the unified `vae.` prefix (design §8.7):
+            # first_stage_model. is where a reader looks for Anima's OWN VAE.
+            if swap_bundled and getattr(trainer, "vae", None) is not None:
+                print(f"[AnimaFullParameterAdapter] Bundling swapped VAE "
+                      f"({swapped.provenance}) under 'vae.' ...")
+                for k, v in trainer.vae.state_dict().items():
+                    combined[f"vae.{k}"] = v.detach().to("cpu").contiguous()
+            else:
+                print(f"[AnimaFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                      f"not bundled; resolved on load via {swapped.locator}")
+        elif vae_embedded:
             print(f"[AnimaFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
             for k, v in trainer.vae.state_dict().items():
                 combined[f"first_stage_model.{k}"] = v.detach().to("cpu").contiguous()
@@ -369,7 +383,15 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         try:
             import json as _json
             from core.models.anima.anima_models import ANIMA_DIT_CONFIG
-            metadata["transformer_config"] = _json.dumps(dict(ANIMA_DIT_CONFIG))
+            _cfg = dict(ANIMA_DIT_CONFIG)
+            # The channel count is the run's, not the constant's: a swap resized
+            # x_embedder and final_layer away from the shipped 16.
+            _channels = int(getattr(trainer.transformer, "in_channels",
+                                    _cfg["in_channels"]))
+            _cfg["in_channels"] = _channels
+            _cfg["out_channels"] = int(getattr(trainer.transformer, "out_channels",
+                                               _cfg["out_channels"]))
+            metadata["transformer_config"] = _json.dumps(_cfg)
         except Exception as _e:
             print(f"[AnimaFullParameterAdapter] transformer_config not serialized: {_e}")
         try:
@@ -378,6 +400,8 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
                 te_type="qwen3", te_embedded=False,
                 vae_type="qwen_image", vae_channels=16, vae_embedded=vae_embedded,
             ))
+            # The swap's own block replaces every component.vae.* key above.
+            metadata.update(swap_md)
         except Exception as _e:
             print(f"[AnimaFullParameterAdapter] component metadata skipped: {_e}")
 

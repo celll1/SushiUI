@@ -107,6 +107,53 @@ def check_inherited_bundling(base_model_path: Optional[str], arch: Optional[str]
             "that cannot be loaded. Leave bundle_vae unset for this run.")
 
 
+def check_arch_vae_compatibility(facts: Dict[str, Any], arch: Optional[str], *,
+                                 base_model_path: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """The family gate (§7.4) for an arch named by string, with no trainer yet.
+
+    Goes through the arch handler so an architecture whose latent geometry is a
+    per-checkpoint fact (MiniT2I) answers from the base checkpoint rather than
+    from a wiring constant that describes only one of its shapes.
+    """
+    from core.models.common.vae_source import check_vae_compatibility
+    from core.training.arch import ARCH_REGISTRY
+
+    handler_cls = ARCH_REGISTRY.get(str(arch or ""))
+    if handler_cls is None:
+        return check_vae_compatibility(facts, arch)
+    return handler_cls(None).check_vae_compatibility(
+        facts, base_model_path=base_model_path)
+
+
+def apply_latent_space(trainer, declared) -> None:
+    """Fold the base's declared VAE and this run's ``vae_swap_source`` into the
+    trainer (design §8.1-8.3). ``declared`` is what the loader resolved from
+    ``component.vae.*``, or None for a native checkpoint.
+
+    Every architecture's ``load_components`` calls this once, after the backbone
+    and VAE are on the trainer and BEFORE the freeze/optimizer: the resize
+    rebinds Parameters.
+    """
+    from dataclasses import replace as _dc_replace
+
+    from core.training.arch import get_arch_handler
+    from core.training.ops.training_method import resolve_training_method
+
+    swap_source = resolve_vae_swap_source(trainer.config)
+    check_swap_method(swap_source, resolve_training_method(trainer))
+
+    if declared is not None:
+        # The loader already built the module from these weights; keeping the
+        # resolver's copy would hold a second VAE in host memory for the run.
+        declared = _dc_replace(declared, state_dict=None)
+    trainer.base_vae_identity = declared
+    if declared is not None:
+        get_arch_handler(trainer).apply_vae_swap(trainer, declared,
+                                                 module=trainer.vae)
+    if swap_source:
+        apply_configured_vae_swap(trainer, swap_source)
+
+
 def preflight_vae_swap(
     config: Dict[str, Any],
     *,
@@ -121,8 +168,7 @@ def preflight_vae_swap(
     Raises ``ValueError``; callers map it to their own error surface.
     """
     from core.models.common.vae_source import (
-        VAE_REGISTRY, VaeSourceError, check_vae_compatibility,
-        describe_vae_source, parse_vae_source,
+        VAE_REGISTRY, VaeSourceError, describe_vae_source, parse_vae_source,
     )
 
     source = resolve_vae_swap_source(config)
@@ -154,11 +200,16 @@ def preflight_vae_swap(
             "scale_temporal": entry.get("scale_temporal"),
             "norm": entry.get("norm"),
         }
-        compatible, reason = check_vae_compatibility(facts, arch)
     else:
         described = describe_vae_source(source, arch=arch)
-        compatible = bool(described.get("compatible"))
-        reason = described.get("reason")
+        if not described.get("compatible") and described.get("ndim") is None:
+            # The source could not be resolved at all; that reason is final.
+            raise ValueError(
+                f"vae_swap_source={source!r} cannot drive {arch or 'this model'}: "
+                f"{described.get('reason') or 'incompatible'}")
+        facts = described
+    compatible, reason = check_arch_vae_compatibility(
+        facts, arch, base_model_path=base_model_path)
     if not compatible:
         raise ValueError(
             f"vae_swap_source={source!r} cannot drive {arch or 'this model'}: "
@@ -173,9 +224,7 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
     the one the base already carries (§7.4's no-op rule: same channel count and
     same weights is not a swap).
     """
-    from core.models.common.vae_source import (
-        check_vae_compatibility, resolve_vae_source,
-    )
+    from core.models.common.vae_source import resolve_vae_source
     from core.training.arch import get_arch_handler
 
     handler = getattr(trainer, "arch", None) or get_arch_handler(trainer)
@@ -183,7 +232,8 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
     native_hash = _module_hash(getattr(trainer, "vae", None))
 
     resolved = resolve_vae_source(source, arch=arch)
-    compatible, reason = check_vae_compatibility(resolved.facts(), arch)
+    compatible, reason = handler.check_vae_compatibility(
+        resolved.facts(), trainer=trainer)
     if not compatible:
         raise ValueError(f"vae_swap_source={source!r} cannot drive {arch}: {reason}")
 
@@ -257,7 +307,7 @@ def validate_latent_io(trainer) -> list:
     if identity is None or identity.identity_native:
         return []
     handler = getattr(trainer, "arch", None) or get_arch_handler(trainer)
-    wiring = getattr(trainer, "wiring", None) or handler.wiring
+    wiring = getattr(trainer, "wiring", None) or handler.resolve_wiring(trainer)
     if wiring is None:
         return []
     problems = []

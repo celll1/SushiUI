@@ -3617,24 +3617,35 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """Set ``_sushi_wiring`` for a loaded SD1.5/SDXL pipeline; return the
         latent-identity fields for ``current_model_info``.
 
-        The reconstructed checkpoint's own declaration (``_sushi_arch``, from
-        ``sushi.vae_type``/``sushi.in_channels``) beats the arch's wiring
-        constant. A NATIVE checkpoint declares nothing and gets only
-        ``latent_channels`` -- the same number, and the same value
-        ``GET /models/current`` already derived from the wiring spec -- so its
-        responses do not change.
+        The reconstructed checkpoint's own declaration beats the arch's wiring
+        constant: ``_sushi_vae_identity`` (the resolved ``component.vae.*``
+        block) when the loader read one, else the legacy ``_sushi_arch`` pair.
+        A NATIVE checkpoint declares nothing and gets only ``latent_channels``
+        -- the same number, and the same value ``GET /models/current`` already
+        derived from the wiring spec -- so its responses do not change.
         """
         try:
             from core.models.component_registry import _WIRING_BY_ARCH
             spec = _WIRING_BY_ARCH.get(arch)
             if spec is None:
                 return {}
+            identity = getattr(pipeline, "_sushi_vae_identity", None) or {}
             declared = getattr(pipeline, "_sushi_arch", None) or {}
-            swap_vae_type = declared.get("vae_type")
-            latent_channels = int(declared.get("in_channels") or spec.latent_channels)
+            swap_vae_type = identity.get("family") or declared.get("vae_type")
+            latent_channels = int(identity.get("latent_channels")
+                                  or declared.get("in_channels")
+                                  or spec.latent_channels)
             self._sushi_wiring = spec.replace(latent_channels=latent_channels)
             fields: Dict[str, Any] = {"latent_channels": latent_channels}
-            if swap_vae_type:
+            if identity:
+                fields.update({
+                    "vae_type": swap_vae_type,
+                    "vae_hash": identity.get("content_hash"),
+                    "vae_provenance": identity.get("provenance"),
+                    "vae_struct_native": bool(identity.get("struct_native")),
+                    "vae_identity_native": bool(identity.get("identity_native")),
+                })
+            elif swap_vae_type:
                 fields.update({
                     "vae_type": swap_vae_type,
                     "vae_provenance": f"registry:{swap_vae_type}",

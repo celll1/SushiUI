@@ -251,6 +251,14 @@ export interface ModelInfo {
   // Latent channels the loaded model runs with (GET /models/current). The
   // architecture's own count unless the checkpoint declares a swapped VAE.
   latent_channels?: number | null;
+  // The four below are present only when the loaded checkpoint declares a VAE
+  // that is not the architecture's own. struct_native answers "same latent
+  // shape", identity_native "same VAE weights": a fine-tuned copy of the
+  // native VAE is struct_native=true, identity_native=false.
+  vae_struct_native?: boolean;
+  vae_identity_native?: boolean;
+  vae_provenance?: string | null;
+  vae_hash?: string | null;
   // MiniMax-H3: "fl2va" | "ref2va" for a single checkpoint, "hybrid" for a
   // merged pair. Only a hybrid carries the three provenance fields after it.
   variant?: string | null;
@@ -6561,7 +6569,12 @@ export interface TrainingRunCreateRequest {
   krea2_lora_scope?: string;  // "attn,mlp,text_fusion,proj" tokens; TE always frozen
   krea2_lr_factor?: number;
   krea2_discrete_flow_shift?: number;
-  // SDXL high-spec VAE migration (swap VAE + resize U-Net conv_in/out). "none"=standard 4ch.
+  // VAE swap: train into another VAE's latent space. "registry:<key>" |
+  // "file:<path>" | "model:<path>"; "" keeps the base model's own VAE.
+  // Candidates come from GET /training/vae-sources; full_finetune only.
+  vae_swap_source?: string;
+  // DEPRECATED spelling of vae_swap_source, SDXL + registry keys only. Kept so
+  // an older run still loads; new runs send vae_swap_source.
   sdxl_vae_type?: string;
   // SDXL Text Encoder swap (CLIP -> alt encoder + trainable bridge adapters). "none"=CLIP.
   sdxl_te_type?: string;
@@ -6915,6 +6928,44 @@ export const getTrainingRunParams = async (id: number): Promise<TrainingRunCreat
 
 export const updateTrainingRun = async (id: number, request: TrainingRunCreateRequest): Promise<TrainingRun> => {
   const response = await api.put(`/training/runs/${id}`, request);
+  return response.data;
+};
+
+/** One VAE a full fine-tune could migrate to (GET /training/vae-sources). */
+export interface VaeSwapCandidate {
+  /** The value `vae_swap_source` takes: "registry:<key>" | "file:<path>" | "model:<path>". */
+  source: string;
+  name?: string;
+  form?: string;
+  latent_channels?: number | null;
+  scale_factor?: number | null;
+  scale_temporal?: number | null;
+  ndim?: number | null;
+  norm?: string | null;
+  vae_class?: string | null;
+  provenance?: string | null;
+  /** Server-side family gate. False means the candidate cannot drive this
+   *  architecture; `reason` says why, including the cases a stock third-party
+   *  VAE is refused for (no observable or declared scaling factor). */
+  compatible?: boolean;
+  reason?: string | null;
+  /** SenseNova only: pixels one token covers, and the resolution band that
+   *  follows from it. A VAE choice must not move the band silently. */
+  token_pixel_width?: number | null;
+  resolution_band_px?: number[] | null;
+}
+
+export interface VaeSwapSourcesResponse {
+  arch: string;
+  sources: {
+    registry: VaeSwapCandidate[];
+    standalone: VaeSwapCandidate[];
+    extract_from_model: VaeSwapCandidate[];
+  };
+}
+
+export const listTrainingVaeSources = async (arch: string): Promise<VaeSwapSourcesResponse> => {
+  const response = await api.get("/training/vae-sources", { params: { arch } });
   return response.data;
 };
 

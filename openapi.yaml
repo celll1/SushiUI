@@ -16129,12 +16129,23 @@ components:
             architecture's own (e.g. `flux1` on an SDXL checkpoint trained with
             a 16-channel VAE). Absent for a native checkpoint.
           example: flux1
+        vae_hash:
+          type: string
+          nullable: true
+          description: |
+            Content hash (sha256 of the tensor bytes, first 16 hex) of the
+            declared VAE. Identifies the latent space the loaded model runs in;
+            two checkpoints with the same `latent_channels` and different
+            hashes do not share one. Present only when the checkpoint declares
+            a swapped VAE.
+          example: 0123456789abcdef
         vae_provenance:
           type: string
           nullable: true
           description: |
             Display-only description of where the declared VAE came from
-            (`registry:<key>`). Never resolve a VAE through this string.
+            (`registry:<key>`, `file:<name>` or `extracted:<model>`). Never
+            resolve a VAE through this string.
           example: registry:flux1
         vae_struct_native:
           type: boolean

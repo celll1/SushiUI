@@ -18,6 +18,8 @@ from types import MappingProxyType
 from typing import (TYPE_CHECKING, Any, Collection, Dict, Mapping, Optional,
                     Tuple)
 
+from .base_identity import OPTION_BASE_LATENT, BaseLatentIdentity
+
 if TYPE_CHECKING:  # typing only -- see the module docstring
     from .codec import CodecSpec
 
@@ -101,6 +103,7 @@ __all__ = [
     "METADATA_SCHEMA_VERSION",
     "METADATA_TARGET_SCOPE",
     "METADATA_WEIGHT_DECOMPOSE",
+    "OPTION_BASE_LATENT",
     "OPTION_FACTOR",
     "OPTION_USE_TUCKER",
     "RANK_REQUIRED",
@@ -164,6 +167,13 @@ class AdapterSpec:
     def use_tucker(self) -> bool:
         """The checkpoint carries ``hada_t1``/``hada_t2``/``lokr_t2``."""
         return bool(self.options.get(OPTION_USE_TUCKER, False))
+
+    def base_latent_identity(self) -> Optional[BaseLatentIdentity]:
+        """The latent space this adapter was trained in, or None when the file
+        declares none (a distinct D10 row, not a default -- see
+        ``base_identity.check_base_latent``)."""
+        return BaseLatentIdentity.from_options(
+            self.options.get(OPTION_BASE_LATENT))
 
     @property
     def scale(self) -> Optional[float]:
@@ -255,8 +265,16 @@ class AdapterSpec:
             meta[METADATA_RANK] = str(self.rank)
         if self.alpha is not None:
             meta[METADATA_ALPHA] = str(float(self.alpha))
-        if self.options:
-            meta[METADATA_OPTIONS] = json.dumps(dict(self.options), sort_keys=True)
+        # The base latent identity travels as flat ``sushi.base.*`` keys, not
+        # inside the options JSON: the two readers that gate on it read a
+        # safetensors header without parsing it (design §9.4).
+        options = {k: v for k, v in self.options.items()
+                   if k != OPTION_BASE_LATENT}
+        if options:
+            meta[METADATA_OPTIONS] = json.dumps(options, sort_keys=True)
+        identity = self.base_latent_identity()
+        if identity is not None:
+            meta.update(identity.to_metadata())
         return meta
 
     # -- validation --------------------------------------------------------
@@ -332,11 +350,16 @@ def _scope_from_metadata(metadata: Mapping[str, str]) -> Tuple[str, ...]:
 
 
 def _options_from_metadata(metadata: Mapping[str, str]) -> Dict[str, Any]:
+    options: Dict[str, Any] = {}
     raw = metadata.get(METADATA_OPTIONS)
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            options.update(parsed)
+    identity = BaseLatentIdentity.from_metadata(metadata)
+    if identity is not None:
+        options[OPTION_BASE_LATENT] = identity.to_options()
+    return options

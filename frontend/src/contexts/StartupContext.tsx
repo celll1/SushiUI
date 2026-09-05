@@ -34,6 +34,12 @@ export interface ModelInfo {
   // Latent channels of the LOADED model: the architecture's own count unless the
   // checkpoint declares a swapped VAE. Never re-derive this from `type`.
   latent_channels?: number | null;
+  // Present only when the checkpoint declares a VAE that is not the
+  // architecture's own. struct_native answers "same latent shape",
+  // identity_native "same VAE weights": a fine-tuned copy of the native VAE is
+  // struct_native=true, identity_native=false.
+  vae_struct_native?: boolean;
+  vae_identity_native?: boolean;
   [key: string]: unknown;
 }
 

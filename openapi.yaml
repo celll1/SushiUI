@@ -18631,6 +18631,58 @@ components:
             Alpha read from the checkpoint's metadata or its first per-target
             `.alpha` tensor. `null` when the file states none.
           example: 16.0
+        base_latent_channels:
+          type: integer
+          nullable: true
+          description: |
+            Latent channel count of the VAE the adapter was trained against,
+            read from the checkpoint's own `sushi.base.latent_channels`
+            metadata key. `null` when the file declares none -- every adapter
+            SushiUI trains does, and a third-party one generally does not.
+
+            A VAE swap resizes only `conv_in`/`conv_out` (SD1.5/SDXL) or the
+            patch embedder (the DiT architectures), none of which an adapter
+            targets, so an adapter from another latent space applies with zero
+            shape mismatches. Applying one whose `base_latent_channels`
+            disagrees with `GET /models/current`'s `latent_channels` is refused
+            with 400 and `code: "lora_incompatible"`.
+          example: 4
+        base_vae_type:
+          type: string
+          nullable: true
+          description: >-
+            VAE family the adapter was trained against (`sushi.base.vae_type`),
+            e.g. `flux1`. `null` when the file declares none.
+          example: "flux1"
+        base_vae_hash:
+          type: string
+          nullable: true
+          description: >-
+            Content hash of that VAE (`sushi.base.vae_hash`, the first 16 hex
+            of a sha256 over its tensors -- the same value a checkpoint's
+            `component.vae.hash` carries). Present only for an adapter trained
+            against a REPLACED VAE. A disagreement with the loaded model's own
+            hash at the same channel count is a warning
+            (`lora_base_vae_mismatch`), not a refusal.
+          example: "9f2c1ab47e0d3355"
+        base_vae_struct_native:
+          type: boolean
+          nullable: true
+          description: >-
+            Whether that VAE had the architecture's own channel layout
+            (channels, spatial/temporal compression, rank, class).
+            `null` when the file declares no identity.
+          example: true
+        base_vae_identity_native:
+          type: boolean
+          nullable: true
+          description: >-
+            Whether that VAE WAS the architecture's own, by content hash.
+            `false` with `base_vae_struct_native: true` means a replacement VAE
+            of the same shape (a fine-tuned VAE), which is the warning case
+            rather than the refusal case. `null` when the file declares no
+            identity.
+          example: true
         size:
           type: integer
           description: File size in bytes

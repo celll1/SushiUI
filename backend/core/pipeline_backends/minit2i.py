@@ -596,6 +596,10 @@ class MiniT2IMixin:
                 resolve_path=self._minit2i_resolve_lora_path,
                 warn=self._minit2i_lora_warn,
                 architecture="minit2i",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="MiniT2I LoRA",
                 count_declared_branches=self._minit2i_declared_pairs,
                 missing_file=self._minit2i_missing_lora,

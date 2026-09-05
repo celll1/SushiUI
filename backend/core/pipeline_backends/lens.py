@@ -103,6 +103,10 @@ class LensMixin:
                 resolve_path=self._lens_resolve_lora_path,
                 warn=self._lens_lora_warn,
                 architecture="lens",
+                # Bound on the composed PipelineManager, not on this
+                # mixin; `getattr` keeps a bare-mixin unit test
+                # constructible (adapter_key_normalization_gate).
+                base_latent=getattr(self, "base_latent_identity", None),
                 label="Lens LoRA",
                 count_declared_branches=self._lens_declared_branches,
                 missing_file=self._lens_missing_lora,

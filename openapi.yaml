@@ -16029,6 +16029,47 @@ components:
           type: integer
         component_revision:
           type: integer
+        latent_channels:
+          type: integer
+          nullable: true
+          description: |
+            Latent channels the LOADED model actually runs with — the
+            architecture's own count unless the checkpoint declares a swapped
+            VAE, in which case this is the declared count. Read this (not an
+            architecture name) to decide whether a VAE override is compatible.
+            Absent for an architecture with no wiring entry.
+          example: 4
+        vae_type:
+          type: string
+          nullable: true
+          description: |
+            VAE family the loaded checkpoint declares, when it is NOT the
+            architecture's own (e.g. `flux1` on an SDXL checkpoint trained with
+            a 16-channel VAE). Absent for a native checkpoint.
+          example: flux1
+        vae_provenance:
+          type: string
+          nullable: true
+          description: |
+            Display-only description of where the declared VAE came from
+            (`registry:<key>`). Never resolve a VAE through this string.
+          example: registry:flux1
+        vae_struct_native:
+          type: boolean
+          description: |
+            Whether the declared VAE has the architecture's own latent structure
+            (channels, scale factors, ndim, class). False means a LoRA or a VAE
+            override built for the architecture's baseline does not fit this
+            model. Present only when the checkpoint declares a swapped VAE.
+          example: false
+        vae_identity_native:
+          type: boolean
+          description: |
+            Whether the declared VAE is the architecture's own VAE. False
+            includes the structurally-identical case (a fine-tuned copy), which
+            `vae_struct_native` does not distinguish. Present only when the
+            checkpoint declares a swapped VAE.
+          example: false
         text_encoder_file:
           type: string
           nullable: true

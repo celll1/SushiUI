@@ -611,6 +611,23 @@ class ModelLoader:
         return None
 
     @staticmethod
+    def _sd_family_from_metadata(metadata: Optional[dict]) -> Optional[str]:
+        """"sdxl"/"sd15" from a `modelspec.architecture` declaration, else None.
+
+        Consulted BEFORE the file-size heuristic (design doc §9.2): a swapped-VAE
+        or fp8 export moves the size in either direction, and a misdetected SDXL
+        would then be rebuilt as SD1.5 with its declaration never read.
+        """
+        arch = str((metadata or {}).get("modelspec.architecture", "") or "").strip().lower()
+        if not arch:
+            return None
+        if arch.startswith("sdxl") or "stable-diffusion-xl" in arch:
+            return "sdxl"
+        if arch.startswith("sd15") or "stable-diffusion-v1" in arch:
+            return "sd15"
+        return None
+
+    @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
         """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
 
@@ -959,8 +976,19 @@ class ModelLoader:
 
                     # Priority 3: SD/SDXL detection
                     if has_unet_keys:
-                        # This is SD or SDXL, not Z-Image
-                        # SDXL detection by file size (>6GB) or specific keys
+                        # This is SD or SDXL, not Z-Image. Declaration first, then
+                        # the architectural signal, and only then file size — see
+                        # _sd_family_from_metadata.
+                        declared = ModelLoader._sd_family_from_metadata(metadata)
+                        if declared:
+                            return declared
+                        # SDXL's added-cond embedding (pooled TE2 + 6 time_ids ->
+                        # 1280). LDM builds label_emb only for a num_classes model,
+                        # which SD1.5 is not. MEASURED on 5 SDXL checkpoints:
+                        # model.diffusion_model.label_emb.0.0.weight [1280, 2816].
+                        if any(k.endswith("label_emb.0.0.weight") for k in keys):
+                            return "sdxl"
+                        # SDXL detection by file size (>6GB)
                         file_size = os.path.getsize(model_path) / (1024**3)  # GB
                         if file_size > 6:
                             return "sdxl"
@@ -2355,7 +2383,7 @@ class ModelLoader:
         custom_vae_type = None
         custom_in_channels = None
         custom_te = None  # dict(te_type, hidden_layer, max_len, dim, embedded) when custom TE
-        if model_type == "sdxl":
+        if model_type in ("sd15", "sdxl"):
             try:
                 from safetensors import safe_open
                 with safe_open(file_path, framework="pt") as _f:
@@ -2448,10 +2476,16 @@ class ModelLoader:
                         use_safetensors=True,
                     )
             else:
+                # A swapped-VAE SD1.5 checkpoint must be built at its declared
+                # channel count and with its own VAE; a native one takes the
+                # unchanged call (its `external_vae`, when the checkpoint has no
+                # embedded VAE, is dropped here as it always has been).
                 pipeline = StableDiffusionPipeline.from_single_file(
                     file_path,
+                    **_sf_kw,
                     torch_dtype=torch_dtype,
                     use_safetensors=True,
+                    **({"vae": external_vae} if custom_in_channels and external_vae is not None else {}),
                 )
         except Exception as e:
             # Fallback: try with float32
@@ -2477,8 +2511,10 @@ class ModelLoader:
             else:
                 pipeline = StableDiffusionPipeline.from_single_file(
                     file_path,
+                    **_sf_kw,
                     torch_dtype=torch.float32,
                     use_safetensors=True,
+                    **({"vae": external_vae} if custom_in_channels and external_vae is not None else {}),
                 )
 
         # Custom SDXL arch: ensure conv_in/conv_out match the custom latent channels and

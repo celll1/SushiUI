@@ -73,6 +73,23 @@ def _read_json(path: str) -> Optional[dict]:
         return None
 
 
+def _declared_vae_class(vcomp: Dict[str, Any]) -> Optional[str]:
+    """The diffusers class of a DECLARED non-native VAE, or None.
+
+    Only consulted for a checkpoint that says its VAE is not the architecture's
+    own; a `component.vae.type` naming a registry family answers this without a
+    `component.vae.class` key (which a pre-P0 checkpoint does not carry).
+    """
+    if vcomp.get("struct_native") is not False:
+        return None
+    try:
+        from core.models.common.vae_store import VAE_REGISTRY
+    except Exception:
+        return None
+    entry = VAE_REGISTRY.get(str(vcomp.get("vae_type") or ""))
+    return (entry or {}).get("class")
+
+
 def _vae_config_dir(path: str) -> Optional[str]:
     """Return the directory holding a VAE ``config.json`` for ``path``.
 
@@ -203,6 +220,11 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
             ts = cfg.get("temporal_compression_ratio")
 
     if vae_class is None:
+        vae_class = vcomp.get("vae_class") or _declared_vae_class(vcomp)
+    if vae_class is None:
+        # Only now the ARCH's own VAE class: a checkpoint that declares a swapped
+        # VAE is not using it, and comparing an override against it would refuse
+        # the right VAE on family grounds.
         vae_class = VAE_CLASS_BY_ARCH.get(arch)
     if lc is None and vae_class in _VAE_CLASS_DEFAULT_LC:
         lc = _VAE_CLASS_DEFAULT_LC[vae_class]
@@ -592,6 +614,11 @@ def check_override_compat(pipeline_manager, apply_vae_path: Optional[str],
 
     if apply_vae_path:
         loaded_vae = describe_vae(loaded_path, loaded_st) if loaded_path else describe_vae("")
+        # The loader's resolved channel count wins over the file scan's: the VAE
+        # a swapped checkpoint runs with is decided at load time.
+        resolved_lc = info.get("latent_channels")
+        if resolved_lc is not None:
+            loaded_vae["latent_channels"] = int(resolved_lc)
         cand_vae = describe_vae(apply_vae_path)
         _check_vae_compat(loaded_vae, cand_vae)
         _warn_vae_training_provenance(apply_vae_path)

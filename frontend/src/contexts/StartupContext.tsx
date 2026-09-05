@@ -31,6 +31,9 @@ export interface ModelInfo {
   is_v_prediction?: boolean;
   model_revision?: number;
   component_revision?: number;
+  // Latent channels of the LOADED model: the architecture's own count unless the
+  // checkpoint declares a swapped VAE. Never re-derive this from `type`.
+  latent_channels?: number | null;
   [key: string]: unknown;
 }
 

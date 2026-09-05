@@ -140,6 +140,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.inpaint_pipeline: Optional[StableDiffusionInpaintPipeline] = None
         self.current_model: Optional[str] = None
         self.current_model_info: Optional[Dict[str, Any]] = None
+        # ComponentWiringSpec of the loaded model with the checkpoint's own
+        # declarations folded in (latent channels of a swapped VAE), or None
+        # when nothing has been loaded. The arch constant is the baseline, not
+        # the answer -- read this wherever the loaded latent shape matters.
+        self._sushi_wiring: Optional[Any] = None
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
         self.model_revision = 0
@@ -525,6 +530,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # the replacement load fails partway through.
         self.current_model = None
         self.current_model_info = None
+        self._sushi_wiring = None
 
         try:
             # === Step 1: Complete cleanup of existing pipelines ===
@@ -1404,6 +1410,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 "prediction_source": pred_source,
                 "model_hash": model_hash
             }
+            self.current_model_info.update(
+                self._fold_sd_latent_identity(base_pipeline, model_type_detected))
 
             # Save this model as the last loaded model
             self._save_last_model(source_type, source, pipeline_type)
@@ -3604,6 +3612,39 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not an audio model. Load an ACE-Step or MiniMax Music 3 model "
                    "to use /generate/outpaint/audio.",
         )
+
+    def _fold_sd_latent_identity(self, pipeline, arch: str) -> Dict[str, Any]:
+        """Set ``_sushi_wiring`` for a loaded SD1.5/SDXL pipeline; return the
+        latent-identity fields for ``current_model_info``.
+
+        The reconstructed checkpoint's own declaration (``_sushi_arch``, from
+        ``sushi.vae_type``/``sushi.in_channels``) beats the arch's wiring
+        constant. A NATIVE checkpoint declares nothing and gets only
+        ``latent_channels`` -- the same number, and the same value
+        ``GET /models/current`` already derived from the wiring spec -- so its
+        responses do not change.
+        """
+        try:
+            from core.models.component_registry import _WIRING_BY_ARCH
+            spec = _WIRING_BY_ARCH.get(arch)
+            if spec is None:
+                return {}
+            declared = getattr(pipeline, "_sushi_arch", None) or {}
+            swap_vae_type = declared.get("vae_type")
+            latent_channels = int(declared.get("in_channels") or spec.latent_channels)
+            self._sushi_wiring = spec.replace(latent_channels=latent_channels)
+            fields: Dict[str, Any] = {"latent_channels": latent_channels}
+            if swap_vae_type:
+                fields.update({
+                    "vae_type": swap_vae_type,
+                    "vae_provenance": f"registry:{swap_vae_type}",
+                    "vae_struct_native": latent_channels == spec.latent_channels,
+                    "vae_identity_native": False,
+                })
+            return fields
+        except Exception as e:
+            print(f"[Pipeline] latent identity fold skipped: {e}")
+            return {}
 
     def _cleanup_component_architectures(self) -> None:
         """Drop every component-dict architecture through the shared inventory

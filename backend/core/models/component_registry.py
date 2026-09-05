@@ -372,27 +372,87 @@ def _empty_components() -> Dict[str, Any]:
     }
 
 
-def _apply_component_hints(components: Dict[str, Any], metadata: Optional[dict]) -> None:
+def _legacy_sdxl_vae_hints(metadata: Optional[dict], arch: Optional[str]) -> Dict[str, Any]:
+    """The `sushi.vae_type` / `sushi.in_channels` declaration as `component.vae.*`.
+
+    The SDXL adapter still writes those two keys (`sdxl_adapter.sushi_modelspec_metadata`);
+    they are the ONLY declaration a VAE-swapped checkpoint saved before the
+    `component.vae.*` block carries, and without them its latent channel count
+    reads as the arch baseline everywhere downstream.
+    """
+    md = metadata or {}
+    vae_type = str(md.get("sushi.vae_type", "") or "").strip().lower()
+    if not vae_type or vae_type in ("none", str(arch or "").lower()):
+        return {}
+    out: Dict[str, Any] = {"type": vae_type, "identity_native": False}
+    try:
+        channels = int(str(md.get("sushi.in_channels", "")).strip())
+    except (TypeError, ValueError):
+        channels = 0
+    if channels > 0:
+        out["channels"] = channels
+    return out
+
+
+def _apply_component_hints(components: Dict[str, Any], metadata: Optional[dict],
+                           arch: Optional[str] = None) -> None:
     """Fold single_file_format component.* hints in (best-effort, no override of
-    a concretely-observed number with None)."""
+    a concretely-observed number with None).
+
+    `component.vae.*` wins per key over the legacy `sushi.*` declaration (design
+    doc §5.2/D8). `struct_native`/`identity_native` are only recorded when the
+    file declares them or when they resolve to False: their ABSENCE is what
+    "this is the architecture's own VAE" is spelled as, so a native checkpoint's
+    record stays exactly what it was before this fold existed.
+    """
     try:
         from core.models.common.single_file_format import parse_component_metadata
         hints = parse_component_metadata(metadata)
     except Exception:
         return
-    vae_h = hints.get("vae") or {}
+    vae_h = dict(hints.get("vae") or {})
+    for key, value in _legacy_sdxl_vae_hints(metadata, arch).items():
+        vae_h.setdefault(key, value)
     if vae_h:
-        if vae_h.get("channels") is not None and components["vae"]["latent_channels"] is None:
+        declared_channels = None
+        if vae_h.get("channels") is not None:
             try:
-                components["vae"]["latent_channels"] = int(vae_h["channels"])
+                declared_channels = int(vae_h["channels"])
             except (TypeError, ValueError):
-                pass
+                declared_channels = None
+        if declared_channels is not None and components["vae"]["latent_channels"] is None:
+            components["vae"]["latent_channels"] = declared_channels
         if vae_h.get("type") and not components["vae"].get("vae_type"):
             components["vae"]["vae_type"] = vae_h["type"]
+        if vae_h.get("class") and not components["vae"].get("vae_class"):
+            components["vae"]["vae_class"] = vae_h["class"]
+        if vae_h.get("scale_factor") is not None and components["vae"]["scale_spatial"] is None:
+            components["vae"]["scale_spatial"] = int(vae_h["scale_factor"])
+        if vae_h.get("scale_temporal") is not None and components["vae"]["scale_temporal"] is None:
+            components["vae"]["scale_temporal"] = int(vae_h["scale_temporal"])
+        for key in ("norm", "norm_pack", "hash", "provenance", "locator", "prefix"):
+            if vae_h.get(key) is not None:
+                components["vae"][key] = vae_h[key]
         if vae_h.get("embedded") is not None:
             components["vae"]["embedded"] = bool(vae_h["embedded"])
             if vae_h["embedded"]:
                 components["vae"]["present"] = True
+
+        spec = _WIRING_BY_ARCH.get(arch or "")
+        struct_native = vae_h.get("struct_native")
+        if struct_native is None and spec is not None:
+            if ((declared_channels is not None and spec.latent_channels
+                 and declared_channels != spec.latent_channels)
+                    or (vae_h.get("scale_factor") is not None
+                        and int(vae_h["scale_factor"]) != spec.vae_scale_factor)):
+                struct_native = False
+        if struct_native is not None:
+            components["vae"]["struct_native"] = bool(struct_native)
+        identity_native = vae_h.get("identity_native")
+        if struct_native is False:
+            identity_native = False
+        if identity_native is not None:
+            components["vae"]["identity_native"] = bool(identity_native)
     te_h = hints.get("te") or {}
     if te_h:
         if te_h.get("dim") is not None and components["text_encoder"]["out_dim"] is None:
@@ -472,7 +532,7 @@ def _scan_single_file(path: str, arch: str, components: Dict[str, Any]) -> None:
         _extract_from_header(components, header, arch)
     except Exception as e:
         print(f"[ComponentRegistry] header extract failed for {path}: {e}")
-    _apply_component_hints(components, metadata)
+    _apply_component_hints(components, metadata, arch)
 
 
 def _scan_sharded(path: str, arch: str, components: Dict[str, Any]) -> None:
@@ -500,7 +560,7 @@ def _scan_sharded(path: str, arch: str, components: Dict[str, Any]) -> None:
         _extract_from_header(components, merged, arch)
     except Exception as e:
         print(f"[ComponentRegistry] sharded extract failed {path}: {e}")
-    _apply_component_hints(components, metadata)
+    _apply_component_hints(components, metadata, arch)
 
 
 def _read_json(path: str) -> Optional[dict]:
@@ -586,22 +646,35 @@ def _fold_baseline(record: Dict[str, Any], arch: str) -> None:
     components = record["components"]
     mismatches: List[str] = []
 
+    # What THIS checkpoint's latent side is, which is the arch baseline unless it
+    # declares a swapped VAE (`struct_native` False). A declaration is the
+    # checkpoint's own statement about how it was trained, so it replaces the
+    # baseline here instead of being reported against it as a mismatch.
+    declared_swap = components["vae"].get("struct_native") is False
+    expected_lc = spec.latent_channels
+    expected_sf = spec.vae_scale_factor
+    if declared_swap:
+        if components["vae"]["latent_channels"] is not None:
+            expected_lc = components["vae"]["latent_channels"]
+        if components["vae"]["scale_spatial"] is not None:
+            expected_sf = components["vae"]["scale_spatial"]
+
     # expected baseline (stored for RP2 compat checks)
     record["expected"] = {
         "te_out_dim": spec.te_out_dim,
         "te_pooled_dim": spec.te_pooled_dim,
-        "latent_channels": spec.latent_channels,
+        "latent_channels": expected_lc,
         "latent_ndim": spec.latent_ndim,
-        "vae_scale_factor": spec.vae_scale_factor,
+        "vae_scale_factor": expected_sf,
     }
 
     # fill VAE latent_channels from baseline if not observed
     obs_lc = components["vae"]["latent_channels"]
-    if obs_lc is None and spec.latent_channels:
-        components["vae"]["latent_channels"] = spec.latent_channels
-    elif obs_lc is not None and spec.latent_channels and obs_lc != spec.latent_channels:
+    if obs_lc is None and expected_lc:
+        components["vae"]["latent_channels"] = expected_lc
+    elif obs_lc is not None and expected_lc and obs_lc != expected_lc:
         mismatches.append(
-            f"vae.latent_channels observed={obs_lc} expected={spec.latent_channels}")
+            f"vae.latent_channels observed={obs_lc} expected={expected_lc}")
 
     # fill TE out_dim from baseline if not observed
     obs_te = components["text_encoder"]["out_dim"]
@@ -758,7 +831,12 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 #     stale cached "anima" record for a Music3 path would be easy to miss; if
 #     one turns up, `invalidate(path)` is still the fix. The live cache has no
 #     minimax_music3 entries as of this commit, so nothing to invalidate yet.
-_REGISTRY_SCHEMA_VERSION = 5
+# v6: the VAE hint fold reads the legacy `sushi.vae_type`/`sushi.in_channels`
+#     declaration and the extended `component.vae.*` block, so a VAE-swapped
+#     checkpoint cached under v5 carries the arch baseline (4ch for SDXL) and
+#     must be rescanned. Records of native checkpoints are unchanged by the
+#     rescan.
+_REGISTRY_SCHEMA_VERSION = 6
 
 
 class ComponentRegistryCache:

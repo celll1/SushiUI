@@ -102,6 +102,13 @@ class ResolvedVAE:
     state_dict: Optional[Dict[str, torch.Tensor]] = field(
         default=None, repr=False, compare=False)
 
+    @property
+    def latent_hash(self) -> str:
+        """Identity of weights and normalisation, independent of provenance."""
+        config = dict(self.config)
+        config.update(scaling_factor=self.scaling_factor, shift_factor=self.shift_factor)
+        return latent_space_hash(self.content_hash, config)
+
     def facts(self) -> Dict[str, Any]:
         """The JSON-able structural subset (what a selector and §5.2 both want)."""
         return {
@@ -118,6 +125,7 @@ class ResolvedVAE:
             "scaling_factor": self.scaling_factor,
             "shift_factor": self.shift_factor,
             "content_hash": self.content_hash,
+            "latent_hash": self.latent_hash,
             "provenance": self.provenance,
             "locator": self.locator,
             "struct_native": self.struct_native,
@@ -358,6 +366,26 @@ def content_hash_for_state_dict(state_dict: Dict[str, torch.Tensor]) -> str:
         flat = tensor.detach().to("cpu").contiguous().reshape(-1)
         digest.update(flat.view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()[:16]
+
+
+def normalization_config(config) -> Dict[str, Any]:
+    """Config values that change latents without changing tensor weights."""
+    def numeric(value):
+        if torch.is_tensor(value):
+            value = value.detach().cpu().tolist()
+        if isinstance(value, (tuple, list)):
+            return [numeric(v) for v in value]
+        return None if value is None else float(value)
+
+    return {
+        key: numeric(config.get(key)) for key in (
+            "scaling_factor", "latents_mean", "latents_std", "batch_norm_eps")
+    } | {"shift_factor": float(config.get("shift_factor") or 0.0)}
+
+
+def latent_space_hash(weights_hash: str, config) -> str:
+    payload = json.dumps(normalization_config(config), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{weights_hash}:{payload}".encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -817,6 +845,12 @@ def load_declared_latent_io(
                 f"{path} declares VAE {expected} at {locator}, which now holds "
                 f"{resolved.content_hash}; refusing to train/generate in a "
                 "different latent space than the checkpoint was trained in")
+        expected_config = declared.get("config")
+        if expected_config and normalization_config(expected_config) != normalization_config(
+                dict(resolved.config, scaling_factor=resolved.scaling_factor,
+                     shift_factor=resolved.shift_factor)):
+            raise VaeSourceError(
+                f"{path}: VAE normalisation at {locator} changed since the checkpoint was saved")
         content_hash = resolved.content_hash
 
     if channels is not None and resolved.latent_channels != channels:
@@ -853,6 +887,7 @@ def describe_vae_source(source: str, *, arch: Optional[str] = None,
                 "reason": f"{type(e).__name__}: {e}"}
     out = resolved.facts()
     out.pop("content_hash", None)
+    out.pop("latent_hash", None)
     compatible, reason = check_vae_compatibility(out, arch)
     out["compatible"] = compatible
     out["reason"] = reason

@@ -1384,6 +1384,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       }
     }
     // Fields with custom coercion rules
+    if (incoming.vae_swap_source !== undefined || incoming.sdxl_vae_type !== undefined) {
+      const legacy = String(incoming.sdxl_vae_type || "").trim().toLowerCase();
+      patch.vae_swap_source = incoming.vae_swap_source?.trim()
+        || (!["", "none", "sdxl"].includes(legacy) ? `registry:${legacy}` : "");
+      patch.sdxl_vae_type = "none";
+    }
     if (incoming.regularization_type !== undefined) {
       patch.regularization_type = incoming.regularization_type || "none";
     }
@@ -3958,7 +3964,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   {!vaeSwapUnsupported && trainingMethod === "full_finetune" && (
                     <VaeSwapSourceSelector
                       value={params.vae_swap_source ?? ""}
-                      onChange={(source) => updateParam("vae_swap_source", source)}
+                      onChange={(source) => setParams(prev => ({
+                        ...prev, vae_swap_source: source, sdxl_vae_type: "none",
+                      }))}
                       arch={baseModelArch || null}
                       baseModelPath={baseModelPath || null}
                     />

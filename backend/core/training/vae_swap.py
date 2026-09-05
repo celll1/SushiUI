@@ -242,6 +242,9 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
           f"{resolved.scale_factor}x spatial, norm={resolved.norm}")
 
     report = handler.apply_vae_swap(trainer, resolved)
+    from dataclasses import replace
+    # A single-file loader infers the full config while converting LDM weights.
+    resolved = replace(resolved, config=_materialized_config(trainer.vae, resolved.config))
 
     # The two hashes are only comparable module-to-module (same key layout, same
     # dtype), which is why the no-op test happens here and not in the resolver.
@@ -276,15 +279,25 @@ def _base_is_already_swapped(trainer) -> bool:
 
 
 def _module_hash(module) -> Optional[str]:
-    from core.models.common.vae_source import content_hash_for_state_dict
+    from core.models.common.vae_source import content_hash_for_state_dict, latent_space_hash
     if module is None:
         return None
     try:
-        return content_hash_for_state_dict(module.state_dict())
+        config = getattr(module, "config", {})
+        if not hasattr(config, "get"):
+            config = vars(config)
+        return latent_space_hash(content_hash_for_state_dict(module.state_dict()), config)
     except Exception as e:
         print(f"[VAESwap] base VAE hash unavailable ({type(e).__name__}: {e}); "
               "treating the swap as a real one")
         return None
+
+
+def _materialized_config(module, fallback):
+    config = getattr(module, "config", None)
+    if config is None:
+        return dict(fallback or {})
+    return dict(config) if hasattr(config, "keys") else dict(vars(config))
 
 
 def validate_latent_io(trainer) -> list:
@@ -381,7 +394,7 @@ def swap_metadata(trainer) -> Tuple[Optional[Any], bool, Dict[str, str]]:
     check_bundling(resolved.source, getattr(trainer, "bundle_vae", None) is False)
     # The scaling numbers are the ones a reader cannot observe from weights, so
     # they travel in the declared config or the checkpoint is unloadable (§7.3).
-    config = dict(resolved.config or {})
+    config = _materialized_config(getattr(trainer, "vae", None), resolved.config)
     for key, value in (("scaling_factor", resolved.scaling_factor),
                        ("shift_factor", resolved.shift_factor)):
         if value is not None:

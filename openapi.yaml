@@ -16155,8 +16155,8 @@ components:
           type: string
           nullable: true
           description: |
-            Content hash (sha256 of the tensor bytes, first 16 hex) of the
-            declared VAE. Identifies the latent space the loaded model runs in;
+            Latent-space hash (sha256 of the weight identity and normalization
+            config, first 16 hex) of the declared VAE. Identifies the latent space the loaded model runs in;
             two checkpoints with the same `latent_channels` and different
             hashes do not share one. Present only when the checkpoint declares
             a swapped VAE.
@@ -18691,9 +18691,9 @@ components:
           type: string
           nullable: true
           description: >-
-            Content hash of that VAE (`sushi.base.vae_hash`, the first 16 hex
-            of a sha256 over its tensors -- the same value a checkpoint's
-            `component.vae.hash` carries). Present only for an adapter trained
+            Latent-space hash of that VAE (`sushi.base.vae_hash`, the first 16 hex
+            of a sha256 over its weight identity and normalization config).
+            Older adapters may carry only a tensor hash. Present only for an adapter trained
             against a REPLACED VAE. A disagreement with the loaded model's own
             hash at the same channel count is a warning
             (`lora_base_vae_mismatch`), not a refusal.

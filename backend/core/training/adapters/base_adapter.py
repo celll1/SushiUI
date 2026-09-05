@@ -301,7 +301,7 @@ def base_latent_metadata(trainer) -> Dict[str, str]:
     return BaseLatentIdentity(
         latent_channels=int(getattr(identity, "latent_channels", 0) or channels),
         vae_type=getattr(identity, "family", None),
-        vae_hash=getattr(identity, "content_hash", None),
+        vae_hash=getattr(identity, "latent_hash", None) or getattr(identity, "content_hash", None),
         struct_native=bool(getattr(identity, "struct_native", False)),
         identity_native=False,
     ).to_metadata()

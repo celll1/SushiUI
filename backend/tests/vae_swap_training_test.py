@@ -194,7 +194,7 @@ def test_a_native_run_gets_no_vae_token():
 def test_a_swapped_run_adds_one_token_and_changes_nothing_else():
     native = _namespace()
     swapped = _namespace(vae_identity=_resolved(16), vae_latent_channels=16)
-    assert swapped == "sdxl__vae-flux1-abcdef01__c16__dtfloat16"
+    assert swapped == f"sdxl__vae-flux1-{_resolved(16).latent_hash[:8]}__c16__dtfloat16"
     # Additive: every component of the native namespace survives in order.
     assert [p for p in swapped.split("__") if not p.startswith("vae-")] == \
         [p if p != "c4" else p for p in native.replace("c4", "c16").split("__")]
@@ -204,7 +204,23 @@ def test_same_channels_different_vae_still_separates_by_hash():
     a = _namespace(vae_identity=_resolved(4, family="sdxl", content_hash="1111111122222222"))
     b = _namespace(vae_identity=_resolved(4, family="sdxl", content_hash="3333333344444444"))
     assert a != b
-    assert a == "sdxl__vae-sdxl-11111111__c4__dtfloat16"
+    identity = _resolved(4, family="sdxl", content_hash="1111111122222222")
+    assert a == f"sdxl__vae-sdxl-{identity.latent_hash[:8]}__c4__dtfloat16"
+
+
+def test_same_weights_different_scaling_separates_cache_and_adapter_identity():
+    from dataclasses import replace
+    from core.adapters.base_identity import BaseLatentIdentity, check_base_latent
+    from core.training.adapters.base_adapter import base_latent_metadata
+
+    original = _resolved(4, struct_native=True)
+    changed = replace(original, scaling_factor=0.5)
+    assert _namespace(vae_identity=original) != _namespace(vae_identity=changed)
+    trainer = SimpleNamespace(vae_identity=original, vae_latent_channels=4)
+    adapter = BaseLatentIdentity.from_metadata(base_latent_metadata(trainer))
+    assert check_base_latent(adapter, BaseLatentIdentity.from_facts(original.facts())).ok
+    verdict = check_base_latent(adapter, BaseLatentIdentity.from_facts(changed.facts()))
+    assert not verdict.refuse and verdict.code == "lora_base_vae_mismatch"
 
 
 # ---------------------------------------------------------------------------

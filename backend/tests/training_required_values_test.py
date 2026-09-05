@@ -185,6 +185,8 @@ _A_DIFFERENT_VALUE = {
     "train_unet": False,
     "text_encoding_mode": "pre_encoded_cache",
     "latent_encoding_mode": "pre_encoded_cache",
+    # Required True for a swapping run; False is the value the run would discard.
+    "sensenova_train_fm_modules": False,
 }
 
 
@@ -197,6 +199,14 @@ def test_every_declared_entry_is_enforced_the_way_its_reason_says(method):
     for param, entry in declared.items():
         config = _shipped_train_config()
         config.update({p: e["value"] for p, e in declared.items()})
+        # `unless` names the config that LIFTS the requirement. The fixture
+        # omits those keys, which falsifies a lift keyed on a truthy value --
+        # but a lift keyed on the EMPTY value is satisfied by absence itself,
+        # so that one has to be falsified explicitly or the requirement under
+        # test is inert.
+        for key, lifted in (entry.get("unless") or {}).items():
+            if lifted == "" and not config.get(key):
+                config[key] = "registry:sdxl"
         config[param] = _A_DIFFERENT_VALUE[param]
         try:
             with _sensenova():

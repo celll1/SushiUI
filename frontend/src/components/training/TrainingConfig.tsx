@@ -5141,12 +5141,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 id="sensenova-train-fm-modules"
                 checked={params.sensenova_train_fm_modules ?? false}
                 onChange={(e) => updateParam("sensenova_train_fm_modules", e.target.checked)}
-                className="w-4 h-4"
+                disabled={!!requiredValue("sensenova_train_fm_modules")}
+                title={requiredValue("sensenova_train_fm_modules")?.reason}
+                className="w-4 h-4 disabled:opacity-60"
               />
               <label htmlFor="sensenova-train-fm-modules" className="text-xs text-gray-300 cursor-pointer">
                 Train Flow-Matching Modules (fm_modules)
               </label>
             </div>
+            <RequiredValueNote entry={requiredValue("sensenova_train_fm_modules")} />
             <p className="text-xs text-gray-500">
               A full fine-tune trains the 294 decoder Linears per MoT half, which is the set the
               INT8 load dequantizes. fm_modules is not quantized, so it is not in that set: the

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 from safetensors import safe_open
@@ -131,12 +131,40 @@ def build_component_metadata(
     vae_type: Optional[str] = None,
     vae_channels=None,
     vae_embedded: Optional[bool] = None,
+    vae_prefix: Optional[str] = None,
+    vae_class: Optional[str] = None,
+    vae_config=None,
+    vae_scale_factor=None,
+    vae_scale_temporal=None,
+    vae_norm: Optional[str] = None,
+    vae_norm_pack=None,
+    vae_provenance: Optional[str] = None,
+    vae_locator: Optional[str] = None,
+    vae_hash: Optional[str] = None,
+    vae_struct_native: Optional[bool] = None,
+    vae_identity_native: Optional[bool] = None,
     te_type: Optional[str] = None,
     te_dim=None,
     te_embedded: Optional[bool] = None,
     te_adapter: Optional[bool] = None,
 ) -> Dict[str, str]:
-    """Build the optional ``component.*`` metadata hint block (all str values)."""
+    """Build the optional ``component.*`` metadata hint block (all str values).
+
+    The VAE block describes the latent space the checkpoint was trained in — see
+    ``docs/guides/VAE_SWAP_MIGRATION_DESIGN.md`` §5.2 for each key's meaning.
+    ``struct_native`` (channels/scale/ndim/class equal the arch default) and
+    ``identity_native`` (same VAE weights as the arch default) are separate
+    questions and are never interchangeable: a fine-tuned copy of the native VAE
+    is ``struct_native=True, identity_native=False``.
+
+    ``vae_provenance`` is display-only; ``vae_locator`` (``registry:<key>`` or
+    ``path:<abs>``) is what a reader resolves a non-embedded VAE through, and is
+    only meaningful together with ``vae_hash``.
+    """
+    if vae_struct_native is False and vae_identity_native is True:
+        raise ValueError(
+            "component.vae: identity_native=True requires struct_native=True "
+            "(a structurally different VAE cannot be the same latent space)")
     md: Dict[str, str] = {}
     if vae_type is not None:
         md["component.vae.type"] = str(vae_type)
@@ -144,6 +172,32 @@ def build_component_metadata(
         md["component.vae.channels"] = str(vae_channels)
     if vae_embedded is not None:
         md["component.vae.embedded"] = "1" if vae_embedded else "0"
+    if vae_prefix:
+        md["component.vae.prefix"] = str(vae_prefix)
+    if vae_class:
+        md["component.vae.class"] = str(vae_class)
+    if vae_config is not None:
+        md["component.vae.config"] = (
+            vae_config if isinstance(vae_config, str)
+            else json.dumps(vae_config, sort_keys=True))
+    if vae_scale_factor is not None:
+        md["component.vae.scale_factor"] = str(int(vae_scale_factor))
+    if vae_scale_temporal is not None:
+        md["component.vae.scale_temporal"] = str(int(vae_scale_temporal))
+    if vae_norm:
+        md["component.vae.norm"] = str(vae_norm)
+    if vae_norm_pack is not None:
+        md["component.vae.norm_pack"] = str(int(vae_norm_pack))
+    if vae_provenance:
+        md["component.vae.provenance"] = str(vae_provenance)
+    if vae_locator:
+        md["component.vae.locator"] = str(vae_locator)
+    if vae_hash:
+        md["component.vae.hash"] = str(vae_hash)
+    if vae_struct_native is not None:
+        md["component.vae.struct_native"] = "1" if vae_struct_native else "0"
+    if vae_identity_native is not None:
+        md["component.vae.identity_native"] = "1" if vae_identity_native else "0"
     if te_type is not None:
         md["component.te.type"] = str(te_type)
     if te_dim is not None:
@@ -162,13 +216,35 @@ def parse_component_metadata(metadata: Optional[dict]) -> Dict[str, dict]:
     """
     metadata = metadata or {}
     out: Dict[str, dict] = {}
-    vae: Dict[str, str] = {}
+    vae: Dict[str, Any] = {}
     if "component.vae.type" in metadata:
         vae["type"] = metadata["component.vae.type"]
     if "component.vae.channels" in metadata:
         vae["channels"] = metadata["component.vae.channels"]
     if "component.vae.embedded" in metadata:
         vae["embedded"] = str(metadata["component.vae.embedded"]).strip().lower() in ("1", "true", "yes")
+    for key in ("prefix", "class", "norm", "provenance", "locator", "hash"):
+        raw = metadata.get(f"component.vae.{key}")
+        if raw:
+            vae[key] = str(raw)
+    for key in ("scale_factor", "scale_temporal", "norm_pack"):
+        if f"component.vae.{key}" in metadata:
+            try:
+                vae[key] = int(str(metadata[f"component.vae.{key}"]).strip())
+            except (TypeError, ValueError):
+                pass
+    if "component.vae.config" in metadata:
+        try:
+            vae["config"] = json.loads(metadata["component.vae.config"])
+        except (TypeError, ValueError):
+            pass
+    for key in ("struct_native", "identity_native"):
+        if f"component.vae.{key}" in metadata:
+            vae[key] = str(metadata[f"component.vae.{key}"]).strip().lower() in ("1", "true", "yes")
+    # A file may declare the impossible pair; the structural answer wins so a
+    # reader can never treat a differently-shaped VAE as the same latent space.
+    if vae.get("struct_native") is False:
+        vae["identity_native"] = False
     if vae:
         out["vae"] = vae
     te: Dict[str, str] = {}

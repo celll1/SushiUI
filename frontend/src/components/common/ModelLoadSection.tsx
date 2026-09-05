@@ -15,25 +15,6 @@ import { useModelComponents } from "@/contexts/ModelComponentsContext";
 import { useResizablePanelHeight } from "@/hooks/useResizablePanelHeight";
 import type { ComponentSlotId } from "@/utils/api";
 
-// Fallback arch -> latent_channels map, used only when the loaded model's
-// latent_channels isn't exposed by GET /models/current (pipeline_manager's
-// current_model_info carries "type" but not latent_channels today). Mirrors
-// backend/core/models/components/wiring.py's per-arch ComponentWiringSpec
-// (kept minimal + commented, update alongside wiring.py if it changes).
-const ARCH_LATENT_CHANNELS: Record<string, number> = {
-  sd15: 4,
-  sdxl: 4,
-  zimage: 16,
-  anima: 16,
-  lens: 32,
-  ideogram4: 32,
-  minit2i: 0, // pixel-space, no VAE
-  krea2: 16,
-  flux2: 32,
-  ltx2: 128,
-  acestep: 64,
-};
-
 interface ModelLoadSectionProps {
   // Panel callback fired after a model (re)load (receives model_info).
   onModelLoad?: (modelInfo: any) => void;
@@ -192,12 +173,11 @@ export default function ModelLoadSection({
   }, [activeTab, modelInfoVersion]);
 
   const loadedArch = modelType ?? null;
-  // modelInfo doesn't carry latent_channels today (see ARCH_LATENT_CHANNELS
-  // comment above) — fall back to the arch map when it's missing.
-  const loadedLatentChannels =
-    (modelInfo?.latent_channels as number | undefined) ??
-    (loadedArch != null ? ARCH_LATENT_CHANNELS[loadedArch] : undefined) ??
-    null;
+  // Server-supplied only: GET /models/current resolves this from the loaded
+  // model's wiring, which a per-arch map here could not do for a checkpoint
+  // that declares a swapped VAE. Null falls back to an arch-name match in
+  // VaeOverrideSelector.
+  const loadedLatentChannels = modelInfo?.latent_channels ?? null;
   const visibleComponentSnapshot =
     typeof modelInfo?.model_revision === "number" &&
     componentSnapshot?.model_revision !== modelInfo.model_revision

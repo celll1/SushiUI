@@ -248,6 +248,9 @@ export interface ModelInfo {
   path?: string;
   architecture?: string;
   vae_type?: string;  // MiniT2I: "none" (pixel) | "sdxl" | "flux1" (latent)
+  // Latent channels the loaded model runs with (GET /models/current). The
+  // architecture's own count unless the checkpoint declares a swapped VAE.
+  latent_channels?: number | null;
   // MiniMax-H3: "fl2va" | "ref2va" for a single checkpoint, "hybrid" for a
   // merged pair. Only a hybrid carries the three provenance fields after it.
   variant?: string | null;

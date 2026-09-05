@@ -10094,16 +10094,19 @@ async def get_current_model():
     """Get currently loaded model info"""
     if pipeline_manager.current_model_info:
         info = dict(pipeline_manager.current_model_info)
-        # Enrich with the loaded architecture's latent_channels from the component
-        # wiring spec (the single source of truth) so the frontend's compatible-only
-        # VAE-override filter can match on latent channels instead of hardcoding an
-        # arch->channels map. Best-effort; absent for archs without a wiring entry.
+        # Enrich with the loaded model's latent_channels so the frontend's
+        # compatible-only VAE-override filter can match on latent channels instead
+        # of hardcoding an arch->channels map. `_sushi_wiring` is the loaded
+        # model's own resolved spec (a swapped VAE is folded in); the arch's
+        # baseline spec is the fallback for a backend that has not resolved one.
         if "latent_channels" not in info:
             try:
-                from core.models.component_registry import _WIRING_BY_ARCH
-                _spec = _WIRING_BY_ARCH.get(str(info.get("type") or "").lower())
-                if _spec is not None:
-                    info["latent_channels"] = _spec.latent_channels
+                _wiring = getattr(pipeline_manager, "_sushi_wiring", None)
+                if _wiring is None:
+                    from core.models.component_registry import _WIRING_BY_ARCH
+                    _wiring = _WIRING_BY_ARCH.get(str(info.get("type") or "").lower())
+                if _wiring is not None:
+                    info["latent_channels"] = _wiring.latent_channels
             except Exception:
                 pass
         info["model_revision"] = int(getattr(pipeline_manager, "model_revision", 0))

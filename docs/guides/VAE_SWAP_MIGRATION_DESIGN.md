@@ -27,7 +27,7 @@ Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位
 | D2 | 対象 arch | 第1波: sd15, sdxl。第2波: zimage, krea2, ltx2。第3波: anima, flux2, lens, minit2i。最終波: sensenova（研究段階）。保留: acestep。対象外: ideogram4, minimax_h3, minimax_music3（§2） |
 | D3 | 重み保存 | 重複チャネルは**チャネル軸で部分コピー**（現行 SDXL と同じ方針）。packed Linear は reshape→チャネル軸スライス→reshape（§6）。入力側と出力側の C の折込順序は arch ごとに**別々に**宣言する（anima は入力 outer / 出力 inner、§5.1）。**新規チャネルは入力側・出力側ともゼロ初期化**。現行の fresh Kaiming 初期化は廃止（SDXL も統一）。ゼロ初期化が走るのは**swap 適用時のみ**で、保存済みチェックポイントの再ロード・再開では保存済み重みを保持する（§6.2） |
 | D4 | スケール補正 | 重みへのスケール補正は行わない。潜在の正規化（`scaling_factor` / `latents_mean,std` / BN）で入力分散を揃える。正規化は VAE 側が宣言する領域（生 C ch、または 2×2 パック後）で適用し、呼び出し側には常に生の C ch 潜在を見せる（§8.4）。効果は未測定である旨を UI には書かない |
-| D5 | 縮小率の変更 | 第1〜3波では**空間/時間縮小率が arch 既定と異なる VAE を拒否**する。例外は SenseNova（pixel 1 → latent 8 が目的そのもの） |
+| D5 | 縮小率の変更 | 第1〜3波では**空間/時間縮小率が arch 既定と異なる VAE を拒否**する。例外は SenseNova（pixel 1 → latent への移行が目的そのもの。空間縮小率は任意の値を受理する、D13） |
 | D6 | VAE の出所 | 3種: (a) レジストリキー、(b) standalone VAE（単一ファイル / diffusers ディレクトリ）、(c) **他フルモデルからの抽出**。(c) は学習側の選択 API でのみ有効化し、生成側の override 候補列挙は現状のまま（§7） |
 | D7 | 同梱 | 差し替え後の VAE は **`vae.` prefix・diffusers キー配置で同梱**（全 arch 共通）。ネイティブ VAE の同梱規約（sd15/sdxl の `first_stage_model.` LDM 配置）は変えない。差し替え run では `bundle_vae` の解決値を True にする。明示 False は `registry:` / `file:` 由来に限り尊重し、解決用の locator を書く。**`model:` 由来の非同梱は保存前（preflight）に拒否**する（§8.7） |
 | D8 | 宣言メタデータ | 既存の `component.vae.*` ブロックを拡張して SSoT にする。`sushi.vae_type` / `sushi.in_channels` は SDXL アダプタが引き続き書き、リーダーは `component.vae.*` を優先し `sushi.*` にフォールバック。**第3の表は作らない**。VAE の「ネイティブ性」は **構造互換**（`struct_native`）と **潜在空間の同一性**（`identity_native`）の 2 キーに分ける（§5.2）。表示用の `provenance` と解決用の `locator` も別キー |
@@ -35,7 +35,7 @@ Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位
 | D10 | LoRA 整合 | 書き側: 全 arch のアダプタメタデータに base の潜在 identity（C、family、hash、`struct_native`、`identity_native`）を記録。読み側: チャネル不一致は **hard refusal**（`lora_incompatible`）、同チャネルで VAE hash 不一致は **warning**。メタデータ無しのアダプタは、base が `struct_native="0"` なら **refusal**、`struct_native="1"` かつ `identity_native="0"`（同構造・別 hash の VAE）なら **warning**、`identity_native="1"` なら現状どおり無検査 |
 | D11 | swap 済み base への LoRA 学習 | **許可**する（base は自己整合しており、LoRA は Linear のみ学習する）。拒否するのは「swap を要求しつつ method が full でない」場合のみ（現行どおり） |
 | D12 | latent cache | namespace に `vae-<family>-<hash8>` トークンを**加算的**に追加。トークンの有無は `identity_native` で決める: `"1"` はトークン無し（既存 namespace を壊さない）、`"0"` は同チャネル・同 family の別 VAE でもトークン付き（hash で分離） |
-| D13 | SenseNova | v1 は **8× VAE のみ受理**（16× は拒否）。生成側パッチ P = 32 / vae_scale_factor = 4 でトークン数を保存。ViT 側の 2×2 マージと `fm_head` の `ps1`/`ps2` は維持するので ViT patch-embed カーネルは P/2 = 2、最終 PixelShuffle 係数 k = P/4 = 1。patch-embed は小さい標準偏差の切断正規分布で初期化、`fm_head.conv2` はゼロ初期化。`sensenova_train_fm_modules` を必須値化 |
+| D13 | SenseNova | 生成側パッチ（潜在格子上）は **`P = 4` 固定**で `vae_scale_factor` に依らない。`fm_head` の `ps1(2)`/`ps2(2)`/`ps3(k)` の総拡大率 `4k` に対する最小の合法値であり、`conv1`・`ps1`・`ps2`・`dense_embedding` を無傷に保つ。ViT patch-embed カーネル = P/2 = 2、最終 PixelShuffle 係数 k = P/4 = 1、`fm_head.conv2` 出力 = C。1 トークンが覆う画素幅は `4 × vae_scale_factor`（8× → 32px、16× → 64px）で、トークン数は `vae_scale_factor` に比例して伸びる解像度で保存される。**任意の `vae_scale_factor` を受理**する。トークン幅・推奨解像度帯は VAE 選択時と生成時に提示し、黙って変えない。patch-embed は小さい標準偏差の切断正規分布で初期化、`fm_head.conv2` はゼロ初期化。`sensenova_train_fm_modules` を必須値化 |
 
 ---
 
@@ -493,7 +493,7 @@ sdxl/sd15/zimage/flux2/anima/lens は `first_stage_model.`、ブリーフ §3.5�
 | wiring `vae_norm="batchnorm"`（flux2/lens）で置換 VAE が BN を持たない | P5（§8.4）まで拒否、P5 以降は解除 |
 | 置換 VAE が `norm="batchnorm"`（`norm_pack=2`）で、置換先 arch の wiring が `batchnorm` でない（sd15/sdxl/zimage 等に flux2/lens 由来 VAE） | P5（§8.4 の正規化領域）まで拒否、P5 以降は解除 |
 | krea2 で `latents_mean/std` も `scaling_factor` も無い | 拒否 |
-| sensenova で `scale_factor != 8` | 拒否（D13、v1 は 8× VAE のみ） |
+| sensenova で `scale_factor` が任意の値 | 受理（D13。`P = 4` 固定なので重み形状は `scale_factor` に依らない。トークン幅 `4 × scale_factor` と推奨解像度帯を候補に添えて返す、§10.2） |
 | `vae_swap_source` が `model:` かつ `bundle_vae` が明示 False | 拒否（D7、§8.7。生成時に解決できない成果物を作らない） |
 | `latent_channels` が現状と同じかつ `content_hash` が同じ | 「差し替え無し」として no-op（swap 扱いにしない、`identity_native="1"`） |
 | `latent_channels` が現状と同じで `content_hash` が異なる | swap として扱う。`resize_latent_io` はコピーのみ（新規チャネル無し）、`struct_native="1"`, `identity_native="0"` |
@@ -776,7 +776,9 @@ identity ゲートを shape ゲートの**前**に置く。
 - `GET /training/vae-sources?arch=<arch>`（openapi 先行）: 3 グループ
   `registry` / `standalone` / `extract_from_model` を、各候補の `latent_channels`, `scale_factor`,
   `ndim`, `norm`, `compatible: bool`, `reason` 付きで返す。§7.4 の family 互換判定はサーバで行い、
-  UI は `compatible=false` を選択不可・理由表示にする。
+  UI は `compatible=false` を選択不可・理由表示にする。`arch=sensenova` では各候補に
+  `token_pixel_width`（= `4 × scale_factor`）と `resolution_band_px` を加え、`VaeSwapSourceSelector` が
+  候補名の隣に表示する（§10.2 の決定: 解像度帯を黙って変えない）。
 - 生成側 `ModelLoadSection`: `vae_identity_native=false` のとき「VAE: <provenance> (<C>ch)」のバッジ。
   `VaeOverrideSelector.isVaeCompatible()`（`:32-44`）は変更不要（サーバの `latent_channels` が正直になる）。
 - `ModelInfo`（`api.ts:239-255`）に `latent_channels?: number`, `vae_struct_native?: boolean`,
@@ -813,41 +815,68 @@ identity ゲートを shape ゲートの**前**に置く。
 - `sensenova_train_fm_modules` は既定オフで、16 テンソルは本リポジトリで一度も最適化されていない
   （`SENSENOVA_TRAINING_DESIGN.md:105-107`）。
 
-### 10.2 決定: 生成側パッチ P とトークン数の保存
+### 10.2 決定: 生成側パッチ P = 4 固定とトークン数の保存
 
-flow matching 側のパッチ幅（潜在格子上）を `P = 32 / vae_scale_factor` とし、1024px で
-32×32 = 1024 トークンをそのまま再現する。RoPE の h/w 範囲、`compute_noise_scale`
-（`sensenova_pipeline_ops.py:133-144`）、`_calculate_dynamic_mu`（`modeling_neo_chat.py:451-479`）が
-全て学習済みレンジに留まる。MiniT2I の latent 設定も同じ選択をしている（512px / 8× / P=2 ⇒
-1024 トークン、`mmjit.py:333-338`）。却下: P=2 固定（MiniT2I 規約）— トークン数 4 倍で 3 機構が分布外になる。
+flow matching 側のパッチ幅（潜在格子上）は **`P = 4` で固定**し、`vae_scale_factor` に依らせない。
 
-`P` は ViT の patch-embed カーネル幅でも `fm_head` の最終 PixelShuffle 係数でもない。
-現行経路の 2×2 マージ（`dense_embedding`）と `ps1(2)`/`ps2(2)` を維持すると、`P` から次が決まる:
+構造的な制約は 1 つだけである。出力側 `fm_head` の `ps1(2) → conv1 → ps2(2) → ps3(k)`
+（`modeling_fm_modules.py:580-598`）は総拡大率が `4k` で、`k` は PixelShuffle の係数なので正の整数
+でなければならない。したがって合法な `P` は `4k`（4, 8, 12, …）に限られ、**`P = 4`（`k = 1`）は
+その最小値**である。現行経路の 2×2 マージ（`dense_embedding`）と `ps1(2)`/`ps2(2)` を維持すると、
+`P` から次が決まり、`P = 4` ではいずれも VAE に依らない定数になる:
 
-- ViT patch-embed カーネル幅 = `P/2`（マージ後に 1 トークン = `P` 潜在画素）
-- `fm_head.ps3` の係数 `k = P/4`（`2·2·k = P`）、`conv2` の出力チャネル = `C·k²`
+- ViT patch-embed カーネル幅（潜在格子上）= `P/2` = **2**（マージ後に 1 トークン = 4 潜在画素）
+- `fm_head.ps3` の係数 `k = P/4` = **1**（`ps3` は恒等）
+- `fm_head.conv2` の出力チャネル = `C·k²` = **C**
 
-**v1 は 8× VAE のみ受理する（`P = 4`）**: ViT カーネル 2×2、`k = 1`（`ps3` は恒等）、`conv2` 出力 = `C`。
-1024px の潜在は 128×128、ViT patchify で 64×64、マージで 32×32 = 1024 トークン。出力は 32×32 →
-`ps1` 64×64 → `ps2` 128×128 → `ps3(1)` 128×128 = 潜在格子。
+形が変わるテンソルは §10.1 の 2 つ（patch-embed `[1024, C, 2, 2]`、`conv2 [C, 256, 3, 3]`）に
+限られ、`conv1 [1024, 1024, 3, 3]`、`ps1`、`ps2`、`dense_embedding [4096, 1024, 2, 2]` は
+**どの `vae_scale_factor` でも無傷**である。16× VAE に追加の重み手術は要らない。
 
-16× VAE（`P = 2`）は `k = 0.5` となり `ps1`/`ps2` を維持したままでは表現できないので**拒否**する
-（§7.4、`scale_factor != 8` → 拒否）。却下した代替:
-(b) `ps1`/`ps2` の係数を可変にする — `conv1 [1024, 1024, 3, 3]` の入力チャネル `input_dim // 4` が
-変わり、§10.1 で「形状不変」としている `conv1` の重みが保存できなくなる。
-(c) ViT 側のマージ率を可変にする — `dense_embedding [4096, 1024, 2, 2]` のカーネルが変わり、
-同じく保存できる重みが減る。どちらも 8× VAE の経路（`conv1`・`dense_embedding` 無傷）を
-16× のために壊すので、16× は本書の範囲外とし、必要になった時点で別設計とする。
+VAE によって変わるのは **1 トークンが覆う画素幅** `4 × vae_scale_factor` だけである:
+8× VAE で 32px（現行 pixel-space の幾何と同一）、16× VAE で 64px。トークン数は
+`vae_scale_factor` に比例して伸びる解像度で保存される: 潜在格子 128×128（ViT patchify 64×64、
+マージ後 32×32 = 1024 トークン）は 8× で 1024px、16× で 2048px に対応し、`fm_head` の出力は
+32×32 → `ps1` 64×64 → `ps2` 128×128 → `ps3(1)` 128×128 = 潜在格子で不変。上流の
+約 4096 トークン帯（生成側の推奨解像度帯、`core/pipeline_backends/sensenova.py:429-440`）は
+8× で 2048² 付近、16× で 4096² 付近に移る。**画像に対するタイルの相対サイズは両者で同一**
+なので、RoPE の h/w index、`compute_noise_scale`（`sensenova_pipeline_ops.py:133-144`、トークン数の
+関数）、`_calculate_dynamic_mu`（`modeling_neo_chat.py:451-479`、`image_seq_len` の関数）は
+全て学習済みレンジに留まる。
 
-`NeoChatConfig` に `gen_patch_size`（= `P`）/ `gen_in_channels` を追加し、生成側 patchify/unpatchify と
-ViT patch-embed（カーネル `P/2`）、`fm_head`（`k = P/4`）だけがこれを読む。`patch_size`/`downsample_ratio` は
-理解タワー・参照前処理専用に残す（§4.3 の共有結合 1 を切る）。`rotary_emb_hw` は共有のままでよい
+負担は transformer から VAE に移る: 4×4×C の潜在タイル 1 枚が再構成する画素領域は 8× で
+32×32、16× で 64×64 であり、制限要因は VAE の再構成品質であって transformer ではない。
+どちらの `vae_scale_factor` についても品質の主張はしない（§10.6-5）。
+
+却下: **1 トークンが覆う画素幅を 32 に固定する**（`P = 32 / vae_scale_factor`）— 8× 以外の
+あらゆる縮小率で `k = P/4` が非整数になり（16× で `k = 0.5`）、ヘッドが実際には収容できる
+VAE を拒否することになる。「1 トークン = 32px」は設計上の選択であって構造的制約ではない。
+却下: `ps1`/`ps2` の係数や ViT のマージ率を可変にして画素幅 32 を保つ — `conv1` の入力チャネル
+`input_dim // 4` と `dense_embedding` のカーネルが変わり、保存できる重みが減る。
+
+`NeoChatConfig` に `gen_patch_size`（= 4）/ `gen_in_channels` を追加し、生成側 patchify/unpatchify と
+ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを読む。`patch_size`/`downsample_ratio` は
+理解タワー・参照前処理専用に残す（§10.1 の共有スカラを切る）。`rotary_emb_hw` は共有のままでよい
 （h/w index は格子から算術で決まり、格子は保存される）。
+
+**決定: 解像度帯は VAE 選択で黙って変えない。** `vae_scale_factor` はモデル選択の帰結であって
+ユーザーが表明した意図ではないので、トークン幅 `4 × vae_scale_factor` と、それに対応する
+推奨解像度帯（現行 3〜5 MP の帯を `(vae_scale_factor / 8)²` 倍した画素数）を次の 2 箇所で提示する:
+
+- 学習側・VAE 選択時: `GET /training/vae-sources?arch=sensenova`（§9.7）の各候補に
+  `token_pixel_width`（= `4 × scale_factor`）と `resolution_band_px`（帯の下限・上限を画素数で）を
+  載せ、`VaeSwapSourceSelector` が候補名の隣に表示する。
+- 生成側・生成時: `_sensenova_common_params` の帯外警告（`core/pipeline_backends/sensenova.py:429-440`、
+  `code="sensenova_resolution"`）の閾値を `3.0 × (s/8)²`〜`5.0 × (s/8)²` MP に置き換え、
+  文面にトークン幅とその要求のトークン数を含める。latent 版チェックポイントのロード時には
+  `code="sensenova_token_grid"` の警告を 1 件、§9.6 の `pipeline._sushi_load_warnings` に積み、
+  初回生成で再生する（`add_warning` を再利用し、新しい配達機構は作らない）。
+  `current_model_info`（§9.1）に `token_pixel_width` を載せ、`ModelLoadSection` のバッジに出す。
 
 ### 10.3 決定: 初期化
 
-- **patch-embed `[1024, C, P/2, P/2]`（8× VAE: `[1024, C, 2, 2]`）: 切断正規分布、
-  `std = 1/sqrt(C·(P/2)²)`**（anima `PatchEmbed.init_weights` `anima_models.py:494-496` と同じ規約）。
+- **patch-embed `[1024, C, 2, 2]`（`P/2 = 2`、`vae_scale_factor` に依らない）: 切断正規分布、
+  `std = 1/sqrt(C·2²)`**（anima `PatchEmbed.init_weights` `anima_models.py:494-496` と同じ規約）。
   却下: (C) チャネル平均複製 — 「潜在チャネルは交換可能」という前提が VAE 潜在では成り立たず、
   さらに 16×16→2×2 のカーネル再標本化が重なる。(D) 擬似逆合成 — オフライン当てはめが要り、
   デコーダの非線形性により高ノイズ域で悪化しうる。(B) ゼロ — 全トークンが入力内容に依らず
@@ -855,8 +884,8 @@ ViT patch-embed（カーネル `P/2`）、`fm_head`（`k = P/4`）だけがこ�
   小さい標準偏差の乱数は本体へ入る信号の大きさを bias と同程度に抑えつつ、step 0 から
   内容依存の特徴を本体に流す。上流への勾配が step 0 でゼロなのはヘッドのゼロ初期化に
   よるもので（次項）、patch-embed の初期化方式では変わらない。
-- **`fm_head.conv2 [C·k², 256, 3, 3]` と bias: ゼロ初期化**（`k = P/4`、8× VAE では `k = 1`、
-  `ps3` は恒等、出力 `C`）。理由: step 0 で `x_pred = 0` となり、初期状態が入力に依存しない
+- **`fm_head.conv2 [C, 256, 3, 3]` と bias: ゼロ初期化**（`k = P/4 = 1`、`ps3` は恒等、
+  出力 `C`。`vae_scale_factor` に依らない）。理由: step 0 で `x_pred = 0` となり、初期状態が入力に依存しない
   定義済みの値になる（fresh random は `x_pred` に入力依存の任意のバイアスを載せる）。
   リポジトリの出力層ゼロ初期化慣習（`modeling_fm_modules.py:293-294, 451-452`）と整合する。
   このとき `v = (x_pred - z)/(1-t) = -z/(1-t)` であり、`t→1` での発散は
@@ -871,14 +900,15 @@ ViT patch-embed（カーネル `P/2`）、`fm_head`（`k = P/4`）だけがこ�
   の enum を予約して後続実験の口だけ残す（v1 は `"zero"` のみ受理）。(E) ピクセルヘッド保持＋後段
   エンコーダ — latent モデルにならない。
 - `ConvDecoder.conv1`、`ps1`、`ps2`、`dense_embedding`、両 embedder、588 Linear は無傷
-  （§10.2 で 8× VAE に限定したことで保証される）。
+  （§10.2 で `P = 4` に固定したことで、どの `vae_scale_factor` でも保証される）。
 
 ### 10.4 決定: `noise_scale` と潜在の正規化
 
 トークン数が保存されるので `compute_noise_scale` の式と `noise_scale_base_image_seq_len`、
 `noise_scale_embedder` は**変更しない**。潜在は VAE の正規化（§8.4）で単位スケール付近に揃える。
 RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与える影響は未測定であり、
-§10.6 の smoke で `noise_scale` 値が学習済みレンジ（`:733` 「1024px で 4」）に入っていることを確認する。
+§10.6 の smoke で `noise_scale` 値が学習済みレンジ（`:733` 「1024px で 4」、latent 版では
+1024 トークン、すなわち `128 × vae_scale_factor` px 四方で 4）に入っていることを確認する。
 較正の再導出（ブリーフ §4.7 (i)）と `noise_scale_mode` 変更（(iii)）は、smoke 後の実験結果で判断する
 （本書では決めない）。
 
@@ -887,8 +917,21 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 - 緩めるガード: `_assert_pixel_head_fm_decoder`（`sensenova_ops.py:1048-1084`）、`vae_encode` の
   `shape[1] != 3`（`:1816`）、`train_step` の `images.shape[1] != 3`（`:1905`）、`vae_decode` の
   `NotImplementedError`（`training/arch/sensenova.py:126`）、`SENSENOVA_WIRING.latent_channels=0`
-  （`wiring.py:187`）、`% 32` 整除（`sensenova_ops.py:1818,1914`, `sensenova_pipeline_ops.py:411`
-  → `% (32 // vae_scale_factor)` を潜在格子に対して）。
+  （`wiring.py:187`）。
+- **トークン幅 `4 × vae_scale_factor` 由来の配線**（画素幅 32 のリテラルを全て置き換える。
+  リテラル 32 は残さない）:
+  - `TOKEN_GRID_ALIGN = 32`（`sensenova_pipeline_ops.py:38`）と、それを既定引数に取る
+    `align_to_grid`/`normalize_resolution`（`:68-76`）: ロード済み wiring の `pixel_align` を
+    引数で受ける。§9.1 の `pipeline._sushi_wiring = SENSENOVA_WIRING.replace(latent_channels=C,
+    vae_scale_factor=s, pixel_align=4·s, …)` が値の出所（`ComponentWiringSpec.pixel_align`、
+    `wiring.py:249`）。`smoke.py:426` の重複定数も同じ値を引く。
+  - 学習側 `pixel_align = 32`（`core/training/arch/sensenova.py:28`）: `apply_vae_swap`（§8.1）が
+    `trainer.wiring.pixel_align = 4·s` を畳み込み、bucketing（`bucketing.py:642, 707`）はそれを読む。
+  - `% 32` 整除チェック（`sensenova_ops.py:1818-1819`, `:1914-1915`, `sensenova_pipeline_ops.py:411-414`）:
+    画素に対しては `% (4·s)`、潜在格子に対しては `% 4`。
+  - 解像度帯の警告（`core/pipeline_backends/sensenova.py:429-440`、現在 3〜5 MP のリテラル）:
+    `(s/8)²` 倍にスケールする（§10.2 の決定）。スケールしなければ 16× VAE での 4096² 生成が
+    毎回帯外と警告される。
 - リテラル `3` の全箇所（ブリーフ §4.2 の編集リスト）を `gen_in_channels` に置換。
 - `trainer.vae` を `ResolvedVAE.module` に、`vae_encode`/`vae_decode` を実 VAE に。
 - 生成側: `randn(B,C,H/s,W/s)`、Euler 更新は潜在上、最終 `clamp` は廃止して `vae.decode`。
@@ -899,19 +942,24 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
   （294 vs 310）は既存の per-group 先頭 prefix remap（`SENSENOVA_TRAINING_DESIGN.md:119-121`）で吸収。
 - 保存: `fm_modules` の新形状テンソルはそのまま書かれる。`component.vae.*` を書き、VAE を `vae.` で同梱。
   int8 export（`sensenova_full_finetune_save_format`）は decoder Linear のみ量子化するので影響なし。
-- 生成ローダ（`pipeline_backends/sensenova.py`）は `component.vae.*` を読んで `gen_patch_size`/
-  `gen_in_channels` を設定し、`vae_override` の拒否（`arch_capabilities.py:607`）は latent 版のみ解除。
-  `component.vae.scale_factor != 8` の宣言はロード拒否（D13）。
-- ViT `patch_embedding` のカーネルを `P/2`、`fm_head.conv2` の出力を `C·(P/4)²` で構築する
-  （§10.2）。`dense_embedding` と `ps1`/`ps2` は触らない。
+- 生成ローダ（`pipeline_backends/sensenova.py`）は `component.vae.*` を読んで `gen_patch_size`（= 4）/
+  `gen_in_channels` を設定し、`component.vae.scale_factor` を wiring の `vae_scale_factor` と
+  `pixel_align = 4·s` に畳み込む（任意の値を受理、D13）。`vae_override` の拒否
+  （`arch_capabilities.py:607`）は latent 版のみ解除し、override 候補は `_check_vae_compat`（§9.5）で
+  `scale_factor` 一致を要求する（`pixel_align` が変わる override は 400）。
+- ViT `patch_embedding` のカーネルを 2、`fm_head.conv2` の出力を `C` で構築する（§10.2、
+  `vae_scale_factor` に依らない）。`dense_embedding` と `ps1`/`ps2` は触らない。
 
 ### 10.6 受け入れ条件（研究段階のゲート）
 
 1. §6.6 相当の性質テストは適用不能（変形が部分コピーでない）。代わりに「形状不変テンソル
    （`conv1`、`dense_embedding`、588 Linear を含む）が bit 同一で保存・再ロードされる」テストを置く。
-2. 形状の一致: 1024px 入力で flow matching 側のトークン数が 1024、ViT 側のマージ後トークン数が
-   1024、`fm_head` の出力が `[B, C, 128, 128]`（潜在格子）であること。
-3. 3 ステップ smoke: `sensenova_train_fm_modules=True`、bf16、有限 loss、`noise_scale` が学習済みレンジ内。
+2. 形状の一致: `128 × vae_scale_factor` px 四方（8×: 1024px、16×: 2048px）の入力で flow matching 側の
+   トークン数が 1024、ViT 側のマージ後トークン数が 1024、`fm_head` の出力が `[B, C, 128, 128]`
+   （潜在格子）であること。8× と 16× の両方で確認し、形が変わるテンソルが両者で同一形状
+   （patch-embed `[1024, C, 2, 2]`、`conv2 [C, 256, 3, 3]`）であること。
+3. 3 ステップ smoke: `sensenova_train_fm_modules=True`、bf16、有限 loss、`noise_scale` が学習済みレンジ内
+   （トークン数 1024 で 4、§10.4）。
    有限 loss だけでは足りず、次を同じ smoke で記録する:
    - `t` の端点付近（`t = 1 - t_eps` と `t = t_eps`）で `v` のノルムが有限であること
      （`(1-t).clamp_min(t_eps)` の下で `-z/(1-t)` が有界であることの確認）。
@@ -919,8 +967,9 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
      1 つ）の勾配ノルムがゼロであること（§10.3 のゼロヘッドの帰結どおり）。
    - step 1 以降で上流の勾配ノルムが有限かつ非ゼロであること（ヘッドが非ゼロになって勾配が
      届いたことの確認）。
-4. 1 枚生成が VAE decode まで通り、出力が NaN でない。
-5. 上記を満たしても**品質の主張はしない**。品質は所有者が実データで判断する。
+4. 1 枚生成が VAE decode まで通り、出力が NaN でない。`normalize_resolution` が `4·s` の格子に
+   スナップし、16× VAE で 4096² の要求に `sensenova_resolution` 警告が出ないこと（§10.5）。
+5. 上記を満たしても**品質の主張はしない**。8× と 16× の優劣も主張しない。品質は所有者が実データで判断する。
 
 ---
 
@@ -939,7 +988,7 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 | **P5 共有正規化層** | `normalize(spec)` 3 方式と正規化領域 `vae_norm_pack`（§8.4）、flux2/lens ops の「normalize → backbone patchify」2 段化、anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除、§7.4 の BN 系ゲート解除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype）。sdxl に flux2 由来の 32ch BN VAE（`registry`/`file`）を当てて `normalize` の出力が 32ch で、flux2 経路で BN 適用後に unpack した値と一致 | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
 | **P6 第2波（zimage/krea2/ltx2）** | `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除 | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は入出力とも `inner` 順の唯一の実例 |
 | **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合 | 同上。anima は padding-mask 行の移動と、出力側が入力側と異なる順序で変形されることをテストで確認。flux2 フルモデルから抽出した 32ch BN VAE を sdxl で smoke → 保存 → 生成（P2 で拒否していた組合せの解除確認） | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
-| **P8 SenseNova** | §10 全体（8× VAE のみ） | §10.6 | 高。研究段階 |
+| **P8 SenseNova** | §10 全体（`P = 4` 固定、任意の `vae_scale_factor`。トークン幅 `4 × vae_scale_factor` 由来の配線 §10.5 を含む） | §10.6（8× と 16× の VAE それぞれで） | 高。研究段階 |
 | 保留 | acestep（§6.4） | — | RVQ 再学習を含み本書の範囲外 |
 
 各フェーズのコミット前に `git diff --cached` の比較レビュー（CLAUDE.md 大規模変更手順）と、
@@ -955,8 +1004,7 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 - **minimax_music3**: 学習非対応。
 - **acestep**: 変形自体は §6.4 で定義できるが、凍結 RVQ・`silence_latent`・`chunk_masks` の再設計を
   含むため本書では保留。
-- **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外だが、そこでも 8× VAE に限る
-  （16× は `ps1`/`ps2`・`dense_embedding` の変更を伴うため別設計、§10.2）。
+- **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外で、任意の空間縮小率を受理する（§10.2）。
 - **生成側 override でのフルモデル抽出**: 提供しない（§7.2）。
 - **重みスケール補正・warmup/freeze スケジュール**: 行わない（D4）。効果の主張は実測後に限る。
 - **SenseNova の `noise_scale` 再較正と `encoder_pinv` ヘッド初期化**: 実験結果待ち（§10.3, §10.4）。

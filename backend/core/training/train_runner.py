@@ -198,7 +198,8 @@ def _apply_sensenova_training_contract(
             "batch_size=1 works without bucketing"
         )
     if is_full_finetune:
-        _apply_sensenova_full_finetune_contract(train_config)
+        _apply_sensenova_full_finetune_contract(
+            train_config, base_model_path=base_model_path)
     elif not _normalize_sensenova_bool(train_config, "train_unet", True):
         # LoRA only. Under full fine-tuning the understanding half alone is a
         # branch resolve_full_finetune_branch names ("und"); under LoRA it is
@@ -371,13 +372,19 @@ def _apply_sensenova_training_contract(
     return True
 
 
-def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> None:
+def _apply_sensenova_full_finetune_contract(
+    train_config: Dict[str, Any], *, base_model_path: str = "",
+) -> None:
     """The full-fine-tune clauses that are decidable from the config alone.
 
     Duplicating nothing: each clause below is checked again inside the trainer
     (``assert_full_finetune_contract`` before the load,
     ``BaseTrainer.train`` from its own arguments). What this adds is the point
     at which it is checked -- before the checkpoint load, not minutes in.
+
+    ``base_model_path`` is read for its METADATA only, by the one clause
+    (``sensenova_gen_patch``) whose answer depends on whether the base is
+    already in a latent space.
 
     ``weight_dtype``/``training_dtype`` are NOT checked here: the full-finetune
     dispatch below forces both to bf16 for this architecture via
@@ -413,20 +420,29 @@ def _apply_sensenova_full_finetune_contract(train_config: Dict[str, Any]) -> Non
             "route never reaches, so the shadow would silently never update."
         )
     from api.param_defaults import TRAINING_DEFAULTS
-    from core.models.sensenova.latent_space import validate_gen_patch
+    from core.models.sensenova.latent_space import (
+        INHERIT_GEN_PATCH, validate_gen_patch,
+    )
     from core.training.vae_swap import resolve_vae_swap_source
 
-    default_patch = int(TRAINING_DEFAULTS["sensenova_gen_patch"])
-    gen_patch = validate_gen_patch(
-        _normalize_sensenova_integer(train_config, "sensenova_gen_patch",
-                                     default_patch),
-        label="sensenova_gen_patch")
-    if gen_patch != default_patch and not resolve_vae_swap_source(train_config):
-        raise ValueError(
-            f"SenseNova sensenova_gen_patch={gen_patch} requires a "
-            f"vae_swap_source: the generation grid is only rebuilt by a swap, "
-            f"so without one the run would train at the base checkpoint's own "
-            f"patch and the setting would be silently ignored.")
+    gen_patch = _normalize_sensenova_integer(
+        train_config, "sensenova_gen_patch",
+        int(TRAINING_DEFAULTS["sensenova_gen_patch"]))
+    if gen_patch != INHERIT_GEN_PATCH:
+        # 0 inherits the base's own grid and asks for nothing; only a positive
+        # multiple of 4 requests a rebuild, and nothing but a swap rebuilds --
+        # except on a base that already carries its own VAE, whose declaration
+        # takes the run through apply_vae_swap with no source of its own.
+        validate_gen_patch(gen_patch, label="sensenova_gen_patch")
+        if not (resolve_vae_swap_source(train_config)
+                or _base_declares_own_vae(base_model_path)):
+            raise ValueError(
+                f"SenseNova sensenova_gen_patch={gen_patch} requires a "
+                f"vae_swap_source: the generation grid is only rebuilt by a "
+                f"swap, so without one the run would train at the base "
+                f"checkpoint's own patch and the setting would be silently "
+                f"ignored. Leave it at {INHERIT_GEN_PATCH} to inherit that "
+                f"patch deliberately.")
     if resolve_vae_swap_source(train_config) and not _normalize_sensenova_bool(
             train_config, "sensenova_train_fm_modules", False):
         # The served requirement (arch_capabilities: required value, lifted when
@@ -571,6 +587,25 @@ def _warn_on_unresumable_sensenova_save_format(
         f"fact -- the weights are already written in the shape it chose.",
         code="sensenova_save_format_not_resumable",
     )
+
+
+def _base_declares_own_vae(base_model_path: str) -> bool:
+    """Does this checkpoint carry a ``component.vae.*`` block of its own?
+
+    Such a base is ALREADY in a latent space, so ``load_components`` reaches
+    ``apply_vae_swap`` from the declaration alone and an explicit
+    ``sensenova_gen_patch`` is honoured without a ``vae_swap_source``. Metadata
+    only (``load_weights=False``); an unreadable header answers "yes" so a probe
+    failure cannot refuse a run the loader would accept.
+    """
+    from core.models.common.vae_source import load_declared_latent_io
+
+    try:
+        return load_declared_latent_io(base_model_path, arch="sensenova",
+                                       load_weights=False,
+                                       download=False) is not None
+    except Exception:
+        return True
 
 
 def _normalize_sensenova_integer(

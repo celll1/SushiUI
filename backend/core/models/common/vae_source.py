@@ -956,16 +956,14 @@ def sensenova_token_geometry(scale_factor: int,
     """SenseNova's token width and recommended resolution band for a VAE.
 
     One token covers ``patch * scale_factor`` pixels and the 3-5 MP band moves
-    with the square of that. ``patch`` defaults to the served
-    ``sensenova_gen_patch``: the candidate listing is not told which patch the
-    run will use, so what it shows is the default-patch width.
+    with the square of that. The candidate listing is not told which patch the
+    run will use, so ``patch=None`` (and the served inherit sentinel 0) shows
+    the architecture's own patch.
     """
-    from api.param_defaults import TRAINING_DEFAULTS
-    from core.models.sensenova.latent_space import validate_gen_patch
+    from core.models.sensenova.latent_space import resolve_gen_patch
 
     scale = int(scale_factor or 1)
-    cells = validate_gen_patch(
-        TRAINING_DEFAULTS["sensenova_gen_patch"] if patch is None else patch)
+    cells = resolve_gen_patch(patch)
     ratio = (cells * scale / 32.0) ** 2
     return {
         "token_pixel_width": cells * scale,

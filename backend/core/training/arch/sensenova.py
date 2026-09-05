@@ -102,19 +102,24 @@ class SenseNovaArchHandler(ArchHandler):
             facts, trainer=trainer, base_model_path=base_model_path)
 
     @staticmethod
-    def _resolve_gen_patch(config) -> int:
-        """The run's generation patch, in latent cells (``sensenova_gen_patch``)."""
+    def _resolve_gen_patch(config, *, base_patch=None) -> int:
+        """The run's generation patch, in latent cells (``sensenova_gen_patch``).
+
+        The served default is ``INHERIT_GEN_PATCH`` (0): it resolves to
+        ``base_patch``, so only a positive value asks to rebuild the grid.
+        """
         from api.param_defaults import TRAINING_DEFAULTS
-        from core.models.sensenova.latent_space import validate_gen_patch
+        from core.models.sensenova.latent_space import resolve_gen_patch
 
         value = config.get("sensenova_gen_patch")
         if value is None:
             value = TRAINING_DEFAULTS["sensenova_gen_patch"]
-        return validate_gen_patch(value, label="sensenova_gen_patch")
+        return resolve_gen_patch(value, base_patch=base_patch,
+                                 label="sensenova_gen_patch")
 
     @staticmethod
     def _warn_off_calibration(trainer, geometry, config) -> None:
-        """A patch other than the default moves the token count the checkpoint's
+        """A patch other than the native 4 moves the token count the checkpoint's
         own schedule is calibrated against, and nothing recalibrates it.
 
         ``compute_noise_scale`` is ``sqrt(tokens / base) * noise_scale``, so a
@@ -123,9 +128,12 @@ class SenseNovaArchHandler(ArchHandler):
         "standard"`` on entry, so ``_calculate_dynamic_mu`` -- the only other
         token-count-dependent term -- is unreachable in this repo.
         """
-        from api.param_defaults import TRAINING_DEFAULTS
+        from core.models.sensenova.latent_space import NATIVE_GEN_LATENT_PATCH
 
-        default_patch = int(TRAINING_DEFAULTS["sensenova_gen_patch"])
+        # The calibrated grid is the pixel model's 32px token, i.e. P=4 on an 8x
+        # VAE -- a structural reference, not whatever the config defaults to
+        # (which is the inherit sentinel).
+        default_patch = NATIVE_GEN_LATENT_PATCH
         if geometry.patch == default_patch:
             return
         from core.models.sensenova.sensenova_pipeline_ops import compute_noise_scale
@@ -145,10 +153,10 @@ class SenseNovaArchHandler(ArchHandler):
         noise_scale = compute_noise_scale(transformer, grid, grid, merge)
         default_side = reference // (default_patch * geometry.vae_scale_factor)
         emit_training_warning(
-            f"SenseNova sensenova_gen_patch={geometry.patch} (default "
+            f"SenseNova sensenova_gen_patch={geometry.patch} (native "
             f"{default_patch}): one token covers {align}px, so a "
             f"{reference}px square is {tokens} tokens against "
-            f"{default_side * default_side} at the default, and "
+            f"{default_side * default_side} at the native patch, and "
             f"compute_noise_scale returns {noise_scale:.4f} there. Both are "
             f"outside the band this checkpoint was trained on and NEITHER is "
             f"recalibrated: the noise-scale formula and its embedder are the "
@@ -177,30 +185,44 @@ class SenseNovaArchHandler(ArchHandler):
             apply_latent_geometry, gen_geometry, latent_config_dict,
             stamp_vae_scale_factor,
         )
-        from core.training.ops.training_method import is_full_finetune
+        from core.training.ops.training_method import (
+            is_full_finetune, resolve_training_method,
+        )
 
         config = getattr(trainer, "config", None) or {}
         init = str(config.get("vae_swap_new_channel_init") or "zero")
-        patch = self._resolve_gen_patch(config)
         geometry = gen_geometry(trainer.transformer)
-        # A base already in a latent space keeps ITS patch when the config only
-        # carries the default. update_training_run sends every Pydantic default,
-        # so editing a coarse-patch run in the UI would otherwise arrive here as
-        # "patch 4", rebuild the two layers it had trained, and say nothing. An
-        # explicitly different patch still rebuilds -- that one was asked for.
-        from api.param_defaults import TRAINING_DEFAULTS
-        if (geometry.is_latent and patch != geometry.patch
-                and patch == int(TRAINING_DEFAULTS["sensenova_gen_patch"])):
-            print(f"{getattr(trainer, 'log_prefix', '[SenseNova]')} "
-                  f"[VAE swap] base declares generation patch {geometry.patch}; "
-                  f"keeping it (config carries only the default {patch})")
-            patch = geometry.patch
+        # 0 (INHERIT_GEN_PATCH, the served default) keeps a latent base's own
+        # patch: update_training_run sends every Pydantic default, so editing a
+        # coarse-patch run in the UI must not arrive here as "patch 4", rebuild
+        # the two layers it had trained, and say nothing. A positive value
+        # rebuilds -- that one was asked for.
+        patch = self._resolve_gen_patch(
+            config, base_patch=geometry.patch if geometry.is_latent else None)
         # A base that already declares this latent space was BUILT in it and its
         # weights are loaded: rebuilding would throw away the two trained layers.
         rebuild = not (geometry.channels == resolved.latent_channels
                        and geometry.patch == patch
                        and geometry.vae_scale_factor == resolved.scale_factor)
-        if rebuild and is_full_finetune(trainer) and not _fm_modules_trained(trainer):
+        if rebuild and not is_full_finetune(trainer):
+            # Reachable without a vae_swap_source (which capability already
+            # refuses for these methods): a patch change against an ALREADY
+            # swapped base arrives here from load_components' declared-VAE path.
+            raise ValueError(
+                f"SenseNova rebuilds its latent I/O only under a full "
+                f"fine-tune, and this run's training_method is "
+                f"{resolve_training_method(trainer)!r}: the generation ViT's "
+                f"patch embed and the fm_head's output convolution are "
+                f"REPLACED, not resized, and LoRA trains neither and saves "
+                f"neither -- the new output convolution would stay at its zero "
+                f"initialisation for the whole run, which also holds the "
+                f"gradient to everything upstream of it at zero. The base is "
+                f"{geometry.channels}ch at patch {geometry.patch} "
+                f"({geometry.vae_scale_factor}x) and this run asks for "
+                f"{resolved.latent_channels}ch at patch {patch} "
+                f"({resolved.scale_factor}x). Leave sensenova_gen_patch at 0 to "
+                f"train at the base's own geometry, or use Full Fine-tune.")
+        if rebuild and not _fm_modules_trained(trainer):
             raise ValueError(
                 "a SenseNova VAE swap requires sensenova_train_fm_modules: the "
                 "swap rebuilds the generation ViT's patch embed and the "

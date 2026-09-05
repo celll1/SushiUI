@@ -323,7 +323,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   num_optimizer_groups: 0,
   bundle_vae: false,
   vae_swap_source: "",
-  sensenova_gen_patch: 4,
+  sensenova_gen_patch: 0,
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
   activation_dispatch_seed_coef: 0.000024,

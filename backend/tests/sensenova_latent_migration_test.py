@@ -4,14 +4,15 @@ What these cover, and what they deliberately do not:
 
 * the geometry (one token = P * vae_scale_factor pixels, exactly two tensors
   change shape, identically at 8x and 16x) and the fact that P is a per-run
-  parameter -- `sensenova_gen_patch`, default 4 -- rather than the constant
+  parameter -- `sensenova_gen_patch`, whose default 0 INHERITS -- not the constant
   §10.2 wrote it as;
 * §10.3's initialisation and its consequences -- including the one the design
   is explicit is NOT avoided: with a zero head ``v = -z/(1-t)`` still grows as
   ``t -> 1`` and is bounded only by ``(1-t).clamp_min(t_eps)``;
 * §10.6's endpoint velocity and step-0/step-1 gradient measurements;
-* the refusals: the shut capability gate, the fm_modules requirement, and a
-  checkpoint whose config and component blocks disagree.
+* the refusals: the shut capability gate, the fm_modules requirement, the
+  full-fine-tune-only rebuild, and a checkpoint whose config and component
+  blocks disagree.
 
 They say NOTHING about whether a swapped model trains or generates well. §10.6-5
 forbids a quality claim, and no run has been made.
@@ -33,11 +34,14 @@ from sensenova_training_core_test import _Cache, _Layer  # noqa: E402
 
 from api.param_defaults import TRAINING_DEFAULTS  # noqa: E402
 from core.models.sensenova.latent_space import (  # noqa: E402
+    INHERIT_GEN_PATCH,
     MIN_GEN_LATENT_PATCH,
+    NATIVE_GEN_LATENT_PATCH,
     apply_latent_geometry,
     gen_geometry,
     latent_config_dict,
     resolution_band_mp,
+    resolve_gen_patch,
     token_pixel_width,
     validate_gen_patch,
 )
@@ -60,8 +64,9 @@ HIDDEN = 64          # llm hidden; ConvDecoder needs it divisible by 4 twice
 VIT_HIDDEN = 32
 CHANNELS = 16
 T_EPS = 0.02
-#: The served default, so a change to it fails here rather than in a run.
-PATCH = TRAINING_DEFAULTS["sensenova_gen_patch"]
+#: The patch a pixel base is migrated at when the run inherits. The SERVED
+#: default is the 0 sentinel; a change to either fails here, not in a run.
+PATCH = NATIVE_GEN_LATENT_PATCH
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +587,7 @@ def test_token_count_and_noise_scale_at_1536px(patch, tokens, noise_scale):
                                merge) == pytest.approx(noise_scale)
 
 
-def test_the_default_patch_is_the_pixel_model_geometry_and_its_init_is_unchanged():
+def test_the_native_patch_is_the_pixel_model_geometry_and_its_init_is_unchanged():
     """P=4 at 8x is 32px per token -- the pixel model's own -- and the truncated
     normal is drawn exactly as before this parameter existed."""
     assert PATCH == MIN_GEN_LATENT_PATCH == 4
@@ -624,11 +629,18 @@ def test_the_run_patch_reaches_the_rebuild_and_the_config_block(capsys):
     assert "3.0000" in out
 
 
-def test_the_default_patch_swaps_exactly_as_before_and_warns_about_nothing(capsys):
+@pytest.mark.parametrize("config", [
+    {"training_method": "full_finetune"},                             # key absent
+    {"training_method": "full_finetune",
+     "sensenova_gen_patch": TRAINING_DEFAULTS["sensenova_gen_patch"]},  # as served
+])
+def test_a_pixel_base_at_the_default_builds_at_the_native_patch(config, capsys):
+    """Nothing to inherit: the sentinel takes the architecture's own 4, which is
+    the pixel model's geometry, so the swap is the one it always was."""
     from core.training.arch.sensenova import SenseNovaArchHandler
 
     tree = _PixelTree()
-    trainer = _swap_trainer(tree, {"training_method": "full_finetune"})
+    trainer = _swap_trainer(tree, dict(config))
     SenseNovaArchHandler(trainer).apply_vae_swap(
         trainer, _RESOLVED_16CH_8X, module=object())
 
@@ -655,6 +667,149 @@ def test_a_latent_base_at_its_own_patch_is_not_rebuilt():
     for name, tensor in before.items():
         assert torch.equal(tensor, after[name]), name
     assert trainer.sensenova_config_dict["gen_patch_size"] == 8
+
+
+def _latent_tree(patch: int):
+    """A base already migrated to 16ch / 8x at ``patch``, as a resumed run sees it."""
+    tree = _PixelTree()
+    apply_latent_geometry(tree, channels=CHANNELS, vae_scale_factor=8, patch=patch)
+    return tree
+
+
+def _lora_trainer(tree, config):
+    trainer = _swap_trainer(tree, config)
+    trainer.network_type = "lora"
+    return trainer
+
+
+def test_the_inherit_sentinel_is_resolved_before_it_is_validated():
+    """0 is not a legal patch -- it is the ABSENCE of a request, and only
+    ``resolve_gen_patch`` understands it."""
+    assert TRAINING_DEFAULTS["sensenova_gen_patch"] == INHERIT_GEN_PATCH == 0
+    with pytest.raises(ValueError, match="positive multiple of 4"):
+        validate_gen_patch(INHERIT_GEN_PATCH)
+
+    assert resolve_gen_patch(0) == NATIVE_GEN_LATENT_PATCH
+    assert resolve_gen_patch(None) == NATIVE_GEN_LATENT_PATCH
+    assert resolve_gen_patch(0, base_patch=8) == 8
+    assert resolve_gen_patch(None, base_patch=12) == 12
+    # A positive value is an explicit request; the base's patch does not soften it.
+    assert resolve_gen_patch(4, base_patch=8) == 4
+    with pytest.raises(ValueError, match="positive multiple of 4"):
+        resolve_gen_patch(6, base_patch=8)
+
+
+def test_a_lora_run_may_not_rebuild_the_latent_io():
+    """P1: the rebuild is full-fine-tune-only whatever asked for it.
+
+    ``vae_swap_source`` is empty here, so the capability table's method gate --
+    which keys on that field -- never sees this run; the base's own declaration
+    is what brings it to ``apply_vae_swap``.
+    """
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _latent_tree(4)
+    before = _params(tree)
+    trainer = _lora_trainer(tree, {"training_method": "lora",
+                                   "vae_swap_source": "",
+                                   "sensenova_gen_patch": 8})
+    with pytest.raises(ValueError, match="only under a full fine-tune"):
+        SenseNovaArchHandler(trainer).apply_vae_swap(
+            trainer, _RESOLVED_16CH_8X, module=object())
+
+    # Refused BEFORE anything was replaced.
+    assert gen_geometry(tree).patch == 4
+    after = _params(tree)
+    for name, tensor in before.items():
+        assert torch.equal(tensor, after[name]), name
+
+
+def test_a_lora_run_on_a_matching_latent_base_still_trains():
+    """The other half of P1: restoring the base's own geometry is not a rebuild,
+    so an ordinary LoRA on a swapped checkpoint keeps working."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _latent_tree(8)
+    before = _params(tree)
+    trainer = _lora_trainer(tree, {"training_method": "lora",
+                                   "vae_swap_source": ""})
+    report = SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert report.replaced == ()
+    after = _params(tree)
+    for name, tensor in before.items():
+        assert torch.equal(tensor, after[name]), name
+    assert gen_geometry(tree).patch == 8
+    assert trainer.sensenova_config_dict["gen_patch_size"] == 8
+    assert trainer.wiring.latent_channels == CHANNELS
+
+
+def test_an_explicit_patch_of_four_rebuilds_a_p8_base_under_full_finetune():
+    """P2: 4 is a value a caller can ask for again, not "the field is absent"."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _latent_tree(8)
+    trainer = _swap_trainer(tree, {"training_method": "full_finetune",
+                                   "sensenova_gen_patch": 4})
+    report = SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert report.replaced == (
+        "fm_modules.vision_model_mot_gen.embeddings.patch_embedding",
+        "fm_modules.fm_head.conv2")
+    assert gen_geometry(tree).patch == 4
+    assert trainer.sensenova_config_dict["gen_patch_size"] == 4
+
+
+@pytest.mark.parametrize("config", [
+    {"training_method": "full_finetune"},                             # key absent
+    {"training_method": "full_finetune",
+     "sensenova_gen_patch": TRAINING_DEFAULTS["sensenova_gen_patch"]},  # as served
+])
+def test_the_default_against_a_p8_base_inherits_8(config):
+    """The hazard the sentinel exists for: update_training_run resends every
+    Pydantic default, and that must not replace the two trained layers."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _latent_tree(8)
+    before = _params(tree)
+    trainer = _swap_trainer(tree, dict(config))
+    report = SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert report.replaced == ()
+    after = _params(tree)
+    for name, tensor in before.items():
+        assert torch.equal(tensor, after[name]), name
+    assert gen_geometry(tree).patch == 8
+    assert trainer.sensenova_config_dict["gen_patch_size"] == 8
+
+
+def test_the_preflight_reads_the_sentinel_as_no_request(tmp_path):
+    """The same reading before the load: 0 asks for nothing, a positive value
+    needs something that actually rebuilds the grid."""
+    from core.training.train_runner import (
+        _apply_sensenova_full_finetune_contract,
+    )
+
+    base = str(tmp_path / "sensenova.safetensors")  # no component.vae.* block
+
+    config = {"sensenova_gen_patch": TRAINING_DEFAULTS["sensenova_gen_patch"]}
+    _apply_sensenova_full_finetune_contract(config, base_model_path=base)
+
+    with pytest.raises(ValueError, match="requires a vae_swap_source"):
+        _apply_sensenova_full_finetune_contract(
+            {"sensenova_gen_patch": 8}, base_model_path=base)
+    with pytest.raises(ValueError, match="positive multiple of 4"):
+        _apply_sensenova_full_finetune_contract(
+            {"sensenova_gen_patch": 6, "vae_swap_source": "registry:flux1"},
+            base_model_path=base)
+    # An explicit patch WITH something that rebuilds is accepted.
+    _apply_sensenova_full_finetune_contract(
+        {"sensenova_gen_patch": 8, "vae_swap_source": "registry:flux1",
+         "sensenova_train_fm_modules": True},
+        base_model_path=base)
 
 
 def test_the_loader_accepts_the_patch_the_checkpoint_declares():

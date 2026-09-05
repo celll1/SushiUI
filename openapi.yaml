@@ -21388,27 +21388,38 @@ components:
           description: How channels the previous VAE did not have are initialised in the resized latent input/output layers.
         sensenova_gen_patch:
           type: 'integer'
-          minimum: 4
-          default: 4
+          minimum: 0
+          default: 0
           description: |
-            SenseNova U1.5 VAE swap only: the generation branch's patch, in
-            LATENT cells. Ignored by every other architecture, and by a
-            SenseNova run with no `vae_swap_source` (a non-default value there
-            is refused rather than silently dropped, since nothing rebuilds the
-            grid).
+            SenseNova U1.5 only: the generation branch's patch, in LATENT cells.
+            Ignored by every other architecture.
 
-            Must be a positive multiple of 4: the fm_head's `ps1(2)` and
+            **`0` (the default) means INHERIT**: keep the patch the base
+            checkpoint was built at, or 4 when the base is pixel-space. Any
+            other value is an explicit request that REBUILDS the generation
+            ViT's patch embed and the fm_head's output convolution, discarding
+            whatever those two layers had learned — which is why the default is
+            the inherit sentinel rather than 4, and why only
+            `training_method: full_finetune` may send a positive value (LoRA
+            trains neither layer and saves neither, so the rebuilt output
+            convolution would stay at its zero initialisation and hold the
+            gradient to everything upstream of it at zero).
+
+            A positive value must be a multiple of 4: the fm_head's `ps1(2)` and
             `ps2(2)` leave its final PixelShuffle a factor of `patch/4`, which
             has to be a positive integer. Tokens can therefore be made COARSER
-            than the pixel model's, never finer.
+            than the pixel model's, never finer. It also needs a
+            `vae_swap_source`, or a base that already carries its own
+            `component.vae.*` block — nothing else rebuilds the grid, and the
+            setting is refused rather than silently dropped.
 
             One token covers `sensenova_gen_patch * vae_scale_factor` pixels.
-            At the default 4 on an 8x VAE that is 32px — exactly the pixel
-            model's own geometry, so the token count, and with it the
-            transformer's work, is unchanged by the swap. At 8 it is 64px:
-            a quarter of the tokens at the same resolution.
+            At 4 on an 8x VAE that is 32px — exactly the pixel model's own
+            geometry, so the token count, and with it the transformer's work,
+            is unchanged by the swap. At 8 it is 64px: a quarter of the tokens
+            at the same resolution.
 
-            NOTHING IS RECALIBRATED for a non-default value. `compute_noise_scale`
+            NOTHING IS RECALIBRATED away from 4. `compute_noise_scale`
             is `sqrt(token_count / base) * noise_scale`, so a coarser patch
             lowers the initial noise scale — which is also fed to the model
             through its own `noise_scale_embedder` — by the same factor the
@@ -21417,10 +21428,10 @@ components:
             count and the resulting noise scale. Whether a coarser token trains
             or generates well is unmeasured.
 
-            The value is written into the saved checkpoint's `gen_patch_size`,
-            and the generation loader rebuilds the tree from it, so a checkpoint
-            trained at 8 reloads at 8.
-          example: 4
+            The patch the tree was actually built at is written into the saved
+            checkpoint's `gen_patch_size`, and the generation loader rebuilds
+            the tree from it, so a checkpoint trained at 8 reloads at 8.
+          example: 0
         sdxl_vae_type:
           type: 'string'
           default: 'none'

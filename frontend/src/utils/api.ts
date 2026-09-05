@@ -6589,9 +6589,11 @@ export interface TrainingRunCreateRequest {
   // "file:<path>" | "model:<path>"; "" keeps the base model's own VAE.
   // Candidates come from GET /training/vae-sources; full_finetune only.
   vae_swap_source?: string;
-  // SenseNova only: the generation patch in LATENT cells, a positive
-  // multiple of 4. A token covers patch * vae_scale_factor pixels, so a
-  // coarser patch is the only thing that reduces the token count.
+  // SenseNova only: the generation patch in LATENT cells. 0 (the default)
+  // inherits the base checkpoint's own patch; a positive multiple of 4
+  // rebuilds the latent I/O layers, which only a full fine-tune can train.
+  // A token covers patch * vae_scale_factor pixels, so a coarser patch is the
+  // only thing that reduces the token count.
   sensenova_gen_patch?: number;
   // DEPRECATED spelling of vae_swap_source, SDXL + registry keys only. Kept so
   // an older run still loads; new runs send vae_swap_source.

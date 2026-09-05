@@ -33,16 +33,37 @@ import os
 from typing import Dict, Optional
 
 
-# vae_type -> registry entry.
-#   class            : diffusers class name that loads this VAE (documentation only)
+# vae_type -> registry entry. THE VAE FAMILY TABLE: the component-side registry
+# (``models/components/vae_registry.py``) is a projection of this one, not a
+# second table (design doc VAE_SWAP_MIGRATION_DESIGN.md §7.1).
+#   class            : diffusers class name that loads this VAE
 #   latent_channels  : latent channel count
+#   latent_ndim      : rank of the latent tensor this VAE produces (4 = [B,C,H,W]
+#                      2D conv stack; 5 = [B,C,T,H,W] causal 3D stack)
+#   scale_factor     : spatial compression ratio
+#   scale_temporal   : temporal compression ratio (1 for a 2D image VAE)
+#   norm / norm_pack : how latents are normalised, and the spatial pack factor of
+#                      the domain the statistics are defined on (§5.2)
 #   store_subdir     : subdirectory under <models_dir>/vae/ for the shared store
 #   default_repo     : HF repo id for the default weights (redistributable)
 #   default_subfolder: subfolder within the repo holding the VAE (None = repo root)
+#   diffusers_repo   : default_repo is a diffusers-layout directory (config.json +
+#                      weights). False = original/LDM single-file release, which
+#                      `from_pretrained` cannot open.
+#   preview          : TAESD preview-decoder kind, or None for the generic path
 #   license          : SPDX-ish license string of the default repo
 #   scaling_factor   : the family's canonical latent scaling factor, or None when
 #                      the family does not have a single scalar one (see below)
 #   shift_factor     : the family's canonical latent shift, or None for "absent"
+#
+# The structural fields are read off the diffusers classes: AutoencoderKL and
+# AutoencoderKLFlux2 are 2D stacks whose spatial ratio is
+# 2 ** (len(block_out_channels) - 1) = 8 (the same expression the diffusers
+# pipelines compute their own vae_scale_factor with); AutoencoderKLQwenImage is a
+# causal 3D stack with spatial 2 ** len(temperal_downsample) = 8 and one temporal
+# halving per True in it = 4. AutoencoderKLFlux2's BatchNorm is declared over
+# prod(patch_size) * latent_channels = 4 * 32 channels, i.e. on the 2x2-packed
+# domain -> norm_pack 2.
 #
 # scaling_factor / shift_factor are the values in the default repo's own
 # config.json, verified against it. They exist here so that a VAE loaded WITHOUT
@@ -66,6 +87,13 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "license": "MIT",
         "scaling_factor": 0.13025,
         "shift_factor": None,
+        "latent_ndim": 4,
+        "scale_factor": 8,
+        "scale_temporal": 1,
+        "norm": "shift_scale",
+        "norm_pack": 1,
+        "diffusers_repo": True,
+        "preview": "taesdxl",   # taesd.py is_sdxl path
     },
     "sd15": {
         "class": "AutoencoderKL",
@@ -76,6 +104,14 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "license": "MIT",
         "scaling_factor": 0.18215,
         "shift_factor": None,
+        "latent_ndim": 4,
+        "scale_factor": 8,
+        "scale_temporal": 1,
+        "norm": "shift_scale",
+        "norm_pack": 1,
+        # Original/LDM single-file release (a bare .safetensors, no config.json).
+        "diffusers_repo": False,
+        "preview": None,
     },
     "flux1": {
         "class": "AutoencoderKL",
@@ -86,6 +122,13 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "license": "Apache-2.0",
         "scaling_factor": 0.3611,
         "shift_factor": 0.1159,
+        "latent_ndim": 4,
+        "scale_factor": 8,
+        "scale_temporal": 1,
+        "norm": "shift_scale",
+        "norm_pack": 1,
+        "diffusers_repo": True,
+        "preview": "taef1",     # taesd.py is_zimage (FLUX VAE) path
     },
     "flux2": {
         "class": "AutoencoderKLFlux2",
@@ -97,6 +140,13 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "license": "Apache-2.0",
         "scaling_factor": None,   # latents_mean / latents_std, no scalar
         "shift_factor": None,
+        "latent_ndim": 4,
+        "scale_factor": 8,
+        "scale_temporal": 1,
+        "norm": "batchnorm",
+        "norm_pack": 2,
+        "diffusers_repo": True,
+        "preview": None,
     },
     "qwen_image": {
         "class": "AutoencoderKLQwenImage",
@@ -107,6 +157,13 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "license": "Apache-2.0",
         "scaling_factor": None,   # latents_mean / latents_std, no scalar
         "shift_factor": None,
+        "latent_ndim": 5,
+        "scale_factor": 8,
+        "scale_temporal": 4,
+        "norm": "per_channel",
+        "norm_pack": 1,
+        "diffusers_repo": True,
+        "preview": None,
     },
 }
 

@@ -6289,6 +6289,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/vae-sources:
+    get:
+      tags: [training]
+      summary: List selectable VAE sources for a VAE-swap full fine-tune
+      description: |
+        Candidate VAEs a full fine-tune can migrate an architecture's latent
+        space to, in the three source forms of
+        `docs/guides/VAE_SWAP_MIGRATION_DESIGN.md` section 7.1:
+
+        * `registry` - a family in the shared VAE table
+          (`registry:<key>`, e.g. `registry:flux1`)
+        * `standalone` - a diffusers VAE directory or single file
+          (`file:<path>`)
+        * `extract_from_model` - the VAE bundled inside ANOTHER full checkpoint,
+          read out of it by prefix (`model:<path>`)
+
+        The extraction form is reachable HERE ONLY. `GET /models/vaes` (the
+        per-generation VAE override list) deliberately does not offer it: an
+        override would re-scan and re-extract several GB on every generation,
+        and a training run that needs one extracts it once and bundles it.
+
+        Structural facts come from the candidate's own weights where they can be
+        observed (header reads only - no tensor data is loaded and no content
+        hash is computed) and from its `config.json` / declared metadata where
+        they cannot. A field that is neither observed nor declared is never
+        guessed: the candidate comes back with `compatible: false` and a
+        `reason` instead. `compatible` also carries the family gate of section
+        7.4 (latent rank, spatial/temporal compression ratio, normalisation
+        domain); a DIFFERENT channel count is the point of the feature and never
+        a refusal on its own.
+
+        For `arch=sensenova` each candidate additionally carries
+        `token_pixel_width` and `resolution_band_px` (section 10.2): that
+        architecture accepts any spatial compression ratio, and the ratio moves
+        how many pixels one token covers, which the selector shows rather than
+        changing silently.
+      parameters:
+        - name: arch
+          in: query
+          required: true
+          description: Architecture the swapped VAE has to drive (e.g. `sdxl`).
+          schema:
+            type: string
+          example: sdxl
+      responses:
+        '200':
+          description: Candidate VAE sources, grouped by form
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaeSourcesResponse'
+              example:
+                arch: sdxl
+                sources:
+                  registry:
+                    - source: "registry:flux1"
+                      name: flux1
+                      form: registry
+                      family: flux1
+                      latent_channels: 16
+                      scale_factor: 8
+                      scale_temporal: 1
+                      ndim: 4
+                      norm: shift_scale
+                      norm_pack: 1
+                      vae_class: AutoencoderKL
+                      scaling_factor: 0.3611
+                      shift_factor: 0.1159
+                      provenance: "registry:flux1"
+                      locator: "registry:flux1"
+                      struct_native: false
+                      identity_native: null
+                      compatible: true
+                      reason: null
+                  standalone: []
+                  extract_from_model: []
+        '400':
+          description: Unknown architecture
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /tagger-training/runs:
     post:
       tags: [tagger-training]
@@ -22537,3 +22619,150 @@ components:
         use_ood_detection:
           type: boolean
           default: false
+    VaeSourceCandidate:
+      type: object
+      description: |
+        One selectable VAE source. Every structural field is nullable: it is
+        present when the candidate's weights or config say so, and null when
+        neither does - in which case `compatible` is false and `reason` says
+        which fact is missing.
+      required: [source, name, form, compatible]
+      properties:
+        source:
+          type: string
+          description: The value to send as the swap source.
+          example: "registry:flux1"
+        name:
+          type: string
+          description: Display name (a registry key, or a redacted path basename).
+          example: flux1
+        form:
+          type: string
+          enum: [registry, file, model]
+          example: registry
+        family:
+          type: string
+          nullable: true
+          description: Shared-table key, or `custom` when the VAE is not one.
+          example: flux1
+        latent_channels:
+          type: integer
+          nullable: true
+          example: 16
+        scale_factor:
+          type: integer
+          nullable: true
+          description: Spatial compression ratio.
+          example: 8
+        scale_temporal:
+          type: integer
+          nullable: true
+          description: Temporal compression ratio (1 for an image VAE).
+          example: 1
+        ndim:
+          type: integer
+          nullable: true
+          description: Rank of the latent tensor (4 = image, 5 = video).
+          example: 4
+        norm:
+          type: string
+          nullable: true
+          enum: [shift_scale, per_channel, batchnorm, null]
+          example: shift_scale
+        norm_pack:
+          type: integer
+          nullable: true
+          description: |
+            Spatial pack factor of the domain the normalisation statistics are
+            defined on (2 = statistics over the 2x2-packed latent).
+          example: 1
+        vae_class:
+          type: string
+          nullable: true
+          example: AutoencoderKL
+        scaling_factor:
+          type: number
+          nullable: true
+          description: |
+            Null when the family normalises per channel instead. NEVER a
+            fallback constant: an undeterminable factor is a refusal.
+          example: 0.3611
+        shift_factor:
+          type: number
+          nullable: true
+          example: 0.1159
+        provenance:
+          type: string
+          nullable: true
+          description: Display string only; resolution goes through `locator`.
+          example: "registry:flux1"
+        locator:
+          type: string
+          nullable: true
+          description: |
+            How a later reader resolves this VAE when it is not bundled
+            (`registry:<key>` or `path:<abs>`). Null for the extraction form,
+            which therefore must be bundled into the trained checkpoint.
+          example: "registry:flux1"
+        struct_native:
+          type: boolean
+          nullable: true
+          description: |
+            Channels, ratios, rank and class all equal the architecture's own
+            VAE. Null = not determined.
+          example: false
+        identity_native:
+          type: boolean
+          nullable: true
+          description: |
+            Same latent space (same weights) as the architecture's own VAE. Null
+            here: it needs a content hash, which this listing does not compute.
+          example: null
+        compatible:
+          type: boolean
+          description: Whether the family gate accepts this VAE for `arch`.
+          example: true
+        reason:
+          type: string
+          nullable: true
+          description: Why it was refused; null when `compatible` is true.
+          example: null
+        token_pixel_width:
+          type: integer
+          nullable: true
+          description: |
+            SenseNova only (`arch=sensenova`): pixels one token covers with this
+            VAE, `4 * scale_factor`.
+          example: 32
+        resolution_band_px:
+          type: array
+          nullable: true
+          description: |
+            SenseNova only: recommended pixel-count band [min, max] with this
+            VAE, the current band scaled by `(scale_factor / 8) ** 2`.
+          items:
+            type: integer
+          example: [3000000, 5000000]
+    VaeSourcesResponse:
+      type: object
+      required: [arch, sources]
+      properties:
+        arch:
+          type: string
+          example: sdxl
+        sources:
+          type: object
+          required: [registry, standalone, extract_from_model]
+          properties:
+            registry:
+              type: array
+              items:
+                $ref: '#/components/schemas/VaeSourceCandidate'
+            standalone:
+              type: array
+              items:
+                $ref: '#/components/schemas/VaeSourceCandidate'
+            extract_from_model:
+              type: array
+              items:
+                $ref: '#/components/schemas/VaeSourceCandidate'

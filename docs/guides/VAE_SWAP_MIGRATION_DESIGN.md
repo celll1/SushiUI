@@ -216,6 +216,23 @@ class LatentIOSpec:
 （anima のように片側だけ読むと逆順を宣言する）。§6.6 のテストは入力側・出力側を別ケースで持つ。
 ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_linear として同じコードで扱う。
 
+実装で確定した3点:
+
+1. **パス解決のルート。** 表の `unet.conv_in` / `unet.conv_out` は U-Net **の所有者**を
+   ルートに取る綴りである。他 arch のパスは transformer 本体をルートに取るので、両者は
+   同じルート型ではない。sd15/sdxl で `resize_latent_io` に素の U-Net を渡してはならない
+   （`resize_unet_in_out` は `SimpleNamespace(unet=unet)` で包んで渡している）。
+2. **`pack_elems` は文書ではなく計算に使う。** `resize_latent_io` は旧チャネル数を引数に取らず
+   `C_old = in_features / P − e` で復元するため、`P` が誤っていると黙って別の要素を切り出す。
+   **minit2i の `P` はチェックポイント単位の config 値**（latent 2 / pixel 16）であって定数ではなく、
+   pixel 版の `final_layer.linear`（768 = 256·3）は `P=4` でも割り切れてしまうので誤りが表に出ない。
+   P7 で minit2i を通すときに、`ComponentWiringSpec` の固定値ではなく
+   ロード済み config から `pack_elems` を解決する経路を用意すること。
+   `ResizeReport.old_in_channels` / `old_out_channels` を `wiring.latent_channels` と
+   突き合わせる検算はその補助であって、代替にはならない。
+3. `core/training/components/wiring.py`（再エクスポートのシム）は `LatentIOSpec` を
+   再エクスポートしていない。学習側からこの型を import する必要が出た波で足す。
+
 ### 5.2 チェックポイント宣言メタデータ（D8）
 
 `build_component_metadata` / `parse_component_metadata`（`single_file_format.py:129-185`）を

@@ -591,13 +591,13 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         print(f"[encode_image DEBUG] Raw latents (before scaling):")
         print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
         print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
-        print(f"  scaling_factor: {vae_model.config.scaling_factor}")
+        print(f"  scaling_factor: {getattr(vae_model.config, 'scaling_factor', None)}")
 
-    # Normalize via (sample - shift) * scale so a swapped high-spec VAE with
-    # a shift_factor (e.g. FLUX.1 0.1159) is handled; standard SDXL has
-    # shift=0 so this is identical to the previous (* scaling_factor).
-    from core.models.minit2i.minit2i_vae import normalize_latent as _normalize_latent
-    latents = _normalize_latent(latents, vae_model)
+    # Whatever the swapped VAE normalises with -- a scaling/shift factor, a
+    # per-channel mean/std, or a BatchNorm over its own 2x2-packed domain
+    # (design §8.4). Native SD/SDXL observes shift_scale and is unchanged.
+    from core.models.components.vae_registry import normalize as _normalize
+    latents = _normalize(latents, vae_model, getattr(trainer, "wiring", None))
 
     # DEBUG: Log scaled latents
     if debug_preprocessing:

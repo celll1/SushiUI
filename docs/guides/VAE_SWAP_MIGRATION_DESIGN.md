@@ -623,6 +623,17 @@ P5 で `vae_norm="batchnorm"` に直す（`vae_norm_pack=2` は P2b で宣言済
 この節は **P5** で実装する。P2〜P4 では BN 系 VAE を非 BN arch に当てる swap（およびその逆）を
 §7.4 で拒否するので、P2 の第1波は `shift_scale` 系 VAE のみで検証する（§11）。
 
+**実装時の訂正（P5）**: 「flux2 と lens は同じ BN の式」という前提は成り立たなかった。flux2 は
+`sqrt(running_var + eps)` を **buffer の dtype（fp32）で計算してから 1 回だけキャスト**し、lens の
+`_bn_normalize` は **var を先に潜在の dtype に落としてから** sqrt していた（lens の
+`_bn_denormalize` と vendor `_decode` は flux2 側の順序）。fp16/bf16 では両者は一致せず（実測:
+チャネルの 12〜18%、bf16 で std の相対差 最大 0.63%）、1 つの関数が両方に bit 同一にはなり得ない。
+共有層は精度の高い前者（＝lens 自身の decode・vendor と同じ）を採り、lens の encode だけが
+fp16/bf16 で最大 1.0%（fp32 では bit 同一）動く。同じ理由で denormalize は `x * std + mean` に
+統一し、vendor の `x / (1/std) - (-mean)` は採らない。per-channel 系は 3 arch とも
+`torch.as_tensor(...).to(dtype)` で 3 dtype とも bit 同一（Qwen-Image の定数では二重丸めも起きない）。
+ltx2 の `(z - mean) * scaling_factor / std` は演算順ごと維持する。
+
 ### 8.5 latent cache namespace（D12）
 
 `base_trainer.py:10554-10557` の

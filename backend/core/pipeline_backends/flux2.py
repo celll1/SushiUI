@@ -25,6 +25,10 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+from core.models.components.vae_registry import (
+    normalize as _vae_normalize,
+    denormalize as _vae_denormalize,
+)
 import time as _time
 from core.inference.generation_timing import generation_timer
 
@@ -1565,15 +1569,10 @@ class Flux2Mixin:
             # Unpack latents with IDs
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-            # Apply BatchNorm scaling (FLUX.2-specific)
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
-                latents.device, latents.dtype
-            )
-            latents = latents * latents_bn_std + latents_bn_mean
-
-            # Unpatchify
+            # Unpatchify, then denormalise on the VAE's own 2x2-packed domain
+            # (the two packings are independent -- design §8.4).
             latents = self._flux2_unpatchify_latents(latents)
+            latents = _vae_denormalize(latents, vae)
 
             # Decode - convert latents to VAE dtype (bfloat16 -> float32)
             latents = latents.to(dtype=vae.dtype)
@@ -1870,12 +1869,8 @@ class Flux2Mixin:
 
         with torch.no_grad():
             latent = vae.encode(img_tensor).latent_dist.mode()
+            latent = _vae_normalize(latent, vae)
             latent = self._flux2_patchify_latents(latent)
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
-            latents_bn_std = torch.sqrt(
-                vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
-            ).to(latent.device, latent.dtype)
-            latent = (latent - latents_bn_mean) / latents_bn_std
 
         ref_x0 = self._flux2_pack_latents(latent).to(device=device, dtype=torch.float32)
         return ref_x0
@@ -2292,15 +2287,9 @@ class Flux2Mixin:
                 latent_dist = vae.encode(img_tensor).latent_dist
                 encoded = latent_dist.sample()
 
-                # Patchify: (1, 32, H, W) -> (1, 128, H/2, W/2)
+                # Normalise, then patchify: (1, 32, H, W) -> (1, 128, H/2, W/2)
+                encoded = _vae_normalize(encoded, vae)
                 encoded = self._flux2_patchify_latents(encoded)
-
-                # BatchNorm normalization
-                latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(encoded.device, encoded.dtype)
-                latents_bn_std = torch.sqrt(
-                    vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
-                ).to(encoded.device, encoded.dtype)
-                encoded = (encoded - latents_bn_mean) / latents_bn_std
 
                 encoded_refs.append(encoded[0])  # [128, H, W]
                 print(f"[FLUX.2 Image Edit] Image {idx+1}: Encoded to latent {encoded[0].shape}")
@@ -2605,13 +2594,9 @@ class Flux2Mixin:
                 latent_dist = vae.encode(image_tensor).latent_dist
                 init_latents = latent_dist.mode()  # Use mode for img2img
 
-            # Patchify
+            # Normalise, then patchify
+            init_latents = _vae_normalize(init_latents, vae)
             init_latents = self._flux2_patchify_latents(init_latents)
-
-            # Apply BatchNorm normalization
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
-            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
-            init_latents = (init_latents - latents_bn_mean) / latents_bn_std
 
             # NOTE: this offload is a within-generation VRAM-relief step (VAE is
             # needed again for decode after denoising), not the keep-hot exit
@@ -3129,14 +3114,9 @@ class Flux2Mixin:
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-            # Denormalize
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
-                latents.device, latents.dtype
-            )
-            latents = latents * latents_bn_std + latents_bn_mean
-
+            # Unpatchify, then denormalize
             latents = self._flux2_unpatchify_latents(latents)
+            latents = _vae_denormalize(latents, vae)
 
             with torch.no_grad():
                 self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
@@ -3474,13 +3454,11 @@ class Flux2Mixin:
             )
             mask_latent = mask_latent.to(self.device, dtype=init_latents.dtype)
 
-            # Patchify
+            # Normalise, then patchify. `init_latents` stays unnormalised because
+            # only the position IDs (a shape) are derived from it.
+            init_latents_normalized = self._flux2_patchify_latents(
+                _vae_normalize(init_latents, vae))
             init_latents = self._flux2_patchify_latents(init_latents)
-
-            # Apply BatchNorm normalization
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(init_latents.device, init_latents.dtype)
-            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
-            init_latents_normalized = (init_latents - latents_bn_mean) / latents_bn_std
 
             # NOTE: this offload is a within-generation VRAM-relief step (VAE is
             # needed again for decode after denoising), not the keep-hot exit
@@ -4020,14 +3998,9 @@ class Flux2Mixin:
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-            # Denormalize
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
-                latents.device, latents.dtype
-            )
-            latents = latents * latents_bn_std + latents_bn_mean
-
+            # Unpatchify, then denormalize
             latents = self._flux2_unpatchify_latents(latents)
+            latents = _vae_denormalize(latents, vae)
 
             with torch.no_grad():
                 self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))

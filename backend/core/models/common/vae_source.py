@@ -906,19 +906,9 @@ def check_vae_compatibility(facts: Dict[str, Any],
             f"temporal compression {temporal}x differs from {arch}'s "
             f"{native_temporal}x")
 
-    # The shared normalisation layer (§8.4) is not built yet, so a swap may not
-    # cross normalisation domains in either direction.
-    from core.models.component_registry import _WIRING_BY_ARCH
-    spec = _WIRING_BY_ARCH.get(arch)
-    arch_norm = getattr(spec, "vae_norm", None)
-    if facts.get("norm") == "batchnorm" and arch_norm != "batchnorm":
-        return False, (
-            f"this VAE normalises with a BatchNorm over its packed latent, which "
-            f"{arch} does not; blocked until the shared normalisation layer lands")
-    if arch_norm == "batchnorm" and facts.get("norm") != "batchnorm":
-        return False, (
-            f"{arch} normalises latents with the VAE's own BatchNorm, which this "
-            "VAE does not carry; blocked until the shared normalisation layer lands")
+    # Crossing a normalisation domain in either direction is supported since P5:
+    # components/vae_registry.normalize packs into the VAE's own statistics
+    # domain and unpacks back, independently of the backbone's patchify (§8.4).
     return True, None
 
 

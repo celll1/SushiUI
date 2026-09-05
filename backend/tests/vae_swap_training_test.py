@@ -250,11 +250,11 @@ def test_preflight_refuses_a_structurally_incompatible_family():
     with pytest.raises(ValueError, match="cannot drive sdxl"):
         preflight_vae_swap({"vae_swap_source": "registry:qwen_image"}, arch="sdxl",
                            method="full_finetune", bundle_vae_explicit_false=False)
-    # And a BatchNorm-domain VAE stays blocked until the shared normalisation
-    # layer lands (P5), which is what keeps P2b to shift_scale sources.
-    with pytest.raises(ValueError, match="normalisation layer"):
-        preflight_vae_swap({"vae_swap_source": "registry:flux2"}, arch="sdxl",
-                           method="full_finetune", bundle_vae_explicit_false=False)
+    # A BatchNorm-domain VAE is NOT one of them since P5: the shared
+    # normalisation layer packs into that domain and back (§8.4).
+    assert preflight_vae_swap({"vae_swap_source": "registry:flux2"}, arch="sdxl",
+                              method="full_finetune",
+                              bundle_vae_explicit_false=False) == "registry:flux2"
 
 
 def test_a_run_without_a_swap_is_not_checked_at_all():

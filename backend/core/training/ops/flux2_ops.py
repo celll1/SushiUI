@@ -354,6 +354,8 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     trainer method (also used by train_step; kept central, called via trainer).
     """
     # FLUX.2 VAE encoding with BatchNorm normalization
+    from core.models.components.vae_registry import normalize
+
     latent_dist = trainer.vae.encode(image_tensor).latent_dist
     latents = latent_dist.sample()
 
@@ -363,15 +365,11 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         print(f"  Shape: {latents.shape}")
         print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
 
-    # Patchify: (B, 32, H, W) -> (B, 128, H/2, W/2)
+    # Normalise on the VAE's own 2x2-packed domain, THEN the backbone's own
+    # patchify: (B, 32, H, W) -> (B, 128, H/2, W/2). The two are independent
+    # (design §8.4); a swapped non-BatchNorm VAE normalises unpacked.
+    latents = normalize(latents, trainer.vae, getattr(trainer, "wiring", None))
     latents = trainer._flux2_patchify_latents_for_training(latents)
-
-    # Apply BatchNorm normalization (like pipeline.py)
-    latents_bn_mean = trainer.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-    latents_bn_std = torch.sqrt(trainer.vae.bn.running_var.view(1, -1, 1, 1) + trainer.vae.config.batch_norm_eps).to(
-        latents.device, latents.dtype
-    )
-    latents = (latents - latents_bn_mean) / latents_bn_std
 
     # DEBUG: Log normalized latents
     if debug_preprocessing:
@@ -1151,18 +1149,15 @@ def _decode_flux2_latents(
     """Decode FLUX.2 latents to PIL image."""
     import numpy as np
 
+    from core.models.components.vae_registry import denormalize
+
     # Step 1: Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)
     latents = trainer._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-    # Step 2: Apply BatchNorm scaling (FLUX.2-specific)
-    latents_bn_mean = trainer.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-    latents_bn_std = torch.sqrt(trainer.vae.bn.running_var.view(1, -1, 1, 1) + trainer.vae.config.batch_norm_eps).to(
-        latents.device, latents.dtype
-    )
-    latents = latents * latents_bn_std + latents_bn_mean
-
-    # Step 3: Unpatchify: (B, 128, H/2, W/2) -> (B, 32, H, W)
+    # Step 2: Unpatchify: (B, 128, H/2, W/2) -> (B, 32, H, W), then denormalise
+    # on the VAE's own packed domain (§8.4).
     latents = trainer._flux2_unpatchify_latents(latents)
+    latents = denormalize(latents, trainer.vae, getattr(trainer, "wiring", None))
 
     # Convert latents to VAE dtype (bfloat16 -> float32)
     latents = latents.to(dtype=trainer.vae.dtype)

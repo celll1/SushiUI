@@ -190,13 +190,6 @@ def prepare_latents_txt2img(
 # VAE encode / decode (Qwen-Image VAE, per-channel latents_mean/std)
 # ---------------------------------------------------------------------------
 
-def _vae_norm_stats(vae, device, dtype):
-    z_dim = vae.config.z_dim
-    mean = torch.tensor(vae.config.latents_mean).view(1, z_dim, 1, 1, 1).to(device=device, dtype=dtype)
-    std = torch.tensor(vae.config.latents_std).view(1, z_dim, 1, 1, 1).to(device=device, dtype=dtype)
-    return mean, std
-
-
 def prepare_style_reference(
     vae, style_image: Image.Image, height: int, width: int, patch_size: int, device, seed: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -224,9 +217,10 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int
     img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).unsqueeze(2)  # (1,3,1,H,W)
     img_t = img_t.to(device=device, dtype=vae.dtype)
 
+    from core.models.components.vae_registry import normalize
+
     latent = vae.encode(img_t).latent_dist.mode()  # (1, z_dim, 1, h, w)
-    mean, std = _vae_norm_stats(vae, latent.device, latent.dtype)
-    latent = (latent - mean) / std
+    latent = normalize(latent, vae)
     latent = latent[:, :, 0]  # (1, z_dim, h, w)
     return pack_latents(latent, patch_size).to(dtype)
 
@@ -235,9 +229,10 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int
 @time_phase("vae_decode")
 def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int, patch_size: int, color_flatten_strength: int = 0) -> Image.Image:
     """Decode packed latents (1, grid_h*grid_w, C*p*p) -> PIL Image."""
+    from core.models.components.vae_registry import denormalize
+
     z = unpack_latents(latents, grid_h, grid_w, patch_size).to(vae.dtype)
-    mean, std = _vae_norm_stats(vae, z.device, z.dtype)
-    z = z * std + mean
+    z = denormalize(z, vae)
     image = vae.decode(z, return_dict=False)[0][:, :, 0]  # (1, 3, H, W)
     image = image.clamp(-1.0, 1.0)
     image01 = (image + 1.0) / 2.0

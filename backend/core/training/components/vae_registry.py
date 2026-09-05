@@ -5,6 +5,7 @@ shared arch-independent layer). This module re-exports it so the training-side A
 surface named in the plan (``core.training.components.vae_registry``) is preserved.
 
 Surface: ``load_vae(spec_or_type, ...)`` / ``normalize(latent, vae, spec)`` /
+``denormalize(latent, vae, spec)`` /
 ``is_latent_vae`` (pixel-space = ``latent_channels == 0``), plus the frozen
 minit2i functions (``load_minit2i_vae`` / ``normalize_latent`` /
 ``denormalize_latent`` / ``VAE_REGISTRY`` / ``VAE_SCALE_FACTOR``).
@@ -23,6 +24,7 @@ from core.models.components.vae_registry import (  # noqa: F401
     denormalize_latent,
     load_vae,
     normalize,
+    denormalize,
     resolve_vae_dir,
     vae_identity,
 )
@@ -30,6 +32,7 @@ from core.models.components.vae_registry import (  # noqa: F401
 __all__ = [
     "load_vae",
     "normalize",
+    "denormalize",
     "is_latent_vae",
     "VAE_REGISTRY",
     "VAE_SCALE_FACTOR",

@@ -449,11 +449,8 @@ def collate_aux(trainer, aux_list):
 def _normalize_ltx_latents(trainer, latents_5d):
     """Apply LTX latents_mean/std + scaling_factor normalization (matches
     ``LTX2Pipeline._normalize_latents``). Input/return: [B, C, T, H', W']."""
-    vae = trainer.vae
-    mean = vae.latents_mean.view(1, -1, 1, 1, 1).to(latents_5d.device, latents_5d.dtype)
-    std = vae.latents_std.view(1, -1, 1, 1, 1).to(latents_5d.device, latents_5d.dtype)
-    scaling_factor = float(getattr(vae.config, "scaling_factor", 1.0))
-    return (latents_5d - mean) * scaling_factor / std
+    from core.models.components.vae_registry import normalize
+    return normalize(latents_5d, trainer.vae, getattr(trainer, "wiring", None))
 
 
 def vae_encode_clip(trainer, clip):

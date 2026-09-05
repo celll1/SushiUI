@@ -34,6 +34,13 @@ def _shipped_is_full_finetune(trainer) -> bool:
     return str(config.get("training_method", "lora") or "lora").strip().lower() != "lora"
 
 
+def _shipped_resolve_training_method(trainer) -> str:
+    """The same shipped bug expressed for the method-name channel the VAE-swap
+    gate reads: the config never carries the key, so every run reads "lora"."""
+    config = getattr(trainer, "config", None) or {}
+    return str(config.get("training_method", "lora") or "lora").strip().lower()
+
+
 class FullParameterTrainer:  # name-matched on purpose: the MRO walk keys on it
     pass
 
@@ -276,20 +283,26 @@ def _run_sdxl_load(trainer):
     )
     with patch.object(sd_sdxl_ops.StableDiffusionXLPipeline, "from_single_file",
                       return_value=pipeline), \
-            patch("core.models.sdxl_custom_arch.vae_latent_channels",
+            patch("core.models.common.vae_source.resolve_vae_source",
                   side_effect=_PastTheGate), \
             patch("core.training.base_trainer._vramdiag", lambda *a, **k: None):
         sd_sdxl_ops.load_components(trainer)
 
 
 def test_sdxl_custom_arch_is_refused_for_lora():
-    trainer = _sdxl_trainer(_LoRAish, sdxl_vae_type="flux")
-    with pytest.raises(ValueError, match="requires training_method='full'"):
+    trainer = _sdxl_trainer(_LoRAish, vae_swap_source="registry:flux1")
+    with pytest.raises(ValueError, match="requires training_method='full_finetune'"):
+        _run_sdxl_load(trainer)
+
+
+def test_legacy_sdxl_vae_type_is_refused_for_lora_through_the_same_gate():
+    trainer = _sdxl_trainer(_LoRAish, sdxl_vae_type="flux1")
+    with pytest.raises(ValueError, match="requires training_method='full_finetune'"):
         _run_sdxl_load(trainer)
 
 
 def test_sdxl_custom_arch_passes_the_gate_for_a_full_finetune():
-    trainer = _sdxl_trainer(FullParameterTrainer, sdxl_vae_type="flux")
+    trainer = _sdxl_trainer(FullParameterTrainer, vae_swap_source="registry:flux1")
     # Reaching the migration (which the full-FT adapter trains and saves) is the
     # assertion: the gate no longer refuses the only method that can do it.
     with pytest.raises(_PastTheGate):
@@ -299,8 +312,9 @@ def test_sdxl_custom_arch_passes_the_gate_for_a_full_finetune():
 def test_negative_control_shipped_predicate_refuses_the_full_finetune():
     """Records the shipped outcome: full FT is refused and told to switch to
     the method it is already using."""
-    trainer = _sdxl_trainer(FullParameterTrainer, sdxl_vae_type="flux")
-    with patch.object(sd_sdxl_ops, "is_full_finetune", _shipped_is_full_finetune):
+    trainer = _sdxl_trainer(FullParameterTrainer, vae_swap_source="registry:flux1")
+    with patch("core.training.ops.sd_sdxl_ops.resolve_training_method",
+               _shipped_resolve_training_method):
         with pytest.raises(ValueError) as refusal:
             _run_sdxl_load(trainer)
     assert "Switch to Full Fine-tune" in str(refusal.value)

@@ -36,8 +36,13 @@ from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokeniz
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 from core.attention import AttentionMode, to_diffusers_backend
+from core.models.common.vae_source import load_declared_latent_io
+from core.training.arch import get_arch_handler
+from core.training.vae_swap import (
+    apply_configured_vae_swap, check_swap_method, resolve_vae_swap_source,
+)
 
-from .training_method import is_full_finetune
+from .training_method import is_full_finetune, resolve_training_method
 
 
 def load_components(trainer) -> None:
@@ -48,9 +53,26 @@ def load_components(trainer) -> None:
     from core.training.base_trainer import _vramdiag
 
     is_safetensors = trainer.model_path.endswith('.safetensors')
+    declared = None          # ResolvedVAE the base declares, or None if native
+    declared_module = None
 
     if is_safetensors:
         print(f"{trainer.log_prefix} Loading from safetensors file")
+        # A base saved by a VAE-swap run must be BUILT at the channel count it
+        # declares (design §8.2): from_single_file otherwise builds the arch
+        # default and cannot load the trained conv_in/conv_out.
+        declared = load_declared_latent_io(trainer.model_path)
+        sf_kwargs = {}
+        if declared is not None:
+            print(f"{trainer.log_prefix} Base declares a non-native VAE "
+                  f"({declared.provenance}, {declared.latent_channels}ch, "
+                  f"{declared.vae_class}); building at its channel count")
+            declared_module = declared.load_module(torch_dtype=trainer.vae_dtype)
+            sf_kwargs = {
+                "num_in_channels": declared.latent_channels,
+                "out_channels": declared.latent_channels,
+                "vae": declared_module,
+            }
         # Try SDXL first, fall back to SD1.5
         try:
             print(f"{trainer.log_prefix} Trying SDXL pipeline...")
@@ -58,6 +80,7 @@ def load_components(trainer) -> None:
                 trainer.model_path,
                 torch_dtype=trainer.dtype,
                 use_safetensors=True,
+                **sf_kwargs,
             )
             is_sdxl_model = True
         except Exception as e:
@@ -66,6 +89,7 @@ def load_components(trainer) -> None:
                 trainer.model_path,
                 torch_dtype=trainer.dtype,
                 use_safetensors=True,
+                **sf_kwargs,
             )
             is_sdxl_model = False
 
@@ -158,39 +182,41 @@ def load_components(trainer) -> None:
     # Store SDXL flag
     trainer.is_sdxl = is_sdxl_model
 
-    # Custom architecture (VAE/TE swap) changes the base structure (conv channels /
-    # text encoder) and is LoRA-incompatible — LoRA cannot train the resized conv
-    # layers or the TE bridge adapters, and the LoRA save path does not persist them
-    # (the trained pieces would be silently lost). Require full fine-tune.
+    # A VAE swap resizes the latent-facing convs and a custom TE adds bridge
+    # adapters: LoRA trains neither and its save path persists neither, so the
+    # trained pieces would be silently lost. Require full fine-tune.
+    swap_source = resolve_vae_swap_source(trainer.config)
+    check_swap_method(swap_source, resolve_training_method(trainer))
     if trainer.is_sdxl:
-        _wants_custom = (
-            str(trainer.config.get("sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
-            or str(trainer.config.get("sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
-        )
-        if _wants_custom and not is_full_finetune(trainer):
+        if (str(trainer.config.get("sdxl_te_type", "") or "").strip().lower()
+                not in ("", "none", "clip")) and not is_full_finetune(trainer):
             raise ValueError(
-                "SDXL custom architecture (sdxl_vae_type / sdxl_te_type) requires "
-                "training_method='full' - LoRA cannot train the resized conv layers or "
-                "the text-encoder bridge adapters. Switch to Full Fine-tune."
+                "SDXL custom architecture (sdxl_te_type) requires "
+                "training_method='full' - LoRA cannot train the text-encoder "
+                "bridge adapters. Switch to Full Fine-tune."
             )
 
-    # SDXL high-spec VAE migration (optional): swap the VAE and resize the U-Net
-    # conv_in/conv_out to the new latent channel count (channel-partial copy; the
-    # transformer body is kept and adapts during training). "none"/"sdxl" keeps the
-    # standard 4ch VAE so existing SDXL runs are unchanged.
+    # The base's own declaration first (it defines the latent space the weights
+    # already live in), then this run's swap on top of it.
+    trainer.base_vae_identity = declared
     trainer.sdxl_vae_type = "sdxl"
-    if trainer.is_sdxl:
-        _svt = str(trainer.config.get("sdxl_vae_type", "") or "").strip().lower()
-        if _svt and _svt not in ("none", "sdxl"):
-            from core.models.sdxl_custom_arch import (
-                load_alt_vae, resize_unet_in_out, vae_latent_channels,
-            )
-            C = vae_latent_channels(_svt)
-            print(f"{trainer.log_prefix} [SDXL custom] Migrating to '{_svt}' VAE ({C}ch) "
-                  f"+ resizing U-Net conv_in/out")
-            trainer.vae = load_alt_vae(_svt, torch_dtype=trainer.vae_dtype)
-            resize_unet_in_out(trainer.unet, C)
-            trainer.sdxl_vae_type = _svt
+    if declared is not None:
+        get_arch_handler(trainer).apply_vae_swap(trainer, declared,
+                                                 module=declared_module)
+        # from_single_file overrides conv_in reliably and conv_out only via the
+        # config update, so the two latent-facing convs are assigned from the
+        # file after the resize. Raises if the file cannot supply them.
+        from core.models.sdxl_custom_arch import load_custom_convs_from_single_file
+        load_custom_convs_from_single_file(trainer.unet, trainer.model_path)
+    if swap_source:
+        apply_configured_vae_swap(trainer, swap_source)
+
+    _identity = getattr(trainer, "vae_identity", None)
+    if _identity is not None and not _identity.identity_native:
+        # Legacy marker the SDXL adapter still writes (sushi.vae_type) and the
+        # inference loader still reads; only a registry family is expressible.
+        if _identity.form == "registry":
+            trainer.sdxl_vae_type = _identity.family
     try:
         trainer.vae_latent_channels = int(trainer.vae.config.latent_channels)
     except Exception:

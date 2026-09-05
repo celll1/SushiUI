@@ -378,16 +378,35 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         # VAE embedding is additionally gated on bundle_vae (per-arch default: sdxl=True
         # for A1111/ComfyUI compatibility; explicit user boolean wins).
         from api.param_defaults import resolve_bundle_vae
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sdxl")
-        _custom_vae = str(getattr(trainer, "sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
-        vae_embedded = bundle_vae and trainer.vae is not None and not _custom_vae
-        if vae_embedded:
+        # A custom-arch checkpoint RESUMED as a base rebuilds sdxl_vae_type without
+        # a resolved identity; its VAE must stay out of the 4ch LDM converter too.
+        legacy_custom_vae = str(getattr(trainer, "sdxl_vae_type", "") or ""
+                                ).strip().lower() not in ("", "none", "sdxl")
+        vae_embedded = (bundle_vae and trainer.vae is not None
+                        and swapped is None and not legacy_custom_vae)
+        if swapped is not None:
+            # A swapped VAE is bundled under the unified `vae.` prefix in
+            # diffusers key layout (design D7): the LDM converter assumes the
+            # 4ch SDXL VAE structure, and a swapped checkpoint is not
+            # A1111/ComfyUI-loadable anyway (conv_in is not 4ch).
+            if swap_bundled and trainer.vae is not None:
+                print(f"[SDXLFullParameterAdapter] Bundling swapped VAE "
+                      f"({swapped.provenance}) under 'vae.' ...")
+                for key, value in trainer.vae.state_dict().items():
+                    combined_state_dict[f"vae.{key}"] = value.detach().cpu()
+            else:
+                print(f"[SDXLFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                      f"not bundled; resolved on load via {swapped.locator}")
+        elif vae_embedded:
             print(f"[SDXLFullParameterAdapter] Collecting VAE weights (diffusers -> CompVis, bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             converted_vae = convert_vae_state_dict_to_original(vae_state)
             for key, value in converted_vae.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
-        elif _custom_vae:
+        elif legacy_custom_vae:
             print(f"[SDXLFullParameterAdapter] Custom VAE ({trainer.sdxl_vae_type}) not embedded "
                   f"(referenced by metadata sushi.vae_type, reloaded on load).")
 
@@ -435,6 +454,9 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "sdxl",
             "component.vae.embedded": "1" if vae_embedded else "0",
             **sushi_modelspec_metadata(self.trainer),
+            # The swap block last: it owns every component.vae.* key for a
+            # swapped run, including `embedded`.
+            **swap_md,
         }
 
         print(f"[SDXLFullParameterAdapter] Saving to {output_path}...")

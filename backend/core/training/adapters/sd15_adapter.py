@@ -40,7 +40,8 @@ def sd15_modelspec_metadata(trainer) -> Dict[str, str]:
     (ModelLoader.detect_prediction_config) can reproduce the training objective
     (epsilon / velocity / sample) on reload instead of always assuming epsilon.
     Resolved "auto" values are skipped (the loader then infers as before). SD1.5
-    has no custom VAE / text-encoder swap, so those sushi.* markers are omitted.
+    has no custom text-encoder swap, so that sushi.* marker is omitted; a VAE
+    swap declares itself through the shared ``component.vae.*`` block instead.
     Keyspace is unchanged — only the safetensors __metadata__ block gains entries.
     """
     md: Dict[str, str] = {"modelspec.architecture": "stable-diffusion-v1"}
@@ -278,9 +279,22 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
         # Save VAE weights: convert diffusers -> CompVis/LDM format (gated on
         # bundle_vae; per-arch default sd15=True for A1111/ComfyUI compatibility).
         from api.param_defaults import resolve_bundle_vae
+        from core.training.vae_swap import swap_metadata
+        swapped, swap_bundled, swap_md = swap_metadata(trainer)
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sd15")
-        vae_embedded = bundle_vae and trainer.vae is not None
-        if vae_embedded:
+        vae_embedded = bundle_vae and trainer.vae is not None and swapped is None
+        if swapped is not None:
+            # A swapped VAE goes under the unified `vae.` prefix in diffusers key
+            # layout (design D7); the LDM converter assumes the 4ch SD VAE.
+            if swap_bundled and trainer.vae is not None:
+                print(f"[SD15FullParameterAdapter] Bundling swapped VAE "
+                      f"({swapped.provenance}) under 'vae.' ...")
+                for key, value in trainer.vae.state_dict().items():
+                    combined_state_dict[f"vae.{key}"] = value.detach().cpu()
+            else:
+                print(f"[SD15FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
+                      f"not bundled; resolved on load via {swapped.locator}")
+        elif vae_embedded:
             print(f"[SD15FullParameterAdapter] Collecting VAE weights (diffusers -> CompVis, bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             converted_vae = convert_vae_state_dict_to_original(vae_state)
@@ -302,6 +316,8 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "sd15",
             "component.vae.embedded": "1" if vae_embedded else "0",
             **sd15_modelspec_metadata(trainer),
+            # Last: the swap block owns every component.vae.* key it writes.
+            **swap_md,
         }
 
         print(f"[SD15FullParameterAdapter] Saving to {output_path}...")

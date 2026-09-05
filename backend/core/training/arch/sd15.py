@@ -18,6 +18,9 @@ from core.training.components.wiring import SD15_WIRING
 class SD15ArchHandler(ArchHandler):
     name = "sd15"
     wiring = SD15_WIRING
+    # SD_UNET_LATENT_IO spells its paths "unet.conv_in"/"unet.conv_out",
+    # i.e. rooted at the U-Net's owner rather than at the U-Net.
+    latent_io_root_attr = None
     adapter_capability = declare_adapter_capability(
         "sd15",
         additive_family=True,

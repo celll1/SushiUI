@@ -27,7 +27,7 @@ import hashlib
 import json
 import os
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
@@ -578,12 +578,17 @@ def resolve_vae_source(
     native_hash: Optional[str] = None,
     download: bool = True,
     load_weights: bool = True,
+    require_backbone: bool = True,
 ) -> ResolvedVAE:
     """Resolve ``source`` into a ``ResolvedVAE``, or raise ``VaeSourceError``.
 
     ``arch`` (when given) decides ``struct_native``; ``identity_native`` also
     needs ``native_hash``, the content hash of that architecture's own VAE —
     without it the answer is None (unknown), never False-by-assumption.
+
+    ``require_backbone`` guards the ``model:`` form against a user naming a
+    standalone VAE with the wrong form; a reader that already knows the file is
+    a checkpoint (``load_declared_latent_io``) turns it off.
     """
     form, value = parse_vae_source(source)
     family = "custom"
@@ -642,7 +647,7 @@ def resolve_vae_source(
             raise VaeSourceError(
                 f"model:{value} carries no VAE under any of "
                 f"{list(VAE_EXTRACT_PREFIXES)}")
-        if not buckets[""]:
+        if require_backbone and not buckets[""]:
             raise VaeSourceError(
                 f"model:{value} is a standalone VAE, not a full checkpoint; "
                 "select it as file:<path>")
@@ -702,6 +707,130 @@ def resolve_vae_source(
         path=path,
         prefix=prefix,
         state_dict=state_dict,
+    )
+
+
+# ---------------------------------------------------------------------------
+# What a checkpoint declares about its own latent space (§8.2 / §9.1)
+# ---------------------------------------------------------------------------
+
+LEGACY_VAE_TYPE_KEY = "sushi.vae_type"
+LEGACY_VAE_CHANNELS_KEY = "sushi.in_channels"
+
+
+def read_vae_declaration(metadata: Optional[dict]) -> Dict[str, Any]:
+    """A checkpoint's ``component.vae.*`` block, falling back to ``sushi.*``.
+
+    The legacy pair carries only a registry family and a channel count, so the
+    locator and ``identity_native`` are reconstructed from it — that is what
+    keeps a pre-migration swapped SDXL checkpoint loadable (§5.3).
+    """
+    metadata = metadata or {}
+    declared = _declared_from_metadata(metadata)
+    legacy_type = str(metadata.get(LEGACY_VAE_TYPE_KEY, "") or "").strip().lower()
+    if legacy_type and legacy_type not in ("none", "sdxl"):
+        declared.setdefault("type", legacy_type)
+        declared.setdefault("locator", f"registry:{legacy_type}")
+        declared.setdefault("identity_native", False)
+        declared.setdefault("embedded", False)
+        try:
+            channels = int(str(metadata.get(LEGACY_VAE_CHANNELS_KEY, "")).strip())
+        except (TypeError, ValueError):
+            channels = 0
+        if channels and declared.get("channels") in (None, ""):
+            declared["channels"] = channels
+    return declared
+
+
+def load_declared_latent_io(
+    path: str,
+    *,
+    arch: Optional[str] = None,
+    load_weights: bool = True,
+    download: bool = True,
+) -> Optional[ResolvedVAE]:
+    """The VAE a checkpoint says it was trained with, or None for a native one.
+
+    ``None`` means "nothing to rebuild": either no declaration, or one that says
+    the architecture's own VAE. Otherwise the returned ``ResolvedVAE`` carries
+    ``latent_channels`` to BUILD the backbone at (before construction, §8.2) and
+    the weights to load, taken from the bundled ``vae.`` section or resolved
+    through the declared locator with a content-hash check.
+
+    Shared by the training loader and the generation loader — a declaration that
+    resolves differently on the two sides is a swapped checkpoint that trains in
+    one latent space and generates in another.
+
+    Without ``arch`` only the explicit ``struct_native`` / ``identity_native``
+    keys (or the legacy ``sushi.vae_type``, which implies both are false) can
+    answer the native question, so pass the architecture whenever it is known.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    weights = _WeightFile(path)
+    declared = read_vae_declaration(weights.metadata)
+    if not declared:
+        return None
+
+    raw_channels = declared.get("channels")
+    try:
+        channels = int(str(raw_channels).strip()) if raw_channels not in (None, "") else None
+    except (TypeError, ValueError):
+        channels = None
+
+    native = arch_native_vae(arch) or {}
+    struct_native = declared.get("struct_native")
+    if struct_native is None and channels is not None and native.get("latent_channels") is not None:
+        struct_native = channels == native["latent_channels"]
+    identity_native = declared.get("identity_native")
+    if identity_native is None and struct_native is False:
+        identity_native = False
+    if struct_native is not False and identity_native is not False:
+        return None
+
+    if declared.get("embedded"):
+        resolved = resolve_vae_source(f"model:{path}", arch=arch,
+                                      load_weights=load_weights, download=False,
+                                      require_backbone=False)
+        # §5.2: a bundled VAE's hash is trusted, not recomputed — recomputing it
+        # over the saved key layout would answer a different question than the
+        # one the swap recorded, and split the latent cache namespace in two.
+        content_hash = str(declared.get("hash") or resolved.content_hash)
+    else:
+        locator = str(declared.get("locator") or "")
+        if locator.startswith("registry:"):
+            source = locator
+        elif locator.startswith("path:"):
+            source = f"file:{locator[len('path:'):]}"
+        else:
+            raise VaeSourceError(
+                f"{path} declares a non-native VAE it does not carry and has no "
+                f"resolvable locator (locator={locator!r}); it cannot be loaded "
+                "in the latent space it was trained in")
+        resolved = resolve_vae_source(source, arch=arch,
+                                      load_weights=load_weights, download=download)
+        expected = str(declared.get("hash") or "")
+        if expected and load_weights and resolved.content_hash != expected:
+            raise VaeSourceError(
+                f"{path} declares VAE {expected} at {locator}, which now holds "
+                f"{resolved.content_hash}; refusing to train/generate in a "
+                "different latent space than the checkpoint was trained in")
+        content_hash = resolved.content_hash
+
+    if channels is not None and resolved.latent_channels != channels:
+        raise VaeSourceError(
+            f"{path} declares {channels} latent channels but its VAE has "
+            f"{resolved.latent_channels}")
+
+    return _dc_replace(
+        resolved,
+        content_hash=content_hash,
+        provenance=str(declared.get("provenance") or resolved.provenance),
+        locator=declared.get("locator") or resolved.locator,
+        struct_native=(struct_native if struct_native is not None
+                       else resolved.struct_native),
+        identity_native=(identity_native if identity_native is not None
+                         else resolved.identity_native),
     )
 
 

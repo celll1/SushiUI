@@ -493,6 +493,11 @@ class ArchHandler(ABC):
     #: are different data and must not share an address.
     clip_audio_prep_version: Optional[str] = None
 
+    #: Trainer attribute the wiring's ``latent_io`` module paths are rooted at.
+    #: ``None`` = the trainer itself, which is what SD/SDXL's ``"unet.conv_in"``
+    #: spelling needs; every DiT roots its paths at the transformer.
+    latent_io_root_attr: Optional[str] = "transformer"
+
     #: Timestep convention this architecture's ``train_step`` noise-mixing
     #: formula uses: which end of the trainer's ``[0,1]`` ``timestep_sampler``
     #: output is a CLEAN (noise-free) latent.
@@ -592,6 +597,47 @@ class ArchHandler(ABC):
     def load_components(self, trainer) -> None:
         """Was ``_load_<arch>_components`` (base_trainer.py:1122+)."""
         raise NotImplementedError
+
+    def apply_vae_swap(self, trainer, resolved, module=None) -> Any:
+        """Install ``resolved`` (a ``ResolvedVAE``) as this run's VAE and resize
+        the backbone's latent I/O to its channel count. Returns a ``ResizeReport``.
+
+        ONE implementation for every architecture (design §8.1): the only
+        per-arch inputs are the declared ``LatentIOSpec`` and where its module
+        paths are rooted. Call BEFORE the optimizer is built —
+        ``resize_latent_io`` rebinds Parameters.
+
+        ``module``: an already-materialised VAE for ``resolved``, when the
+        caller had to build one earlier (a loader that must hand the VAE to the
+        pipeline constructor); avoids reading the weights a second time.
+        """
+        from core.models.components.latent_io import resize_latent_io
+
+        spec = getattr(self.wiring, "latent_io", None)
+        if spec is None:
+            raise ValueError(
+                f"arch '{self.name}' declares no latent I/O, so its VAE cannot "
+                f"be swapped")
+
+        config = getattr(trainer, "config", None) or {}
+        init = str(config.get("vae_swap_new_channel_init") or "zero")
+
+        trainer.vae = module if module is not None else resolved.load_module(
+            torch_dtype=getattr(trainer, "vae_dtype", None))
+        root = (trainer if self.latent_io_root_attr is None
+                else getattr(trainer, self.latent_io_root_attr))
+        report = resize_latent_io(root, spec, resolved.latent_channels,
+                                  new_channel_init=init)
+        trainer.wiring = self.wiring.replace(
+            latent_channels=resolved.latent_channels,
+            vae_norm=resolved.norm,
+            vae_norm_pack=resolved.norm_pack,
+        )
+        # Read by the latent cache namespace, the save-side declaration and
+        # strict_validation.
+        trainer.vae_identity = resolved
+        trainer.vae_latent_channels = resolved.latent_channels
+        return report
 
     @abstractmethod
     def setup_block_swap(self, trainer) -> None:

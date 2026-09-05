@@ -21269,9 +21269,31 @@ components:
         sdxl_micro_conditioning:
           type: 'boolean'
           default: true
+        vae_swap_source:
+          type: 'string'
+          default: ''
+          description: |
+            VAE to migrate this full fine-tune to, as `registry:<key>` (a family
+            in the shared VAE table), `file:<path>` (a standalone VAE file or
+            diffusers directory) or `model:<path>` (the VAE inside another full
+            checkpoint). Empty keeps the base model's own VAE.
+
+            Candidates and their per-architecture compatibility come from
+            `GET /training/vae-sources`. The latent input/output layers are
+            resized to the new channel count, copying the channels the two VAEs
+            share; only `training_method: full_finetune` accepts a swap.
+            A `model:` source is refused together with `bundle_vae: false` — an
+            extracted VAE has no reference a later load could resolve.
+          example: 'registry:flux1'
+        vae_swap_new_channel_init:
+          type: 'string'
+          enum: ['zero']
+          default: 'zero'
+          description: How channels the previous VAE did not have are initialised in the resized latent input/output layers.
         sdxl_vae_type:
           type: 'string'
           default: 'none'
+          description: Read-only back-compat alias of `vae_swap_source` (SDXL, registry key such as `flux1`). Present so an existing run's config still loads; use `vae_swap_source` for new runs.
         sdxl_te_type:
           type: 'string'
           default: 'none'

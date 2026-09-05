@@ -21,6 +21,7 @@ pixel-space branch is ``spec.latent_channels == 0`` (mirrors minit2i's
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Optional
 
@@ -142,10 +143,14 @@ def load_minit2i_vae(vae_type: str, torch_dtype: torch.dtype = torch.float16,
 
 
 def _scale_shift(vae) -> tuple:
-    scale = float(getattr(vae.config, "scaling_factor", 1.0) or 1.0)
-    shift = getattr(vae.config, "shift_factor", 0.0)
-    shift = float(shift) if shift is not None else 0.0
-    return scale, shift
+    scale = getattr(getattr(vae, "config", None), "scaling_factor", None)
+    if scale is None:
+        raise ValueError(
+            "shift_scale normalisation needs a scaling_factor and this VAE "
+            "declares none. A missing/None scaling factor means 'cannot be "
+            "determined', never 1.0 (common/vae_store.py)")
+    shift = getattr(vae.config, "shift_factor", None)
+    return float(scale), (float(shift) if shift is not None else 0.0)
 
 
 def normalize_latent(sample: torch.Tensor, vae) -> torch.Tensor:
@@ -194,6 +199,162 @@ def load_vae(spec_or_type, *, torch_dtype: torch.dtype = torch.float16,
     return load_minit2i_vae(vae_type, torch_dtype=torch_dtype, local_dir=local_dir)
 
 
+# --- Latent normalisation: three methods, one domain (design §8.4) -------------
+
+_NORM_METHODS = ("shift_scale", "per_channel", "batchnorm", "identity")
+
+
+def _pack_2x2(latent: torch.Tensor) -> torch.Tensor:
+    """``[B, C, H, W] -> [B, 4C, H/2, W/2]``, C outermost. view/permute only."""
+    b, c, h, w = latent.shape
+    x = latent.view(b, c, h // 2, 2, w // 2, 2).permute(0, 1, 3, 5, 2, 4)
+    return x.reshape(b, c * 4, h // 2, w // 2)
+
+
+def _unpack_2x2(packed: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`_pack_2x2`."""
+    b, c4, h, w = packed.shape
+    x = packed.reshape(b, c4 // 4, 2, 2, h, w).permute(0, 1, 4, 2, 5, 3)
+    return x.reshape(b, c4 // 4, h * 2, w * 2)
+
+
+def _bn_stats(vae, latent: torch.Tensor) -> tuple:
+    """``(mean, std)`` from the VAE's own BatchNorm, in ``latent``'s dtype.
+
+    The sqrt runs in the buffers' dtype and the result is cast once. Casting
+    the variance first instead (lens's old encode helper did) rounds three
+    times over and moves 12-18% of channels, by up to 0.6% in bf16.
+    """
+    bn = getattr(vae, "bn", None)
+    if bn is None:
+        raise ValueError(
+            "batchnorm normalisation was requested but this VAE carries no "
+            "`bn` module")
+    eps = getattr(getattr(vae, "config", None), "batch_norm_eps", None)
+    if eps is None:
+        raise ValueError(
+            "batchnorm normalisation was requested but this VAE declares no "
+            "batch_norm_eps")
+    mean = bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
+    std = torch.sqrt(bn.running_var.view(1, -1, 1, 1) + eps).to(
+        latent.device, latent.dtype)
+    return mean, std
+
+
+def _per_channel_stats(vae, latent: torch.Tensor) -> tuple:
+    """``(mean, std, scaling_factor)`` for per-channel normalisation.
+
+    The module's own buffers win over the config list (LTX-2.3 registers them;
+    the Qwen-Image VAE only configures them).
+    """
+    config = getattr(vae, "config", None)
+    mean_src = getattr(vae, "latents_mean", None)
+    std_src = getattr(vae, "latents_std", None)
+    if not torch.is_tensor(mean_src):
+        mean_src = getattr(config, "latents_mean", None)
+    if not torch.is_tensor(std_src):
+        std_src = getattr(config, "latents_std", None)
+    if mean_src is None or std_src is None:
+        raise ValueError(
+            "per-channel normalisation was requested but this VAE declares no "
+            "latents_mean/latents_std")
+    shape = (1, -1) + (1,) * (latent.ndim - 2)
+    mean = torch.as_tensor(mean_src).view(shape).to(
+        device=latent.device, dtype=latent.dtype)
+    std = torch.as_tensor(std_src).view(shape).to(
+        device=latent.device, dtype=latent.dtype)
+    scaling = getattr(config, "scaling_factor", None)
+    return mean, std, (None if scaling is None else float(scaling))
+
+
+def _observe_norm(vae, latent: torch.Tensor) -> tuple:
+    """``(method, pack)`` read off the VAE itself, for a caller with no spec
+    (§7.3's observation rules)."""
+    bn = getattr(vae, "bn", None)
+    if bn is not None:
+        stat_channels = int(bn.running_mean.numel())
+        channels = int(latent.shape[1])
+        ratio = stat_channels // channels if channels else 0
+        pack = math.isqrt(ratio) if ratio else 0
+        if not ratio or ratio * channels != stat_channels or pack * pack != ratio:
+            raise ValueError(
+                f"this VAE's BatchNorm spans {stat_channels} channels, which is "
+                f"not a square spatial packing of {channels} latent channels")
+        return "batchnorm", pack
+    config = getattr(vae, "config", None)
+    has_per_channel = (
+        (torch.is_tensor(getattr(vae, "latents_mean", None))
+         or getattr(config, "latents_mean", None) is not None)
+        and (torch.is_tensor(getattr(vae, "latents_std", None))
+             or getattr(config, "latents_std", None) is not None))
+    if has_per_channel:
+        return "per_channel", 1
+    return "shift_scale", 1
+
+
+def _resolve_norm(vae, spec, latent: torch.Tensor) -> tuple:
+    method = getattr(spec, "vae_norm", None)
+    if not method:
+        return _observe_norm(vae, latent)
+    if method not in _NORM_METHODS:
+        raise ValueError(
+            f"unknown latent normalisation '{method}' (expected one of "
+            f"{list(_NORM_METHODS)})")
+    return method, max(1, int(getattr(spec, "vae_norm_pack", 1) or 1))
+
+
+def _apply_norm(x: torch.Tensor, vae, method: str, *, forward: bool) -> torch.Tensor:
+    if method == "shift_scale":
+        scale, shift = _scale_shift(vae)
+        return (x - shift) * scale if forward else x / scale + shift
+    if method == "per_channel":
+        mean, std, scaling = _per_channel_stats(vae, x)
+        if forward:
+            return (x - mean) / std if scaling is None else (x - mean) * scaling / std
+        return x * std + mean if scaling is None else x * std / scaling + mean
+    if method == "batchnorm":
+        mean, std = _bn_stats(vae, x)
+        return (x - mean) / std if forward else x * std + mean
+    raise ValueError(f"unknown latent normalisation '{method}'")
+
+
+def _normalized(latent: torch.Tensor, vae, spec, *, forward: bool) -> torch.Tensor:
+    method, pack = _resolve_norm(vae, spec, latent)
+    if method == "identity":
+        return latent
+    if pack == 1:
+        return _apply_norm(latent, vae, method, forward=forward)
+    if pack != 2:
+        raise ValueError(
+            f"normalisation pack factor {pack} is not implemented (1 or 2)")
+    if method != "batchnorm":
+        # §7.3: only a BatchNorm's statistics live on a packed domain.
+        raise ValueError(
+            f"'{method}' normalisation is defined on the raw channels, so "
+            f"vae_norm_pack={pack} is a contradiction")
+    if latent.ndim != 4:
+        raise ValueError(
+            f"a 2x2-packed normalisation domain needs a [B, C, H, W] latent, "
+            f"got {latent.ndim}-D")
+    if latent.shape[-1] % 2 or latent.shape[-2] % 2:
+        raise ValueError(
+            f"a 2x2-packed normalisation domain needs even latent H/W, got "
+            f"{tuple(latent.shape[-2:])}")
+    return _unpack_2x2(_apply_norm(_pack_2x2(latent), vae, method, forward=forward))
+
+
 def normalize(latent: torch.Tensor, vae, spec=None) -> torch.Tensor:
-    """Spec-aware normalize wrapper (delegates to the frozen ``normalize_latent``)."""
-    return normalize_latent(latent, vae)
+    """Raw VAE sample -> normalised latent, by ``spec.vae_norm`` (§8.4).
+
+    Takes and returns a RAW ``[B, C, ...]`` latent whatever the method: when the
+    statistics live on the 2x2-packed 4C channels (``spec.vae_norm_pack == 2``,
+    AutoencoderKLFlux2's BatchNorm) the pack/unpack happens here, independently
+    of the backbone's own patchify. Without a spec the method is observed off
+    the VAE.
+    """
+    return _normalized(latent, vae, spec, forward=True)
+
+
+def denormalize(latent: torch.Tensor, vae, spec=None) -> torch.Tensor:
+    """Normalised latent -> raw VAE sample. Inverse of :func:`normalize`."""
+    return _normalized(latent, vae, spec, forward=False)

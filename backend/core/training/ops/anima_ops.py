@@ -329,9 +329,8 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     image_tensor_5d = image_tensor.unsqueeze(2)
     latent_dist = trainer.vae.encode(image_tensor_5d).latent_dist
     latents_5d = latent_dist.sample()  # [B, 16, 1, H/8, W/8]
-    from core.models.anima.anima_pipeline_ops import _get_qwen_vae_normalization
-    mean_t, std_t = _get_qwen_vae_normalization(trainer.vae, latents_5d.device, latents_5d.dtype)
-    latents_5d = (latents_5d - mean_t) / std_t
+    from core.models.components.vae_registry import normalize
+    latents_5d = normalize(latents_5d, trainer.vae, getattr(trainer, "wiring", None))
     # Drop the temporal dim for storage; train_step_anima re-adds it.
     latents = latents_5d.squeeze(2)
     del image_tensor_5d, latent_dist, latents_5d

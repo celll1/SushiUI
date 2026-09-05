@@ -322,14 +322,6 @@ def encode_prompts_batched(text_encoder, qwen3_tokenizer, t5_tokenizer,
 
 # --------- VAE helpers ---------
 
-def _get_qwen_vae_normalization(vae, device, dtype):
-    """Return (mean, std) tensors shaped (1, z_dim, 1, 1, 1) for Qwen-Image VAE."""
-    z_dim = vae.config.z_dim
-    mean = torch.tensor(vae.config.latents_mean, dtype=dtype, device=device).view(1, z_dim, 1, 1, 1)
-    std = torch.tensor(vae.config.latents_std, dtype=dtype, device=device).view(1, z_dim, 1, 1, 1)
-    return mean, std
-
-
 @torch.no_grad()
 def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -> torch.Tensor:
     """Encode a PIL image to normalized Anima latents (B=1, C=16, T=1, H/8, W/8).
@@ -343,9 +335,8 @@ def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -
     posterior = vae.encode(t).latent_dist
     latents = posterior.sample()
 
-    mean, std = _get_qwen_vae_normalization(vae, latents.device, latents.dtype)
-    latents = (latents - mean) / std
-    return latents
+    from core.models.components.vae_registry import normalize
+    return normalize(latents, vae)
 
 
 @torch.no_grad()
@@ -380,8 +371,8 @@ def vae_decode_latents(vae, latents: torch.Tensor, color_flatten_strength: int =
     if latents.dim() == 4:
         latents = latents.unsqueeze(2)
 
-    mean, std = _get_qwen_vae_normalization(vae, latents.device, latents.dtype)
-    raw_latents = latents * std + mean
+    from core.models.components.vae_registry import denormalize
+    raw_latents = denormalize(latents, vae)
 
     out = vae.decode(raw_latents)
     sample = out.sample if hasattr(out, "sample") else out

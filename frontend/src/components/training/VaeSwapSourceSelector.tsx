@@ -145,6 +145,10 @@ export default function VaeSwapSourceSelector({
         this VAE; it is bundled into every save.
         {loading && " Listing candidates…"}
         {error && ` Candidates could not be listed: ${error}`}
+        {/* An unknown arch skips the fetch entirely, which otherwise leaves the
+            list empty with nothing said -- indistinguishable from "none found". */}
+        {!loading && !error && !arch
+          && " Select a base model first: the candidate list is per architecture."}
         {!loading && !error && arch
           && groups.registry.length + groups.standalone.length
              + groups.extract_from_model.length === 0

@@ -145,6 +145,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # when nothing has been loaded. The arch constant is the baseline, not
         # the answer -- read this wherever the loaded latent shape matters.
         self._sushi_wiring: Optional[Any] = None
+        # Notices raised while a model LOADS, which `add_warning()` alone would
+        # drop (no generation is open yet). Replayed onto the first generation
+        # after the load by `generation_status.start_generation`.
+        self._sushi_load_warnings: List[Dict[str, str]] = []
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
         self.model_revision = 0
@@ -531,6 +535,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.current_model = None
         self.current_model_info = None
         self._sushi_wiring = None
+        self._sushi_load_warnings = []
 
         try:
             # === Step 1: Complete cleanup of existing pipelines ===
@@ -3658,6 +3663,31 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                    "to use /generate/outpaint/audio.",
         )
 
+    def record_load_warning(self, message: str, code: str) -> None:
+        """Queue a notice raised during a model load (§9.6).
+
+        A loader runs outside any generation, so `add_warning()` there is a
+        no-op; this holds the notice until the next generation opens a bucket
+        for it. Deduplicated, so reloading the same model twice does not stack.
+        """
+        entry = {"code": code, "message": message}
+        buffer = getattr(self, "_sushi_load_warnings", None)
+        if buffer is None:
+            buffer = self._sushi_load_warnings = []
+        if entry not in buffer:
+            buffer.append(entry)
+        print(f"[Pipeline] load warning ({code}): {message}")
+
+    def consume_load_warnings(self) -> List[Dict[str, str]]:
+        """Take the queued load-time notices, emptying the queue.
+
+        They describe the load, not the generation, so they are replayed once —
+        onto the first generation after the load — rather than on every one.
+        """
+        buffer = getattr(self, "_sushi_load_warnings", None) or []
+        self._sushi_load_warnings = []
+        return list(buffer)
+
     def _fold_sd_latent_identity(self, pipeline, arch: str) -> Dict[str, Any]:
         """Set ``_sushi_wiring`` for a loaded SD1.5/SDXL pipeline; return the
         latent-identity fields for ``current_model_info``.
@@ -3697,6 +3727,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "vae_struct_native": latent_channels == spec.latent_channels,
                     "vae_identity_native": False,
                 })
+            if fields.get("vae_identity_native") is False:
+                self.record_load_warning(
+                    f"This checkpoint runs on a replaced VAE "
+                    f"({latent_channels}-channel, "
+                    f"{fields.get('vae_provenance') or swap_vae_type}) instead of "
+                    f"{arch}'s own. Adapters, cached latents and VAE overrides built "
+                    f"for {arch}'s latent space do not apply to it.",
+                    code="model_vae_swapped",
+                )
             return fields
         except Exception as e:
             print(f"[Pipeline] latent identity fold skipped: {e}")

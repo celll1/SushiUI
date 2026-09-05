@@ -8,6 +8,12 @@ from diffusers import AutoencoderTiny
 from PIL import Image
 import numpy as np
 
+# Preview decoders a replaced VAE can be routed to, keyed as the VAE family
+# table names them (vae_store.VAE_REGISTRY["preview"]). "taesd" is the default
+# path, so it carries no flag of its own.
+_VAE_PREVIEW_KINDS = ("taesd", "taesdxl", "taef1", "matrix16", "matrix32")
+
+
 class TAESDManager:
     def __init__(self):
         self.taesd = None
@@ -207,7 +213,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -220,9 +226,24 @@ class TAESDManager:
             is_anima: True for Anima models (16ch Qwen-Image latent, uses first 3 channels as RGB)
             image_width: Target image width (for FLUX.2 preview aspect ratio calculation)
             image_height: Target image height (for FLUX.2 preview aspect ratio calculation)
+            vae_preview_kind: Decoder kind for a checkpoint whose VAE was
+                replaced, chosen from that VAE's family rather than from the
+                architecture (`generation_utils._preview_vae_kind`). Overrides
+                every is_* flag above. None for a native model.
         """
         import time
         decode_start_time = time.time()
+
+        if vae_preview_kind is not None:
+            if vae_preview_kind not in _VAE_PREVIEW_KINDS:
+                return None
+            is_deus = is_zimage_sdxl_vae = is_lens = is_ideogram4 = False
+            is_minit2i = is_krea2 = False
+            minit2i_vae_type = "none"
+            is_sdxl = vae_preview_kind == "taesdxl"
+            is_zimage = vae_preview_kind == "taef1"
+            is_anima = vae_preview_kind == "matrix16"
+            is_flux2 = vae_preview_kind == "matrix32"
 
         # MiniT2I latent variants: route the preview to the matching tiny decoder
         # (sdxl-VAE -> TAESD-XL 4ch, flux1-VAE -> TAEF1 16ch). The normalized latent

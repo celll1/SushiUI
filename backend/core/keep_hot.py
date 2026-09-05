@@ -128,10 +128,19 @@ def compute_model_key(manager, params: Dict[str, Any]) -> str:
     MUST change whenever keeping a component resident across generations
     would be unsafe: a different checkpoint, a different LoRA set (path or
     weight), a different U-Net quantization, or a different weight dtype.
+
+    The VAE slot is part of that identity twice over: a per-generation override
+    replaces the module with one freshly loaded onto the CPU, so a resident
+    "vae" from the previous generation would be skip-staged while the slot in
+    fact holds an off-GPU module; and the loaded checkpoint's own VAE identity
+    distinguishes two loads of the same path that resolved different VAEs.
     """
     lora_configs = params.get("loras", []) or []
+    info = getattr(manager, "current_model_info", None) or {}
     key_parts = (
         str(getattr(manager, "current_model", None)),
+        str(getattr(manager, "_override_vae_path", None)),
+        str(info.get("vae_hash")),
         _lora_fingerprint(lora_configs),
         _quantization_fingerprint(manager, params),
         # A kept-hot TE is only valid for the exact TE placement/precision it was

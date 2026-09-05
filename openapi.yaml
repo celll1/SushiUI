@@ -15540,6 +15540,13 @@ components:
         `add_warning()` (`backend/api/generation_status.py`): a requested
         option that was ignored, substituted, or downgraded. Entries are
         deduplicated within a single generation.
+
+        A notice raised while the MODEL LOADED (no generation was open to
+        record it) is replayed onto the first generation after that load, and
+        only that one — for example `model_vae_swapped`, which says the loaded
+        checkpoint runs on a VAE other than its architecture's own. The same
+        facts stay readable at any time from `GET /models/current`
+        (`latent_channels`, `vae_provenance`, `vae_identity_native`).
       required: [code, message]
       properties:
         code:

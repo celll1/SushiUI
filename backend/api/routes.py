@@ -16011,6 +16011,102 @@ async def create_training_run(
         training_db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/training/vae-sources")
+def list_vae_sources(arch: str, db: Session = Depends(get_gallery_db)):
+    """Candidate VAEs a VAE-swap full fine-tune can migrate ``arch`` to.
+
+    Three groups (design doc VAE_SWAP_MIGRATION_DESIGN.md §7.1): shared-table
+    families, standalone VAEs, and the VAE inside another full checkpoint. The
+    last group is reachable here and nowhere else — the per-generation override
+    list (``GET /models/vaes``) stays standalone-only by design (§7.2).
+
+    Header/config reads only: no tensor data and no content hash, so listing a
+    directory of multi-GB checkpoints stays cheap. The per-candidate
+    ``compatible``/``reason`` is the server-side family gate (§7.4).
+    """
+    from api.generation_overrides import (
+        _friendly_component_name, classify_vae_candidate, describe_vae,
+    )
+    from core.models.common.vae_source import VAE_REGISTRY, describe_vae_source
+    from core.models.component_registry import _WIRING_BY_ARCH
+
+    if arch not in _WIRING_BY_ARCH:
+        raise CustomValidationError(
+            "Unknown architecture",
+            detail=f"arch={arch!r}; known: {', '.join(sorted(_WIRING_BY_ARCH))}")
+
+    def _describe(source: str, name: str) -> Dict[str, Any]:
+        described = describe_vae_source(source, arch=arch)
+        described["name"] = name
+        described.setdefault("form", source.split(":", 1)[0])
+        return described
+
+    registry = [_describe(f"registry:{key}", key) for key in VAE_REGISTRY]
+
+    standalone: List[Dict[str, Any]] = []
+    extractable: List[Dict[str, Any]] = []
+    seen_paths = set()
+    accepted_dirs = set()
+
+    def _key(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    def _consider(path: str):
+        if not path or _key(path) in seen_paths:
+            return
+        seen_paths.add(_key(path))
+        # The scan offers a VAE directory and then the weight file inside it;
+        # the file alone carries no config, so listing it would only ever add a
+        # second, unresolvable copy of the directory already listed.
+        if _key(os.path.dirname(path)) in accepted_dirs:
+            return
+        try:
+            candidate = classify_vae_candidate(path)
+            if candidate is not None:
+                if candidate.get("kind") == "pid_decoder":
+                    # A decode-side super-resolution head, not an encoder: it
+                    # cannot define the latent space a run trains in.
+                    return
+                if os.path.isdir(candidate["path"]):
+                    accepted_dirs.add(_key(candidate["path"]))
+                standalone.append(_describe(f"file:{candidate['path']}",
+                                            candidate["name"]))
+                return
+            described = describe_vae(path)
+            if described.get("present") and described.get("has_backbone"):
+                extractable.append(
+                    _describe(f"model:{path}", _friendly_component_name(path)))
+        except Exception as e:
+            print(f"[VAESources] skipped {path}: {type(e).__name__}: {e}")
+
+    for scan_dir in _override_scan_dirs(db):
+        try:
+            entries = os.listdir(scan_dir)
+        except OSError:
+            continue
+        for name in entries:
+            item_path = os.path.join(scan_dir, name)
+            if os.path.isdir(item_path):
+                _offer_component_dir(item_path, _consider)
+            elif name.endswith(".safetensors"):
+                _consider(item_path)
+
+    try:
+        for export_dir in _training_vae_export_dirs():
+            _consider(export_dir)
+    except Exception as e:
+        print(f"[VAESources] training-directory scan failed: {e}")
+
+    return {
+        "arch": arch,
+        "sources": {
+            "registry": registry,
+            "standalone": standalone,
+            "extract_from_model": extractable,
+        },
+    }
+
+
 @router.get("/training/runs")
 async def list_training_runs(db: Session = Depends(get_training_db)):
     """List all training runs.

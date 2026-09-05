@@ -1,7 +1,7 @@
 """VAE component registry — arch-independent VAE component layer (plan A.4).
 
-Generalizes ``core/models/minit2i/minit2i_vae.py``: it hosts the canonical
-implementation of the AutoencoderKL registry (``VAE_REGISTRY``, ``VAE_SCALE_FACTOR``,
+Generalizes ``core/models/minit2i/minit2i_vae.py``: it hosts the AutoencoderKL
+loader surface (``VAE_REGISTRY``, ``VAE_SCALE_FACTOR``,
 ``is_latent_vae``, ``vae_latent_channels``, ``preview_decoder_for``,
 ``load_minit2i_vae``, ``normalize_latent`` / ``denormalize_latent``). The old
 ``core.models.minit2i.minit2i_vae`` module is a thin re-export shim of this one, so
@@ -9,10 +9,10 @@ existing imports keep resolving to the SAME objects (identity preserved).
 
 BEHAVIOR FREEZE: the minit2i VAE functions are moved byte-identically (including
 the ``[MiniT2I VAE]`` log strings and the ``"none"`` pixel-space sentinel semantics
-via ``is_latent_vae``). The shared default-VAE resolver still lives in
-``core/models/common/vae_store.py`` (already arch-independent and consumed by many
-archs); this module re-exports ``resolve_vae_dir`` / ``vae_identity`` for a unified
-component surface and does not move it (least-churn, R6 cache stability).
+via ``is_latent_vae``). ``VAE_REGISTRY`` is now a PROJECTION of the family table in
+``core/models/common/vae_store.py`` rather than a second copy of it; the projected
+membership and every field it exposes are unchanged. That module also stays the
+home of the shared resolver, re-exported here for a unified component surface.
 
 Spec-driven ``load_vae`` / ``encode`` / ``normalize`` are ADDITIVE (plan A.4): the
 pixel-space branch is ``spec.latent_channels == 0`` (mirrors minit2i's
@@ -26,20 +26,33 @@ from typing import Optional
 
 import torch
 
-# vae_type -> (HF repo, subfolder, latent channels, preview-decoder kind)
+from core.models.common.vae_store import VAE_REGISTRY as _VAE_FAMILIES
+
+
+def _generic_kl_entry(entry: dict) -> Optional[dict]:
+    """Project a family-table entry onto this loader's view, or None if it can't
+    load it: ``load_minit2i_vae`` hardcodes ``AutoencoderKL.from_pretrained``, so
+    an entry needs both that class and a diffusers-layout default repo.
+    """
+    if entry.get("class") != "AutoencoderKL" or not entry.get("diffusers_repo"):
+        return None
+    return {
+        "repo": entry["default_repo"],
+        "subfolder": entry.get("default_subfolder"),
+        "channels": entry["latent_channels"],
+        "preview": entry.get("preview"),
+    }
+
+
+# vae_type -> (HF repo, subfolder, latent channels, preview-decoder kind).
+# A PROJECTION of the family table in common/vae_store.py, not a second table
+# (design doc VAE_SWAP_MIGRATION_DESIGN.md §7.1): sdxl + flux1, as before.
 VAE_REGISTRY = {
-    "sdxl": {
-        "repo": "madebyollin/sdxl-vae-fp16-fix",
-        "subfolder": None,
-        "channels": 4,
-        "preview": "taesdxl",   # taesd.py is_sdxl path
-    },
-    "flux1": {
-        "repo": "diffusers/FLUX.1-vae",
-        "subfolder": None,
-        "channels": 16,
-        "preview": "taef1",     # taesd.py is_zimage (FLUX VAE) path
-    },
+    key: projected
+    for key, projected in (
+        (key, _generic_kl_entry(entry)) for key, entry in _VAE_FAMILIES.items()
+    )
+    if projected is not None
 }
 
 VAE_SCALE_FACTOR = 8  # spatial downsample of these AutoencoderKLs
@@ -54,7 +67,7 @@ def vae_latent_channels(vae_type: str) -> int:
 
 
 def preview_decoder_for(vae_type: str) -> str:
-    return VAE_REGISTRY.get(vae_type, {}).get("preview", "matrix")
+    return VAE_REGISTRY.get(vae_type, {}).get("preview") or "matrix"
 
 
 def _local_candidates(vae_type: str, local_dir: Optional[str]) -> list:

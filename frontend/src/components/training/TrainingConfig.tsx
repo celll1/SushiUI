@@ -3960,6 +3960,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       value={params.vae_swap_source ?? ""}
                       onChange={(source) => updateParam("vae_swap_source", source)}
                       arch={baseModelArch || null}
+                      baseModelPath={baseModelPath || null}
                     />
                   )}
 

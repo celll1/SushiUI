@@ -25,17 +25,17 @@ Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位
 |---|---|---|
 | D1 | 全体方針 | SDXL 専用機構（`sdxl_vae_type`）を **arch 非依存に一般化**する。arch 別 opt-in の積み上げは採らない。arch ごとに宣言するのは「潜在 I/O の構造」（§5.1 `LatentIOSpec`）だけで、変形・出所解決・同梱・宣言・ゲートは共有層に置く |
 | D2 | 対象 arch | 第1波: sd15, sdxl。第2波: zimage, krea2, ltx2。第3波: anima, flux2, lens, minit2i。最終波: sensenova（研究段階）。保留: acestep。対象外: ideogram4, minimax_h3, minimax_music3（§2） |
-| D3 | 重み保存 | 重複チャネルは**チャネル軸で部分コピー**（現行 SDXL と同じ方針）。packed Linear は reshape→チャネル軸スライス→reshape（§6）。**新規チャネルは入力側・出力側ともゼロ初期化**。現行の fresh Kaiming 初期化は廃止（SDXL も統一） |
-| D4 | スケール補正 | 重みへのスケール補正は行わない。潜在の正規化（`scaling_factor` / `latents_mean,std` / BN）で入力分散を揃える。効果は未測定である旨を UI には書かない |
+| D3 | 重み保存 | 重複チャネルは**チャネル軸で部分コピー**（現行 SDXL と同じ方針）。packed Linear は reshape→チャネル軸スライス→reshape（§6）。入力側と出力側の C の折込順序は arch ごとに**別々に**宣言する（anima は入力 outer / 出力 inner、§5.1）。**新規チャネルは入力側・出力側ともゼロ初期化**。現行の fresh Kaiming 初期化は廃止（SDXL も統一）。ゼロ初期化が走るのは**swap 適用時のみ**で、保存済みチェックポイントの再ロード・再開では保存済み重みを保持する（§6.2） |
+| D4 | スケール補正 | 重みへのスケール補正は行わない。潜在の正規化（`scaling_factor` / `latents_mean,std` / BN）で入力分散を揃える。正規化は VAE 側が宣言する領域（生 C ch、または 2×2 パック後）で適用し、呼び出し側には常に生の C ch 潜在を見せる（§8.4）。効果は未測定である旨を UI には書かない |
 | D5 | 縮小率の変更 | 第1〜3波では**空間/時間縮小率が arch 既定と異なる VAE を拒否**する。例外は SenseNova（pixel 1 → latent 8 が目的そのもの） |
 | D6 | VAE の出所 | 3種: (a) レジストリキー、(b) standalone VAE（単一ファイル / diffusers ディレクトリ）、(c) **他フルモデルからの抽出**。(c) は学習側の選択 API でのみ有効化し、生成側の override 候補列挙は現状のまま（§7） |
-| D7 | 同梱 | 差し替え後の VAE は **`vae.` prefix・diffusers キー配置で同梱**（全 arch 共通）。ネイティブ VAE の同梱規約（sd15/sdxl の `first_stage_model.` LDM 配置）は変えない。差し替え run では `bundle_vae` の解決値を True にする（明示 False は尊重） |
-| D8 | 宣言メタデータ | 既存の `component.vae.*` ブロックを拡張して SSoT にする。`sushi.vae_type` / `sushi.in_channels` は SDXL アダプタが引き続き書き、リーダーは `component.vae.*` を優先し `sushi.*` にフォールバック。**第3の表は作らない** |
-| D9 | 生成時の VAE 優先順位 | 現行の「ユーザー override > 宣言 > 埋め込み > arch 既定」を維持。ただし宣言値を正直に伝播させ、`_check_vae_compat` がチャネル不一致で 400、同チャネル別 VAE で警告を出すようにする |
-| D10 | LoRA 整合 | 書き側: 全 arch のアダプタメタデータに base の潜在 identity を記録。読み側: チャネル不一致は **hard refusal**（`lora_incompatible`）、同チャネルで VAE hash 不一致は **warning**、**メタデータ無しのアダプタを非ネイティブ base に当てる場合は refusal**。ネイティブ base への無メタデータアダプタは現状どおり無検査 |
+| D7 | 同梱 | 差し替え後の VAE は **`vae.` prefix・diffusers キー配置で同梱**（全 arch 共通）。ネイティブ VAE の同梱規約（sd15/sdxl の `first_stage_model.` LDM 配置）は変えない。差し替え run では `bundle_vae` の解決値を True にする。明示 False は `registry:` / `file:` 由来に限り尊重し、解決用の locator を書く。**`model:` 由来の非同梱は保存前（preflight）に拒否**する（§8.7） |
+| D8 | 宣言メタデータ | 既存の `component.vae.*` ブロックを拡張して SSoT にする。`sushi.vae_type` / `sushi.in_channels` は SDXL アダプタが引き続き書き、リーダーは `component.vae.*` を優先し `sushi.*` にフォールバック。**第3の表は作らない**。VAE の「ネイティブ性」は **構造互換**（`struct_native`）と **潜在空間の同一性**（`identity_native`）の 2 キーに分ける（§5.2）。表示用の `provenance` と解決用の `locator` も別キー |
+| D9 | 生成時の VAE 優先順位 | 現行の「ユーザー override > 宣言 > 埋め込み > arch 既定」を維持。ただし宣言値を正直に伝播させ、`_check_vae_compat` が構造不一致（チャネル・縮小率・ndim）で 400、同構造で hash 不一致の VAE で警告を出すようにする |
+| D10 | LoRA 整合 | 書き側: 全 arch のアダプタメタデータに base の潜在 identity（C、family、hash、`struct_native`、`identity_native`）を記録。読み側: チャネル不一致は **hard refusal**（`lora_incompatible`）、同チャネルで VAE hash 不一致は **warning**。メタデータ無しのアダプタは、base が `struct_native="0"` なら **refusal**、`struct_native="1"` かつ `identity_native="0"`（同構造・別 hash の VAE）なら **warning**、`identity_native="1"` なら現状どおり無検査 |
 | D11 | swap 済み base への LoRA 学習 | **許可**する（base は自己整合しており、LoRA は Linear のみ学習する）。拒否するのは「swap を要求しつつ method が full でない」場合のみ（現行どおり） |
-| D12 | latent cache | namespace に `vae-<family>-<hash8>` トークンを**加算的**に追加。ネイティブ VAE はトークン無し（既存 namespace を壊さない） |
-| D13 | SenseNova | 生成側パッチ P = 32 / vae_scale_factor（8× VAE なら 4）でトークン数を保存。patch-embed は小さい標準偏差の切断正規分布で初期化、`fm_head.conv2` はゼロ初期化。`sensenova_train_fm_modules` を必須値化 |
+| D12 | latent cache | namespace に `vae-<family>-<hash8>` トークンを**加算的**に追加。トークンの有無は `identity_native` で決める: `"1"` はトークン無し（既存 namespace を壊さない）、`"0"` は同チャネル・同 family の別 VAE でもトークン付き（hash で分離） |
+| D13 | SenseNova | v1 は **8× VAE のみ受理**（16× は拒否）。生成側パッチ P = 32 / vae_scale_factor = 4 でトークン数を保存。ViT 側の 2×2 マージと `fm_head` の `ps1`/`ps2` は維持するので ViT patch-embed カーネルは P/2 = 2、最終 PixelShuffle 係数 k = P/4 = 1。patch-embed は小さい標準偏差の切断正規分布で初期化、`fm_head.conv2` はゼロ初期化。`sensenova_train_fm_modules` を必須値化 |
 
 ---
 
@@ -72,10 +72,10 @@ Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位
 | zimage | 16 / 8 | `all_x_embedder["2-1"] Linear(p²·f·C→dim)`, `all_final_layer["2-1"].linear Linear(dim→p²·f·C)`（`zimage_transformer.py:463-472`, `:518-530`） | あり、**C が最内** | 可能。4ch/16ch 両対応の前例あり（`model_loader.py:1458-1512`） | 2 |
 | krea2 | 16 / 8 → 2×2 pack | `img_in Linear(64→6144)`, `final_layer.linear Linear(6144→64)`（`krea2/vendor/transformer.py:405,431-436,465`） | あり、C が最外（`krea2_pipeline_ops.py:140-147`） | 可能。per-channel `latents_mean/std` と `z_dim` を消費側が読む（`krea2_pipeline_ops.py:193-197`） | 2 |
 | ltx2 | 128 / 空間32・時間8 | `proj_in Linear(128→inner)`, `proj_out Linear(inner→128)`, `audio_proj_in/out`（diffusers `transformer_ltx2.py:1110-1126,1155-1162,1313-1317`） | なし（`patch_size=1`） | 可能。置換 VAE は video VAE 必須、`17n+5` フレーム算術は時間比率固定 | 2 |
-| anima | 16 / 8 | `x_embedder.proj[1] Linear((C+1)·p²·t→2048, bias=False)`, `final_layer.linear Linear(2048→p²·t·C, bias=False)`（`anima_models.py:480-491,507-513,1152-1157`） | あり、C が最外、**入力側のみ +1（padding mask）** | 可能・要注意。学習可能 `pos_embedder` が `max_img_h//patch_spatial` でサイズ決定（`:1160-1170`）⇒ 縮小率変更は不可（D5 で拒否） | 3 |
-| flux2 | 32 / 8 → 2×2 pack | `x_embedder Linear(128→inner, bias=False)`, `proj_out Linear(inner→128, bias=False)` | あり、C が最外（`base_trainer.py:10486-10491`） | 可能・要注意。trainer が `vae.bn.running_mean/var` を直読（`flux2_ops.py:367-372`） | 3 |
-| lens | 32 / 8 → 2×2 pack | `img_in Linear(128→inner)`, `proj_out Linear(inner→128, bias=True)`（`lens/vendor/transformer.py:426-451,533`） | あり、C が最外（`lens_pipeline_ops.py:283-288`） | 可能・要注意。同じく VAE 内部 BN（`lens_pipeline_ops.py:299+`） | 3 |
-| minit2i | 3 / 4 / 16 | `img_embedder.proj1 Conv2d(C,128,k=P,s=P,bias=False)`, `final_layer.linear Linear(hidden→P²·C)`（`mmjit.py:104-109,278-284`） | 出力側のみ | 実装済み（config 値）。差し替え＝`vae_type` 変更＋変形として同機構に乗せる | 3 |
+| anima | 16 / 8 | `x_embedder.proj[1] Linear((C+1)·p²·t→2048, bias=False)`, `final_layer.linear Linear(2048→p²·t·C, bias=False)`（`anima_models.py:480-491,507-513,1152-1157`） | あり、**入力側は C が最外、出力側は C が最内**（`anima_models.py:485-489`, `:1208-1212`）、**入力側のみ +1（padding mask）** | 可能・要注意。学習可能 `pos_embedder` が `max_img_h//patch_spatial` でサイズ決定（`:1160-1170`）⇒ 縮小率変更は不可（D5 で拒否） | 3 |
+| flux2 | 32 / 8 → 2×2 pack | `x_embedder Linear(128→inner, bias=False)`, `proj_out Linear(inner→128, bias=False)` | あり、C が最外（入出力とも、`base_trainer.py:10482-10497`） | 可能・要注意。trainer が **2×2 パック後の 128ch** に `vae.bn.running_mean/var` を直読で適用（`flux2_ops.py:366-373`）。正規化領域は §8.4 | 3 |
+| lens | 32 / 8 → 2×2 pack | `img_in Linear(128→inner)`, `proj_out Linear(inner→128, bias=True)`（`lens/vendor/transformer.py:426-451,533`） | あり、C が最外（入出力とも、`lens_pipeline_ops.py:283-296`） | 可能・要注意。同じく `_patchify` → `_bn_normalize` の順で VAE 内部 BN をパック後に適用（`lens_pipeline_ops.py:283-300`） | 3 |
+| minit2i | 3 / 4 / 16 | `img_embedder.proj1 Conv2d(C,128,k=P,s=P,bias=False)`, `final_layer.linear Linear(hidden→P²·C)`（`mmjit.py:104-109,278-284`） | 入力側は conv（折込なし）、出力側は packed で C が最内（`mmjit.py:371-377`） | 実装済み（config 値）。差し替え＝`vae_type` 変更＋変形として同機構に乗せる | 3 |
 | sensenova | pixel、VAE なし、格子 /32 | §10 | — | アーキ的に別物。研究段階の変更として最終波 | 4 |
 | acestep | audio 64 / 1920 | `decoder.proj_in Conv1d(192→inner)`, `decoder.proj_out ConvTranspose1d(inner→64)`（`modeling_acestep_v15_turbo.py:1268-1305`）、`detokenize.proj_out`（`:894`）、凍結 RVQ | 時間 patchify のみ、C は 3 倍（`:1706`, `:1359`） | 可能だが凍結 RVQ の再学習/置換と `silence_latent` 資産（`acestep_ops.py:189-196,537-548`）の再生成が必要 | 保留 |
 | ideogram4 | 32 / 8 | `input_proj`, `final_layer.linear` ×2 transformer | あり | **対象外**: full FT が拒否されている（`arch_capabilities.py:1028-1030`）、`Ideogram4FullParameterAdapter` 不在 | — |
@@ -88,13 +88,16 @@ Status: 設計のみ。実装は未着手。本書は §11 のフェーズ単位
 ### 2.1 横断的な制約（設計の根拠）
 
 - **6 arch が `p²·C`（または `p²·t·C`）をトークン次元に折り込む。** 1:1 依存は ltx2 と
-  2つの U-Net のみ。折込の順序は arch により**2通り**ある（§6）。
+  2つの U-Net のみ。折込の順序は **outer / inner の 2 通り**あり、しかも**入力側と出力側で
+  一致するとは限らない**（anima は入力 outer / 出力 inner、minit2i は入力 conv / 出力 inner、§5.1）。
 - **潜在正規化は 3 方式**: (a) `scaling_factor`/`shift_factor`（sd15/sdxl/zimage）、
   (b) per-channel `latents_mean/std`（anima/krea2/ltx2）、(c) VAE 内部 BatchNorm
-  （flux2/lens/ideogram4）。共有層の `normalize(latent, vae, spec)` は `spec` を無視して
+  （flux2/lens/ideogram4）。(c) は生の C ch 潜在ではなく **2×2 パック後の 4C ch に対して統計が
+  定義されている**（flux2 `bn.running_mean` は 128 次元、`flux2_ops.py:366-373`; lens
+  `lens_pipeline_ops.py:283-300`）。共有層の `normalize(latent, vae, spec)` は `spec` を無視して
   `shift_scale` しか実装していない（`vae_registry.py:166-168`, `:113-129`）。
   `_scale_shift` の `or 1.0` は flux2 で scale=1.0 を返し、これは `vae_store.py:55-58` が
-  禁じている読み方である。第3波で 3 方式を実装する（§8.4）。
+  禁じている読み方である。第3波の前提として 3 方式と正規化領域を実装する（§8.4）。
 - **縮小率はチャネルより深い依存を持つ。** trainer の形状リテラル `base_trainer.py:14476-14532`
   （`//8`, `//16`, `64`, `128`, `3`）、zimage `calculate_shift`（`zimage_ops.py:656-667`）、
   flux2 `_flux2_compute_empirical_mu_for_sample`（`:1138-1141`）、anima `pos_embedder`、
@@ -165,13 +168,18 @@ arch ごとに「潜在に面するモジュール」と「C の折込レイア�
 構造的事実であり、`wiring.py:35-52` の既存フィールド（`latent_channels`, `latent_packing`,
 `vae_norm`）の隣に置く。**新しい表ではなく既存 spec の拡張**である。
 
+入力側（潜在 → backbone）と出力側（backbone → 潜在）は**別の関数が別の順序でパックする**
+ので、`kind` と `channel_order` は入出力で別フィールドに持つ。単一の `kind`/`channel_order` は置かない。
+
 ```python
 @dataclass(frozen=True)
 class LatentIOSpec:
     in_module: str            # 例 "unet.conv_in", "x_embedder", "img_in", "x_embedder.proj.1"
     out_module: str           # 例 "unet.conv_out", "proj_out", "final_layer.linear"
-    kind: str                 # "conv" | "packed_linear"
-    channel_order: str        # packed_linear のみ: "outer" | "inner"
+    in_kind: str              # "conv" | "packed_linear"
+    out_kind: str             # "conv" | "packed_linear"
+    in_channel_order: str     # in_kind == packed_linear のみ: "outer" | "inner"
+    out_channel_order: str    # out_kind == packed_linear のみ: "outer" | "inner"
     pack_elems: int           # packed_linear のみ: p² (・t) (・f)。例 flux2/lens/krea2=4, anima=4(空間)×1(時間), zimage=4
     extra_in_channels: int    # 入力側に付く非潜在チャネル数（anima=1、他=0）
     in_repeat: int            # 入力側で C が何倍で入るか（acestep=3、他=1）
@@ -180,24 +188,32 @@ class LatentIOSpec:
 
 宣言値（第1〜3波）:
 
-| arch | in_module | out_module | kind | order | pack_elems | extra | repeat |
+| arch | in_module | out_module | in_kind / in_order | out_kind / out_order | pack_elems | extra | repeat |
 |---|---|---|---|---|---|---|---|
-| sd15/sdxl | `unet.conv_in` | `unet.conv_out` | conv | — | — | 0 | 1 |
-| zimage | `all_x_embedder.2-1` | `all_final_layer.2-1.linear` | packed_linear | inner | 4 | 0 | 1 |
-| krea2 | `img_in` | `final_layer.linear` | packed_linear | outer | 4 | 0 | 1 |
-| ltx2 | `proj_in` | `proj_out` | packed_linear | outer | 1 | 0 | 1 |
-| anima | `x_embedder.proj.1` | `final_layer.linear` | packed_linear | outer | 4 | 1 | 1 |
-| flux2 | `x_embedder` | `proj_out` | packed_linear | outer | 4 | 0 | 1 |
-| lens | `img_in` | `proj_out` | packed_linear | outer | 4 | 0 | 1 |
-| minit2i | `img_embedder.proj1` | `final_layer.linear` | conv(in) / packed_linear(out) | 要検証 | P² | 0 | 1 |
+| sd15/sdxl | `unet.conv_in` | `unet.conv_out` | conv / — | conv / — | — | 0 | 1 |
+| zimage | `all_x_embedder.2-1` | `all_final_layer.2-1.linear` | packed_linear / inner | packed_linear / inner | 4 | 0 | 1 |
+| krea2 | `img_in` | `final_layer.linear` | packed_linear / outer | packed_linear / outer | 4 | 0 | 1 |
+| ltx2 | `proj_in` | `proj_out` | packed_linear / — | packed_linear / — | 1 | 0 | 1 |
+| anima | `x_embedder.proj.1` | `final_layer.linear` | packed_linear / **outer** | packed_linear / **inner** | 4 | 1 | 1 |
+| flux2 | `x_embedder` | `proj_out` | packed_linear / outer | packed_linear / outer | 4 | 0 | 1 |
+| lens | `img_in` | `proj_out` | packed_linear / outer | packed_linear / outer | 4 | 0 | 1 |
+| minit2i | `img_embedder.proj1` | `final_layer.linear` | conv / — | packed_linear / inner | P² | 0 | 1 |
 
-`channel_order` の根拠: zimage の unpatchify は `view(F//pF, H//pH, W//pW, pF, pH, pW, C)`
-（`zimage_transformer.py:518-530`）で C が最内。krea2 `pack_latents` は
-`permute(0,2,4,1,3,5).reshape(..., c*p*p)`（`krea2_pipeline_ops.py:140-147`）、flux2 は
-`permute(0,1,3,5,2,4).reshape(B, C*4, ...)`（`base_trainer.py:10486-10491`）、lens は同型
-（`lens_pipeline_ops.py:283-288`）、anima は `Rearrange("b c (t r) (h m) (w n) -> b t h w (c r m n)")`
-（`anima_models.py:485-489`）で、いずれも C が最外。minit2i の `final_layer.linear` の
-出力順序は `unpatchify`（`mmjit.py:371-377`）を読んで確定する（要検証）。
+順序の根拠（入力側と出力側を別々に読んで確定した値）:
+
+| arch | 入力側 | 出力側 |
+|---|---|---|
+| zimage | `view(C,F_t,pF,H_t,pH,W_t,pW).permute(1,3,5,2,4,6,0)`（`zimage_transformer.py:592-597`、学習側 `batched_zimage_wrapper.py:239-244` も同一）⇒ inner | `view(F//pF,H//pH,W//pW,pF,pH,pW,out_ch).permute(6,0,3,1,4,2,5)`（`zimage_transformer.py:526-531`）⇒ inner |
+| krea2 | `pack_latents`: `view(b,c,h/p,p,w/p,p).permute(0,2,4,1,3,5)`（`krea2_pipeline_ops.py:140-146`）⇒ outer | `unpack_latents`: `view(b,gh,gw,c,p,p).permute(0,3,1,4,2,5)`（`krea2_pipeline_ops.py:150-157`）⇒ outer |
+| lens | `_patchify`: `view(b,c,h/2,2,w/2,2).permute(0,1,3,5,2,4)`（`lens_pipeline_ops.py:283-288`）⇒ outer | `_unpatchify`: `reshape(b,c4//4,2,2,h,w).permute(0,1,4,2,5,3)`（`lens_pipeline_ops.py:291-296`）⇒ outer |
+| flux2 | `_flux2_patchify_latents_for_training`: `view(b,c,h/2,2,w/2,2).permute(0,1,3,5,2,4)`（`base_trainer.py:10482-10489`）⇒ outer | `_flux2_unpatchify_latents`: `reshape(b,c//4,2,2,h,w).permute(0,1,4,2,5,3)`（`base_trainer.py:10491-10497`）⇒ outer |
+| anima | `Rearrange("b c (t r) (h m) (w n) -> b t h w (c r m n)")`（`anima_models.py:485-489`）⇒ outer | `rearrange(x, "B T H W (p1 p2 t C) -> B C (T t) (H p1) (W p2)")`（`anima_models.py:1208-1212`）⇒ **inner** |
+| minit2i | `x_embedder.proj1` は Conv2d、パック無し（`mmjit.py:104-109`） | `unpatchify`: `reshape(b,gh,gw,p,p,c)`（`mmjit.py:371-377`）⇒ inner |
+| ltx2 | `patch_size=1` ⇒ `pack_elems=1`、順序は無意味 | 同左 |
+
+入出力の対称性は **arch ごとに両側のコードを読んで確定した事実であり、推定してはならない**。
+新 arch を追加するときは、上表に入力側と出力側の両方の引用を足してから宣言を書く
+（anima のように片側だけ読むと逆順を宣言する）。§6.6 のテストは入力側・出力側を別ケースで持つ。
 ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_linear として同じコードで扱う。
 
 ### 5.2 チェックポイント宣言メタデータ（D8）
@@ -216,13 +232,21 @@ ltx2 の in/out は 1:1（`patch_size=1`）なので `pack_elems=1` の packed_l
 | `component.vae.scale_factor` | int（例 `"8"`） | 空間縮小率 |
 | `component.vae.scale_temporal` | int | 時間縮小率（画像 VAE は `"1"`） |
 | `component.vae.norm` | `"shift_scale"/"per_channel"/"batchnorm"` | 正規化方式。§8.4 の `normalize(spec)` が読む |
-| `component.vae.source` | 文字列 | 出所（`registry:flux1`, `file:<name>`, `extracted:<model stem>`）。表示用 |
-| `component.vae.hash` | sha256 先頭 16 hex | 同梱/参照 VAE の**テンソル内容ハッシュ**。cache namespace とアダプタ identity に使う |
-| `component.vae.native` | `"1"/"0"` | arch 既定 VAE と同 family・同 C か。`"0"` が「swap 済み」の定義 |
+| `component.vae.norm_pack` | int（`"1"` or `"2"`） | 正規化統計が定義される領域の空間パック係数。`"1"` = 生の C ch、`"2"` = 2×2 パック後の 4C ch（flux2/lens の BN）。backbone 側の `pack_elems` とは独立（§8.4） |
+| `component.vae.provenance` | 文字列 | 出所の**表示用**文字列（`registry:flux1`, `file:<basename>`, `extracted:<model stem>`）。解決には使わない |
+| `component.vae.locator` | 文字列 or 空 | 非同梱時の**解決用**参照。`registry:<key>` または `path:<絶対パス>`。同梱時は空。ロード時は locator 先の内容ハッシュを再計算して `component.vae.hash` と照合し、不一致・不在は拒否（§8.7, §9.1） |
+| `component.vae.hash` | sha256 先頭 16 hex | 同梱/参照 VAE の**テンソル内容ハッシュ**。cache namespace とアダプタ identity、locator 検証に使う |
+| `component.vae.struct_native` | `"1"/"0"` | **構造互換**: `channels` / `scale_factor` / `scale_temporal` / `latent_ndim` / `class` が arch 既定 VAE と全て一致するか。capability 判定、LoRA の hard refusal 境界、生成側 `_check_vae_compat` の hard/soft 判定に使う |
+| `component.vae.identity_native` | `"1"/"0"` | **潜在空間の同一性**: `hash` が arch 既定 VAE のハッシュと一致するか。`"0"` が「swap 済み」の定義。cache namespace、アダプタ identity、warning 境界に使う。`struct_native="0"` ⇒ `identity_native="0"` は不変条件（逆は成り立たない: 同構造の fine-tune 版 VAE は `struct_native="1"`, `identity_native="0"`） |
 
+- 「arch 既定 VAE」は、その base を swap 無しでロードしたときに使われる VAE を指す
+  （sd15/sdxl は base に同梱された `first_stage_model.`、他 arch は同梱 VAE またはレジストリ既定）。
+  base が既に `identity_native="0"` を宣言している場合、その系列で作る成果物は `"0"` を引き継ぐ（§8.3）。
+  宣言を持たず sniff が arch 既定と一致するチェックポイントは両キーとも `"1"` として扱う（現行経路）。
 - ハッシュは学習側の VAE 解決時に 1 回だけ、state_dict のテンソルバイト列を安定順序で
-  sha256 して得る。生成側では再計算せずメタデータを信じる（同梱時は改竄されない前提。
-  外部参照時は §9.2 の整合ゲートが shape で検証する）。
+  sha256 して得る。同梱時は生成側で再計算せずメタデータを信じる（改竄されない前提）。
+  非同梱時は locator 先を読んだ時点で再計算し、`component.vae.hash` と一致しなければロード拒否する
+  （表示用 `provenance` は解決に使わない）。
 - `sushi.vae_type` / `sushi.in_channels` は SDXL アダプタが引き続き書く（`sdxl_adapter.py:58-62`）。
   `component_registry._apply_component_hints`（`:375-408`）はこの 2 キーも読むように拡張し、
   `component.vae.*` を優先、`sushi.*` にフォールバックする。ブリーフ §5.3 が指摘する
@@ -287,22 +311,38 @@ def resize_latent_io(module_root: nn.Module, spec: LatentIOSpec,
   予測する」と定義でき、勾配は下流の非ゼロ重みを通じて定義される。リポジトリの出力層ゼロ初期化の
   前例（`modeling_fm_modules.py:293-294, 451-452`）とも整合する。
   却下: チャネル平均複製（VAE 潜在チャネルは互換でない）、fresh random（上記）。
+- ゼロ初期化が走るのは **swap を新規に適用する瞬間だけ**である。swap 済みチェックポイントの
+  生成ロード・学習ロード・再開では、`resize_latent_io` の後に保存済み state_dict が新しい層を
+  上書きし、保存済み重みが保持される（現行の SDXL 経路も resize 後に
+  `load_custom_convs_from_single_file` が上書きする形になっている、`model_loader.py:2484-2500`）。
+  これを回帰条件にする: 「swap 済みチェックポイントを再ロードした backbone の `in_module`/`out_module`
+  重みが保存値と bit 同一」（§6.6-6、§11 P1）。
 - SDXL の既存 swap 経路もこの実装に切り替える。**SDXL の挙動変更**であり CHANGELOG に書く。
+  既存 run（Kaiming 初期化）と同じ設定で再学習しても学習結果は再現されない。保存済みの既存 run の
+  再ロード・再開は上記の回帰条件により影響を受けない。
 
 ### 6.3 `packed_linear`（DiT 6 arch + ltx2）
 
 packed 次元では「重複チャネル」は連続スライスではない。`W_in: [hidden, P·C_old]` を
 `[:, :P·n]` でスライスすると、`outer` 順では先頭 `n` チャネル分の全要素（正しい）だが、
-`inner` 順（zimage）では先頭 `P·n` 要素＝空間位置 `s < n` の**全チャネル**を拾い、
+`inner` 順では先頭 `P·n` 要素＝空間位置 `s < n` の**全チャネル**を拾い、
 チャネル `c ≥ n` の重みが `c < n` の位置に混入する。したがって必ず 3-D に戻してから
 チャネル軸でスライスする。
 
-インデックス定義（packed index `k`、チャネル `c ∈ [0,C)`、パック内位置 `s ∈ [0,P)`）:
+入力側と出力側は**別々の順序宣言**（`in_channel_order` / `out_channel_order`）で、別々に演算する。
+1 つの式で両側を扱わない（anima は入力 outer / 出力 inner）。
 
-- `outer`: `k = c·P + s`（flux2/lens/krea2/anima/ltx2）
-- `inner`: `k = s·C + c`（zimage）
+入力側のインデックス（packed index `k_in`、チャネル `c ∈ [0,C+e)`、パック内位置 `s ∈ [0,P)`）:
 
-入力側 `W_in: [hidden, P·(C_old + e)]`（`e = extra_in_channels`）:
+- `in_channel_order="outer"`: `k_in = c·P + s`（flux2/lens/krea2/anima/ltx2）
+- `in_channel_order="inner"`: `k_in = s·(C+e) + c`（zimage）
+
+出力側のインデックス（packed index `k_out`、`c ∈ [0,C)`）:
+
+- `out_channel_order="outer"`: `k_out = c·P + s`（flux2/lens/krea2/ltx2）
+- `out_channel_order="inner"`: `k_out = s·C + c`（zimage/anima/minit2i）
+
+入力側 `W_in: [hidden, P·(C_old + e)]`（`e = extra_in_channels`、`order = in_channel_order`）:
 
 ```python
 if order == "outer":
@@ -321,7 +361,7 @@ else:  # inner
 
 入力 bias は hidden 次元なので全コピー（flux2/anima は `bias=False`）。
 
-出力側 `W_out: [P·C_old, hidden]`、`b_out: [P·C_old]`:
+出力側 `W_out: [P·C_old, hidden]`、`b_out: [P·C_old]`（`order = out_channel_order`、入力側の値を流用しない）:
 
 ```python
 if order == "outer":
@@ -336,9 +376,11 @@ W_new = Wn.view(P * C_new, hidden); b_new = bn.view(P * C_new)
 ```
 
 出力側に `extra` は無い（anima は出力 `p²·t·C`、`anima_models.py:507-513`）。
+minit2i は入力側が `conv`（§6.2）、出力側だけがこの `inner` 式を通る。
 
 `pack_elems` の内訳（anima `r·m·n`、zimage `pF·pH·pW`）は `outer`/`inner` の判定にだけ
 効き、内部順序はスライスに影響しない（C 軸と直交する軸をまとめて `P` として扱える）。
+anima の出力 `(p1 p2 t C)` も同様で、`p1·p2·t` をまとめて `P`、C が最内である。
 
 ### 6.4 acestep（保留波の仕様のみ）
 
@@ -360,17 +402,31 @@ W_new = Wn.view(P * C_new, hidden); b_new = bn.view(P * C_new)
 `tests/latent_io_test.py`（新規）に**性質テスト**を置く。これが「strided vs contiguous」の
 バグを捕まえる唯一の手段である。
 
-1. 拡張の等価性: 乱数潜在 `x: [B, C_old, H, W]` を用意し `y_old = L_old(pack(x))`。
+入力側と出力側は**別ケース**にする。入力側だけを見るテストは anima の出力順序の誤りを通してしまう
+（入力 outer / 出力 inner）。各ケースは arch ごとにパラメタ化し、**その arch の実際の pack 関数と
+unpack 関数**（§5.1 の根拠表に引用したもの）を直接呼ぶ。テスト内で pack/unpack を書き直さない。
+
+1. 入力側・拡張の等価性: 乱数潜在 `x: [B, C_old, H, W]` を用意し `y_old = L_old(pack_arch(x))`。
    `L_new = resize(L_old, C_new ≥ C_old)`、`x' = cat([x, zeros(B, C_new-C_old, H, W)], dim=1)` として
-   `y_new = L_new(pack(x'))`。**`y_new == y_old`（allclose、fp32）**。`pack` は各 arch の実装
-   （`pack_latents` / `_flux2_patchify_latents_for_training` / anima `Rearrange` / zimage の view）を
-   直接呼ぶ。`inner`/`outer` を取り違えると必ず落ちる。
-2. 縮小の等価性: `C_new < C_old` で `y_new == L_old(pack(x[:, :C_new]))` に対応する出力行の一致。
-3. 出力側: `unpack(L_new_out(h))[:, :n] == unpack(L_old_out(h))[:, :n]`、残りチャネルは 0。
-4. anima: extra チャネル（padding mask）の重みが `C_new` 位置に移っていること。
+   `y_new = L_new(pack_arch(x'))`。**`y_new == y_old`（allclose、fp32）**。`pack_arch` は
+   `pack_latents` / `_patchify` / `_flux2_patchify_latents_for_training` / anima `x_embedder` の
+   `Rearrange` / zimage の `view(...).permute(...)` / minit2i は恒等（conv）。
+   `in_channel_order` を取り違えると必ず落ちる。
+2. 入力側・縮小の等価性: `C_new < C_old` で `y_new == L_old(pack_arch(x[:, :C_new]))` に対応する出力行の一致。
+3. 出力側・拡張と縮小: 乱数 `h: [B, T, hidden]` に対し
+   `unpack_arch_new(L_new_out(h))[:, :n] == unpack_arch_old(L_old_out(h))[:, :n]`（allclose、fp32）、
+   `C_new > C_old` なら残りチャネルは 0。`unpack_arch` は `unpack_latents` / `_unpatchify` /
+   `_flux2_unpatchify_latents` / anima `final_layer` 後の `rearrange` / zimage `unpatchify` /
+   minit2i `unpatchify`。`out_channel_order` を取り違えると必ず落ちる。anima はこのケースで
+   入力側と異なる順序を通ることを確認する。
+4. anima: extra チャネル（padding mask）の重みが入力側の `C_new` 位置に移っていること。
 5. sd15/sdxl: 現行 `resize_unet_in_out` の重複部分と bit 同一（回帰）。
+6. 再ロードの保持: `resize` 後に保存した state_dict を、再度 `resize` した層にロードして
+   bit 同一（§6.2 の回帰条件。ゼロ初期化が保存済み重みを上書きしないことの確認）。
 
 いずれも GPU 不要・モデル不要（`nn.Linear`/`nn.Conv2d` を spec 通りの形で生成する）。
+pack/unpack 関数がモジュールメソッドである arch（anima、zimage、minit2i）は、当該メソッドを
+最小 config のモジュールから呼ぶか、関数として切り出してから使う。
 
 ---
 
@@ -386,8 +442,11 @@ W_new = Wn.view(P * C_new, hidden); b_new = bn.view(P * C_new)
 | `file:<path>` | `file:M:/model/vae/flux2_vae.safetensors` | standalone: 単一ファイル（LDM 素キー or diffusers キー）/ diffusers ディレクトリ。現行 `load_override_vae`（`pipeline.py:1851-1901`）の 2 分岐と同じ判定を共有関数化して使う |
 | `model:<path>` | `model:M:/model/flux2/flux2-dev.safetensors` | **抽出**: ヘッダのみで `has_backbone` を確認し、`split_prefixed_state_dict(sd, ["vae.", "first_stage_model."])` で VAE 部分だけをロードする（§7.2） |
 
-戻り値 `ResolvedVAE(module, latent_channels, scale_factor, scale_temporal, ndim, norm, vae_class,
-config_dict, family, content_hash, provenance)`。学習・生成の両方がこの 1 型を消費する。
+戻り値 `ResolvedVAE(module, latent_channels, scale_factor, scale_temporal, ndim, norm, norm_pack,
+vae_class, config_dict, family, content_hash, provenance, locator, struct_native, identity_native)`。
+学習・生成の両方がこの 1 型を消費する。`provenance` は表示用文字列、`locator` は解決用
+（`registry:<key>` / `path:<絶対パス>`、`model:` 由来は `None`）で、§5.2 の同名キーにそのまま書かれる。
+`struct_native` / `identity_native` は §5.2 の定義に従い、解決時に arch 既定 VAE と比較して確定する。
 
 ### 7.2 抽出経路と、塞いでいる 3 つのゲートの扱い
 
@@ -414,11 +473,12 @@ sdxl/sd15/zimage/flux2/anima/lens は `first_stage_model.`、ブリーフ §3.5�
 | フィールド | 観測（優先） | 宣言（欠落時） | 最終手段 |
 |---|---|---|---|
 | `latent_channels` | `decoder.conv_in.weight.shape[1]` | `component.vae.channels` / `config.json` | 拒否 |
-| `scale_factor` | `encoder` の downsample 段数（`down_blocks` 数から算出、要検証） | `config.json` / 表A | 拒否 |
+| `scale_factor` | `encoder` の downsample 段数（`down_blocks` 数から算出）。**未検証**: 対応する VAE クラスごとに、down-block 数と実縮小率の対応を確認してから実装する | `config.json` / 表A | 拒否 |
 | `norm` | `bn.running_mean` が在れば `batchnorm`、`config.latents_mean` が在れば `per_channel` | `component.vae.norm` | `shift_scale`（`scaling_factor` が宣言されている場合のみ） |
+| `norm_pack` | `batchnorm` のとき `bn.running_mean.numel() / latent_channels` の平方根（flux2: 128/32=4 → 2）。平方数でなければ拒否。`batchnorm` 以外は 1 | `component.vae.norm_pack` | 拒否 |
 | `scaling_factor`/`shift_factor` | 観測不能 | `config.json` → `component.vae.*` → 表A `canonical_latent_scaling`（`vae_store.py:120-132`） | **拒否**。`0.18215` の当て推量（`:117`）は使わない |
 | `latents_mean/std` | 観測不能 | `config.json` | 拒否 |
-| `vae_class` | LDM 素キー → `AutoencoderKL`、`bn.*` → `AutoencoderKLFlux2`、5D conv → 要検証 | `component.vae.class` | 拒否 |
+| `vae_class` | LDM 素キー → `AutoencoderKL`、`bn.*` → `AutoencoderKLFlux2`。5D conv（video VAE）のクラス判別は**未検証**: 対応クラス（ltx2/anima の VAE）ごとに識別キーを確認してから実装する | `component.vae.class` | 拒否 |
 | dtype | ロード地点の既定（`pipeline.py:1856-1861` 踏襲） | `vae_dtype`（学習）/ 現行ロジック（生成） | — |
 
 「拒否」は学習 preflight で `ValueError`、生成ロードで `NotFoundError`/`ValidationError`
@@ -430,9 +490,13 @@ sdxl/sd15/zimage/flux2/anima/lens は `first_stage_model.`、ブリーフ §3.5�
 |---|---|
 | `ndim` が wiring の `latent_ndim` と異なる（画像 VAE を anima/ltx2 に等） | 拒否 |
 | `scale_factor` / `scale_temporal` が wiring と異なる | 拒否（D5、SenseNova 除く） |
-| wiring `vae_norm="batchnorm"`（flux2/lens）で置換 VAE が BN を持たない | 第2波まで拒否、第3波で §8.4 により解除 |
+| wiring `vae_norm="batchnorm"`（flux2/lens）で置換 VAE が BN を持たない | P5（§8.4）まで拒否、P5 以降は解除 |
+| 置換 VAE が `norm="batchnorm"`（`norm_pack=2`）で、置換先 arch の wiring が `batchnorm` でない（sd15/sdxl/zimage 等に flux2/lens 由来 VAE） | P5（§8.4 の正規化領域）まで拒否、P5 以降は解除 |
 | krea2 で `latents_mean/std` も `scaling_factor` も無い | 拒否 |
-| `latent_channels` が現状と同じかつ `content_hash` が同じ | 「差し替え無し」として no-op（swap 扱いにしない） |
+| sensenova で `scale_factor != 8` | 拒否（D13、v1 は 8× VAE のみ） |
+| `vae_swap_source` が `model:` かつ `bundle_vae` が明示 False | 拒否（D7、§8.7。生成時に解決できない成果物を作らない） |
+| `latent_channels` が現状と同じかつ `content_hash` が同じ | 「差し替え無し」として no-op（swap 扱いにしない、`identity_native="1"`） |
+| `latent_channels` が現状と同じで `content_hash` が異なる | swap として扱う。`resize_latent_io` はコピーのみ（新規チャネル無し）、`struct_native="1"`, `identity_native="0"` |
 
 ---
 
@@ -447,16 +511,23 @@ def apply_vae_swap(self, trainer, resolved: ResolvedVAE) -> None:
     trainer.vae = resolved.module
     report = resize_latent_io(trainer.backbone, self.wiring.latent_io, resolved.latent_channels)
     trainer.wiring = self.wiring.replace(latent_channels=resolved.latent_channels,
-                                         vae_norm=resolved.norm)
+                                         vae_norm=resolved.norm,
+                                         vae_norm_pack=resolved.norm_pack)
     trainer.vae_identity = resolved   # cache namespace / metadata / strict_validation が読む
 ```
+
+`vae_norm_pack` は `ComponentWiringSpec` に足す int フィールド（既定 1、flux2/lens は 2）。
+`vae_norm` と同じく §8.4 の `normalize(spec)` だけが読む。
 
 - `trainer.backbone` は arch により `unet` / `transformer` を指す既存属性（各 ops が持つ）。
 - `wiring.replace` は既存の graft helper（`wiring.py:47-50`）。`wiring.py:22-26` が約束して未実装の
   「ロード時に実際の値を畳み込む」処理はこれで実装される。
 - `sd_sdxl_ops.py:177-197` の SDXL 固有ブロックはこの共通実装の呼び出しに置き換える。
-- flux2 の `_flux2_patchify_latents_for_training`（`base_trainer.py:10486-10491`）と `//8` バリデータ
+- flux2 の `_flux2_patchify_latents_for_training`（`base_trainer.py:10482-10489`）と `//8` バリデータ
   （`:14516-14522`）は C を `trainer.wiring.latent_channels` から読むよう変更（縮小率は D5 で不変）。
+  `flux2_ops.py:366-373` が patchify と BN 適用を 1 続きで書いている箇所は、P5 で
+  「§8.4 の `normalize`（生 32ch を受け取り生 32ch を返す）→ backbone 用 patchify」の 2 段に分ける。
+  置換 VAE が BN を持たない場合（P5 以降）は `normalize` が `resolved.norm` の方式で動く。
   krea2 の `z_dim` 読み（`krea2_pipeline_ops.py:193-197`）、anima の `latents_mean/std`（`anima_ops.py:330-332`）、
   ltx2（`ltx2_ops.py:450-456`）は `resolved` の値を `trainer.vae.config` 経由で読むので、置換 VAE が
   同じ config 属性を持てば変更不要。持たない場合は §7.4 で拒否済み。
@@ -464,8 +535,10 @@ def apply_vae_swap(self, trainer, resolved: ResolvedVAE) -> None:
 ### 8.2 swap 済み base からの学習（ブリーフ §1.6-8 の解消）
 
 `sd_sdxl_ops.load_components`（`:43-100`）を含む全 arch の学習ローダは、base の
-`component.vae.*`（`sushi.*` フォールバック）を読み、`native="0"` なら**モデル構築前に**
-`in_channels` を宣言値で指定して構築し、同梱 VAE を `vae.` prefix からロードする。
+`component.vae.*`（`sushi.*` フォールバック）を読み、`struct_native="0"` なら**モデル構築前に**
+`in_channels` を宣言値で指定して構築する。`identity_native="0"`（swap 済み）なら VAE を
+同梱の `vae.` prefix から、非同梱なら `locator` から（hash 照合付き、§8.7）ロードする。
+同構造・別 hash の base（`struct_native="1"`, `identity_native="0"`）は構築を変えずに VAE だけ差し替わる。
 これは生成側ローダ（§9.1）と同じ関数 `load_declared_latent_io(path) -> ResolvedVAE | None`
 を共有する。SDXL の `from_single_file(num_in_channels=C, out_channels=C)` +
 `load_custom_convs_from_single_file` の 3 段回避（`model_loader.py:2419-2500`）は、
@@ -477,10 +550,11 @@ def apply_vae_swap(self, trainer, resolved: ResolvedVAE) -> None:
 - 「`vae_swap_source != ""` かつ `training_method != "full_finetune"`」→ `ValueError`（現行
   `sd_sdxl_ops.py:161-175` と同文言の一般化）。テスト `training_method_gate_test.py:285-314` の
   存在しないキー `"flux"`（`:286`）は `registry:flux1` に直す。
-- base が既に `native="0"` で swap を要求しない LoRA/full → **許可**。アダプタメタデータに
+- base が既に `identity_native="0"` で swap を要求しない LoRA/full → **許可**。アダプタメタデータに
   base の潜在 identity を書く（§9.4）。
-- base が `native="0"` でさらに別の swap を要求 → 許可（2 段階移行）。`native` の基準は arch 既定
-  VAE なので `"0"` のまま。
+- base が `identity_native="0"` でさらに別の swap を要求 → 許可（2 段階移行）。両キーの基準は
+  arch 既定 VAE（§5.2）なので、`identity_native` は `"0"` を引き継ぎ、`struct_native` は新 VAE と
+  arch 既定の比較で決め直す。
 
 ### 8.4 共有正規化層の完成（第3波の前提）
 
@@ -489,11 +563,34 @@ def apply_vae_swap(self, trainer, resolved: ResolvedVAE) -> None:
 
 - `shift_scale`: `(z - shift) * scale`（現行 `normalize_latent` `:113-129`）
 - `per_channel`: `(z - mean.view(1,-1,…)) / std.view(1,-1,…)`（anima/krea2/ltx2 の各 ops にある式）
-- `batchnorm`: `(z - bn.running_mean) / sqrt(bn.running_var + eps)`（`flux2_ops.py:367-372`, `lens_pipeline_ops.py:299+`）
+- `batchnorm`: `(z - bn.running_mean) / sqrt(bn.running_var + eps)`（`flux2_ops.py:366-373`, `lens_pipeline_ops.py:283-300`）
+
+**正規化が定義される領域（`spec.vae_norm_pack`）**: `batchnorm` の統計は生の C ch ではなく
+2×2 パック後の 4C ch に対して定義されている（flux2 の `running_mean` は 128 次元で、trainer は
+`_flux2_patchify_latents_for_training` を通してから引いている、`flux2_ops.py:366-373`; lens は
+`_patchify` → `_bn_normalize`、`lens_pipeline_ops.py:283-300`）。これは VAE の性質であって
+backbone の性質ではない。契約は次のとおり:
+
+- `normalize` / `denormalize` は**常に生の C ch 潜在 `[B, C, H, W]` を受け取り、生の C ch 潜在を返す**。
+- `vae_norm_pack == 2` のとき、内部で `view(B,C,H/2,2,W/2,2).permute(0,1,3,5,2,4).reshape(B,4C,H/2,W/2)`
+  （C 最外、`base_trainer.py:10482-10489` と同じ順序）→ 統計を適用 → 逆変換
+  （`base_trainer.py:10491-10497` と同じ）を行う。統計の並びは VAE がこの pack 順で学習されたことに
+  依存するので、`norm_pack` の pack 順は VAE 側の固定仕様として `vae_class` ごとに 1 つに決め、
+  `LatentIOSpec` の `in_channel_order` から導かない。
+- backbone 側のパック（`LatentIOSpec.pack_elems` / `in_channel_order`）とは**独立**である。
+  flux2/lens では両者がともに 2×2 で一致するため現行コードは 1 回の patchify で兼ねているが、
+  sdxl に flux2 由来の VAE を当てる場合は backbone がパックしないので、VAE 側で pack → BN → unpack
+  して 32ch の正規化済み潜在を得る必要がある。逆に flux2 に `shift_scale` の VAE を当てる場合は
+  `normalize` は pack せず、backbone の patchify だけが走る。
+- P5 の受け入れ条件（ネイティブ VAE の潜在が置き換え前後で bit 同一）は、pack → 統計 → unpack →
+  backbone patchify の往復が `view`/`permute` のみで数値演算を含まないことで満たされる。
 
 flux2/lens/anima/krea2/ltx2 の ops は自前の式をこの関数呼び出しに置き換える。`_scale_shift` の
 `or 1.0`（`vae_store.py:55-58` が禁じる読み）は削除し、`scaling_factor is None and norm == "shift_scale"`
 を例外にする。これは swap の有無に関係なく正しくなる変更で、単独コミットにする。
+
+この節は **P5** で実装する。P2〜P4 では BN 系 VAE を非 BN arch に当てる swap（およびその逆）を
+§7.4 で拒否するので、P2 の第1波は `shift_scale` 系 VAE のみで検証する（§11）。
 
 ### 8.5 latent cache namespace（D12）
 
@@ -503,10 +600,13 @@ flux2/lens/anima/krea2/ltx2 の ops は自前の式をこの関数呼び出し�
 vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
 ```
 
-を `vae_type = None if self.vae_identity.native else f"{family}-{hash8}"` に置き換える。
-`build_cache_namespace`（`latent_cache.py:72-134`）は変更しない: ネイティブは `None` で
-トークン無し（`base_arch.py:431-433` の不変条件どおり加算的）、非ネイティブは `vae-<family>-<hash8>`
-＋既存の `c<n>`、`dt<dtype>`。同 family 同 C の別 VAE（fine-tune 版 SDXL VAE など）は hash で分かれる。
+を `vae_type = None if self.vae_identity.identity_native else f"{family}-{hash8}"` に置き換える。
+判定キーは **`identity_native`**（潜在空間の同一性、§5.2）であって `struct_native` ではない。
+`build_cache_namespace`（`latent_cache.py:72-134`）は変更しない: `identity_native="1"` は `None` で
+トークン無し（`base_arch.py:431-433` の不変条件どおり加算的）、`"0"` は `vae-<family>-<hash8>`
+＋既存の `c<n>`、`dt<dtype>`。同 family 同 C の別 VAE（fine-tune 版 SDXL VAE など）は
+`struct_native="1"` だが `identity_native="0"` なのでトークンが付き、素の SDXL VAE で作った
+キャッシュとは hash で分かれる（同一 namespace への混入を起こさない）。
 hash 計算は §5.2 の 1 回のみで、`vae_store.vae_identity()`（`:135-165`）の `vae_path` は
 provenance 文字列に使う。
 
@@ -531,10 +631,19 @@ provenance 文字列に使う。
 - ネイティブ VAE の同梱は現行規約のまま（sd15/sdxl は `first_stage_model.` LDM 配置、
   `BUNDLE_VAE_DEFAULTS_BY_ARCH` `param_defaults.py:2956-2961`）。swap 済み sdxl は A1111/ComfyUI で
   読めない（`conv_in` が 4ch でない）ので LDM 互換を保つ理由が無い。
-- `bundle_vae` resolver（`:3048-3056`）: `vae_swap_source != ""` → 既定 True。明示 False は尊重し、
-  その場合 `component.vae.embedded="0"` と `component.vae.source` を書き、生成ロードは
-  `source` を `file:`/`registry:` として解決する（`model:` は解決しない: 抽出元の存在を
-  生成時に前提にしない）。解決不能なら**ロード拒否**（黙って 4ch にフォールバックしない）。
+- `bundle_vae` resolver（`:3048-3056`）: `vae_swap_source != ""` → 既定 True。明示 False の扱いは
+  出所で分かれる:
+  - `registry:<key>` / `file:<path>` → 尊重する。`component.vae.embedded="0"`、
+    `component.vae.locator` に `registry:<key>` / `path:<絶対パス>`（`file:` は解決時に絶対化した
+    パス）、`component.vae.hash` を書く。表示用 `provenance` は解決に使わない（basename では元ファイルを
+    特定できない）。生成ロード・学習ロードは locator を解決し、内容ハッシュを再計算して `hash` と
+    照合する。不在・不一致は**ロード拒否**（黙って 4ch にフォールバックしない）。
+  - `model:<path>` → **preflight で拒否**（`ValueError`、run 作成時の検証で返す。§7.4）。
+    抽出 VAE は抽出元フルモデルの中にしか存在せず、生成時に抽出元の存在を前提にしないので
+    解決可能な locator を持てない。保存が成功して後で読めない成果物を作らない。
+    却下: 保存時に standalone VAE を別ファイルとして書き出し locator で指す案 — 成果物が
+    2 ファイルになり、片方だけ移動されると同じ「読めない成果物」になる。同梱（既定 True）が
+    その要件を 1 ファイルで満たす。
 - 10GiB シャーディング（`:57`）: VAE テンソルは他と同じく `dedup_tensors` → シャード分割に乗る。
   リーダー `load_component_state_dict`（`:312-330`）は prefix で全シャードを横断するので変更不要。
 - LoRA 保存には VAE を同梱しない（LoRA は base を変えない。§9.4 の identity だけ書く）。
@@ -551,8 +660,10 @@ provenance 文字列に使う。
 
 - 宣言が無く sniff も arch 既定と一致 → `None`（現行経路、変更なし）。
 - 宣言 C と sniff C の不一致（anima は `+1`、inpaint U-Net は `2C+1` を許容）→ **ロード拒否**。
-- 一致し非ネイティブ → `ResolvedVAE`（同梱なら `vae.`/`first_stage_model.` から、非同梱なら
-  `source` から）。
+- 一致し `identity_native="0"` → `ResolvedVAE`（同梱なら `vae.`/`first_stage_model.` から、非同梱なら
+  `locator` から。locator 先の内容ハッシュが `component.vae.hash` と一致しなければ拒否、§8.7）。
+  `struct_native="0"` なら backbone を宣言 C で構築する。`struct_native="1"` かつ
+  `identity_native="0"` は構築を変えず VAE だけを置き換える。
 
 各 arch ローダは backbone を C で構築してから state_dict をロードする。diffusers 経由の
 sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `resize_unet_in_out` +
@@ -560,9 +671,9 @@ sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `res
 `load_custom_convs_from_single_file` の shape 不一致は例外にする。`model_type == "sdxl"` ゲート
 （`:2358`）は `model_type in ("sd15", "sdxl")` へ、その他 arch はそれぞれのローダで同じ関数を呼ぶ。
 
-ロード後、`pipeline._sushi_wiring = _WIRING_BY_ARCH[arch].replace(latent_channels=C, vae_norm=…)`
+ロード後、`pipeline._sushi_wiring = _WIRING_BY_ARCH[arch].replace(latent_channels=C, vae_norm=…, vae_norm_pack=…)`
 を必ず設定し、`current_model_info`（`pipeline.py:1397-1405`）に `latent_channels`, `vae_type`,
-`vae_hash`, `vae_source`, `vae_native` を載せる。`/models/current`（`routes.py:10097-10108`）、
+`vae_hash`, `vae_provenance`, `vae_struct_native`, `vae_identity_native` を載せる。`/models/current`（`routes.py:10097-10108`）、
 `describe_vae`（`generation_overrides.py:154-224`）、`_fold_baseline`（`component_registry.py:599-604`）
 は静的定数ではなく `pipeline._sushi_wiring` を読む。`ModelLoadSection.tsx:196-201` はサーバ値を
 既に優先するのでフロント変更は `api.ts:239-255` `ModelInfo` への `latent_channels` 宣言のみ。
@@ -572,8 +683,13 @@ sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `res
 `detect_model_type()` の SD/SDXL サイズ閾値（`model_loader.py:961-968`）の**前**に:
 
 1. `component.vae.*` / `sushi.*` / `modelspec.architecture` があれば `model_type` を確定。
+   swap 済みモデル（`identity_native="0"`）はこの段で必ず確定する。
 2. `model.diffusion_model.label_emb.0.0.weight` の有無で sdxl/sd15 を判定（SDXL の
-   added-cond 埋め込み。キー名は手元のチェックポイントで要検証）。
+   added-cond 埋め込み）。**未検証**: このキー名はリポジトリ内のコンバータの対応表
+   （`training/adapters/state_dict_converter.py:24`、`label_emb.0.0.weight` ↔
+   `add_embedding.linear_1.weight`）にあるが、実チェックポイントのヘッダで prefix 込みの
+   完全なキー名を確認していない。P0 の実装時に手元の SDXL / SD1.5 チェックポイントで確認してから
+   採用し、確認できなければこの段を入れずに 1 → 3 とする。
 3. どちらも無いときだけ現行のサイズ閾値。
 
 差し替え後のファイルサイズは両方向に動く（16ch VAE 同梱で増、fp8 export で減）ため、
@@ -598,8 +714,9 @@ sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `res
 |---|---|
 | `sushi.base.latent_channels` | int |
 | `sushi.base.vae_type` | family |
-| `sushi.base.vae_hash` | `component.vae.hash` と同じ 16 hex（ネイティブなら arch 既定 VAE のハッシュ。生成時に既定 VAE をロードした時点で 1 回計算しキャッシュする） |
-| `sushi.base.vae_native` | `"1"/"0"` |
+| `sushi.base.vae_hash` | `component.vae.hash` と同じ 16 hex（`identity_native="1"` なら arch 既定 VAE のハッシュ。生成時に既定 VAE をロードした時点で 1 回計算しキャッシュする） |
+| `sushi.base.vae_struct_native` | `"1"/"0"`（§5.2） |
+| `sushi.base.vae_identity_native` | `"1"/"0"`（§5.2） |
 
 `AdapterSpec`（`spec.py:135-143`）には `options["base_latent"]` として載せ、既存規約どおり
 明示アクセサ `base_latent_identity()` を付ける。`schema_version` は上げない（任意キーの追加）。
@@ -612,8 +729,12 @@ sd15/sdxl は現行 `from_single_file(num_in_channels=C, out_channels=C)` + `res
 |---|---|---|
 | `latent_channels` あり、不一致 | — | **refuse** `lora_incompatible`（`with_error_code(RuntimeError)`） |
 | `latent_channels` 一致、`vae_hash` 不一致 | — | warning `lora_base_vae_mismatch`（`_lora_warn`） |
-| メタデータ無し | `vae_native="0"` | **refuse** `lora_incompatible`。理由: SushiUI が作る swap 済み base 用アダプタは必ずメタデータを持つので、無メタデータのものは別の潜在空間で学習された可能性が高い。証明はできないが、サイレント破損（適用率 100%、shape 不一致ゼロ、ブリーフ §6.2）の方が回復不能 |
-| メタデータ無し | `vae_native="1"` | 現状どおり無検査 |
+| メタデータ無し | `vae_struct_native="0"` | **refuse** `lora_incompatible`。理由: SushiUI が作る swap 済み base 用アダプタは必ずメタデータを持つので、無メタデータのものは別の潜在空間で学習された可能性が高い。証明はできないが、サイレント破損（適用率 100%、shape 不一致ゼロ、ブリーフ §6.2）の方が回復不能 |
+| メタデータ無し | `vae_struct_native="1"` かつ `vae_identity_native="0"` | warning `lora_base_vae_unknown`。同構造の別 VAE（fine-tune 版 SDXL VAE 等）はチャネル配置が一致しており、無メタデータのアダプタは base VAE で学習された通常のアダプタである可能性が高い。§13-6 の境界（同形状で identity が異なるものは警告）に従う。無言では通さない |
+| メタデータ無し | `vae_identity_native="1"` | 現状どおり無検査 |
+
+境界の根拠は 2 キーで分ける: hard refusal は**構造**（`struct_native`、チャネル配置が物理的に異なる）、
+warning は**同一性**（`identity_native`、同配置で潜在分布が異なりうる）。
 
 **読み側（`AdapterSession` 経路、他 11 arch）**: `session._canonicalize`（`:304`）で spec を
 得た直後、同じ表で `AdapterIncompatible(code="lora_incompatible")`（`:96`）を投げる/警告する。
@@ -623,8 +744,9 @@ anima `x_embedder`/`final_layer` `anima_lora.py:42,52`、lens `img_in`/`proj_out
 （`session.py:105-111`）も同時に働く。それは「部分適用」ではなく「不一致」として扱われるべきなので、
 identity ゲートを shape ゲートの**前**に置く。
 
-`GET /loras` の応答（`detect_adapter_fields`）に `base_latent_channels`/`base_vae_native` を
-載せ、フロントの LoRA 一覧はロード済みモデルの `latent_channels` と比べて非互換を灰色表示する。
+`GET /loras` の応答（`detect_adapter_fields`）に `base_latent_channels` / `base_vae_struct_native` /
+`base_vae_identity_native` を載せ、フロントの LoRA 一覧はロード済みモデルの `latent_channels` と
+比べて非互換を灰色表示する。
 
 ### 9.5 override 優先順位（D9）
 
@@ -655,9 +777,10 @@ identity ゲートを shape ゲートの**前**に置く。
   `registry` / `standalone` / `extract_from_model` を、各候補の `latent_channels`, `scale_factor`,
   `ndim`, `norm`, `compatible: bool`, `reason` 付きで返す。§7.4 の family 互換判定はサーバで行い、
   UI は `compatible=false` を選択不可・理由表示にする。
-- 生成側 `ModelLoadSection`: `vae_native=false` のとき「VAE: <source> (<C>ch)」のバッジ。
+- 生成側 `ModelLoadSection`: `vae_identity_native=false` のとき「VAE: <provenance> (<C>ch)」のバッジ。
   `VaeOverrideSelector.isVaeCompatible()`（`:32-44`）は変更不要（サーバの `latent_channels` が正直になる）。
-- `ModelInfo`（`api.ts:239-255`）に `latent_channels?: number`, `vae_native?: boolean`, `vae_source?: string` を宣言。
+- `ModelInfo`（`api.ts:239-255`）に `latent_channels?: number`, `vae_struct_native?: boolean`,
+  `vae_identity_native?: boolean`, `vae_provenance?: string` を宣言。
 
 ---
 
@@ -672,12 +795,17 @@ identity ゲートを shape ゲートの**前**に置く。
   `wiring.py:185-189`）。サンプリングは `randn(B,3,H,W)` → Euler → `clamp(-1,1)`
   （`sensenova_pipeline_ops.py:117,1111-1112,1141`）。
 - 1 ステップに 2 つの patchify（`:619-648`）: `patchify(img, 32)` → `[B,(H/32)(W/32),3072]` が
-  flow matching の状態、`patchify(img,16)` → ViT。
+  flow matching の状態、`patchify(img,16)` → ViT。ViT 側は 16×16 の `patch_embedding` の後に
+  `dense_embedding = Conv2d(1024, 4096, k=2, s=2)` で **2×2 マージ**する（`modeling_neo_vit.py:135-137`、
+  `sensenova_pipeline_ops.py:621` 経由）。1 トークンが覆う画素幅は ViT パッチ幅 × 2 = 32 で、
+  flow matching 側の 32 と一致する。
+- 出力側 `fm_head`（`ConvDecoder`）は `ps1(2) → conv1 → ps2(2) → conv2 → ps3(8)`
+  （`modeling_fm_modules.py:580-598`）で、総拡大率は `2·2·8 = 32`。
 - 形が変わるテンソルは実質 2 つ: `fm_modules.vision_model_mot_gen.embeddings.patch_embedding.weight
   [1024,3,16,16]`（`modeling_neo_vit.py:132-134`）と `fm_modules.fm_head.conv2.weight/bias
-  [192,256,3,3]`（`modeling_fm_modules.py:580-598`、`192 = 3·8²`、`ps1(2)→conv1→ps2(2)→conv2→ps3(8)`）。
-  約 1.2M パラメータ。588 decoder Linear（約 99.6%）、norm、embeddings、両 RoPE、
-  `timestep_embedder`/`noise_scale_embedder`、`ConvDecoder.conv1`、理解タワー全体は形状不変。
+  [192,256,3,3]`（`192 = 3·8²`）。約 1.2M パラメータ。588 decoder Linear（約 99.6%）、norm、
+  embeddings、両 RoPE、`timestep_embedder`/`noise_scale_embedder`、`dense_embedding`、
+  `ConvDecoder.conv1`、`ps1`/`ps2`、理解タワー全体は形状不変（§10.2 の選択で維持される）。
 - 学習済み位置テーブルは無い（3 機構すべて解析計算、`modeling_qwen3.py:606-610`,
   `modeling_neo_chat.py:502-507`, `modeling_neo_vit.py:144-167`）。
 - `patch_size`/`downsample_ratio` は両タワー共有スカラ（`modeling_neo_chat.py:191-194`）で、
@@ -687,35 +815,63 @@ identity ゲートを shape ゲートの**前**に置く。
 
 ### 10.2 決定: 生成側パッチ P とトークン数の保存
 
-`P = 32 / vae_scale_factor`（8× VAE → P=4、16× VAE → P=2）。1024px で 32×32 = 1024 トークンが
-そのまま再現され、RoPE の h/w 範囲、`compute_noise_scale`（`sensenova_pipeline_ops.py:133-144`）、
-`_calculate_dynamic_mu`（`modeling_neo_chat.py:451-479`）が全て学習済みレンジに留まる。
-MiniT2I の latent 設定も同じ選択をしている（512px / 8× / P=2 ⇒ 1024 トークン、`mmjit.py:333-338`）。
-却下: P=2 固定（MiniT2I 規約）— トークン数 4 倍で 3 機構が分布外になる。
+flow matching 側のパッチ幅（潜在格子上）を `P = 32 / vae_scale_factor` とし、1024px で
+32×32 = 1024 トークンをそのまま再現する。RoPE の h/w 範囲、`compute_noise_scale`
+（`sensenova_pipeline_ops.py:133-144`）、`_calculate_dynamic_mu`（`modeling_neo_chat.py:451-479`）が
+全て学習済みレンジに留まる。MiniT2I の latent 設定も同じ選択をしている（512px / 8× / P=2 ⇒
+1024 トークン、`mmjit.py:333-338`）。却下: P=2 固定（MiniT2I 規約）— トークン数 4 倍で 3 機構が分布外になる。
 
-`NeoChatConfig` に `gen_patch_size` / `gen_in_channels` を追加し、生成側 patchify/unpatchify と
-ViT patch-embed だけがこれを読む。`patch_size`/`downsample_ratio` は理解タワー・参照前処理専用に残す
-（§4.3 の共有結合 1 を切る）。`rotary_emb_hw` は共有のままでよい（h/w index は格子から算術で決まり、
-格子は保存される）。
+`P` は ViT の patch-embed カーネル幅でも `fm_head` の最終 PixelShuffle 係数でもない。
+現行経路の 2×2 マージ（`dense_embedding`）と `ps1(2)`/`ps2(2)` を維持すると、`P` から次が決まる:
+
+- ViT patch-embed カーネル幅 = `P/2`（マージ後に 1 トークン = `P` 潜在画素）
+- `fm_head.ps3` の係数 `k = P/4`（`2·2·k = P`）、`conv2` の出力チャネル = `C·k²`
+
+**v1 は 8× VAE のみ受理する（`P = 4`）**: ViT カーネル 2×2、`k = 1`（`ps3` は恒等）、`conv2` 出力 = `C`。
+1024px の潜在は 128×128、ViT patchify で 64×64、マージで 32×32 = 1024 トークン。出力は 32×32 →
+`ps1` 64×64 → `ps2` 128×128 → `ps3(1)` 128×128 = 潜在格子。
+
+16× VAE（`P = 2`）は `k = 0.5` となり `ps1`/`ps2` を維持したままでは表現できないので**拒否**する
+（§7.4、`scale_factor != 8` → 拒否）。却下した代替:
+(b) `ps1`/`ps2` の係数を可変にする — `conv1 [1024, 1024, 3, 3]` の入力チャネル `input_dim // 4` が
+変わり、§10.1 で「形状不変」としている `conv1` の重みが保存できなくなる。
+(c) ViT 側のマージ率を可変にする — `dense_embedding [4096, 1024, 2, 2]` のカーネルが変わり、
+同じく保存できる重みが減る。どちらも 8× VAE の経路（`conv1`・`dense_embedding` 無傷）を
+16× のために壊すので、16× は本書の範囲外とし、必要になった時点で別設計とする。
+
+`NeoChatConfig` に `gen_patch_size`（= `P`）/ `gen_in_channels` を追加し、生成側 patchify/unpatchify と
+ViT patch-embed（カーネル `P/2`）、`fm_head`（`k = P/4`）だけがこれを読む。`patch_size`/`downsample_ratio` は
+理解タワー・参照前処理専用に残す（§4.3 の共有結合 1 を切る）。`rotary_emb_hw` は共有のままでよい
+（h/w index は格子から算術で決まり、格子は保存される）。
 
 ### 10.3 決定: 初期化
 
-- **patch-embed `[1024, C, P, P]`: 切断正規分布、`std = 1/sqrt(C·P²)`**（anima `PatchEmbed.init_weights`
-  `anima_models.py:494-496` と同じ規約）。
+- **patch-embed `[1024, C, P/2, P/2]`（8× VAE: `[1024, C, 2, 2]`）: 切断正規分布、
+  `std = 1/sqrt(C·(P/2)²)`**（anima `PatchEmbed.init_weights` `anima_models.py:494-496` と同じ規約）。
   却下: (C) チャネル平均複製 — 「潜在チャネルは交換可能」という前提が VAE 潜在では成り立たず、
-  さらに 16×16→P×P のカーネル再標本化が重なる。(D) 擬似逆合成 — オフライン当てはめが要り、
-  デコーダの非線形性により高ノイズ域で悪化しうる。(B) ゼロ — 出力ヘッドもゼロなので
-  step 0 の勾配が入力側に届かない（ヘッドが非ゼロになるまで 1 ステップ遅れる）。小さい標準偏差の
-  乱数は本体へ入る信号の大きさを bias と同程度に抑えつつ、step 0 から勾配が定義される。
-- **`fm_head.conv2 [C·k², 256, 3, 3]` と bias: ゼロ初期化**（`k = P` の最終 PixelShuffle 係数、
-  8× VAE なら `ps3` 8→4、出力 `C·16`）。step 0 で `x_pred = 0`、`v = (0 - z)/(1-t)` の原点向きフロー場。
-  リポジトリの出力層ゼロ初期化慣習（`modeling_fm_modules.py:293-294, 451-452`）と整合し、
-  `t→1` での `v` 爆発（`modeling_neo_chat.py:655` の `(1-t).clamp_min(t_eps)` 割り）を避ける。
-  却下: (D) ランダム — 上記爆発。(B) エンコーダ擬似逆 — 当てはめパスと PixelShuffle 展開基底での
+  さらに 16×16→2×2 のカーネル再標本化が重なる。(D) 擬似逆合成 — オフライン当てはめが要り、
+  デコーダの非線形性により高ノイズ域で悪化しうる。(B) ゼロ — 全トークンが入力内容に依らず
+  bias のみの同一値になり、ヘッドが非ゼロになる step 1 まで本体は入力内容を一切見ない。
+  小さい標準偏差の乱数は本体へ入る信号の大きさを bias と同程度に抑えつつ、step 0 から
+  内容依存の特徴を本体に流す。上流への勾配が step 0 でゼロなのはヘッドのゼロ初期化に
+  よるもので（次項）、patch-embed の初期化方式では変わらない。
+- **`fm_head.conv2 [C·k², 256, 3, 3]` と bias: ゼロ初期化**（`k = P/4`、8× VAE では `k = 1`、
+  `ps3` は恒等、出力 `C`）。理由: step 0 で `x_pred = 0` となり、初期状態が入力に依存しない
+  定義済みの値になる（fresh random は `x_pred` に入力依存の任意のバイアスを載せる）。
+  リポジトリの出力層ゼロ初期化慣習（`modeling_fm_modules.py:293-294, 451-452`）と整合する。
+  このとき `v = (x_pred - z)/(1-t) = -z/(1-t)` であり、`t→1` での発散は
+  `(1-t).clamp_min(t_eps)`（`modeling_neo_chat.py:655`）でのみ抑えられる。ゼロ初期化は
+  この発散を避ける手段では**ない**（`x_pred` の値に依らず `-z/(1-t)` の項は残る）。
+  **ゼロヘッドは step 0 で `conv2` より上流（`conv1` 以前、588 Linear、patch-embed）への勾配を
+  ゼロにする**。`conv2` 自身の勾配は入力（`ps2` 出力）に比例して非ゼロなので、step 1 以降は
+  上流にも勾配が流れる。§10.6 はこれを受け入れ条件で測る。
+  却下: (D) ランダム — 初期 `x_pred` が入力依存の無意味な値になり、初期損失の大きさが初期化の
+  乱数に依存する。(B) エンコーダ擬似逆 — 当てはめパスと PixelShuffle 展開基底での
   合成が要る。研究的には最有力だが v1 では採らず、`sensenova_latent_head_init: "zero"|"encoder_pinv"`
   の enum を予約して後続実験の口だけ残す（v1 は `"zero"` のみ受理）。(E) ピクセルヘッド保持＋後段
   エンコーダ — latent モデルにならない。
-- `ConvDecoder.conv1`、`ps1`、`ps2`、両 embedder、588 Linear は無傷。
+- `ConvDecoder.conv1`、`ps1`、`ps2`、`dense_embedding`、両 embedder、588 Linear は無傷
+  （§10.2 で 8× VAE に限定したことで保証される）。
 
 ### 10.4 決定: `noise_scale` と潜在の正規化
 
@@ -745,14 +901,26 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
   int8 export（`sensenova_full_finetune_save_format`）は decoder Linear のみ量子化するので影響なし。
 - 生成ローダ（`pipeline_backends/sensenova.py`）は `component.vae.*` を読んで `gen_patch_size`/
   `gen_in_channels` を設定し、`vae_override` の拒否（`arch_capabilities.py:607`）は latent 版のみ解除。
+  `component.vae.scale_factor != 8` の宣言はロード拒否（D13）。
+- ViT `patch_embedding` のカーネルを `P/2`、`fm_head.conv2` の出力を `C·(P/4)²` で構築する
+  （§10.2）。`dense_embedding` と `ps1`/`ps2` は触らない。
 
 ### 10.6 受け入れ条件（研究段階のゲート）
 
-1. §6.6 相当の性質テストは適用不能（変形が部分コピーでない）。代わりに「形状不変テンソルが
-   bit 同一で保存・再ロードされる」テストを置く。
-2. 3 ステップ smoke: `sensenova_train_fm_modules=True`、bf16、有限 loss、`noise_scale` が学習済みレンジ内。
-3. 1 枚生成が VAE decode まで通り、出力が NaN でない。
-4. 上記 3 点を満たしても**品質の主張はしない**。品質は所有者が実データで判断する。
+1. §6.6 相当の性質テストは適用不能（変形が部分コピーでない）。代わりに「形状不変テンソル
+   （`conv1`、`dense_embedding`、588 Linear を含む）が bit 同一で保存・再ロードされる」テストを置く。
+2. 形状の一致: 1024px 入力で flow matching 側のトークン数が 1024、ViT 側のマージ後トークン数が
+   1024、`fm_head` の出力が `[B, C, 128, 128]`（潜在格子）であること。
+3. 3 ステップ smoke: `sensenova_train_fm_modules=True`、bf16、有限 loss、`noise_scale` が学習済みレンジ内。
+   有限 loss だけでは足りず、次を同じ smoke で記録する:
+   - `t` の端点付近（`t = 1 - t_eps` と `t = t_eps`）で `v` のノルムが有限であること
+     （`(1-t).clamp_min(t_eps)` の下で `-z/(1-t)` が有界であることの確認）。
+   - step 0 で `conv2` の勾配ノルムが非ゼロ、`conv2` より上流（`conv1`、patch-embed、decoder Linear の
+     1 つ）の勾配ノルムがゼロであること（§10.3 のゼロヘッドの帰結どおり）。
+   - step 1 以降で上流の勾配ノルムが有限かつ非ゼロであること（ヘッドが非ゼロになって勾配が
+     届いたことの確認）。
+4. 1 枚生成が VAE decode まで通り、出力が NaN でない。
+5. 上記を満たしても**品質の主張はしない**。品質は所有者が実データで判断する。
 
 ---
 
@@ -763,15 +931,15 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 
 | Phase | 内容 | 検証 | リスク |
 |---|---|---|---|
-| **P0 宣言と正直な伝播** | `component.vae.*` 拡張キー（§5.2）、`_apply_component_hints` の `sushi.*` フォールバック、`current_model_info` / `pipeline._sushi_wiring`、`/models/current`・`describe_vae`・`_fold_baseline` の読み替え、arch 判定の順序変更（§9.2）、`ModelInfo` 型宣言 | 既存の swap 済み SDXL チェックポイントで `/models/current.latent_channels == 16`、`_check_vae_compat` が 4ch override を 400、native モデルで全応答が不変 | 低。読み取り経路のみ。SD/SDXL 判定の新シグナルはキー名の実機検証が要る |
-| **P1 変形の一般化** | `latent_io.py` + `LatentIOSpec`（§5.1, §6）、性質テスト（§6.6）、`resize_unet_in_out` を委譲に変更、新規チャネルゼロ初期化 | `tests/latent_io_test.py` 全 arch の pack 関数で等価性、SDXL 回帰 bit 同一 | 低〜中。SDXL の初期化変更は挙動変更（CHANGELOG） |
-| **P2 出所と第1波（sd15/sdxl）** | `vae_source.py`（registry/file/model、§7）、表B → 表A 統合、`vae_swap_source` の全層配線（§5.3、TRAINING_PARAMS_GUIDE Case B）、`GET /training/vae-sources`（openapi 先行）、`apply_vae_swap`（§8.1）、cache namespace（§8.5）、`strict_validation` 拡張（§8.6）、同梱 `vae.`（§8.7）、生成ロードの同梱読み（§9.1）、swap 済み base の学習ロード（§8.2）、capability 登録と `VaeSwapSourceSelector`（§9.7） | sdxl: `registry:flux1` / `file:` / `model:`（flux2 フルモデルから抽出した 32ch を含む）で 3 ステップ smoke → 保存 → 生成ロード → 1 枚生成。sd15 同様。`bundle_vae=False` で `source` 解決と拒否。cache namespace が `vae-…` を含む | 中。配線層が多い。`model_fields_set` 判定の漏れ、old YAML の `sdxl_vae_type` エイリアス |
+| **P0 宣言と正直な伝播** | `component.vae.*` 拡張キー（§5.2、`struct_native`/`identity_native`/`provenance`/`locator`/`norm_pack` を含む）、`_apply_component_hints` の `sushi.*` フォールバック、`current_model_info` / `pipeline._sushi_wiring`、`/models/current`・`describe_vae`・`_fold_baseline` の読み替え、arch 判定の順序変更（§9.2）、`ModelInfo` 型宣言 | 既存の swap 済み SDXL チェックポイントで `/models/current.latent_channels == 16`、`_check_vae_compat` が 4ch override を 400、native モデルで全応答が不変。§9.2-2 の `label_emb` キーは実チェックポイントのヘッダで確認できた場合のみ有効化 | 低。読み取り経路のみ。SD/SDXL 判定の新シグナルは実機未検証（確認できなければ入れない） |
+| **P1 変形の一般化** | `latent_io.py` + `LatentIOSpec`（入出力別の kind/order、§5.1, §6）、性質テスト（§6.6）、`resize_unet_in_out` を委譲に変更、新規チャネルゼロ初期化 | `tests/latent_io_test.py`: 入力側は各 arch の実 pack 関数、出力側は実 unpack 関数で**別ケース**として等価性（anima の入力 outer / 出力 inner を含む）、SDXL 回帰 bit 同一、swap 済みチェックポイントの再ロードで `in_module`/`out_module` の重みが保存値と bit 同一（§6.2 の回帰条件） | 低〜中。SDXL の初期化変更は挙動変更（CHANGELOG）。既存 run の再現性は変わる、再ロード・再開は不変 |
+| **P2 出所と第1波（sd15/sdxl）** | `vae_source.py`（registry/file/model、§7）、表B → 表A 統合、`vae_swap_source` の全層配線（§5.3、TRAINING_PARAMS_GUIDE Case B）、`GET /training/vae-sources`（openapi 先行）、`apply_vae_swap`（§8.1）、cache namespace（§8.5）、`strict_validation` 拡張（§8.6）、同梱 `vae.` と locator（§8.7）、生成ロードの同梱読み・locator 解決（§9.1）、swap 済み base の学習ロード（§8.2）、capability 登録と `VaeSwapSourceSelector`（§9.7）。**`shift_scale` 系 VAE のみ**を対象にし、BN 系（`norm=batchnorm`）は §7.4 で拒否 | sdxl: `registry:flux1`（16ch）/ `file:`（16ch standalone）/ `model:` で 3 ステップ smoke → 保存 → 生成ロード → 1 枚生成。`model:` の初回検証は (i) zimage フルモデルから抽出した 16ch `first_stage_model.`（`shift_scale`、C 変更あり）と (ii) 別の SDXL フルモデルから抽出した 4ch VAE（同 C・別 hash: `struct_native="1"`, `identity_native="0"`、resize はコピーのみ、cache namespace が分離、生成ロードで抽出 VAE が使われる）の 2 本。sd15 同様。`registry:`/`file:` + `bundle_vae=False` で locator 解決と hash 不一致時の拒否、`model:` + `bundle_vae=False` が preflight で拒否。flux2 フルモデルからの抽出は §7.4 で拒否されることを確認（解除は P7） | 中。配線層が多い。`model_fields_set` 判定の漏れ、old YAML の `sdxl_vae_type` エイリアス |
 | **P3 アダプタ整合** | 書き側 identity（全 arch）、diffusers 経路ゲート、`AdapterSession` ゲート、`GET /loras` 拡張、フロント灰色表示（§9.4） | 標準 SDXL LoRA を swap 済み SDXL に当てて `lora_incompatible`; swap 済み base で学習した LoRA が通る; 同 C 別 hash で warning | 中。無メタデータ refusal は既存ユーザーの LoRA を swap 済みモデルで拒否する（設計意図） |
 | **P4 生成側の残り** | TAESD ルーティング、inpaint `2C+1`、`keep_hot` キー、`height//8` 読み替え、ロード時警告の再生（§9.3, §9.6） | 16ch SDXL でプレビューが RGB 射影/`taef1` に切替、inpaint が 33ch ゲートを正しく判定、`vae_path` 変更で hot VAE が無効化 | 低 |
-| **P5 共有正規化層** | `normalize(spec)` 3 方式（§8.4）、flux2/lens/anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype） | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
-| **P6 第2波（zimage/krea2/ltx2）** | `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除 | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は `inner` 順の唯一の実例 |
-| **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合 | 同上。anima は padding-mask 行の移動をテストで確認 | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
-| **P8 SenseNova** | §10 全体 | §10.6 | 高。研究段階 |
+| **P5 共有正規化層** | `normalize(spec)` 3 方式と正規化領域 `vae_norm_pack`（§8.4）、flux2/lens ops の「normalize → backbone patchify」2 段化、anima/krea2/ltx2 ops の置き換え、`or 1.0` 削除、§7.4 の BN 系ゲート解除 | 各 arch でネイティブ VAE の潜在が置き換え前後で bit 同一（同一入力・同一 dtype）。sdxl に flux2 由来の 32ch BN VAE（`registry`/`file`）を当てて `normalize` の出力が 32ch で、flux2 経路で BN 適用後に unpack した値と一致 | 中。5 arch の学習経路に触る。dtype 行列（fp16/bf16）で検証（verify-in-production-dtype） |
+| **P6 第2波（zimage/krea2/ltx2）** | `LatentIOSpec` 宣言、各ローダの宣言読み・同梱読み、capability 解除 | 各 arch で smoke → 保存 → 生成。zimage は 16ch→4ch（既存 4ch 版 VAE）と 4ch→16ch の両方向 | 中。zimage は入出力とも `inner` 順の唯一の実例 |
+| **P7 第3波（anima/flux2/lens/minit2i）** | anima `+1` と出力 `inner`、flux2/lens は P5 前提、minit2i は `vae_type` config と統合 | 同上。anima は padding-mask 行の移動と、出力側が入力側と異なる順序で変形されることをテストで確認。flux2 フルモデルから抽出した 32ch BN VAE を sdxl で smoke → 保存 → 生成（P2 で拒否していた組合せの解除確認） | 中〜高。flux2/lens は BN 以外の VAE を初めて通す |
+| **P8 SenseNova** | §10 全体（8× VAE のみ） | §10.6 | 高。研究段階 |
 | 保留 | acestep（§6.4） | — | RVQ 再学習を含み本書の範囲外 |
 
 各フェーズのコミット前に `git diff --cached` の比較レビュー（CLAUDE.md 大規模変更手順）と、
@@ -787,7 +955,8 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 - **minimax_music3**: 学習非対応。
 - **acestep**: 変形自体は §6.4 で定義できるが、凍結 RVQ・`silence_latent`・`chunk_masks` の再設計を
   含むため本書では保留。
-- **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外。
+- **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外だが、そこでも 8× VAE に限る
+  （16× は `ps1`/`ps2`・`dense_embedding` の変更を伴うため別設計、§10.2）。
 - **生成側 override でのフルモデル抽出**: 提供しない（§7.2）。
 - **重みスケール補正・warmup/freeze スケジュール**: 行わない（D4）。効果の主張は実測後に限る。
 - **SenseNova の `noise_scale` 再較正と `encoder_pinv` ヘッド初期化**: 実験結果待ち（§10.3, §10.4）。
@@ -803,6 +972,12 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 4. VAE のスケーリング数値は表A（`vae_store.py`）と各 VAE の `config.json` にしか存在しない。
    コードに数値リテラルを増やさない。
 5. cache namespace への追加は加算的（`base_arch.py:431-433`）。
-6. 「拒否」と「警告」の境界: 形状・チャネル・ndim・縮小率の不一致は拒否、同形状で identity が
-   異なるものは警告、証明できないが破損の蓋然性が高いもの（無メタデータ×非ネイティブ）は拒否。
-7. UI・コミットメッセージ・本書に主観的形容詞と未測定の数値を書かない。
+6. 「拒否」と「警告」の境界: 形状・チャネル・ndim・縮小率の不一致（`struct_native="0"` 側）は拒否、
+   同形状で identity が異なるもの（`struct_native="1"`, `identity_native="0"`）は警告、証明できないが
+   破損の蓋然性が高いもの（無メタデータ × `struct_native="0"`）は拒否。
+7. `struct_native` と `identity_native` を混用しない: 構築・hard refusal・capability は前者、
+   cache namespace・アダプタ identity・warning は後者。
+8. 正規化は VAE 側の領域（`vae_norm_pack`）で閉じ、呼び出し側は常に生の C ch を扱う。backbone の
+   パック（`LatentIOSpec`）と VAE の正規化パックを同じ物として書かない。
+9. 表示用（`provenance`）を解決に使わない。解決は `locator` + hash 照合のみ。
+10. UI・コミットメッセージ・本書に主観的形容詞と未測定の数値を書かない。

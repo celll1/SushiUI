@@ -261,9 +261,12 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
     trainer.vae_identity = _with_identity(resolved, identity_native)
     if identity_native:
         return None
+    # "new", not "zero-initialised": this line is shared by every architecture,
+    # and SenseNova's rebuild draws its patch embed from a truncated normal.
+    # Each handler prints the init it actually used.
     print(f"{log} [VAE swap] latent I/O resized: {report.replaced} "
           f"-> {report.new_channels}ch ({report.copied_elements} elements copied, "
-          f"{report.new_elements} zero-initialised)")
+          f"{report.new_elements} new)")
     return report
 
 

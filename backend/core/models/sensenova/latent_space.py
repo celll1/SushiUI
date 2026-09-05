@@ -13,7 +13,10 @@ The geometry, in one place:
   with ``k`` a positive integer, so 4 is the smallest legal patch;
 * one token therefore covers ``P * vae_scale_factor`` PIXELS -- 32 with an 8x
   VAE, which is the pixel model's own geometry, and 64 with a 16x one. The
-  token COUNT is preserved at a resolution that scales with the VAE;
+  token COUNT is preserved at a resolution that scales with the VAE, so at 8x
+  the resolution does not scale at all and the transformer does IDENTICAL work:
+  a swap at 8x costs a VAE encode and buys no compute back. Token count falls
+  as ``1/s**2`` only above 8x;
 * the gen ViT's patch embed faces ``P / merge_size = 2`` latent cells, and the
   fm_head's final PixelShuffle factor is ``k = P / 4 = 1``. Neither depends on
   the compression ratio, so no 16x VAE needs extra weight surgery.

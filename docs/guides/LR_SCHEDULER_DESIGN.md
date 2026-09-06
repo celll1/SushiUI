@@ -1431,3 +1431,17 @@ seam (b) を実行する（機構は 1 つ、保存先だけが違う）。復�
 P7 が**やっていない**こと: VAE への実行時コマンド（`training_control_rpc`）、
 `.lr_schedule.json` と `lr_decay_state` メトリクス、`lr_group_schedules` / `lr_layer_decay`
 （この trainer の param group は 1 つで、深さフックも無い）、tagger（§15）。
+
+### 18.10 監査後の再開・設定往復修正（2026-09-06）
+
+- 蓄積数変更やスキップで scheduler 軸に差がある場合、新終端は保存位置に
+  `max(0, floor(T/gas) − floor(global_step/gas))` を加える。MNT の再計算も
+  同じ残り更新数を使う。過去の位置を新しい gas で換算し直さない。
+- warmup 中の延長では、linear / polynomial / cosine の減衰起点を `τ(W)` に置く。
+  実軸 W で乗数 1 に達し、延長後の終端まで単調に減衰する。
+- 既存 YAML の編集では、欠落した床を旧スケジュールの互換規則で復元する。
+  新規 run の既定 0.25 と区別し、total_steps だけの編集で床を変えない。
+- グループに plateau_cosine_floor がある場合も、開始比率を保存・表示する。
+
+回帰条件は蓄積数の増減、スキップ・部分蓄積、MNT 再計算、warmup 中の延長、
+旧 YAML の設定往復、グループ別 plateau の設定往復を含む。

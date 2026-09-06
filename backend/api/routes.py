@@ -16492,6 +16492,11 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             value = default
         result[field_name] = value
 
+    # Editing a legacy YAML must not replace its floor with the new-run default.
+    if train.get("lr_floor_ratio") is None:
+        from core.training.lr_schedules import _resolve_floor
+        result["lr_floor_ratio"] = _resolve_floor(
+            train, "relora" if job == "relora" else result["lr_scheduler"])[0]
     return result
 
 

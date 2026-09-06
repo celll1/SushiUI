@@ -20490,6 +20490,64 @@ components:
             the base LR. The floor still applies, so the multiplier never goes
             below `lr_floor_ratio`.
           example: 1.0
+        lr_group_schedules:
+          type: object
+          nullable: true
+          default: null
+          additionalProperties:
+            type: string
+            enum: [constant, constant_with_warmup, linear, cosine, cosine_with_restarts,
+                   polynomial, plateau_cosine_floor, wsd, rex]
+          description: |
+            Per-component schedule NAMES: `{"<component>": "<lr_scheduler>"}`.
+            `null` (the default) means every optimizer param group runs the run's
+            own `lr_scheduler`.
+
+            Only the name varies. `lr_warmup_steps`, `lr_floor_ratio`, the
+            `lr_decay_*` and `lr_cycle_*` keys and the runtime timeline stay
+            run-wide, so a `start_decay` / `cancel_decay` command still reaches
+            every group.
+
+            The keys are the component names the architecture's adapter puts on
+            its param groups — `unet`, `text_encoder`, `text_encoder_1`,
+            `text_encoder_2`, `vision_encoder`, plus a few architecture-specific
+            ones (`repa_projector`, `controlnet`). A key that matches no group in
+            the run does nothing and is reported as a warning.
+
+            Refused together with fused optimizer groups
+            (`num_optimizer_groups > 0` and `blocks_to_swap > 0`), which rebuild
+            the optimizer from a flat parameter list and lose the component
+            boundaries. Ignored under `training_method: relora`, whose curve is
+            shaped by its merges.
+          example: null
+        lr_layer_decay:
+          type: number
+          format: float
+          default: 1.0
+          exclusiveMinimum: 0
+          maximum: 1
+          description: |
+            Layer-wise learning-rate decay. Each optimizer param group is split
+            by the depth of the architecture's forward-ordered block its
+            parameters sit in, and depth `d` of `n` trains at
+            `lr * lr_layer_decay ** (n - 1 - d)`: the last block keeps the
+            group's own rate and earlier ones are scaled down. A parameter in no
+            block (an embedder, the final layer, a text encoder) is treated as
+            the last depth, i.e. left at 1.0. `1.0` = off.
+
+            Available only where the architecture's blocks have one forward
+            order to measure depth on; the U-Net architectures declare it
+            unsupported (see `GET /training/arch-capabilities`). Refused
+            together with fused optimizer groups, which rebuild the optimizer
+            from a flat parameter list at one learning rate.
+
+            Toggling it, or changing the block count or the trainable set,
+            changes the optimizer's group structure; a resume then declines to
+            restore the optimizer state rather than write one depth's moments
+            onto another's parameters, and comes up with fresh moments (the
+            configured warmup is re-armed if `rewarmup_on_optimizer_reset` is
+            on).
+          example: 1.0
         rewarmup_on_optimizer_reset:
           type: boolean
           default: true

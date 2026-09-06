@@ -417,7 +417,12 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                     if parameter.requires_grad
                 )
             if params:
-                groups.append({"params": params, "lr": lr})
+                groups.append({
+                    "params": params, "lr": lr,
+                    # The same components the LoRA adapter's two groups carry.
+                    "name": "unet" if half == "gen" else "text_encoder_1",
+                    "component": "unet" if half == "gen" else "text_encoder_1",
+                })
         if not groups:
             raise RuntimeError(
                 f"SenseNova full fine-tuning collected no trainable parameter from "

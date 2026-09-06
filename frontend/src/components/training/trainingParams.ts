@@ -33,6 +33,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "lr_decay_start_ratio", "lr_floor_ratio", "rewarmup_on_optimizer_reset",
   "lr_decay_start_step", "lr_decay_steps", "lr_decay_shape",
   "lr_cycle_steps", "lr_cycle_peak_decay",
+  "lr_group_schedules", "lr_layer_decay",
   "use_ema", "ema_decay", "ema_update_every", "ema_device", "gpu_index", "optimizer",
   "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
   "optimizer_cautious", "optimizer_schedule_free",

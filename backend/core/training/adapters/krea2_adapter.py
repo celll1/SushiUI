@@ -136,7 +136,8 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
             if t_params:
                 base_lr = resolve_component_lr(trainer, "unet_lr", label="Krea 2 transformer")
                 print(f"[Krea2FullParameterAdapter] {sum(p.numel() for p in t_params):,} trainable params (transformer)")
-                groups.append({"params": t_params, "lr": base_lr})
+                groups.append({"params": t_params, "lr": base_lr,
+                               "name": "unet", "component": "unet"})
         return groups
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):

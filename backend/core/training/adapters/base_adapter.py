@@ -477,7 +477,11 @@ class BaseLoRAAdapter(ABC):
                     f"{type(self).__name__} injected {len(params)} {component!r} LoRA "
                     f"parameter(s) but declares no learning rate for that component"
                 )
-            groups.append({"params": params, "lr": resolve()})
+            # `name` labels the group (the resume LR report, `lr_<component>`);
+            # `component` is what lr_group_schedules maps and survives LLRD
+            # appending a `.dNN` depth to the name (§17.3).
+            groups.append({"params": params, "lr": resolve(),
+                           "name": component, "component": component})
         leftover = sorted(c for c, p in buckets.items() if p)
         if leftover:
             raise ValueError(

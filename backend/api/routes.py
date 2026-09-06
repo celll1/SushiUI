@@ -15325,6 +15325,32 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["lr_cycle_steps"], ge=0)
     lr_cycle_peak_decay: float = Field(
         default=TRAINING_DEFAULTS["lr_cycle_peak_decay"], gt=0.0, le=1.0)
+    # Per-component schedule NAMES (D16). null = off. The numeric keys above and
+    # the runtime timeline stay run-wide; only the curve differs per component.
+    lr_group_schedules: Optional[Dict[str, str]] = TRAINING_DEFAULTS["lr_group_schedules"]
+    # Layer-wise LR decay (D17): 1.0 = off. Refused for an architecture whose
+    # blocks have no total order (see arch_capabilities).
+    lr_layer_decay: float = Field(
+        default=TRAINING_DEFAULTS["lr_layer_decay"], gt=0.0, le=1.0)
+
+    @field_validator("lr_group_schedules")
+    @classmethod
+    def _known_lr_group_schedules(cls, value):
+        # Same vocabulary as lr_scheduler: a per-group name that is not a
+        # schedule would otherwise be refused at optimizer setup, minutes in.
+        if not value:
+            return None
+        from core.training.lr_schedules import LR_SCHEDULER_NAMES
+
+        out = {}
+        for component, name in value.items():
+            key = str(name).strip().lower()
+            if key not in LR_SCHEDULER_NAMES:
+                raise ValueError(
+                    f"lr_group_schedules['{component}'] = '{name}' is not a "
+                    f"schedule name. Supported: {', '.join(LR_SCHEDULER_NAMES)}")
+            out[str(component).strip().lower()] = key
+        return out
 
     @field_validator("lr_scheduler")
     @classmethod

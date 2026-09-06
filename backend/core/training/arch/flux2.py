@@ -52,6 +52,15 @@ class Flux2ArchHandler(ArchHandler):
         # not via a post-adapter conductor call from the mode subclasses. No-op.
         return None
 
+    def depth_blocks(self, trainer):
+        # Forward order: the double-stream blocks, then the single-stream ones.
+        transformer = getattr(trainer, "transformer", None)
+        if transformer is None:
+            return None
+        double = list(getattr(transformer, "transformer_blocks", None) or [])
+        single = list(getattr(transformer, "single_transformer_blocks", None) or [])
+        return (double + single) or None
+
     def setup_attention_backend(self, trainer) -> None:
         # P3c: body lives in ops/flux2_ops (shared with base_trainer delegator).
         from core.training.ops import flux2_ops

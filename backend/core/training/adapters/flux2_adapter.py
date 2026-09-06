@@ -290,12 +290,14 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         if trainer.train_unet and trainer.transformer is not None:
             transformer_params = [p for p in trainer.transformer.parameters() if p.requires_grad]
             if transformer_params:
-                params.append({"params": transformer_params, "lr": trainer.unet_lr})
+                params.append({"params": transformer_params, "lr": trainer.unet_lr,
+                               "name": "unet", "component": "unet"})
 
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             te_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
             if te_params:
-                params.append({"params": te_params, "lr": trainer.text_encoder_1_lr})
+                params.append({"params": te_params, "lr": trainer.text_encoder_1_lr,
+                               "name": "text_encoder_1", "component": "text_encoder_1"})
 
         return params
 

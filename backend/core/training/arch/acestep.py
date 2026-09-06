@@ -54,6 +54,10 @@ class AceStepArchHandler(ArchHandler):
         from core.training.ops import acestep_ops
         acestep_ops.setup_block_swap(trainer)
 
+    def depth_blocks(self, trainer):
+        decoder = getattr(getattr(trainer, "transformer", None), "decoder", None)
+        return getattr(decoder, "layers", None)
+
     def setup_attention_backend(self, trainer) -> None:
         from core.training.ops import acestep_ops
         acestep_ops.setup_attention_backend(trainer, trainer.attention_backend)

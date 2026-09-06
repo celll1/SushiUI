@@ -54,6 +54,21 @@ class Ideogram4ArchHandler(ArchHandler):
         from core.training.ops import ideogram4_ops
         ideogram4_ops.setup_block_swap(trainer)
 
+    def depth_blocks(self, trainer):
+        # Two parallel copies of one stack: layer j is the SAME depth in the
+        # conditional and the unconditional transformer, so they share an entry
+        # rather than being concatenated (which would make the uncond stack look
+        # like a second half of one deeper network).
+        layers = getattr(getattr(trainer, "transformer", None), "layers", None)
+        if layers is None:
+            return None
+        uncond = getattr(trainer, "transformer_uncond", None)
+        if uncond is None or not getattr(trainer, "ideogram4_train_uncond", False):
+            return list(layers)
+        uncond_layers = list(getattr(uncond, "layers", None) or [])
+        return [([block] + ([uncond_layers[j]] if j < len(uncond_layers) else []))
+                for j, block in enumerate(layers)]
+
     def setup_attention_backend(self, trainer) -> None:
         # P3b: body lives in ops/ideogram4_ops (shared with base_trainer delegator).
         from core.training.ops import ideogram4_ops

@@ -64,6 +64,10 @@ class Ltx2ArchHandler(ArchHandler):
         from core.training.ops import ltx2_ops
         ltx2_ops.setup_block_swap(trainer)
 
+    def depth_blocks(self, trainer):
+        transformer = getattr(trainer, "transformer", None)
+        return getattr(transformer, "transformer_blocks", None)
+
     def setup_attention_backend(self, trainer) -> None:
         from core.training.ops import ltx2_ops
         ltx2_ops.setup_attention_backend(trainer, trainer.attention_backend)

@@ -298,6 +298,9 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # architecture without the mechanism has always accepted and ignored it,
     # and listing it here would newly hide a control on runs that carry it.
     "cfg_uncond_drop": ["cfg_uncond_drop_rate"],
+    # Layer-wise LR decay. Its depth axis is ArchHandler.depth_blocks, which
+    # only exists where the blocks have a forward order to be deep in.
+    "lr_layer_decay": ["lr_layer_decay"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -314,6 +317,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_overlap_transfer": "SenseNova MoT phase eviction overlapped half swap",
     "sensenova_train_fm_modules": "SenseNova flow-matching module training (fm_modules)",
     "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
+    "lr_layer_decay": "layer-wise learning-rate decay",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1246,6 +1250,18 @@ _add_training_required_value(
 _add_training_feature_unsupported(
     "sensenova", "vae",
     "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
+
+# --- Layer-wise LR decay ----------------------------------------------------
+# `lr_layer_decay` scales a param group by the depth of the block its
+# parameters sit in, and depth comes from ArchHandler.depth_blocks -- the same
+# forward-ordered block list each DiT arch hands its block-swap conductor. The
+# U-Net architectures return None there: their encoder blocks feed decoder
+# blocks through skip connections, so "how deep is this block" has no single
+# answer and any number assigned to it would be a choice, not a fact.
+for _a in ("sd15", "sdxl"):
+    _add_training_feature_unsupported(
+        _a, "lr_layer_decay",
+        "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
 
 
 # ---------------------------------------------------------------------------

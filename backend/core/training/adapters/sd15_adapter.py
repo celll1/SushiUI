@@ -232,12 +232,14 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
         if trainer.train_unet and trainer.unet is not None:
             unet_params = [p for p in trainer.unet.parameters() if p.requires_grad]
             if unet_params:
-                params.append({"params": unet_params, "lr": trainer.unet_lr})
+                params.append({"params": unet_params, "lr": trainer.unet_lr,
+                               "name": "unet", "component": "unet"})
 
         if trainer.train_text_encoder and trainer.text_encoder is not None:
             te1_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
             if te1_params:
-                params.append({"params": te1_params, "lr": trainer.text_encoder_1_lr})
+                params.append({"params": te1_params, "lr": trainer.text_encoder_1_lr,
+                               "name": "text_encoder_1", "component": "text_encoder_1"})
 
         return params
 

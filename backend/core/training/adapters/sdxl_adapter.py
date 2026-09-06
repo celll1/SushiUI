@@ -301,19 +301,22 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         if trainer.train_unet and trainer.unet is not None:
             unet_params = [p for p in trainer.unet.parameters() if p.requires_grad]
             if unet_params:
-                params.append({"params": unet_params, "lr": trainer.unet_lr})
+                params.append({"params": unet_params, "lr": trainer.unet_lr,
+                               "name": "unet", "component": "unet"})
 
         _custom_te = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
         if trainer.train_text_encoder and not _custom_te:
             if trainer.text_encoder is not None:
                 te1_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
                 if te1_params:
-                    params.append({"params": te1_params, "lr": trainer.text_encoder_1_lr})
+                    params.append({"params": te1_params, "lr": trainer.text_encoder_1_lr,
+                                   "name": "text_encoder_1", "component": "text_encoder_1"})
 
             if trainer.text_encoder_2 is not None:
                 te2_params = [p for p in trainer.text_encoder_2.parameters() if p.requires_grad]
                 if te2_params:
-                    params.append({"params": te2_params, "lr": trainer.text_encoder_2_lr})
+                    params.append({"params": te2_params, "lr": trainer.text_encoder_2_lr,
+                                   "name": "text_encoder_2", "component": "text_encoder_2"})
 
         # Custom SDXL TE: bridge adapters (always trainable) + optionally the encoder body.
         if getattr(trainer, "sdxl_te_type", "none") not in ("none", "clip", "", None) \
@@ -324,14 +327,18 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
                                              label="SDXL custom-TE bridge adapters")
                 print(f"[SDXLFullParameterAdapter] {sum(p.numel() for p in ad_params):,} trainable "
                       f"params (custom-TE bridge adapters), lr={ad_lr}")
-                params.append({"params": ad_params, "lr": ad_lr})
+                params.append({"params": ad_params, "lr": ad_lr,
+                               "name": "te_bridge_adapters",
+                               "component": "text_encoder"})
             if getattr(trainer, "sdxl_te_train_encoder", False) and getattr(trainer, "te_custom", None) is not None:
                 te_params = [p for p in trainer.te_custom.parameters() if p.requires_grad]
                 if te_params:
                     te_lr = resolve_component_lr(
                         trainer, "text_encoder_1_lr", "text_encoder_lr", "unet_lr",
                         label="SDXL custom TE body")
-                    params.append({"params": te_params, "lr": te_lr})
+                    params.append({"params": te_params, "lr": te_lr,
+                                   "name": "te_custom",
+                                   "component": "text_encoder"})
 
         return params
 

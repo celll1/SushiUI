@@ -188,6 +188,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lr_decay_shape: "cosine",
   lr_cycle_steps: 0,
   lr_cycle_peak_decay: 1.0,
+  lr_group_schedules: null,
+  lr_layer_decay: 1.0,
   rewarmup_on_optimizer_reset: true,
   use_ema: false,
   ema_decay: 0.9999,
@@ -589,6 +591,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const lrDecayShape = params.lr_decay_shape ?? "cosine";
   const lrCycleSteps = params.lr_cycle_steps ?? 0;
   const lrCyclePeakDecay = params.lr_cycle_peak_decay ?? 1.0;
+  const lrLayerDecay = params.lr_layer_decay ?? 1.0;
+  const lrGroupSchedules = params.lr_group_schedules ?? null;
   // The curve is sampled by the backend with the trainer's own code (there is
   // deliberately no schedule maths in this file).
   const [lrPreview, setLrPreview] = useState<LrSchedulePreview | null>(null);
@@ -969,6 +973,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const sensenovaCfgNormSupported = trainingSampleParameterSupported(
     archCapabilities, trainingSampleArch, "sensenova_sample_cfg_norm");
   const selectedTrainingSampleNote = trainingSampleNote(archCapabilities, trainingSampleArch);
+  const layerDecayUnsupported = unsupportedTrainingFeature("lr_layer_decay");
   const vaeUnsupported = unsupportedTrainingFeature("vae");
   const vaeSwapUnsupported = unsupportedTrainingFeature("vae_swap");
   // Aligned CFG null-condition training. A string here means the backend cannot
@@ -4305,6 +4310,69 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </>
               )}
             </div>
+
+            {/* Layer-wise LR decay. Hidden where the backend says the
+                architecture's blocks have no forward order to be deep in. */}
+            {!layerDecayUnsupported && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Layer-wise LR Decay</label>
+                <NumberInput
+                  value={lrLayerDecay}
+                  onCommit={(v) => updateParam("lr_layer_decay", v)}
+                  defaultValue={1.0}
+                  min={0.01}
+                  max={1}
+                  step="any"
+                  parse="float"
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Block at depth d of n trains at lr x this^(n-1-d): the last block keeps
+                  the group&apos;s rate, earlier ones are scaled down. Anything outside the
+                  block stack stays at 1.0. 1.0 = uniform. Not available with Fused
+                  Optimizer Groups. Changing it changes the optimizer&apos;s group
+                  structure, so a resume across the change starts with fresh optimizer
+                  moments.
+                </p>
+              </div>
+            )}
+
+            <details className="rounded border border-gray-700 bg-gray-900/40 p-2">
+              <summary className="text-xs text-gray-400 cursor-pointer">
+                Per-component LR schedules{lrGroupSchedules && Object.keys(lrGroupSchedules).length > 0
+                  ? ` (${Object.keys(lrGroupSchedules).length} set)` : " (off)"}
+              </summary>
+              <p className="text-xs text-gray-500 mt-2">
+                Give a component a different schedule NAME. Warmup, floor, decay and cycle
+                values stay run-wide, and so does the decay/cancel command. A component this
+                run has no optimizer group for is reported in the run&apos;s warnings. The
+                preview above draws the run&apos;s own schedule, not these. Not available
+                with Fused Optimizer Groups; ignored by ReLoRA.
+              </p>
+              <div className="grid grid-cols-2 gap-3 mt-2">
+                {["unet", "text_encoder", "text_encoder_1", "text_encoder_2", "vision_encoder"].map((component) => (
+                  <div key={component}>
+                    <label className="block text-xs text-gray-400 mb-1">{component}</label>
+                    <select
+                      value={lrGroupSchedules?.[component] ?? ""}
+                      onChange={(e) => {
+                        const next: Record<string, string> = { ...(lrGroupSchedules ?? {}) };
+                        if (e.target.value) next[component] = e.target.value;
+                        else delete next[component];
+                        updateParam("lr_group_schedules",
+                          Object.keys(next).length > 0 ? next : null);
+                      }}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">Run default ({lrScheduler})</option>
+                      {LR_SCHEDULER_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </details>
 
             <div className="rounded border border-gray-700 bg-gray-900/60 p-2">
               <div className="flex items-baseline justify-between">

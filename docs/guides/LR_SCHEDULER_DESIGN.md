@@ -1509,6 +1509,7 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 | `DECAYING` / `FLOOR` / `RECOVERING` で retarget | オーバーレイを**吸収**。現在の実現値から混合し、新 spec 下で `BASE` に戻る（D26） |
 | warmup 中に retarget | 許可（warmup 長の変更は正当な編集）。ただし混合が「LR を上げる減衰」と読まれないよう、`state_at` は `BASE` を返し `lr_decay_state` を 0 のままにする |
 | retarget 後の `total_steps` 変化 | **その時点で有効な spec** の総長を動かす。`current_total` / `nominal_total` は spec ではなく事象列から導出しているため、`restart` の相対総長と自然に合成される |
+| retarget 後の `decay` / `cancel` | `_apply_decay` の `at < spec.warmup_steps` と `_apply_cancel` の `recovery = spec.warmup_steps` は、R0 以降**畳み込まれた spec** を読む。`anchor = restart` の spec の `warmup_steps` は **`S` からの相対長**、`at` は**絶対 scheduler step** なので、両者を `at − S` で突き合わせるよう**リベースが必須**。忘れると `warmup_steps > 0` の retarget 以後、`at < W_new` の減衰コマンドが「warmup 中」として全て拒否される（§18 が挙げた 3 件と同じ、軸の取り違え） |
 | retarget と `restart`（cosine のサイクル再開）事象 | 別物。名前の衝突を避けるため、UI・ログ・警告コードでは前者を **retarget**、後者を **cycle restart** と表記する |
 | `lr_group_schedules` オフで `groups` 指定つき retarget | 受理して全グループに適用する（spec は 1 つしかない）。拒否しない |
 
@@ -1579,7 +1580,7 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 | P | 内容 | 受け入れ |
 |---|---|---|
 | R0 | `_fold` が `(spec, state)` を返す形への変更（挙動不変） | LR 関連 13 ファイル 609 件（`lr_schedules` / `lr_schedule_*` / `lr_group_schedules_and_layer_decay` / `test_lr_resume_override` / `rewarmup_on_optimizer_reset` / `fused_optimizer_group_resume` / `component_lr_resume_alignment` / `params_roundtrip_defaults` / `config_edit_key_preservation`）が通り、乗数が bit 同一 |
-| R1 | `ScheduleSpec` の直列化、`retarget` 事象、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 7 件を網羅する試験 |
+| R1 | `ScheduleSpec` の直列化、`retarget` 事象（`issued` / `gain` 込み）、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 8 件を網羅する試験。`warmup_steps > 0` の retarget 後に減衰コマンドが通ることを含む |
 | R2 | グループセレクタ（spec のグループ識別子を含む） | `lr_group_schedules` オン/オフ両方 |
 | R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ |
 | R4 | プレビュー API と UI | サーバ実装と UI 表示の一致 |

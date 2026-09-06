@@ -517,8 +517,8 @@ _KEY_VERDICTS = {
     "optimizer": "enum: VALID_OPTIMIZERS (= everything OptimizerFactory resolves)",
     "optimizer_weight_decay": "bounded: >= 0 (negative grows the weights)",
     "max_grad_norm": "bounded: >= 0, where 0 MEANS 'no clipping' (repo-wide convention)",
-    "lr_scheduler": "enum: VALID_LR_SCHEDULERS, and 'constant' forbids a warmup",
-    "lr_warmup_steps": "bounded: >= 0, < total_steps, and 0 under lr_scheduler 'constant'",
+    "lr_scheduler": "enum: VALID_LR_SCHEDULERS (the registry, minus what this surface cannot shape)",
+    "lr_warmup_steps": "bounded: >= 0, < total_steps; every schedule applies it",
     "seed": "bounded: 0 .. 2**32-1 (numpy.random.seed's domain)",
     "num_workers": "bounded: >= 0",
     "save_every": "bounded: >= 0 (0 = only the final checkpoint)",
@@ -695,25 +695,33 @@ class VaeNumericRefusalTest(unittest.TestCase):
                     name)
 
     def test_an_unrunnable_lr_scheduler_is_refused(self):
-        """The trainer CATCHES a get_scheduler failure and continues at a
+        """The trainer CATCHES a construction failure and continues at a
         constant LR, so an unknown name is not an error at run time — it is a
         silently ignored schedule. `piecewise_constant` is a real diffusers name
-        that would always land there (no `step_rules` is ever passed)."""
+        that the registry does not carry either (no `step_rules` is ever
+        passed)."""
         for name in ("piecewise_constant", "cosine_annealing", ""):
             with self.subTest(lr_scheduler=name):
                 self._assert_refused("silently ignore the schedule",
                                      vae={"lr_scheduler": name})
 
+    def test_a_registry_name_this_surface_cannot_shape_is_refused(self):
+        """`wsd` builds, and would then never decay: its plateau ends at an
+        `lr_decay_start_step` or at a runtime command, and this trainer has
+        neither. Silent inertness, so it is withheld with its own remedy."""
+        self._assert_refused("hold the base learning rate for the whole run",
+                             vae={"lr_scheduler": "wsd"})
+
     # ── warmup vs the schedule that is supposed to consume it ────────────
-    def test_a_warmup_under_the_constant_scheduler_is_refused(self):
-        """diffusers' get_scheduler returns the CONSTANT schedule *before* the
-        `num_warmup_steps` argument is used at all, so the pair is recorded
-        everywhere and applied nowhere. Both keys are UI-reachable and
-        `constant` is the shipped default, which makes this the likeliest
-        spelling of the mistake."""
-        self._assert_refused("returns the constant schedule without ever",
-                             vae={"lr_scheduler": "constant",
-                                  "lr_warmup_steps": 500})
+    def test_a_warmup_under_the_constant_scheduler_is_accepted(self):
+        """Was refused while diffusers built the schedule: its `get_scheduler`
+        returned the CONSTANT branch before `num_warmup_steps` was passed to
+        anything, so the pair was recorded everywhere and applied nowhere. The
+        registry's `constant` IS `constant_with_warmup` (design §4.2), so the
+        combination now does what the config says and the refusal is gone."""
+        cfg = self._assert_accepted(vae={"lr_scheduler": "constant",
+                                         "lr_warmup_steps": 500})
+        self.assertEqual(cfg["lr_warmup_steps"], 500)
 
     def test_the_same_warmup_under_constant_with_warmup_is_accepted(self):
         cfg = self._assert_accepted(vae={"lr_scheduler": "constant_with_warmup",
@@ -725,10 +733,8 @@ class VaeNumericRefusalTest(unittest.TestCase):
         self.assertEqual(cfg["lr_scheduler"], "constant")
         self.assertEqual(cfg["lr_warmup_steps"], 0)
 
-    def test_every_other_scheduler_accepts_a_warmup(self):
+    def test_every_scheduler_accepts_a_warmup(self):
         for name in VALID_LR_SCHEDULERS:
-            if name == "constant":
-                continue
             with self.subTest(lr_scheduler=name):
                 self._assert_accepted(vae={"lr_scheduler": name,
                                            "lr_warmup_steps": 100})
@@ -743,6 +749,13 @@ class VaeNumericRefusalTest(unittest.TestCase):
                     "lr_scheduler": "constant_with_warmup",
                     "total_steps": 100, "lr_warmup_steps": warmup,
                 })
+
+    def test_the_offered_vocabulary_is_the_registry_minus_what_it_cannot_shape(self):
+        from core.training.lr_schedules import LR_SCHEDULER_NAMES
+        from core.training.vae.vae_config import _UNSHAPED_LR_SCHEDULERS
+        self.assertEqual(
+            list(VALID_LR_SCHEDULERS),
+            [n for n in LR_SCHEDULER_NAMES if n not in _UNSHAPED_LR_SCHEDULERS])
 
     def test_a_warmup_shorter_than_the_run_is_accepted(self):
         cfg = self._assert_accepted(vae={"lr_scheduler": "constant_with_warmup",

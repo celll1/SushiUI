@@ -506,6 +506,32 @@ name the *other* cause that lands there, a checkpoint written under a different
 loads back into the same implementation and parameter-group layout; the one
 explicit exception is the AdamW -> AdamW8bit migration described below.
 
+### The LR schedule across a resume
+
+The schedule comes from the shared registry
+(`core/training/lr_schedules.py`, [LR_SCHEDULER_DESIGN.md](LR_SCHEDULER_DESIGN.md)),
+so `lr_scheduler` here is the same vocabulary the LoRA / full fine-tune trainers
+offer, minus `wsd`. Two consequences worth knowing before a resume:
+
+* **`lr_scheduler.pt` carries more than torch's state.** A `LambdaLR`'s
+  `state_dict()` holds `last_epoch` and `base_lrs` and nothing the schedule's
+  own closure captured, so the file also stores a format version, the schedule
+  position, and the run's *timeline* of events. Restore order is timeline, then
+  scheduler state, then the LR re-assertion. A file written before this existed
+  (a bare `state_dict`) still loads, and is read as "no timeline".
+* **Editing `total_steps` and resuming no longer reshapes the past.** The change
+  is recorded as an anchor at the resume position: the curve before it is
+  unchanged, it is continuous there, and the remaining span is mapped onto the
+  new remainder — so a `plateau_cosine_floor` run extended mid-decay keeps
+  decaying and reaches its floor at the new end, instead of jumping back onto
+  the plateau. One resume is not protected: a checkpoint written before the
+  timeline existed does not record the total it was built with, so that first
+  resume takes the current `total_steps` as the axis and says so.
+
+Steps are counted in *optimizer* steps throughout — this trainer's step counter
+only advances on an update, so `gradient_accumulation_steps` widens the batch
+without dividing `total_steps` or `lr_warmup_steps`.
+
 ### Resume while changing AdamW to AdamW8bit
 
 VAE resume permits exactly one optimizer change: a checkpoint written by torch
@@ -809,8 +835,7 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | `max_grad_norm < 0` | `clip_grad_norm_` scales by `max_norm / total_norm` and clamps that factor only from *above*, so a negative bound negates every gradient. **0 is accepted and means "no clipping"** — see [Gradient clipping](#gradient-clipping-0-means-off). |
 | `optimizer_weight_decay < 0` | Multiplies every weight by more than 1 per step; unbounded growth, unreported until the loss stops being finite. |
 | `optimizer` outside `VALID_OPTIMIZERS` | `OptimizerFactory` would raise only after the base VAE is loaded. The enum is exactly what that factory resolves — **including** `adamw8bit_ringbuffer` / `lion8bit_ringbuffer`, which do run here: with no allocator passed they fall back to allocating their 8-bit state on the GPU (verified by a live `step()`), i.e. the same placement as plain `adamw8bit` / `lion8bit`. `build_optimizer` logs that, since the name promises otherwise. |
-| `lr_scheduler` outside `VALID_LR_SCHEDULERS` | `build_optimizer` *catches* a `get_scheduler` failure and continues at a constant LR, so an unrunnable name is not an error at run time — it is a silently ignored schedule. `piecewise_constant` is excluded for the same reason (no `step_rules` is ever passed). |
-| `lr_scheduler: constant` with `lr_warmup_steps > 0` | `get_scheduler`'s `CONSTANT` branch returns before `num_warmup_steps` is passed to anything, so the run trains at the full LR from step 0 while the YAML, the sidecar and the LR chart all record a warmup. `constant` is the default and both keys are UI-reachable, so this is the likeliest spelling of the mistake. Use `constant_with_warmup`. |
+| `lr_scheduler` outside `VALID_LR_SCHEDULERS` | `build_optimizer` *catches* a construction failure and continues at a constant LR, so an unrunnable name is not an error at run time — it is a silently ignored schedule. `VALID_LR_SCHEDULERS` is the shared registry vocabulary (`lr_schedules.LR_SCHEDULER_NAMES`) minus `wsd`, whose plateau ends at an `lr_decay_start_step` or a runtime `start_decay` command and so would never decay on this surface; `piecewise_constant` is not in the registry at all (no `step_rules` is ever passed). |
 | `lr_warmup_steps >= total_steps` | The whole run would be warmup, so the configured LR is never reached while the YAML, the sidecar and the LR chart all report it. |
 | `validation_num_images < 1` | The split is `items[-validation_num_images:]`: 0 leaves the **training** split empty (`items[:-0]` is `items[:0]`) while validating on everything, and -1 trains on `items[:1]`. |
 | Negative `validation_every` / `save_every` / `num_workers` / `max_step_saves_to_keep` / `lr_warmup_steps` / `pattern_size` | Each one is guarded downstream by `> 0`, so a negative value *silently* disables validation, disables checkpointing, or keeps every checkpoint instead of pruning. |

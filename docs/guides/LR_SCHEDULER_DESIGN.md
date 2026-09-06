@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 / P3 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6 で修正済み）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 / P3 / P4 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6、ReLoRA の統合は §18.7）。P5 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -738,7 +738,7 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 | **P1 タイムラインと延長耐性（実装済み、§18.2）** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
 | **P2 実行時コマンド（実装済み、§18.3。UI のみ P3 へ）** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
 | **P3 新スケジュールと床の一般化（実装済み、§18.4）** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
-| **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
+| **P4 ReLoRA 統合（実装済み、§18.7）** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
 | **P5 LLRD** | `ArchHandler.depth_blocks`（DiT 第 1 波）、`apply_layer_decay`、グループ `name` 必須化（§10.3、LLRD でも必要）、メトリクス emit の変更、capability 登録、UI | テスト: 合成モデルで `depth_of` の被覆（全 trainable param がどこかに入る）、係数の等比、非ブロック param が 1.0、`_record_configured_group_lrs` が分割後を記録、fused 併用が `ValueError`。実 arch は 3 step smoke（有限 loss）で足りる | 中。arch ごとのブロック属性（要検証）。sd15/sdxl は unsupported |
 | **P6 グループ別スケジュール** | `lr_group_schedules`、`build_lr_scheduler` の lambda リスト、fused 併用拒否、Advanced UI | テスト: 2 グループで異なる名前、`reassert_config_lr` と fast-forward が各グループの lambda を使う、無名グループの警告 | 低〜中。既定オフ |
 | **P7 VAE トレーナー語彙統合** | `vae_trainer.py:663-674` を `build_lr_scheduler` に、`VALID_LR_SCHEDULERS` を import に、`constant` + warmup 拒否の撤去、openapi `:21653` の enum 更新 | 既存 VAE テストが通る。`lr_scheduler.pt` の新旧形式復元と timeline の延長耐性、constant + warmup 以外の refusal matrix を検証（§17.4） | 低。任意（後回し可） |
@@ -1221,3 +1221,61 @@ API のコマンドは `command` 以外のペイロードを持たない（`trai
 テストは `lr_schedules_test.py` に追加（gas 1/2/4 で減衰開始とサイクル長が schedule の同じ
 **割合**に載る、長さが 0 に落ちない、`gas == 1` は全レジストリ名で修正前の式と spec も曲線も
 同一）。既存テストは 1 件も書き換えていない。
+
+### 18.7 P4 で出荷したもの（2026-09-06）
+
+P4 は ReLoRA をレジストリに入れた。`relora` は 1 つの curve になり、merge は
+timeline の `restart` 事象になった。`relora_scheduler.py`（`CosineWithMultipleWarmups`、
+`_LRScheduler` 直系）は削除し、`relora_trainer.setup_optimizer` の差し替え（旧 `:147-181`）も
+廃した。ReLoRA も `build_lr_scheduler` の `LambdaLR` を使う——D2 の不変条件と
+`lr_utils.py:44-53` の docstring がこれで真になった。
+
+旧実装との比較は**到着順**（その step までに登録済みの restart だけを渡す＝実行中の
+スケジューラが実際に持っていた列）で行い、全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。
+テストは `backend/tests/lr_schedule_relora_test.py`（35 件）で、旧 `get_lr` は
+import ではなく**写し**である（モジュールごと消えているため）。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| 未来 restart の参照（§17.3 の本題） | `get_lr` が登録済み**全** restart から次の終端を採る（`relora_scheduler.py:111-117`）。resume が全件を再登録するので、**過去の cosine が後から短くなる** | 評価位置 `s` 以下の restart だけを読み、終端は常にその時点の total | 1 回でも merge した run の resume 全部。W=200 / W_r=100 / T=2000、merge 500・1000・1500 の run では step 900 の乗数が 0.8909（実走時）→ 0.1464（再開後）で、全 step の 1/4 以上が変化した |
+| 軸 | `total_steps` / `initial_warmup_steps` / `restart_warmup_steps` は global step、位置カウンタ `_relora_step` は scheduler 軸（§18.5 は「比率は正しい」と書いたが、**位置は正しくない**: `gas > 1` では曲線が run の到達しない位置に定義され、`add_restart(global_step)` も gas 倍先を指した） | 3 つとも `to_scheduler_axis`（floor）、`at` は `live_scheduler_step()` | `gradient_accumulation_steps > 1` の ReLoRA run。`gas = 4` なら曲線は 1/4 に縮み（＝ run が cosine を最後まで走る）、restart は設定どおりの merge 位置で効く。`gas == 1` は完全に不変 |
+| 床 | `min_lr_ratio = 0.0` 固定（`relora_trainer.py:162, 175`） | `lr_floor_ratio`（D10 / §4.2）。キーの無い旧 YAML は 0.0（§12.2） | **新規 run は既定 0.25**（`_build_train_section` が無条件に書く）ので cosine が 0.25·lr で止まる。UI はこの入力を `lr_scheduler === "constant"`（ReLoRA の既定であり ReLoRA が無視する値）で隠していたので、表示条件に `training_method === "relora"` を足した |
+| restart の反映時点 | merge フックは `scheduler.step()` の**後**なので、restart は次の更新（1 step 後）から効いた。reinit 直後の 1 step が restart 前の LR で走る | merge seam でも §5.6 の即時反映を行う（`reapply_lr_schedule_position`） | ReLoRA 全部。1 step 分の LR |
+| 3 つのフォールバック | `_fast_forward_one_lr_scheduler` の O(global_step) リプレイ、`_rearm_warmup_after_optimizer_reset` の無言スキップ、`reassert_config_lr` の乗数 1.0 | ガードとして残置。ReLoRA からは到達しない（テストで固定） | ReLoRA の resume が O(1) になり、optimizer state を復元できなかった再開で再 warmup が掛かり、config の LR がスケジュール位置込みで再表明される（挙動変更、改善） |
+| `epochs` 単位 merge の restart | `_restore_scheduler_restarts` は `i * merge_every`（steps 単位）しか再現できず、epochs では**全部失われた**（`:421`）。再開すると restart の無い cosine に戻る | 事象なので位置ごと state.json に残る | epoch 単位 merge の ReLoRA run |
+
+事象の無い旧チェックポイントは `_restore_legacy_lr_restarts`（`install_lr_schedule_events` の
+末尾から呼ぶ）が `merge_count` から steps 単位のみ再構成し、epochs では再構成できないことを
+1 行出す。`at` 重複は `ignored_duplicate_restart` で弾くので、事象を持つチェックポイントで
+二重登録は起きない。
+
+§17.3 が実コードと合わなかった点:
+
+- **「各区間の減衰終端はその時点の total」の *total* は名目 total とした。** 実 total
+  （`current_total`）を分母にすると `total_steps` を変えた再開のたびに過去の減衰率まで
+  変わり、§7.2 の「anchor より前は不変」を破る。`nominal_total` + `clock` にすれば warp が
+  そのまま効き、事象が構築時の 1 件だけなら両者は一致するので bit 同一性にも影響しない。
+- **`lr_scheduler` 設定を無視した旨の 1 行は `resolve_spec` が出せない**（§3.3 はそう書く）。
+  `resolve_spec` は正規化後の `"relora"` しか受け取らず、無視した名前を知らない。
+  `ReLoRATrainer.setup_optimizer` が出す。
+- **`restart_warmup_steps` は config から解決できない。** §3.2 は
+  `ScheduleSpec.relora_restart_warmup_steps` を config 解決の結果として書いているが、この値は
+  YAML の `network.relora` にあり、トレーナーの `self.config`（`train` セクション）には無い。
+  `resolve_spec` の引数として渡す（`resolve_lr_schedule_spec` が
+  `getattr(trainer, "restart_warmup_steps", None)`、既定は `TRAINING_DEFAULTS`）。
+- **`relora` は D18 の語彙に入れない。** `LR_SCHEDULER_NAMES` に足すと restart を持たない run が
+  「restart 付きの曲線」を選べてしまう（実体は warmup → 単一 cosine）。
+  `INTERNAL_SCHEDULER_NAMES` を分け、`resolve_spec` だけが受理する。validator・openapi の
+  enum・UI の `<select>` は変わらない。
+- **旧チェックポイントの restart 復元は `_restore_relora_state` からは呼べない。** これは
+  `install_lr_schedule_events` より**前**に走り、`timeline.load()` が事象列を丸ごと置換するので、
+  そこで足した restart は消える。復元は seam (b) の直後に移した。
+- **再 warmup の 0/F の別は「初回か否か」で決まり、`step < W` では決まらない。** §17.3 の
+  「初回のみ 0 から 1」を共通 ramp（`base_multiplier` の先頭）で表すと、初回 warmup 中に
+  起きた merge の re-warmup が共通 ramp と二重に掛かる。`relora` だけ `base_multiplier` の
+  先頭で自前の乗数を返し、区間が初回かどうかで 0→1 と F→1 を分ける。
+
+P4 が**やっていない**こと: LLRD（P5）、`lr_group_schedules`（P6）、VAE（P7）。
+`GET /training/lr-schedule/preview` は `relora` を受け付けない（語彙外）ので、ReLoRA run の
+UI プレビューは選択中の（無視される）スケジュールを描く——プレビューの下に無視される旨を
+1 行書いた。restart 位置を持つプレビューは本フェーズの範囲外。

@@ -26,9 +26,14 @@ from typing import Dict, Optional, Set
 import torch
 import torch.nn as nn
 
+from .base_trainer import (
+    live_scheduler_step,
+    lr_scheduler_advance_interval,
+    reapply_lr_schedule_position,
+)
 from .lora_trainer import LoRATrainer
+from .lr_schedules import to_scheduler_axis
 from .relora_utils import merge_lora_into_base, reinitialize_lora, reset_optimizer_state
-from .relora_scheduler import CosineWithMultipleWarmups
 
 
 class ReLoRATrainer(LoRATrainer):
@@ -140,45 +145,25 @@ class ReLoRATrainer(LoRATrainer):
         """
         Setup optimizer and LR scheduler.
 
-        Calls parent setup_optimizer() for optimizer creation, then replaces
-        the LR scheduler with CosineWithMultipleWarmups for jagged warmup support.
+        ReLoRA's schedule is the registry's ``relora`` curve
+        (``lr_schedules.py``, §4.2): the merge restarts shape it, so no other
+        name can express it and the run's ``lr_scheduler`` setting is ignored --
+        as it always was, when this method discarded the scheduler the parent
+        had just built. What it builds now is a ``LambdaLR`` like every other
+        schedule, which is what makes the resume fast-forward, the post-reset
+        re-warmup and the config-LR re-assertion work for ReLoRA too.
 
         Args:
             optimizer_type: Optimizer type
-            lr_scheduler_type: LR scheduler type (used for parent; replaced for ReLoRA)
+            lr_scheduler_type: LR scheduler type (ignored; see above)
             total_steps: Total training steps
         """
-        # 1. Call parent to create optimizer (and initial scheduler, fused groups, etc.)
-        super().setup_optimizer(optimizer_type, lr_scheduler_type, total_steps)
-
-        # 2. Replace LR scheduler with ReLoRA's CosineWithMultipleWarmups
-        #    Only replace the main scheduler (not fused optimizer group schedulers)
-        if self.fused_optimizer_groups is None:
-            self.lr_scheduler = CosineWithMultipleWarmups(
-                optimizer=self.optimizer,
-                total_steps=total_steps,
-                initial_warmup_steps=self.optimizer_warmup_steps,
-                restart_warmup_steps=self.restart_warmup_steps,
-                min_lr_ratio=0.0,
-            )
-            print(f"{self.log_prefix} LR scheduler replaced with CosineWithMultipleWarmups")
-            print(f"{self.log_prefix}   initial_warmup={self.optimizer_warmup_steps}, restart_warmup={self.restart_warmup_steps}")
-        else:
-            # Fused optimizer groups: replace all schedulers
-            new_schedulers = []
-            for i, optimizer in enumerate(self.fused_optimizer_groups.optimizers):
-                scheduler = CosineWithMultipleWarmups(
-                    optimizer=optimizer,
-                    total_steps=total_steps,
-                    initial_warmup_steps=self.optimizer_warmup_steps,
-                    restart_warmup_steps=self.restart_warmup_steps,
-                    min_lr_ratio=0.0,
-                )
-                new_schedulers.append(scheduler)
-
-            self.lr_schedulers = new_schedulers
-            self.lr_scheduler = new_schedulers[0]  # For compatibility
-            print(f"{self.log_prefix} Replaced {len(new_schedulers)} LR schedulers with CosineWithMultipleWarmups")
+        if str(lr_scheduler_type or "").strip().lower() != "relora":
+            print(f"{self.log_prefix} lr_scheduler '{lr_scheduler_type}' is ignored: "
+                  f"ReLoRA's own restart schedule is used "
+                  f"(initial warmup {self.optimizer_warmup_steps}, "
+                  f"restart warmup {self.restart_warmup_steps} steps)")
+        super().setup_optimizer(optimizer_type, "relora", total_steps)
 
     # ============================================================
     # Merge-Reinit Cycle
@@ -322,22 +307,31 @@ class ReLoRATrainer(LoRATrainer):
 
     def _add_lr_restart(self, global_step: int):
         """
-        Register a warmup restart in all LR schedulers.
+        Record the merge's warmup restart on the schedule timeline.
+
+        Seam (d) of the design's §5.2. One event, not one per scheduler: under
+        fused optimizer groups the N schedulers share a single timeline, so they
+        cannot disagree about where a restart is.
 
         Args:
-            global_step: Step at which the restart occurs
+            global_step: Step at which the restart occurs (logged; the event's
+                position is on the scheduler axis)
         """
-        if self.fused_optimizer_groups is not None:
-            # Multiple schedulers (fused optimizer groups)
-            for scheduler in self.lr_schedulers:
-                if hasattr(scheduler, 'add_restart'):
-                    scheduler.add_restart(global_step)
-        else:
-            # Single scheduler
-            if hasattr(self.lr_scheduler, 'add_restart'):
-                self.lr_scheduler.add_restart(global_step)
+        timeline = getattr(self, "lr_timeline", None)
+        if timeline is None:
+            print(f"{self.log_prefix} WARNING: no LR schedule timeline; the merge at "
+                  f"step {global_step} will not restart the warmup")
+            return
 
-        print(f"{self.log_prefix} Added LR warmup restart at step {global_step}")
+        at = live_scheduler_step(self)
+        result = timeline.add("restart", at=at)
+        if result == "applied":
+            # This hook runs AFTER scheduler.step(), so the param groups still
+            # hold the pre-restart LR; without rewriting them the reinitialized
+            # adapter would take one more step at it.
+            reapply_lr_schedule_position(self)
+        print(f"{self.log_prefix} Added LR warmup restart at scheduler step {at} "
+              f"(global step {global_step}): {result}")
 
     # ============================================================
     # Training State Save/Restore
@@ -387,35 +381,45 @@ class ReLoRATrainer(LoRATrainer):
             print(f"{self.log_prefix} Restored ReLoRA state: merge_count={self.merge_count}")
             if self.relora_merge_unit == "epochs":
                 print(f"{self.log_prefix}   last_merge_epoch={self._last_merge_epoch}")
+        # The restarts themselves come back with the schedule timeline in
+        # state.json. Checkpoints that predate that are handled by
+        # _restore_legacy_lr_restarts, which install_lr_schedule_events calls
+        # after the load -- not from here, which runs before it.
 
-            # Re-register past restart points in scheduler
-            # so that get_lr() computes correctly for the current cycle
-            self._restore_scheduler_restarts()
-
-    def _restore_scheduler_restarts(self):
+    def _restore_legacy_lr_restarts(self, position: int) -> None:
         """
-        Re-register historical restart points in LR scheduler(s) on resume.
+        Rebuild `restart` events for a checkpoint that carries none.
 
-        When resuming, the scheduler needs to know about past merge points
-        to correctly compute the LR for the current cycle.
+        Since P4 a merge IS a timeline event and is restored with the rest of
+        state.json; this is the back-compat path for checkpoints written before
+        that, which record only ``merge_count``. Only step-unit merges can be
+        placed from it -- an epoch-unit run's merge steps were never recorded
+        anywhere, which is why the old re-registration dropped them outright.
+
+        Args:
+            position: the resumed scheduler-axis position; restarts after it
+                belong to a future this resume has rewound past.
         """
-        if self.merge_count == 0:
+        timeline = getattr(self, "lr_timeline", None)
+        if timeline is None or self.merge_count <= 0:
+            return
+        if timeline.restarts():
             return
 
-        if self.relora_merge_unit == "steps":
-            # Re-register all past merge steps
-            for i in range(1, self.merge_count + 1):
-                merge_step = i * self.relora_merge_every
-                if self.fused_optimizer_groups is not None:
-                    for scheduler in self.lr_schedulers:
-                        if hasattr(scheduler, 'add_restart'):
-                            scheduler.add_restart(merge_step)
-                else:
-                    if hasattr(self.lr_scheduler, 'add_restart'):
-                        self.lr_scheduler.add_restart(merge_step)
+        if self.relora_merge_unit != "steps":
+            print(f"{self.log_prefix} WARNING: this checkpoint predates LR restart events "
+                  f"and merges by epoch, so the steps of its {self.merge_count} past "
+                  f"merge(s) are not recorded anywhere. The schedule resumes as if none "
+                  f"had happened; merges from here on are recorded.")
+            return
 
-            print(f"{self.log_prefix} Restored {self.merge_count} LR restart points")
-        else:
-            # Epoch-based: restart points are less predictable
-            # The scheduler will handle new restarts correctly going forward
-            print(f"{self.log_prefix} Epoch-based merge: scheduler restarts will be re-registered on next merge")
+        interval = lr_scheduler_advance_interval(self)
+        restored = 0
+        for i in range(1, self.merge_count + 1):
+            at = to_scheduler_axis(i * self.relora_merge_every, interval)
+            if at > position:
+                break
+            if timeline.add("restart", at=at) == "applied":
+                restored += 1
+        print(f"{self.log_prefix} Restored {restored} LR restart point(s) from merge_count "
+              f"(estimated positions: this checkpoint predates restart events)")

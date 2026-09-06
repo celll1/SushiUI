@@ -41,6 +41,19 @@ const yamlInt = (yaml: string | undefined, key: string, fallback: number): numbe
 const yamlBool = (yaml: string | undefined, key: string): boolean =>
   ["true", "1", "yes", "on"].includes((yamlScalar(yaml, key) ?? "").toLowerCase());
 
+/** Seconds as `2d 3h 4m 5s`. The day part is omitted below 24h, so a run
+ *  shorter than a day reads exactly as it did before; a longer one no longer
+ *  reports its third day as "72h". */
+const formatDuration = (totalSeconds: number): string => {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const hms = `${hours}h ${minutes}m ${secs}s`;
+  return days > 0 ? `${days}d ${hms}` : hms;
+};
+
 const formatIterationRate = (seconds: number | null): string => {
   if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "Calculating...";
   if (seconds < 1) return `${(1 / seconds).toFixed(2)} iter/s`;
@@ -512,12 +525,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const now = Date.now();
     const elapsedMs = now - startTime;
 
-    // Format elapsed time
-    const elapsedSeconds = Math.floor(elapsedMs / 1000);
-    const elapsedHours = Math.floor(elapsedSeconds / 3600);
-    const elapsedMinutes = Math.floor((elapsedSeconds % 3600) / 60);
-    const elapsedSecs = elapsedSeconds % 60;
-    const elapsed = `${elapsedHours}h ${elapsedMinutes}m ${elapsedSecs}s`;
+    const elapsed = formatDuration(elapsedMs / 1000);
 
     // Calculate ETA (only if training is running and progress > 0)
     if (currentRun.status !== "running" || currentRun.progress <= 0 || currentRun.current_step === 0) {
@@ -542,12 +550,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const etaSecondsPerIteration = recentSecondsPerIteration ?? averageSecondsPerIteration;
     const remainingMs = etaSecondsPerIteration * 1000 * remainingSteps;
 
-    // Format ETA
-    const remainingSeconds = Math.floor(remainingMs / 1000);
-    const etaHours = Math.floor(remainingSeconds / 3600);
-    const etaMinutes = Math.floor((remainingSeconds % 3600) / 60);
-    const etaSecs = remainingSeconds % 60;
-    const eta = `${etaHours}h ${etaMinutes}m ${etaSecs}s`;
+    const eta = formatDuration(remainingMs / 1000);
 
     return { elapsed, eta, averageSecondsPerIteration };
   };

@@ -6330,10 +6330,10 @@ paths:
         evenly spaced `[step, multiplier]` samples, so a client never has to
         re-implement a schedule to draw it. No run and no model are involved.
 
-        The step axis is OPTIMIZER steps: `total_steps` is divided by
-        `gradient_accumulation_steps` exactly as the trainer divides it, and
-        `scheduler_total_steps` in the response is the axis the points are on.
-        `lr_warmup_steps` is NOT divided, matching what the trainer passes.
+        The step axis is OPTIMIZER steps: `total_steps` and `lr_warmup_steps`
+        are both divided by `gradient_accumulation_steps` exactly as the trainer
+        divides them, and `scheduler_total_steps` and `warmup_steps` in the
+        response are on that axis.
 
         Omitting `lr_floor_ratio` asks for the reading a YAML with no floor key
         gets (0.25 for `plateau_cosine_floor`, 0.0 otherwise) and reports it as
@@ -19955,7 +19955,9 @@ components:
           example: plateau_cosine_floor
         warmup_steps:
           type: integer
-          description: Also the length of the linear return a `cancel_decay` uses.
+          description: |
+            On the scheduler axis (`lr_warmup_steps // gradient_accumulation_steps`),
+            like `step`. Also the length of the linear return a `cancel_decay` uses.
           example: 100
         state:
           type: string
@@ -20124,6 +20126,7 @@ components:
           example: 1000
         warmup_steps:
           type: integer
+          description: lr_warmup_steps // gradient_accumulation_steps — the same axis as `scheduler_total_steps`.
           example: 100
         floor_ratio:
           type: number

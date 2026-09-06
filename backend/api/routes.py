@@ -18616,12 +18616,13 @@ async def preview_lr_schedule(
     """
     from core.training.lr_schedules import (
         ScheduleTimeline, describe_spec, resolve_spec, sample_curve,
+        to_scheduler_axis,
     )
 
     if total_steps < 1:
         raise HTTPException(status_code=400, detail="total_steps must be >= 1")
     interval = max(1, int(gradient_accumulation_steps))
-    scheduler_total = int(total_steps) // interval
+    scheduler_total = to_scheduler_axis(total_steps, interval)
     if scheduler_total < 1:
         raise HTTPException(
             status_code=400,
@@ -18641,12 +18642,11 @@ async def preview_lr_schedule(
         config["lr_floor_ratio"] = lr_floor_ratio
 
     try:
-        # lr_warmup_steps is NOT divided by the accumulation: the trainer
-        # passes it to resolve_spec unchanged (only the total is on the
-        # scheduler axis), so dividing here would draw a curve the run does
-        # not follow.
+        # Both counts go onto the scheduler axis, exactly as the trainer does
+        # it: a preview that divided only the total would draw a curve the run
+        # does not follow.
         spec = resolve_spec(
-            config, warmup_steps=max(0, int(lr_warmup_steps)),
+            config, warmup_steps=to_scheduler_axis(lr_warmup_steps, interval),
             total_steps=scheduler_total, name=lr_scheduler)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

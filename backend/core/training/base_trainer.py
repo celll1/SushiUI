@@ -52,6 +52,7 @@ from core.training.lr_schedules import (
     build_lr_scheduler,
     describe_spec,
     resolve_spec,
+    to_scheduler_axis,
 )
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_event, emit_training_warning
@@ -318,7 +319,7 @@ def scheduler_total_steps(trainer, total_steps: int) -> int:
     nothing.
     """
     interval = lr_scheduler_advance_interval(trainer)
-    sched_total = int(total_steps) // interval
+    sched_total = to_scheduler_axis(total_steps, interval)
     if sched_total < 1:
         raise ValueError(
             f"total_steps={total_steps} is smaller than "
@@ -330,10 +331,23 @@ def scheduler_total_steps(trainer, total_steps: int) -> int:
     return sched_total
 
 
+def scheduler_warmup_steps(trainer, warmup_steps: Optional[int] = None) -> int:
+    """``W`` (global_step axis) -> ``W_sched``, by the same rule as ``T``.
+
+    The two must share an axis: with only ``T`` converted the warmup would take
+    ``gradient_accumulation_steps`` times the fraction of the schedule that
+    ``lr_warmup_steps`` asks for. A warmup shorter than one accumulation window
+    floors to 0, i.e. no ramp -- it asked for less than one LR update.
+    """
+    if warmup_steps is None:
+        warmup_steps = getattr(trainer, "optimizer_warmup_steps", 0) or 0
+    return to_scheduler_axis(warmup_steps, lr_scheduler_advance_interval(trainer))
+
+
 def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
     spec = resolve_spec(
         getattr(trainer, "config", None) or {},
-        warmup_steps=getattr(trainer, "optimizer_warmup_steps", 0),
+        warmup_steps=scheduler_warmup_steps(trainer),
         total_steps=scheduler_total_steps(trainer, total_steps),
         name=lr_scheduler_type,
     )
@@ -5951,10 +5965,18 @@ class BaseTrainer(ABC):
                   f"schedule's un-warmed LR")
             return False
 
-        warmup = max(0, int(getattr(self, "optimizer_warmup_steps", 0) or 0))
+        configured = max(0, int(getattr(self, "optimizer_warmup_steps", 0) or 0))
+        # The ramp LENGTH is on the scheduler axis because the composed lambda's
+        # argument and its anchor are (§17.1); it is not only the anchor that
+        # converts.
+        warmup = scheduler_warmup_steps(self, configured)
         if warmup <= 0:
+            detail = ("lr_warmup_steps=0" if configured <= 0 else
+                      f"lr_warmup_steps={configured} is shorter than one "
+                      f"gradient_accumulation_steps window, so it is 0 LR "
+                      f"updates")
             print(f"{self.log_prefix} {cause}; no warmup "
-                  f"to re-arm (lr_warmup_steps=0). The first steps run at the "
+                  f"to re-arm ({detail}). The first steps run at the "
                   f"full scheduled LR.")
             return False
 
@@ -5983,8 +6005,10 @@ class BaseTrainer(ABC):
                   f"scheduler(s)); resuming at the full scheduled LR")
             return False
 
+        length = (f"{warmup}-step" if warmup == configured else
+                  f"{configured}-step ({warmup} LR update)")
         print(f"{self.log_prefix} {cause}. "
-              f"Re-arming the configured {warmup}-step warmup from step {anchor} "
+              f"Re-arming the configured {length} warmup from step {anchor} "
               f"over {rearmed} schedule(s)"
               + (f" ({skipped} non-LambdaLR skipped)" if skipped else "")
               + " -- the underlying schedule keeps its position.")

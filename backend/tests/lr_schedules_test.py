@@ -20,8 +20,13 @@ bit-identity (§14, §18):
 * ``constant`` + ``lr_warmup_steps > 0`` now warms up (diffusers dropped the
   warmup for that one name);
 * ``cosine`` holds its terminal value past ``T`` instead of rising again;
-* ``polynomial``'s floor is ``1e-7 / optimizer.defaults['lr']``, ported as-is;
 * the scheduler axis is ``total_steps // gradient_accumulation_steps``.
+
+P3 generalized the floor (D10), which took ``polynomial`` out of the
+bit-identical set: its floor was ``1e-7 / optimizer.defaults['lr']`` and is now
+``lr_floor_ratio``, 0.0 for a YAML that carries no floor at all. The two
+polynomial tests below hold that change instead of the port. The rest still
+compose to bit-identity because ``F == 0`` makes ``F + (1 - F) * shape`` exact.
 
 Purity (§4.3) is checked by evaluating every step ascending, descending and
 shuffled: the fast-forward, the re-assertion and the composed re-warmup all
@@ -112,7 +117,7 @@ def _legacy_plateau(W: int, T: int, decay_start_ratio: float, floor_ratio: float
 # ---------------------------------------------------------------------------
 
 _COMPATIBLE = ("constant_with_warmup", "linear", "cosine",
-               "cosine_with_restarts", "polynomial")
+               "cosine_with_restarts")
 _SHAPES = [(0, 1000), (1, 1000), (100, 1000), (999, 1000), (0, 7), (3, 7)]
 
 
@@ -133,19 +138,39 @@ def test_constant_without_warmup_is_bit_identical():
         assert ours(step) == theirs(step), step
 
 
-def test_polynomial_floor_is_the_ported_diffusers_one():
-    """Not 0: lr_end / lr_init, with lr_end = 1e-7 (optimization.py:226)."""
+def test_polynomial_floor_is_now_lr_floor_ratio_not_diffusers_lr_end():
+    """P3 (D10/§17.2): the floor is the configured fraction, and a YAML with
+    no floor key decays to 0 where the port decayed to 1e-7 / lr."""
     for lr in (1e-4, 1e-6, 2.5e-6):
-        ours = _ours("polynomial", 10, 100, lr=lr)
-        assert ours(100) == pytest.approx(1e-7 / lr, rel=1e-12)
-        assert ours(100) == _diffusers("polynomial", 10, 100, lr=lr)(100)
-        assert ours(500) == 1e-7 / lr, "past T it holds lr_end/lr_init"
+        bare = _ours("polynomial", 10, 100, lr=lr)
+        assert bare(100) == 0.0
+        assert bare(500) == 0.0
+        assert _diffusers("polynomial", 10, 100, lr=lr)(100) == pytest.approx(
+            1e-7 / lr, rel=1e-12), "what it used to hold"
+
+    floored = _ours("polynomial", 10, 100, {"lr_floor_ratio": 0.25})
+    assert floored(100) == 0.25
+    assert floored(55) == pytest.approx(0.25 + 0.75 * 0.5)
+    # Shape unchanged: power is still 1, so it is linear between W and T.
+    assert floored(10) == 1.0
 
 
-def test_polynomial_refuses_an_lr_below_its_floor():
+def test_polynomial_matches_diffusers_when_the_floor_is_spelled_out():
+    """The old floor was lr_end / lr_init; give it as lr_floor_ratio and the
+    two agree to rounding (the associations differ, so not bit-identity)."""
+    lr = 1e-4
+    ours = _ours("polynomial", 10, 100, {"lr_floor_ratio": 1e-7 / lr}, lr=lr)
+    theirs = _diffusers("polynomial", 10, 100, lr=lr)
+    for step in range(0, 101):
+        assert ours(step) == pytest.approx(theirs(step), rel=1e-12, abs=1e-15), step
+
+
+def test_polynomial_no_longer_refuses_a_tiny_learning_rate():
+    """The refusal was diffusers' lr_end > lr_init check. A floor RATIO cannot
+    exceed the base LR, so there is nothing left to refuse."""
     spec = resolve_spec({}, warmup_steps=0, total_steps=100, name="polynomial")
-    with pytest.raises(ValueError):
-        build_lr_scheduler(_optimizer(lr=1e-8), spec, _timeline(spec))
+    scheduler = build_lr_scheduler(_optimizer(lr=1e-8), spec, _timeline(spec))
+    assert scheduler.lr_lambdas[0](0) == 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal, get_args
-from pydantic import BaseModel, Field, conint
+from pydantic import BaseModel, Field, conint, field_validator
 from datetime import datetime
 from pathlib import Path
 import contextvars
@@ -15305,12 +15305,56 @@ class TrainingRunCreateRequest(BaseModel):
     # gt=0, not ge=0: 0 here trains nothing (every optimizer step a no-op),
     # unlike a component rate, which can legitimately hold at 0.
     learning_rate: float = Field(default=TRAINING_DEFAULTS["learning_rate"], gt=0)
-    lr_scheduler: str = "constant"
-    lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in
-    # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only
-    # consumed when lr_scheduler == "plateau_cosine_floor".
-    lr_decay_start_ratio: float = TRAINING_DEFAULTS["lr_decay_start_ratio"]
-    lr_floor_ratio: float = TRAINING_DEFAULTS["lr_floor_ratio"]
+    lr_scheduler: str = TRAINING_DEFAULTS["lr_scheduler"]
+    lr_warmup_steps: int = Field(
+        default=TRAINING_DEFAULTS["lr_warmup_steps"], ge=0)
+    # Only consumed when lr_scheduler == "plateau_cosine_floor".
+    lr_decay_start_ratio: float = Field(
+        default=TRAINING_DEFAULTS["lr_decay_start_ratio"], ge=0.0, le=1.0)
+    # The floor every schedule decays to, as a fraction of the base LR.
+    lr_floor_ratio: float = Field(
+        default=TRAINING_DEFAULTS["lr_floor_ratio"], ge=0.0, le=1.0)
+    # "wsd" / "rex", and the length and shape a runtime start_decay uses.
+    lr_decay_start_step: int = Field(
+        default=TRAINING_DEFAULTS["lr_decay_start_step"], ge=0)
+    lr_decay_steps: int = Field(
+        default=TRAINING_DEFAULTS["lr_decay_steps"], ge=0)
+    lr_decay_shape: str = TRAINING_DEFAULTS["lr_decay_shape"]
+    # "cosine_with_restarts".
+    lr_cycle_steps: int = Field(
+        default=TRAINING_DEFAULTS["lr_cycle_steps"], ge=0)
+    lr_cycle_peak_decay: float = Field(
+        default=TRAINING_DEFAULTS["lr_cycle_peak_decay"], gt=0.0, le=1.0)
+
+    @field_validator("lr_scheduler")
+    @classmethod
+    def _known_lr_scheduler(cls, value: str) -> str:
+        # D18: core/training/lr_schedules.LR_SCHEDULER_NAMES is the vocabulary,
+        # and it is what the trainer resolves against. An unknown name used to
+        # be accepted here and refused at construction, minutes into the run.
+        # Imported here, not at module scope: lr_schedules reads
+        # api.param_defaults, so a top-level import is a cycle that breaks
+        # importing the trainer without the API package.
+        from core.training.lr_schedules import LR_SCHEDULER_NAMES
+
+        name = str(value).strip().lower()
+        if name not in LR_SCHEDULER_NAMES:
+            raise ValueError(
+                f"Unknown lr_scheduler '{value}'. Supported: "
+                f"{', '.join(LR_SCHEDULER_NAMES)}")
+        return name
+
+    @field_validator("lr_decay_shape")
+    @classmethod
+    def _known_lr_decay_shape(cls, value: str) -> str:
+        from core.training.lr_schedules import DECAY_SHAPE_NAMES
+
+        name = str(value).strip().lower()
+        if name not in DECAY_SHAPE_NAMES:
+            raise ValueError(
+                f"Unknown lr_decay_shape '{value}'. Supported: "
+                f"{', '.join(DECAY_SHAPE_NAMES)}")
+        return name
     # Re-apply the configured warmup when a resume comes up with a fresh
     # optimizer state (state file pruned/missing, or load rejected).
     rewarmup_on_optimizer_reset: bool = TRAINING_DEFAULTS["rewarmup_on_optimizer_reset"]
@@ -18546,6 +18590,79 @@ async def get_lr_schedule_status(
             for r in (pending_requests(output_dir, int(run_id)) if output_dir else [])
         ],
         "results": list_results(output_dir, int(run_id)) if output_dir else [],
+    }
+
+
+@router.get("/training/lr-schedule/preview")
+async def preview_lr_schedule(
+    lr_scheduler: str = TRAINING_DEFAULTS["lr_scheduler"],
+    total_steps: int = TRAINING_DEFAULTS["total_steps"],
+    gradient_accumulation_steps: int = TRAINING_DEFAULTS["gradient_accumulation_steps"],
+    lr_warmup_steps: int = TRAINING_DEFAULTS["lr_warmup_steps"],
+    lr_floor_ratio: Optional[float] = None,
+    lr_decay_start_ratio: float = TRAINING_DEFAULTS["lr_decay_start_ratio"],
+    lr_decay_start_step: int = TRAINING_DEFAULTS["lr_decay_start_step"],
+    lr_decay_steps: int = TRAINING_DEFAULTS["lr_decay_steps"],
+    lr_decay_shape: str = TRAINING_DEFAULTS["lr_decay_shape"],
+    lr_cycle_steps: int = TRAINING_DEFAULTS["lr_cycle_steps"],
+    lr_cycle_peak_decay: float = TRAINING_DEFAULTS["lr_cycle_peak_decay"],
+    n_points: int = 256,
+):
+    """Sample the LR multiplier curve a config would produce (D20).
+
+    Server-side so the schedule is never re-implemented in TypeScript. Omitting
+    lr_floor_ratio applies the compatibility reading a YAML without the key
+    gets, which is how an existing run's curve is drawn.
+    """
+    from core.training.lr_schedules import (
+        ScheduleTimeline, describe_spec, resolve_spec, sample_curve,
+    )
+
+    if total_steps < 1:
+        raise HTTPException(status_code=400, detail="total_steps must be >= 1")
+    interval = max(1, int(gradient_accumulation_steps))
+    scheduler_total = int(total_steps) // interval
+    if scheduler_total < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"total_steps={total_steps} is smaller than "
+                   f"gradient_accumulation_steps={interval}: the optimizer "
+                   f"would never step.")
+
+    config = {
+        "lr_decay_start_ratio": lr_decay_start_ratio,
+        "lr_decay_start_step": lr_decay_start_step,
+        "lr_decay_steps": lr_decay_steps,
+        "lr_decay_shape": lr_decay_shape,
+        "lr_cycle_steps": lr_cycle_steps,
+        "lr_cycle_peak_decay": lr_cycle_peak_decay,
+    }
+    if lr_floor_ratio is not None:
+        config["lr_floor_ratio"] = lr_floor_ratio
+
+    try:
+        # lr_warmup_steps is NOT divided by the accumulation: the trainer
+        # passes it to resolve_spec unchanged (only the total is on the
+        # scheduler axis), so dividing here would draw a curve the run does
+        # not follow.
+        spec = resolve_spec(
+            config, warmup_steps=max(0, int(lr_warmup_steps)),
+            total_steps=scheduler_total, name=lr_scheduler)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    points = sample_curve(spec, timeline, n_points=n_points)
+    return {
+        "lr_scheduler": spec.name,
+        "scheduler_total_steps": spec.total_steps,
+        "warmup_steps": spec.warmup_steps,
+        "floor_ratio": spec.floor_ratio,
+        "floor_defaulted": spec.floor_defaulted,
+        "description": describe_spec(spec),
+        "n_points": len(points),
+        "points": [[int(step), float(value)] for step, value in points],
     }
 
 

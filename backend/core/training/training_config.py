@@ -190,12 +190,28 @@ def _build_train_section(
         # `lr_warmup_steps` for back-compat with anything that reads it.
         train["optimizer_warmup_steps"] = p["lr_warmup_steps"]
     if str(p.get("lr_scheduler", "constant")) == "plateau_cosine_floor":
-        # Plateau-then-cosine-floor scheduler knobs. Only meaningful for this
-        # scheduler type; only emitted when selected to keep YAML output for
-        # all other schedulers unchanged.
-        train["lr_decay_start_ratio"] = p.get("lr_decay_start_ratio", 0.85)
-        train["lr_floor_ratio"] = p.get("lr_floor_ratio", 0.25)
-    # Emitted unconditionally: unlike the two above it is not tied to a
+        # The plateau's own ratio: no other scheduler reads it.
+        train["lr_decay_start_ratio"] = p.get(
+            "lr_decay_start_ratio", TRAINING_DEFAULTS["lr_decay_start_ratio"])
+    # Written unconditionally, like rewarmup_on_optimizer_reset below: the
+    # trainer distinguishes "no floor key" (a YAML older than the floor's
+    # generalization, read per schedule) from an explicit value, so a
+    # conditional write would hand a new run the compatibility reading. Spelled
+    # out one key per line because train_section_key_vocabulary() reads these
+    # subscripts out of the AST.
+    train["lr_floor_ratio"] = p.get("lr_floor_ratio",
+                                    TRAINING_DEFAULTS["lr_floor_ratio"])
+    train["lr_decay_start_step"] = p.get("lr_decay_start_step",
+                                         TRAINING_DEFAULTS["lr_decay_start_step"])
+    train["lr_decay_steps"] = p.get("lr_decay_steps",
+                                    TRAINING_DEFAULTS["lr_decay_steps"])
+    train["lr_decay_shape"] = p.get("lr_decay_shape",
+                                    TRAINING_DEFAULTS["lr_decay_shape"])
+    train["lr_cycle_steps"] = p.get("lr_cycle_steps",
+                                    TRAINING_DEFAULTS["lr_cycle_steps"])
+    train["lr_cycle_peak_decay"] = p.get("lr_cycle_peak_decay",
+                                         TRAINING_DEFAULTS["lr_cycle_peak_decay"])
+    # Emitted unconditionally: unlike lr_decay_start_ratio it is not tied to a
     # scheduler type, and the trainer reads it on EVERY resume.
     train["rewarmup_on_optimizer_reset"] = bool(
         p.get("rewarmup_on_optimizer_reset",

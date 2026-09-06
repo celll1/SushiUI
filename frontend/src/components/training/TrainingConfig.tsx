@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -129,6 +129,28 @@ const ADAPTER_ALGORITHM_LABELS: Record<string, string> = {
   lokr: "LoKr (Kronecker product)",
 };
 
+// What each schedule does, in the vocabulary the backend registry defines.
+// constant_with_warmup is accepted but not offered: it is the same curve as
+// constant, which now applies the warmup too.
+const LR_SCHEDULER_OPTIONS: { value: string; label: string; note: string }[] = [
+  { value: "constant", label: "Constant",
+    note: "Warmup, then holds the base LR for the rest of training." },
+  { value: "linear", label: "Linear",
+    note: "Decays in a straight line from the end of warmup to the floor at the end of the run." },
+  { value: "cosine", label: "Cosine",
+    note: "Cosine decay from the end of warmup to the floor at the end of the run, then holds the floor." },
+  { value: "cosine_with_restarts", label: "Cosine with Restarts",
+    note: "A cosine that restarts every cycle. Each restart is a step change back up to that cycle's peak." },
+  { value: "polynomial", label: "Polynomial",
+    note: "Linear decay to the floor (the exponent is 1)." },
+  { value: "plateau_cosine_floor", label: "Plateau then Cosine Floor",
+    note: "Warmup, holds the base LR flat, then cosine-decays to the floor and holds it." },
+  { value: "wsd", label: "WSD (warmup / stable / decay)",
+    note: "Holds the base LR until the decay start step, then decays in the chosen shape. With start step 0 nothing decays until a \"Decay now\" command is sent to the running run." },
+  { value: "rex", label: "REX",
+    note: "Decays from the end of warmup with the REX shape (1-q)/(1-q/2), which leaves the base LR at a finite slope and drops steeply at the end." },
+];
+
 const ADAPTER_ALGORITHM_NOTES: Record<string, string> = {
   lora: "Two low-rank factors per target (lora_down, lora_up).",
   loha: "Element-wise product of two low-rank factorizations.",
@@ -161,6 +183,11 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lr_warmup_steps: 0,
   lr_decay_start_ratio: 0.85,
   lr_floor_ratio: 0.25,
+  lr_decay_start_step: 0,
+  lr_decay_steps: 0,
+  lr_decay_shape: "cosine",
+  lr_cycle_steps: 0,
+  lr_cycle_peak_decay: 1.0,
   rewarmup_on_optimizer_reset: true,
   use_ema: false,
   ema_decay: 0.9999,
@@ -557,6 +584,66 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const lrWarmupSteps = params.lr_warmup_steps ?? 0;
   const lrDecayStartRatio = params.lr_decay_start_ratio ?? 0.85;
   const lrFloorRatio = params.lr_floor_ratio ?? 0.25;
+  const lrDecayStartStep = params.lr_decay_start_step ?? 0;
+  const lrDecaySteps = params.lr_decay_steps ?? 0;
+  const lrDecayShape = params.lr_decay_shape ?? "cosine";
+  const lrCycleSteps = params.lr_cycle_steps ?? 0;
+  const lrCyclePeakDecay = params.lr_cycle_peak_decay ?? 1.0;
+  // The curve is sampled by the backend with the trainer's own code (there is
+  // deliberately no schedule maths in this file).
+  const [lrPreview, setLrPreview] = useState<LrSchedulePreview | null>(null);
+  const [lrPreviewError, setLrPreviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      getLrSchedulePreview({
+        lr_scheduler: lrScheduler,
+        total_steps: totalSteps,
+        gradient_accumulation_steps: params.gradient_accumulation_steps ?? 1,
+        lr_warmup_steps: lrWarmupSteps,
+        lr_floor_ratio: lrFloorRatio,
+        lr_decay_start_ratio: lrDecayStartRatio,
+        lr_decay_start_step: lrDecayStartStep,
+        lr_decay_steps: lrDecaySteps,
+        lr_decay_shape: lrDecayShape,
+        lr_cycle_steps: lrCycleSteps,
+        lr_cycle_peak_decay: lrCyclePeakDecay,
+        n_points: 192,
+      })
+        .then((data) => {
+          if (cancelled) return;
+          setLrPreview(data);
+          setLrPreviewError(null);
+        })
+        .catch((err: any) => {
+          if (cancelled) return;
+          setLrPreview(null);
+          setLrPreviewError(
+            err?.response?.data?.detail || err?.message || "Could not sample the schedule"
+          );
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [lrScheduler, totalSteps, params.gradient_accumulation_steps, lrWarmupSteps,
+      lrFloorRatio, lrDecayStartRatio, lrDecayStartStep, lrDecaySteps,
+      lrDecayShape, lrCycleSteps, lrCyclePeakDecay]);
+
+  const lrPreviewPath = useMemo(() => {
+    const points = lrPreview?.points ?? [];
+    if (points.length < 2) return "";
+    const lastStep = points[points.length - 1][0] || 1;
+    return points
+      .map(([step, m], i) => {
+        const x = (step / lastStep) * 100;
+        const y = 100 - Math.max(0, Math.min(1, m)) * 100;
+        return `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(" ");
+  }, [lrPreview]);
   const useEma = params.use_ema ?? false;
   const emaDecay = params.ema_decay ?? 0.9999;
   const emaUpdateEvery = params.ema_update_every ?? 1;
@@ -4061,17 +4148,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 onChange={(e) => updateParam("lr_scheduler", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
-                <option value="constant">Constant</option>
-                <option value="cosine">Cosine</option>
-                <option value="linear">Linear</option>
-                <option value="plateau_cosine_floor">Plateau then Cosine Floor</option>
+                {LR_SCHEDULER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+                {/* Accepted, not offered: it is the same curve as Constant. Shown
+                    only so an older run that stored it does not read as blank. */}
+                {lrScheduler === "constant_with_warmup" && (
+                  <option value="constant_with_warmup">Constant with Warmup</option>
+                )}
               </select>
-              {lrScheduler === "plateau_cosine_floor" && (
-                <p className="text-xs text-gray-500 mt-1">
-                  Warmup, then holds the base LR flat, then cosine-decays down to a floor
-                  (fraction of base LR) and holds that floor for the rest of training.
-                </p>
-              )}
+              <p className="text-xs text-gray-500 mt-1">
+                {LR_SCHEDULER_OPTIONS.find((o) => o.value === lrScheduler)?.note ??
+                  "Warmup, then holds the base LR. Same curve as Constant."}
+              </p>
             </div>
 
             <div>
@@ -4087,8 +4176,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
             </div>
 
-            {lrScheduler === "plateau_cosine_floor" && (
-              <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              {lrScheduler === "plateau_cosine_floor" && (
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Decay Start Ratio</label>
                   <NumberInput
@@ -4103,6 +4192,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   />
                   <p className="text-xs text-gray-500 mt-1">Fraction of total steps where the plateau ends</p>
                 </div>
+              )}
+              {/* Every schedule but Constant decays to this floor. */}
+              {lrScheduler !== "constant" && lrScheduler !== "constant_with_warmup" && (
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">LR Floor Ratio</label>
                   <NumberInput
@@ -4117,8 +4209,137 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   />
                   <p className="text-xs text-gray-500 mt-1">Floor as a fraction of base LR (held after decay)</p>
                 </div>
+              )}
+              {lrScheduler === "wsd" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Decay Start Step</label>
+                    <NumberInput
+                      value={lrDecayStartStep}
+                      onCommit={(v) => updateParam("lr_decay_start_step", v)}
+                      defaultValue={0}
+                      min={0}
+                      step={1}
+                      parse="int"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Optimizer step the plateau ends at. 0 = the config never starts the
+                      decay; send &quot;Decay now&quot; to the running run instead.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Decay Steps</label>
+                    <NumberInput
+                      value={lrDecaySteps}
+                      onCommit={(v) => updateParam("lr_decay_steps", v)}
+                      defaultValue={0}
+                      min={0}
+                      step={1}
+                      parse="int"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      How long the decay runs. 0 = to the end of the run. A length in steps
+                      is not stretched if total steps is raised later.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Decay Shape</label>
+                    <select
+                      value={lrDecayShape}
+                      onChange={(e) => updateParam("lr_decay_shape", e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="cosine">Cosine</option>
+                      <option value="linear">Linear</option>
+                      <option value="rex">REX</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Also the shape a &quot;Decay now&quot; command uses, under any scheduler.
+                    </p>
+                  </div>
+                </>
+              )}
+              {lrScheduler === "cosine_with_restarts" && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Cycle Steps</label>
+                    <NumberInput
+                      value={lrCycleSteps}
+                      onCommit={(v) => updateParam("lr_cycle_steps", v)}
+                      defaultValue={0}
+                      min={0}
+                      step={1}
+                      parse="int"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Length of one cosine cycle in optimizer steps. 0 = one cycle over the
+                      whole run, which is a plain cosine.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Cycle Peak Decay</label>
+                    <NumberInput
+                      value={lrCyclePeakDecay}
+                      onCommit={(v) => updateParam("lr_cycle_peak_decay", v)}
+                      defaultValue={1.0}
+                      min={0.01}
+                      max={1}
+                      step="any"
+                      parse="float"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Cycle i peaks at this value to the power i. 1.0 = every restart
+                      returns to the base LR.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="rounded border border-gray-700 bg-gray-900/60 p-2">
+              <div className="flex items-baseline justify-between">
+                <span className="text-xs text-gray-400">Schedule preview</span>
+                <span className="text-xxs text-gray-500">
+                  {lrPreview
+                    ? `${lrPreview.scheduler_total_steps.toLocaleString()} optimizer steps`
+                    : ""}
+                </span>
               </div>
-            )}
+              {lrPreviewError ? (
+                <p className="text-xs text-red-400 mt-1">{lrPreviewError}</p>
+              ) : (
+                <svg
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  className="w-full h-20 mt-1"
+                >
+                  <line x1="0" y1="0" x2="100" y2="0" stroke="#374151" strokeWidth="1"
+                        vectorEffect="non-scaling-stroke" />
+                  <line x1="0" y1="100" x2="100" y2="100" stroke="#374151" strokeWidth="1"
+                        vectorEffect="non-scaling-stroke" />
+                  {!!lrPreview && lrPreview.floor_ratio > 0 && (
+                    <line
+                      x1="0" y1={100 - lrPreview.floor_ratio * 100}
+                      x2="100" y2={100 - lrPreview.floor_ratio * 100}
+                      stroke="#4b5563" strokeWidth="1" strokeDasharray="4 3"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  <path d={lrPreviewPath} fill="none" stroke="#60a5fa" strokeWidth="1.5"
+                        vectorEffect="non-scaling-stroke" />
+                </svg>
+              )}
+              <p className="text-xxs text-gray-500 mt-1">
+                Multiplier on the base LR, 0 at the bottom and 1 at the top, sampled by the
+                backend. {useEpochs
+                  ? "Epoch mode: the run's total step count is computed at start, so this uses the Total Steps box."
+                  : ""}
+              </p>
+            </div>
 
             {lrWarmupSteps > 0 && (
               <div>

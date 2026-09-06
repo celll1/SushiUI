@@ -2186,11 +2186,28 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "learning_rate": 1e-4,
     "lr_scheduler": "constant",
     "lr_warmup_steps": 0,
-    # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only
-    # consumed when lr_scheduler == "plateau_cosine_floor"; harmless for all
-    # other scheduler types.
+    # Only consumed when lr_scheduler == "plateau_cosine_floor": the fraction
+    # of the run at which its plateau ends.
     "lr_decay_start_ratio": 0.85,
+    # The floor every schedule decays to, as a fraction of the base LR (D10 of
+    # docs/guides/LR_SCHEDULER_DESIGN.md). A YAML written before that generalization
+    # carries no key at all and is read as 0.25 for plateau_cosine_floor and 0.0
+    # for every other name -- this default applies to new runs and to the UI.
     "lr_floor_ratio": 0.25,
+    # "wsd": the step the plateau ends at (0 = never from config; a runtime
+    # start_decay command begins it), how long the decay runs (0 = to the
+    # schedule's end) and its shape. lr_decay_steps also gives a runtime
+    # start_decay its length under any scheduler; lr_decay_shape gives it its
+    # shape. "rex" is "wsd" with the decay starting at the end of warmup.
+    "lr_decay_start_step": 0,
+    "lr_decay_steps": 0,
+    "lr_decay_shape": "cosine",
+    # "cosine_with_restarts": the length of one cosine cycle in optimizer
+    # steps (0 = one cycle over the whole run, which is what this name did
+    # before the cycle count was reachable), and the factor each restart's
+    # peak is multiplied by (1.0 = every cycle returns to the base LR).
+    "lr_cycle_steps": 0,
+    "lr_cycle_peak_decay": 1.0,
     # Re-arm the configured warmup when a resume comes up with a FRESH optimizer
     # state -- the `_optimizer.pt` was pruned or missing, or load_state_dict
     # rejected it (optimizer type / trainable-parameter change). The resume path

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason } from "@/utils/api";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
@@ -67,6 +67,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [sampleQueue, setSampleQueue] = useState<TrainingSampleQueueResponse | null>(null);
   const [isQueueingSample, setIsQueueingSample] = useState(false);
   const [sampleQueueError, setSampleQueueError] = useState<string | null>(null);
+  // Runtime LR schedule: the state the trainer publishes, plus the two commands
+  // that change it without stopping the run.
+  const [lrSchedule, setLrSchedule] = useState<LrScheduleStatusResponse | null>(null);
+  const [lrCommandPending, setLrCommandPending] = useState<string | null>(null);
+  const [lrCommandError, setLrCommandError] = useState<string | null>(null);
   // Index into the flattened sample list (see sampleImages) rather than a URL,
   // so the enlarged view can walk across step boundaries and drag the slider
   // with it.
@@ -300,6 +305,46 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const canQueueSample =
     hasSampleImages && sampleQueue !== null && !samplesUnsupportedReason &&
     currentRun.status === "running";
+
+  // The published state changes on its own as the decay reaches the floor and
+  // as a cancellation's ramp finishes, so it is polled, not fetched once.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await getLrScheduleStatus(currentRun.id);
+        if (!cancelled) setLrSchedule(data);
+      } catch {
+        if (!cancelled) setLrSchedule(null);
+      }
+    };
+    load();
+    if (currentRun.status === "running" || currentRun.status === "starting") {
+      const interval = setInterval(load, 5000);
+      return () => {
+        cancelled = true;
+        clearInterval(interval);
+      };
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRun.id, currentRun.status]);
+
+  const handleLrCommand = async (command: "start_decay" | "cancel_decay") => {
+    setLrCommandPending(command);
+    setLrCommandError(null);
+    try {
+      await queueLrScheduleCommand(currentRun.id, command);
+      setLrSchedule(await getLrScheduleStatus(currentRun.id));
+    } catch (err: any) {
+      setLrCommandError(
+        err?.response?.data?.detail || err?.message || "Failed to queue the command"
+      );
+    } finally {
+      setLrCommandPending(null);
+    }
+  };
 
   const handleQueueSample = async () => {
     setIsQueueingSample(true);
@@ -794,6 +839,105 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
           )}
             </div>
+
+          {/* Runtime LR schedule: state the trainer published, and the two
+              commands that change it without stopping the run. */}
+          {(currentRun.status === "running" || currentRun.status === "starting" ||
+            !!lrSchedule?.status) && (
+            <div className="space-y-2 rounded-md border border-gray-700 bg-gray-800/80 p-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-semibold text-sm">LR Schedule</h3>
+                <span className="font-mono text-xxs text-gray-400">
+                  {lrSchedule?.status
+                    ? `${lrSchedule.status.scheduler} · ${lrSchedule.status.state}`
+                    : "no state published yet"}
+                </span>
+              </div>
+              {lrSchedule?.status && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xxs text-gray-300">
+                  <span>
+                    Multiplier{" "}
+                    <span className="font-mono text-gray-100">
+                      {lrSchedule.status.multiplier.toFixed(4)}
+                    </span>
+                  </span>
+                  <span>
+                    Step{" "}
+                    <span className="font-mono text-gray-100">
+                      {lrSchedule.status.step.toLocaleString()}
+                    </span>
+                    {" / "}
+                    {lrSchedule.status.effective_total_steps.toLocaleString()}
+                  </span>
+                  {lrSchedule.status.state !== "base" && (
+                    <span>
+                      since step{" "}
+                      <span className="font-mono text-gray-100">
+                        {lrSchedule.status.state_at.toLocaleString()}
+                      </span>
+                    </span>
+                  )}
+                  {lrSchedule.status.decay_disarmed && (
+                    <span className="text-yellow-400">configured decay cancelled</span>
+                  )}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleLrCommand("start_decay")}
+                  disabled={!lrSchedule?.is_running || lrCommandPending !== null}
+                  title={
+                    !lrSchedule?.is_running
+                      ? "Only a running training run can be told to change its LR."
+                      : undefined
+                  }
+                  className="flex-1 px-2 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xxs sm:text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {lrCommandPending === "start_decay" ? "Sending..." : "Decay now"}
+                </button>
+                <button
+                  onClick={() => handleLrCommand("cancel_decay")}
+                  disabled={!lrSchedule?.is_running || lrCommandPending !== null}
+                  title={
+                    !lrSchedule?.is_running
+                      ? "Only a running training run can be told to change its LR."
+                      : undefined
+                  }
+                  className="flex-1 px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xxs sm:text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {lrCommandPending === "cancel_decay" ? "Sending..." : "Cancel decay"}
+                </button>
+              </div>
+              {!!lrSchedule?.pending?.length && (
+                <p className="text-xxs text-gray-300">
+                  {lrSchedule.pending.length} queued (max {lrSchedule.max_pending})
+                </p>
+              )}
+              {lrSchedule?.results?.slice(0, 3).map((r) => (
+                <p
+                  key={r.request_id}
+                  className={`text-xxs leading-relaxed ${
+                    r.result === "applied" || r.result === "disarmed_scheduled_decay"
+                      ? "text-gray-400"
+                      : "text-yellow-400"
+                  }`}
+                >
+                  {r.command} at step {r.at}: {r.result}
+                  {r.error ? ` (${r.error})` : ""}
+                </p>
+              ))}
+              {lrCommandError && (
+                <p className="text-xxs leading-relaxed text-red-400">{lrCommandError}</p>
+              )}
+              <p className="text-xxs leading-relaxed text-gray-500">
+                &quot;Decay now&quot; decays from the current multiplier to the floor;
+                &quot;Cancel decay&quot; returns to the configured curve over the run&apos;s
+                warmup length, and also voids a decay the config had scheduled. Both are
+                applied at the head of the next batch. The command is saved with the
+                training state, so resuming from a checkpoint written before it un-does it.
+              </p>
+            </div>
+          )}
 
           {/* Configuration Info */}
           <div className="space-y-2 rounded-md border border-gray-700 bg-gray-800/80 p-3 text-xs">

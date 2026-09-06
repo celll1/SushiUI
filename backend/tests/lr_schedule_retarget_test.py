@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.training.lr_schedules import (  # noqa: E402
     BLEND_SHAPE_NAMES,
+    RETARGET_ANCHORS,
     SPEC_VERSION,
     STATE_BASE,
     STATE_DECAYING,
@@ -91,19 +92,37 @@ def _reloaded(timeline: ScheduleTimeline, upto: int = 10 ** 9,
 # Serialization (§19.5)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name,config", [
+ROUND_TRIP_SPECS = [
     ("cosine", None),
     ("plateau_cosine_floor", PLATEAU),
     ("wsd", {"lr_decay_start_step": 400, "lr_decay_steps": 300,
              "lr_decay_shape": "rex"}),
     ("cosine_with_restarts", {"lr_cycle_steps": 500,
                               "lr_cycle_peak_decay": 0.8}),
-])
+]
+
+
+@pytest.mark.parametrize("name,config", ROUND_TRIP_SPECS)
 def test_a_spec_round_trips_through_json(name, config):
     spec = _spec(name, 100, TOTAL, config)
     payload = json.loads(json.dumps(spec.to_dict()))
     assert payload["v"] == SPEC_VERSION
-    assert ScheduleSpec.from_dict(payload) == spec
+    # An alias's derived start does not travel (invariant 15); the ratio it is
+    # re-derived from does, so the restored spec evaluates identically.
+    expected = (replace(spec, decay_start_step=None)
+                if spec.decay_start_ratio is not None else spec)
+    assert ScheduleSpec.from_dict(payload) == expected
+
+
+def test_only_a_real_axis_decay_start_survives_serialization():
+    alias = _spec("plateau_cosine_floor", 0, TOTAL, PLATEAU)
+    assert alias.decay_start_step == 8500          # derived from the seed total
+    assert "decay_start_step" not in alias.to_dict()
+    assert alias.to_dict()["decay_start_ratio"] == 0.85
+
+    configured = _spec("wsd", 0, TOTAL, {"lr_decay_start_step": 400})
+    assert configured.to_dict()["decay_start_step"] == 400
+    assert configured.to_dict()["decay_start_ratio"] is None
 
 
 def test_from_dict_ignores_a_key_it_does_not_know():
@@ -242,16 +261,50 @@ def test_an_extension_after_a_retarget_moves_the_new_curve_s_end():
     assert timeline.multiplier(spec, 2 * TOTAL) == pytest.approx(at_old_end)
 
 
-def test_the_retarget_spec_bakes_no_absolute_step():
-    """Invariant 15: nothing in the stored spec names a step on the run's axis,
-    so an extension cannot leave a stale end behind."""
+@pytest.mark.parametrize("name,config", ROUND_TRIP_SPECS)
+def test_the_stored_spec_is_never_re_derived(name, config):
+    """Invariant 15: the payload carries no step derived from the seed axis,
+    and an extension does not rewrite what was written once -- the span is
+    derived at evaluation time instead (D22).
+
+    The one step-valued field that may survive is `wsd`'s configured `D`, a
+    real-axis quantity (D8) read from the retarget's own origin, which
+    `test_a_configured_decay_start_is_a_length_from_the_retarget_step` pins.
+    """
     spec, timeline = _run("constant")
-    timeline.add("retarget", at=2000, new_spec=_spec("cosine"), length=0)
-    stored = timeline.dump(TOTAL)[-1]["spec"]
-    assert stored["decay_start_step"] is None
+    timeline.add("retarget", at=2000, new_spec=_spec(name, 100, TOTAL, config),
+                 length=0)
+    stored = json.loads(json.dumps(timeline.dump(TOTAL)[-1]["spec"]))
     assert stored["total_steps"] == TOTAL   # the seed, not the derived span
+    if stored["decay_start_ratio"] is not None:
+        assert "decay_start_step" not in stored
+
     timeline.add("total_steps", at=3000, value=3 * TOTAL)
-    assert timeline.dump(TOTAL)[-2]["spec"] == stored
+    assert timeline.dump(3 * TOTAL)[-2]["spec"] == stored
+
+
+def test_an_alias_s_derived_decay_start_is_re_derived_on_the_local_span():
+    """The alias bakes 8500 for a T=10000 seed; retargeted at 2000 its plateau
+    must end at 85% of the REMAINING span (local 6800 = step 8800), not there."""
+    spec, timeline = _run("constant")
+    timeline.add("retarget", at=2000,
+                 new_spec=_spec("plateau_cosine_floor", 0, TOTAL, PLATEAU),
+                 length=0)
+    assert "decay_start_step" not in timeline.dump(TOTAL)[-1]["spec"]
+    assert timeline.multiplier(spec, 8799) == pytest.approx(1.0)
+    assert timeline.multiplier(spec, 8801) < 1.0
+    assert timeline.multiplier(spec, TOTAL) == pytest.approx(0.25)
+
+
+def test_a_configured_decay_start_is_a_length_from_the_retarget_step():
+    """`wsd`'s D is a real-axis position (D8); under `anchor=restart` that axis
+    starts at S, so D=400 means 400 steps after the retarget."""
+    spec, timeline = _run("constant")
+    timeline.add("retarget", at=2000, length=0, new_spec=_spec(
+        "wsd", 0, TOTAL, {"lr_decay_start_step": 400, "lr_decay_steps": 300}))
+    assert timeline.multiplier(spec, 2399) == pytest.approx(1.0)
+    assert timeline.multiplier(spec, 2401) < 1.0
+    assert timeline.multiplier(spec, 2700) == pytest.approx(0.0, abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +340,21 @@ def test_the_new_curve_starts_from_zero_when_the_retarget_warms_up():
     assert timeline.multiplier(spec, 5000) == 0.0
     assert timeline.multiplier(spec, 5500) == pytest.approx(0.5 * peak)
     assert timeline.multiplier(spec, 6000) == pytest.approx(peak)
+
+
+def test_a_decay_after_a_scaled_retarget_starts_from_the_unscaled_curve():
+    """`gain` multiplies the whole new curve, floor included, so the decay's
+    seed is the curve's OWN value: seeding from the realized (already scaled)
+    multiplier squares the gain and makes the LR jump at the decay step."""
+    spec, timeline = _run("constant")
+    new = _spec("constant", 0, TOTAL, {"lr_floor_ratio": 0.3})
+    timeline.add("retarget", at=3000, new_spec=new, length=0, gain=2.0)
+    assert timeline.add("decay", at=5000, length=1000) == "applied"
+
+    assert timeline.multiplier(spec, 4999) == pytest.approx(2.0)
+    assert timeline.multiplier(spec, 5000) == pytest.approx(2.0)
+    assert timeline.multiplier(spec, 6000) == pytest.approx(2.0 * 0.3)
+    assert timeline.multiplier(spec, 9000) == pytest.approx(2.0 * 0.3)
 
 
 def test_a_cancel_after_a_retarget_recovers_over_the_new_warmup_length():
@@ -345,12 +413,13 @@ def test_length_zero_switches_instantly():
             lone.multiplier(new, step - 4000))
 
 
+@pytest.mark.parametrize("anchor", RETARGET_ANCHORS)
 @pytest.mark.parametrize("shape", BLEND_SHAPE_NAMES)
-def test_a_blend_starts_on_the_old_curve_and_ends_on_the_new_one(shape):
+def test_a_blend_starts_on_the_old_curve_and_ends_on_the_new_one(shape, anchor):
     spec, timeline = _run("constant")
     old = timeline.multiplier(spec, 4000)
     timeline.add("retarget", at=4000, new_spec=_spec("cosine", 0), length=800,
-                 shape=shape)
+                 shape=shape, anchor=anchor)
     instant = _reloaded(timeline)
     instant.events[-1]["length"] = 0
 
@@ -467,6 +536,18 @@ def test_rule_1_a_backdated_retarget_is_refused():
         "rejected_backdated")
 
 
+@pytest.mark.parametrize("at,expected", [
+    (5000, "applied"),          # at == issued
+    (4999, "rejected_backdated"),
+])
+def test_rule_1_s_boundary_is_at_equals_issued(at, expected):
+    """One step either side: this is the guard against the retroactive rewrite
+    §17.3 records for ReLoRA, so it is pinned as tightly as rule 5's."""
+    _, timeline = _run()
+    assert timeline.add("retarget", at=at, issued=5000, length=0,
+                        new_spec=_spec("constant")) == expected
+
+
 def test_rule_1_a_future_dated_retarget_is_accepted():
     spec, timeline = _run()
     assert timeline.add("retarget", at=6000, issued=5000,
@@ -488,6 +569,18 @@ def test_rule_2_a_schedule_outside_the_vocabulary_is_refused(bad):
 def test_rule_2_an_unknown_curve_is_refused_too():
     spec, timeline = _run()
     broken = replace(_spec("constant"), curve="parabola")
+    _assert_refused(timeline, spec,
+                    timeline.add("retarget", at=4000, new_spec=broken),
+                    "rejected_unknown_scheduler")
+
+
+@pytest.mark.parametrize("curve", ["relora", "wsd"])
+def test_rule_2_refuses_a_curve_that_does_not_belong_to_the_name(curve):
+    """A serialized pair is not evidence: `relora` is a real curve, so
+    name="cosine" with curve="relora" would otherwise install the segmented
+    ReLoRA curve on a run with no merges."""
+    spec, timeline = _run()
+    broken = replace(_spec("cosine"), curve=curve)
     _assert_refused(timeline, spec,
                     timeline.add("retarget", at=4000, new_spec=broken),
                     "rejected_unknown_scheduler")
@@ -538,6 +631,23 @@ def test_rule_5_measures_the_span_from_the_retarget_step():
     _, timeline = _run()
     assert timeline.add("retarget", at=7000, new_spec=_spec("constant", 2000),
                         length=0) == "applied"
+
+
+def test_rule_5_refuses_a_warmup_exactly_as_long_as_the_span():
+    """§17.2's contract is 0 <= W < T_sched, so the boundary is >=: a warmup
+    ending exactly at the run's end leaves no step at peak."""
+    spec, timeline = _run()
+    _assert_refused(timeline, spec, timeline.add(
+        "retarget", at=8000, new_spec=_spec("constant", 2000)),
+        "rejected_warmup_exceeds_span")
+
+
+def test_rule_5_measures_the_continue_span_as_the_whole_total():
+    """A `continue` warmup is a position from 0, not a length from S, so a
+    long-finished warmup must not refuse a retarget late in the run."""
+    _, timeline = _run()
+    assert timeline.add("retarget", at=9500, new_spec=_spec("constant", 2000),
+                        anchor="continue", length=0) == "applied"
 
 
 def test_rule_6_a_floor_outside_zero_to_one_is_refused():
@@ -594,6 +704,7 @@ def test_a_refused_retarget_is_idempotent_by_request_id():
 @pytest.mark.parametrize("bad_kwargs", [
     {"anchor": "sideways"},
     {"shape": "sigmoid"},
+    {"shape": "exp"},          # D22: the blend adds no shape of its own
 ])
 def test_a_misspelled_vocabulary_word_raises_at_the_seam(bad_kwargs):
     """As `decay` does with its shape: a word outside the vocabulary is a
@@ -664,7 +775,7 @@ def test_evaluation_order_does_not_change_any_value():
     timeline.add("retarget", at=2000, new_spec=_spec("constant", 300),
                  length=1200, shape="cosine")
     timeline.add("retarget", at=2600, new_spec=_spec("cosine"), length=900,
-                 shape="exp", gain=1.2)
+                 shape="rex", gain=1.2)
     timeline.add("decay", at=6000, length=1000)
 
     steps = list(range(0, TOTAL + 1, 41))
@@ -688,14 +799,47 @@ def test_two_timelines_folding_the_same_events_agree_bit_for_bit():
     assert _curve(spec, twin, steps) == _curve(spec, timeline, steps)
 
 
-def test_a_run_with_no_retarget_is_untouched():
-    """The R0/R1 regression condition: without the new event kind, nothing in
-    the fold behaves differently."""
+def _plateau(step: float) -> float:
+    """§4.2's plateau curve for W=100, T=10000, ratio 0.85, F=0.25, written
+    out. Deliberately does not call the module under test: comparing the lambda
+    with `timeline.multiplier` cannot fail, since the lambda IS that call."""
+    if step < 100:
+        return step / 100.0
+    if step <= 8500:
+        return 1.0
+    q = min(1.0, (step - 8500) / 1500.0)
+    return 0.25 + 0.75 * 0.5 * (1.0 + math.cos(math.pi * q))
+
+
+def test_a_run_with_no_retarget_follows_the_closed_form_curve():
+    """The R0/R1 regression condition: with no `retarget` in the list, the
+    multiplier is still §4.2's formula, warp included."""
+    spec, timeline = _run("plateau_cosine_floor", 100, TOTAL, PLATEAU)
+    fn = make_lambda(spec, timeline)
+    for step in (0, 50, 99, 100, 2000, 8499, 8500, 9250, 9999, TOTAL):
+        assert fn(step) == pytest.approx(_plateau(step)), step
+
+    timeline.add("total_steps", at=4000, value=2 * TOTAL)
+    for step in (2000, 4000, 12000, 16000, 18000, 2 * TOTAL):
+        # tau(s) = 4000 + (s - 4000) * 6000/16000 past the anchor (§7.2).
+        clock = step if step <= 4000 else 4000 + (step - 4000) * 0.375
+        assert fn(step) == pytest.approx(_plateau(clock)), step
+
+
+def test_a_decay_and_a_cancel_with_no_retarget_follow_the_closed_form():
     spec, timeline = _run("plateau_cosine_floor", 100, TOTAL, PLATEAU)
     timeline.add("decay", at=2000, length=500)
-    timeline.add("cancel", at=2300)
-    timeline.add("total_steps", at=4000, value=2 * TOTAL)
     fn = make_lambda(spec, timeline)
-    for step in range(0, 2 * TOTAL + 1, 53):
-        assert fn(step) == timeline.multiplier(spec, step)
-        assert not math.isnan(fn(step))
+
+    def decaying(step):                      # F + (m_start - F) * k(q), m_start = 1
+        q = min(1.0, (step - 2000) / 500.0)
+        return 0.25 + 0.75 * 0.5 * (1.0 + math.cos(math.pi * q))
+
+    for step in (2000, 2125, 2250, 2400, 2500, 3000):
+        assert fn(step) == pytest.approx(decaying(step)), step
+
+    m_c = decaying(2300)
+    timeline.add("cancel", at=2300)          # R = W = 100, linear back to base
+    for step in (2300, 2350, 2400, 2500):
+        ratio = min(1.0, (step - 2300) / 100.0)
+        assert fn(step) == pytest.approx(m_c + (1.0 - m_c) * ratio), step

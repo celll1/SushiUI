@@ -350,6 +350,10 @@ def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
         warmup_steps=scheduler_warmup_steps(trainer),
         total_steps=scheduler_total_steps(trainer, total_steps),
         name=lr_scheduler_type,
+        # The config's own step counts (lr_decay_start_step, lr_decay_steps,
+        # lr_cycle_steps) are on the global_step axis too; resolve_spec
+        # converts them.
+        advance_interval=lr_scheduler_advance_interval(trainer),
     )
     if spec.curve == "polynomial" and spec.floor_defaulted:
         # The one name whose absent-floor reading changed with D10.

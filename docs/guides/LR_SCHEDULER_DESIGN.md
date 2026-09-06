@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 / P3 実装済み（§18。P0 の軸変換の取りこぼしは §18.5 で修正済み）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 / P3 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6 で修正済み）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -36,7 +36,7 @@ Status: **P0 / P1 / P2 / P3 実装済み（§18。P0 の軸変換の取りこぼ
 | D5 | 取り消しの形 | **base curve へ線形に復帰**する。復帰長 `R = lr_warmup_steps`、`R = 0` なら不連続復帰。逆向き補間（減衰に費やした step 数で戻す）は採らない: 所要 step 数が無制限で「元の LR で続けたい」という意図と逆行する。「現在値で保持」は取り消しではないので採らない（§5.4） |
 | D6 | 制御経路 | **sample RPC と同形の新モジュール `training_control_rpc.py`**（ファイル RPC、run スコープ、claim-delete）。sample RPC のペイロード流用はしない（schema・上限 3・「1 バッチ 1 件」・stop 時に claim しない `:10255` が全て sample 専用の意味論）。共有プリミティブ（atomic write / read / owns / age sort）は `training_file_rpc.py` に移して両者が import する。config 経由（stop→edit→resume）は**併存**するが主経路ではない（§6） |
 | D7 | 延長耐性の暗黙化 | **時間軸の warp**。最初に構築されたときの `total_steps` を名目軸とし、以後の `total_steps` 変化は `(anchor=resume step, new_total)` 事象として state.json に記録、resume 点より前の形は不変、残りの区間を新しい残り step 数に線形写像する。**再構築の引数は変わらず、形は再構築のたびに事象列から再導出される**。設定キーは増やさない。旧挙動（無言の再伸長 §5 の危険）は消える。すでに減衰中の run の扱いは §7.3 |
-| D8 | 軸の定義 | 「絶対 step で書かれたものは実軸、`total_steps` 相対で書かれたものは名目軸（warp 後）」。warmup `W`、`lr_decay_steps`、`lr_cycle_steps`、復帰長 `R`、事象の `at` は実軸。`cosine`/`linear`/`polynomial` の進行度、「終端まで」の減衰、「1 サイクル＝全体」は名目軸 |
+| D8 | 軸の定義 | 「絶対 step で書かれたものは実軸、`total_steps` 相対で書かれたものは名目軸（warp 後）」。warmup `W`、`lr_decay_steps`、`lr_cycle_steps`、復帰長 `R`、事象の `at` は実軸。**実軸/名目軸（どの時計で読むか）と global_step/scheduler 軸（何を 1 と数えるか）は独立**で、config の step キーには両方が掛かる（§18.6）。`cosine`/`linear`/`polynomial` の進行度、「終端まで」の減衰、「1 サイクル＝全体」は名目軸 |
 | D9 | スケジューラ軸と `gradient_accumulation_steps` | スケジューラの位置は**更新境界での advance 数**で数える（保存契約は §17.1）。現状は構築 `T` が `global_step` 単位（`:12557-12561` → `:6011`）、`scheduler.step()` は optimizer step ごと（`:15933`, `:15987-15992`）、resume は `last_epoch = global_step`（`:3901`）で、`gradient_accumulation_steps > 1` では三者が一致しない（§1-3）。`T_sched = floor(T / gas)`、**`W` も同じ規則で `floor(W / gas)`**（片方だけ変換すると `W/T` が gas 倍ずれる。§18.5）、fast-forward は保存した scheduler_step に統一する（旧状態のみ `global_step // gas` 推定）。P0 で直す（先に直さないとタイムラインの `at` が壊れる） |
 | D10 | 床の一般化 | `lr_floor_ratio` を**レジストリの全スケジュールに適用**（`m = warmup(step) · (F + (1−F)·shape)`）。`constant` の床は効かないが、warmup は §4.2 の挙動変更対象。既定値は `param_defaults.py:2193` の `0.25` のまま。YAML には**無条件に書く**（`rewarmup_on_optimizer_reset` と同じ、`training_config.py:198-202`）。**YAML にキーが無い旧 run は `plateau_cosine_floor` のみ 0.25、他は 0.0** と読む（polynomial を除く旧床の保存（§4.2）。§12.2） |
 | D11 | `plateau_cosine_floor` | 名前は残し、レジストリでは **`wsd` の別名**（`decay_start = round(ratio·T_sched)`、長さ「終端まで」、形 `cosine`）。同一 `T` で現行実装と bit 同一の乗数（P0 の回帰条件）。別名化により D7 の延長耐性と §6 のコマンドが自動で効く |
@@ -159,9 +159,9 @@ class ScheduleTimeline:                    # 実行時状態（§5）。seam で
     def clock(self, step: int) -> float                    # 実軸 → 名目軸（§7）
     def state_at(self, step: int) -> tuple[int, float]     # (状態コード, 復帰/減衰の開始乗数)
 
-def to_scheduler_axis(steps: int, interval: int) -> int   # floor(steps/gas)。W も T もこれを通る
+def to_scheduler_axis(steps: int, interval: int) -> int   # floor(steps/gas)。W も T も config の step キーもこれを通る
 def resolve_spec(config: dict, *, warmup_steps: int, total_steps: int,
-                 name: str) -> ScheduleSpec
+                 name: str, advance_interval: int = 1) -> ScheduleSpec
 def make_lambda(spec: ScheduleSpec, timeline: ScheduleTimeline) -> Callable[[int], float]
 def build_lr_scheduler(optimizer, spec, timeline,
                        group_names: Sequence[str] | None = None,
@@ -1180,9 +1180,44 @@ P0 は `T` だけを `scheduler_total_steps()` で `floor(T/gas)` に変換し�
   二重に掛かる点も含めて所有者の判断待ち。
 - `lr_decay_start_step` / `lr_decay_steps` / `lr_cycle_steps`（P3 の実軸キー）も未変換で、
   `gas > 1` では config の数値の gas 倍の位置・長さになる。W と同じ種類のずれだが、
-  こちらは P3 の決定事項なので本修正では触っていない。
+  こちらは P3 の決定事項なので本修正では触っていない → **§18.6 で修正済み**。
 
 テストは `lr_schedules_test.py`（W の floor、gas 1/2/4 で `W_sched/T_sched` が一定、
 ramp が `W/gas` で 1.0 に達する、`gas == 1` は全レジストリ名で spec も曲線も同一）と
 `rewarmup_on_optimizer_reset_test.py`（ランプ長、`W < gas`）に追加。既存テストは 1 件も
 書き換えていない。
+
+### 18.6 config の step キーも scheduler 軸に載せた（P3 の取りこぼし、2026-09-06）
+
+§18.5 が記録だけして残した最後の 1 件。`lr_decay_start_step` / `lr_decay_steps` /
+`lr_cycle_steps` はユーザーが `total_steps` や `lr_warmup_steps` と全く同じ意味で入力する
+step 数だが、`resolve_spec` が config から未変換のまま読んでいたため、比較相手の
+`T_sched` に対して `gas` 倍の位置・長さになっていた。P3（`437d8404`）の出荷から 1 時間なので
+互換性の問題は無い。
+
+規則は §18.5 と同じ 1 箇所（`to_scheduler_axis`）が持ち、変換は **spec を解決する seam**
+（`resolve_spec` に渡す新引数 `advance_interval`）で行う。保存済みの属性は変換しない。
+`base_trainer.resolve_lr_schedule_spec` とプレビュー（`GET /training/lr-schedule/preview`）の
+両方が同じ値を渡すので、プレビューは run と一致し続ける。
+
+| 変更 | 旧 | 新 |
+|---|---|---|
+| `lr_decay_start_step`（wsd の減衰開始、実軸の**位置**） | config の数値をそのまま `decay_start_step` へ。`gas=4` なら設定の 4 倍の位置で減衰開始 | `floor(D/gas)`。0（= 手動）の判定は**変換前の設定値**で行うので、1 蓄積窓より小さい開始値が「手動」に化けることはない（scheduler step 0 になる） |
+| `lr_decay_steps`（減衰の**長さ**。config WSD と `start_decay` コマンドの両方） | 未変換。`gas` 倍の長さ | `max(1, floor(L/gas))`。0 は変換前に「未設定 = 終端まで」へ解決済み。1 未満に落とさないのは、0 が別曲線（終端まで）の sentinel であり、かつ除数だから |
+| `lr_cycle_steps`（cosine_with_restarts のサイクル長） | 未変換。`gas` 倍のサイクル | `max(1, floor(C/gas))`。0（= 全体で 1 サイクル）の扱いは同上 |
+
+軸が 2 つあることを混同しない: `lr_decay_start_step` は**実軸の位置**（timeline の warp で
+動かない、§17.2）であると同時に**global_step 単位で入力される**（§17.1）。今回変わるのは
+単位だけで、時計は変わらない。`lr_decay_start_ratio` は無次元の比で、掛ける相手の `T` が
+既に `T_sched` なので変換不要（`plateau_cosine_floor` は今回も bit 同一）。
+
+未変換のまま**正しい**と確認したもの: コマンド経路の `at`（`live_scheduler_step()` = scheduler
+軸）、コマンドの長さ（`spec.command_decay_length` 経由なので今回の変換が効く）、`cancel` の
+復帰長（`spec.warmup_steps` = §18.5 で変換済み）、`total_steps` 事象の `at` と値、
+`lr_cycle_peak_decay` / `lr_floor_ratio` / `lr_decay_shape`（無次元・文字列）。
+API のコマンドは `command` 以外のペイロードを持たない（`training_control_rpc.queue_request`）ので
+外から step 値が入る経路は無い。
+
+テストは `lr_schedules_test.py` に追加（gas 1/2/4 で減衰開始とサイクル長が schedule の同じ
+**割合**に載る、長さが 0 に落ちない、`gas == 1` は全レジストリ名で修正前の式と spec も曲線も
+同一）。既存テストは 1 件も書き換えていない。

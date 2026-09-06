@@ -6330,10 +6330,11 @@ paths:
         evenly spaced `[step, multiplier]` samples, so a client never has to
         re-implement a schedule to draw it. No run and no model are involved.
 
-        The step axis is OPTIMIZER steps: `total_steps` and `lr_warmup_steps`
-        are both divided by `gradient_accumulation_steps` exactly as the trainer
-        divides them, and `scheduler_total_steps` and `warmup_steps` in the
-        response are on that axis.
+        The step axis is OPTIMIZER steps: `total_steps`, `lr_warmup_steps` and
+        the step-valued schedule keys (`lr_decay_start_step`, `lr_decay_steps`,
+        `lr_cycle_steps`) are all divided by `gradient_accumulation_steps`
+        exactly as the trainer divides them, and `scheduler_total_steps` and
+        `warmup_steps` in the response are on that axis.
 
         Omitting `lr_floor_ratio` asks for the reading a YAML with no floor key
         gets (0.25 for `plateau_cosine_floor`, 0.0 otherwise) and reports it as
@@ -20393,9 +20394,11 @@ components:
           default: 0
           minimum: 0
           description: |
-            Linear ramp from 0 to the base LR over this many OPTIMIZER steps,
-            applied by every scheduler. Also the length of the return ramp a
-            `cancel_decay` command uses.
+            Linear ramp from 0 to the base LR over this many training steps,
+            applied by every scheduler. Counted like `total_steps`, so both are
+            divided by `gradient_accumulation_steps` to reach the scheduler's
+            axis. Also the length of the return ramp a `cancel_decay` command
+            uses.
           example: 100
         lr_decay_start_ratio:
           type: number
@@ -20429,23 +20432,26 @@ components:
           default: 0
           minimum: 0
           description: |
-            `wsd` only: the OPTIMIZER step its plateau ends at. 0 means the config
-            declares no decay — the run holds the base LR until a `start_decay`
-            command arrives, which is the runtime WSD the command endpoint exists
-            for.
+            `wsd` only: the training step its plateau ends at, counted like
+            `total_steps` (both are divided by `gradient_accumulation_steps` to
+            reach the scheduler's axis). 0 means the config declares no decay —
+            the run holds the base LR until a `start_decay` command arrives,
+            which is the runtime WSD the command endpoint exists for.
           example: 0
         lr_decay_steps:
           type: integer
           default: 0
           minimum: 0
           description: |
-            How long a decay runs, in OPTIMIZER steps. 0 = until the schedule's
-            end. Used by `wsd`'s configured decay and by a `start_decay` command
-            under any scheduler.
+            How long a decay runs, in training steps, counted like `total_steps`
+            (both are divided by `gradient_accumulation_steps` to reach the
+            scheduler's axis). 0 = until the schedule's end. Used by `wsd`'s
+            configured decay and by a `start_decay` command under any scheduler.
 
-            An explicit length is measured in real steps, so extending
-            `total_steps` on a resume does NOT stretch it: it reaches the floor
-            where it always would have and the extra steps run at the floor.
+            An explicit length is measured on the real (un-warped) axis, so
+            extending `total_steps` on a resume does NOT stretch it: it reaches
+            the floor where it always would have and the extra steps run at the
+            floor.
           example: 0
         lr_decay_shape:
           type: string
@@ -20463,12 +20469,14 @@ components:
           minimum: 0
           description: |
             `cosine_with_restarts` only: the length of one cosine cycle in
-            OPTIMIZER steps. 0 = one cycle over the whole run, which is a plain
-            cosine — and is what this scheduler produced before the cycle count
-            was reachable, so an existing run's curve is unchanged.
+            training steps, counted like `total_steps` (both are divided by
+            `gradient_accumulation_steps` to reach the scheduler's axis). 0 =
+            one cycle over the whole run, which is a plain cosine — and is what
+            this scheduler produced before the cycle count was reachable, so an
+            existing run's curve is unchanged.
 
-            A cycle length is absolute: extending `total_steps` adds cycles
-            rather than stretching them.
+            A cycle length is absolute on the real (un-warped) axis: extending
+            `total_steps` adds cycles rather than stretching them.
           example: 0
         lr_cycle_peak_decay:
           type: number

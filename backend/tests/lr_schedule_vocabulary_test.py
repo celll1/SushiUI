@@ -80,11 +80,15 @@ def _optimizer(lr: float = 1e-4, groups: int = 1):
     return torch.optim.AdamW([{"params": [p]} for p in params], lr=lr)
 
 
-def _lambda(name: str, W: int, T: int, config=None):
-    spec = resolve_spec(config or {}, warmup_steps=W, total_steps=T, name=name)
+def _timeline(spec):
     timeline = ScheduleTimeline()
     timeline.set_total_steps(spec.total_steps)
-    return make_lambda(spec, timeline)
+    return timeline
+
+
+def _lambda(name: str, W: int, T: int, config=None):
+    spec = resolve_spec(config or {}, warmup_steps=W, total_steps=T, name=name)
+    return make_lambda(spec, _timeline(spec))
 
 
 def _train_section(**overrides) -> dict:
@@ -384,6 +388,31 @@ def test_the_preview_is_on_the_optimizer_step_axis():
                     gradient_accumulation_steps=4, n_points=8)
     assert body["scheduler_total_steps"] == 250
     assert body["points"][-1][0] == 250
+
+
+def test_the_preview_puts_the_config_step_keys_on_the_trainer_s_axis():
+    """The preview resolves the same spec the trainer would, at gas > 1 too."""
+    from core.training.base_trainer import resolve_lr_schedule_spec
+
+    class _Probe:
+        log_prefix = "[Test]"
+        _grad_accum_steps = 4
+        optimizer_warmup_steps = 200
+        config = {"lr_decay_start_step": 600, "lr_decay_steps": 200,
+                  "lr_floor_ratio": 0.1, "lr_decay_shape": "cosine"}
+
+    spec = resolve_lr_schedule_spec(_Probe(), "wsd", 1000)
+    body = _preview(lr_scheduler="wsd", total_steps=1000,
+                    gradient_accumulation_steps=4, lr_warmup_steps=200,
+                    lr_decay_start_step=600, lr_decay_steps=200,
+                    lr_floor_ratio=0.1, n_points=64)
+
+    assert (spec.decay_start_step, spec.decay_length) == (150, 50)
+    fn = make_lambda(spec, _timeline(spec))
+    assert body["scheduler_total_steps"] == spec.total_steps
+    assert body["warmup_steps"] == spec.warmup_steps
+    for step, value in body["points"]:
+        assert value == fn(step), step
 
 
 def test_the_preview_reports_the_compatibility_floor_as_defaulted():

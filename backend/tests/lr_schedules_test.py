@@ -452,6 +452,105 @@ def test_the_warmup_fraction_of_the_schedule_is_the_same_at_every_gas(gas):
     assert fn((W // gas) // 2) == pytest.approx(0.5)
 
 
+# ---------------------------------------------------------------------------
+# The config's own step keys share that axis (the P3 follow-up defect)
+# ---------------------------------------------------------------------------
+#
+# lr_decay_start_step / lr_decay_steps / lr_cycle_steps are counts of steps a
+# user enters, exactly as total_steps and lr_warmup_steps are, but resolve_spec
+# read them out of the config undivided -- so they landed at `gas` times the
+# configured position or length on the T_sched axis they are measured against.
+
+
+def _p3_config_step_keys(config):
+    """The three keys as P3 read them: straight out of the config, undivided.
+
+    A literal transcription of the pre-fix expression, so the gas == 1 bar is
+    checked against the old reading and not against the new one.
+    """
+    return (int(config.get("lr_decay_start_step", 0)) or None,
+            int(config.get("lr_decay_steps", 0)) or None,
+            int(config.get("lr_cycle_steps", 0) or 0))
+
+
+@pytest.mark.parametrize("gas", [1, 2, 4])
+def test_the_decay_start_and_length_are_the_same_fraction_at_every_gas(gas):
+    W, T, D, L = 400, 4000, 2000, 800
+    config = {"lr_decay_start_step": D, "lr_decay_steps": L,
+              "lr_floor_ratio": 0.1}
+    spec = resolve_lr_schedule_spec(_WarmupProbe(gas, W, config), "wsd", T)
+
+    assert spec.decay_start_step / spec.total_steps == pytest.approx(D / T)
+    assert spec.decay_length / spec.total_steps == pytest.approx(L / T)
+
+    fn = make_lambda(spec, _timeline(spec))
+    assert fn(spec.decay_start_step - 1) == pytest.approx(1.0)
+    assert fn(spec.decay_start_step) == pytest.approx(1.0)
+    assert fn(spec.decay_start_step + spec.decay_length // 2) == pytest.approx(0.55)
+    assert fn(spec.decay_start_step + spec.decay_length) == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("gas", [1, 2, 4])
+def test_the_cycle_length_is_the_same_fraction_at_every_gas(gas):
+    W, T, C = 400, 4000, 1000
+    config = {"lr_cycle_steps": C, "lr_cycle_peak_decay": 0.5}
+    spec = resolve_lr_schedule_spec(_WarmupProbe(gas, W, config),
+                                    "cosine_with_restarts", T)
+
+    assert spec.cycle_steps / spec.total_steps == pytest.approx(C / T)
+
+    fn = make_lambda(spec, _timeline(spec))
+    for index in range(3):
+        at = spec.warmup_steps + index * spec.cycle_steps
+        assert fn(at) == pytest.approx(0.5 ** index)
+        assert fn(at + spec.cycle_steps - 1) < 0.5 ** index
+
+
+def test_a_length_shorter_than_one_window_stays_a_length():
+    """0 is the "run to the end" sentinel AND the divisor, so it is not a floor."""
+    config = {"lr_decay_start_step": 100, "lr_decay_steps": 3}
+    spec = resolve_lr_schedule_spec(_WarmupProbe(4, 0, config), "wsd", 4000)
+    assert (spec.decay_length, spec.command_decay_length) == (1, 1)
+    assert spec.decay_end_kind == "length"
+
+    cycles = resolve_lr_schedule_spec(_WarmupProbe(4, 0, {"lr_cycle_steps": 3}),
+                                      "cosine_with_restarts", 4000)
+    assert cycles.cycle_steps == 1
+
+
+def test_a_decay_start_inside_the_first_window_is_not_read_as_manual():
+    """None would mean "no configured decay": the run would never decay."""
+    spec = resolve_lr_schedule_spec(
+        _WarmupProbe(4, 0, {"lr_decay_start_step": 3}), "wsd", 4000)
+    assert spec.decay_start_step == 0
+
+
+@pytest.mark.parametrize("gas", [1, 2, 4])
+def test_an_unset_step_key_is_still_unset_at_every_gas(gas):
+    spec = resolve_lr_schedule_spec(_WarmupProbe(gas, 0, {}), "wsd", 4000)
+    assert spec.decay_start_step is None
+    assert spec.decay_length is None and spec.command_decay_length is None
+    cycles = resolve_lr_schedule_spec(_WarmupProbe(gas, 0, {}),
+                                      "cosine_with_restarts", 4000)
+    assert cycles.cycle_steps == 0
+
+
+@pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
+def test_gas_1_reads_the_config_step_keys_exactly_as_p3_did(name):
+    W, T = 400, 4000
+    config = {"lr_floor_ratio": 0.1, "lr_decay_start_step": 2000,
+              "lr_decay_steps": 500, "lr_decay_shape": "rex",
+              "lr_cycle_steps": 900, "lr_cycle_peak_decay": 0.8}
+    spec = resolve_lr_schedule_spec(_WarmupProbe(1, W, config), name, T)
+    start, length, cycle = _p3_config_step_keys(config)
+
+    assert spec.command_decay_length == length
+    assert spec.cycle_steps == (cycle if name == "cosine_with_restarts" else 0)
+    if name == "wsd":
+        assert spec.decay_start_step == start
+        assert spec.decay_length == length
+
+
 @pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
 def test_gas_1_is_untouched_for_every_registry_name(name):
     """The regression bar: at gas=1 the conversion is the identity."""

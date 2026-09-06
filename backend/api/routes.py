@@ -18446,6 +18446,109 @@ async def get_training_sample_queue(
     }
 
 
+# ---------------------------------------------------------------------------
+# Runtime LR-schedule commands ("decay now" / "cancel decay")
+# ---------------------------------------------------------------------------
+# File-RPC (core/training/training_control_rpc), a sibling of the sample queue
+# sharing only its transport. The trainer claims every queued command at the
+# HEAD of its next batch, before the forward, because the fused optimizer paths
+# step from a backward hook.
+
+
+class LrScheduleCommandRequest(BaseModel):
+    command: str
+
+
+@router.post("/training/runs/{run_id}/lr-schedule", status_code=202)
+async def queue_lr_schedule_command(
+    run_id: int,
+    request: LrScheduleCommandRequest,
+    db: Session = Depends(get_training_db),
+):
+    """Queue a runtime LR-schedule command for a running training run.
+
+    Returns as soon as the command file is written. See openapi.yaml for the
+    result codes and the checkpoint-truncation contract.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        COMMANDS, MAX_PENDING_REQUESTS, ControlQueueFullError,
+        list_pending_requests, queue_request,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    command = (request.command or "").strip()
+    if command not in COMMANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown LR schedule command '{request.command}'. "
+                   f"Supported: {', '.join(COMMANDS)}")
+
+    # The DB status can say "running" for a subprocess that has already died,
+    # and only a live one claims command files.
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick "
+                   f"the command up")
+
+    try:
+        payload = queue_request(proc.output_dir, command=command, run_id=int(run_id))
+    except ControlQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue LR schedule command: {e}")
+
+    return {
+        "request_id": payload["request_id"],
+        "run_id": int(run_id),
+        "command": command,
+        "queued_at": payload["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
+    }
+
+
+@router.get("/training/runs/{run_id}/lr-schedule")
+async def get_lr_schedule_status(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """The run's published LR schedule state, pending commands and results."""
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        MAX_PENDING_REQUESTS, list_results, pending_requests, read_status,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    output_dir = proc.output_dir if proc is not None else run.output_dir
+
+    return {
+        "run_id": int(run_id),
+        "is_running": bool(proc is not None and proc.is_running),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "status": read_status(output_dir) if output_dir else None,
+        "pending": [
+            {
+                "request_id": r.get("request_id"),
+                "command": r.get("command"),
+                "queued_at": r.get("queued_at"),
+            }
+            for r in (pending_requests(output_dir, int(run_id)) if output_dir else [])
+        ],
+        "results": list_results(output_dir, int(run_id)) if output_dir else [],
+    }
+
+
 @router.get("/training/runs/{run_id}/samples")
 async def get_training_samples(
     run_id: int,

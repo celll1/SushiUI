@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 実装済み（§18）。P2 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 実装済み（§18）。P3 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -735,7 +735,7 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 |---|---|---|---|
 | **P0 集約と等価移植（実装済み、§18）** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = floor(T/gas)`、fast-forward は保存した scheduler_step、旧状態のみ除算推定、詳細は §17.1）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 互換条件（§17）を満たす名前と床、`0 ≤ W < T`、`0 ≤ s ≤ T` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
 | **P1 タイムラインと延長耐性（実装済み、§18.2）** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
-| **P2 実行時コマンド** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
+| **P2 実行時コマンド（実装済み、§18.3。UI のみ P3 へ）** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
 | **P3 新スケジュールと床の一般化** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
 | **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
 | **P5 LLRD** | `ArchHandler.depth_blocks`（DiT 第 1 波）、`apply_layer_decay`、グループ `name` 必須化（§10.3、LLRD でも必要）、メトリクス emit の変更、capability 登録、UI | テスト: 合成モデルで `depth_of` の被覆（全 trainable param がどこかに入る）、係数の等比、非ブロック param が 1.0、`_record_configured_group_lrs` が分割後を記録、fused 併用が `ValueError`。実 arch は 3 step smoke（有限 loss）で足りる | 中。arch ごとのブロック属性（要検証）。sd15/sdxl は unsupported |
@@ -928,6 +928,59 @@ P0 が**やっていない**こと: 実行時タイムライン（`ScheduleTimel
   `lr_decay_steps`（P3）か `decay` 事象の `length`（P2 のコマンド）からしか生まれず、
   P1 の config 経由の減衰は全て「終端まで」である。機構（実軸の長さは warp で伸びない）は
   実装済みでテストが固定している。警告は長さを作れるフェーズと同時に入れる。
+- **P2: §6.4 の 409 条件は DB の `status` では判定していない。** §6.4 は
+  `status not in ("running","starting")` と書いているが、コマンドファイルを claim
+  するのは生きたサブプロセスだけであり、DB 行は落ちたプロセスに対しても
+  `running` のままになりうる。実装は sample の POST と同じ
+  `training_process_manager.processes[id].is_running` を使う。同じ理由の同じ判定を
+  2 つ持たない。
+- **P2: `GET` の応答は §6.4 の 6 フィールドを平坦に返さない。** `state` /
+  `events` / `nominal_total_steps` / `effective_total_steps` はトレーナーが書いた
+  ファイル由来で「まだ無い」ことがあり、`pending` / `results` は API 側が毎回
+  数えるものである。平坦に並べると前者のせいで全フィールドが nullable になるので、
+  ファイル由来を nullable な `status` オブジェクトに入れ、`pending` / `results` /
+  `run_id` / `is_running` / `max_pending` を必須にした（`LrScheduleStatusResponse`）。
+- **P2: `clear_all` は `.lr_schedule.json` を消さない。** §6.2 は spawn 前の
+  `clear_all` を「stop→resume を跨いだ『減衰しろ』を適用しない」ためと定義しており、
+  それは要求・結果ファイルだけで達成できる。一方 §6.4 は「停止中の run でも読める」
+  ことを要求しており、停止中にそれを答えられるのは表示ファイルだけである。よって
+  消すのは `.control_request_*` / `.control_result_*` の 2 prefix のみ。
+- **P2: 即時反映（§5.6）が実際に値を変えるのは不連続な取り消しだけである。**
+  `decay`・`R > 0` の `cancel`・`disarmed_scheduled_decay` はいずれも適用 step で
+  連続なので、`base_lr · λ_new(at) == base_lr · λ_old(at)` であり、
+  `_fast_forward_one_lr_scheduler` は同じ値を書き直す。値が跳ぶのは
+  `W = 0` の `cancel`（§5.4 の不連続復帰）だけで、この 1 ケースだけが
+  「forward の前でなければこのバッチの更新に間に合わない」に該当する。
+  ポーリング位置がバッチ先頭であるべき理由はもう 1 つあり、そちらは全ケースに効く:
+  `at = last_epoch` は optimizer step の後では 1 進んでいる。
+- **P2: `rejected_unknown_command` は §5.3 の表に無い結果コードである。**
+  タイムラインは知らない `kind` を受け取らないので、未知のコマンド文字列は
+  `add()` まで到達しない。API は `queue_request` で 400 として弾くが、
+  別ビルドが書いた古い要求ファイルは弾けないので、トレーナーはそれを黙って捨てず
+  この結果コードで記録する。openapi の `LrScheduleCommandResult` に載せた。
+- **P2: コマンドは長さも形も運ばない。** §6.2 の要求スキーマどおり body は
+  `command` だけで、`decay` 事象の `length` は `lr_decay_steps`、`shape` は
+  `lr_decay_shape`（どちらも P3 の config キー）から来る。したがって P2 の
+  コマンド由来の減衰は全て「名目終端まで」であり、P1 の記載どおり
+  `lr_schedule_extension_on_floor`（§7.3）はまだ発火しない。
+- **P2: 表示ファイルが古くなりうる窓は「バッチ境界の外」だけである。** §17.3 は
+  「時間経過で DECAYING→FLOOR になる」ことを問題にしているが、状態が変わる条件は
+  事象の追加か `last_epoch` の前進のみで、後者は `scheduler.step()`＝バッチループの
+  中でしか起きない。ポーリングは同じループの先頭で毎バッチ状態を再評価するので、
+  scheduler が進んだことによる遷移は必ず次のバッチで書き直される。残る窓は
+  「バッチが 1 つも走っていない間」— resume 直後の fast-forward からその run の
+  最初のバッチまで、およびデータセット走査・latent キャッシュ・チェックポイント
+  書き込み中で、この間 `written_at` / `step` は最後のバッチのものである。
+  openapi の `GET` の description に書いた。
+- **P2: グループ名は DiT アーキテクチャでは `group{i}` になる。**
+  `lr_schedule_group_states` は `_build_component_lr_list()` の名前を使うが、
+  この関数は DiT 系で空を返す（`component_lr_resume_alignment_test.py` が
+  固定している既知の性質）。長さが param group 数と一致しないときは
+  index 由来の名前に落とす。状態・乗数・LR はどのアーキテクチャでも正しい。
+- **P2: UI は入れていない（§14 の P2 行から外した）。** §14 の P2 行は
+  「UI ボタンと状態表示」を含むが、本フェーズはバックエンドと API までとし、
+  フロントは P3 の UI 作業とまとめる。API は openapi に載っているので
+  `POST` / `GET` はそのまま呼べる。
 
 ### 18.2 P1 で出荷した挙動変更（2026-09-06）
 
@@ -951,3 +1004,52 @@ step 9000 のチェックポイントから再開すると step 9137 に出し�
 
 テストは `backend/tests/lr_schedule_timeline_test.py`（50 件）。P0 の
 `backend/tests/lr_schedules_test.py`（101 件）は 1 件も書き換えずに通る。
+
+### 18.3 P2 で出荷したもの（2026-09-06）
+
+P2 はタイムラインに外から事象を入れる経路を付けた。sample RPC の transport を
+`training_file_rpc.py` に**純移動**（atomic write / read / age sort / `owns` /
+`make_request_id` と、それらの上の一覧・結果書き込み・prefix 一括削除）し、
+`training_sample_rpc.py` はその薄い包みになった（挙動不変、既存テスト 140 件が通る）。
+新しい queue は `training_control_rpc.py`:
+
+- 要求 `<output_dir>/.control_request_<id>.json`、結果 `.control_result_<id>.json`、
+  表示 `.lr_schedule.json`。
+- `claim_all` は自 run の要求を**全件**古い順に claim-delete する。coalesce は
+  トレーナー側で `timeline.add` を順に呼ぶことで自然に起きる。
+- 上限 20（sample の 3 と別。コマンドは dict 追記なのでディレクトリの上限であって
+  スループットの上限ではない）、保存する結果 40（1 バーストぶんが全部残る）。
+- stop 中でも claim する（sample は stop を遅らせるので claim しない）。
+- spawn 前の `clear_all` は要求と結果のみ（§18.1）。
+
+トレーナー側は `base_trainer.py` にモジュール関数 4 つ:
+`poll_lr_schedule_commands`（seam (c)）、`lr_schedule_status`、
+`refresh_lr_schedule_status`、`lr_decay_state_code`。ポーリングはバッチループの
+**先頭**、`.stop_training` 検査の直後・forward の前で、sample の claim
+（サンプリングブロック内）とは別の位置である。1 バッチ 1 回、`claim_all` →
+各コマンドを `timeline.add(kind, at=live_scheduler_step(), request_id=…)` →
+1 件でも `applied` / `disarmed_scheduled_decay` なら全スケジューラへ即時反映 →
+`request_id` ごとに結果を書く → `.lr_schedule.json` → `lr_schedule_command`。
+例外はループに投げない。
+
+`.lr_schedule.json` は**状態が変わったときに書く**。署名は
+（状態コード, 状態の開始 step, 減衰無効化フラグ, 事象数, 実効 total）で、事象が
+無くても毎バッチ再評価するので DECAYING→FLOOR と RECOVERING→BASE の時間遷移が
+そのまま反映される（§17.3）。代表グループの状態に加え、param group ごとの
+状態・乗数・LR を `groups` に入れる（P6 でグループごとに spec が分かれても
+形は変わらない）。`lr_decay_state`（0/1/2/3）を毎 step emit し、
+`metric_registry.py` に専用スケールで登録した。
+
+API（openapi 先行、同一変更内）:
+
+| メソッド/パス | 応答 |
+|---|---|
+| `POST /training/runs/{id}/lr-schedule` | 202 `LrScheduleCommandAccepted` / 400 未知コマンド / 404 / 409 サブプロセス不在 / 429 上限 / 500 |
+| `GET /training/runs/{id}/lr-schedule` | 200 `LrScheduleStatusResponse`（`status` は nullable、停止中の run でも読める）/ 404 |
+
+P2 が**やっていない**こと: config キー（P3）、`wsd`/`rex`/床の一般化（P3）、
+UI（P3）、ReLoRA の `restart` 事象（P4）、グループ別スケジュール（P6）、
+VAE トレーナー（P7）。テストは
+`backend/tests/lr_schedule_control_rpc_test.py`（38 件）。P0 の
+`lr_schedules_test.py`、P1 の `lr_schedule_timeline_test.py`、
+sample RPC の既存テストは 1 件も書き換えずに通る。

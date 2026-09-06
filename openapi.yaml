@@ -6153,6 +6153,174 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/lr-schedule:
+    post:
+      tags: [training]
+      summary: Start or cancel the LR decay of a running training run
+      description: |
+        Order a runtime change to the run's learning-rate schedule without
+        stopping it. Two commands:
+
+        - `start_decay` — decay from the multiplier the schedule is at right
+          now, down to the schedule's floor, using the run's decay shape. The
+          decay runs to the schedule's nominal end unless the run configured an
+          explicit length.
+        - `cancel_decay` — stop decaying and return LINEARLY to the base curve
+          over `lr_warmup_steps` steps. With `lr_warmup_steps = 0` the return is
+          a step change: that run configured no ramp anywhere. A cancel also
+          voids a decay the run's own config had scheduled but not yet started.
+
+        **Fire and forget.** The response is a 202 as soon as the command file
+        is written. The trainer claims every queued command at the head of its
+        next batch, before the forward pass, and applies them in arrival order;
+        the outcome of each appears in
+        `GET /training/runs/{run_id}/lr-schedule` under its `request_id`.
+
+        **Re-delivery is idempotent.** Repeating a `request_id` that was already
+        applied returns the same result code rather than acting twice.
+
+        **A command lives in the checkpoint, not forever.** The applied event is
+        saved with the training state and truncated to the checkpoint's step, so
+        resuming from a checkpoint written BEFORE the command un-does it — the
+        same rule that trims metrics recorded after a resume point.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LrScheduleCommandRequest'
+            example:
+              command: start_decay
+      responses:
+        '202':
+          description: Command queued. Not yet applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleCommandAccepted'
+        '400':
+          description: Unknown command.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing, so nothing would claim the command.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The pending command queue for this run is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The command file could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [training]
+      summary: Current LR schedule state, pending commands and recent results
+      description: |
+        Reads the run's output directory: the schedule state the trainer last
+        published, the commands queued but not yet claimed, and the recorded
+        outcome of the recent ones. Works for a stopped run too — the files live
+        on disk, not in the subprocess.
+
+        The state is refreshed by the trainer whenever it CHANGES, including the
+        changes time makes on its own with no command behind them (`decaying`
+        becomes `floor` when the decay reaches its end; `recovering` becomes
+        `base` when the return ramp finishes), so this never reports a phase the
+        run has already left. It is not refreshed while the run is between
+        batches — during dataset scanning, latent caching or a checkpoint write
+        the `written_at`/`step` it carries are the last batch's.
+
+        `state` is the representative group's. `groups` carries every optimizer
+        param group's own state; today they all follow one schedule and agree.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Schedule state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleStatusResponse'
+              example:
+                run_id: 112
+                is_running: true
+                max_pending: 20
+                status:
+                  version: 1
+                  run_id: 112
+                  written_at: 1772500401.117
+                  step: 9137
+                  global_step: 9137
+                  scheduler: plateau_cosine_floor
+                  warmup_steps: 100
+                  state: decaying
+                  state_code: 1
+                  state_at: 9137
+                  decay_disarmed: false
+                  multiplier: 0.9412
+                  nominal_total_steps: 10000
+                  effective_total_steps: 20000
+                  groups:
+                    - index: 0
+                      name: U-Net
+                      schedule: plateau_cosine_floor
+                      state: decaying
+                      state_code: 1
+                      multiplier: 0.9412
+                      lr: 9.412e-05
+                  events:
+                    - kind: total_steps
+                      at: 0
+                      value: 10000
+                      seq: 0
+                    - kind: decay
+                      at: 9137
+                      request_id: "3f0c9ab41d7e5602"
+                      length: null
+                      shape: cosine
+                      result: applied
+                      seq: 1
+                pending: []
+                results:
+                  - request_id: "3f0c9ab41d7e5602"
+                    run_id: 112
+                    command: start_decay
+                    result: applied
+                    at: 9137
+                    global_step: 9137
+                    error: null
+                    completed_at: 1772500401.109
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /training/runs/{run_id}/samples/{filename}:
     get:
       tags: [training]
@@ -19573,6 +19741,292 @@ components:
           description: Most recent first.
           items:
             $ref: '#/components/schemas/TrainingSampleResult'
+
+    LrScheduleCommandRequest:
+      type: object
+      description: One runtime change to a running run's learning-rate schedule.
+      required: [command]
+      properties:
+        command:
+          type: string
+          enum: [start_decay, cancel_decay]
+          description: |
+            `start_decay` begins decaying from the current multiplier to the
+            schedule's floor; `cancel_decay` returns linearly to the base curve
+            over `lr_warmup_steps` steps and voids a decay the config had
+            scheduled but not yet started.
+          example: start_decay
+      example:
+        command: start_decay
+
+    LrScheduleCommandAccepted:
+      type: object
+      description: |
+        Acknowledgement of a queued LR-schedule command. The command file has
+        been written to the run's output directory; it has NOT been applied yet.
+        The trainer claims it at the head of its next batch. Poll
+        `GET /training/runs/{run_id}/lr-schedule` for the result code.
+      required: [request_id, run_id, command, queued_at, pending_count, max_pending]
+      properties:
+        request_id:
+          type: string
+          description: |
+            Identifier of this command. Re-sending the same id is idempotent:
+            the trainer answers with the result it already recorded rather than
+            applying the command twice.
+          example: "3f0c9ab41d7e5602"
+        run_id:
+          type: integer
+          example: 112
+        command:
+          type: string
+          enum: [start_decay, cancel_decay]
+          example: start_decay
+        queued_at:
+          type: number
+          format: double
+          description: Unix timestamp at which the command file was written.
+          example: 1772500401.002
+        pending_count:
+          type: integer
+          description: Commands queued for this run including this one.
+          example: 1
+        max_pending:
+          type: integer
+          description: |
+            Queue cap. A further command past this is refused with 429. Applying
+            a command costs a list append, so this bounds the directory rather
+            than the throughput.
+          example: 20
+      example:
+        request_id: "3f0c9ab41d7e5602"
+        run_id: 112
+        command: start_decay
+        queued_at: 1772500401.002
+        pending_count: 1
+        max_pending: 20
+
+    LrScheduleGroupState:
+      type: object
+      description: |
+        One optimizer parameter group's own overlay state. Every group follows
+        one schedule today, so these agree; the per-group shape is what a
+        future per-group schedule selection fills in.
+      properties:
+        index:
+          type: integer
+          example: 0
+        name:
+          type: string
+          description: The component this group trains, when the trainer can name it.
+          example: U-Net
+        schedule:
+          type: string
+          example: plateau_cosine_floor
+        state:
+          type: string
+          enum: [base, decaying, floor, recovering]
+          example: decaying
+        state_code:
+          type: integer
+          description: 0 base, 1 decaying, 2 floor, 3 recovering. Same code as the `lr_decay_state` metric.
+          example: 1
+        multiplier:
+          type: number
+          format: double
+          description: The schedule multiplier applied to this group's base LR.
+          example: 0.9412
+        lr:
+          type: number
+          format: double
+          description: The learning rate actually set on this group.
+          example: 9.412e-05
+
+    LrScheduleState:
+      type: object
+      description: |
+        The schedule state the trainer last published, read from
+        `<output_dir>/.lr_schedule.json`. Display only — the authoritative event
+        list is saved with the training state and is what a resume reads.
+      properties:
+        version:
+          type: integer
+          example: 1
+        run_id:
+          type: integer
+          nullable: true
+          example: 112
+        written_at:
+          type: number
+          format: double
+          example: 1772500401.117
+        step:
+          type: integer
+          description: |
+            Position on the SCHEDULER axis (one unit per optimizer update, i.e.
+            per `gradient_accumulation_steps` global steps), not `global_step`.
+          example: 9137
+        global_step:
+          type: integer
+          nullable: true
+          example: 9137
+        scheduler:
+          type: string
+          example: plateau_cosine_floor
+        warmup_steps:
+          type: integer
+          description: Also the length of the linear return a `cancel_decay` uses.
+          example: 100
+        state:
+          type: string
+          enum: [base, decaying, floor, recovering]
+          description: The representative group's state.
+          example: decaying
+        state_code:
+          type: integer
+          example: 1
+        state_at:
+          type: integer
+          description: Scheduler step the current phase began at.
+          example: 9137
+        decay_disarmed:
+          type: boolean
+          description: A cancel voided the decay the run's config had scheduled.
+          example: false
+        multiplier:
+          type: number
+          format: double
+          example: 0.9412
+        nominal_total_steps:
+          type: integer
+          description: |
+            The total the curve's shape is defined against — the one the run was
+            FIRST built with. Editing `total_steps` maps the remaining span onto
+            the new one instead of moving this.
+          example: 10000
+        effective_total_steps:
+          type: integer
+          description: The scheduler-axis step this session actually ends at.
+          example: 20000
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/LrScheduleGroupState'
+        events:
+          type: array
+          description: |
+            The runtime event list, in application order. `total_steps` records
+            a nominal-axis re-anchor, `decay`/`cancel` a command, `noop` a
+            command that was refused before it could take effect.
+          items:
+            type: object
+            additionalProperties: true
+
+    LrScheduleQueueItem:
+      type: object
+      description: One command the trainer has not claimed yet.
+      properties:
+        request_id:
+          type: string
+          example: "3f0c9ab41d7e5602"
+        command:
+          type: string
+          enum: [start_decay, cancel_decay]
+          example: start_decay
+        queued_at:
+          type: number
+          format: double
+          example: 1772500401.002
+
+    LrScheduleCommandResult:
+      type: object
+      description: |
+        What the trainer's timeline answered for one command. Kept only for the
+        most recent commands of the current run and cleared when a run starts.
+      properties:
+        request_id:
+          type: string
+          example: "3f0c9ab41d7e5602"
+        run_id:
+          type: integer
+          nullable: true
+          example: 112
+        command:
+          type: string
+          example: start_decay
+        result:
+          type: string
+          enum:
+            - applied
+            - disarmed_scheduled_decay
+            - ignored_already_decaying
+            - ignored_already_recovering
+            - ignored_no_active_decay
+            - rejected_during_warmup
+            - rejected_zero_length
+            - rejected_unknown_command
+            - error
+          description: |
+            - `applied` — the state machine moved.
+            - `disarmed_scheduled_decay` — a cancel arrived before the run's
+              configured decay had started; the configured decay will not fire.
+            - `ignored_*` — the command was a no-op in the state the schedule
+              was in (already decaying, already recovering, nothing to cancel).
+            - `rejected_during_warmup` — a decay cannot start while the LR is
+              still ramping up.
+            - `rejected_zero_length` — the decay would have had no room left to
+              run in.
+            - `rejected_unknown_command` — the command string was not one of the
+              two the trainer knows.
+            - `error` — applying it raised; `error` carries the text.
+          example: applied
+        at:
+          type: integer
+          description: Scheduler-axis step the command was applied at.
+          example: 9137
+        global_step:
+          type: integer
+          example: 9137
+        error:
+          type: string
+          nullable: true
+          example: null
+        completed_at:
+          type: number
+          format: double
+          example: 1772500401.109
+
+    LrScheduleStatusResponse:
+      type: object
+      description: LR schedule state, pending commands and recent results for a run.
+      required: [run_id, max_pending, pending, results]
+      properties:
+        run_id:
+          type: integer
+          example: 112
+        is_running:
+          type: boolean
+          description: Whether a trainer subprocess is alive to claim commands.
+          example: true
+        max_pending:
+          type: integer
+          example: 20
+        status:
+          allOf:
+            - $ref: '#/components/schemas/LrScheduleState'
+          nullable: true
+          description: |
+            Null before the trainer's first batch of the current session, and
+            for a run that never wrote one.
+        pending:
+          type: array
+          items:
+            $ref: '#/components/schemas/LrScheduleQueueItem'
+        results:
+          type: array
+          description: Most recent first.
+          items:
+            $ref: '#/components/schemas/LrScheduleCommandResult'
 
     GpuStatsEntry:
       type: object

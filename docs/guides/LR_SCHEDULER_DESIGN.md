@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 / P3 実装済み（§18）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 / P3 実装済み（§18。P0 の軸変換の取りこぼしは §18.5 で修正済み）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -37,7 +37,7 @@ Status: **P0 / P1 / P2 / P3 実装済み（§18）。P4 以降は未実装。** 
 | D6 | 制御経路 | **sample RPC と同形の新モジュール `training_control_rpc.py`**（ファイル RPC、run スコープ、claim-delete）。sample RPC のペイロード流用はしない（schema・上限 3・「1 バッチ 1 件」・stop 時に claim しない `:10255` が全て sample 専用の意味論）。共有プリミティブ（atomic write / read / owns / age sort）は `training_file_rpc.py` に移して両者が import する。config 経由（stop→edit→resume）は**併存**するが主経路ではない（§6） |
 | D7 | 延長耐性の暗黙化 | **時間軸の warp**。最初に構築されたときの `total_steps` を名目軸とし、以後の `total_steps` 変化は `(anchor=resume step, new_total)` 事象として state.json に記録、resume 点より前の形は不変、残りの区間を新しい残り step 数に線形写像する。**再構築の引数は変わらず、形は再構築のたびに事象列から再導出される**。設定キーは増やさない。旧挙動（無言の再伸長 §5 の危険）は消える。すでに減衰中の run の扱いは §7.3 |
 | D8 | 軸の定義 | 「絶対 step で書かれたものは実軸、`total_steps` 相対で書かれたものは名目軸（warp 後）」。warmup `W`、`lr_decay_steps`、`lr_cycle_steps`、復帰長 `R`、事象の `at` は実軸。`cosine`/`linear`/`polynomial` の進行度、「終端まで」の減衰、「1 サイクル＝全体」は名目軸 |
-| D9 | スケジューラ軸と `gradient_accumulation_steps` | スケジューラの位置は**更新境界での advance 数**で数える（保存契約は §17.1）。現状は構築 `T` が `global_step` 単位（`:12557-12561` → `:6011`）、`scheduler.step()` は optimizer step ごと（`:15933`, `:15987-15992`）、resume は `last_epoch = global_step`（`:3901`）で、`gradient_accumulation_steps > 1` では三者が一致しない（§1-3）。`T_sched = floor(T / gas)`、fast-forward は保存した scheduler_step に統一する（旧状態のみ `global_step // gas` 推定）。P0 で直す（先に直さないとタイムラインの `at` が壊れる） |
+| D9 | スケジューラ軸と `gradient_accumulation_steps` | スケジューラの位置は**更新境界での advance 数**で数える（保存契約は §17.1）。現状は構築 `T` が `global_step` 単位（`:12557-12561` → `:6011`）、`scheduler.step()` は optimizer step ごと（`:15933`, `:15987-15992`）、resume は `last_epoch = global_step`（`:3901`）で、`gradient_accumulation_steps > 1` では三者が一致しない（§1-3）。`T_sched = floor(T / gas)`、**`W` も同じ規則で `floor(W / gas)`**（片方だけ変換すると `W/T` が gas 倍ずれる。§18.5）、fast-forward は保存した scheduler_step に統一する（旧状態のみ `global_step // gas` 推定）。P0 で直す（先に直さないとタイムラインの `at` が壊れる） |
 | D10 | 床の一般化 | `lr_floor_ratio` を**レジストリの全スケジュールに適用**（`m = warmup(step) · (F + (1−F)·shape)`）。`constant` の床は効かないが、warmup は §4.2 の挙動変更対象。既定値は `param_defaults.py:2193` の `0.25` のまま。YAML には**無条件に書く**（`rewarmup_on_optimizer_reset` と同じ、`training_config.py:198-202`）。**YAML にキーが無い旧 run は `plateau_cosine_floor` のみ 0.25、他は 0.0** と読む（polynomial を除く旧床の保存（§4.2）。§12.2） |
 | D11 | `plateau_cosine_floor` | 名前は残し、レジストリでは **`wsd` の別名**（`decay_start = round(ratio·T_sched)`、長さ「終端まで」、形 `cosine`）。同一 `T` で現行実装と bit 同一の乗数（P0 の回帰条件）。別名化により D7 の延長耐性と §6 のコマンドが自動で効く |
 | D12 | 新スケジュール名 | `wsd`（設定で減衰開始 step を持てる WSD）、`rex`（`wsd` の別名: 減衰開始 = warmup 終了、形 `rex`）。`cosine_with_restarts` は**名前を保ち in-house 実装に置換**（絶対サイクル長 `lr_cycle_steps`、annealing `lr_cycle_peak_decay`、床）。現状この名前は `num_cycles` を渡していないため（`:6007-6012`、diffusers 既定 `1`、`optimization.py:294`）**単一 cosine と同一**であり、`lr_cycle_steps = 0`（既定）を「1 サイクル＝全体」と定義すれば既存 run の形は変わらない |
@@ -140,7 +140,7 @@ LR_SCHEDULER_NAMES: tuple[str, ...]        # 正典の語彙（D18）
 @dataclass(frozen=True)
 class ScheduleSpec:                        # config から解決した不変の入力
     name: str
-    warmup_steps: int                      # W（optimizer_warmup_steps）
+    warmup_steps: int                      # W_sched（optimizer step 単位、D9）
     total_steps: int                       # T_sched（optimizer step 単位、D9）
     floor_ratio: float                     # F（D10）
     decay_start_step: int                  # wsd: 0 = 手動
@@ -159,6 +159,7 @@ class ScheduleTimeline:                    # 実行時状態（§5）。seam で
     def clock(self, step: int) -> float                    # 実軸 → 名目軸（§7）
     def state_at(self, step: int) -> tuple[int, float]     # (状態コード, 復帰/減衰の開始乗数)
 
+def to_scheduler_axis(steps: int, interval: int) -> int   # floor(steps/gas)。W も T もこれを通る
 def resolve_spec(config: dict, *, warmup_steps: int, total_steps: int,
                  name: str) -> ScheduleSpec
 def make_lambda(spec: ScheduleSpec, timeline: ScheduleTimeline) -> Callable[[int], float]
@@ -804,7 +805,9 @@ scheduler も各 backward の共通 seam で 1 回進める。パラメータ ho
 gas 変更後は過去の事象位置を変えず、保存位置 S に残りの更新回数を足した値を新終端とする。
 残り回数は実ループの境界条件から求める（通常の modulo 継続なら `floor(T/gas)−floor(global_step/gas)`）。
 部分蓄積の勾配を保存していない再開、スキップ、MNT、fused を個別にテストする。
-resume 直後の re-warmup anchor も scheduler 軸に変換する。D9 は除算 2 箇所だけの変更ではない。
+resume 直後の re-warmup は anchor **とランプ長の両方**を scheduler 軸に変換する
+（lambda の引数が scheduler 軸なので、長さだけ global step のままだと gas 倍のランプになる）。
+D9 は除算 2 箇所だけの変更ではない。
 
 ### 17.2 曲線の境界と互換条件（P0 / P3）
 
@@ -1147,3 +1150,39 @@ UI（§14 の P2 行から繰り越した分を含む）:
 P3 が**やっていない**こと: ReLoRA 統合（P4）、LLRD（P5）、`lr_group_schedules`（P6）、
 VAE トレーナーの語彙統合（P7、`vae_config.py` の `VALID_LR_SCHEDULERS` は未変更で
 `LR_SCHEDULER_NAMES` の真部分集合のまま）。
+
+### 18.5 warmup を scheduler 軸に載せた（P0 の取りこぼし、2026-09-06）
+
+P0 は `T` だけを `scheduler_total_steps()` で `floor(T/gas)` に変換し、`W`
+（`optimizer_warmup_steps`）を global step のまま `resolve_spec` に渡していた。
+両者は同じ軸に居なければ `W/T` が gas 倍ずれる。**変換前（P0〜P3）より、片方だけ
+変換されていない状態の方が比率としては悪い**（P0 以前は両方 global step だった）。
+規則は `lr_schedules.to_scheduler_axis(steps, interval)` 1 箇所が持ち、
+`scheduler_total_steps` / 新設 `scheduler_warmup_steps` / プレビュー
+（`GET /training/lr-schedule/preview`）がすべてそれを通る。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| warmup の軸 | `W` は global step のまま `resolve_spec` へ。`gas` 倍の区間を warmup が占め、`lr_warmup_steps` が指す step では ramp が `1/gas` にしか達しない | `W_sched = floor(W/gas)`。ramp が 1.0 に達するのは設定どおり `lr_warmup_steps` 学習 step 目 | `gradient_accumulation_steps > 1` の run（`gas == 1` は全語彙で bit 同一） |
+| re-warmup（`_rearm_warmup_after_optimizer_reset`）のランプ長 | anchor だけ scheduler 軸で、長さは global step。ランプが gas 倍長かった | 長さも `floor(W/gas)`。`W < gas` は「1 回も LR 更新が無い長さ」なので再 warmup せず、その旨を 1 行出す | 同上（optimizer state を復元できずに再開した run） |
+| プレビューの `warmup_steps` | 分母だけ scheduler 軸で、warmup は未変換（コメントで明示していた） | トレーナーと同じ変換。応答の `warmup_steps` は `scheduler_total_steps` と同じ軸 | `gas > 1` でプレビューを見ていた UI |
+
+同じ軸に載っていない **既知の残り**（この修正の対象外。どれも P0 の変換とは
+独立で、それぞれの中では自己整合している）:
+
+- ReLoRA の `CosineWithMultipleWarmups`（`relora_trainer.py:157-180`）は `total_steps` も
+  `initial_warmup_steps` も global step で渡すので比率は正しい。レジストリへの統合は P4。
+  **`optimizer_warmup_steps` 属性そのものを割ってはならない**（ReLoRA の分母が未変換のため）。
+- VAE トレーナー（`vae_trainer.py:663-674`）は diffusers に両方 global step で渡す。P7。
+- schedule-free 系 optimizer（`_ringbuffer_optimizer_kwargs` の `warmup_steps`）の内部カウンタ
+  `k` は `optimizer.step()` ごとに増える（`adamw8bit_ringbuffer.py:1049`）ので実質 scheduler 軸だが、
+  受け取る値は global step のまま。P0 以前からの状態で、LR スケジューラの ramp と乗算で
+  二重に掛かる点も含めて所有者の判断待ち。
+- `lr_decay_start_step` / `lr_decay_steps` / `lr_cycle_steps`（P3 の実軸キー）も未変換で、
+  `gas > 1` では config の数値の gas 倍の位置・長さになる。W と同じ種類のずれだが、
+  こちらは P3 の決定事項なので本修正では触っていない。
+
+テストは `lr_schedules_test.py`（W の floor、gas 1/2/4 で `W_sched/T_sched` が一定、
+ramp が `W/gas` で 1.0 に達する、`gas == 1` は全レジストリ名で spec も曲線も同一）と
+`rewarmup_on_optimizer_reset_test.py`（ランプ長、`W < gas`）に追加。既存テストは 1 件も
+書き換えていない。

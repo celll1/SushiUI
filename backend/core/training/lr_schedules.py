@@ -8,8 +8,8 @@ function of the step and of the timeline's events -- the invariant
 both evaluate lambdas out of order and rely on.
 
 Step axis (D9/§17.1): one unit per ``scheduler.step()``, i.e. per update
-boundary, NOT per ``global_step``. ``BaseTrainer`` divides by the effective
-advance interval before calling ``resolve_spec``.
+boundary, NOT per ``global_step``. ``BaseTrainer`` puts BOTH the warmup and the
+total on that axis (``to_scheduler_axis``) before calling ``resolve_spec``.
 
 P0 ported the six diffusers schedules and the in-house ``plateau_cosine_floor``
 so that the multiplier is bit-identical for ``0 <= s <= total_steps``. Three
@@ -61,6 +61,7 @@ __all__ = [
     "make_lambda",
     "resolve_spec",
     "sample_curve",
+    "to_scheduler_axis",
 ]
 
 # The canonical vocabulary (D18). routes.py validates against it and
@@ -528,6 +529,17 @@ def _positive_or_none(config: Optional[Mapping[str, Any]], key: str) -> Optional
     return value or None
 
 
+def to_scheduler_axis(steps: int, interval: int) -> int:
+    """A global-step count -> scheduler advances (D9/§17.1).
+
+    Floor, because a trailing partial accumulation window is never flushed.
+    Every step count ``resolve_spec`` receives goes through here: converting
+    ``T`` but not ``W`` would make the warmup occupy ``interval`` times the
+    fraction of the schedule the configured number asks for.
+    """
+    return max(0, int(steps)) // max(1, int(interval))
+
+
 def resolve_spec(
     config: Optional[Mapping[str, Any]],
     *,
@@ -537,7 +549,8 @@ def resolve_spec(
 ) -> ScheduleSpec:
     """Resolve the run's config into an immutable spec.
 
-    ``total_steps`` must already be on the scheduler axis (``T_sched``).
+    ``warmup_steps`` and ``total_steps`` must both already be on the scheduler
+    axis (``to_scheduler_axis``).
     """
     key = str(name).strip().lower()
     if key not in LR_SCHEDULER_NAMES:

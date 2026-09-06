@@ -53,9 +53,10 @@ class RearmHarness:
     _compose_warmup_lambda = staticmethod(BaseTrainer._compose_warmup_lambda)
     _fast_forward_one_lr_scheduler = staticmethod(BaseTrainer._fast_forward_one_lr_scheduler)
 
-    def __init__(self, warmup=1000, config=None, n_groups=1, base_lr=1e-6):
+    def __init__(self, warmup=1000, config=None, n_groups=1, base_lr=1e-6, gas=1):
         self.log_prefix = "[Test]"
         self.optimizer_warmup_steps = warmup
+        self._grad_accum_steps = gas
         self.config = config if config is not None else {}
         self.optimizers = []
         self.lr_schedulers = []
@@ -214,3 +215,23 @@ def test_ramp_shape_matches_the_configured_warmup():
         expected = min(1.0, k / 800.0)
         assert h.multiplier(10000 + k) == pytest.approx(expected), k
     assert not math.isnan(h.multiplier(10000))
+
+
+def test_ramp_length_is_on_the_scheduler_axis():
+    """The composed lambda's argument and anchor are scheduler advances, so the
+    LENGTH has to be too -- otherwise the re-warmup lasts gas times as long as
+    the configured number of training steps."""
+    h = RearmHarness(warmup=800, gas=4)
+    # No saved scheduler_step: 40000 global steps is 10000 advances.
+    h._fast_forward_lr_schedulers(40000)
+    assert h._rearm_warmup_after_optimizer_reset(40000) is True
+
+    for k in (0, 50, 100, 199, 200, 400):
+        expected = min(1.0, k / 200.0)
+        assert h.multiplier(10000 + k) == pytest.approx(expected), k
+
+
+def test_a_warmup_shorter_than_one_accumulation_window_is_no_ramp(capsys):
+    h = RearmHarness(warmup=3, gas=4)
+    assert h._rearm_warmup_after_optimizer_reset(40000) is False
+    assert "shorter than one gradient_accumulation_steps window" in capsys.readouterr().out

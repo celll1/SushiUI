@@ -308,8 +308,10 @@ def test_the_lambda_reads_the_timeline_object_not_a_snapshot():
 # ---------------------------------------------------------------------------
 
 from core.training.base_trainer import (  # noqa: E402
+    resolve_lr_schedule_spec,
     resume_scheduler_position,
     scheduler_total_steps,
+    scheduler_warmup_steps,
 )
 
 
@@ -407,3 +409,62 @@ def test_an_accumulation_change_across_a_resume_is_reported(capsys):
     probe._resume_scheduler_interval = 4
     assert resume_scheduler_position(probe, 4000) == 500
     assert "lr_schedule_accumulation_changed" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# W and T share the axis (the P0 follow-up defect)
+# ---------------------------------------------------------------------------
+#
+# P0 converted T with scheduler_total_steps() and left W in global steps, so
+# the warmup occupied `gas` times the fraction of the schedule the configured
+# number asks for. Both go through to_scheduler_axis() now.
+
+
+class _WarmupProbe(_AxisProbe):
+    """An _AxisProbe that also carries a warmup and a config."""
+
+    def __init__(self, gas=1, warmup=0, config=None):
+        super().__init__(gas)
+        self.optimizer_warmup_steps = warmup
+        self.config = config or {}
+
+
+@pytest.mark.parametrize("W,gas,expected", [(400, 1, 400), (400, 2, 200),
+                                            (400, 4, 100), (3, 4, 0), (0, 4, 0)])
+def test_warmup_floors_onto_the_scheduler_axis(W, gas, expected):
+    assert scheduler_warmup_steps(_WarmupProbe(gas, W)) == expected
+
+
+@pytest.mark.parametrize("gas", [1, 2, 4])
+def test_the_warmup_fraction_of_the_schedule_is_the_same_at_every_gas(gas):
+    """W/T is what a user configured; only the unit of both changes."""
+    W, T = 400, 4000
+    spec = resolve_lr_schedule_spec(_WarmupProbe(gas, W), "cosine", T)
+
+    assert spec.warmup_steps == W // gas
+    assert spec.total_steps == T // gas
+    assert spec.warmup_steps / spec.total_steps == pytest.approx(0.1)
+
+    # The ramp reaches 1.0 at W/gas scheduler advances, and nowhere earlier.
+    fn = make_lambda(spec, _timeline(spec))
+    assert fn(W // gas) == pytest.approx(1.0)
+    assert fn(W // gas - 1) < 1.0
+    assert fn((W // gas) // 2) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
+def test_gas_1_is_untouched_for_every_registry_name(name):
+    """The regression bar: at gas=1 the conversion is the identity."""
+    W, T = 400, 4000
+    config = {"lr_floor_ratio": 0.1, "lr_decay_start_step": 2000,
+              "lr_decay_steps": 500, "lr_decay_shape": "rex",
+              "lr_cycle_steps": 900, "lr_cycle_peak_decay": 0.8}
+    converted = resolve_lr_schedule_spec(_WarmupProbe(1, W, config), name, T)
+    # What the pre-fix trainer built: undivided W, T // 1.
+    direct = resolve_spec(config, warmup_steps=W, total_steps=T, name=name)
+    assert converted == direct
+
+    ours = make_lambda(converted, _timeline(converted))
+    theirs = make_lambda(direct, _timeline(direct))
+    for step in range(0, T + 200, 7):
+        assert ours(step) == theirs(step)

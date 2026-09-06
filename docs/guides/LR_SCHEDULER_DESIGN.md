@@ -1578,7 +1578,7 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 
 | P | 内容 | 受け入れ |
 |---|---|---|
-| R0 | `_fold` が `(spec, state)` を返す形への変更（挙動不変） | 既存 609 件が bit 同一で通る |
+| R0 | `_fold` が `(spec, state)` を返す形への変更（挙動不変） | LR 関連 13 ファイル 609 件（`lr_schedules` / `lr_schedule_*` / `lr_group_schedules_and_layer_decay` / `test_lr_resume_override` / `rewarmup_on_optimizer_reset` / `fused_optimizer_group_resume` / `component_lr_resume_alignment` / `params_roundtrip_defaults` / `config_edit_key_preservation`）が通り、乗数が bit 同一 |
 | R1 | `ScheduleSpec` の直列化、`retarget` 事象、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 7 件を網羅する試験 |
 | R2 | グループセレクタ（spec のグループ識別子を含む） | `lr_group_schedules` オン/オフ両方 |
 | R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ |

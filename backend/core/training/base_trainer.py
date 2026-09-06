@@ -675,8 +675,9 @@ def lr_decay_explicit_length(trainer, position: int) -> Optional[int]:
     overlay = timeline.state_at(spec, int(position))
     if overlay.code in (STATE_DECAYING, STATE_FLOOR) and overlay.length is not None:
         return int(overlay.length)
-    if spec.curve == "wsd" and spec.decay_length is not None:
-        return int(spec.decay_length)
+    active = timeline.active_spec(spec, int(position))
+    if active.curve == "wsd" and active.decay_length is not None:
+        return int(active.decay_length)
     return None
 
 
@@ -720,7 +721,7 @@ def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dic
             "index": index,
             "name": (group.get("name") or (names[index] if names else None)
                      or f"group{index}"),
-            "schedule": group_spec.name,
+            "schedule": timeline.active_spec(group_spec, position).name,
             "state": STATE_NAMES.get(int(state.code), "base"),
             "state_code": int(state.code),
             "multiplier": float(timeline.multiplier(group_spec, position)),
@@ -738,21 +739,22 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
 
     position = live_scheduler_step(trainer)
     state = timeline.state_at(spec, position)
+    active = timeline.active_spec(spec, position)
     return {
         "version": 1,
         "run_id": getattr(trainer, "run_id", None),
         "written_at": time.time(),
         "step": int(position),
         "global_step": None if global_step is None else int(global_step),
-        "scheduler": spec.name,
-        "warmup_steps": int(spec.warmup_steps),
+        "scheduler": active.name,
+        "warmup_steps": int(active.warmup_steps),
         "state": STATE_NAMES.get(int(state.code), "base"),
         "state_code": int(state.code),
         "state_at": int(state.at),
         "decay_disarmed": bool(state.decay_disarmed),
         "multiplier": float(timeline.multiplier(spec, position)),
-        "nominal_total_steps": int(timeline.nominal_total(spec.total_steps)),
-        "effective_total_steps": int(timeline.current_total(spec.total_steps)),
+        "nominal_total_steps": int(timeline.nominal_total(active.total_steps)),
+        "effective_total_steps": int(timeline.current_total(active.total_steps)),
         "groups": lr_schedule_group_states(trainer, spec, timeline, position),
         "events": timeline.dump(position),
     }
@@ -822,12 +824,13 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
                 result = "rejected_unknown_command"
             elif kind == "decay":
                 # §12.1: the command carries no length or shape; both come from
-                # the run's config, through the spec. Not spec.decay_shape --
-                # that is the BASE curve's, which the two aliases fix to their
-                # own definition.
+                # the run's config, through the spec in force here. Not
+                # decay_shape -- that is the BASE curve's, which the two
+                # aliases fix to their own definition.
+                active = timeline.active_spec(spec, position)
                 result = timeline.add(kind, at=position, request_id=request_id,
-                                      length=spec.command_decay_length,
-                                      shape=spec.command_decay_shape)
+                                      length=active.command_decay_length,
+                                      shape=active.command_decay_shape)
             else:
                 result = timeline.add(kind, at=position, request_id=request_id)
         except Exception as e:   # noqa: BLE001

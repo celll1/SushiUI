@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from core.models.components.latent_io import ResizeReport
 
@@ -168,6 +169,58 @@ def _replace_conv(old: nn.Conv2d, *, in_channels: int, out_channels: int,
     return new.to(device=old.weight.device, dtype=old.weight.dtype)
 
 
+LATENT_HEAD_TARGET_STD = 1.0
+"""What ``x0_pred`` should measure at step 0.
+
+The head predicts the clean latent directly (``sensenova_ops`` scores it as
+``mse(x0_pred, x0)/(1-t)**2``), and a VAE's normalisation -- ``scaling_factor``,
+``latents_mean``/``latents_std`` or the batchnorm form -- exists precisely to put
+that latent at unit variance. Measured across 720 dataset images through the SDXL
+VAE: per-image std p1 0.743, p50 0.987, p99 1.235.
+"""
+
+
+def _calibrate_output_scale(conv: nn.Conv2d, target_std: float) -> None:
+    """Rescale ``conv`` once, on its first input, so its output std hits target.
+
+    conv2's input is whatever ``act1(conv1(ps1(hidden)))`` happens to produce, and
+    nothing at build time knows that scale, so a fan-in init lands the head's
+    output at an arbitrary multiple of the latent it is predicting. Measuring one
+    real input settles it exactly.
+
+    The measurement runs in a pre-forward hook rather than at build time because
+    the activations only exist once the body runs. It uses ``conv2d`` directly, not
+    ``conv(...)``, so the probe cannot re-enter this hook, and it rescales BEFORE
+    the module computes the output that autograd will see -- a post-forward rescale
+    would leave one step's gradient scaled against weights that no longer exist.
+    """
+    state = {"handle": None}
+
+    def probe(module, args):
+        handle, state["handle"] = state["handle"], None
+        if handle is None:
+            return None
+        handle.remove()
+        with torch.no_grad():
+            out = F.conv2d(args[0].to(module.weight.dtype), module.weight,
+                           module.bias, module.stride, module.padding,
+                           module.dilation, module.groups)
+            observed = float(out.float().std())
+            if not (observed > 0.0 and math.isfinite(observed)):
+                print(f"[SenseNova] head calibration skipped: output std "
+                      f"measured {observed!r}")
+                return None
+            factor = float(target_std) / observed
+            module.weight.mul_(factor)
+            if module.bias is not None:
+                module.bias.mul_(factor)
+        print(f"[SenseNova] head calibrated: x0_pred std {observed:.5f} -> "
+              f"{target_std:.5f} (conv2 weights x{factor:.5f})")
+        return None
+
+    state["handle"] = conv.register_forward_pre_hook(probe)
+
+
 def apply_latent_geometry(
     transformer,
     *,
@@ -189,22 +242,33 @@ def apply_latent_geometry(
     whose geometry disagrees with the config block it writes, which loads clean
     and generates noise.
 
-    Initialisation is §10.3's: the patch embed from a truncated normal at
-    ``std = 1/sqrt(fan_in)`` (anima's ``PatchEmbed.init_weights`` convention) so
-    the body sees content-dependent features from step 0, and ``conv2`` zeroed so
-    ``x_pred`` starts at a defined value that does not depend on the input. A
-    zero head also makes the gradient to everything upstream of it zero at step 0
-    -- that is a consequence, not a mitigation, and it does NOT tame the
-    ``v = -z/(1-t)`` divergence as ``t -> 1``; only ``(1-t).clamp_min(t_eps)``
-    does.
+    The patch embed comes from a truncated normal at ``std = 1/sqrt(fan_in)``
+    (anima's ``PatchEmbed.init_weights`` convention) so the body sees
+    content-dependent features from step 0. ``head_init`` chooses what the output
+    convolution starts at:
+
+    ``"zero"`` (§10.3) makes ``x0_pred`` start at a defined value that does not
+    depend on the input -- the constant zero, i.e. "predict the mean latent for
+    every input". It also makes the gradient to everything UPSTREAM of the head
+    zero at step 0, since that gradient is ``W`` times something and ``W`` is zero.
+
+    ``"scaled"`` gives the head a fan-in truncated normal and calibrates it on its
+    first real input so ``x0_pred`` measures ``LATENT_HEAD_TARGET_STD``. The
+    decoder maps latent amplitude to output contrast near-linearly (measured:
+    output std 6.8 / 21.3 / 79.2 at latent amplitude 0.05 / 0.2 / 1.0 of a real
+    latent, and the same curve for structureless noise), so a zero head decodes to
+    exactly ``decode(0)`` -- one flat colour -- whatever the body has learnt.
+
+    Neither choice tames the ``v = -z/(1-t)`` divergence as ``t -> 1``; only
+    ``(1-t).clamp_min(t_eps)`` does.
 
     Call BEFORE the optimizer is built: this rebinds Parameters.
     """
-    if head_init != "zero":
+    if head_init not in ("zero", "scaled"):
         # "encoder_pinv" is reserved by §10.3 for a later experiment.
         raise ValueError(
             f"SenseNova latent head init {head_init!r} is not implemented; "
-            f"only 'zero' is accepted")
+            f"'zero' and 'scaled' are accepted")
     if channels <= 0:
         raise ValueError(f"latent channel count must be positive, got {channels}")
     patch = validate_gen_patch(patch)
@@ -249,6 +313,15 @@ def apply_latent_geometry(
         new_conv2.weight.zero_()
         if new_conv2.bias is not None:
             new_conv2.bias.zero_()
+    if head_init == "scaled":
+        head_std = 1.0 / math.sqrt(new_conv2.in_channels * 3 * 3)
+        with torch.no_grad():
+            weight = torch.empty(new_conv2.weight.shape, dtype=torch.float32,
+                                 device="cpu")
+            nn.init.trunc_normal_(weight, std=head_std, a=-3 * head_std,
+                                  b=3 * head_std, generator=generator)
+            new_conv2.weight.copy_(weight.to(new_conv2.weight.dtype))
+        _calibrate_output_scale(new_conv2, LATENT_HEAD_TARGET_STD)
     head.conv2 = new_conv2
     head.ps3 = nn.PixelShuffle(shuffle)
 
@@ -264,7 +337,7 @@ def apply_latent_geometry(
           f"patch_embedding {tuple(old_embed.weight.shape)} -> "
           f"{tuple(new_embed.weight.shape)} (trunc normal, std={std:.5f}), "
           f"fm_head.conv2 {tuple(old_conv2.weight.shape)} -> "
-          f"{tuple(new_conv2.weight.shape)} (zero)")
+          f"{tuple(new_conv2.weight.shape)} ({head_init})")
     return ResizeReport(
         replaced=("fm_modules.vision_model_mot_gen.embeddings.patch_embedding",
                   "fm_modules.fm_head.conv2"),
@@ -272,7 +345,9 @@ def apply_latent_geometry(
         old_out_channels=int(old_conv2.out_channels),
         new_channels=int(channels),
         # Zero COPIED is the whole difference from every other architecture's
-        # swap: this is a rebuild, not a channel-axis slice (§10.6-1).
+        # swap: this is a rebuild, not a channel-axis slice (§10.6-1). That holds
+        # for both head inits -- "scaled" seeds the head, it does not carry the
+        # pixel head's weights across.
         copied_elements=0,
         new_elements=int(new_embed.weight.numel() + new_conv2.weight.numel()),
     )

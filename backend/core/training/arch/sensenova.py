@@ -281,6 +281,12 @@ class SenseNovaArchHandler(ArchHandler):
     def setup_block_swap(self, trainer) -> None:
         raise NotImplementedError("SenseNova training block swap is not implemented")
 
+    def depth_blocks(self, trainer):
+        # One depth axis for both MoT halves: the generation and understanding
+        # weights of layer j live inside the same decoder layer.
+        model = getattr(getattr(trainer, "transformer", None), "language_model", None)
+        return getattr(getattr(model, "model", None), "layers", None)
+
     def setup_attention_backend(self, trainer) -> None:
         from core.training.ops import sensenova_ops
 

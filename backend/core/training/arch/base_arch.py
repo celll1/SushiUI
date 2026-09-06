@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import (Any, Callable, Dict, FrozenSet, List, Mapping, Optional,
-                    Tuple)
+                    Sequence, Tuple)
 
 import torch
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
@@ -667,6 +667,23 @@ class ArchHandler(ABC):
         """Was ``setup_<arch>_block_swap`` — wrapper construction only; the
         optimizer/fused validation stays central (plan R2)."""
         raise NotImplementedError
+
+    def depth_blocks(self, trainer) -> Optional[Sequence[Any]]:
+        """The architecture's blocks in FORWARD order, for layer-wise LR decay.
+
+        The one source of "depth" (D17 of docs/guides/LR_SCHEDULER_DESIGN.md):
+        entry ``j`` is depth ``j``, and an optimizer group's parameters are
+        split and scaled by it. An entry is one block, or an iterable of blocks
+        that share a depth -- Ideogram 4 runs a conditional and an
+        unconditional copy of one stack, whose layer ``j`` is the same depth in
+        both.
+
+        ``None`` = this architecture defines no total order over depth, which
+        is what U-Net skip connections are: `lr_layer_decay` is refused for it
+        in ``api/arch_capabilities.py``, and this returning None is the code
+        saying the same thing.
+        """
+        return None
 
     @abstractmethod
     def setup_attention_backend(self, trainer) -> None:

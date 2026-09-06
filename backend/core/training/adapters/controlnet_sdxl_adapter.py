@@ -146,7 +146,8 @@ class ControlNetSDXLAdapter(BaseControlNetAdapter):
             raise ValueError("[ControlNetSDXL] No trainable parameters found")
 
         param_groups = [
-            {"params": params, "lr": self.trainer.unet_lr}
+            {"params": params, "lr": self.trainer.unet_lr,
+             "name": "controlnet", "component": "controlnet"}
         ]
 
         param_type = "Standard ControlNet" if self.controlnet_type == "standard" else "LLLite"

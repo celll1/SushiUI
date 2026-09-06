@@ -211,6 +211,13 @@ def _build_train_section(
                                     TRAINING_DEFAULTS["lr_cycle_steps"])
     train["lr_cycle_peak_decay"] = p.get("lr_cycle_peak_decay",
                                          TRAINING_DEFAULTS["lr_cycle_peak_decay"])
+    train["lr_layer_decay"] = p.get("lr_layer_decay",
+                                    TRAINING_DEFAULTS["lr_layer_decay"])
+    # The one LR key written conditionally besides lr_decay_start_ratio: null is
+    # both the default AND "no per-component schedules", so an absent key and a
+    # written null mean the same thing (§12.1).
+    if p.get("lr_group_schedules"):
+        train["lr_group_schedules"] = dict(p["lr_group_schedules"])
     # Emitted unconditionally: unlike lr_decay_start_ratio it is not tied to a
     # scheduler type, and the trainer reads it on EVERY resume.
     train["rewarmup_on_optimizer_reset"] = bool(

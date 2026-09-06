@@ -122,7 +122,9 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
                 proj_base_lr = resolve_component_lr(self.trainer, "unet_lr", label="MiniT2I REPA projector")
                 proj_lr = proj_base_lr * float(getattr(self.trainer, "repa_proj_lr_factor", 1.0))
                 print(f"[MiniT2ILoRAAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
-                groups.append({"params": p_params, "lr": proj_lr})
+                groups.append({"params": p_params, "lr": proj_lr,
+                               "name": "repa_projector",
+                               "component": "repa_projector"})
         return groups
 
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
@@ -198,13 +200,15 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
             if t_params:
                 base_lr = resolve_component_lr(trainer, "unet_lr", label="MiniT2I transformer")
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in t_params):,} trainable params (transformer)")
-                groups.append({"params": t_params, "lr": base_lr})
+                groups.append({"params": t_params, "lr": base_lr,
+                               "name": "unet", "component": "unet"})
         if self._train_te():
             te_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
             if te_params:
                 te_lr = resolve_component_lr(trainer, "text_encoder_lr", label="MiniT2I FLAN-T5")
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in te_params):,} trainable params (FLAN-T5), lr={te_lr}")
-                groups.append({"params": te_params, "lr": te_lr})
+                groups.append({"params": te_params, "lr": te_lr,
+                               "name": "text_encoder", "component": "text_encoder"})
         # REPA projector (training-only alignment head). Joins the optimizer so it is
         # updated; appended last so the param-group order is stable across resume.
         if getattr(trainer, "repa_enable", False) and getattr(trainer, "repa_projector", None) is not None:
@@ -213,7 +217,9 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
                 proj_base_lr = resolve_component_lr(trainer, "unet_lr", label="MiniT2I REPA projector")
                 proj_lr = proj_base_lr * float(getattr(trainer, "repa_proj_lr_factor", 1.0))
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
-                groups.append({"params": p_params, "lr": proj_lr})
+                groups.append({"params": p_params, "lr": proj_lr,
+                               "name": "repa_projector",
+                               "component": "repa_projector"})
         return groups
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):

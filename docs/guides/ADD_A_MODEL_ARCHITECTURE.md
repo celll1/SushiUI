@@ -254,7 +254,12 @@ ship it disabled — MiniMax-H3's FBCache is the worked example.
 `_EXPECTED_ARCH_KEYS` + `resolve_arch_name` **in the same priority order as
 `base_trainer._build_cache_namespace`** (a module-level assert enforces the key
 set; the ordering is the cache-namespace stability invariant), and the
-`is_<arch>` branches in `base_trainer.py`. Video adds `vae_encode_clip` to the
+`is_<arch>` branches in `base_trainer.py`. `ArchHandler.depth_blocks` is
+optional and defaults to `None`: implement it with the forward-ordered block
+list — the same one the block-swap conductor gets — to make `lr_layer_decay`
+(layer-wise LR decay) available, and register the architecture as unsupported
+for that feature in `api/arch_capabilities.py` if its blocks have no total order
+by depth (see `docs/guides/LR_SCHEDULER_DESIGN.md` §11). Video adds `vae_encode_clip` to the
 handler interface: a `[T,C,H,W]` pixel clip in the shared loader's convention →
 a normalized 5-D latent. If the architecture's pixel or tiling convention differs
 from the shared loader's, the arch owns the conversion — and if the tiling policy

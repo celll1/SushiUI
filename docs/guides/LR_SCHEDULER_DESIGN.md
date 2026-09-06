@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 / P3 / P4 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6、ReLoRA の統合は §18.7）。P5 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 / P3 / P4 / P5 / P6 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6、ReLoRA の統合は §18.7、LLRD とグループ別スケジュールは §18.8）。残るは P7（VAE トレーナーの語彙統合）のみ。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -1279,3 +1279,81 @@ P4 が**やっていない**こと: LLRD（P5）、`lr_group_schedules`（P6）�
 `GET /training/lr-schedule/preview` は `relora` を受け付けない（語彙外）ので、ReLoRA run の
 UI プレビューは選択中の（無視される）スケジュールを描く——プレビューの下に無視される旨を
 1 行書いた。restart 位置を持つプレビューは本フェーズの範囲外。
+
+### 18.8 P5 / P6 で出荷したもの（2026-09-06）
+
+**§14 の表と実装の番号が入れ替わっている。** §14 は P5 = LLRD、P6 = グループ別スケジュールと
+書いているが、実装は 1 コミットで両方入れた（LLRD がグループ構造を変え、グループ別スケジュールが
+その構造の上に乗るので、片方だけ出荷すると `.dNN` とコンポーネント名の分離（§17.3）が
+検証できない）。以下は機能名で書く。
+
+**グループ別スケジュール（D16、既定オフ）**: `lr_group_schedules`（`null` = オフ）は
+コンポーネント名 → スケジュール名の写像で、`build_lr_scheduler` が param group ごとに別の
+lambda を持つ `LambdaLR` を返す。数値パラメータ・タイムライン・コマンドは run 共通のまま
+（事象列だけが共有、状態は spec ごと。P1 の実装がそのまま効く）。
+
+**LLRD（D17）**: `lr_layer_decay`（`1.0` = オフ）1 キー。`setup_optimizer` がアダプタの
+グループを受けた直後、**optimizer を作る前**に `apply_layer_lr_decay` で深さ別に分割し、
+深さ `d`（全 `n`）を `lr · factor^(n−1−d)` にする。深さの出所は新フック
+`ArchHandler.depth_blocks(trainer)`。**プリセット値は本書どおり決めていない**（既定は
+オフの 1.0）。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| param group の `name` / `component` | アダプタは書かない（§1-6）ので `_name_configured_groups` は `_build_component_lr_list` か `group{i}` に落ちていた | LoRA は `component_param_groups` の 1 箇所、フル FT・ControlNet・VE は各アダプタが `name`（細分ラベル）と `component`（`LORA_COMPONENT_*`）の**両方**を書く | 全 run。resume の LR 再表明ログのラベルが `U-Net` → `unet` 等に変わる。`.lr_schedule.json` の `groups[].name` も同様 |
+| `lr_<component>` メトリクス | `_build_component_lr_list` 由来、長さ不一致で `g{i}` | 同じ優先順を**先頭に残した**うえで、一致しないときだけ `_configured_group_names`、最後に `g{i}`。`.dNN` 付きは最終深度（係数 1.0）だけ emit（§11.4） | LLRD を使う run のみ。使わない run の系列名は 1 つも変わらない |
+| optimizer state の復元 | グループ数が変われば prefix remap が index で寄せる | 深さ分割の署名（`name` と param 数）が食い違う resume は**復元を拒否して既存の fresh optimizer 経路へ**（§17.3）。`.dNN` がどちらにも無ければ判定自体しない | LLRD を切り替えた／ブロック数か trainable 集合が変わった resume |
+
+§10 / §11 / §17 が実コードと合わなかった点:
+
+- **`build_lr_scheduler` は `group_schedules: Mapping[str, str]` を受け取れない。** §3.2 / §10.2 の
+  署名は名前の写像だが、名前から spec を作るには config・`gradient_accumulation_steps`・
+  ReLoRA の restart warmup が要り、この関数はそのどれも持たない（`lr_schedules.py` は
+  `core.training` の他モジュールに依存しない、という D1 の制約でもある）。実装は
+  **解決済みの `group_specs: Sequence[ScheduleSpec]`（param group と同順）** を受け取り、
+  名前の解決は `base_trainer.resolve_lr_group_specs` が `resolve_spec` を名前ごとに
+  呼んで行う（§17.3 の「alias を再解決する」はそこで満たされる）。使わない引数
+  `group_names` は削除した。
+- **`depth_blocks` の 1 要素は 1 ブロックとは限らない。** §11.2 は
+  `Sequence[nn.Module] | None` だが、Ideogram 4 は cond / uncond の 2 本の**並列**スタックを
+  持ち（`ideogram4_train_uncond` で uncond にも LoRA が入る）、層 `j` は両者で同じ深さである。
+  連結すると uncond 側が「より深い後半」に見えるので、要素は**モジュール 1 個または同じ深さを
+  共有するモジュールの列**とした。他の arch は 1 要素 1 ブロックのまま。
+- **fused optimizer groups の拒否条件は `num_optimizer_groups > 0` だけではない。** §10.4 は
+  そう書くが、`create_optimizer_groups` を呼ぶのは `setup_optimizer` の
+  `blocks_to_swap > 0` の枝の中だけで、block swap 無しの `num_optimizer_groups` は何も
+  平坦化しない。§10.4 自身が「8-bit optimizer と Block Swap の既存拒否と同じ場所・同じ文体」と
+  言っており、その既存拒否は `blocks_to_swap > 0 and num_optimizer_groups > 0` である。
+  よって拒否は**その条件**（`fused_optimizer_groups_active`）とした。動く設定を拒否しない。
+  ただし LLRD は optimizer を作る前に走るので、拒否の**位置**は既存の枝より前になる。
+- **LLRD は 1 ブロックのスタックを拒否する。** `n = 1` では全係数が `factor^0 = 1.0` になり、
+  設定が無言で無効になる。`n_depths < 2` は「深さの無い arch」と同じ拒否に落とす。
+- **ReLoRA は `lr_group_schedules` も無視する。** §10 は触れていないが、group 別に別 curve を
+  当てると、その group だけ merge の restart を失う。`lr_scheduler` を無視するのと同じ
+  1 行を出して無視する（P4 の慣行）。
+- **写像に載っているのに該当グループが無いコンポーネントは警告**（`lr_group_schedules_unknown_component`）で、
+  拒否ではない。`train_text_encoder` を切った run が写像を持ったまま起動できなくなるのを避ける。
+  名前の無いグループが 1 つでもある場合は §10.3 どおり写像ごと無視
+  （`lr_group_schedules_unnamed_groups`）。
+
+`depth_blocks` を実装した arch（= capability が `lr_layer_decay` を提供する arch）:
+zimage（`transformer_original.layers`）、flux2（`transformer_blocks` + `single_transformer_blocks`）、
+krea2 / lens / ltx2 / minimax_h3（`transformer.transformer_blocks`）、anima（`transformer.blocks`）、
+acestep（`transformer.decoder.layers`）、ideogram4（`transformer.layers`、uncond と深さ共有）、
+minit2i（`txt_preamble_blocks` + `double_blocks`）、sensenova
+（`transformer.language_model.model.layers`、MoT の 2 半分は同じ層の中なので深さ軸は 1 本）。
+**辞退**: sd15 / sdxl（U-Net の skip 接続で深さの全順序が定義できない。`ArchHandler.depth_blocks`
+の既定 `None` のまま、capability に理由付きで登録）。
+
+新しい警告コード: `lr_group_schedules_unnamed_groups`、`lr_group_schedules_unknown_component`。
+
+テストは `backend/tests/lr_group_schedules_and_layer_decay_test.py`（81 件）。既定オフの
+bit 同一性は、直前のコミットの `lr_schedules.py` を **git から取り出して import し**、
+全レジストリ名 × `gas ∈ {1,4}` × 全 step で乗数を突き合わせて固定している（式を書き写さない）。
+P0〜P4 のテスト（`lr_schedules_test.py` / `lr_schedule_timeline_test.py` /
+`lr_schedule_vocabulary_test.py` / `lr_schedule_control_rpc_test.py` /
+`lr_schedule_relora_test.py`、計 348 件）と resume 系 5 本（144 件）は 1 件も書き換えずに通る。
+
+やっていないこと: P7（VAE トレーナーの語彙統合）。グループ別スケジュールの**プレビュー**も
+入れていない（`GET /training/lr-schedule/preview` は run の代表スケジュールだけを描く。
+UI にその旨を 1 行書いた）。

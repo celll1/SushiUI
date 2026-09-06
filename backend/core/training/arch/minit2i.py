@@ -158,6 +158,17 @@ class MiniT2IArchHandler(ArchHandler):
         from core.training.ops import minit2i_ops
         minit2i_ops.setup_block_swap(trainer)
 
+    def depth_blocks(self, trainer):
+        # Forward order (vendor/mmjit.py): the text preamble blocks, then the
+        # MM-JiT double blocks.
+        net = getattr(getattr(getattr(trainer, "transformer", None), "model", None),
+                      "net", None)
+        if net is None:
+            return None
+        preamble = list(getattr(net, "txt_preamble_blocks", None) or [])
+        double = list(getattr(net, "double_blocks", None) or [])
+        return (preamble + double) or None
+
     def setup_attention_backend(self, trainer) -> None:
         # P3c: body lives in ops/minit2i_ops (shared with base_trainer delegator).
         from core.training.ops import minit2i_ops

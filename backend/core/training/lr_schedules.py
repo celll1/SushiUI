@@ -64,7 +64,9 @@ __all__ = [
     "STATE_RECOVERING",
     "ScheduleSpec",
     "ScheduleTimeline",
+    "apply_layer_decay",
     "base_multiplier",
+    "build_depth_map",
     "build_lr_scheduler",
     "describe_spec",
     "make_lambda",
@@ -904,19 +906,90 @@ def build_lr_scheduler(
     optimizer,
     spec: ScheduleSpec,
     timeline: ScheduleTimeline,
-    group_names: Optional[Sequence[str]] = None,
-    group_schedules: Optional[Mapping[str, str]] = None,
+    group_specs: Optional[Sequence[ScheduleSpec]] = None,
 ) -> LambdaLR:
     """The only place this project constructs an LR scheduler.
 
     Always a ``LambdaLR`` carrying a LIST of lambdas, one per param group, so
     ``lr_utils.reassert_config_lr``'s ``len(lambdas) == n_groups`` test and the
     fast-forward's zip hold without a special case.
-    """
-    if group_schedules:
-        raise NotImplementedError("lr_group_schedules ships in P6")
-    del group_names  # P6
 
+    ``group_specs`` is D16's per-component schedule, already resolved: one spec
+    per param group, in group order. None (the default) puts the run's single
+    spec on every group, which is what every run does unless
+    ``lr_group_schedules`` is set. The specs share ONE timeline -- only the
+    event list is shared, the overlay state is derived per spec (§17.3).
+    """
     timeline.bind_spec(spec)
-    lr_lambda = make_lambda(spec, timeline)
-    return LambdaLR(optimizer, lr_lambda=[lr_lambda] * len(optimizer.param_groups))
+    groups = list(optimizer.param_groups)
+    if group_specs is None:
+        lr_lambda = make_lambda(spec, timeline)
+        return LambdaLR(optimizer, lr_lambda=[lr_lambda] * len(groups))
+
+    specs = list(group_specs)
+    if len(specs) != len(groups):
+        raise ValueError(
+            f"group_specs describes {len(specs)} param group(s) but the "
+            f"optimizer has {len(groups)}: the lambdas are applied BY INDEX, so "
+            f"a mismatch would give some group another group's schedule.")
+    return LambdaLR(optimizer,
+                    lr_lambda=[make_lambda(s, timeline) for s in specs])
+
+
+def build_depth_map(blocks: Optional[Sequence[Any]]
+                    ) -> Tuple[Dict[int, int], int]:
+    """``id(param) -> depth`` over an architecture's forward-ordered blocks.
+
+    An entry is one block, or several blocks that SHARE a depth: Ideogram 4
+    runs a conditional and an unconditional copy of one stack, whose layer j is
+    the same depth in both. LoRA parameters are covered without being mentioned
+    -- an adapter replaces the target Linear in its parent's module tree, so
+    ``block.parameters()`` already yields them.
+    """
+    depth_of: Dict[int, int] = {}
+    count = 0
+    for depth, entry in enumerate(blocks or []):
+        modules = entry if isinstance(entry, (list, tuple)) else [entry]
+        for module in modules:
+            for param in module.parameters():
+                depth_of[id(param)] = depth
+        count = depth + 1
+    return depth_of, count
+
+
+def apply_layer_decay(groups: Sequence[Mapping[str, Any]],
+                      depth_of: Mapping[int, int], n_depths: int,
+                      factor: float) -> List[Dict[str, Any]]:
+    """Split each optimizer group by block depth and scale its LR (D17/§11.2).
+
+    ``lr * factor ** (n - 1 - depth)``: the deepest block keeps the group's own
+    rate and every earlier one is scaled down. A parameter in no block (an
+    embedder, the final layer, a text encoder) is treated as the last depth,
+    i.e. left at 1.0.
+
+    Group order is preserved and depths ascend within a group, because a resume
+    writes the recorded per-group base LRs back BY INDEX. The split keeps
+    ``component`` and puts the depth only in ``name`` (§17.3), so a
+    ``lr_group_schedules`` mapping still resolves after the split.
+    """
+    factor = float(factor)
+    if n_depths <= 0 or factor == 1.0:
+        return [dict(group) for group in groups]
+
+    out: List[Dict[str, Any]] = []
+    for index, group in enumerate(groups):
+        name = str(group.get("name") or f"group{index}")
+        buckets: Dict[int, List[Any]] = {}
+        for param in group.get("params", []):
+            buckets.setdefault(depth_of.get(id(param), n_depths - 1),
+                               []).append(param)
+        base_lr = group.get("lr")
+        for depth in sorted(buckets):
+            split = dict(group)
+            split["params"] = buckets[depth]
+            split["name"] = f"{name}.d{depth:02d}"
+            split.setdefault("component", name)
+            if base_lr is not None:
+                split["lr"] = float(base_lr) * factor ** (n_depths - 1 - depth)
+            out.append(split)
+    return out

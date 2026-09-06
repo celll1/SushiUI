@@ -178,7 +178,8 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
         # Single parameter group with UNet learning rate
         # (ControlNet mirrors UNet architecture, so UNet LR is appropriate)
         param_groups = [
-            {"params": params, "lr": self.trainer.unet_lr}
+            {"params": params, "lr": self.trainer.unet_lr,
+             "name": "controlnet", "component": "controlnet"}
         ]
 
         print(f"[ControlNetSD15] Trainable parameters: {sum(p.numel() for p in params):,}")
@@ -192,7 +193,8 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             raise ValueError("[ControlNetSD15] No trainable parameters found in LLLite module")
 
         param_groups = [
-            {"params": params, "lr": self.trainer.unet_lr}
+            {"params": params, "lr": self.trainer.unet_lr,
+             "name": "controlnet", "component": "controlnet"}
         ]
 
         print(f"[ControlNetSD15] LLLite trainable parameters: {sum(p.numel() for p in params):,}")

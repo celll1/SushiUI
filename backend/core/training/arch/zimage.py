@@ -52,6 +52,12 @@ class ZImageArchHandler(ArchHandler):
         # No-op here (nothing to move); block swap is already set up at load.
         return None
 
+    def depth_blocks(self, trainer):
+        # The same list the loader hands LayerOffloadConductor. `transformer` is
+        # the batched wrapper; the layers live on the module it wraps.
+        target = getattr(trainer, "transformer_original", None) or trainer.transformer
+        return getattr(target, "layers", None)
+
     def setup_attention_backend(self, trainer) -> None:
         # P3a: body lives in ops/zimage_ops (shared with base_trainer delegator).
         from core.training.ops import zimage_ops

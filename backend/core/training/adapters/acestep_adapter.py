@@ -230,7 +230,8 @@ class AceStepFullParameterAdapter(BaseFullParameterAdapter):
             return []
         total = sum(p.numel() for p in params)
         print(f"[AceStepFullParameterAdapter] 1 param group, {total:,} trainable params")
-        return [{"params": params, "lr": base_lr}]
+        return [{"params": params, "lr": base_lr,
+                 "name": "unet", "component": "unet"}]
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
         trainer = self.trainer

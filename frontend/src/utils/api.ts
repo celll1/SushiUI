@@ -6470,6 +6470,9 @@ export interface TrainingRunCreateRequest {
   lr_decay_shape?: string;  // "cosine" | "linear" | "rex"
   lr_cycle_steps?: number;  // cosine_with_restarts only: cycle length (0 = one cycle over the whole run)
   lr_cycle_peak_decay?: number;  // cosine_with_restarts only: cycle i peaks at this^i
+  // Per-component schedule NAMES ({ "unet": "wsd", ... }); null/absent = every group runs lr_scheduler
+  lr_group_schedules?: Record<string, string> | null;
+  lr_layer_decay?: number;  // Layer-wise LR decay: depth d of n trains at lr * this^(n-1-d). 1.0 = off
   rewarmup_on_optimizer_reset?: boolean;  // Re-apply lr_warmup_steps when a resume gets a fresh optimizer state (default true)
   use_ema?: boolean;  // Weight EMA (opt-in, default off); saves a separate, loadable "_ema" checkpoint alongside the normal one
   ema_decay?: number;  // EMA decay factor (default 0.9999)

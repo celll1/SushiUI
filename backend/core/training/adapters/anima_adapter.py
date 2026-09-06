@@ -306,13 +306,17 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
 
         groups: List[Dict[str, Any]] = []
         if base_params:
-            groups.append({"params": base_params, "lr": base_lr})
+            groups.append({"params": base_params, "lr": base_lr,
+                           "name": "base", "component": "unet"})
         if attn_mlp_params:
-            groups.append({"params": attn_mlp_params, "lr": base_lr * attn_mlp_factor})
+            groups.append({"params": attn_mlp_params, "lr": base_lr * attn_mlp_factor,
+                           "name": "attn_mlp", "component": "unet"})
         if mod_params:
-            groups.append({"params": mod_params, "lr": base_lr * mod_factor})
+            groups.append({"params": mod_params, "lr": base_lr * mod_factor,
+                           "name": "mod", "component": "unet"})
         if adapter_params:
-            groups.append({"params": adapter_params, "lr": base_lr * adapter_factor})
+            groups.append({"params": adapter_params, "lr": base_lr * adapter_factor,
+                           "name": "llm_adapter", "component": "unet"})
 
         total = sum(sum(p.numel() for p in g["params"]) for g in groups)
         print(f"[AnimaFullParameterAdapter] {len(groups)} param group(s), "

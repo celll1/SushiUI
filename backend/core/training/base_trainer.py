@@ -45,10 +45,13 @@ from core.attention import (
 from core.training import training_control_rpc as control_rpc
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
+    LR_SCHEDULER_NAMES,
     STATE_DECAYING,
     STATE_FLOOR,
     STATE_NAMES,
     ScheduleTimeline,
+    apply_layer_decay,
+    build_depth_map,
     build_lr_scheduler,
     describe_spec,
     resolve_spec,
@@ -370,6 +373,177 @@ def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
     return spec
 
 
+def depth_split_structure_changed(optimizer, optimizer_state):
+    """Why a by-index restore into THIS group structure is refused (§17.3).
+
+    Layer-wise LR decay makes the group structure a function of the block
+    count, the trainable set and the factor: toggling any of them renumbers
+    every group, and both the direct load and the prefix remap write BY INDEX,
+    so one depth's moments would land on another's parameters. Only claimed
+    when a depth split is present on one side or the other -- a run without
+    ``lr_layer_decay`` resumes exactly as it did.
+    """
+    def signature(groups):
+        return [(g.get("name"), len(g.get("params", []) or []))
+                for g in (groups or [])]
+
+    live = signature(getattr(optimizer, "param_groups", []))
+    saved = signature((optimizer_state or {}).get("param_groups"))
+    if not any(name and re.search(r"\.d\d+$", str(name))
+               for name, _ in live + saved):
+        return None
+    if live == saved:
+        return None
+    return (f"the optimizer's param groups are layer-wise-decay splits and do "
+            f"not match the checkpoint's: {len(live)} group(s) "
+            f"{[n for n, _ in live]} now against {len(saved)} "
+            f"{[n for n, _ in saved]} then")
+
+
+def fused_optimizer_groups_active(trainer) -> bool:
+    """Whether ``_setup_fused_optimizer_groups`` will run for this run.
+
+    Both conditions, because that is the branch: ``num_optimizer_groups`` is
+    only read inside ``setup_optimizer``'s ``blocks_to_swap > 0`` arm, so it
+    rebuilds nothing on its own.
+    """
+    return (int(getattr(trainer, "blocks_to_swap", 0) or 0) > 0
+            and int(getattr(trainer, "num_optimizer_groups", 0) or 0) > 0)
+
+
+_FUSED_GROUPS_REFUSAL = (
+    "num_optimizer_groups={groups} together with blocks_to_swap={swap} rebuilds "
+    "the optimizer from a FLAT parameter list at the run's single learning rate "
+    "(create_optimizer_groups), which discards the component boundaries "
+    "{feature} is defined over -- it is the same flattening the "
+    "component_lr_flattened warning reports. "
+    "Options: (1) set num_optimizer_groups=0 (Adafactor and the 8-bit/ring-buffer "
+    "optimizers register their own per-parameter fused-backward hooks instead), "
+    "(2) leave {key} at its default."
+)
+
+
+def apply_layer_lr_decay(trainer, param_groups):
+    """Split each optimizer group by block depth and scale its LR (D17/§11.2).
+
+    Runs on the adapter's groups BEFORE the optimizer is built, because the
+    split IS the group structure. Returns them untouched at ``lr_layer_decay ==
+    1.0``, which is every run that does not ask for it.
+    """
+    config = getattr(trainer, "config", None) or {}
+    raw = config.get("lr_layer_decay", _TRAINING_DEFAULTS["lr_layer_decay"])
+    factor = float(_TRAINING_DEFAULTS["lr_layer_decay"] if raw is None else raw)
+    if factor == 1.0:
+        return param_groups
+    if not 0.0 < factor <= 1.0:
+        raise ValueError(
+            f"lr_layer_decay must be in (0, 1] (got {factor}): it is the factor "
+            f"each step UP the block stack multiplies the learning rate by, and "
+            f"1.0 means no decay.")
+    if fused_optimizer_groups_active(trainer):
+        raise ValueError(_FUSED_GROUPS_REFUSAL.format(
+            groups=trainer.num_optimizer_groups, swap=trainer.blocks_to_swap,
+            feature="layer-wise LR decay", key="lr_layer_decay"))
+
+    arch = getattr(trainer, "arch", None)
+    blocks = arch.depth_blocks(trainer) if arch is not None else None
+    depth_of, n_depths = build_depth_map(blocks)
+    if n_depths < 2:
+        raise ValueError(
+            f"lr_layer_decay={factor} was requested, but this architecture "
+            f"exposes no ordered block stack to measure depth on "
+            f"(ArchHandler.depth_blocks returned "
+            f"{'nothing' if not blocks else str(n_depths) + ' block(s)'}). "
+            f"api/arch_capabilities.py declares which architectures support it; "
+            f"set lr_layer_decay=1.0 for this one.")
+
+    groups = apply_layer_decay(param_groups, depth_of, n_depths, factor)
+    covered = sum(1 for group in param_groups for p in group.get("params", [])
+                  if id(p) in depth_of)
+    total = sum(len(group.get("params", [])) for group in param_groups)
+    print(f"{getattr(trainer, 'log_prefix', '[Trainer]')} Layer-wise LR decay "
+          f"{factor}: {n_depths} block(s), {len(param_groups)} param group(s) -> "
+          f"{len(groups)}, {covered}/{total} parameter tensor(s) in a block "
+          f"(the rest keep their group's rate)")
+    return groups
+
+
+def resolve_lr_group_specs(trainer, spec, total_steps):
+    """One resolved ``ScheduleSpec`` per param group, or ``None`` (D16/§10).
+
+    ``None`` -- the default, and every run that does not set
+    ``lr_group_schedules`` -- puts the run's single spec on every group, which
+    is bit-identical to what P4 shipped. Only the NAME varies per component:
+    the numeric parameters and the timeline stay run-wide, so a runtime command
+    still reaches every group.
+
+    Each name is re-resolved through ``resolve_spec``, not name-substituted into
+    the run's spec: an alias fixes its own start axis and end kind (§17.3).
+    """
+    config = getattr(trainer, "config", None) or {}
+    mapping = config.get("lr_group_schedules")
+    if not mapping:
+        return None
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    if not isinstance(mapping, dict):
+        raise ValueError(
+            f"lr_group_schedules must be a mapping of component name -> schedule "
+            f"name (got {type(mapping).__name__}).")
+    if fused_optimizer_groups_active(trainer):
+        raise ValueError(_FUSED_GROUPS_REFUSAL.format(
+            groups=trainer.num_optimizer_groups, swap=trainer.blocks_to_swap,
+            feature="per-component LR schedules", key="lr_group_schedules"))
+    if spec.curve == "relora":
+        # Same convention as the ignored `lr_scheduler`: ReLoRA's curve is
+        # shaped by its merges, and a per-group replacement would drop the
+        # restarts for that group without saying so.
+        print(f"{prefix} lr_group_schedules is ignored: ReLoRA's own restart "
+              f"schedule applies to every param group")
+        return None
+
+    groups = [g for optimizer in all_optimizers(trainer) if optimizer is not None
+              for g in optimizer.param_groups]
+    components = [g.get("component") or g.get("name") for g in groups]
+    if not groups or not all(components):
+        emit_training_warning(
+            f"lr_group_schedules was set, but {sum(1 for c in components if not c)} "
+            f"of this run's {len(groups)} optimizer param group(s) carry no "
+            f"component name, so there is no way to tell which schedule belongs "
+            f"to which. Every group keeps the run's '{spec.name}'.",
+            code="lr_group_schedules_unnamed_groups", prefix=prefix)
+        return None
+
+    wanted = {str(k).strip().lower(): str(v).strip().lower()
+              for k, v in mapping.items()}
+    unmatched = sorted(set(wanted) - {str(c).lower() for c in components})
+    if unmatched:
+        emit_training_warning(
+            f"lr_group_schedules names component(s) {unmatched} that this run has "
+            f"no optimizer group for (its groups are "
+            f"{sorted({str(c) for c in components})}); those entries do nothing.",
+            code="lr_group_schedules_unknown_component", prefix=prefix)
+
+    resolved: Dict[str, Any] = {}
+    specs = []
+    for component in components:
+        name = wanted.get(str(component).lower())
+        if name is None or name == spec.name:
+            specs.append(spec)
+            continue
+        if name not in LR_SCHEDULER_NAMES:
+            raise ValueError(
+                f"lr_group_schedules['{component}'] = '{name}' is not a schedule "
+                f"name. Supported: {', '.join(LR_SCHEDULER_NAMES)}")
+        if name not in resolved:
+            resolved[name] = resolve_lr_schedule_spec(trainer, name, total_steps)
+        specs.append(resolved[name])
+
+    if resolved:
+        print(f"{prefix} LR group schedules: " + ", ".join(
+            f"{c}={s.name}" for c, s in zip(components, specs)))
+    return specs
+
+
 def live_scheduler_step(trainer) -> int:
     """Where the schedule actually is, on the scheduler axis."""
     for scheduler in all_lr_schedulers(trainer):
@@ -520,11 +694,15 @@ def reapply_lr_schedule_position(trainer) -> None:
 def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dict[str, Any]]:
     """Per-param-group overlay state (§17.3).
 
-    In P2 every group folds the SAME spec, so the entries agree; the shape is
-    what P6 fills in once a group can carry a schedule of its own.
+    Every group folds the same EVENT list; which curve it folds them over is
+    its own once ``lr_group_schedules`` is set, so the state and multiplier are
+    read per group rather than once for the run.
     """
     groups = [pg for optimizer in all_optimizers(trainer) if optimizer is not None
               for pg in optimizer.param_groups]
+    group_specs = list(getattr(trainer, "lr_group_specs", None) or [])
+    if len(group_specs) != len(groups):
+        group_specs = [spec] * len(groups)
     try:
         _, names = trainer._build_component_lr_list()
     except Exception:   # noqa: BLE001
@@ -534,14 +712,16 @@ def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dic
 
     out: List[Dict[str, Any]] = []
     for index, group in enumerate(groups):
-        state = timeline.state_at(spec, position)
+        group_spec = group_specs[index]
+        state = timeline.state_at(group_spec, position)
         out.append({
             "index": index,
-            "name": names[index] if names else (group.get("name") or f"group{index}"),
-            "schedule": spec.name,
+            "name": (group.get("name") or (names[index] if names else None)
+                     or f"group{index}"),
+            "schedule": group_spec.name,
             "state": STATE_NAMES.get(int(state.code), "base"),
             "state_code": int(state.code),
-            "multiplier": float(timeline.multiplier(spec, position)),
+            "multiplier": float(timeline.multiplier(group_spec, position)),
             "lr": float(group.get("lr", 0.0)),
         })
     return out
@@ -4731,6 +4911,15 @@ class BaseTrainer(ABC):
         """Load one saved state dict into one optimizer."""
         from .optimizers.host_state_allocator import HostStateResidencyError
 
+        changed = depth_split_structure_changed(optimizer, optimizer_state)
+        if changed is not None:
+            print(f"{self.log_prefix} Not restoring optimizer state from {label}: "
+                  f"{changed}. Restoring by index would give one depth's moments "
+                  f"to another's parameters. Continuing with fresh optimizer "
+                  f"state (the configured warmup is re-armed if "
+                  f"rewarmup_on_optimizer_reset is on).")
+            return False
+
         def move_tensors_to_device(obj, device):
             """Recursively move all tensors in nested dict/list to target device."""
             if isinstance(obj, torch.Tensor):
@@ -5629,6 +5818,8 @@ class BaseTrainer(ABC):
     # Recorded at the end of setup_optimizer; None means "never recorded".
     _configured_group_lrs = None
     _configured_group_names = None
+    #: One ScheduleSpec per param group (D16), or None = one schedule for all.
+    lr_group_specs = None
 
     def _record_configured_group_lrs(self, requested_group_lrs=None):
         """Snapshot the BASE learning rate of every optimizer param group.
@@ -5688,6 +5879,54 @@ class BaseTrainer(ABC):
                         for a, b in zip(legacy_lrs, lrs))):
             return list(legacy_names)
         return [str(g.get("name") or f"group{i}") for i, g in enumerate(groups)]
+
+    _lr_metric_labels = None
+
+    def _per_group_lr_metric_labels(self):
+        """One ``lr_<label>`` suffix per param group, or None to skip it.
+
+        Layer-wise LR decay turns one component into one group per depth, which
+        would replace the ``lr_unet`` series with ``lr_unetd00``..``lr_unetd29``.
+        Only the DEEPEST split of a component is emitted -- the one whose factor
+        is 1.0 -- so the series keeps meaning what it meant before the split.
+
+        Computed once: the group structure does not change during a run.
+        """
+        if self._lr_metric_labels is not None:
+            return self._lr_metric_labels
+
+        groups = list(getattr(self.optimizer, "param_groups", []) or [])
+        # Source order preserved from before the split existed, so no run's
+        # existing series is renamed: the legacy list first (SD/SDXL get
+        # "unet"/"te1"), then the recorded group names, then the index (which
+        # is what a DiT run without LLRD still gets).
+        try:
+            _, names = self._build_component_lr_list()
+        except Exception:   # noqa: BLE001
+            names = []
+        if len(names) != len(groups):
+            names = list(getattr(self, "_configured_group_names", None) or [])
+        if len(names) != len(groups):
+            names = [f"g{i}" for i in range(len(groups))]
+
+        deepest: Dict[str, int] = {}
+        for index, name in enumerate(names):
+            base, _, depth = str(name).rpartition(".d")
+            if base and depth.isdigit():
+                keep = deepest.get(base)
+                if keep is None or int(depth) > int(str(names[keep]).rpartition(".d")[2]):
+                    deepest[base] = index
+
+        labels: List[Optional[str]] = []
+        for index, name in enumerate(names):
+            base, _, depth = str(name).rpartition(".d")
+            if base and depth.isdigit():
+                labels.append(re.sub(r'[^a-z0-9]+', '', base.lower())
+                              if deepest.get(base) == index else None)
+            else:
+                labels.append(re.sub(r'[^a-z0-9]+', '', str(name).lower()))
+        self._lr_metric_labels = labels
+        return labels
 
     def _configured_component_lr_description(self, n_groups):
         """``(lrs, names, source)`` for ``n_groups`` groups, or ``([], [], reason)``.
@@ -6337,12 +6576,19 @@ class BaseTrainer(ABC):
                                          label="vision encoder")
             ve_params = list(self.vision_encoder.parameters())
             if ve_params:
-                param_groups.append({"params": ve_params, "lr": ve_lr})
+                param_groups.append({"params": ve_params, "lr": ve_lr,
+                                     "name": "vision_encoder",
+                                     "component": "vision_encoder"})
                 ve_total = sum(p.numel() for p in ve_params)
                 print(f"{self.log_prefix} Vision Encoder: Added {len(ve_params)} param tensors ({ve_total/1e6:.1f}M params, lr={ve_lr}) to optimizer")
                 # Set requires_grad on VE model
                 for p in ve_params:
                     p.requires_grad_(True)
+
+        # D17, before the optimizer exists: the depth split IS the group
+        # structure the optimizer is built from, and the resume writes the
+        # recorded per-group base LRs back by index into it.
+        param_groups = apply_layer_lr_decay(self, param_groups)
 
         print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
@@ -6478,8 +6724,13 @@ class BaseTrainer(ABC):
         self.lr_timeline.set_total_steps(self.lr_schedule_spec.total_steps)
         print(f"{self.log_prefix} LR scheduler: "
               f"{describe_spec(self.lr_schedule_spec)}")
+        # D16: None unless lr_group_schedules is set, in which case one spec per
+        # param group over the SAME timeline.
+        self.lr_group_specs = resolve_lr_group_specs(
+            self, self.lr_schedule_spec, total_steps)
         self.lr_scheduler = build_lr_scheduler(
-            self.optimizer, self.lr_schedule_spec, self.lr_timeline)
+            self.optimizer, self.lr_schedule_spec, self.lr_timeline,
+            group_specs=self.lr_group_specs)
 
         # Initialize weight EMA (opt-in, default off). Must run after the
         # optimizer (and therefore the trainable param groups) exists.
@@ -16182,16 +16433,13 @@ class BaseTrainer(ABC):
                                 # potentially-different LRs. Single-group runs
                                 # (e.g. ControlNet) keep only the "lr" series
                                 # above -- do not duplicate it here.
-                                # _build_component_lr_list() is only called
-                                # once per step (cached in a local) and is
-                                # itself best-effort: any mismatch/exception
-                                # just falls back to the single "lr" series.
                                 if len(self.optimizer.param_groups) > 1:
-                                    _component_lrs, _component_names = self._build_component_lr_list()
-                                    for _i, _pg in enumerate(self.optimizer.param_groups):
-                                        _name = _component_names[_i] if _i < len(_component_names) else f"g{_i}"
-                                        _key = "lr_" + re.sub(r'[^a-z0-9]+', '', _name.lower())
-                                        self.log_extra_metric(_key, float(_pg["lr"]))
+                                    for _i, _label in enumerate(self._per_group_lr_metric_labels()):
+                                        if _label is None:
+                                            continue
+                                        self.log_extra_metric(
+                                            "lr_" + _label,
+                                            float(self.optimizer.param_groups[_i]["lr"]))
                         except Exception:
                             pass
 

@@ -67,6 +67,10 @@ class LensArchHandler(ArchHandler):
         from core.training.ops import lens_ops
         lens_ops.setup_block_swap(trainer)
 
+    def depth_blocks(self, trainer):
+        transformer = getattr(trainer, "transformer", None)
+        return getattr(transformer, "transformer_blocks", None)
+
     def setup_attention_backend(self, trainer) -> None:
         # P3b: body lives in ops/lens_ops (shared with base_trainer delegator).
         from core.training.ops import lens_ops

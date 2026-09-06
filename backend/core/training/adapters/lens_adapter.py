@@ -191,11 +191,14 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
 
         groups: List[Dict[str, Any]] = []
         if img_params:
-            groups.append({"params": img_params, "lr": base_lr * img_factor, "name": "img_stream"})
+            groups.append({"params": img_params, "lr": base_lr * img_factor,
+                           "name": "img_stream", "component": "unet"})
         if txt_params:
-            groups.append({"params": txt_params, "lr": base_lr * txt_factor, "name": "txt_stream"})
+            groups.append({"params": txt_params, "lr": base_lr * txt_factor,
+                           "name": "txt_stream", "component": "unet"})
         if other_params:
-            groups.append({"params": other_params, "lr": base_lr, "name": "other"})
+            groups.append({"params": other_params, "lr": base_lr,
+                           "name": "other", "component": "unet"})
 
         total = sum(sum(p.numel() for p in g["params"]) for g in groups)
         print(f"[LensFullParameterAdapter] {len(groups)} param group(s), "

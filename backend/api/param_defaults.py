@@ -2208,6 +2208,17 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # peak is multiplied by (1.0 = every cycle returns to the base LR).
     "lr_cycle_steps": 0,
     "lr_cycle_peak_decay": 1.0,
+    # Per-component schedule NAMES (D16 of docs/guides/LR_SCHEDULER_DESIGN.md).
+    # null = off: every optimizer group runs the run's own lr_scheduler. The
+    # numeric parameters above stay run-wide, and so does the runtime timeline.
+    # Refused together with fused optimizer groups, which rebuild the optimizer
+    # from a flat parameter list and lose the component boundaries.
+    "lr_group_schedules": None,
+    # Layer-wise LR decay (D17): each optimizer group is split by the depth of
+    # the block its parameters sit in, and depth d of n runs at
+    # lr * lr_layer_decay ** (n - 1 - d). 1.0 = off, and no value other than
+    # "off" is recommended here: this project does not ship an unmeasured one.
+    "lr_layer_decay": 1.0,
     # Re-arm the configured warmup when a resume comes up with a FRESH optimizer
     # state -- the `_optimizer.pt` was pruned or missing, or load_state_dict
     # rejected it (optimizer type / trainable-parameter change). The resume path

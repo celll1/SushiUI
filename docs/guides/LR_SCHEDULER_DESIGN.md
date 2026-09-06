@@ -53,7 +53,7 @@ Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変�
 | D22 | 遷移の急峻さ | `length = L` と `shape` による**旧曲線と新曲線の重み付き混合**: `m(s) = (1−w(u))·m_old(s) + w(u)·m_new(s)`、`u = (s−S)/L`、`w(0)=0`、`w(1)=1`。`L = 0` は瞬時切替。`shape ∈ {linear, cosine, exp}` は `decay_shape` の語彙を流用し、新しい形は増やさない |
 | D23 | anchor の既定 | **`restart`**。新 spec の軸を `S` から始め、`m_new(s) = m_at_S · g(s−S)`（`g(0)=1` に正規化）。`continue`（グローバル軸でそのまま評価）も選べるが既定にしない: 監視しながらの切替で、切替の瞬間に新曲線の中間値へ跳ねるため。**`restart` の総長は評価時に `current_total − S` から導出**し、絶対値を焼き込まない（D7 の延長耐性を継承。§18 の plateau `D` 焼き込みと同じ失敗を避ける） |
 | D24 | グループセレクタ | **持つ**。`groups` は `null` またはコンポーネント名の配列、`null` = 全グループ（`decay`/`cancel` の現行意味論と一致）。`lr_group_schedules` が既定オフでも、後から有効化した run で「全 spec を無言で置換」する事故を構造的に防ぐため。**実装上の帰結**: 現状 `_fold(spec, step)` は spec の同一性を知らないので、**spec にグループ識別子を持たせる**必要がある |
-| D25 | 事象の日付 | `at >= 受理時点の step` のみ受理。**過去日付は拒否**（`refused_kind` → `kind="noop"`、`:298` の既存機構）: `_fold` は `at <= step` を全て畳み込むため、過去日付は曲線を遡って書き換える。これは ReLoRA の遡及短縮欠陥（§17）と同型。**未来日付は許可**（事象列は既に `at` でソート済みで、追加コストが無い） |
+| D25 | 事象の日付 | 事象は `at`（発効）と `issued`（受理された step）の**2 つの step 印**を持つ。`at >= issued` のみ受理。**過去日付は拒否**（`refused_kind` → `kind="noop"`、`:298` の既存機構）: `_fold` は `at <= step` を全て畳み込むため、過去日付は曲線を遡って書き換える。これは ReLoRA の遡及短縮欠陥（§17）と同型。**未来日付は許可**（事象列は既に `at` でソート済みで、追加コストが無い）。state.json への切り詰めは `at` ではなく **`issued`** で行う（`at` で切ると未来予約が保存のたびに消える。§19.5） |
 | D26 | オーバーレイとの合成 | `retarget` は **decay/cancel オーバーレイを吸収**する。`DECAYING`/`FLOOR`/`RECOVERING` のいずれで受けても、混合は**その時点で実現している乗数**から始まり、新 spec の下で `BASE` に戻る。`decay_disarmed` は引き継がない（新 spec の config 減衰は新たに武装する） |
 | D27 | 派生操作 | `scale`（今から `×k`）・`hold`（現在値で固定）・`undo`（直前の retarget を取り消す）は**いずれも `retarget` の退化形**として表現し、事象種を増やさない。`undo` は逆向きの `retarget` の追記であり、履歴を巻き戻さない（D25 と整合） |
 | D28 | 条件トリガ | 「loss が N 回横ばいなら減衰」等は、**発火時点で `at` を固定した具体事象を materialize する**。条件式そのものを事象列に入れない（学習履歴依存になり replay 不能、D3 の純粋性が壊れる） |
@@ -781,7 +781,7 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 3. `total_steps` 相対の量は名目軸 `τ(s)`、絶対 step の量は実軸（D8）。新しい量を足すときはどちらかを明記する。
 4. scheduler 軸は更新境界での advance 数（D9 / §17.1）。`at`、`last_epoch`、`T_sched` は全てこの軸。
 5. 事象の焼き込み: `decay` は `length`/`shape` を持つ。config の後変更で開始済みの減衰を変えない。
-6. state.json への保存は `at <= step` に切り詰める。表示ファイルを resume の根拠にしない。
+6. state.json への保存は **`issued <= step`** に切り詰める（`at` ではない。未来予約を保存する。§19.5）。表示ファイルを resume の根拠にしない。
 7. 既定値は `api/param_defaults.py` にのみ置く。Pydantic は参照する。
 8. API 変更は `openapi.yaml` を先に更新する。
 9. capability 判定は `api/arch_capabilities.py` と `core/adapters/capability.py` のみ。スケジュールは arch 非依存
@@ -1466,8 +1466,10 @@ P7 が**やっていない**こと: VAE への実行時コマンド（`training_
 
 ```
 {"kind": "retarget", "at": S, "seq": n, "request_id": "...",
+ "issued": I,                           # 受理された scheduler step。保存の切り詰めはこれで判定
  "spec":   {...},                       # 新しい ScheduleSpec（直列化形、19.5）
  "anchor": "restart" | "continue",      # 既定 restart（D22）
+ "gain":   k,                           # 新曲線に掛ける倍率。既定 1.0（19.6 の scale の置き場）
  "length": L,                           # 混合区間。0 = 瞬時切替
  "shape":  "linear" | "cosine" | "exp", # 混合の重み関数
  "groups": null | ["unet", ...]}        # null = 全グループ（D24）
@@ -1484,8 +1486,15 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 `m_old` は retarget 直前まで有効だった曲線（オーバーレイ込みの実現値）、`m_new` は新 spec の曲線。
 `L = 0` のときは `u` を 1 と定義する。
 
-- `anchor = restart`: `m_new(s) = m_at_S · g(s − S)`。`g` は新 spec の形を `g(0) = 1` に正規化したもの。
-  総長は評価時に `current_total − S` から導出する（**絶対値を焼き込まない**、D22）。
+- `anchor = restart`: `m_new(s) = m_at_S · gain · g(s − S)`。`g` は**新 spec 自身の曲線を、
+  その warmup 後のピークが 1 になるよう正規化**したもの（レジストリの全スケジュールはこの正規化で
+  ピーク 1）。総長は評価時に `current_total − S` から導出する（**絶対値を焼き込まない**、D22）。
+
+  `g(0) = 1` は **`warmup_steps = 0` のときに限って成り立つ**。`warmup_steps > 0` の retarget は
+  「ここから warmup をやり直す」という**意図的な指示**であり、`g(0) = 0` から立ち上がる。混合は
+  `m_old` から warmup の起点へ降りる形になり、`S` での値は連続だが単調ではない。これは拒否せず、
+  D29 のプレビューで可視化して利用者に見せる（曲線は純関数なので適用前に見える）。
+  **`g(0) = 1` を仮定した実装を書かない**（0 除算になる）。
 - `anchor = continue`: `m_new(s)` は新 spec をグローバル軸でそのまま評価した値。
 
 **混合の連鎖**: 混合区間中に別の retarget が来た場合、その時点の実現値を `m_old` として新しい混合を開始する。
@@ -1508,11 +1517,12 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 いずれも `add()` の受理時点で判定し、`refused_kind` を残して `kind = "noop"` にする（`:298` の既存機構）。
 拒否は記録に残り、曲線は動かない。
 
-1. `at < 受理時点の scheduler step`（D25）
+1. `at < issued`（受理時点の scheduler step より前。D25）
 2. 新 spec が語彙外のスケジュール名を指す（`LR_SCHEDULER_NAMES` 外。`INTERNAL_SCHEDULER_NAMES` も外）
 3. `anchor = restart` で `current_total − S <= 0`（残り区間が無い）
 4. `L < 0`、または `L` が `0` に丸まる単位変換を経ている（§18.5 と同じ番兵）
 5. 新 spec の `warmup_steps` が残り区間を超える
+8. `gain <= 0`。`gain > 1` は LR を上げるが正当な指示なので拒否しない（プレビューで見える）
 6. `lr_floor_ratio` が `[0, 1]` の外
 7. `groups` に存在しないコンポーネント名が含まれる
 
@@ -1520,7 +1530,12 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 
 `ScheduleSpec` は `to_dict()` / `from_dict()` を持つ（`v` フィールド付き、未知キーは無視）。
 `retarget` 事象は `spec` をこの形で持ち、D4 の `lr_schedule_events` にそのまま入る。
-**`at <= step` への切り詰め（不変条件 6）はそのまま適用**する。
+**切り詰めは `at` ではなく `issued` で行う**（不変条件 6 の改訂）。未来予約（`at > 現在 step`）は
+`issued <= 保存 step` である限り**保存され、resume 後も生きている**。`at` で切り詰めると、
+D25 が許可した予約が保存のたびに消える。
+
+`issued` を持たない旧事象は `issued = at` として読む（retarget 以前の事象は全て `at = 受理時点`
+だったので、この読み替えは既存 run の切り詰め結果を変えない）。
 
 `lr_schedule_events` に `retarget` を含まない旧 state は、そのまま「retarget なし」として読める。
 後方互換のための分岐は不要。
@@ -1529,8 +1544,8 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 
 | 操作 | 実体 |
 |---|---|
-| `scale k`（今から `×k`） | 現在の spec のまま、`m_at_S · k` を新しい基準にする retarget |
-| `hold` | `constant` spec への retarget（`L = 0`） |
+| `scale k`（今から `×k`） | `spec` は現在のもの、`anchor = restart`、`gain = k` の retarget |
+| `hold` | `constant` spec への retarget（`gain = 1`、`L = 0`）。`m_at_S` で平坦になる |
 | `undo` | 直前の retarget の 1 つ前の spec への retarget。履歴は巻き戻さず追記する |
 
 UI は 3 つとも独立したボタンとして出すが、事象列に落ちるのは `retarget` である。
@@ -1555,6 +1570,7 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 
 14. 事象は追記のみ。過去を書き換えない（D25）。取り消しも追記で表現する。
 15. `retarget` の `spec` は直列化形で持ち、絶対 step を焼き込まない（`restart` の総長は評価時に導出）。
+    `g(0) = 1` を仮定しない（`warmup_steps > 0` では 0 から立ち上がる。§19.2）。
 16. 混合中の乗数は両曲線の最大値を超えない（D30）。
 17. 事象種を増やさない。新しい操作は `retarget` の退化形として表現する（D27）。
 

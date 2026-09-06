@@ -2598,7 +2598,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # "registry:<key>" / "file:<path>" / "model:<path>" (design §7.1).
     "vae_swap_source": "",
     # How channels the old VAE did not have are initialised in the resized latent
-    # I/O layers. "zero" is the only accepted value (design D3).
+    # I/O layers. "zero" everywhere (design D3); SenseNova's head rebuild also
+    # accepts "scaled", which calibrates the head to emit a unit-variance latent.
     "vae_swap_new_channel_init": "zero",
     # SenseNova VAE swap only: the generation patch in LATENT cells. 0 = inherit
     # (keep the base checkpoint's own patch; 4 for a pixel-space base), which is

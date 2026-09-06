@@ -49,6 +49,16 @@ Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変�
 | D18 | 語彙統一 | 正典は `lr_schedules.LR_SCHEDULER_NAMES`。拡散側 Pydantic（`routes.py:15308`、素の `str`）に validator を付け、openapi（`:19772`）に `enum` を付ける。VAE 側の `VALID_LR_SCHEDULERS`（`vae_config.py:87-88`）は VAE がレジストリ builder を採用するフェーズ（P7）で同じタプルを import する。tagger は対象外（§15） |
 | D19 | 観測 | 減衰状態は `log_extra_metric("lr_decay_state", …)`（`:16954`）で毎 step emit（0 = base, 1 = decaying, 2 = floor, 3 = recovering）。永続記録は state.json（D4）。表示用に `<output_dir>/.lr_schedule.json` を事象適用のたびに書く（読み取り専用、resume の根拠にしない） |
 | D20 | プレビュー | スケジュール曲線のプレビューは**サーバ側**エンドポイント（`GET /training/lr-schedule/preview`）が同じ Python 実装で標本点を返す。TS に式を二重実装しない |
+| D21 | 実行時のスケジュール変更 | 新事象 **`retarget`**。`{kind, at, spec, anchor, length, shape, groups, request_id}`。`decay`/`cancel` と同じ事象列に載せ、**新しい事象種はこれ 1 つだけ**足す（§19.1）。これに伴い `_fold` は `OverlayState` だけでなく**有効な spec も畳み込む**（`(spec, state)` を返す）。影響先は `_value` / `_base` / `_advance` / `multiplier` / `state_at` / `sample_curve` と resume 経路 |
+| D22 | 遷移の急峻さ | `length = L` と `shape` による**旧曲線と新曲線の重み付き混合**: `m(s) = (1−w(u))·m_old(s) + w(u)·m_new(s)`、`u = (s−S)/L`、`w(0)=0`、`w(1)=1`。`L = 0` は瞬時切替。`shape ∈ {linear, cosine, exp}` は `decay_shape` の語彙を流用し、新しい形は増やさない |
+| D23 | anchor の既定 | **`restart`**。新 spec の軸を `S` から始め、`m_new(s) = m_at_S · g(s−S)`（`g(0)=1` に正規化）。`continue`（グローバル軸でそのまま評価）も選べるが既定にしない: 監視しながらの切替で、切替の瞬間に新曲線の中間値へ跳ねるため。**`restart` の総長は評価時に `current_total − S` から導出**し、絶対値を焼き込まない（D7 の延長耐性を継承。§18 の plateau `D` 焼き込みと同じ失敗を避ける） |
+| D24 | グループセレクタ | **持つ**。`groups` は `null` またはコンポーネント名の配列、`null` = 全グループ（`decay`/`cancel` の現行意味論と一致）。`lr_group_schedules` が既定オフでも、後から有効化した run で「全 spec を無言で置換」する事故を構造的に防ぐため。**実装上の帰結**: 現状 `_fold(spec, step)` は spec の同一性を知らないので、**spec にグループ識別子を持たせる**必要がある |
+| D25 | 事象の日付 | `at >= 受理時点の step` のみ受理。**過去日付は拒否**（`refused_kind` → `kind="noop"`、`:298` の既存機構）: `_fold` は `at <= step` を全て畳み込むため、過去日付は曲線を遡って書き換える。これは ReLoRA の遡及短縮欠陥（§17）と同型。**未来日付は許可**（事象列は既に `at` でソート済みで、追加コストが無い） |
+| D26 | オーバーレイとの合成 | `retarget` は **decay/cancel オーバーレイを吸収**する。`DECAYING`/`FLOOR`/`RECOVERING` のいずれで受けても、混合は**その時点で実現している乗数**から始まり、新 spec の下で `BASE` に戻る。`decay_disarmed` は引き継がない（新 spec の config 減衰は新たに武装する） |
+| D27 | 派生操作 | `scale`（今から `×k`）・`hold`（現在値で固定）・`undo`（直前の retarget を取り消す）は**いずれも `retarget` の退化形**として表現し、事象種を増やさない。`undo` は逆向きの `retarget` の追記であり、履歴を巻き戻さない（D25 と整合） |
+| D28 | 条件トリガ | 「loss が N 回横ばいなら減衰」等は、**発火時点で `at` を固定した具体事象を materialize する**。条件式そのものを事象列に入れない（学習履歴依存になり replay 不能、D3 の純粋性が壊れる） |
+| D29 | 適用前プレビュー | D20 のエンドポイントに**未適用の事象列を渡せるようにする**（`POST /training/lr-schedule/preview`、body に候補事象）。曲線は純関数なので、適用前に「入れたらどうなるか」を同じ実装で返せる。TS に式を二重実装しない（D20 と同じ） |
+| D30 | 混合区間の上限 | 混合中は `m(s) <= max(m_old(s), m_new(s))` を不変条件とする。`w` を `[0,1]` に clamp し、`shape` に凸性を要求する。切替で LR が両曲線のどちらより高くなる事故を排除する |
 
 ---
 
@@ -1445,3 +1455,127 @@ P7 が**やっていない**こと: VAE への実行時コマンド（`training_
 
 回帰条件は蓄積数の増減、スキップ・部分蓄積、MNT 再計算、warmup 中の延長、
 旧 YAML の設定往復、グループ別 plateau の設定往復を含む。
+
+
+## 19. 実行時のスケジュール変更（要求: 任意 step での方式・パラメータ変更、D21–D30）
+
+§5 の実行時タイムラインは「今から減衰」「取り消し」の 2 操作しか持たない。本節はこれを
+「任意の step から、スケジュールの**方式そのもの**と**パラメータ**を差し替える」まで広げる。
+
+### 19.1 事象の形
+
+```
+{"kind": "retarget", "at": S, "seq": n, "request_id": "...",
+ "spec":   {...},                       # 新しい ScheduleSpec（直列化形、19.5）
+ "anchor": "restart" | "continue",      # 既定 restart（D22）
+ "length": L,                           # 混合区間。0 = 瞬時切替
+ "shape":  "linear" | "cosine" | "exp", # 混合の重み関数
+ "groups": null | ["unet", ...]}        # null = 全グループ（D24）
+```
+
+`decay` / `cancel` と同じ事象列・同じ `_order` に載る。**新しい事象種はこれ 1 つだけ**。
+
+### 19.2 混合と anchor
+
+```
+m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1)
+```
+
+`m_old` は retarget 直前まで有効だった曲線（オーバーレイ込みの実現値）、`m_new` は新 spec の曲線。
+`L = 0` のときは `u` を 1 と定義する。
+
+- `anchor = restart`: `m_new(s) = m_at_S · g(s − S)`。`g` は新 spec の形を `g(0) = 1` に正規化したもの。
+  総長は評価時に `current_total − S` から導出する（**絶対値を焼き込まない**、D22）。
+- `anchor = continue`: `m_new(s)` は新 spec をグローバル軸でそのまま評価した値。
+
+**混合の連鎖**: 混合区間中に別の retarget が来た場合、その時点の実現値を `m_old` として新しい混合を開始する。
+評価は連鎖を遡るが、**混合が完了した (`s >= S + L`) 段は寄与しない**（`w = 1`）ので、
+評価時に遡る深さは「同時に進行中の混合の数」に等しく、事象の総数には比例しない。
+
+### 19.3 相互作用（§17.3 の表への追加）
+
+| 状況 | 規則 |
+|---|---|
+| `BASE` で retarget | 新 spec へ混合。`start` は現在の base 値 |
+| `DECAYING` / `FLOOR` / `RECOVERING` で retarget | オーバーレイを**吸収**。現在の実現値から混合し、新 spec 下で `BASE` に戻る（D26） |
+| warmup 中に retarget | 許可（warmup 長の変更は正当な編集）。ただし混合が「LR を上げる減衰」と読まれないよう、`state_at` は `BASE` を返し `lr_decay_state` を 0 のままにする |
+| retarget 後の `total_steps` 変化 | **その時点で有効な spec** の総長を動かす。`current_total` / `nominal_total` は spec ではなく事象列から導出しているため、`restart` の相対総長と自然に合成される |
+| retarget と `restart`（cosine のサイクル再開）事象 | 別物。名前の衝突を避けるため、UI・ログ・警告コードでは前者を **retarget**、後者を **cycle restart** と表記する |
+| `lr_group_schedules` オフで `groups` 指定つき retarget | 受理して全グループに適用する（spec は 1 つしかない）。拒否しない |
+
+### 19.4 拒否規則
+
+いずれも `add()` の受理時点で判定し、`refused_kind` を残して `kind = "noop"` にする（`:298` の既存機構）。
+拒否は記録に残り、曲線は動かない。
+
+1. `at < 受理時点の scheduler step`（D25）
+2. 新 spec が語彙外のスケジュール名を指す（`LR_SCHEDULER_NAMES` 外。`INTERNAL_SCHEDULER_NAMES` も外）
+3. `anchor = restart` で `current_total − S <= 0`（残り区間が無い）
+4. `L < 0`、または `L` が `0` に丸まる単位変換を経ている（§18.5 と同じ番兵）
+5. 新 spec の `warmup_steps` が残り区間を超える
+6. `lr_floor_ratio` が `[0, 1]` の外
+7. `groups` に存在しないコンポーネント名が含まれる
+
+### 19.5 直列化と resume
+
+`ScheduleSpec` は `to_dict()` / `from_dict()` を持つ（`v` フィールド付き、未知キーは無視）。
+`retarget` 事象は `spec` をこの形で持ち、D4 の `lr_schedule_events` にそのまま入る。
+**`at <= step` への切り詰め（不変条件 6）はそのまま適用**する。
+
+`lr_schedule_events` に `retarget` を含まない旧 state は、そのまま「retarget なし」として読める。
+後方互換のための分岐は不要。
+
+### 19.6 派生操作（D27）
+
+| 操作 | 実体 |
+|---|---|
+| `scale k`（今から `×k`） | 現在の spec のまま、`m_at_S · k` を新しい基準にする retarget |
+| `hold` | `constant` spec への retarget（`L = 0`） |
+| `undo` | 直前の retarget の 1 つ前の spec への retarget。履歴は巻き戻さず追記する |
+
+UI は 3 つとも独立したボタンとして出すが、事象列に落ちるのは `retarget` である。
+
+### 19.7 条件トリガ（D28）
+
+トリガ評価はトレーナー側（`poll_lr_schedule_commands` と同じ seam）で行い、
+発火したら `at` を固定した `retarget` / `decay` を **materialize して追記**する。
+条件式は事象列に入らないので、§16 不変条件 2（lambda の純粋性）は保たれる。
+
+本節ではトリガの条件語彙は決めない（未測定の閾値を書かないため）。実装フェーズを分ける。
+
+### 19.8 API・UI
+
+- `POST /training/runs/{id}/lr-schedule/retarget` — 事象を投函する（D6 の control RPC 経由）
+- `POST /training/lr-schedule/preview` — 候補事象列を受け取り標本点を返す（D29）
+- UI は「方式ピッカー + パラメータ + 適用 step（既定 = 現在）+ 混合長 + 形」と、
+  **適用前にチャートへ重ねるプレビュー**を持つ。適用済み事象はチャート上にマーカーで出す
+- `.lr_schedule.json`（D19）に有効 spec と進行中の混合を書く（表示専用、resume の根拠にしない）
+
+### 19.9 §16 に追加する不変条件
+
+14. 事象は追記のみ。過去を書き換えない（D25）。取り消しも追記で表現する。
+15. `retarget` の `spec` は直列化形で持ち、絶対 step を焼き込まない（`restart` の総長は評価時に導出）。
+16. 混合中の乗数は両曲線の最大値を超えない（D30）。
+17. 事象種を増やさない。新しい操作は `retarget` の退化形として表現する（D27）。
+
+### 19.10 実装フェーズ
+
+| P | 内容 | 受け入れ |
+|---|---|---|
+| R0 | `_fold` が `(spec, state)` を返す形への変更（挙動不変） | 既存 609 件が bit 同一で通る |
+| R1 | `ScheduleSpec` の直列化、`retarget` 事象、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 7 件を網羅する試験 |
+| R2 | グループセレクタ（spec のグループ識別子を含む） | `lr_group_schedules` オン/オフ両方 |
+| R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ |
+| R4 | プレビュー API と UI | サーバ実装と UI 表示の一致 |
+| R5 | 派生操作（scale / hold / undo） | いずれも `retarget` に落ちること |
+| R6 | 条件トリガ | 別途設計 |
+
+### 19.11 範囲外
+
+- トリガの条件語彙と閾値（R6 で別途）
+- optimizer のハイパーパラメータ（`betas`、`weight_decay`）の実行時変更。LR 乗数の話ではない
+- 学習率の**絶対値**の変更。本節が扱うのは乗数であり、基準 LR は config が持つ
+
+**回帰条件**: R1–R3 は、§17 が挙げた 3 件の実欠陥（ReLoRA の遡及短縮、plateau `D` の焼き込み、
+蓄積数変更時の終端）と同じ条件下で `retarget` を挟んだ場合を必ず含める。
+本節の費用は混合の式ではなく、この組み合わせにある。

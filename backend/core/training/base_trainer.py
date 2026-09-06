@@ -45,6 +45,8 @@ from core.attention import (
 from core.training import training_control_rpc as control_rpc
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
+    STATE_DECAYING,
+    STATE_FLOOR,
     STATE_NAMES,
     ScheduleTimeline,
     build_lr_scheduler,
@@ -329,12 +331,22 @@ def scheduler_total_steps(trainer, total_steps: int) -> int:
 
 
 def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
-    return resolve_spec(
+    spec = resolve_spec(
         getattr(trainer, "config", None) or {},
         warmup_steps=getattr(trainer, "optimizer_warmup_steps", 0),
         total_steps=scheduler_total_steps(trainer, total_steps),
         name=lr_scheduler_type,
     )
+    if spec.curve == "polynomial" and spec.floor_defaulted:
+        # The one name whose absent-floor reading changed with D10.
+        emit_training_warning(
+            "This run's YAML sets no lr_floor_ratio, so `polynomial` now "
+            "decays to 0. Before the floor was generalized it settled at "
+            "diffusers' own lr_end/lr_init = 1e-7/lr instead. Set "
+            "lr_floor_ratio to choose the floor explicitly.",
+            code="lr_schedule_polynomial_floor_changed",
+            prefix=getattr(trainer, "log_prefix", "[Trainer]"))
+    return spec
 
 
 def live_scheduler_step(trainer) -> int:
@@ -436,6 +448,32 @@ def install_lr_schedule_events(trainer, global_step: int) -> None:
             f"old remainder onto the new one, so the curve is continuous here "
             f"and still reaches its end at the new total.",
             code="lr_schedule_total_steps_changed", prefix=prefix)
+        length = lr_decay_explicit_length(trainer, position)
+        if length is not None and spec.total_steps > previous:
+            emit_training_warning(
+                f"This run's decay has an explicit length ({length} scheduler "
+                f"steps), which is measured in real steps and is NOT stretched "
+                f"by the new total: it reaches the floor where it always would "
+                f"have, and the extra steps run at the floor.",
+                code="lr_schedule_extension_on_floor", prefix=prefix)
+
+
+def lr_decay_explicit_length(trainer, position: int) -> Optional[int]:
+    """The decay's length in REAL steps, or None when it runs to the end.
+
+    Either the config's (`lr_decay_steps` under `wsd`) or the one baked into a
+    decay event that has already been applied.
+    """
+    timeline = getattr(trainer, "lr_timeline", None)
+    spec = getattr(trainer, "lr_schedule_spec", None)
+    if timeline is None or spec is None:
+        return None
+    overlay = timeline.state_at(spec, int(position))
+    if overlay.code in (STATE_DECAYING, STATE_FLOOR) and overlay.length is not None:
+        return int(overlay.length)
+    if spec.curve == "wsd" and spec.decay_length is not None:
+        return int(spec.decay_length)
+    return None
 
 
 def reapply_lr_schedule_position(trainer) -> None:
@@ -572,6 +610,14 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
         try:
             if kind is None:
                 result = "rejected_unknown_command"
+            elif kind == "decay":
+                # §12.1: the command carries no length or shape; both come from
+                # the run's config, through the spec. Not spec.decay_shape --
+                # that is the BASE curve's, which the two aliases fix to their
+                # own definition.
+                result = timeline.add(kind, at=position, request_id=request_id,
+                                      length=spec.command_decay_length,
+                                      shape=spec.command_decay_shape)
             else:
                 result = timeline.add(kind, at=position, request_id=request_id)
         except Exception as e:   # noqa: BLE001

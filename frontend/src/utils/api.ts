@@ -6460,10 +6460,16 @@ export interface TrainingRunCreateRequest {
   gradient_accumulation_steps?: number;
   max_grad_norm?: number;
   learning_rate?: number;
-  lr_scheduler?: string;  // Includes "plateau_cosine_floor" (warmup -> plateau -> cosine decay to floor)
+  // One of LR_SCHEDULER_NAMES; the backend rejects anything else.
+  lr_scheduler?: string;
   lr_warmup_steps?: number;
   lr_decay_start_ratio?: number;  // plateau_cosine_floor only: fraction of total steps where decay begins (default 0.85)
-  lr_floor_ratio?: number;  // plateau_cosine_floor only: floor as a fraction of base LR (default 0.25)
+  lr_floor_ratio?: number;  // Floor every decaying schedule holds, as a fraction of base LR (default 0.25)
+  lr_decay_start_step?: number;  // wsd only: step the plateau ends at (0 = only a start_decay command starts it)
+  lr_decay_steps?: number;  // Decay length in optimizer steps (0 = to the end); also a start_decay command's length
+  lr_decay_shape?: string;  // "cosine" | "linear" | "rex"
+  lr_cycle_steps?: number;  // cosine_with_restarts only: cycle length (0 = one cycle over the whole run)
+  lr_cycle_peak_decay?: number;  // cosine_with_restarts only: cycle i peaks at this^i
   rewarmup_on_optimizer_reset?: boolean;  // Re-apply lr_warmup_steps when a resume gets a fresh optimizer state (default true)
   use_ema?: boolean;  // Weight EMA (opt-in, default off); saves a separate, loadable "_ema" checkpoint alongside the normal one
   ema_decay?: number;  // EMA decay factor (default 0.9999)
@@ -7250,6 +7256,111 @@ export const getTrainingSampleQueue = async (
   runId: number
 ): Promise<TrainingSampleQueueResponse> => {
   const response = await api.get(`/training/runs/${runId}/sample-queue`);
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// Runtime LR schedule: decay now / cancel, and the state the trainer publishes
+// ---------------------------------------------------------------------------
+
+// The vocabulary itself is mirrored once, in TrainingConfig.tsx's
+// LR_SCHEDULER_OPTIONS (each name with the note its control shows);
+// lr_schedule_vocabulary_test.py pins that list against the backend registry.
+
+export interface LrScheduleGroupState {
+  index: number;
+  name: string;
+  schedule: string;
+  state: string;
+  state_code: number;
+  multiplier: number;
+  lr: number;
+}
+
+export interface LrScheduleState {
+  version: number;
+  run_id: number | null;
+  written_at: number;
+  step: number;
+  global_step: number;
+  scheduler: string;
+  warmup_steps: number;
+  state: string;
+  state_code: number;
+  state_at: number;
+  decay_disarmed: boolean;
+  multiplier: number;
+  nominal_total_steps: number;
+  effective_total_steps: number;
+  groups: LrScheduleGroupState[];
+  events: Record<string, any>[];
+}
+
+export interface LrScheduleCommandResult {
+  request_id: string;
+  run_id: number | null;
+  command: string;
+  result: string;
+  at: number;
+  global_step: number;
+  error: string | null;
+  completed_at: number;
+}
+
+export interface LrScheduleStatusResponse {
+  run_id: number;
+  is_running: boolean;
+  max_pending: number;
+  // Null until the trainer's first batch of this session wrote one.
+  status: LrScheduleState | null;
+  pending: { request_id: string; command: string; queued_at: number }[];
+  results: LrScheduleCommandResult[];
+}
+
+export interface LrScheduleCommandAccepted {
+  request_id: string;
+  run_id: number;
+  command: string;
+  queued_at: number;
+  pending_count: number;
+  max_pending: number;
+}
+
+// Fire and forget: the 202 means the command file was written. The trainer
+// applies it at the head of its next batch and the outcome shows up in
+// getLrScheduleStatus under the same request_id.
+export const queueLrScheduleCommand = async (
+  runId: number,
+  command: "start_decay" | "cancel_decay"
+): Promise<LrScheduleCommandAccepted> => {
+  const response = await api.post(`/training/runs/${runId}/lr-schedule`, { command });
+  return response.data;
+};
+
+export const getLrScheduleStatus = async (
+  runId: number
+): Promise<LrScheduleStatusResponse> => {
+  const response = await api.get(`/training/runs/${runId}/lr-schedule`);
+  return response.data;
+};
+
+export interface LrSchedulePreview {
+  lr_scheduler: string;
+  scheduler_total_steps: number;
+  warmup_steps: number;
+  floor_ratio: number;
+  floor_defaulted: boolean;
+  description: string;
+  n_points: number;
+  points: [number, number][];
+}
+
+// The curve is sampled by the backend with the same code the trainer runs, so
+// no schedule is ever re-implemented here.
+export const getLrSchedulePreview = async (
+  params: Record<string, string | number | undefined>
+): Promise<LrSchedulePreview> => {
+  const response = await api.get(`/training/lr-schedule/preview`, { params });
   return response.data;
 };
 

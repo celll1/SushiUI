@@ -6321,6 +6321,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /training/lr-schedule/preview:
+    get:
+      tags: [training]
+      summary: Sample the LR multiplier curve a configuration would produce
+      description: |
+        Evaluates a proposed schedule with the same code a run uses and returns
+        evenly spaced `[step, multiplier]` samples, so a client never has to
+        re-implement a schedule to draw it. No run and no model are involved.
+
+        The step axis is OPTIMIZER steps: `total_steps` is divided by
+        `gradient_accumulation_steps` exactly as the trainer divides it, and
+        `scheduler_total_steps` in the response is the axis the points are on.
+        `lr_warmup_steps` is NOT divided, matching what the trainer passes.
+
+        Omitting `lr_floor_ratio` asks for the reading a YAML with no floor key
+        gets (0.25 for `plateau_cosine_floor`, 0.0 otherwise) and reports it as
+        `floor_defaulted: true`. The samples show only the configured curve: a
+        runtime `start_decay`, a cancellation and a `total_steps` change belong
+        to a live run and appear in `GET /training/runs/{run_id}/lr-schedule`.
+      parameters:
+        - name: lr_scheduler
+          in: query
+          schema: { type: string, default: constant }
+        - name: total_steps
+          in: query
+          schema: { type: integer, default: 1000, minimum: 1 }
+        - name: gradient_accumulation_steps
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: lr_warmup_steps
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: lr_floor_ratio
+          in: query
+          description: Omit for the compatibility reading of a floor-less config.
+          schema: { type: number, format: float, minimum: 0, maximum: 1 }
+        - name: lr_decay_start_ratio
+          in: query
+          schema: { type: number, format: float, default: 0.85 }
+        - name: lr_decay_start_step
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: lr_decay_steps
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: lr_decay_shape
+          in: query
+          schema: { type: string, default: cosine, enum: [cosine, linear, rex] }
+        - name: lr_cycle_steps
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: lr_cycle_peak_decay
+          in: query
+          schema: { type: number, format: float, default: 1.0 }
+        - name: n_points
+          in: query
+          description: Clamped to 2..512.
+          schema: { type: integer, default: 256 }
+      responses:
+        '200':
+          description: Curve samples
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrSchedulePreview'
+              example:
+                lr_scheduler: wsd
+                scheduler_total_steps: 1000
+                warmup_steps: 100
+                floor_ratio: 0.1
+                floor_defaulted: false
+                description: "wsd (warmup=100, total=1000, floor_ratio=0.1, decay_start=600 (real), decay_length=to_end, decay_shape=rex) [scheduler steps]"
+                n_points: 6
+                points: [[0, 0.0], [200, 1.0], [400, 1.0], [600, 1.0], [800, 0.7], [1000, 0.1]]
+        '400':
+          description: Unknown scheduler name, unknown decay shape, or a total below the accumulation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /training/runs/{run_id}/samples/{filename}:
     get:
       tags: [training]
@@ -20028,6 +20108,47 @@ components:
           items:
             $ref: '#/components/schemas/LrScheduleCommandResult'
 
+    LrSchedulePreview:
+      type: object
+      description: Samples of the LR multiplier curve a configuration produces.
+      required: [lr_scheduler, scheduler_total_steps, warmup_steps, floor_ratio,
+                 floor_defaulted, description, n_points, points]
+      properties:
+        lr_scheduler:
+          type: string
+          description: The resolved name, lower-cased.
+          example: wsd
+        scheduler_total_steps:
+          type: integer
+          description: total_steps // gradient_accumulation_steps — the axis the points are on.
+          example: 1000
+        warmup_steps:
+          type: integer
+          example: 100
+        floor_ratio:
+          type: number
+          format: float
+          example: 0.1
+        floor_defaulted:
+          type: boolean
+          description: True when no floor was supplied and the compatibility reading applied.
+          example: false
+        description:
+          type: string
+          description: The one-line spec the trainer logs at startup for the same config.
+        n_points:
+          type: integer
+          description: Length of `points`; may be below the requested count, which is deduplicated after rounding to integer steps.
+          example: 6
+        points:
+          type: array
+          description: "`[step, multiplier]` pairs, ascending by step, both endpoints included."
+          items:
+            type: array
+            items:
+              type: number
+          example: [[0, 0.0], [500, 1.0], [1000, 0.1]]
+
     GpuStatsEntry:
       type: object
       properties:
@@ -20226,23 +20347,59 @@ components:
         lr_scheduler:
           type: string
           default: "constant"
+          enum:
+            - constant
+            - constant_with_warmup
+            - linear
+            - cosine
+            - cosine_with_restarts
+            - polynomial
+            - plateau_cosine_floor
+            - wsd
+            - rex
           description: |
-            Learning rate scheduler type. Includes the diffusers scheduler types
-            (`constant`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`,
-            `constant_with_warmup`, ...) plus `plateau_cosine_floor`: warmup, then a
-            plateau at the base LR, then a cosine decay down to a floor
-            (`lr_floor_ratio` of the base LR) that is held for the remainder of
-            training (see `lr_decay_start_ratio` / `lr_floor_ratio`).
+            Learning rate scheduler. Every name is built by the same in-house
+            registry, and the multiplier is always
+            `warmup(step) * (lr_floor_ratio + (1 - lr_floor_ratio) * shape(step))`.
+
+            - `constant` — no decay. Unlike the diffusers schedule of the same
+              name it DOES apply `lr_warmup_steps`, so it is identical to
+              `constant_with_warmup` (which is still accepted).
+            - `linear`, `cosine`, `polynomial` — decay from the end of warmup to
+              the end of the run, holding `lr_floor_ratio` afterwards.
+            - `cosine_with_restarts` — a cosine that restarts every
+              `lr_cycle_steps` steps, each cycle peaking at
+              `lr_cycle_peak_decay^cycle`. With `lr_cycle_steps: 0` there is one
+              cycle over the whole run, which is a plain cosine.
+            - `plateau_cosine_floor` — warmup, a plateau at the base LR until
+              `lr_decay_start_ratio` of the run, then a cosine decay to the floor.
+            - `wsd` — warmup-stable-decay: the plateau ends at
+              `lr_decay_start_step` (0 = never from config, so the decay is
+              started by `POST /training/runs/{run_id}/lr-schedule`), runs for
+              `lr_decay_steps` (0 = to the end) and has shape `lr_decay_shape`.
+            - `rex` — `wsd` with the decay starting at the end of warmup and the
+              REX shape `(1-q)/(1-q/2)`, which no cosine reproduces: cosine
+              enters its decay with slope 0 and REX with -1/2.
+
+            An unknown name is rejected here rather than when the run reaches
+            the optimizer. `piecewise_constant` is not offered: its `step_rules`
+            were never passed, so it never worked.
           example: "cosine"
         lr_warmup_steps:
           type: integer
           default: 0
-          description: Number of LR warmup steps
+          minimum: 0
+          description: |
+            Linear ramp from 0 to the base LR over this many OPTIMIZER steps,
+            applied by every scheduler. Also the length of the return ramp a
+            `cancel_decay` command uses.
           example: 100
         lr_decay_start_ratio:
           type: number
           format: float
           default: 0.85
+          minimum: 0
+          maximum: 1
           description: |
             Only consumed when `lr_scheduler` is `plateau_cosine_floor`. Fraction of
             total training steps (0-1) at which the plateau ends and the cosine decay
@@ -20252,11 +20409,76 @@ components:
           type: number
           format: float
           default: 0.25
+          minimum: 0
+          maximum: 1
           description: |
-            Only consumed when `lr_scheduler` is `plateau_cosine_floor`. Fraction of
-            the base learning rate the cosine decay settles at and holds for the
-            remainder of training (never decays to 0).
+            The floor every decaying schedule settles at and holds, as a fraction
+            of the base learning rate. `constant` has no decay, so it is unaffected.
+
+            A run whose YAML predates this generalization carries no key at all,
+            and is read as 0.25 for `plateau_cosine_floor` and 0.0 for every other
+            name — which is what those schedules did. `polynomial` is the one
+            exception worth naming: it used to settle at diffusers' own
+            `1e-7 / lr` and now settles at 0 unless a floor is given.
           example: 0.25
+        lr_decay_start_step:
+          type: integer
+          default: 0
+          minimum: 0
+          description: |
+            `wsd` only: the OPTIMIZER step its plateau ends at. 0 means the config
+            declares no decay — the run holds the base LR until a `start_decay`
+            command arrives, which is the runtime WSD the command endpoint exists
+            for.
+          example: 0
+        lr_decay_steps:
+          type: integer
+          default: 0
+          minimum: 0
+          description: |
+            How long a decay runs, in OPTIMIZER steps. 0 = until the schedule's
+            end. Used by `wsd`'s configured decay and by a `start_decay` command
+            under any scheduler.
+
+            An explicit length is measured in real steps, so extending
+            `total_steps` on a resume does NOT stretch it: it reaches the floor
+            where it always would have and the extra steps run at the floor.
+          example: 0
+        lr_decay_shape:
+          type: string
+          default: "cosine"
+          enum: [cosine, linear, rex]
+          description: |
+            The shape of a `wsd` decay and of a `start_decay` command's decay, as
+            k(q) with k(0)=1 and k(1)=0: `cosine` = ½(1+cos(πq)), `linear` = 1-q,
+            `rex` = (1-q)/(1-q/2). Ignored by `rex` (which is this shape by
+            definition) and by `plateau_cosine_floor` (cosine by definition).
+          example: "cosine"
+        lr_cycle_steps:
+          type: integer
+          default: 0
+          minimum: 0
+          description: |
+            `cosine_with_restarts` only: the length of one cosine cycle in
+            OPTIMIZER steps. 0 = one cycle over the whole run, which is a plain
+            cosine — and is what this scheduler produced before the cycle count
+            was reachable, so an existing run's curve is unchanged.
+
+            A cycle length is absolute: extending `total_steps` adds cycles
+            rather than stretching them.
+          example: 0
+        lr_cycle_peak_decay:
+          type: number
+          format: float
+          default: 1.0
+          exclusiveMinimum: 0
+          maximum: 1
+          description: |
+            `cosine_with_restarts` only: cycle `i` peaks at
+            `lr_cycle_peak_decay^i` of the base LR. 1.0 = every restart returns to
+            the base LR. The floor still applies, so the multiplier never goes
+            below `lr_floor_ratio`.
+          example: 1.0
         rewarmup_on_optimizer_reset:
           type: boolean
           default: true

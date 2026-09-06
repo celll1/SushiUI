@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 実装済み（§18）。P3 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 / P2 / P3 実装済み（§18）。P4 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -736,7 +736,7 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 | **P0 集約と等価移植（実装済み、§18）** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = floor(T/gas)`、fast-forward は保存した scheduler_step、旧状態のみ除算推定、詳細は §17.1）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 互換条件（§17）を満たす名前と床、`0 ≤ W < T`、`0 ≤ s ≤ T` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
 | **P1 タイムラインと延長耐性（実装済み、§18.2）** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
 | **P2 実行時コマンド（実装済み、§18.3。UI のみ P3 へ）** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
-| **P3 新スケジュールと床の一般化** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
+| **P3 新スケジュールと床の一般化（実装済み、§18.4）** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
 | **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
 | **P5 LLRD** | `ArchHandler.depth_blocks`（DiT 第 1 波）、`apply_layer_decay`、グループ `name` 必須化（§10.3、LLRD でも必要）、メトリクス emit の変更、capability 登録、UI | テスト: 合成モデルで `depth_of` の被覆（全 trainable param がどこかに入る）、係数の等比、非ブロック param が 1.0、`_record_configured_group_lrs` が分割後を記録、fused 併用が `ValueError`。実 arch は 3 step smoke（有限 loss）で足りる | 中。arch ごとのブロック属性（要検証）。sd15/sdxl は unsupported |
 | **P6 グループ別スケジュール** | `lr_group_schedules`、`build_lr_scheduler` の lambda リスト、fused 併用拒否、Advanced UI | テスト: 2 グループで異なる名前、`reassert_config_lr` と fast-forward が各グループの lambda を使う、無名グループの警告 | 低〜中。既定オフ |
@@ -982,6 +982,43 @@ P0 が**やっていない**こと: 実行時タイムライン（`ScheduleTimel
   フロントは P3 の UI 作業とまとめる。API は openapi に載っているので
   `POST` / `GET` はそのまま呼べる。
 
+- **P3: §12.3 のチェックリストには `PARAM_KEYS` を守るガードが無い。** 9 番の
+  「漏れると編集保存のたびに既定へ戻る」は正しいが、それを固定するはずの
+  `training_edit_restore_coverage_test.py` は pass-through キーでは無力である:
+  そのテストの「送っているキー」集合自体が `PARAM_KEYS` から作られるので、
+  エントリを消すと送信側と復元側の両方から同時に消え、差が出ない
+  （実際に消して確認した）。リテラルに名前が出る computed キーだけが守られている。
+  P3 は「`TrainingRunCreateRequest` の `lr_*` フィールド全件が `PARAM_KEYS` に居る」
+  という assertion を `lr_schedule_vocabulary_test.py` に置いた。
+- **P3: 無条件書き込みをループで書くと `train_section_key_vocabulary()` が見落とす。**
+  この関数は `_build_train_section` の AST から `train["literal"] = ...` の
+  添字リテラルを拾う（`training_config.py`）。`for key in (...): train[key] = ...`
+  では語彙に入らず、`preserve_unmodelled_train_keys` が将来そのキーを
+  「config チャンネル専用」と誤認する土台になる。1 キー 1 行で書いた。
+- **P3: `routes.py` から `lr_schedules` を module-level import すると循環になる。**
+  `lr_schedules` → `api.param_defaults` → `api/__init__.py` → `api.routes` →
+  `lr_schedules`（初期化途中）で `ImportError` になり、**API を経由しない
+  `core.training.base_trainer` の import が壊れる**（＝トレーナーのサブプロセスが
+  起動しない）。D18 の「Pydantic に validator を付ける」には import 位置の制約が
+  付く: validator の本体で import する。AGENTS.md の実 import チェックが捕捉した。
+- **P3: `W` は scheduler 軸に換算されていない。** §17.1 は `T` と resume 位置を
+  直したが、`optimizer_warmup_steps` は `gradient_accumulation_steps` で割られずに
+  そのまま `resolve_spec` の `W` になる（`base_trainer.py` の
+  `resolve_lr_schedule_spec` と再 warmup のランプ長）。`gas > 1` では warmup が
+  `T_sched` に対して `gas` 倍の長さを占める。P3 はこれを**変えていない**（全 run の
+  形が変わる挙動変更で、P3 の範囲外）。プレビューも同じ換算をしないことで
+  トレーナーと一致させてある。直すなら独立したフェーズと警告が要る。
+- **P3: `lr_decay_steps` は 2 つの意味を持つ。** §12.1 は「`wsd`、コマンドの `decay`」と
+  1 行に書いているが、前者は base curve の長さ（`wsd` のみ、`plateau_cosine_floor` と
+  `rex` は「名目終端まで」で固定）、後者はどの名前でも効くコマンドの長さである。
+  `ScheduleSpec` は `decay_length`（curve 用）と `command_decay_length`（コマンド用）に
+  分けた。同じキーを別名の base curve に効かせると D11 の bit 同一が壊れる。
+- **P3: polynomial は明示床でも diffusers と bit 同一にはならない。** 式の結合が
+  違う（`((lr_init−lr_end)·p + lr_end)/lr_init` 対 `F + (1−F)·p`）ので、
+  `F = lr_end/lr_init` を与えても丸め一致まで。§17.2 の「明示 F への移行後は
+  linear と同形になる」は形の話であり、bit 同一の主張ではない。P0 テストの
+  polynomial 2 件は P3 の契約に書き換えた（`_COMPATIBLE` からも外した）。
+
 ### 18.2 P1 で出荷した挙動変更（2026-09-06）
 
 P1 は `ScheduleTimeline` を本体にした: `(at, seq)` 順の事象列、§7.2 の時間軸 warp、
@@ -1053,3 +1090,60 @@ VAE トレーナー（P7）。テストは
 `backend/tests/lr_schedule_control_rpc_test.py`（38 件）。P0 の
 `lr_schedules_test.py`、P1 の `lr_schedule_timeline_test.py`、
 sample RPC の既存テストは 1 件も書き換えずに通る。
+
+### 18.4 P3 で出荷したもの（2026-09-06）
+
+P3 は語彙を開いた。`wsd` と `rex`（どちらも 1 つの curve の別名）、実軸のサイクル長と
+ピーク annealing を持つ in-house `cosine_with_restarts`、そして D10 の床
+—— 全 curve が `m = ramp · (F + (1 − F) · shape)` になった。`F = 0` では
+`1 − 0 == 1`、`1 · x == x`、`0 + x == x` がいずれも厳密なので、移植済み曲線は
+P0 と bit 同一のまま（`lr_schedules_test.py` の diffusers 対照が通る）。
+config キーは §12.3 のチェックリスト全段（`param_defaults` → `openapi.yaml` →
+Pydantic → YAML 書き込み → `resolve_spec` → `api.ts` → `DEFAULT_PARAMS` →
+コントロール → `PARAM_KEYS`）に載せた。
+
+新キー 5 本（`TRAINING_DEFAULTS` が唯一の情報源）:
+`lr_decay_start_step` (0)、`lr_decay_steps` (0)、`lr_decay_shape` ("cosine")、
+`lr_cycle_steps` (0)、`lr_cycle_peak_decay` (1.0)。
+`lr_floor_ratio` と合わせて 6 本を `_build_train_section` で**無条件に**書く
+（`lr_decay_start_ratio` だけは §12.1 どおり `plateau_cosine_floor` のときだけ）。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| `polynomial` の床 | `1e-7 / optimizer.defaults['lr']`（diffusers の `lr_end/lr_init`。P0 はそのまま移植した） | `lr_floor_ratio`。YAML にキーが無ければ **0.0** | `lr_scheduler: polynomial` の全 run。構築時に `lr_schedule_polynomial_floor_changed` を 1 行出す |
+| `polynomial` の構築拒否 | `lr_end > lr_init` で `ValueError`（`lr < 1e-7` の run が開始前に落ちた） | 床は比率なので基準 LR を超えられない。拒否そのものが消えた | 基準 LR が `1e-7` 未満の run |
+| `linear` / `cosine` / `cosine_with_restarts` の床 | 常に 0 | `lr_floor_ratio`（YAML にキーが無ければ 0.0 = 旧挙動） | 床を明示した新規 run のみ |
+| `lr_scheduler` の未知名 | 任意文字列が API を通り、構築時に `ValueError`（P0 以降） | `TrainingRunCreateRequest` の validator が 422 で弾き、小文字に正規化する | 未知名を送っていた呼び出し元（動く run は無い） |
+| `lr_floor_ratio` / `lr_decay_*` / `lr_cycle_*` の範囲 | 無検証 | Pydantic で `0 ≤ F ≤ 1`、`0 < peak ≤ 1`、step 系は `≥ 0`。`resolve_spec` も同じ境界で `ValueError` | 範囲外を送っていた呼び出し元 |
+| 旧 run の編集保存 | 床キーの無い YAML はそのまま | `GET /params` が Pydantic 既定 0.25 を返し、保存で YAML に入る。`cosine` の run を編集保存すると床が 0 → 0.25 になる | 編集された旧 run。UI に値が出るので無言ではない（§12.2 のプリセット経由と同じ帰結） |
+| `lr_schedule_extension_on_floor` | 発火しなかった（明示長を作れるキーが無かった、§18.1） | `lr_decay_steps > 0` か明示長の `decay` 事象を持つ run を延長再開したときに出る | 明示長を設定した run |
+
+新しい警告コード: `lr_schedule_polynomial_floor_changed`、および P1 から用意されていた
+`lr_schedule_extension_on_floor` の実発火。
+
+API（openapi 先行、同一変更内）:
+
+| メソッド/パス | 応答 |
+|---|---|
+| `GET /training/lr-schedule/preview` | 200 `LrSchedulePreview`（`sample_curve()` の標本、`n_points ≤ 512`）/ 400 未知名・未知 shape・`total_steps < gas` |
+
+UI（§14 の P2 行から繰り越した分を含む）:
+
+- `TrainingConfig.tsx` の `<select>` はレジストリ全語彙（`constant_with_warmup` は
+  受理のみ・非表示。ただし run が既にその値を持つときだけ選択肢を出す。空表示を避けるため）。
+  条件表示は `wsd` → 開始 step / 長さ / 形、`cosine_with_restarts` → サイクル長 / ピーク減衰、
+  `plateau_cosine_floor` → 開始比、`constant` 以外 → 床。
+- スケジュールプレビューは `GET /training/lr-schedule/preview` の標本を折れ線で描く（D20）。
+  TS 側に式は無い。
+- `TrainingMonitor.tsx` に「Decay now」「Cancel decay」と
+  `GET /training/runs/{id}/lr-schedule` の状態表示（代表グループの state・乗数・位置、
+  pending、直近の結果コード）。§6.5 の「チェックポイントより前に戻すとコマンドは無かったことになる」
+  を 1 文で書いた。
+
+テストは `backend/tests/lr_schedule_vocabulary_test.py`（83 件）。P0 の
+`lr_schedules_test.py` は polynomial の 2 件だけ P3 の契約に書き換え（bit 同一の対象から外れたため）、
+残りと P1 / P2 のテストは 1 件も書き換えずに通る。
+
+P3 が**やっていない**こと: ReLoRA 統合（P4）、LLRD（P5）、`lr_group_schedules`（P6）、
+VAE トレーナーの語彙統合（P7、`vae_config.py` の `VALID_LR_SCHEDULERS` は未変更で
+`LR_SCHEDULER_NAMES` の真部分集合のまま）。

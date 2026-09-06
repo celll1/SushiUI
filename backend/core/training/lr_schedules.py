@@ -22,8 +22,15 @@ P1 adds the runtime timeline: the ``total_steps`` warp of §7.2 and the
 BASE/DECAYING/FLOOR/RECOVERING overlay of §5.3 as §17.3 restates it. The
 overlay state is derived per SPEC from one shared event list, so P6's per-group
 schedules can diverge without a second timeline. P2 feeds it commands through
-``training_control_rpc``; the ReLoRA ``restart`` event is P4, and the
-generalized floor with the ``wsd``/``rex`` names is P3.
+``training_control_rpc``; the ReLoRA ``restart`` event is P4.
+
+P3 opens the vocabulary: ``wsd`` and ``rex`` (both aliases of one curve),
+``cosine_with_restarts`` with a real-axis cycle length and per-cycle peak
+annealing, and D10's floor -- ``m = ramp * (F + (1 - F) * shape)`` for EVERY
+curve, which is bit-identical to P0 wherever ``F == 0``. ``polynomial`` joins
+that form, so its floor is now ``lr_floor_ratio`` and no longer diffusers'
+``1e-7 / lr`` (§17.2, recorded in §18.3). A YAML with no floor key at all reads
+as 0.25 for ``plateau_cosine_floor`` and 0.0 everywhere else (§12.2).
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 __all__ = [
+    "DECAY_SHAPE_NAMES",
     "LR_SCHEDULER_NAMES",
     "OverlayState",
     "STATE_BASE",
@@ -52,10 +60,12 @@ __all__ = [
     "describe_spec",
     "make_lambda",
     "resolve_spec",
+    "sample_curve",
 ]
 
-# The vocabulary P0 implements. D18's validator/enum, and the `wsd` / `rex`
-# names, are P3.
+# The canonical vocabulary (D18). routes.py validates against it and
+# openapi.yaml's enum mirrors it. `relora` stays internal (P4); the VAE
+# trainer's own list is P7.
 LR_SCHEDULER_NAMES = (
     "constant",
     "constant_with_warmup",
@@ -64,16 +74,23 @@ LR_SCHEDULER_NAMES = (
     "cosine_with_restarts",
     "polynomial",
     "plateau_cosine_floor",
+    "wsd",
+    "rex",
 )
 
-# diffusers' get_polynomial_decay_schedule_with_warmup defaults, which neither
-# construction site ever overrode. Its floor is lr_end/lr_init -- NOT 0
-# (optimization.py:226, :252-270). P3 replaces it with an explicit floor.
-_POLYNOMIAL_LR_END = 1e-7
+# `wsd`'s decay shape k(q), k(0)=1, k(1)=0 (§4.2). `rex` is a shape, not a
+# separate curve: no exponent on a cosine reaches it, because cosine enters the
+# decay with slope 0 and REX with -1/2 (§8).
+DECAY_SHAPE_NAMES = ("cosine", "linear", "rex")
+
+# diffusers' polynomial exponent, which neither construction site ever
+# overrode. Its floor used to be lr_end/lr_init = 1e-7/lr; D10 replaced that
+# with lr_floor_ratio, so the two now differ for a run that sets no floor.
 _POLYNOMIAL_POWER = 1.0
-# get_scheduler's num_cycles default, likewise never passed: today's
-# `cosine_with_restarts` is a single cosine (§1-1).
-_RESTART_CYCLES = 1.0
+# §12.2: what a floor-less YAML means for every name but plateau_cosine_floor.
+# Not an API default (that is param_defaults' 0.25) -- it is how the schedules
+# that predate D10 actually behaved.
+_LEGACY_ABSENT_FLOOR = 0.0
 
 # Overlay states (§5.3). The integers D19 emits as `lr_decay_state` in P2.
 STATE_BASE = 0
@@ -113,6 +130,9 @@ class ScheduleSpec:
     warmup_steps: int
     total_steps: int
     floor_ratio: float = 0.0
+    # True when the YAML carried no lr_floor_ratio and §12.2's rule supplied
+    # one. The trainer warns on the one name where that changes the curve.
+    floor_defaulted: bool = False
     decay_start_step: Optional[int] = None
     # §17.2: an alias's derived start resolves from the NOMINAL total, so a
     # resume with a new total_steps does not move it. Equal to
@@ -122,10 +142,16 @@ class ScheduleSpec:
     decay_length: Optional[int] = None
     decay_end_kind: str = "nominal_total"
     decay_shape: str = "cosine"
-    poly_lr_end: float = _POLYNOMIAL_LR_END
-    # Bound to the optimizer by build_lr_scheduler: diffusers' polynomial
-    # multiplier is expressed relative to optimizer.defaults["lr"].
-    poly_lr_init: Optional[float] = None
+    # §12.1: lr_decay_steps / lr_decay_shape also give a runtime `start_decay`
+    # its length and shape, under EVERY name. The base curve reads
+    # decay_length/decay_shape instead, and the two aliases fix those to their
+    # own definition (cosine to the nominal end / rex from warmup).
+    command_decay_length: Optional[int] = None
+    command_decay_shape: str = "cosine"
+    # cosine_with_restarts (§9.1). 0 = one cycle over the whole nominal run,
+    # which is the single cosine every existing YAML already got.
+    cycle_steps: int = 0
+    cycle_peak_decay: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -473,6 +499,35 @@ def _lookup(config: Optional[Mapping[str, Any]], key: str) -> Any:
     return _TRAINING_DEFAULTS[key] if value is None else value
 
 
+def _resolve_floor(config: Optional[Mapping[str, Any]],
+                   name: str) -> Tuple[float, bool]:
+    """``F`` and whether §12.2's compatibility rule supplied it.
+
+    The rule keys off the YAML, never off the Pydantic default: a run written
+    before D10 has no key at all, and only ``plateau_cosine_floor`` had a floor
+    then.
+    """
+    raw = (config or {}).get("lr_floor_ratio")
+    if raw is None:
+        if name == "plateau_cosine_floor":
+            return float(_TRAINING_DEFAULTS["lr_floor_ratio"]), True
+        return _LEGACY_ABSENT_FLOOR, True
+    floor = float(raw)
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError(
+            f"lr_floor_ratio must be between 0 and 1 (got {floor}): it is a "
+            f"fraction of the base learning rate.")
+    return floor, False
+
+
+def _positive_or_none(config: Optional[Mapping[str, Any]], key: str) -> Optional[int]:
+    """A step count where the API spells "unset" as 0 (§12.1)."""
+    value = int(_lookup(config, key))
+    if value < 0:
+        raise ValueError(f"{key} must be >= 0 (got {value})")
+    return value or None
+
+
 def resolve_spec(
     config: Optional[Mapping[str, Any]],
     *,
@@ -493,43 +548,100 @@ def resolve_spec(
 
     W = max(0, int(warmup_steps or 0))
     T = max(1, int(total_steps))
+    floor, floor_defaulted = _resolve_floor(config, key)
+    # Available to a runtime `start_decay` under every name; the base curve
+    # reads decay_length/decay_shape, which only `wsd` takes from these.
+    command_length = _positive_or_none(config, "lr_decay_steps")
+    command_shape = str(_lookup(config, "lr_decay_shape")).strip().lower()
+    if command_shape not in DECAY_SHAPE_NAMES:
+        raise ValueError(
+            f"Unknown lr_decay_shape '{command_shape}'. Supported: "
+            f"{', '.join(DECAY_SHAPE_NAMES)}")
+    common = dict(warmup_steps=W, total_steps=T, floor_ratio=floor,
+                  floor_defaulted=floor_defaulted,
+                  command_decay_length=command_length,
+                  command_decay_shape=command_shape)
 
     if key == "plateau_cosine_floor":
         # D11: an alias for wsd -- decay start on the NOMINAL axis, length "to
         # the nominal end", never stored as an explicit real length (§17.2).
         ratio = float(_lookup(config, "lr_decay_start_ratio"))
-        floor = float(_lookup(config, "lr_floor_ratio"))
         start = max(W, min(round(ratio * T), T))
         return ScheduleSpec(
-            name=key, curve="wsd", warmup_steps=W, total_steps=T,
-            floor_ratio=floor, decay_start_step=start, decay_start_ratio=ratio,
-            decay_start_axis="nominal", decay_length=None,
-            decay_end_kind="nominal_total", decay_shape="cosine",
-        )
+            name=key, curve="wsd", decay_start_step=start,
+            decay_start_ratio=ratio, decay_start_axis="nominal",
+            decay_length=None, decay_end_kind="nominal_total",
+            decay_shape="cosine", **common)
 
-    # The floor is per-curve in P0 (polynomial's is diffusers' own; the others
-    # have none). Applying lr_floor_ratio to every curve is D10, in P3.
+    if key == "rex":
+        # §8/D14: WSD with no plateau. D = W is a REAL step, so W = 0 starts
+        # the decay at 0 -- distinct from `wsd`'s external D = 0, which means
+        # "manual" (§17.2).
+        return ScheduleSpec(
+            name=key, curve="wsd", decay_start_step=W, decay_start_axis="real",
+            decay_length=None, decay_end_kind="nominal_total",
+            decay_shape="rex", **common)
+
+    if key == "wsd":
+        return ScheduleSpec(
+            name=key, curve="wsd",
+            decay_start_step=_positive_or_none(config, "lr_decay_start_step"),
+            decay_start_axis="real", decay_length=command_length,
+            decay_end_kind="length" if command_length else "nominal_total",
+            decay_shape=command_shape, **common)
+
+    if key == "cosine_with_restarts":
+        peak = float(_lookup(config, "lr_cycle_peak_decay"))
+        if not 0.0 < peak <= 1.0:
+            raise ValueError(
+                f"lr_cycle_peak_decay must be in (0, 1] (got {peak}): it is the "
+                f"factor each restart's peak is multiplied by.")
+        return ScheduleSpec(
+            name=key, curve=key,
+            cycle_steps=int(_positive_or_none(config, "lr_cycle_steps") or 0),
+            cycle_peak_decay=peak, **common)
+
     curve = "constant" if key == "constant_with_warmup" else key
-    return ScheduleSpec(name=key, curve=curve, warmup_steps=W, total_steps=T)
+    return ScheduleSpec(name=key, curve=curve, **common)
 
 
 def _decay_shape(name: str) -> Callable[[float], float]:
     if name == "cosine":
         return lambda q: 0.5 * (1.0 + math.cos(math.pi * q))
-    raise NotImplementedError(f"decay_shape '{name}' ships in P3")
+    if name == "linear":
+        return lambda q: 1.0 - q
+    if name == "rex":
+        return lambda q: (1.0 - q) / (1.0 - q / 2.0)
+    raise ValueError(
+        f"Unknown decay shape '{name}'. Supported: {', '.join(DECAY_SHAPE_NAMES)}")
 
 
 def base_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
                     *, decay_disarmed: bool = False) -> float:
     """``m_base(s)``: §4's curve, with no runtime overlay on it.
 
+    ``m = ramp(s) * (F + (1 - F) * shape(s))`` (D10). With ``F == 0`` that
+    composition is bit-identical to the bare shape -- ``1 - 0 == 1``,
+    ``1 * x == x`` and ``0 + x == x`` are all exact -- which is what keeps the
+    ported curves equal to what diffusers produced.
+
     Reads ``timeline`` only through ``nominal_total``/``clock``, so it stays a
     pure function of ``(step, timeline.events)``.
     """
     W = spec.warmup_steps
     if W > 0 and step < W:
+        # The ramp is OUTSIDE the floor: warmup climbs from 0, as the plateau
+        # schedule it replaces did.
         return step / float(W)
 
+    F = spec.floor_ratio
+    return F + (1.0 - F) * _shape(spec, timeline, step, decay_disarmed)
+
+
+def _shape(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
+           decay_disarmed: bool) -> float:
+    """``shape(s)`` of §4.2: in [0, 1], with the floor applied by the caller."""
+    W = spec.warmup_steps
     curve = spec.curve
     if curve == "constant":
         # constant_with_warmup's shape. diffusers' bare `constant` ignored
@@ -542,29 +654,25 @@ def base_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
     if curve == "linear":
         return max(0.0, float(T - timeline.clock(step)) / float(max(1, T - W)))
 
-    if curve == "cosine":
+    if curve in ("cosine", "polynomial") or (
+            curve == "cosine_with_restarts" and spec.cycle_steps <= 0):
         progress = float(timeline.clock(step) - W) / float(max(1, T - W))
         # Clamped, where diffusers lets the cosine rise again past T.
         if progress > 1.0:
             progress = 1.0
+        if curve == "polynomial":
+            return max(0.0, (1.0 - progress) ** _POLYNOMIAL_POWER)
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     if curve == "cosine_with_restarts":
-        progress = float(timeline.clock(step) - W) / float(max(1, T - W))
-        if progress >= 1.0:
-            return 0.0
-        return max(0.0, 0.5 * (1.0 + math.cos(
-            math.pi * ((_RESTART_CYCLES * progress) % 1.0))))
-
-    if curve == "polynomial":
-        lr_init = spec.poly_lr_init
-        lr_end = spec.poly_lr_end
-        s = timeline.clock(step)
-        if s > T:
-            return lr_end / lr_init
-        pct_remaining = 1 - (s - W) / (T - W)
-        decay = (lr_init - lr_end) * pct_remaining ** _POLYNOMIAL_POWER + lr_end
-        return decay / lr_init
+        # C > 0 is an ABSOLUTE cycle length: real-axis, so an extension adds
+        # cycles instead of stretching them, and nothing here reads T.
+        C = float(spec.cycle_steps)
+        elapsed = max(0.0, float(step - W))
+        index = int(elapsed // C)
+        q = (elapsed - index * C) / C
+        peak = spec.cycle_peak_decay ** index
+        return max(0.0, peak * 0.5 * (1.0 + math.cos(math.pi * q)))
 
     if curve == "wsd":
         D = _config_decay_start(spec, T)
@@ -572,17 +680,23 @@ def base_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
             # Manual WSD not started, or a cancel voided the config decay
             # (§17.3). Holds 1 past T as well.
             return 1.0
-        F = spec.floor_ratio
-        position = (timeline.clock(step)
-                    if spec.decay_start_axis == "nominal" else float(step))
+        k = _decay_shape(spec.decay_shape)
+        if spec.decay_length is not None:
+            # An explicit length is REAL steps (D8): an extension runs the
+            # extra steps at the floor rather than stretching the decay.
+            if step < D:
+                return 1.0
+            return k(min(1.0, (step - D) / float(spec.decay_length)))
+        start = (float(D) if spec.decay_start_axis == "nominal"
+                 else timeline.clock(D))
+        position = timeline.clock(step)
         # Tested before the q form so that D == T holds the floor rather than
         # restarting the decay (the old lambda's max(1, T - D)).
         if position >= T:
-            return F
-        if position < D:
+            return 0.0
+        if position < start:
             return 1.0
-        q = (position - D) / float(max(1, T - D))
-        return F + (1.0 - F) * _decay_shape(spec.decay_shape)(q)
+        return k((position - start) / float(max(1, T - start)))
 
     raise ValueError(f"Unknown schedule curve '{curve}'")
 
@@ -591,13 +705,8 @@ def make_lambda(spec: ScheduleSpec, timeline: ScheduleTimeline) -> Callable[[int
     """The multiplier as a pure function of ``(step, timeline.events)``."""
     if spec.curve not in _CURVES:
         raise ValueError(f"Unknown schedule curve '{spec.curve}'")
-    if spec.curve == "polynomial" and spec.poly_lr_init is None:
-        raise ValueError(
-            "polynomial needs poly_lr_init; build it through build_lr_scheduler()")
     if spec.curve == "wsd":
         _decay_shape(spec.decay_shape)
-        if spec.decay_end_kind != "nominal_total" or spec.decay_length is not None:
-            raise NotImplementedError("explicit config decay lengths ship in P3")
 
     def lr_lambda(step: int) -> float:
         return timeline.multiplier(spec, step)
@@ -607,14 +716,36 @@ def make_lambda(spec: ScheduleSpec, timeline: ScheduleTimeline) -> Callable[[int
 
 def describe_spec(spec: ScheduleSpec) -> str:
     """One line for the startup log (§13)."""
-    parts = [f"warmup={spec.warmup_steps}", f"total={spec.total_steps}"]
+    parts = [f"warmup={spec.warmup_steps}", f"total={spec.total_steps}",
+             f"floor_ratio={spec.floor_ratio}"
+             + (" (default)" if spec.floor_defaulted else "")]
     if spec.curve == "wsd":
-        parts.append(f"decay_start={spec.decay_start_step}")
+        parts.append("decay_start=" + (
+            "manual" if spec.decay_start_step is None
+            else f"{spec.decay_start_step} ({spec.decay_start_axis})"))
+        parts.append("decay_length=" + (
+            "to_end" if spec.decay_length is None else str(spec.decay_length)))
         parts.append(f"decay_shape={spec.decay_shape}")
-        parts.append(f"floor_ratio={spec.floor_ratio}")
-    if spec.curve == "polynomial":
-        parts.append(f"lr_end={spec.poly_lr_end}")
+    if spec.curve == "cosine_with_restarts":
+        parts.append("cycle_steps=" + (
+            "whole_run" if spec.cycle_steps <= 0 else str(spec.cycle_steps)))
+        parts.append(f"cycle_peak_decay={spec.cycle_peak_decay}")
     return f"{spec.name} ({', '.join(parts)}) [scheduler steps]"
+
+
+def sample_curve(spec: ScheduleSpec, timeline: ScheduleTimeline,
+                 n_points: int = 256) -> List[Tuple[int, float]]:
+    """``n_points`` evenly spaced ``(step, multiplier)`` samples (D20).
+
+    The preview endpoint's only source, so the UI never re-implements a
+    schedule in TypeScript. Endpoints included; a discontinuity BETWEEN two
+    samples (a hard restart, a zero-length cancel) is not resolved by them.
+    """
+    total = timeline.current_total(spec.total_steps)
+    points = max(2, min(512, int(n_points)))
+    last = max(1, int(total))
+    steps = sorted({round(i * last / (points - 1)) for i in range(points)})
+    return [(step, timeline.multiplier(spec, step)) for step in steps]
 
 
 def build_lr_scheduler(
@@ -633,14 +764,6 @@ def build_lr_scheduler(
     if group_schedules:
         raise NotImplementedError("lr_group_schedules ships in P6")
     del group_names  # P6
-
-    if spec.curve == "polynomial":
-        lr_init = float(optimizer.defaults["lr"])
-        if not lr_init > spec.poly_lr_end:
-            raise ValueError(
-                f"lr_end ({spec.poly_lr_end}) must be smaller than initial lr "
-                f"({lr_init})")
-        spec = replace(spec, poly_lr_init=lr_init)
 
     timeline.bind_spec(spec)
     lr_lambda = make_lambda(spec, timeline)

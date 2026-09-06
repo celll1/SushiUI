@@ -42,6 +42,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from core.training.lr_utils import reassert_config_lr
+from core.training.training_events import emit_training_warning
 from core.training.vae.vae_config import VaeConfigError, strict_bool
 from core.training.vae.vae_dataset import (
     VaeEpochCropSampler,
@@ -93,6 +94,40 @@ _CKPT_ARTIFACTS = (
 # ("... unavailable; using constant LR") writes exactly such a checkpoint, and
 # refusing it would leave no way to resume once the cause is fixed.
 _CKPT_CONDITIONAL = ("ema.safetensors", "lr_scheduler.pt")
+
+# Payload version of ``lr_scheduler.pt``. Bumped when the keys AROUND the
+# scheduler's own state_dict change; the state_dict itself is torch's.
+_LR_SCHEDULE_STATE_VERSION = 1
+
+
+def _split_lr_scheduler_state(payload: Any,
+                              fallback_step: int) -> Tuple[Any, List[Any], int]:
+    """``(scheduler state, timeline events, scheduler position)`` from the file.
+
+    Migration: before P7 the file WAS the scheduler's ``state_dict()`` and no
+    timeline existed, so an old checkpoint reads as that half with no events —
+    which is exactly §7.4's "the first resume of a checkpoint with no timeline
+    takes the current total as the nominal axis".
+    """
+    if isinstance(payload, dict) and "lr_schedule_version" in payload:
+        version = int(payload.get("lr_schedule_version") or 0)
+        if version > _LR_SCHEDULE_STATE_VERSION:
+            raise ValueError(
+                f"lr_scheduler.pt is format version {version} and this build "
+                f"reads up to {_LR_SCHEDULE_STATE_VERSION}")
+        state = payload.get("scheduler")
+        if not isinstance(state, dict):
+            raise ValueError("lr_scheduler.pt carries no scheduler state")
+        events = payload.get("events") or []
+        if not isinstance(events, list):
+            raise ValueError("lr_scheduler.pt's events are not a list")
+        return state, list(events), int(payload.get("scheduler_step",
+                                                    fallback_step))
+    position = fallback_step
+    if isinstance(payload, dict):
+        position = int(payload.get("last_epoch", fallback_step))
+    return payload, [], int(position)
+
 
 # Cross-optimizer resume is deliberately an allow-list. These names are the
 # public VAE config values, not Python class names. Every allowed pair must also
@@ -167,6 +202,11 @@ class VaeTrainer:
         self.trainable_names: List[str] = []
         self.optimizer = None
         self.lr_scheduler = None
+        # The timeline the schedule's lambda closes over, and the spec it folds
+        # events over. Persisted BESIDE the scheduler's own state_dict, which
+        # carries neither (§17.4).
+        self.lr_timeline = None
+        self.lr_schedule_spec = None
         self.loss_bank = None
         self.ema: Optional[Dict[str, torch.Tensor]] = None
         self._ema_updates = 0
@@ -660,18 +700,60 @@ class VaeTrainer:
             weight_decay=self.cfg["optimizer_weight_decay"],
         )
 
+        self.build_lr_schedule()
+
+    def build_lr_schedule(self):
+        """Build the run's LR schedule through the shared registry (P7).
+
+        No accumulation conversion, deliberately: this loop increments
+        ``global_step`` only on the optimizer-step branch, so ``total_steps``
+        and ``lr_warmup_steps`` are ALREADY counted in scheduler advances.
+        ``gradient_accumulation_steps`` widens the batch here; it does not
+        divide the step counter, which is why ``resolve_spec`` is called at the
+        default ``advance_interval=1`` and not through ``base_trainer``'s
+        ``to_scheduler_axis`` (design §17.1, §18.9).
+
+        The config carries no ``lr_floor_ratio`` / ``lr_decay_*`` / ``lr_cycle_*``
+        key, so the floor resolves by the compatibility rule of §12.2 (0.25 for
+        ``plateau_cosine_floor``, 0.0 for everything else) and the aliases take
+        their shape constants from ``TRAINING_DEFAULTS``. ``describe_spec``
+        prints the resolved numbers, since this surface cannot state them.
+        """
+        from core.training.lr_schedules import (
+            ScheduleTimeline, build_lr_scheduler, describe_spec, resolve_spec,
+        )
         try:
-            from diffusers.optimization import get_scheduler
-            self.lr_scheduler = get_scheduler(
-                str(self.cfg["lr_scheduler"]),
-                optimizer=self.optimizer,
-                num_warmup_steps=int(self.cfg["lr_warmup_steps"]),
-                num_training_steps=int(self.cfg["total_steps"]),
+            timeline = ScheduleTimeline()
+            timeline.set_total_steps(int(self.cfg["total_steps"]))
+            spec = resolve_spec(
+                self.cfg,
+                warmup_steps=int(self.cfg["lr_warmup_steps"]),
+                total_steps=int(self.cfg["total_steps"]),
+                name=str(self.cfg["lr_scheduler"]),
             )
+            self.lr_scheduler = build_lr_scheduler(self.optimizer, spec, timeline)
+            self.lr_timeline = timeline
+            self.lr_schedule_spec = spec
+            print(f"{self.log_prefix} LR schedule: {describe_spec(spec)}")
+            if spec.curve == "polynomial":
+                # This surface has no lr_floor_ratio key, so the floor is always
+                # the §12.2 default and polynomial always lands on the changed
+                # reading. Named rather than left to the chart.
+                emit_training_warning(
+                    f"lr_scheduler='polynomial' now decays to 0. It used to "
+                    f"settle at diffusers' own lr_end/lr_init = 1e-7/lr "
+                    f"({1e-7 / max(float(self.cfg['learning_rate']), 1e-30):.4g} "
+                    f"of the base LR at this learning_rate). VAE training has no "
+                    f"lr_floor_ratio key to override it with; use 'cosine' or "
+                    f"'plateau_cosine_floor' for a schedule that holds a floor.",
+                    code="lr_schedule_polynomial_floor_changed",
+                    prefix=self.log_prefix)
         except Exception as e:
             print(f"{self.log_prefix} LR scheduler "
                   f"{self.cfg['lr_scheduler']!r} unavailable ({e}); using constant LR")
             self.lr_scheduler = None
+            self.lr_timeline = None
+            self.lr_schedule_spec = None
 
     def build_losses(self):
         self.loss_bank = vae_losses.VaeLossBank(
@@ -1030,7 +1112,7 @@ class VaeTrainer:
         optimizer_state["_sushi_opt_class"] = type(self.optimizer).__name__
         torch.save(optimizer_state, ckpt_dir / "optimizer.pt")
         if self.lr_scheduler is not None:
-            torch.save(self.lr_scheduler.state_dict(), ckpt_dir / "lr_scheduler.pt")
+            torch.save(self._lr_scheduler_payload(), ckpt_dir / "lr_scheduler.pt")
         torch.save(
             {
                 "python": random.getstate(),
@@ -1073,6 +1155,25 @@ class VaeTrainer:
         self._record_checkpoint_row(ckpt_dir, step)
         self._prune_checkpoints()
         return ckpt_dir
+
+    def _lr_scheduler_payload(self) -> Dict[str, Any]:
+        """What ``lr_scheduler.pt`` carries (§17.4).
+
+        A ``LambdaLR``'s ``state_dict()`` holds ``last_epoch`` and ``base_lrs``
+        and NOTHING its lambda closed over. The timeline is where an extension
+        warp lives, so writing only the state_dict would resume the right
+        POSITION on a curve rebuilt from this session's ``total_steps`` -- the
+        very rewind §7.3 exists to prevent. Version / events / scheduler_step
+        therefore go in explicitly, beside the scheduler's own half.
+        """
+        timeline = getattr(self, "lr_timeline", None)
+        position = int(getattr(self.lr_scheduler, "last_epoch", 0) or 0)
+        return {
+            "lr_schedule_version": _LR_SCHEDULE_STATE_VERSION,
+            "scheduler_step": position,
+            "events": timeline.dump(position) if timeline is not None else [],
+            "scheduler": self.lr_scheduler.state_dict(),
+        }
 
     def _checkpoint_manifest(self, ckpt_dir: Path) -> Dict[str, int]:
         """Name -> byte size of every artifact this checkpoint actually wrote.
@@ -1640,6 +1741,28 @@ class VaeTrainer:
               f"keep one comparable series, restore the checkpoint's values; to "
               f"read a clean series under the new ones, start a new run.")
 
+    def _install_lr_schedule_timeline(self, events, position: int) -> None:
+        """Seam (b) of design §5.2, for this trainer's own artifact.
+
+        The saved events replace the provisional ``total_steps(at=0)`` the
+        build wrote, and a ``total_steps`` that has changed since the
+        checkpoint is recorded as an anchor at ``position`` rather than
+        silently redefining the whole curve: the shape before the resume stays
+        bit-identical and the remaining span is mapped onto the new remainder
+        (§7.2). Shared with the diffusion trainers, which reach it from
+        ``load_training_state`` instead — the mechanism is one, only the
+        storage differs.
+        """
+        if getattr(self, "lr_timeline", None) is None:
+            return
+        from core.training.base_trainer import install_lr_schedule_events
+
+        self._resume_lr_schedule_events = list(events or [])
+        # Authoritative position, on the scheduler axis. No accumulation
+        # conversion: see build_lr_schedule.
+        self._resume_scheduler_step = int(position)
+        install_lr_schedule_events(self, int(position))
+
     def load_checkpoint(self, checkpoint):
         """Resume from a checkpoint directory, a run-relative step name, or the
         already-resolved Path from :meth:`resolve_resume_target`."""
@@ -1802,9 +1925,16 @@ class VaeTrainer:
         if self.lr_scheduler is not None and \
                 artifacts["lr_scheduler.pt"] in ("ok", "unverified"):
             try:
-                self.lr_scheduler.load_state_dict(
+                state, events, position = _split_lr_scheduler_state(
                     torch.load(ckpt_dir / "lr_scheduler.pt",
-                               map_location="cpu", weights_only=False))
+                               map_location="cpu", weights_only=False),
+                    int(train_state.get("step", 0)))
+                # Order is timeline -> scheduler state -> LR re-assertion
+                # (§17.4). The lambda closes over the timeline OBJECT, so the
+                # events have to be in it before anything evaluates the curve,
+                # and reassert_config_lr below does.
+                self._install_lr_schedule_timeline(events, position)
+                self.lr_scheduler.load_state_dict(state)
             except Exception as e:
                 raise VaeConfigError(
                     f"Checkpoint {ckpt_dir.name} has an lr_scheduler.pt this run "

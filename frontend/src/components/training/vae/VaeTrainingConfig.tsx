@@ -158,13 +158,14 @@ const OPTIMIZERS = [
   "paged_adamw", "paged_adamw8bit", "paged_lion8bit",
 ];
 
-// diffusers get_scheduler names. Must stay identical to VALID_LR_SCHEDULERS in
-// backend/core/training/vae/vae_config.py: an unlisted name is refused there,
+// Must stay identical to VALID_LR_SCHEDULERS in
+// backend/core/training/vae/vae_config.py (the shared registry vocabulary minus
+// the names this trainer cannot shape): an unlisted name is refused there,
 // because the trainer would otherwise fall back to a constant LR and run on
 // silently under a config that says something else.
 const LR_SCHEDULERS = [
   "constant", "constant_with_warmup", "linear", "cosine",
-  "cosine_with_restarts", "polynomial",
+  "cosine_with_restarts", "polynomial", "plateau_cosine_floor", "rex",
 ];
 
 const inputClass =
@@ -386,16 +387,6 @@ export default function VaeTrainingConfig({
       setError(
         `Warmup steps (${cfg.lr_warmup_steps}) must be below total steps (${cfg.total_steps}): ` +
         "otherwise the whole run is warmup and the configured learning rate is never reached."
-      );
-      return;
-    }
-    // "constant" never receives num_warmup_steps from diffusers' get_scheduler,
-    // so a warmup set next to it is recorded everywhere and applied nowhere.
-    if (cfg.lr_scheduler === "constant" && cfg.lr_warmup_steps > 0) {
-      setError(
-        `The "constant" LR scheduler ignores warmup steps (${cfg.lr_warmup_steps}): the run would ` +
-        "train at the full learning rate from step 0 while the config and the LR chart record a " +
-        "warmup. Use \"constant_with_warmup\", or set warmup steps to 0."
       );
       return;
     }
@@ -1285,14 +1276,10 @@ export default function VaeTrainingConfig({
               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
-          {cfg.lr_scheduler === "constant" && cfg.lr_warmup_steps > 0 && (
-            <p className="text-xs text-red-400 -mt-1">
-              The &quot;constant&quot; scheduler never receives the warmup length, so the run would
-              train at the full learning rate from step 0 while the config and the LR chart record
-              a warmup. Use &quot;constant_with_warmup&quot;, or set warmup steps to 0. The backend
-              refuses this combination.
-            </p>
-          )}
+          <p className="text-xs text-gray-500 -mt-1">
+            Every schedule applies the warmup, &quot;constant&quot; included. Steps are counted in
+            optimizer steps, so gradient accumulation does not divide them.
+          </p>
 
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Seed</label>

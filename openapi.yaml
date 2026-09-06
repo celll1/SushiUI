@@ -22407,33 +22407,53 @@ components:
           example: 0.1
         lr_scheduler:
           type: string
-          enum: ["constant", "constant_with_warmup", "linear", "cosine", "cosine_with_restarts", "polynomial"]
+          enum:
+            - constant
+            - constant_with_warmup
+            - linear
+            - cosine
+            - cosine_with_restarts
+            - polynomial
+            - plateau_cosine_floor
+            - rex
           default: "constant"
           description: |
-            `diffusers.optimization.get_scheduler` name. Restricted to the
-            schedules this trainer can actually run: `piecewise_constant`
-            requires a `step_rules` argument that is never passed, and an
-            unrecognised name is not a run-time error either — the trainer
-            catches the failure and continues at a CONSTANT learning rate, so
-            the run would silently ignore the schedule its config records.
+            Built by the same in-house registry as the diffusion trainers'
+            `lr_scheduler` (see that field for what each name does), on the same
+            step axis: this trainer's step counter only advances on an optimizer
+            step, so `total_steps` and `lr_warmup_steps` are already the units
+            the schedule is defined over and `gradient_accumulation_steps` does
+            not divide them.
 
-            `constant` together with `lr_warmup_steps > 0` is REFUSED:
-            `get_scheduler`'s `CONSTANT` branch returns before
-            `num_warmup_steps` is passed to anything, so the run would train at
-            the full learning rate from step 0 while the YAML, the sidecar and
-            the LR chart all record a warmup. Use `constant_with_warmup`.
+            `constant` DOES apply `lr_warmup_steps` — that combination used to
+            be refused, because diffusers' `get_scheduler` returned its constant
+            schedule without ever passing the warmup on.
+
+            Two names the diffusion surface offers are absent. `piecewise_constant`
+            is not in the registry at all (its `step_rules` were never passed).
+            `wsd` is: its plateau ends at an `lr_decay_start_step` or at a
+            runtime `start_decay` command, and VAE training has neither key nor
+            command queue, so it could only hold the base rate for the whole run
+            while the config said otherwise. Use `rex` to decay from the end of
+            warmup, or `plateau_cosine_floor` for a plateau then a cosine to a
+            floor.
+
+            The shape constants the aliases need (`lr_decay_start_ratio` 0.85,
+            `lr_floor_ratio` 0.25 for `plateau_cosine_floor`, 0.0 elsewhere) are
+            not settable here; the resolved values are printed when the run
+            starts. `polynomial` decays to 0 rather than to diffusers'
+            `1e-7 / lr`, and says so.
           example: "constant"
         lr_warmup_steps:
           type: integer
           minimum: 0
           default: 0
           description: |
-            Linear warmup length. Must be strictly below `total_steps`:
-            otherwise the entire run is warmup and `learning_rate` is never
-            reached, while the YAML, the provenance sidecar and the LR chart
-            all still report it. Requires an `lr_scheduler` that consumes it —
-            above 0 with `lr_scheduler: constant` is refused, since that
-            schedule never receives the value.
+            Linear warmup length, in optimizer steps. Must be strictly below
+            `total_steps`: otherwise the entire run is warmup and
+            `learning_rate` is never reached, while the YAML, the provenance
+            sidecar and the LR chart all still report it. Every name in
+            `lr_scheduler` applies it, `constant` included.
           example: 0
         seed:
           type: integer

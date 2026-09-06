@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 / P1 / P2 / P3 / P4 / P5 / P6 実装済み（§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6、ReLoRA の統合は §18.7、LLRD とグループ別スケジュールは §18.8）。残るは P7（VAE トレーナーの語彙統合）のみ。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変換の取りこぼしは §18.5、P3 の config キー分は §18.6、ReLoRA の統合は §18.7、LLRD とグループ別スケジュールは §18.8、VAE トレーナーは §18.9。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -741,7 +741,7 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 | **P4 ReLoRA 統合（実装済み、§18.7）** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
 | **P5 LLRD** | `ArchHandler.depth_blocks`（DiT 第 1 波）、`apply_layer_decay`、グループ `name` 必須化（§10.3、LLRD でも必要）、メトリクス emit の変更、capability 登録、UI | テスト: 合成モデルで `depth_of` の被覆（全 trainable param がどこかに入る）、係数の等比、非ブロック param が 1.0、`_record_configured_group_lrs` が分割後を記録、fused 併用が `ValueError`。実 arch は 3 step smoke（有限 loss）で足りる | 中。arch ごとのブロック属性（要検証）。sd15/sdxl は unsupported |
 | **P6 グループ別スケジュール** | `lr_group_schedules`、`build_lr_scheduler` の lambda リスト、fused 併用拒否、Advanced UI | テスト: 2 グループで異なる名前、`reassert_config_lr` と fast-forward が各グループの lambda を使う、無名グループの警告 | 低〜中。既定オフ |
-| **P7 VAE トレーナー語彙統合** | `vae_trainer.py:663-674` を `build_lr_scheduler` に、`VALID_LR_SCHEDULERS` を import に、`constant` + warmup 拒否の撤去、openapi `:21653` の enum 更新 | 既存 VAE テストが通る。`lr_scheduler.pt` の新旧形式復元と timeline の延長耐性、constant + warmup 以外の refusal matrix を検証（§17.4） | 低。任意（後回し可） |
+| **P7 VAE トレーナー語彙統合（実装済み、§18.9）** | `vae_trainer.py:663-674` を `build_lr_scheduler` に、`VALID_LR_SCHEDULERS` を import に、`constant` + warmup 拒否の撤去、openapi `:21653` の enum 更新 | 既存 VAE テストが通る。`lr_scheduler.pt` の新旧形式復元と timeline の延長耐性、constant + warmup 以外の refusal matrix を検証（§17.4） | 低。任意（後回し可） |
 
 各フェーズのコミット前に `git diff --cached` の比較レビュー（CLAUDE.md 大規模変更手順）と、
 `py_compile` に加えて実 import（`python -c "import core.training.lr_schedules"` 等）を行う。
@@ -1357,3 +1357,77 @@ P0〜P4 のテスト（`lr_schedules_test.py` / `lr_schedule_timeline_test.py` /
 やっていないこと: P7（VAE トレーナーの語彙統合）。グループ別スケジュールの**プレビュー**も
 入れていない（`GET /training/lr-schedule/preview` は run の代表スケジュールだけを描く。
 UI にその旨を 1 行書いた）。
+
+### 18.9 P7 で出荷したもの（2026-09-06）
+
+P7 で VAE トレーナー（`core/training/vae/`）もレジストリに乗った。
+`vae_trainer.build_optimizer` は `diffusers.optimization.get_scheduler` を呼ばず
+`build_lr_scheduler` を呼ぶ（実体は新メソッド `build_lr_schedule`）、
+`vae_config.VALID_LR_SCHEDULERS` は `LR_SCHEDULER_NAMES` から**導出**され、
+`constant` + warmup の拒否は消えた。D2 の「本書の対象が作る LR スケジューラは
+例外なく `LambdaLR`」はこれで全対象に対して真になった。
+
+§17.4 の必要条件（語彙の import だけで済ませない）は、`lr_scheduler.pt` の
+**実経路**テストで満たしている: `build_optimizer` → `save_checkpoint` →
+`load_checkpoint` を実 optimizer・実 `LambdaLR`・実チェックポイントディレクトリで
+往復させる（`backend/tests/lr_schedule_vae_resume_test.py`、17 件）。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| `lr_scheduler: constant` + `lr_warmup_steps > 0` | `vae_config` が拒否（diffusers の `constant` 分岐が `num_warmup_steps` を受け取らないため） | `constant_with_warmup` と同一曲線で warmup する（§4.2）。拒否は撤去、フロントの同名バリデーションと赤字注記も撤去 | この組み合わせを書いていた run（今まで開始できなかった） |
+| 語彙 | 独自の 6 名 | `LR_SCHEDULER_NAMES` から `_UNSHAPED_LR_SCHEDULERS` を引いた 8 名（`plateau_cosine_floor` と `rex` が増えた） | 新規 run のみ |
+| `polynomial` の床 | diffusers の `lr_end/lr_init = 1e-7/lr` | `0.0`（§12.2 の欠落キー規則。この面には `lr_floor_ratio` キーが無い） | `lr_scheduler: polynomial` の VAE run。構築時に `lr_schedule_polynomial_floor_changed` を 1 行出す |
+| `cosine` の `s > T` | 終端後に再上昇 | 終端値を保持（P0 と同じ） | 延長した run |
+| `total_steps` を変えた再開 | 新しい `T` で作り直し、`lr_scheduler.pt` の `last_epoch` だけを戻す＝**位置は正しく曲線は別物**。10000→20000 の延長で `plateau_cosine_floor` の `D` が 8500→17000 に動き、減衰中の run がプラトーへ戻る | anchor 付き `total_steps` 事象として記録し、§7.2 の warp を掛ける。anchor 以前は bit 同一、anchor で連続、新しい終端で床 | 再開時に `total_steps` を編集した VAE run |
+| `lr_scheduler.pt` の中身 | `LambdaLR.state_dict()` そのもの | `{lr_schedule_version, scheduler_step, events, scheduler}`。旧形式は「timeline 無し」として読める（移行） | 全 VAE run |
+
+`ScheduleTimeline` は `build_lr_schedule` が作り、`load_checkpoint` が
+`_install_lr_schedule_timeline` → `base_trainer.install_lr_schedule_events` を通して
+seam (b) を実行する（機構は 1 つ、保存先だけが違う）。復元順は §17.4 どおり
+**timeline → scheduler state → LR 再表明**で、`reassert_config_lr` が lambda を
+評価するのはその後である。
+
+§17.4 / §12.4 が実コードと合わなかった点:
+
+- **`VALID_LR_SCHEDULERS` は `LR_SCHEDULER_NAMES` そのものにはできない。** §12.4 は
+  「同じタプルを import する」と書くが、`wsd` はこの面では**必ず不活性**になる:
+  減衰開始は `lr_decay_start_step`（この面に無いキー）か実行時 `start_decay`
+  コマンド（この面に無い RPC）でしか始まらず、既定 0 は「手動」に解決されるので
+  warmup 後は恒久的に 1.0 を返す。YAML が `wsd` と言いながら定数 LR で走る run は
+  `vae_config` が他の 3 箇所で拒否している当のものなので、`_UNSHAPED_LR_SCHEDULERS`
+  として名指しで外し、拒否メッセージに `rex` / `plateau_cosine_floor` を代替として
+  書いた。**導出**なので語彙は 2 つに割れない（レジストリに名前が増えれば VAE にも
+  届く）。テストがこの等式を固定している。
+- **拒否行列は 1 行減って 1 行増えた。** §17.4 は「constant + warmup の拒否だけを外す」
+  と書いており、外したのはその 1 行だけだが、上記の `wsd` はその代わりに 1 行増える。
+  refusal matrix の他の行（未知名、warmup >= total、optimizer 系、component set、
+  チェックポイント artifact の 3 段）は 1 行も変えていない。
+- **蓄積軸の変換は行わない。** §17.1 / §18.5 は `W` と `T` を
+  `floor(x / gradient_accumulation_steps)` に載せるが、**この trainer にはその軸が無い**:
+  ループは `micro % accum != 0` で `continue` し、`global_step` は optimizer step の
+  分岐でしか増えない（`vae_trainer.py` の train ループ）。したがって `total_steps` /
+  `lr_warmup_steps` は最初から scheduler advance 単位であり、ここで割ると曲線が run の
+  1/accum に縮む。`resolve_spec` は既定の `advance_interval=1` で呼ぶ。P4 の報告が
+  「自己整合している」と書いた状態は、割らないことが正しいという意味だった。
+- **`polynomial` の床変更には remedy が無い。** 拡散側の警告文は「`lr_floor_ratio` を
+  明示せよ」と言うが、この面にそのキーは無い。VAE 版の文面は事実（0 に落ちる、旧値は
+  `1e-7/lr`）と代替の名前だけを言う。
+- **alias の形状定数はこの面から設定できない。** `plateau_cosine_floor` の
+  `lr_decay_start_ratio` (0.85) と床 (0.25) は `TRAINING_DEFAULTS` と §12.2 の
+  欠落キー規則から来る。値は `describe_spec` の 1 行が構築時に出す。キーを
+  `VAE_TRAINING_DEFAULTS` に増やすのは P7 の範囲外とした（openapi・vae_config の
+  数値ゲート・パネル・`_KEY_VERDICTS` に 7 キー分の面が要る）。
+- **`vae_config` は torch から自由ではなくなった。** `lr_schedules` が
+  `torch.optim.lr_scheduler.LambdaLR` と `api.param_defaults` を import するため。
+  `VALID_CROP_SCALE_POLICIES` の隣のコメントがその性質を主張していたので直した。
+  実害は無い（この module の consumer は `train_runner` とテストだけで、どちらも
+  すでに torch を読み込んでいる）。routes は `vae_config` を module-level では
+  import しないので §18.1 の循環にはならない。
+- **`build_optimizer` の except-fallback は残した。** 「構築に失敗したら定数 LR で続ける」は
+  `_CKPT_CONDITIONAL`（`lr_scheduler.pt` の absent を damage と読まない根拠）が
+  依存している挙動である。未知名は `vae_config` が先に拒否するので、この枝に
+  落ちるのは実質バグのときだけになった。
+
+P7 が**やっていない**こと: VAE への実行時コマンド（`training_control_rpc`）、
+`.lr_schedule.json` と `lr_decay_state` メトリクス、`lr_group_schedules` / `lr_layer_decay`
+（この trainer の param group は 1 つで、深さフックも無い）、tagger（§15）。

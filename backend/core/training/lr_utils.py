@@ -42,10 +42,10 @@ resume exists to preserve.
 
 Why replacing ``base_lrs`` is schedule-preserving
 -------------------------------------------------
-``BaseTrainer`` builds every schedule through
-``lr_schedules.build_lr_scheduler``, which always returns a ``LambdaLR``, and
-``VaeTrainer`` uses ``diffusers.optimization.get_scheduler``, all of whose types
-are one too. For a ``LambdaLR``, ``lr = base_lr * f(last_epoch)`` -- ``base_lrs``
+Both trainers build every schedule through
+``lr_schedules.build_lr_scheduler``, which always returns a ``LambdaLR``
+(``VaeTrainer`` since P7; it used ``diffusers.optimization.get_scheduler``
+before, all of whose types are one too). For a ``LambdaLR``, ``lr = base_lr * f(last_epoch)`` -- ``base_lrs``
 is purely a scale, so replacing it rescales the schedule without moving along
 it. No adaptive scheduler (``ReduceLROnPlateau``-style), whose state would
 legitimately carry the LR itself, is constructed anywhere in this codebase.

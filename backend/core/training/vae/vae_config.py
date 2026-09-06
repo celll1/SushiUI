@@ -19,6 +19,11 @@ from __future__ import annotations
 import math
 from typing import Any, Dict
 
+# The one vocabulary. This module's only non-stdlib import, and it pulls torch
+# in with it: the trainer builds every schedule through that registry now, so a
+# name accepted here has to be one it can resolve.
+from core.training.lr_schedules import LR_SCHEDULER_NAMES
+
 
 class VaeConfigError(ValueError):
     """A VAE training configuration that must not be allowed to run."""
@@ -32,8 +37,8 @@ VALID_DTYPES = ("bf16", "fp32")
 VALID_LPIPS_NETS = ("vgg", "alex", "squeeze")
 # How much an image is resampled before the square crop is taken. Defined here,
 # with the rest of the enums, and imported by vae_dataset (rather than the other
-# way round) so that this module stays free of torch/PIL: it is the pure-config
-# gate and is exercised by a fast, GPU-free test file.
+# way round) so that this module stays free of PIL and of the model stack: it is
+# the pure-config gate, and is still GPU-free.
 VALID_CROP_SCALE_POLICIES = ("downscale", "native", "mixed")
 
 # Every optimizer name OptimizerFactory resolves. Anything else raises inside
@@ -78,14 +83,20 @@ RINGBUFFER_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
 # is told to delete it, which is the right answer: it never did anything.
 _VAE_SUPPORTED_OPTIMIZER_KEYS = frozenset({"optimizer", "optimizer_weight_decay"})
 
-# ``diffusers.optimization.get_scheduler`` names this trainer can run.
-# ``piecewise_constant`` is deliberately absent: it requires a ``step_rules``
-# argument that ``VaeTrainer.build_optimizer`` never passes, so asking for it
-# could only land in that method's except-branch and run at a CONSTANT LR while
-# the YAML, the sidecar and /params all still say otherwise. Mirrored by the
-# LR_SCHEDULERS list in the frontend panel.
-VALID_LR_SCHEDULERS = ("constant", "constant_with_warmup", "linear", "cosine",
-                       "cosine_with_restarts", "polynomial")
+# `wsd`'s plateau ends either at ``lr_decay_start_step`` or at a runtime
+# ``start_decay`` command. This surface has neither the key nor the command
+# queue, so the name would resolve to "manual", never decay, and run as a
+# constant for the whole run while the YAML said wsd -- the same silent
+# inertness ``piecewise_constant`` was withheld for (and still is: it is not in
+# the registry either, its ``step_rules`` having never been passed).
+_UNSHAPED_LR_SCHEDULERS = ("wsd",)
+
+# The names this trainer can run, out of the one canonical vocabulary
+# (docs/guides/LR_SCHEDULER_DESIGN.md D18) rather than a second list of its own.
+# Mirrored by the LR_SCHEDULERS list in the frontend panel and by the enum on
+# VaeTrainingDefaults.lr_scheduler in openapi.yaml.
+VALID_LR_SCHEDULERS = tuple(n for n in LR_SCHEDULER_NAMES
+                            if n not in _UNSHAPED_LR_SCHEDULERS)
 
 # Loss keys that participate in the "at least one active term" check.
 _LOSS_WEIGHT_KEYS = ("mse_weight", "l1_weight", "lpips_weight",
@@ -553,9 +564,9 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
             f"would have no effect on the run. Remove them."
         )
         if "optimizer_warmup_steps" in unsupported:
-            # The one key with a working equivalent here: build_optimizer passes
-            # lr_warmup_steps to get_scheduler, so warmup IS available under
-            # that name. Say so rather than only "remove it".
+            # The one key with a working equivalent here: build_optimizer
+            # resolves lr_warmup_steps into the schedule, so warmup IS
+            # available under that name. Say so rather than only "remove it".
             message += (" For LR warmup use lr_warmup_steps, which this trainer "
                         "passes to the LR scheduler.")
         raise VaeConfigError(message)
@@ -793,8 +804,21 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
     cfg["optimizer"] = optimizer
 
     scheduler = str(cfg["lr_scheduler"]).strip().lower()
+    if scheduler in _UNSHAPED_LR_SCHEDULERS:
+        # Builds, and then never decays -- worse than an unknown name, which at
+        # least fails to build.
+        raise VaeConfigError(
+            f"lr_scheduler={scheduler!r} is a schedule this trainer can build "
+            f"but can never start: its plateau ends at an lr_decay_start_step "
+            f"or at a runtime start_decay command, and VAE training offers "
+            f"neither the key nor the command queue. It would hold the base "
+            f"learning rate for the whole run while the YAML, the provenance "
+            f"sidecar and the LR chart all say {scheduler!r}. Use 'rex' to "
+            f"decay from the end of warmup, or 'plateau_cosine_floor' for a "
+            f"plateau then a cosine to a floor."
+        )
     if scheduler not in VALID_LR_SCHEDULERS:
-        # build_optimizer catches a get_scheduler failure and CONTINUES at a
+        # build_optimizer catches a construction failure and CONTINUES at a
         # constant LR, so an unknown name here is not an error at run time --
         # it is a run that silently ignores the schedule it recorded.
         raise VaeConfigError(
@@ -805,25 +829,6 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
             f"config records."
         )
     cfg["lr_scheduler"] = scheduler
-
-    if scheduler == "constant" and cfg["lr_warmup_steps"] > 0:
-        # diffusers' get_scheduler does not merely ignore the argument here, it
-        # never receives it: the CONSTANT branch is
-        # `return schedule_func(optimizer, last_epoch=last_epoch)`, taken before
-        # the "all other schedulers require num_warmup_steps" line. So the run
-        # trains at the full LR from step 0 while the YAML, the provenance
-        # sidecar and the LR chart all record a warmup. Both keys are UI-
-        # reachable and `constant` is the default, which makes this the most
-        # likely spelling of the mistake, not the least.
-        raise VaeConfigError(
-            f"lr_scheduler='constant' ignores lr_warmup_steps "
-            f"({cfg['lr_warmup_steps']}): diffusers' get_scheduler returns the "
-            f"constant schedule without ever passing num_warmup_steps to it, so "
-            f"the run would train at the full learning rate from step 0 while "
-            f"the YAML, the provenance sidecar and the LR chart all record a "
-            f"warmup. Use lr_scheduler='constant_with_warmup' to actually warm "
-            f"up, or lr_warmup_steps=0."
-        )
 
     # ---- L_invented sub-parameters ----------------------------------------
     # Type and range are checked UNCONDITIONALLY, so a typo'd value cannot sit

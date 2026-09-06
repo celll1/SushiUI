@@ -273,24 +273,27 @@ class ScheduleTimeline:
                 "decay/cancel need a spec: build_lr_scheduler binds the "
                 "representative one, or pass spec= explicitly")
 
+        # What gets baked in comes from the spec in force AT `at`, which the
+        # fold reports; `resolved` only seeds it.
+        active, state = self._fold(resolved, at)
+
         event: Dict[str, Any] = {"kind": kind, "at": at,
                                  "request_id": request_id}
         length = payload.get("length")
         if kind == "decay":
             event["length"] = None if length is None else int(length)
-            event["shape"] = str(payload.get("shape") or resolved.decay_shape)
+            event["shape"] = str(payload.get("shape") or active.decay_shape)
             _decay_shape(event["shape"])  # refuse a P3 shape at the seam
         else:
             # §5.4: the recovery length is baked in, so a later config edit
             # cannot reshape a cancel that already happened.
-            event["length"] = int(resolved.warmup_steps if length is None
+            event["length"] = int(active.warmup_steps if length is None
                                   else length)
 
-        state = self._fold(resolved, at)
         if kind == "decay":
-            _, result = self._apply_decay(resolved, state, event)
+            _, result = self._apply_decay(active, state, event)
         else:
-            _, result = self._apply_cancel(resolved, state, event)
+            _, result = self._apply_cancel(active, state, event)
         if result in _REFUSED:
             # Kept so re-delivering the request_id answers the same thing.
             # `noop` is a kind the state machine does not know, so a refused
@@ -382,12 +385,19 @@ class ScheduleTimeline:
 
     def state_at(self, spec: ScheduleSpec, step: int) -> OverlayState:
         """The overlay state at ``step`` for ONE spec/group (§17.3)."""
-        return self._fold(spec, int(step))
+        return self._fold(spec, int(step))[1]
+
+    def active_spec(self, spec: ScheduleSpec, step: int) -> ScheduleSpec:
+        """The spec in force at ``step``: ``spec`` itself until §19's
+        ``retarget`` can replace it. Read it wherever a caller reports or bakes
+        a spec field beside a timeline state, so that replacement reaches it."""
+        return self._fold(spec, int(step))[0]
 
     def multiplier(self, spec: ScheduleSpec, step: int) -> float:
         """The LR multiplier: §4's base curve with the overlay on top."""
         step = int(step)
-        return self._value(spec, self._fold(spec, step), step)
+        active, state = self._fold(spec, step)
+        return self._value(active, state, step)
 
     # -- internals -------------------------------------------------------
 
@@ -400,13 +410,20 @@ class ScheduleTimeline:
     def _sorted(self) -> List[Dict[str, Any]]:
         return sorted(self.events, key=_order)
 
-    def _fold(self, spec: ScheduleSpec, step: int) -> OverlayState:
-        """Apply every event at or before ``step``, in arrival order.
+    def _fold(self, spec: ScheduleSpec,
+              step: int) -> Tuple[ScheduleSpec, OverlayState]:
+        """Apply every event at or before ``step``, in arrival order, and
+        return the spec in force there together with the overlay on it.
+
+        The spec is folded rather than fixed because §19's ``retarget``
+        replaces it mid-run; every event is then applied over the curve that
+        was active when it arrived, not over the one config resolved to.
 
         This is also what an event arriving AT ``step`` sees: earlier same-step
         events carry a smaller ``seq``, so they are already folded in, and the
         trailing advance is the same one the replay does before applying it.
         """
+        active = spec
         state = OverlayState()
         for event in self._sorted():
             at = int(event.get("at", 0))
@@ -414,12 +431,12 @@ class ScheduleTimeline:
                 break
             kind = event.get("kind")
             if kind == "decay":
-                state = self._advance(spec, state, at)
-                state, _ = self._apply_decay(spec, state, event)
+                state = self._advance(active, state, at)
+                state, _ = self._apply_decay(active, state, event)
             elif kind == "cancel":
-                state = self._advance(spec, state, at)
-                state, _ = self._apply_cancel(spec, state, event)
-        return self._advance(spec, state, step)
+                state = self._advance(active, state, at)
+                state, _ = self._apply_cancel(active, state, event)
+        return active, self._advance(active, state, step)
 
     def _apply_decay(self, spec: ScheduleSpec, state: OverlayState,
                      event: Mapping[str, Any]) -> Tuple[OverlayState, str]:

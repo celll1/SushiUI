@@ -354,6 +354,9 @@ def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
         # lr_cycle_steps) are on the global_step axis too; resolve_spec
         # converts them.
         advance_interval=lr_scheduler_advance_interval(trainer),
+        # ReLoRA only, and out of the YAML's network section rather than the
+        # train section this `config` is.
+        restart_warmup_steps=getattr(trainer, "restart_warmup_steps", None),
     )
     if spec.curve == "polynomial" and spec.floor_defaulted:
         # The one name whose absent-floor reading changed with D10.
@@ -455,6 +458,13 @@ def install_lr_schedule_events(trainer, global_step: int) -> None:
             f"anywhere. Any runtime decay or cancellation ordered before this "
             f"checkpoint is gone. Later resumes are protected.",
             code="lr_schedule_state_missing", prefix=prefix)
+
+    # After the load, which replaces the event list wholesale: a ReLoRA
+    # checkpoint written before merges became `restart` events has none to load
+    # and rebuilds them from merge_count instead (§18.7).
+    restore_legacy = getattr(trainer, "_restore_legacy_lr_restarts", None)
+    if callable(restore_legacy):
+        restore_legacy(position)
 
     previous = timeline.current_total(spec.total_steps)
     if previous != spec.total_steps:
@@ -4354,8 +4364,10 @@ class BaseTrainer(ABC):
                 group["lr"] = value
             return
 
-        # ReLoRA's scheduler has restart history and cannot be positioned from
-        # the final step alone.
+        # Unreachable since P4 put ReLoRA in the registry: every scheduler this
+        # project builds is a LambdaLR. Kept as the guard for one that is not,
+        # since replaying is the only way to position a scheduler whose value
+        # depends on state it accumulates by stepping.
         for _ in range(int(position)):
             scheduler.step()
 
@@ -5994,8 +6006,9 @@ class BaseTrainer(ABC):
                 continue
             lambdas = getattr(scheduler, "lr_lambdas", None)
             if not lambdas:
-                # ReLoRA's restart scheduler is not a LambdaLR; it has no lambda
-                # to compose against and is left alone rather than guessed at.
+                # Unreachable since P4 (ReLoRA was the last non-LambdaLR): a
+                # scheduler with no lambda has nothing to compose against, and
+                # is left alone rather than guessed at.
                 skipped += 1
                 continue
             scheduler.lr_lambdas = [

@@ -50,12 +50,12 @@ is purely a scale, so replacing it rescales the schedule without moving along
 it. No adaptive scheduler (``ReduceLROnPlateau``-style), whose state would
 legitimately carry the LR itself, is constructed anywhere in this codebase.
 
-One exception survives P0: ``ReLoRATrainer.setup_optimizer`` discards what it
-just built and installs ``CosineWithMultipleWarmups``, an ``_LRScheduler``
-subclass with no ``lr_lambdas``. There the multiplier is skipped and the plain
-base LR is written -- the pre-existing behaviour, and the same fallback any
-other non-``LambdaLR`` would get. P4 of docs/guides/LR_SCHEDULER_DESIGN.md
-brings ReLoRA into the registry and removes the exception.
+No exception survives P4: ReLoRA used to install an ``_LRScheduler`` subclass
+with no ``lr_lambdas``, for which the multiplier below was silently skipped and
+the plain base LR written. Its restart curve is now a registry entry like any
+other (docs/guides/LR_SCHEDULER_DESIGN.md §18.7), so the ``len(lambdas) == n``
+branch is taken for every schedule this project builds. The fallback stays as a
+guard, not as a case that happens.
 """
 
 from __future__ import annotations

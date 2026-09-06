@@ -4158,8 +4158,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 )}
               </select>
               <p className="text-xs text-gray-500 mt-1">
-                {LR_SCHEDULER_OPTIONS.find((o) => o.value === lrScheduler)?.note ??
-                  "Warmup, then holds the base LR. Same curve as Constant."}
+                {trainingMethod === "relora"
+                  ? "ReLoRA ignores this and the preview below: its schedule is a cosine that restarts with a warmup at every merge. LR Warmup Steps, Restart Warmup Steps and LR Floor Ratio do apply to it."
+                  : (LR_SCHEDULER_OPTIONS.find((o) => o.value === lrScheduler)?.note ??
+                     "Warmup, then holds the base LR. Same curve as Constant.")}
               </p>
             </div>
 
@@ -4193,8 +4195,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <p className="text-xs text-gray-500 mt-1">Fraction of total steps where the plateau ends</p>
                 </div>
               )}
-              {/* Every schedule but Constant decays to this floor. */}
-              {lrScheduler !== "constant" && lrScheduler !== "constant_with_warmup" && (
+              {/* Every schedule but Constant decays to this floor -- including
+                  ReLoRA's, whose lr_scheduler value is ignored. */}
+              {(trainingMethod === "relora"
+                || (lrScheduler !== "constant" && lrScheduler !== "constant_with_warmup")) && (
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">LR Floor Ratio</label>
                   <NumberInput

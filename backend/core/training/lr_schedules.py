@@ -26,6 +26,12 @@ overlay state is derived per SPEC from one shared event list, so P6's per-group
 schedules can diverge without a second timeline. P2 feeds it commands through
 ``training_control_rpc``; the ReLoRA ``restart`` event is P4.
 
+P4 brings ReLoRA in: ``relora`` is a curve here rather than a scheduler class
+of its own, and a merge is a ``restart`` event on the timeline. It is the one
+name outside ``LR_SCHEDULER_NAMES`` -- the restart list shapes it, so it is not
+something a run can select -- and the one curve that returns its own multiplier
+instead of composing with the shared ramp (§17.3).
+
 P3 opens the vocabulary: ``wsd`` and ``rex`` (both aliases of one curve),
 ``cosine_with_restarts`` with a real-axis cycle length and per-cycle peak
 annealing, and D10's floor -- ``m = ramp * (F + (1 - F) * shape)`` for EVERY
@@ -48,6 +54,7 @@ from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 __all__ = [
     "DECAY_SHAPE_NAMES",
+    "INTERNAL_SCHEDULER_NAMES",
     "LR_SCHEDULER_NAMES",
     "OverlayState",
     "STATE_BASE",
@@ -67,8 +74,7 @@ __all__ = [
 ]
 
 # The canonical vocabulary (D18). routes.py validates against it and
-# openapi.yaml's enum mirrors it. `relora` stays internal (P4); the VAE
-# trainer's own list is P7.
+# openapi.yaml's enum mirrors it. The VAE trainer's own list is P7.
 LR_SCHEDULER_NAMES = (
     "constant",
     "constant_with_warmup",
@@ -80,6 +86,13 @@ LR_SCHEDULER_NAMES = (
     "wsd",
     "rex",
 )
+
+# Resolvable but NOT selectable: ReLoRA's curve is chosen by
+# training_method='relora' and shaped by its restart events, so offering it as
+# an lr_scheduler value would let a non-ReLoRA run ask for a curve with no
+# restarts in it. Kept out of the API validator and the openapi enum.
+INTERNAL_SCHEDULER_NAMES = ("relora",)
+_RESOLVABLE_NAMES = LR_SCHEDULER_NAMES + INTERNAL_SCHEDULER_NAMES
 
 # `wsd`'s decay shape k(q), k(0)=1, k(1)=0 (§4.2). `rex` is a shape, not a
 # separate curve: no exponent on a cosine reaches it, because cosine enters the
@@ -110,7 +123,7 @@ STATE_NAMES = {
 }
 
 _CURVES = ("constant", "linear", "cosine", "cosine_with_restarts",
-           "polynomial", "wsd")
+           "polynomial", "wsd", "relora")
 
 # `add` results meaning "recorded, but the state machine must never fold it":
 # the request was refused, for every group, before it became an event.
@@ -158,6 +171,9 @@ class ScheduleSpec:
     # which is the single cosine every existing YAML already got.
     cycle_steps: int = 0
     cycle_peak_decay: float = 1.0
+    # `relora` only: the ramp length after a merge. The run's first warmup is
+    # `warmup_steps`; every later segment uses this one (§4.2).
+    relora_restart_warmup_steps: int = 0
 
 
 @dataclass(frozen=True)
@@ -232,6 +248,18 @@ class ScheduleTimeline:
                 return "ignored_unchanged"
             self._append({"kind": kind, "at": at, "value": value,
                           "request_id": request_id, "result": "applied"})
+            return "applied"
+
+        if kind == "restart":
+            # Seam (d): a ReLoRA merge. The BASE curve reads these; the overlay
+            # state machine below does not, so a restart can never disturb a
+            # decay or a cancellation. Deduplicated by position so that
+            # re-registering a legacy checkpoint's merges is idempotent.
+            if any(e.get("kind") == "restart" and int(e.get("at", 0)) == at
+                   for e in self.events):
+                return "ignored_duplicate_restart"
+            self._append({"kind": kind, "at": at, "request_id": request_id,
+                          "result": "applied"})
             return "applied"
 
         if kind not in ("decay", "cancel"):
@@ -317,6 +345,16 @@ class ScheduleTimeline:
             if event.get("kind") == "total_steps":
                 value = int(event["value"])
         return int(default) if value is None else value
+
+    def restarts(self, upto: Optional[int] = None) -> List[int]:
+        """ReLoRA restart positions, ascending, none of them after ``upto``.
+
+        §17.3: reading a restart the run has not reached yet is what let a
+        resume shorten a cosine segment retroactively.
+        """
+        return [int(e["at"]) for e in self._sorted()
+                if e.get("kind") == "restart"
+                and (upto is None or int(e["at"]) <= int(upto))]
 
     def clock(self, step: int) -> float:
         """Real scheduler step -> nominal axis (§7.2).
@@ -567,6 +605,7 @@ def resolve_spec(
     total_steps: int,
     name: str,
     advance_interval: int = 1,
+    restart_warmup_steps: Optional[int] = None,
 ) -> ScheduleSpec:
     """Resolve the run's config into an immutable spec.
 
@@ -579,9 +618,14 @@ def resolve_spec(
     Two independent axes meet in this function: the UNIT of a count
     (global_step vs scheduler advance, §17.1) and the CLOCK a position is read
     on (real vs nominal, §17.2). Converting the unit never changes the clock.
+
+    ``restart_warmup_steps`` is ReLoRA's post-merge ramp. It arrives as an
+    argument rather than out of ``config`` because it lives in the YAML's
+    ``network.relora`` section, which the trainer's ``config`` (the ``train``
+    section) does not carry.
     """
     key = str(name).strip().lower()
-    if key not in LR_SCHEDULER_NAMES:
+    if key not in _RESOLVABLE_NAMES:
         raise ValueError(
             f"Unknown lr_scheduler '{name}'. Supported: "
             f"{', '.join(LR_SCHEDULER_NAMES)}"
@@ -642,6 +686,19 @@ def resolve_spec(
             decay_end_kind="length" if command_length else "nominal_total",
             decay_shape=command_shape, **common)
 
+    if key == "relora":
+        # §4.2's relora row. The old scheduler's hardcoded min_lr_ratio=0.0 is
+        # now F, so a YAML written before D10 (no floor key) reads as 0.0.
+        # W_r is a LENGTH in global steps like W and floors the same way: one
+        # shorter than an accumulation window is 0 LR updates, not 1.
+        restart_warmup = (_TRAINING_DEFAULTS["restart_warmup_steps"]
+                          if restart_warmup_steps is None
+                          else restart_warmup_steps)
+        return ScheduleSpec(
+            name=key, curve=key,
+            relora_restart_warmup_steps=to_scheduler_axis(restart_warmup, A),
+            **common)
+
     if key == "cosine_with_restarts":
         peak = float(_lookup(config, "lr_cycle_peak_decay"))
         if not 0.0 < peak <= 1.0:
@@ -678,9 +735,14 @@ def base_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
     ``1 * x == x`` and ``0 + x == x`` are all exact -- which is what keeps the
     ported curves equal to what diffusers produced.
 
-    Reads ``timeline`` only through ``nominal_total``/``clock``, so it stays a
-    pure function of ``(step, timeline.events)``.
+    Reads ``timeline`` only through ``nominal_total``/``clock``/``restarts``, so
+    it stays a pure function of ``(step, timeline.events)``.
     """
+    if spec.curve == "relora":
+        # Returns its segment's multiplier directly, floor included: a
+        # re-warmup composed with the shared ramp would be squared (§17.3).
+        return _relora_multiplier(spec, timeline, step)
+
     W = spec.warmup_steps
     if W > 0 and step < W:
         # The ramp is OUTSIDE the floor: warmup climbs from 0, as the plateau
@@ -689,6 +751,41 @@ def base_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
 
     F = spec.floor_ratio
     return F + (1.0 - F) * _shape(spec, timeline, step, decay_disarmed)
+
+
+def _relora_multiplier(spec: ScheduleSpec, timeline: ScheduleTimeline,
+                       step: int) -> float:
+    """ReLoRA's segmented curve (§4.2's ``relora`` row).
+
+    A merge starts a segment: a linear re-warmup of
+    ``relora_restart_warmup_steps``, then a cosine to the run's end.
+
+    §17.3, and the reason this is not a transcription of the class it replaced:
+    only restarts at or before ``step`` are read, and the terminus is the run's
+    TOTAL, never the next restart. The old ``get_lr`` took its terminus from the
+    whole registered list, so a resume that re-registered every past merge at
+    once retroactively shortened the cosine the run had already trained through.
+    """
+    start, warmup, restarted = 0, spec.warmup_steps, False
+    for at in timeline.restarts(upto=step):
+        start, warmup, restarted = at, spec.relora_restart_warmup_steps, True
+
+    F = spec.floor_ratio
+    elapsed = step - start
+    if warmup > 0 and elapsed < warmup:
+        ramp = elapsed / float(warmup)
+        # §17.3: the run's FIRST warmup climbs from 0 (D10 puts the shared ramp
+        # outside the floor); a re-warmup climbs from the floor it fell to.
+        return (F + (1.0 - F) * ramp) if restarted else ramp
+
+    T = timeline.nominal_total(spec.total_steps)
+    decay_from = timeline.clock(start + warmup)
+    span = T - decay_from
+    if span <= 0:
+        # The replaced scheduler's `decay_steps <= 0` branch: hold the peak.
+        return 1.0
+    q = min(1.0, max(0.0, (timeline.clock(step) - decay_from) / span))
+    return F + (1.0 - F) * 0.5 * (1.0 + math.cos(math.pi * q))
 
 
 def _shape(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
@@ -779,6 +876,8 @@ def describe_spec(spec: ScheduleSpec) -> str:
         parts.append("decay_length=" + (
             "to_end" if spec.decay_length is None else str(spec.decay_length)))
         parts.append(f"decay_shape={spec.decay_shape}")
+    if spec.curve == "relora":
+        parts.append(f"restart_warmup={spec.relora_restart_warmup_steps}")
     if spec.curve == "cosine_with_restarts":
         parts.append("cycle_steps=" + (
             "whole_run" if spec.cycle_steps <= 0 else str(spec.cycle_steps)))

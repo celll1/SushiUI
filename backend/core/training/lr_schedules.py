@@ -112,12 +112,9 @@ _RESOLVABLE_NAMES = LR_SCHEDULER_NAMES + INTERNAL_SCHEDULER_NAMES
 # decay with slope 0 and REX with -1/2 (§8).
 DECAY_SHAPE_NAMES = ("cosine", "linear", "rex")
 
-# §19.1's blend weight w(u), w(0)=0, w(1)=1. `linear` and `cosine` are the
-# decay vocabulary read as w = 1 - k(u) (D22 asked for no new shapes); `rex`
-# joins them for the same reason. `exp` is named by §19.1 and by no other part
-# of the design, so its rate is a definition made here, not a measurement.
-BLEND_SHAPE_NAMES = ("linear", "cosine", "exp", "rex")
-_BLEND_EXP_K = 4.0
+# §19.2's blend weight w(u), w(0)=0, w(1)=1: the decay vocabulary read as
+# w = 1 - k(u). D22 adds no shape of its own.
+BLEND_SHAPE_NAMES = DECAY_SHAPE_NAMES
 
 # §19.1. `restart` re-anchors the new curve at the event (D23); `continue`
 # evaluates it on the global axis.
@@ -211,11 +208,17 @@ class ScheduleSpec:
     def to_dict(self) -> Dict[str, Any]:
         """The JSON form a ``retarget`` event carries (§19.5).
 
-        No absolute step is derived here: an ``anchor="restart"`` spec's
-        ``total_steps`` is not what its span is read from (D22).
+        Invariant 15: no absolute step travels in the payload. An alias's
+        ``decay_start_step`` is DROPPED, because it was derived from the seed
+        total and names a position on an axis the reader no longer has --
+        ``decay_start_ratio`` is its only source. ``wsd``'s configured ``D``
+        (no ratio) stays: D8 makes it a real-axis quantity, read from the
+        retarget's own origin.
         """
         payload: Dict[str, Any] = {"v": SPEC_VERSION}
         payload.update(asdict(self))
+        if self.decay_start_ratio is not None:
+            payload.pop("decay_start_step")
         return payload
 
     @classmethod
@@ -503,8 +506,14 @@ class ScheduleTimeline:
         """§19.4's eight rules, in the order they are tested. None = accept."""
         if at < issued:                                             # 1 (D25)
             return "rejected_backdated"
-        if (new_spec.name not in LR_SCHEDULER_NAMES                 # 2
-                or new_spec.curve not in _CURVES):
+        if new_spec.name not in LR_SCHEDULER_NAMES:                 # 2
+            return "rejected_unknown_scheduler"
+        # Never trust a serialized (name, curve) pair: R3 takes this dict from
+        # an endpoint, and name="cosine" with curve="relora" would install the
+        # segmented ReLoRA curve on a run that has no merges. Resolved from the
+        # name, not compared against a second table that could drift.
+        if new_spec.curve != resolve_spec(
+                {}, warmup_steps=0, total_steps=1, name=new_spec.name).curve:
             return "rejected_unknown_scheduler"
         if gain <= 0.0:                                             # 8
             return "rejected_non_positive_gain"
@@ -517,7 +526,9 @@ class ScheduleTimeline:
         span = total - at if anchor == "restart" else total
         if anchor == "restart" and span <= 0:                       # 3
             return "rejected_no_remaining_span"
-        if new_spec.warmup_steps > span:                            # 5
+        # >=, not >: §17.2's construction contract is 0 <= W < T_sched, and a
+        # warmup that ends exactly at the run's end leaves no step at peak.
+        if new_spec.warmup_steps >= span:                           # 5
             return "rejected_warmup_exceeds_span"
         if groups and known_groups is not None:                     # 7
             allowed = {str(g) for g in known_groups}
@@ -894,9 +905,6 @@ def _blend_weight(name: str) -> Callable[[float], float]:
         return lambda u: u
     if name == "cosine":
         return lambda u: 0.5 * (1.0 - math.cos(math.pi * u))
-    if name == "exp":
-        return lambda u: ((math.exp(_BLEND_EXP_K * u) - 1.0)
-                          / (math.exp(_BLEND_EXP_K) - 1.0))
     if name == "rex":
         return lambda u: 1.0 - (1.0 - u) / (1.0 - u / 2.0)
     raise ValueError(

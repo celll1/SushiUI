@@ -352,6 +352,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   num_optimizer_groups: 0,
   bundle_vae: false,
   vae_swap_source: "",
+  vae_swap_new_channel_init: "zero",
   sensenova_gen_patch: 0,
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
@@ -4064,6 +4065,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       baseModelPath={baseModelPath || null}
                     />
                   )}
+
+                  {!vaeSwapUnsupported && trainingMethod === "full_finetune"
+                    && baseModelArch === "sensenova" && params.vae_swap_source ? (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Rebuilt head initialisation
+                      </label>
+                      <select
+                        value={params.vae_swap_new_channel_init ?? "zero"}
+                        onChange={(e) => updateParam("vae_swap_new_channel_init", e.target.value)}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="zero">Zero (predicts a constant at step 0)</option>
+                        <option value="scaled">Scaled (calibrated to unit latent variance)</option>
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">
+                        A zero head decodes to one flat colour until it has trained, and passes no
+                        gradient to the body on the first step. Scaled seeds the head and calibrates
+                        it on its first batch so its predicted latent starts at the variance the
+                        loss scores it against.
+                      </p>
+                    </div>
+                  ) : null}
 
                   <div>
                     <label className="block text-xs text-gray-400 mb-1">

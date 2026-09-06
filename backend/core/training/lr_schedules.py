@@ -9,7 +9,9 @@ both evaluate lambdas out of order and rely on.
 
 Step axis (D9/§17.1): one unit per ``scheduler.step()``, i.e. per update
 boundary, NOT per ``global_step``. ``BaseTrainer`` puts BOTH the warmup and the
-total on that axis (``to_scheduler_axis``) before calling ``resolve_spec``.
+total on that axis (``to_scheduler_axis``) before calling ``resolve_spec``,
+which converts the config's own step- and length-valued keys itself from
+``advance_interval``.
 
 P0 ported the six diffusers schedules and the in-house ``plateau_cosine_floor``
 so that the multiplier is bit-identical for ``0 <= s <= total_steps``. Three
@@ -122,6 +124,9 @@ class ScheduleSpec:
     Axes (D8/§17.2): ``warmup_steps`` and ``decay_length`` are REAL scheduler
     steps; ``total_steps`` and a ``decay_start_axis="nominal"`` start are read
     through the timeline's clock, which P1 warps when ``total_steps`` changes.
+    That real/nominal CLOCK is independent of the UNIT: every count in here is
+    scheduler advances, converted from the config's global steps by
+    ``resolve_spec`` (§17.1).
     ``decay_start_step=None`` means "no configured decay" (the external ``D=0``
     P3 exposes as manual WSD), which is distinct from a start of 0.
     """
@@ -533,11 +538,26 @@ def to_scheduler_axis(steps: int, interval: int) -> int:
     """A global-step count -> scheduler advances (D9/§17.1).
 
     Floor, because a trailing partial accumulation window is never flushed.
-    Every step count ``resolve_spec`` receives goes through here: converting
-    ``T`` but not ``W`` would make the warmup occupy ``interval`` times the
-    fraction of the schedule the configured number asks for.
+    Every step count ``resolve_spec`` receives OR reads out of the config goes
+    through here: converting ``T`` but not ``W`` would make the warmup occupy
+    ``interval`` times the fraction of the schedule the configured number asks
+    for, and the same is true of a decay start or a cycle length.
     """
     return max(0, int(steps)) // max(1, int(interval))
+
+
+def _length_on_scheduler_axis(steps: Optional[int],
+                              interval: int) -> Optional[int]:
+    """A configured LENGTH onto the scheduler axis, never floored to 0.
+
+    0 is the "unset" sentinel for both length keys -- a decay that runs to the
+    nominal end, one cycle over the whole run -- and it is also the divisor in
+    those two branches, so a length shorter than one accumulation window
+    becomes the shortest representable one rather than a different curve.
+    """
+    if steps is None:
+        return None
+    return max(1, to_scheduler_axis(steps, interval))
 
 
 def resolve_spec(
@@ -546,11 +566,19 @@ def resolve_spec(
     warmup_steps: int,
     total_steps: int,
     name: str,
+    advance_interval: int = 1,
 ) -> ScheduleSpec:
     """Resolve the run's config into an immutable spec.
 
     ``warmup_steps`` and ``total_steps`` must both already be on the scheduler
-    axis (``to_scheduler_axis``).
+    axis (``to_scheduler_axis``). ``advance_interval`` is the run's
+    ``gradient_accumulation_steps``: the config's step- and length-valued keys
+    are entered on the global_step axis, like those two, and are converted
+    HERE, at the one seam. 1 = nothing to convert.
+
+    Two independent axes meet in this function: the UNIT of a count
+    (global_step vs scheduler advance, §17.1) and the CLOCK a position is read
+    on (real vs nominal, §17.2). Converting the unit never changes the clock.
     """
     key = str(name).strip().lower()
     if key not in LR_SCHEDULER_NAMES:
@@ -561,10 +589,14 @@ def resolve_spec(
 
     W = max(0, int(warmup_steps or 0))
     T = max(1, int(total_steps))
+    A = max(1, int(advance_interval))
     floor, floor_defaulted = _resolve_floor(config, key)
     # Available to a runtime `start_decay` under every name; the base curve
-    # reads decay_length/decay_shape, which only `wsd` takes from these.
-    command_length = _positive_or_none(config, "lr_decay_steps")
+    # reads decay_length/decay_shape, which only `wsd` takes from these. The
+    # sentinel is resolved on the CONFIGURED number, so no accumulation width
+    # can turn a length a user asked for into "unset".
+    command_length = _length_on_scheduler_axis(
+        _positive_or_none(config, "lr_decay_steps"), A)
     command_shape = str(_lookup(config, "lr_decay_shape")).strip().lower()
     if command_shape not in DECAY_SHAPE_NAMES:
         raise ValueError(
@@ -578,6 +610,7 @@ def resolve_spec(
     if key == "plateau_cosine_floor":
         # D11: an alias for wsd -- decay start on the NOMINAL axis, length "to
         # the nominal end", never stored as an explicit real length (§17.2).
+        # A ratio has no unit, and T is already T_sched, so nothing converts.
         ratio = float(_lookup(config, "lr_decay_start_ratio"))
         start = max(W, min(round(ratio * T), T))
         return ScheduleSpec(
@@ -587,18 +620,24 @@ def resolve_spec(
             decay_shape="cosine", **common)
 
     if key == "rex":
-        # §8/D14: WSD with no plateau. D = W is a REAL step, so W = 0 starts
-        # the decay at 0 -- distinct from `wsd`'s external D = 0, which means
-        # "manual" (§17.2).
+        # §8/D14: WSD with no plateau. D = W is a REAL step, already on the
+        # scheduler axis, so W = 0 starts the decay at 0 -- distinct from
+        # `wsd`'s external D = 0, which means "manual" (§17.2).
         return ScheduleSpec(
             name=key, curve="wsd", decay_start_step=W, decay_start_axis="real",
             decay_length=None, decay_end_kind="nominal_total",
             decay_shape="rex", **common)
 
     if key == "wsd":
+        # A REAL-axis POSITION (the timeline's warp never moves it, §17.2) that
+        # is nonetheless configured in global steps: only the unit converts. 0
+        # already means "manual" here, so a start inside the first accumulation
+        # window lands at scheduler step 0 and is not read as unset.
+        start = _positive_or_none(config, "lr_decay_start_step")
         return ScheduleSpec(
             name=key, curve="wsd",
-            decay_start_step=_positive_or_none(config, "lr_decay_start_step"),
+            decay_start_step=(None if start is None
+                              else to_scheduler_axis(start, A)),
             decay_start_axis="real", decay_length=command_length,
             decay_end_kind="length" if command_length else "nominal_total",
             decay_shape=command_shape, **common)
@@ -611,7 +650,8 @@ def resolve_spec(
                 f"factor each restart's peak is multiplied by.")
         return ScheduleSpec(
             name=key, curve=key,
-            cycle_steps=int(_positive_or_none(config, "lr_cycle_steps") or 0),
+            cycle_steps=int(_length_on_scheduler_axis(
+                _positive_or_none(config, "lr_cycle_steps"), A) or 0),
             cycle_peak_decay=peak, **common)
 
     curve = "constant" if key == "constant_with_warmup" else key

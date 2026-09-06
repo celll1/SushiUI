@@ -18642,12 +18642,14 @@ async def preview_lr_schedule(
         config["lr_floor_ratio"] = lr_floor_ratio
 
     try:
-        # Both counts go onto the scheduler axis, exactly as the trainer does
-        # it: a preview that divided only the total would draw a curve the run
-        # does not follow.
+        # Every step count goes onto the scheduler axis, exactly as the
+        # trainer does it -- the two arguments here, and the config's own step
+        # keys inside resolve_spec. A preview that divided only some of them
+        # would draw a curve the run does not follow.
         spec = resolve_spec(
             config, warmup_steps=to_scheduler_axis(lr_warmup_steps, interval),
-            total_steps=scheduler_total, name=lr_scheduler)
+            total_steps=scheduler_total, name=lr_scheduler,
+            advance_interval=interval)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

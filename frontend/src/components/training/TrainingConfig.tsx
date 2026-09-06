@@ -4224,8 +4224,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Optimizer step the plateau ends at. 0 = the config never starts the
-                      decay; send &quot;Decay now&quot; to the running run instead.
+                      Training step the plateau ends at, counted like Total Steps (both are
+                      divided by Gradient Accumulation Steps). 0 = the config never starts
+                      the decay; send &quot;Decay now&quot; to the running run instead.
                     </p>
                   </div>
                   <div>
@@ -4240,8 +4241,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      How long the decay runs. 0 = to the end of the run. A length in steps
-                      is not stretched if total steps is raised later.
+                      How long the decay runs, counted like Total Steps. 0 = to the end of
+                      the run. A length in steps is not stretched if total steps is raised
+                      later.
                     </p>
                   </div>
                   <div>
@@ -4275,8 +4277,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Length of one cosine cycle in optimizer steps. 0 = one cycle over the
-                      whole run, which is a plain cosine.
+                      Length of one cosine cycle, counted like Total Steps. 0 = one cycle
+                      over the whole run, which is a plain cosine.
                     </p>
                   </div>
                   <div>

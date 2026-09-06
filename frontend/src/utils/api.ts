@@ -6466,7 +6466,7 @@ export interface TrainingRunCreateRequest {
   lr_decay_start_ratio?: number;  // plateau_cosine_floor only: fraction of total steps where decay begins (default 0.85)
   lr_floor_ratio?: number;  // Floor every decaying schedule holds, as a fraction of base LR (default 0.25)
   lr_decay_start_step?: number;  // wsd only: step the plateau ends at (0 = only a start_decay command starts it)
-  lr_decay_steps?: number;  // Decay length in optimizer steps (0 = to the end); also a start_decay command's length
+  lr_decay_steps?: number;  // Decay length in training steps (0 = to the end); also a start_decay command's length
   lr_decay_shape?: string;  // "cosine" | "linear" | "rex"
   lr_cycle_steps?: number;  // cosine_with_restarts only: cycle length (0 = one cycle over the whole run)
   lr_cycle_peak_decay?: number;  // cosine_with_restarts only: cycle i peaks at this^i

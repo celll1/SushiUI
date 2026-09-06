@@ -189,16 +189,11 @@ def _build_train_section(
         # the UI's warmup value was a silent no-op. Write both keys — keep
         # `lr_warmup_steps` for back-compat with anything that reads it.
         train["optimizer_warmup_steps"] = p["lr_warmup_steps"]
-    if str(p.get("lr_scheduler", "constant")) == "plateau_cosine_floor":
-        # The plateau's own ratio: no other scheduler reads it.
+    if (train["lr_scheduler"] == "plateau_cosine_floor"
+            or "plateau_cosine_floor" in (p.get("lr_group_schedules") or {}).values()):
         train["lr_decay_start_ratio"] = p.get(
             "lr_decay_start_ratio", TRAINING_DEFAULTS["lr_decay_start_ratio"])
-    # Written unconditionally, like rewarmup_on_optimizer_reset below: the
-    # trainer distinguishes "no floor key" (a YAML older than the floor's
-    # generalization, read per schedule) from an explicit value, so a
-    # conditional write would hand a new run the compatibility reading. Spelled
-    # out one key per line because train_section_key_vocabulary() reads these
-    # subscripts out of the AST.
+    # Absence means a legacy floor; new runs must write an explicit value.
     train["lr_floor_ratio"] = p.get("lr_floor_ratio",
                                     TRAINING_DEFAULTS["lr_floor_ratio"])
     train["lr_decay_start_step"] = p.get("lr_decay_start_step",

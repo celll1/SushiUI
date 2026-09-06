@@ -528,6 +528,45 @@ class _ResumeProbe:
         return self.lr_scheduler.lr_lambdas[0]
 
 
+@pytest.mark.parametrize("name", ["linear", "polynomial", "cosine",
+                                  "cosine_with_restarts"])
+def test_extension_during_warmup_keeps_the_peak_and_bounds(name):
+    spec, timeline, fn = _run(name, 100, 1000, {"lr_floor_ratio": 0.0})
+    timeline.add("total_steps", at=50, value=2000)
+    assert fn(99) == pytest.approx(0.99)
+    assert fn(100) == pytest.approx(1.0)
+    values = [fn(s) for s in range(100, 2001)]
+    assert all(0.0 <= v <= 1.0 for v in values)
+    assert all(a >= b for a, b in zip(values, values[1:]))
+    assert fn(2000) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("old_gas,new_gas,global_step,saved_position", [
+    (1, 4, 500, 500),
+    (4, 1, 500, 125),
+    (4, 4, 503, 120),  # skipped advances and an incomplete window
+])
+def test_resume_total_counts_only_remaining_update_boundaries(
+        old_gas, new_gas, global_step, saved_position):
+    first = _ResumeProbe("cosine", 0, 1000 // old_gas)
+    before = first.fn(saved_position)
+    probe = _ResumeProbe("cosine", 0, 1000 // new_gas, gas=new_gas,
+                         saved_events=first.lr_timeline.dump(saved_position),
+                         scheduler_step=saved_position)
+    probe._resume_scheduler_interval = old_gas
+    install_lr_schedule_events(probe, global_step)
+    end = saved_position + 1000 // new_gas - global_step // new_gas
+    assert probe.lr_timeline.current_total(0) == end
+    assert probe.fn(saved_position) == pytest.approx(before)
+    assert probe.fn(end) == pytest.approx(0.0)
+    # A later resume uses the same offset, not a second warp.
+    later = _ResumeProbe("cosine", 0, 1000 // new_gas, gas=new_gas,
+                         saved_events=probe.lr_timeline.dump(saved_position + 1),
+                         scheduler_step=saved_position + 1)
+    install_lr_schedule_events(later, (global_step // new_gas + 1) * new_gas)
+    assert later.lr_timeline.events == probe.lr_timeline.events
+
+
 def test_the_resume_seam_keeps_the_old_nominal_axis_and_warps(capsys):
     first = _ResumeProbe("plateau_cosine_floor", 0, 10000, PLATEAU)
     before = [first.fn(s) for s in range(0, 9001)]
@@ -626,6 +665,20 @@ def test_the_mnt_hook_is_silent_when_the_total_did_not_move(capsys):
     probe._reanchor_lr_schedule_total(10000)
     assert [e["kind"] for e in probe.lr_timeline.events] == ["total_steps"]
     assert "lr_schedule_total_steps_changed" not in capsys.readouterr().out
+
+
+def test_mnt_recomputation_keeps_the_saved_axis_offset():
+    probe = _MntProbe("cosine", 0, 250, gas=4,
+                      saved_events=[{"kind": "total_steps", "at": 0,
+                                     "seq": 0, "value": 1000}],
+                      scheduler_step=500)
+    install_lr_schedule_events(probe, 500)
+    probe.lr_scheduler.last_epoch = 500
+    before = probe.fn(500)
+    probe._reanchor_lr_schedule_total(1200, global_step=500)
+    assert probe.lr_timeline.current_total(0) == 675
+    assert probe.fn(500) == pytest.approx(before)
+    assert probe.fn(675) == pytest.approx(0.0)
 
 
 class _StateHarness:

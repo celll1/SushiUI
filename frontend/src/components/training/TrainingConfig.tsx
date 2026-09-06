@@ -4184,7 +4184,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {lrScheduler === "plateau_cosine_floor" && (
+              {(lrScheduler === "plateau_cosine_floor"
+                || Object.values(lrGroupSchedules ?? {}).includes("plateau_cosine_floor")) && (
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Decay Start Ratio</label>
                   <NumberInput

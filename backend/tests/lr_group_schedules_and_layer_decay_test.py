@@ -701,6 +701,50 @@ def test_it_round_trips_request_to_yaml_to_request(key, value):
     assert getattr(restored, key) == value
 
 
+@pytest.mark.parametrize("name,expected", [
+    ("cosine", 0.0), ("linear", 0.0),
+    ("plateau_cosine_floor", TRAINING_DEFAULTS["lr_floor_ratio"]),
+])
+@pytest.mark.parametrize("floor", [None, 0.0, 0.4])
+def test_editing_legacy_run_preserves_floor(name, expected, floor):
+    train = {"lr_scheduler": name, "steps": 1000}
+    if floor is not None:
+        train["lr_floor_ratio"] = floor
+        expected = floor
+    params = _extract_request_params_from_yaml({"train": train}, job="lora")
+    params["total_steps"] = 2000
+    rewritten = _train_section(**params)
+    assert rewritten["lr_floor_ratio"] == expected
+    spec = resolve_spec(rewritten, warmup_steps=0, total_steps=2000, name=name)
+    assert spec.floor_ratio == expected
+
+
+def test_new_run_keeps_new_floor_default():
+    assert _train_section(lr_scheduler="cosine")["lr_floor_ratio"] == TRAINING_DEFAULTS["lr_floor_ratio"]
+
+
+@pytest.mark.parametrize("floor", [None, 0.4])
+def test_relora_edit_uses_its_effective_schedule_for_legacy_floor(floor):
+    train = {"lr_scheduler": "plateau_cosine_floor", "steps": 1000}
+    if floor is not None:
+        train["lr_floor_ratio"] = floor
+    params = _extract_request_params_from_yaml({"train": train}, job="relora")
+    rewritten = _train_section(**params)
+    spec = resolve_spec(rewritten, warmup_steps=0, total_steps=2000, name="relora")
+    assert spec.floor_ratio == (0.0 if floor is None else floor)
+
+
+def test_group_plateau_retains_start_ratio_through_edit():
+    train = _train_section(lr_scheduler="cosine", lr_decay_start_ratio=0.5,
+                           lr_group_schedules={"unet": "plateau_cosine_floor"})
+    params = _extract_request_params_from_yaml({"train": train}, job="lora")
+    rewritten = _train_section(**params)
+    assert rewritten["lr_decay_start_ratio"] == 0.5
+    spec = resolve_spec(rewritten, warmup_steps=0, total_steps=1000,
+                        name=rewritten["lr_group_schedules"]["unet"])
+    assert spec.decay_start_step == 500
+
+
 def test_the_layer_decay_is_written_unconditionally():
     for scheduler in ("constant", "cosine", "wsd"):
         train = _train_section(lr_scheduler=scheduler)

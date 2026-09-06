@@ -802,13 +802,16 @@ def _shape(spec: ScheduleSpec, timeline: ScheduleTimeline, step: int,
         return 1.0
 
     T = timeline.nominal_total(spec.total_steps)
+    warmup_end = timeline.clock(W)
 
     if curve == "linear":
-        return max(0.0, float(T - timeline.clock(step)) / float(max(1, T - W)))
+        return min(1.0, max(0.0, float(T - timeline.clock(step))
+                            / float(max(1, T - warmup_end))))
 
     if curve in ("cosine", "polynomial") or (
             curve == "cosine_with_restarts" and spec.cycle_steps <= 0):
-        progress = float(timeline.clock(step) - W) / float(max(1, T - W))
+        progress = max(0.0, float(timeline.clock(step) - warmup_end)
+                       / float(max(1, T - warmup_end)))
         # Clamped, where diffusers lets the cosine rise again past T.
         if progress > 1.0:
             progress = 1.0

@@ -572,9 +572,8 @@ def resume_scheduler_position(trainer, global_step: int) -> int:
             emit_training_warning(
                 f"gradient_accumulation_steps changed since the checkpoint "
                 f"({saved_interval} -> {interval}). The LR schedule resumes at its "
-                f"saved position ({int(saved)}), but its total is now total_steps "
-                f"// {interval} instead of total_steps // {saved_interval}, so the "
-                f"remaining shape is stretched or compressed.",
+                f"saved position ({int(saved)}); only the remaining update "
+                f"boundaries are counted with the new interval.",
                 code="lr_schedule_accumulation_changed", prefix=prefix)
         return int(saved)
 
@@ -640,18 +639,21 @@ def install_lr_schedule_events(trainer, global_step: int) -> None:
     if callable(restore_legacy):
         restore_legacy(position)
 
+    remaining = max(0, spec.total_steps - to_scheduler_axis(
+        global_step, lr_scheduler_advance_interval(trainer)))
+    new_total = position + remaining
     previous = timeline.current_total(spec.total_steps)
-    if previous != spec.total_steps:
-        timeline.add("total_steps", at=position, value=spec.total_steps)
+    if previous != new_total:
+        timeline.add("total_steps", at=position, value=new_total)
         emit_training_warning(
             f"total_steps changed since the checkpoint ({previous} -> "
-            f"{spec.total_steps} scheduler steps). The schedule up to step "
+            f"{new_total} scheduler steps). The schedule up to step "
             f"{position} is unchanged; the remaining shape is mapped from the "
             f"old remainder onto the new one, so the curve is continuous here "
             f"and still reaches its end at the new total.",
             code="lr_schedule_total_steps_changed", prefix=prefix)
         length = lr_decay_explicit_length(trainer, position)
-        if length is not None and spec.total_steps > previous:
+        if length is not None and new_total > previous:
             emit_training_warning(
                 f"This run's decay has an explicit length ({length} scheduler "
                 f"steps), which is measured in real steps and is NOT stretched "
@@ -4495,7 +4497,8 @@ class BaseTrainer(ABC):
                 continue
             self._fast_forward_one_lr_scheduler(scheduler, position)
 
-    def _reanchor_lr_schedule_total(self, total_steps: int) -> None:
+    def _reanchor_lr_schedule_total(self, total_steps: int,
+                                   global_step: Optional[int] = None) -> None:
         """Record a new ``total_steps`` from the CURRENT position (§7.2).
 
         Called when the MNT recomputation moves ``actual_total_steps`` after
@@ -4505,16 +4508,14 @@ class BaseTrainer(ABC):
         spec = getattr(self, "lr_schedule_spec", None)
         if timeline is None or spec is None:
             return
-        try:
-            new_total = scheduler_total_steps(self, total_steps)
-        except ValueError:
-            # A recomputed total below one accumulation window. Leaving the
-            # schedule on its old anchor beats failing a resume here.
-            return
+        position = live_scheduler_step(self)
+        interval = lr_scheduler_advance_interval(self)
+        completed = position * interval if global_step is None else global_step
+        new_total = position + max(0, to_scheduler_axis(total_steps, interval)
+                                   - to_scheduler_axis(completed, interval))
         previous = timeline.current_total(spec.total_steps)
         if new_total == previous:
             return
-        position = live_scheduler_step(self)
         timeline.add("total_steps", at=position, value=new_total)
         reapply_lr_schedule_position(self)
         emit_training_warning(
@@ -13751,7 +13752,7 @@ class BaseTrainer(ABC):
                 # Re-anchor its timeline here (§7.1-3) instead of warning that
                 # the decay curve is now wrong: the shape before this position
                 # is preserved and the remainder is mapped onto the new one.
-                self._reanchor_lr_schedule_total(actual_total_steps)
+                self._reanchor_lr_schedule_total(actual_total_steps, global_step)
 
         # Clean up future steps in database (old data from previous interrupted training)
         # This prevents duplicate metrics when training resumes from an earlier step

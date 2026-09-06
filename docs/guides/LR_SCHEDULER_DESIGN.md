@@ -1,6 +1,6 @@
 # LR スケジューラ拡張設計（WSD / 実行時減衰と取り消し / 床 / restart / REX / LLRD / 集約）
 
-Status: **P0 実装済み（§18）。P1 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
+Status: **P0 / P1 実装済み（§18）。P2 以降は未実装。** 本書は §14 のフェーズ単位で実装・検証・コミットする前提で
 書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て `file:line` を付す。
 引用のない記述は設計上の決定であり、「要検証」と付したものは実装前に確認が必要な事実主張である。
 一次資料は 2 本の read-only 調査を統合したブリーフ（本書執筆時点の作業ファイル）で、
@@ -733,8 +733,8 @@ bit 同一であること**は互換条件を満たすケースだけの回帰�
 
 | Phase | 内容 | 検証 | リスク |
 |---|---|---|---|
-| **P0 集約と等価移植** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = floor(T/gas)`、fast-forward は保存した scheduler_step、旧状態のみ除算推定、詳細は §17.1）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 互換条件（§17）を満たす名前と床、`0 ≤ W < T`、`0 ≤ s ≤ T` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
-| **P1 タイムラインと延長耐性** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
+| **P0 集約と等価移植（実装済み、§18）** | `lr_schedules.py`（`ScheduleSpec`, `resolve_spec`, 6 つの diffusers 名 + `plateau_cosine_floor` 別名, `build_lr_scheduler`、タイムラインは空実装で `total_steps(at=0)` のみ）。`:6001-6012` / `:6506-6522` を置換、`_build_plateau_cosine_floor_scheduler` 削除。D9 の軸統一（`T_sched = floor(T/gas)`、fast-forward は保存した scheduler_step、旧状態のみ除算推定、詳細は §17.1）。`lr_utils.py:44-53` の docstring 更新 | `backend/tests/lr_schedules_test.py`: 互換条件（§17）を満たす名前と床、`0 ≤ W < T`、`0 ≤ s ≤ T` で全 step、diffusers `get_scheduler` の `lr_lambdas[0]` と `abs diff == 0`。`plateau_cosine_floor` は旧実装を test 内に写して bit 同一。純粋性（昇順・降順・乱順）。既存 4 テスト（`test_lr_resume_override.py`, `rewarmup_on_optimizer_reset_test.py`, `fused_optimizer_group_resume_test.py`, `component_lr_resume_alignment_test.py`）が通る。`gas > 1` の resume 位置が `global_step // gas` になるテスト | 中。`gas > 1` の run は resume 後の位置が変わる（§1-3 の不一致の解消。CHANGELOG に書く）。`constant` + `W > 0` が warmup するようになる（挙動変更、明示） |
+| **P1 タイムラインと延長耐性（実装済み、§18.2）** | `ScheduleTimeline` 本体、`τ`、`save/load_training_state` の `lr_schedule_events`、resume seam (b)、`total_steps` 比較と警告、MNT 再計算フック、`.lr_schedule.json`、`lr_schedule_state_missing` | テスト: 延長 10k→20k を step 9000 で行い、`s < 9000` で bit 同一、`s = 9000` で連続、`20000` で床。二重延長の合成。縮小。事象キー無し state.json の後方互換。`dump(upto_step)` の切り詰め。fused N 個が同値 | 中。resume 順序に 1 行挿入（`:12885` / `:12959` の前）。state.json のキー追加は後方互換 |
 | **P2 実行時コマンド** | `training_file_rpc.py`（純移動）、`training_control_rpc.py`、ポーリング seam、§5.3 の状態機械と §5.4 の復帰、即時反映、`lr_decay_state` メトリクス、openapi → `POST/GET /training/runs/{id}/lr-schedule`、UI ボタンと状態表示、spawn 前 `clear_all` | テスト: 状態遷移表の全行（結果コード）。`decay` → `cancel` → `decay` の連続と乗数の連続性（`R > 0`）。`R = 0` の不連続。step 9000 のチェックポイントから resume すると 9137 の `decay` が消えること。sample RPC のテストが純移動後も通る。API は 202/404/409/429 | 中。ポーリングはバッチごとの `Path.glob` 1 回（sample と同じコスト） |
 | **P3 新スケジュールと床の一般化** | `wsd` / `rex` / in-house `cosine_with_restarts`（annealing）/ `polynomial` の床、`lr_decay_*` / `lr_cycle_*` / `lr_floor_ratio` 無条件書き込み、D10 の後方互換規則、validator と enum、UI 項目、プレビューエンドポイント、`PARAM_KEYS`、ガードテスト | テスト: §8 の表の数値（`k_rex(½) = 2/3`、傾き）。`lr_cycle_steps = 0` が `cosine` と bit 同一。YAML にキー無し × 各名で床が 0.25/0.0 に解決。preview の標本が `make_lambda` と一致。ガードテスト 2 本 | 中。プリセット経由の床 0.25（§12.2、所有者に明示） |
 | **P4 ReLoRA 統合** | `relora` を `LambdaLR` 化（`restart` 事象）、`relora_trainer.py:147-181` / `:395-421` の整理、`relora_scheduler.py` 削除。`:3908-3911` と `:5536-5541` のフォールバックはガードとして残すがテストで到達不能を確認 | テスト: 旧 `CosineWithMultipleWarmups` を test 内に写し、同じ restart 列で全 step bit 同一（`min_lr_ratio = 0` ⇔ `F = 0`）。restart は全件を先に渡さず当時の到着順で投入し、過去が変化しないことも検証する（§17）。`epochs` 単位の restart が resume 後も残る（旧実装では失われた `:421`） | 中。ReLoRA の resume が re-warmup / 再表明の対象になる（改善だが挙動変更） |
@@ -892,3 +892,62 @@ P0 が**やっていない**こと: 実行時タイムライン（`ScheduleTimel
   `last_epoch = global_step` を書いていたので、`gas > 1` の旧チェックポイントは
   推定値でも旧値でもない位置から再開する。これは §1-3 の不一致の解消であり、
   上表 2 行目に含まれる。
+- **P1: `plateau_cosine_floor` の `D` は spec に焼き込めない。** §17.2 は
+  「alias の導出値は名目 T から解決する。再開時の新 T を分母や D に再投入しない」と
+  書いているが、P0 の `resolve_spec` は `D = round(ratio·T_sched)` を `ScheduleSpec` に
+  焼き込んでいた。10000 → 20000 の延長を再開すると `T_sched` が新しい値になるため
+  `D` が 8500 から 17000 へ動き、§7.3 が防ぐはずの「プラトーへ戻る」が warp を入れても
+  そのまま起きる。P1 で `ScheduleSpec.decay_start_ratio` を足し、`D` を評価時に
+  `T_nominal` から再導出する。事象が無ければ `T_nominal == spec.total_steps` なので
+  P0 の bit 同一は保たれる（`lr_schedules_test.py` は全件通る）。
+- **P1: `set_total_steps` の `NotImplementedError` は残した。** §18 はこれを P0 stub の
+  印として書いているが、同時に構築 seam (a) の不変条件でもある（構築は run につき 1 回）。
+  P1 は再アンカーを `add("total_steps", at=<resume step>, value=…)` という別の seam に置き、
+  `set_total_steps` の 2 度目の拒否をそのまま残した。P0 のガードテストは意味を変えずに通る。
+- **P1: `state_at` は `(int, float)` を返さない。** §3.2 の署名では復帰長 `R`、明示長 `L`、
+  焼き込んだ形、config 減衰の無効化フラグが表現できない。§17.3 の「spec/group を引数に
+  受ける」に従い `state_at(spec, step) -> OverlayState`（frozen dataclass）とした。
+  `code` と `start_multiplier` が §3.2 の 2 要素にあたる。
+- **P1: 結果コードは代表グループのもの、状態はグループごと。** §5.3 の遷移表は単一状態を
+  前提に書かれているが §17.3 は状態をグループ別に持てと言う。両立のため事象列は「命令ログ」
+  とし、`result` は要求者に返した記録として事象に残すだけで、状態機械は読まない
+  （グループごとに再導出する）。拒否された要求だけは `kind="noop"` として残し、
+  どのグループでも効かないようにしたうえで `request_id` の再送に同じ答えを返す。
+- **P1: §17.1 の「保存位置 S に残りの更新回数を足した値を新終端とする」は未実装。**
+  実装したのは §14 P1 行どおりの `T_sched` の単純比較である。S + 残り回数にすると、
+  スキップのあった run は `S < global_step//gas` なので終端が必ず変わり、`total_steps` を
+  一切触っていない通常の再開でも毎回 warp と `lr_schedule_total_steps_changed` が出る。
+  スキップの無い run では両者は一致する。実装するには別の警告コードと、fused / MNT /
+  部分蓄積の各経路ごとの残り回数導出（§17.1 自身が「実ループの境界条件から求める」と
+  書いている部分）が要る。
+- **P1: `.lr_schedule.json` は書いていない。** §14 の P1 行にあるが、読み手
+  （`GET /training/runs/{id}/lr-schedule`）は P2 で、§17.3 が「事象時だけ更新すると
+  DECAYING→FLOOR の時間遷移で古くなる」と明示している。既知で古くなる artifact を
+  先に出荷しない。読み手・状態遷移時の更新・`lr_decay_state` メトリクスと一緒に P2 で入れる。
+- **P1: `lr_schedule_extension_on_floor`（§7.3）は発火しない。** 明示長の減衰は config キー
+  `lr_decay_steps`（P3）か `decay` 事象の `length`（P2 のコマンド）からしか生まれず、
+  P1 の config 経由の減衰は全て「終端まで」である。機構（実軸の長さは warp で伸びない）は
+  実装済みでテストが固定している。警告は長さを作れるフェーズと同時に入れる。
+
+### 18.2 P1 で出荷した挙動変更（2026-09-06）
+
+P1 は `ScheduleTimeline` を本体にした: `(at, seq)` 順の事象列、§7.2 の時間軸 warp、
+§5.3 の BASE / DECAYING / FLOOR / RECOVERING（式は §17.3 の訂正版）、spec ごとの状態、
+state.json への直列化。制御 RPC と HTTP 面（P2）、ReLoRA merge（P4）、config キー（P3）は
+入っていないので、外から事象を作れるのは resume の `total_steps` 比較と MNT 再計算だけである。
+事象が 1 件（構築時の `total_steps(at=0)`）のときの乗数は P0 と bit 同一（P0 テスト 101 件が通る）。
+
+| 変更 | 旧 | 新 | 影響を受ける run |
+|---|---|---|---|
+| resume 時の `total_steps` 変更 | 無言。新しい `T` で作り直して古い位置へ fast-forward するので、減衰中の run がプラトーへ戻る（§1-4） | anchor = 再開位置の `total_steps` 事象を記録し、anchor より前の形は不変、残りを新しい残り区間へ写像。`lr_schedule_total_steps_changed` を 1 行出す | 再開時に `steps` を編集した run |
+| MNT 変化による `total_steps` 再計算 | 「LR scheduler was initialized with old total_steps / LR decay curve may be affected」の 3 行 WARNING を出して何もしない | 同じ warp を現在位置で適用し、`_fast_forward_one_lr_scheduler` で全グループに即時反映（§5.6）。3 行の WARNING は削除 | resume で MNT を変えた run |
+| 事象キーの無いチェックポイント | — | 最初の resume だけ現在の `T` を名目軸とし、`lr_schedule_state_missing` を 1 行出す（§5.5/§7.4）。以後は保護される | P1 より前のチェックポイント |
+
+state.json に 1 キーを追加した（読み側は欠落を「事象なし」と読む）: `lr_schedule_events`。
+`dump` は `at <= scheduler_step` に切り詰め、`load` も `upto_step` で切り詰めるので、
+step 9000 のチェックポイントから再開すると step 9137 に出した命令は無かったことになる
+（`_cleanup_future_metrics` と同じ意味論）。新しい警告コードは
+`lr_schedule_total_steps_changed` と `lr_schedule_state_missing`。
+
+テストは `backend/tests/lr_schedule_timeline_test.py`（50 件）。P0 の
+`backend/tests/lr_schedules_test.py`（101 件）は 1 件も書き換えずに通る。

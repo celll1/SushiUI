@@ -381,6 +381,73 @@ def resume_scheduler_position(trainer, global_step: int) -> int:
     return estimate
 
 
+def dump_lr_schedule_events(trainer) -> List[Dict[str, Any]]:
+    """The timeline, truncated to the position being saved (§5.5)."""
+    timeline = getattr(trainer, "lr_timeline", None)
+    if timeline is None:
+        return []
+    return timeline.dump(live_scheduler_step(trainer))
+
+
+def install_lr_schedule_events(trainer, global_step: int) -> None:
+    """Seam (b) of §5.2: install the saved timeline, BEFORE the fast-forward.
+
+    Construction could only guess the nominal axis (it does not know the resume
+    step yet), so it wrote a provisional ``total_steps(at=0)``. Here the saved
+    event list replaces it, which is what makes the curve before the resume
+    point bit-identical across a ``total_steps`` change (§7.2), and a new
+    ``total_steps`` anchor records the change from this position on.
+
+    Must run before ``_fast_forward_lr_schedulers``: that evaluates the lambdas,
+    which read the timeline.
+    """
+    timeline = getattr(trainer, "lr_timeline", None)
+    spec = getattr(trainer, "lr_schedule_spec", None)
+    if timeline is None or spec is None:
+        return
+
+    position = resume_scheduler_position(trainer, global_step)
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    saved = getattr(trainer, "_resume_lr_schedule_events", None)
+
+    if saved:
+        timeline.load(saved, upto_step=position)
+        if not any(e.get("kind") == "total_steps" for e in timeline.events):
+            timeline.set_total_steps(spec.total_steps)
+    elif position > 0:
+        emit_training_warning(
+            f"This checkpoint carries no LR schedule timeline, so the run's "
+            f"nominal end is taken to be its CURRENT total ({spec.total_steps} "
+            f"scheduler steps) -- the total it was built with is not recorded "
+            f"anywhere. Any runtime decay or cancellation ordered before this "
+            f"checkpoint is gone. Later resumes are protected.",
+            code="lr_schedule_state_missing", prefix=prefix)
+
+    previous = timeline.current_total(spec.total_steps)
+    if previous != spec.total_steps:
+        timeline.add("total_steps", at=position, value=spec.total_steps)
+        emit_training_warning(
+            f"total_steps changed since the checkpoint ({previous} -> "
+            f"{spec.total_steps} scheduler steps). The schedule up to step "
+            f"{position} is unchanged; the remaining shape is mapped from the "
+            f"old remainder onto the new one, so the curve is continuous here "
+            f"and still reaches its end at the new total.",
+            code="lr_schedule_total_steps_changed", prefix=prefix)
+
+
+def reapply_lr_schedule_position(trainer) -> None:
+    """Write ``base_lr * lambda(position)`` into every group, in place.
+
+    The loop is ``optimizer.step()`` then ``scheduler.step()``, so a timeline
+    edit that does not rewrite the groups is invisible until the step after
+    next (§5.6).
+    """
+    position = live_scheduler_step(trainer)
+    for scheduler in all_lr_schedulers(trainer):
+        if scheduler is not None:
+            BaseTrainer._fast_forward_one_lr_scheduler(scheduler, position)
+
+
 def setup_fused_grad_norm(trainer, optimizers):
     """Give every fused-backward hook a place to record gradient norms.
 
@@ -3911,6 +3978,11 @@ class BaseTrainer(ABC):
             "scheduler_step": live_scheduler_step(self),
             "gradient_accumulation_steps": int(getattr(self, "_grad_accum_steps", 1) or 1),
             "lr_scheduler_advance_interval": lr_scheduler_advance_interval(self),
+            # The runtime timeline (§5.5/D4): a LambdaLR's state_dict does not
+            # carry what its lambda closed over. Truncated to at <= the saved
+            # position, so rewinding to an earlier checkpoint drops the commands
+            # issued after it -- the same semantics as _cleanup_future_metrics.
+            "lr_schedule_events": dump_lr_schedule_events(self),
         }
 
         with open(state_file, 'w') as f:
@@ -3958,6 +4030,7 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} No training state file found: {state_file.name}")
             self._resume_scheduler_step = None
             self._resume_scheduler_interval = None
+            self._resume_lr_schedule_events = None
             return None
 
         with open(state_file, 'r') as f:
@@ -3967,6 +4040,7 @@ class BaseTrainer(ABC):
         # this, and both then reach the fast-forward through the same helper.
         self._resume_scheduler_step = state.get("scheduler_step")
         self._resume_scheduler_interval = state.get("lr_scheduler_advance_interval")
+        self._resume_lr_schedule_events = state.get("lr_schedule_events")
 
         # Restore random_state from serialized format
         random_state_dict = state["random_state"]
@@ -3998,6 +4072,35 @@ class BaseTrainer(ABC):
             if scheduler is None:
                 continue
             self._fast_forward_one_lr_scheduler(scheduler, position)
+
+    def _reanchor_lr_schedule_total(self, total_steps: int) -> None:
+        """Record a new ``total_steps`` from the CURRENT position (§7.2).
+
+        Called when the MNT recomputation moves ``actual_total_steps`` after
+        the schedule was already built and fast-forwarded.
+        """
+        timeline = getattr(self, "lr_timeline", None)
+        spec = getattr(self, "lr_schedule_spec", None)
+        if timeline is None or spec is None:
+            return
+        try:
+            new_total = scheduler_total_steps(self, total_steps)
+        except ValueError:
+            # A recomputed total below one accumulation window. Leaving the
+            # schedule on its old anchor beats failing a resume here.
+            return
+        previous = timeline.current_total(spec.total_steps)
+        if new_total == previous:
+            return
+        position = live_scheduler_step(self)
+        timeline.add("total_steps", at=position, value=new_total)
+        reapply_lr_schedule_position(self)
+        emit_training_warning(
+            f"total_steps changed to {total_steps} ({previous} -> {new_total} "
+            f"scheduler steps) at scheduler step {position}. The schedule up to "
+            f"there is unchanged; the remaining shape is mapped from the old "
+            f"remainder onto the new one.",
+            code="lr_schedule_total_steps_changed", prefix=self.log_prefix)
 
     @staticmethod
     def _fast_forward_one_lr_scheduler(scheduler, position: int) -> None:
@@ -12944,6 +13047,10 @@ class BaseTrainer(ABC):
                             None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
+                    # Install the saved LR timeline first: the fast-forward
+                    # evaluates the lambdas, which read it (seam (b), §5.2).
+                    install_lr_schedule_events(self, global_step)
+
                     # Fast-forward every lr_scheduler to match the checkpoint
                     self._fast_forward_lr_schedulers(global_step)
 
@@ -13017,6 +13124,10 @@ class BaseTrainer(ABC):
                         start_epoch = self._resolve_start_epoch(
                             None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
+
+                    # Install the saved LR timeline first: the fast-forward
+                    # evaluates the lambdas, which read it (seam (b), §5.2).
+                    install_lr_schedule_events(self, global_step)
 
                     # Fast-forward every lr_scheduler to match the checkpoint
                     self._fast_forward_lr_schedulers(global_step)
@@ -13130,17 +13241,11 @@ class BaseTrainer(ABC):
                 if update_total_steps_callback is not None:
                     update_total_steps_callback(actual_total_steps)
 
-                # Note: LR scheduler was already fast-forwarded to global_step
-                # It will continue from there with the remaining steps
-                # No need to reinitialize optimizer/scheduler since global_step is preserved
-                #
-                # Warning: For non-constant LR schedulers (cosine, etc.), the scheduler's
-                # total_steps was set to the old value. This may cause incorrect LR decay.
-                # For constant scheduler, this is not an issue.
-                if lr_scheduler_type.lower() != "constant":
-                    print(f"{self.log_prefix} WARNING: MNT change with {lr_scheduler_type} LR scheduler")
-                    print(f"{self.log_prefix} WARNING: LR scheduler was initialized with old total_steps")
-                    print(f"{self.log_prefix} WARNING: LR decay curve may be affected. Consider using 'constant' scheduler for MNT experiments.")
+                # The scheduler was built and fast-forwarded with the old total.
+                # Re-anchor its timeline here (§7.1-3) instead of warning that
+                # the decay curve is now wrong: the shape before this position
+                # is preserved and the remainder is mapped onto the new one.
+                self._reanchor_lr_schedule_total(actual_total_steps)
 
         # Clean up future steps in database (old data from previous interrupted training)
         # This prevents duplicate metrics when training resumes from an earlier step

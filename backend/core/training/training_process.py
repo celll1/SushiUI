@@ -260,6 +260,17 @@ class TrainingProcess:
         except Exception as e:   # noqa: BLE001
             print(f"[Training] WARNING: Failed to clear stale sample requests before spawn: {e}")
 
+        # Same for runtime LR-schedule commands: a "decay now" issued to a run
+        # that then stopped must not be applied by the next one. The commands
+        # already APPLIED live in the checkpoint's event list, not here.
+        try:
+            from core.training.training_control_rpc import clear_all as _clear_control_rpc
+            removed = _clear_control_rpc(self.output_dir)
+            if removed:
+                print(f"[Training] Removed {removed} stale LR-schedule command/result file(s) before spawn")
+        except Exception as e:   # noqa: BLE001
+            print(f"[Training] WARNING: Failed to clear stale LR schedule commands before spawn: {e}")
+
         # Start asyncio subprocess (non-blocking)
         # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
         self.process = await asyncio.create_subprocess_exec(

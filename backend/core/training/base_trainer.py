@@ -29,6 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 import json
 import re
 import secrets
+import time
 from datetime import datetime
 import numpy as np
 import gc
@@ -41,15 +42,17 @@ from core.attention import (
     resolve_backend,
     to_diffusers_backend,
 )
+from core.training import training_control_rpc as control_rpc
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
+    STATE_NAMES,
     ScheduleTimeline,
     build_lr_scheduler,
     describe_spec,
     resolve_spec,
 )
 from core.training.lr_utils import reassert_config_lr
-from core.training.training_events import emit_training_warning
+from core.training.training_events import emit_training_event, emit_training_warning
 from core.training.image_preprocessing import flatten_to_rgb
 from core.training.checkpoint_space import (
     KEEP_FLOOR_AFTER_WRITE,
@@ -446,6 +449,171 @@ def reapply_lr_schedule_position(trainer) -> None:
     for scheduler in all_lr_schedulers(trainer):
         if scheduler is not None:
             BaseTrainer._fast_forward_one_lr_scheduler(scheduler, position)
+
+
+def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dict[str, Any]]:
+    """Per-param-group overlay state (§17.3).
+
+    In P2 every group folds the SAME spec, so the entries agree; the shape is
+    what P6 fills in once a group can carry a schedule of its own.
+    """
+    groups = [pg for optimizer in all_optimizers(trainer) if optimizer is not None
+              for pg in optimizer.param_groups]
+    try:
+        _, names = trainer._build_component_lr_list()
+    except Exception:   # noqa: BLE001
+        names = []
+    if len(names) != len(groups):
+        names = []
+
+    out: List[Dict[str, Any]] = []
+    for index, group in enumerate(groups):
+        state = timeline.state_at(spec, position)
+        out.append({
+            "index": index,
+            "name": names[index] if names else (group.get("name") or f"group{index}"),
+            "schedule": spec.name,
+            "state": STATE_NAMES.get(int(state.code), "base"),
+            "state_code": int(state.code),
+            "multiplier": float(timeline.multiplier(spec, position)),
+            "lr": float(group.get("lr", 0.0)),
+        })
+    return out
+
+
+def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """The `.lr_schedule.json` payload: representative state plus per group."""
+    timeline = getattr(trainer, "lr_timeline", None)
+    spec = getattr(trainer, "lr_schedule_spec", None)
+    if timeline is None or spec is None:
+        return None
+
+    position = live_scheduler_step(trainer)
+    state = timeline.state_at(spec, position)
+    return {
+        "version": 1,
+        "run_id": getattr(trainer, "run_id", None),
+        "written_at": time.time(),
+        "step": int(position),
+        "global_step": None if global_step is None else int(global_step),
+        "scheduler": spec.name,
+        "warmup_steps": int(spec.warmup_steps),
+        "state": STATE_NAMES.get(int(state.code), "base"),
+        "state_code": int(state.code),
+        "state_at": int(state.at),
+        "decay_disarmed": bool(state.decay_disarmed),
+        "multiplier": float(timeline.multiplier(spec, position)),
+        "nominal_total_steps": int(timeline.nominal_total(spec.total_steps)),
+        "effective_total_steps": int(timeline.current_total(spec.total_steps)),
+        "groups": lr_schedule_group_states(trainer, spec, timeline, position),
+        "events": timeline.dump(position),
+    }
+
+
+def refresh_lr_schedule_status(trainer, global_step: Optional[int] = None,
+                               force: bool = False) -> bool:
+    """Rewrite `.lr_schedule.json` when the state changed -- event or not.
+
+    §17.3: DECAYING -> FLOOR and RECOVERING -> BASE happen with NO event, so an
+    event-only refresh leaves GET reporting a state the run has left. The
+    signature is recomputed every batch (a pure fold); the write happens on a
+    change.
+    """
+    try:
+        status = lr_schedule_status(trainer, global_step=global_step)
+        if status is None:
+            return False
+        signature = (status["state_code"], status["state_at"],
+                     status["decay_disarmed"], len(status["events"]),
+                     status["effective_total_steps"])
+        if not force and signature == getattr(trainer, "_lr_status_signature", None):
+            return False
+        control_rpc.write_status(trainer.output_dir, status)
+        trainer._lr_status_signature = signature
+        return True
+    except Exception as e:   # noqa: BLE001
+        prefix = getattr(trainer, "log_prefix", "[Trainer]")
+        print(f"{prefix} WARNING: could not write LR schedule status: {e}")
+        return False
+
+
+def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
+    """Seam (c) of §5.2: apply the run's queued LR-schedule commands.
+
+    Called at the HEAD of the batch, BEFORE the forward. Under the fused paths
+    the optimizer update runs from a backward hook, so a multiplier written any
+    later than this would not reach the update this batch is about to make
+    (§5.6). Never raises into the loop.
+    """
+    timeline = getattr(trainer, "lr_timeline", None)
+    spec = getattr(trainer, "lr_schedule_spec", None)
+    if timeline is None or spec is None:
+        return 0
+
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    output_dir = getattr(trainer, "output_dir", None)
+    run_id = getattr(trainer, "run_id", None)
+    if output_dir is None:
+        return 0
+    try:
+        requests = control_rpc.claim_all(output_dir, run_id)
+    except Exception as e:   # noqa: BLE001
+        print(f"{prefix} WARNING: LR schedule command poll failed: {e}")
+        requests = []
+
+    position = live_scheduler_step(trainer)
+    applied = 0
+    outcomes: List[str] = []
+    for request in requests:
+        request_id = str(request.get("request_id") or "") or control_rpc.make_request_id()
+        command = str(request.get("command") or "")
+        kind = control_rpc.COMMAND_EVENT_KINDS.get(command)
+        error = None
+        try:
+            if kind is None:
+                result = "rejected_unknown_command"
+            else:
+                result = timeline.add(kind, at=position, request_id=request_id)
+        except Exception as e:   # noqa: BLE001
+            result, error = "error", str(e)
+            print(f"{prefix} WARNING: LR schedule command {command} failed: {e}")
+        if result in ("applied", "disarmed_scheduled_decay"):
+            applied += 1
+        outcomes.append(f"{command}={result}")
+        try:
+            control_rpc.write_result(output_dir, request_id, {
+                "request_id": request_id,
+                "run_id": run_id,
+                "command": command,
+                "result": result,
+                "at": int(position),
+                "global_step": int(global_step),
+                "error": error,
+            })
+        except Exception as e:   # noqa: BLE001
+            print(f"{prefix} WARNING: could not record LR schedule result "
+                  f"{request_id}: {e}")
+
+    if applied:
+        reapply_lr_schedule_position(trainer)
+    if requests:
+        emit_training_event(
+            "info",
+            f"LR schedule command(s) handled at scheduler step {position}: "
+            f"{', '.join(outcomes)}.",
+            code="lr_schedule_command", prefix=prefix)
+    refresh_lr_schedule_status(trainer, global_step=global_step,
+                               force=bool(requests))
+    return applied
+
+
+def lr_decay_state_code(trainer) -> Optional[int]:
+    """The `lr_decay_state` metric value (D19), or None when there is no timeline."""
+    timeline = getattr(trainer, "lr_timeline", None)
+    spec = getattr(trainer, "lr_schedule_spec", None)
+    if timeline is None or spec is None:
+        return None
+    return int(timeline.state_at(spec, live_scheduler_step(trainer)).code)
 
 
 def setup_fused_grad_norm(trainer, optimizers):
@@ -14322,6 +14490,12 @@ class BaseTrainer(ABC):
                         stop_flag_file.unlink()  # Clean up flag file
                         raise KeyboardInterrupt("Training stopped by user")
 
+                    # Runtime LR-schedule commands (seam (c) of the design's
+                    # §5.2). Here and not in the sampling block: the fused paths
+                    # step the optimizer from a backward hook, so a multiplier
+                    # written after the forward misses this batch's update.
+                    poll_lr_schedule_commands(self, global_step)
+
                     # Periodically publish Danbooru augmentation metrics for the
                     # UI (read by the /training/runs/{id}/danbooru-metrics endpoint).
                     if getattr(self, "_danbooru_collector", None) is not None and \
@@ -15931,6 +16105,17 @@ class BaseTrainer(ABC):
                                         _name = _component_names[_i] if _i < len(_component_names) else f"g{_i}"
                                         _key = "lr_" + re.sub(r'[^a-z0-9]+', '', _name.lower())
                                         self.log_extra_metric(_key, float(_pg["lr"]))
+                        except Exception:
+                            pass
+
+                        # Which phase of the runtime overlay the schedule is in
+                        # (0 base / 1 decaying / 2 floor / 3 recovering, D19).
+                        # A pure fold over the event list: it cannot perturb the
+                        # schedule it reports.
+                        try:
+                            _decay_state = lr_decay_state_code(self)
+                            if _decay_state is not None:
+                                self.log_extra_metric("lr_decay_state", float(_decay_state))
                         except Exception:
                             pass
 

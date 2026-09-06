@@ -149,6 +149,15 @@ EXTRA_METRIC_DEFS = {
     # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
     # its own axis rather than the shared pooled Y-range.
     "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right", **_LR},
+    # Which phase of the runtime LR overlay the run is in: 0 base, 1 decaying,
+    # 2 floor, 3 recovering (docs/guides/LR_SCHEDULER_DESIGN.md D19). A step
+    # code, not a rate, so it gets a scale group of its own rather than sharing
+    # the learning-rate axis it would otherwise flatten.
+    "lr_decay_state": {"label": "LR decay state", "color": "#f472b6", "dashed": True,
+                       "axis": "right", "family": "other",
+                       "scale_group": "lr_decay_state",
+                       "range": {"kind": "fixed", "min": 0, "max": 3},
+                       "sampling": "dense"},
     # Run-cumulative batches abandoned before their backward pass (OOM, unusable
     # item, no valid latents, missing condition image). Monotone staircase: a
     # skip writes no metrics row of its own, so this rides the next completed

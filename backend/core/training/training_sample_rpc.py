@@ -4,7 +4,8 @@ Same file-RPC shape as ``training_preview_rpc`` (atomic write, delete before
 processing, result written last), different contract: the trainer runs a claimed
 request through its ORDINARY scheduled-sample block, so the PNG lands in
 ``<output_dir>/samples/`` under its own name and the result file here carries
-only metadata.
+only metadata. The transport itself lives in ``training_file_rpc``, shared with
+``training_control_rpc``.
 
   API side:
     1. write   ``<output_dir>/.sample_request_<id>.json``
@@ -21,17 +22,29 @@ cleared before the next run is spawned instead (``training_process.py``).
 """
 from __future__ import annotations
 
-import json
-import os
 import secrets
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Transport primitives shared with training_control_rpc. The private aliases
+# keep this module's own call sites unchanged.
+from core.training.training_file_rpc import (
+    SUFFIX,
+    atomic_write_json as _atomic_write_json,
+    clear_prefixes as _clear_prefixes,
+    list_records as _list_records,
+    list_request_paths as _list_request_paths,
+    make_request_id,
+    owns,
+    parse_records as _parse_records,
+    read_json as _read_json,
+    request_path as _request_path,
+    write_record as _write_record,
+)
+
 REQUEST_PREFIX = ".sample_request_"
 RESULT_PREFIX = ".sample_result_"
-SUFFIX = ".json"
 
 # N queued requests would mean N full generations back to back with training
 # stalled, so the queue is capped rather than unbounded.
@@ -53,10 +66,6 @@ class SampleQueueFullError(RuntimeError):
     """Raised by :func:`queue_request` when the pending cap is already reached."""
 
 
-def make_request_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
 def resolve_seed(configured_seed: Any) -> int:
     """A concrete seed, never the -1 sentinel.
 
@@ -73,63 +82,16 @@ def resolve_seed(configured_seed: Any) -> int:
 
 
 def request_path(output_dir: str | Path, request_id: str) -> Path:
-    return Path(output_dir) / f"{REQUEST_PREFIX}{request_id}{SUFFIX}"
+    return _request_path(output_dir, REQUEST_PREFIX, request_id)
 
 
 def result_path(output_dir: str | Path, request_id: str) -> Path:
-    return Path(output_dir) / f"{RESULT_PREFIX}{request_id}{SUFFIX}"
-
-
-def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, path)
-
-
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _sorted_by_age(paths: List[Path]) -> List[Path]:
-    """Oldest first. mtime then name, so same-second requests still order."""
-    def key(p: Path):
-        try:
-            return (p.stat().st_mtime, p.name)
-        except OSError:
-            return (0.0, p.name)
-    return sorted(paths, key=key)
-
-
-def owns(record: Optional[Dict[str, Any]], run_id: Optional[int]) -> bool:
-    """Whether ``run_id`` may act on this request/result.
-
-    Two runs that share a ``run_name`` share an ``output_dir`` (the same reason
-    ``_step0_sample_done_for_this_run`` checks the marker's run id rather than
-    the file's existence), so a request names the run it was queued for. A record
-    with no ``run_id`` -- one written before this field existed -- is treated as
-    ours rather than left to wedge the directory forever.
-    """
-    if run_id is None or record is None:
-        return True
-    owner = record.get("run_id")
-    return owner is None or int(owner) == int(run_id)
+    return _request_path(output_dir, RESULT_PREFIX, request_id)
 
 
 def list_pending_requests(output_dir: str | Path,
                           run_id: Optional[int] = None) -> List[Path]:
-    out = Path(output_dir)
-    if not out.is_dir():
-        return []
-    paths = _sorted_by_age(list(out.glob(f"{REQUEST_PREFIX}*{SUFFIX}")))
-    if run_id is None:
-        return paths
-    return [p for p in paths if owns(_read_json(p), run_id)]
+    return _list_request_paths(output_dir, REQUEST_PREFIX, run_id)
 
 
 def read_request(req_path: Path) -> Optional[Dict[str, Any]]:
@@ -139,12 +101,7 @@ def read_request(req_path: Path) -> Optional[Dict[str, Any]]:
 def pending_requests(output_dir: str | Path,
                      run_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Parsed pending requests, oldest first (for the queue endpoint)."""
-    out: List[Dict[str, Any]] = []
-    for p in list_pending_requests(output_dir, run_id):
-        req = _read_json(p)
-        if req is not None:
-            out.append(req)
-    return out
+    return _parse_records(list_pending_requests(output_dir, run_id))
 
 
 def queue_request(
@@ -209,50 +166,21 @@ def write_result(output_dir: str | Path, request_id: str,
     Single file, written last (the PNG it describes is already in ``samples/``
     under its own name), so a reader that sees this file sees a complete record.
     """
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    payload = dict(result)
-    payload.setdefault("request_id", request_id)
-    payload.setdefault("completed_at", time.time())
-    _atomic_write_json(result_path(out, request_id), payload)
-    stale = _sorted_by_age(list(out.glob(f"{RESULT_PREFIX}*{SUFFIX}")))
-    for p in stale[:max(0, len(stale) - MAX_KEPT_RESULTS)]:
-        try:
-            p.unlink()
-        except OSError:
-            pass
+    _write_record(output_dir, RESULT_PREFIX, request_id, result,
+                  keep=MAX_KEPT_RESULTS)
 
 
 def list_results(output_dir: str | Path,
                  run_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Recorded results, newest first."""
-    out = Path(output_dir)
-    if not out.is_dir():
-        return []
-    results: List[Dict[str, Any]] = []
-    for p in reversed(_sorted_by_age(list(out.glob(f"{RESULT_PREFIX}*{SUFFIX}")))):
-        rec = _read_json(p)
-        if rec is not None and owns(rec, run_id):
-            results.append(rec)
-    return results
+    return _list_records(output_dir, RESULT_PREFIX, run_id)
 
 
 def clear_all(output_dir: str | Path) -> int:
     """Remove every request/result file. Called before a run is spawned so a
     request left pending by a stopped or crashed run cannot leak into the next
     one. Returns the number of files removed."""
-    out = Path(output_dir)
-    if not out.is_dir():
-        return 0
-    removed = 0
-    for prefix in (REQUEST_PREFIX, RESULT_PREFIX):
-        for p in out.glob(f"{prefix}*"):
-            try:
-                p.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    return _clear_prefixes(output_dir, (REQUEST_PREFIX, RESULT_PREFIX))
 
 
 def sample_filename(step: int, sample_index: int,

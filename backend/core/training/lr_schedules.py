@@ -21,9 +21,9 @@ resume lands.
 P1 adds the runtime timeline: the ``total_steps`` warp of §7.2 and the
 BASE/DECAYING/FLOOR/RECOVERING overlay of §5.3 as §17.3 restates it. The
 overlay state is derived per SPEC from one shared event list, so P6's per-group
-schedules can diverge without a second timeline. The control RPC that feeds it
-commands is P2, the ReLoRA ``restart`` event is P4, and the generalized floor
-with the ``wsd``/``rex`` names is P3.
+schedules can diverge without a second timeline. P2 feeds it commands through
+``training_control_rpc``; the ReLoRA ``restart`` event is P4, and the
+generalized floor with the ``wsd``/``rex`` names is P3.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ __all__ = [
     "STATE_BASE",
     "STATE_DECAYING",
     "STATE_FLOOR",
+    "STATE_NAMES",
     "STATE_RECOVERING",
     "ScheduleSpec",
     "ScheduleTimeline",
@@ -79,6 +80,14 @@ STATE_BASE = 0
 STATE_DECAYING = 1
 STATE_FLOOR = 2
 STATE_RECOVERING = 3
+# The strings `.lr_schedule.json` and the API report; the integers are what the
+# `lr_decay_state` metric carries.
+STATE_NAMES = {
+    STATE_BASE: "base",
+    STATE_DECAYING: "decaying",
+    STATE_FLOOR: "floor",
+    STATE_RECOVERING: "recovering",
+}
 
 _CURVES = ("constant", "linear", "cosine", "cosine_with_restarts",
            "polynomial", "wsd")

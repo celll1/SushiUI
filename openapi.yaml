@@ -22128,17 +22128,9 @@ components:
           example: 'registry:flux1'
         vae_swap_new_channel_init:
           type: 'string'
-          enum: ['zero', 'scaled']
+          enum: ['zero']
           default: 'zero'
-          description: |
-            How channels the previous VAE did not have are initialised in the resized latent input/output layers.
-
-            `zero` leaves them at zero, so the swapped model's first prediction does not depend on its input.
-
-            `scaled` is accepted by SenseNova only, and only when the swap rebuilds the generation head: the
-            head is seeded from a truncated normal and calibrated on its first batch so its predicted latent
-            has unit standard deviation. Every other architecture resizes by copying trained channels and
-            accepts `zero` only.
+          description: How channels the previous VAE did not have are initialised in the resized latent input/output layers.
         sensenova_gen_patch:
           type: 'integer'
           minimum: 0

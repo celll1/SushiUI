@@ -15770,7 +15770,7 @@ class TrainingRunCreateRequest(BaseModel):
     # VAE swap (arch-independent; full fine-tune only). sdxl_vae_type below is a
     # read-only alias kept so an existing run's config still loads.
     vae_swap_source: str = TRAINING_DEFAULTS["vae_swap_source"]
-    vae_swap_new_channel_init: Literal["zero", "scaled"] = TRAINING_DEFAULTS[
+    vae_swap_new_channel_init: Literal["zero"] = TRAINING_DEFAULTS[
         "vae_swap_new_channel_init"
     ]
     # 0 = inherit the base checkpoint's own generation patch (4 for a

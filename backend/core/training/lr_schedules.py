@@ -39,12 +39,19 @@ curve, which is bit-identical to P0 wherever ``F == 0``. ``polynomial`` joins
 that form, so its floor is now ``lr_floor_ratio`` and no longer diffusers'
 ``1e-7 / lr`` (§17.2, recorded in §18.3). A YAML with no floor key at all reads
 as 0.25 for ``plateau_cosine_floor`` and 0.0 everywhere else (§12.2).
+
+R1 adds §19's ``retarget``: one more event kind, carrying a serialized
+``ScheduleSpec``, that replaces the curve mid-run and blends from the old one
+over ``length`` steps. The fold therefore returns a CHAIN of curves rather than
+one spec, and an ``anchor="restart"`` link is evaluated on its own axis whose
+origin is the event's step -- which is why every comparison between an event's
+``at`` and a spec's ``warmup_steps`` rebases (§19.3's last row).
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import MISSING, asdict, dataclass, fields, replace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from torch.optim.lr_scheduler import LambdaLR
@@ -53,10 +60,13 @@ from torch.optim.lr_scheduler import LambdaLR
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 __all__ = [
+    "BLEND_SHAPE_NAMES",
     "DECAY_SHAPE_NAMES",
     "INTERNAL_SCHEDULER_NAMES",
     "LR_SCHEDULER_NAMES",
     "OverlayState",
+    "RETARGET_ANCHORS",
+    "SPEC_VERSION",
     "STATE_BASE",
     "STATE_DECAYING",
     "STATE_FLOOR",
@@ -66,6 +76,7 @@ __all__ = [
     "ScheduleTimeline",
     "apply_layer_decay",
     "base_multiplier",
+    "blend_length_on_scheduler_axis",
     "build_depth_map",
     "build_lr_scheduler",
     "describe_spec",
@@ -101,6 +112,21 @@ _RESOLVABLE_NAMES = LR_SCHEDULER_NAMES + INTERNAL_SCHEDULER_NAMES
 # decay with slope 0 and REX with -1/2 (§8).
 DECAY_SHAPE_NAMES = ("cosine", "linear", "rex")
 
+# §19.1's blend weight w(u), w(0)=0, w(1)=1. `linear` and `cosine` are the
+# decay vocabulary read as w = 1 - k(u) (D22 asked for no new shapes); `rex`
+# joins them for the same reason. `exp` is named by §19.1 and by no other part
+# of the design, so its rate is a definition made here, not a measurement.
+BLEND_SHAPE_NAMES = ("linear", "cosine", "exp", "rex")
+_BLEND_EXP_K = 4.0
+
+# §19.1. `restart` re-anchors the new curve at the event (D23); `continue`
+# evaluates it on the global axis.
+RETARGET_ANCHORS = ("restart", "continue")
+
+# ScheduleSpec.to_dict's `v` (§19.5). Bump only for a change a reader cannot
+# absorb by ignoring unknown keys.
+SPEC_VERSION = 1
+
 # diffusers' polynomial exponent, which neither construction site ever
 # overrode. Its floor used to be lr_end/lr_init = 1e-7/lr; D10 replaced that
 # with lr_floor_ratio, so the two now differ for a run that sets no floor.
@@ -129,7 +155,12 @@ _CURVES = ("constant", "linear", "cosine", "cosine_with_restarts",
 
 # `add` results meaning "recorded, but the state machine must never fold it":
 # the request was refused, for every group, before it became an event.
-_REFUSED = ("rejected_during_warmup", "rejected_zero_length")
+# The eight `retarget` ones are §19.4, in the order `_refuse_retarget` tests them.
+_REFUSED = ("rejected_during_warmup", "rejected_zero_length",
+            "rejected_backdated", "rejected_unknown_scheduler",
+            "rejected_non_positive_gain", "rejected_negative_length",
+            "rejected_floor_out_of_range", "rejected_no_remaining_span",
+            "rejected_warmup_exceeds_span", "rejected_unknown_group")
 
 
 @dataclass(frozen=True)
@@ -177,6 +208,37 @@ class ScheduleSpec:
     # `warmup_steps`; every later segment uses this one (§4.2).
     relora_restart_warmup_steps: int = 0
 
+    def to_dict(self) -> Dict[str, Any]:
+        """The JSON form a ``retarget`` event carries (§19.5).
+
+        No absolute step is derived here: an ``anchor="restart"`` spec's
+        ``total_steps`` is not what its span is read from (D22).
+        """
+        payload: Dict[str, Any] = {"v": SPEC_VERSION}
+        payload.update(asdict(self))
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ScheduleSpec":
+        """Rebuild a spec, IGNORING keys this build does not know (§19.5).
+
+        A state file written by a newer build has to keep resuming, so an
+        unknown key is dropped rather than refused; a missing required one is
+        an error, since guessing a name or a total is not recoverable.
+        """
+        known = {f.name: f for f in fields(cls)}
+        kwargs = {name: _coerce_field(known[name].type, value)
+                  for name, value in dict(data or {}).items()
+                  if name in known}
+        missing = [name for name, f in known.items()
+                   if name not in kwargs
+                   and f.default is MISSING and f.default_factory is MISSING]
+        if missing:
+            raise ValueError(
+                "ScheduleSpec.from_dict is missing required key(s): "
+                + ", ".join(sorted(missing)))
+        return cls(**kwargs)
+
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -194,6 +256,73 @@ class OverlayState:
     length: Optional[int] = None
     shape: str = "cosine"
     decay_disarmed: bool = False
+
+
+@dataclass(frozen=True)
+class _Blend:
+    """How one curve was entered from the one before it (§19.2).
+
+    ``prev`` is the curve the retarget replaced, still evolving: ``m_old(s)``
+    is what it WOULD have produced, so a decay it was in keeps decaying for the
+    length of the blend. Past ``at + length`` the weight is 1 and ``prev`` is
+    never evaluated again, which is what bounds the chain walk to the number of
+    blends in progress rather than to the number of events.
+    """
+
+    prev: "_Curve"
+    at: int
+    length: int
+    shape: str
+
+
+@dataclass(frozen=True)
+class _Curve:
+    """One link of the fold: a spec, its overlay, and the axis it reads on.
+
+    ``origin`` is 0 for the config curve and ``S`` for an ``anchor="restart"``
+    retarget; ``scale`` is ``m_at_S * gain`` there and ``gain`` on the global
+    axis. ``view`` maps the timeline's clock and totals onto that axis. Every
+    field is rebuilt by each fold -- nothing here is cached on the timeline,
+    because the lambda must stay a pure function of ``(step, events)``.
+    """
+
+    spec: ScheduleSpec
+    state: OverlayState
+    view: Any
+    origin: int = 0
+    scale: float = 1.0
+    link: Optional[_Blend] = None
+
+
+class _LocalAxis:
+    """The timeline seen from step ``origin`` (D22).
+
+    Duck-types the four reads ``base_multiplier`` makes. The span is derived
+    here, at evaluation time, from the run's own totals -- never stored on the
+    spec -- so an extension moves a restart-anchored curve's end with it, and
+    composing with the warp keeps the curve continuous at the anchor.
+    """
+
+    def __init__(self, timeline: "ScheduleTimeline", origin: int):
+        self._timeline = timeline
+        self._origin = int(origin)
+        self._clock_origin = timeline.clock(self._origin)
+
+    def nominal_total(self, default: int) -> int:
+        span = self._timeline.nominal_total(default) - self._clock_origin
+        return max(1, int(round(span)))
+
+    def current_total(self, default: int) -> int:
+        return max(1, self._timeline.current_total(default) - self._origin)
+
+    def clock(self, step: float) -> float:
+        return self._timeline.clock(self._origin + step) - self._clock_origin
+
+    def restarts(self, upto: Optional[int] = None) -> List[int]:
+        limit = None if upto is None else self._origin + int(upto)
+        return [at - self._origin
+                for at in self._timeline.restarts(upto=limit)
+                if at >= self._origin]
 
 
 class ScheduleTimeline:
@@ -264,6 +393,9 @@ class ScheduleTimeline:
                           "result": "applied"})
             return "applied"
 
+        if kind == "retarget":
+            return self._add_retarget(at, spec, request_id, payload)
+
         if kind not in ("decay", "cancel"):
             raise ValueError("Unknown timeline event kind: " + repr(kind))
 
@@ -275,10 +407,14 @@ class ScheduleTimeline:
 
         # What gets baked in comes from the spec in force AT `at`, which the
         # fold reports; `resolved` only seeds it.
-        active, state = self._fold(resolved, at)
+        curve = self._fold_curve(resolved, at)
+        active = curve.spec
 
         event: Dict[str, Any] = {"kind": kind, "at": at,
                                  "request_id": request_id}
+        issued = payload.get("issued")
+        if issued is not None:
+            event["issued"] = int(issued)
         length = payload.get("length")
         if kind == "decay":
             event["length"] = None if length is None else int(length)
@@ -291,9 +427,9 @@ class ScheduleTimeline:
                                   else length)
 
         if kind == "decay":
-            _, result = self._apply_decay(active, state, event)
+            _, result = self._apply_decay(curve, event)
         else:
-            _, result = self._apply_cancel(active, state, event)
+            _, result = self._apply_cancel(curve, event)
         if result in _REFUSED:
             # Kept so re-delivering the request_id answers the same thing.
             # `noop` is a kind the state machine does not know, so a refused
@@ -304,19 +440,106 @@ class ScheduleTimeline:
         self._append(event)
         return result
 
+    def _add_retarget(self, at: int, seed: Optional[ScheduleSpec],
+                      request_id: Optional[str],
+                      payload: Mapping[str, Any]) -> str:
+        """§19.1's event: replace the curve from ``at`` on, blending from the old.
+
+        ``new_spec=`` is the retarget's own schedule (a ``ScheduleSpec`` or its
+        ``to_dict()``); the ``spec=`` argument of ``add`` keeps its old meaning,
+        the representative curve the result code is scored against.
+        ``known_groups=`` is the component list §19.4's rule 7 validates
+        against; without it the names cannot be checked and are accepted.
+
+        An unknown ``anchor`` or blend ``shape`` RAISES rather than refusing --
+        the same seam-time check `decay` makes on its shape, since a
+        misspelled vocabulary word is a caller bug, not a refused request.
+        """
+        raw = payload.get("new_spec")
+        if raw is None:
+            raise ValueError(
+                "retarget needs new_spec=<ScheduleSpec or its to_dict()>")
+        new_spec = (raw if isinstance(raw, ScheduleSpec)
+                    else ScheduleSpec.from_dict(raw))
+
+        anchor = str(payload.get("anchor") or "restart").strip().lower()
+        if anchor not in RETARGET_ANCHORS:
+            raise ValueError(
+                f"Unknown retarget anchor '{anchor}'. Supported: "
+                f"{', '.join(RETARGET_ANCHORS)}")
+        shape = str(payload.get("shape") or "linear").strip().lower()
+        _blend_weight(shape)
+
+        gain = payload.get("gain")
+        gain = 1.0 if gain is None else float(gain)
+        length = payload.get("length")
+        length = 0 if length is None else int(length)
+        issued = payload.get("issued")
+        issued = at if issued is None else int(issued)
+        groups = payload.get("groups")
+        groups = None if groups is None else [str(g) for g in groups]
+
+        event: Dict[str, Any] = {
+            "kind": "retarget", "at": at, "issued": issued,
+            "spec": new_spec.to_dict(), "anchor": anchor, "gain": gain,
+            "length": length, "shape": shape, "groups": groups,
+            "request_id": request_id,
+        }
+        result = self._refuse_retarget(
+            at, issued, new_spec, anchor, gain, length, groups,
+            payload.get("known_groups"), seed) or "applied"
+        if result in _REFUSED:
+            event["refused_kind"] = event["kind"]
+            event["kind"] = "noop"
+        event["result"] = result
+        self._append(event)
+        return result
+
+    def _refuse_retarget(self, at: int, issued: int, new_spec: ScheduleSpec,
+                         anchor: str, gain: float, length: int,
+                         groups: Optional[Sequence[str]],
+                         known_groups: Optional[Sequence[str]],
+                         seed: Optional[ScheduleSpec]) -> Optional[str]:
+        """§19.4's eight rules, in the order they are tested. None = accept."""
+        if at < issued:                                             # 1 (D25)
+            return "rejected_backdated"
+        if (new_spec.name not in LR_SCHEDULER_NAMES                 # 2
+                or new_spec.curve not in _CURVES):
+            return "rejected_unknown_scheduler"
+        if gain <= 0.0:                                             # 8
+            return "rejected_non_positive_gain"
+        if length < 0:                                              # 4
+            return "rejected_negative_length"
+        if not 0.0 <= new_spec.floor_ratio <= 1.0:                  # 6
+            return "rejected_floor_out_of_range"
+        total = self.current_total(
+            (seed or self.spec or new_spec).total_steps)
+        span = total - at if anchor == "restart" else total
+        if anchor == "restart" and span <= 0:                       # 3
+            return "rejected_no_remaining_span"
+        if new_spec.warmup_steps > span:                            # 5
+            return "rejected_warmup_exceeds_span"
+        if groups and known_groups is not None:                     # 7
+            allowed = {str(g) for g in known_groups}
+            if any(g not in allowed for g in groups):
+                return "rejected_unknown_group"
+        return None
+
     def load(self, events: Optional[Sequence[Mapping[str, Any]]],
              upto_step: Optional[int] = None) -> None:
         """Seam (b): install a saved event list, BEFORE the fast-forward.
 
         ``upto_step`` drops later commands, the same semantics as
         ``_cleanup_future_metrics``: rewinding to an earlier checkpoint un-does
-        what was ordered after it.
+        what was ordered after it. Cut by ``issued``, like ``dump`` (§19.5): a
+        reservation for a future step was ordered BEFORE the checkpoint, and
+        cutting it by ``at`` would delete it on the way back in.
         """
         self.events = []
         self._next_seq = 0
         for index, event in enumerate(events or []):
             record = dict(event)
-            if upto_step is not None and int(record.get("at", 0)) > int(upto_step):
+            if upto_step is not None and _issued(record) > int(upto_step):
                 continue
             record.setdefault("at", 0)
             record.setdefault("seq", index)
@@ -325,9 +548,15 @@ class ScheduleTimeline:
         self.events.sort(key=_order)
 
     def dump(self, upto_step: int) -> List[Dict[str, Any]]:
-        """JSON-ready events with ``at <= upto_step``, in application order."""
+        """JSON-ready events with ``issued <= upto_step``, in application order.
+
+        Invariant 6 as §19.5 revised it: the cut is by ``issued``, so a future
+        reservation (``at > upto_step``) survives every save between its order
+        and its effect. An event with no ``issued`` reads as ``issued = at``,
+        which is what every event written before R1 was.
+        """
         return [dict(e) for e in self._sorted()
-                if int(e.get("at", 0)) <= int(upto_step)]
+                if _issued(e) <= int(upto_step)]
 
     def bind_spec(self, spec: ScheduleSpec) -> None:
         """Name the representative spec `add` scores result codes against."""
@@ -388,16 +617,18 @@ class ScheduleTimeline:
         return self._fold(spec, int(step))[1]
 
     def active_spec(self, spec: ScheduleSpec, step: int) -> ScheduleSpec:
-        """The spec in force at ``step``: ``spec`` itself until §19's
-        ``retarget`` can replace it. Read it wherever a caller reports or bakes
-        a spec field beside a timeline state, so that replacement reaches it."""
+        """The spec in force at ``step``: ``spec`` itself, or the last
+        ``retarget``'s. Read it wherever a caller reports or bakes a spec field
+        beside a timeline state, so that replacement reaches it. Under
+        ``anchor="restart"`` its step-valued fields are lengths from the
+        retarget's step, not positions on the run's axis."""
         return self._fold(spec, int(step))[0]
 
     def multiplier(self, spec: ScheduleSpec, step: int) -> float:
-        """The LR multiplier: §4's base curve with the overlay on top."""
+        """The LR multiplier: §4's base curve with the overlay on top, blended
+        with whatever a ``retarget`` replaced (§19.2)."""
         step = int(step)
-        active, state = self._fold(spec, step)
-        return self._value(active, state, step)
+        return self._chain_value(self._fold_curve(spec, step), step)
 
     # -- internals -------------------------------------------------------
 
@@ -412,36 +643,81 @@ class ScheduleTimeline:
 
     def _fold(self, spec: ScheduleSpec,
               step: int) -> Tuple[ScheduleSpec, OverlayState]:
-        """Apply every event at or before ``step``, in arrival order, and
-        return the spec in force there together with the overlay on it.
+        """The spec in force at ``step`` and the overlay on it."""
+        curve = self._fold_curve(spec, int(step))
+        return curve.spec, curve.state
 
-        The spec is folded rather than fixed because §19's ``retarget``
-        replaces it mid-run; every event is then applied over the curve that
-        was active when it arrived, not over the one config resolved to.
+    def _fold_curve(self, spec: ScheduleSpec, step: int) -> _Curve:
+        """Apply every event at or before ``step``, in arrival order.
+
+        The spec is folded rather than fixed because a ``retarget`` replaces it
+        mid-run; every event is then applied over the curve that was active
+        when it arrived, not over the one config resolved to. A retarget also
+        keeps a reference to what it replaced, for the blend of §19.2.
 
         This is also what an event arriving AT ``step`` sees: earlier same-step
         events carry a smaller ``seq``, so they are already folded in, and the
         trailing advance is the same one the replay does before applying it.
         """
-        active = spec
-        state = OverlayState()
+        curve = _Curve(spec=spec, state=OverlayState(), view=self)
         for event in self._sorted():
             at = int(event.get("at", 0))
             if at > step:
                 break
             kind = event.get("kind")
             if kind == "decay":
-                state = self._advance(active, state, at)
-                state, _ = self._apply_decay(active, state, event)
+                curve = self._advanced(curve, at)
+                curve = replace(curve,
+                                state=self._apply_decay(curve, event)[0])
             elif kind == "cancel":
-                state = self._advance(active, state, at)
-                state, _ = self._apply_cancel(active, state, event)
-        return active, self._advance(active, state, step)
+                curve = self._advanced(curve, at)
+                curve = replace(curve,
+                                state=self._apply_cancel(curve, event)[0])
+            elif kind == "retarget":
+                curve = self._retarget(self._advanced(curve, at), event)
+        return self._advanced(curve, step)
 
-    def _apply_decay(self, spec: ScheduleSpec, state: OverlayState,
-                     event: Mapping[str, Any]) -> Tuple[OverlayState, str]:
+    def _retarget(self, curve: _Curve, event: Mapping[str, Any]) -> _Curve:
+        """Enter the event's spec, keeping ``curve`` as the blend's ``m_old``.
+
+        D26: whatever overlay was running is ABSORBED -- the new curve starts
+        in BASE, and the value it starts from is the realized multiplier, decay
+        or recovery included. ``decay_disarmed`` does not carry over: the new
+        spec's own configured decay is armed.
+
+        R2 owns ``groups``: the event stores the selector, but a retarget here
+        replaces the curve of EVERY spec. Filtering needs a group identifier on
+        the spec (D24) -- without one, matching by name would apply the
+        retarget to whichever group happens to share a schedule.
+        """
         at = int(event.get("at", 0))
-        if at < spec.warmup_steps:
+        spec = ScheduleSpec.from_dict(event["spec"])
+        anchor = str(event.get("anchor") or "restart")
+        gain = event.get("gain")
+        gain = 1.0 if gain is None else float(gain)
+        link = _Blend(prev=curve, at=at, length=int(event.get("length") or 0),
+                      shape=str(event.get("shape") or "linear"))
+        if anchor == "continue":
+            return _Curve(spec=spec, state=OverlayState(), view=self,
+                          scale=gain, link=link)
+        # anchor=restart: m_new(s) = m_at_S * gain * g(s - S). The registry's
+        # curves all peak at 1 after their warmup, so g is the curve itself on
+        # the local axis -- nothing is divided by g(0), which is 0 whenever the
+        # new spec warms up (§19.2).
+        return _Curve(spec=spec, state=OverlayState(),
+                      view=_LocalAxis(self, at), origin=at,
+                      scale=self._chain_value(curve, at) * gain, link=link)
+
+    def _apply_decay(self, curve: _Curve,
+                     event: Mapping[str, Any]) -> Tuple[OverlayState, str]:
+        state = curve.state
+        at = int(event.get("at", 0))
+        # §19.3's last row: `at` is an absolute scheduler step and warmup_steps
+        # is a length from this curve's origin. Unrebased, a command inside the
+        # new warmup but past step W_new would be ACCEPTED, starting a decay on
+        # a rising ramp -- the design states this failure with the sign the
+        # other way round.
+        if at - curve.origin < curve.spec.warmup_steps:
             # Also what keeps a ramp from being read as "a decay that raises
             # the LR", and q's denominator away from zero.
             return state, "rejected_during_warmup"
@@ -449,57 +725,68 @@ class ScheduleTimeline:
             return state, "ignored_already_decaying"
         length = event.get("length")
         if length is None:
-            if self.nominal_total(spec.total_steps) - self.clock(at) <= 0:
+            if (curve.view.nominal_total(curve.spec.total_steps)
+                    - curve.view.clock(at - curve.origin)) <= 0:
                 return state, "rejected_zero_length"
         elif int(length) <= 0:
             return state, "rejected_zero_length"
         return OverlayState(
             code=STATE_DECAYING, at=at,
-            start_multiplier=self._value(spec, state, at),
+            start_multiplier=self._own_value(curve, at),
             length=None if length is None else int(length),
-            shape=str(event.get("shape") or spec.decay_shape),
+            shape=str(event.get("shape") or curve.spec.decay_shape),
             decay_disarmed=state.decay_disarmed,
         ), "applied"
 
-    def _apply_cancel(self, spec: ScheduleSpec, state: OverlayState,
+    def _apply_cancel(self, curve: _Curve,
                       event: Mapping[str, Any]) -> Tuple[OverlayState, str]:
+        state = curve.state
         at = int(event.get("at", 0))
         length = event.get("length")
-        recovery = int(spec.warmup_steps if length is None else length)
+        # A LENGTH, so no rebase: R = W is the same number on either axis.
+        recovery = int(curve.spec.warmup_steps if length is None else length)
         if state.code == STATE_RECOVERING:
             return state, "ignored_already_recovering"
         if state.code in (STATE_DECAYING, STATE_FLOOR):
             return OverlayState(
                 code=STATE_RECOVERING, at=at,
-                start_multiplier=self._value(spec, state, at),
+                start_multiplier=self._own_value(curve, at),
                 length=recovery, shape=state.shape, decay_disarmed=True,
             ), "applied"
-        if _has_config_decay(spec) and not state.decay_disarmed:
+        if _has_config_decay(curve.spec) and not state.decay_disarmed:
             # §17.3: a cancel voids the config-declared WSD decay too. Already
             # past its start, that is a recovery; before it, a disarm.
-            if self._config_decay_started(spec, at):
+            if self._config_decay_started(curve, at):
                 return OverlayState(
                     code=STATE_RECOVERING, at=at,
-                    start_multiplier=self._base(spec, at, False),
+                    start_multiplier=self._own_base(curve, at, False),
                     length=recovery, decay_disarmed=True,
                 ), "applied"
             return replace(state, decay_disarmed=True), "disarmed_scheduled_decay"
         return state, "ignored_no_active_decay"
 
-    def _advance(self, spec: ScheduleSpec, state: OverlayState,
-                 step: int) -> OverlayState:
-        """The transitions time makes on its own (§5.3's last two rows)."""
-        if state.code == STATE_DECAYING and self._q(spec, state, step) >= 1.0:
-            return replace(state, code=STATE_FLOOR)
+    def _advanced(self, curve: _Curve, step: int) -> _Curve:
+        """The transitions time makes on its own (§5.3's last two rows).
+
+        Idempotent, so the chain walk can re-apply it to a curve the fold has
+        already advanced.
+        """
+        state = curve.state
+        if state.code == STATE_DECAYING and self._q(curve, step) >= 1.0:
+            return replace(curve, state=replace(state, code=STATE_FLOOR))
         if (state.code == STATE_RECOVERING
                 and step >= state.at + int(state.length or 0)):
-            return OverlayState(decay_disarmed=state.decay_disarmed)
-        return state
+            return replace(curve, state=OverlayState(
+                decay_disarmed=state.decay_disarmed))
+        return curve
 
-    def _q(self, spec: ScheduleSpec, state: OverlayState, step: int) -> float:
+    def _q(self, curve: _Curve, step: int) -> float:
+        state = curve.state
         if state.length is None:
-            span = self.nominal_total(spec.total_steps) - self.clock(state.at)
-            elapsed = self.clock(step) - self.clock(state.at)
+            view, origin = curve.view, curve.origin
+            span = (view.nominal_total(curve.spec.total_steps)
+                    - view.clock(state.at - origin))
+            elapsed = view.clock(step - origin) - view.clock(state.at - origin)
         else:
             span = float(state.length)
             elapsed = float(step - state.at)
@@ -507,38 +794,130 @@ class ScheduleTimeline:
             return 1.0
         return min(1.0, max(0.0, elapsed / span))
 
-    def _config_decay_started(self, spec: ScheduleSpec, step: int) -> bool:
-        start = _config_decay_start(spec, self.nominal_total(spec.total_steps))
+    def _config_decay_started(self, curve: _Curve, step: int) -> bool:
+        spec, view = curve.spec, curve.view
+        start = _config_decay_start(spec, view.nominal_total(spec.total_steps))
         if start is None:
             return False
-        position = (self.clock(step) if spec.decay_start_axis == "nominal"
-                    else float(step))
+        local = step - curve.origin
+        position = (view.clock(local) if spec.decay_start_axis == "nominal"
+                    else float(local))
         return position >= float(start)
 
-    def _value(self, spec: ScheduleSpec, state: OverlayState,
-               step: int) -> float:
+    def _chain_value(self, curve: _Curve, step: int) -> float:
+        """The realized multiplier: this curve, blended with what it replaced.
+
+        Walks back one link per blend still in progress; a finished one returns
+        before recursing, so the depth is the number of overlapping blends and
+        not the number of events (§19.2).
+        """
+        curve = self._advanced(curve, step)
+        value = curve.scale * self._own_value(curve, step)
+        link = curve.link
+        if link is None:
+            return value
+        u = (1.0 if link.length <= 0
+             else min(1.0, max(0.0, (step - link.at) / float(link.length))))
+        w = _blend_weight(link.shape)(u)
+        if w >= 1.0:
+            return value
+        # A convex combination with w in [0, 1]: D30's bound
+        # m(s) <= max(m_old(s), m_new(s)) is the clamp above, not the shape.
+        return (1.0 - w) * self._chain_value(link.prev, step) + w * value
+
+    def _own_value(self, curve: _Curve, step: int) -> float:
+        """This curve's own multiplier, UNSCALED: the overlay on its base.
+
+        Unscaled because ``scale`` multiplies the whole curve, floor included,
+        so a decay started after a restart-anchored retarget runs between this
+        curve's ``F`` and its own realized value rather than between two
+        already-scaled numbers.
+        """
+        spec, state = curve.spec, curve.state
         if state.code == STATE_DECAYING:
             floor = spec.floor_ratio
             shape = _decay_shape(state.shape)
             return floor + (state.start_multiplier - floor) * shape(
-                self._q(spec, state, step))
+                self._q(curve, step))
         if state.code == STATE_FLOOR:
             return spec.floor_ratio
         if state.code == STATE_RECOVERING:
-            base = self._base(spec, step, state.decay_disarmed)
+            base = self._own_base(curve, step, state.decay_disarmed)
             recovery = int(state.length or 0)
             if recovery <= 0:
                 return base
             ratio = min(1.0, max(0.0, (step - state.at) / float(recovery)))
             return state.start_multiplier + (base - state.start_multiplier) * ratio
-        return self._base(spec, step, state.decay_disarmed)
+        return self._own_base(curve, step, state.decay_disarmed)
 
-    def _base(self, spec: ScheduleSpec, step: int, disarmed: bool) -> float:
-        return base_multiplier(spec, self, step, decay_disarmed=disarmed)
+    def _own_base(self, curve: _Curve, step: int, disarmed: bool) -> float:
+        return base_multiplier(curve.spec, curve.view, step - curve.origin,
+                               decay_disarmed=disarmed)
 
 
 def _order(event: Mapping[str, Any]) -> Tuple[int, int]:
     return (int(event.get("at", 0)), int(event.get("seq", 0)))
+
+
+def _issued(event: Mapping[str, Any]) -> int:
+    """When the event was ACCEPTED (§19.5). Absent means it was accepted at
+    its own ``at``, which every event written before R1 was."""
+    issued = event.get("issued")
+    at = int(event.get("at", 0))
+    return at if issued is None else int(issued)
+
+
+def _coerce_field(annotation: Any, value: Any) -> Any:
+    """Read one JSON value back into a ScheduleSpec field's type.
+
+    ``from __future__ import annotations`` leaves the annotation a string, and
+    JSON does not distinguish 10 from 10.0, so a round trip through a state
+    file would otherwise hand the curve a float where it counts steps.
+    """
+    if value is None:
+        return None
+    text = str(annotation)
+    if "bool" in text:
+        return bool(value)
+    if "float" in text:
+        return float(value)
+    if "int" in text:
+        return int(value)
+    if "str" in text:
+        return str(value)
+    return value
+
+
+def _blend_weight(name: str) -> Callable[[float], float]:
+    """``w(u)`` of §19.2: w(0)=0, w(1)=1, non-decreasing on [0, 1]."""
+    if name == "linear":
+        return lambda u: u
+    if name == "cosine":
+        return lambda u: 0.5 * (1.0 - math.cos(math.pi * u))
+    if name == "exp":
+        return lambda u: ((math.exp(_BLEND_EXP_K * u) - 1.0)
+                          / (math.exp(_BLEND_EXP_K) - 1.0))
+    if name == "rex":
+        return lambda u: 1.0 - (1.0 - u) / (1.0 - u / 2.0)
+    raise ValueError(
+        f"Unknown blend shape '{name}'. Supported: {', '.join(BLEND_SHAPE_NAMES)}")
+
+
+def blend_length_on_scheduler_axis(steps: Optional[int],
+                                   interval: int) -> Optional[int]:
+    """A retarget's ``L`` from global steps onto the scheduler axis.
+
+    0 means "switch instantly" here, so a positive request that floors to 0
+    returns -1 -- which ``add`` refuses (§19.4 rule 4) rather than silently
+    turning a requested blend into a hard switch. §18.5's sentinel, refusing
+    where the config path clamps, because there is no reason to guess.
+    """
+    if steps is None:
+        return None
+    requested = int(steps)
+    if requested <= 0:
+        return requested
+    return to_scheduler_axis(requested, interval) or -1
 
 
 def _config_decay_start(spec: ScheduleSpec,

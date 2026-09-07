@@ -2146,7 +2146,13 @@ def predict_original_latent_unified(
 
         if prediction_target == "epsilon":
             # model_pred = noise, solve for x_0: x_0 = (x_t - sqrt(1 - alpha_bar) * noise) / sqrt(alpha_bar)
-            predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar
+            # Floor bounds the amplification at 1000x so a zero-terminal-SNR schedule
+            # (alpha_bar_T == 0 exactly) yields a finite number instead of inf/NaN. Inactive for
+            # the schedulers this repo constructs (scaled_linear: min sqrt(alpha_bar) 6.8e-2), but
+            # a diffusers-dir scheduler_config can still set cosine or zero-SNR — see
+            # ops/sd_sdxl_ops.py's from_pretrained load. A finite value here is a backstop, not a
+            # usable x_0: exclude those samples with ops/x0_recovery.snr_band_mask instead.
+            predicted_latent = (noisy_latents - sqrt_one_minus_alpha_bar * model_pred) / sqrt_alpha_bar.clamp_min(1e-3)
         elif prediction_target == "velocity":
             # model_pred = v = sqrt(alpha_bar) * noise - sqrt(1 - alpha_bar) * x_0
             # Solve for x_0: x_0 = sqrt(alpha_bar) * x_t - sqrt(1 - alpha_bar) * v

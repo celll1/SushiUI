@@ -4097,7 +4097,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             Gain (0 = keep the checkpoint&apos;s value)
                           </label>
                           <input
-                            type="number" min={0} step={0.001}
+                            type="number" min={0} step="any"
                             value={params.sensenova_noise_scale_gain ?? 0}
                             onChange={(e) => updateParam(
                               "sensenova_noise_scale_gain",

@@ -107,6 +107,12 @@ changes.
 
 ## Reusable subagents
 
+**When the main agent is GPT-6 Astra (`gpt-6-astra`), it must not use any
+subagents.** The main agent performs all implementation, review, verification,
+and commit work itself. This rule takes precedence over the delegation,
+independent-subagent audit, and consultant requirements below and in
+`.claude/agents/*.md`.
+
 Repo-specific subagent definitions live in `.claude/agents/*.md` (tracked in
 git — see the negated `.gitignore` entries for `.claude/agents/`). Check there
 before writing a one-off agent prompt from scratch. Each definition sets both

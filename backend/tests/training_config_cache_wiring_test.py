@@ -48,11 +48,25 @@ def test_force_recache_reaches_the_dataset_section(generator):
 
 
 def test_visible_frontend_controls_are_sent_and_restored():
-    source = (ROOT / "frontend/src/components/training/TrainingConfig.tsx").read_text(
-        encoding="utf-8"
+    """Each of these controls is visible in the form, so a run started from it
+    must carry the value and an edit of that run must show it again.
+
+    `getRequestData` no longer names the fields: it spreads
+    `passThroughParams(params)`, which copies every PARAM_KEYS entry that
+    `getRequestData` does not build itself, and `applyParamsToState` restores
+    through the same list. So the question "is this control sent and restored"
+    is now "is it in PARAM_KEYS, and if it is also a computed key, does the
+    request build it" -- which is what this asks, through the same readers
+    training_edit_restore_coverage_test.py uses.
+    """
+    from training_edit_restore_coverage_test import (
+        _param_keys, _request_data, _request_keys, _source,
     )
-    request = source[source.index("const getRequestData"):source.index("const applyParamsToState")]
-    restore = source[source.index("const applyParamsToState"):]
+
+    source = _source()
+    param_keys = set(_param_keys(source))
+    request_keys = _request_keys(source)
+    request = _request_data(source)
 
     keys = (
         "anima_lora_scope",
@@ -75,11 +89,17 @@ def test_visible_frontend_controls_are_sent_and_restored():
         "fp8_base_dtype",
     )
     for key in keys:
-        assert f"{key}: params.{key}" in request, key
-        assert f'"{key}"' in restore, key
+        # In PARAM_KEYS is what makes it restorable: applyParamsToState's loop
+        # is over that list, so a key outside it silently reverts to the default
+        # when a run is edited.
+        assert key in param_keys, f"{key} is not in PARAM_KEYS, so an edit loses it"
+        assert key in request_keys, f"{key} never reaches the request"
 
+    panel = (ROOT / "frontend/src/components/training/TrainingConfig.tsx").read_text(
+        encoding="utf-8"
+    )
     assert "[Math.max(...params.base_resolutions!)]" in request
-    assert 'type={enableBucketing ? "checkbox" : "radio"}' in source
+    assert 'type={enableBucketing ? "checkbox" : "radio"}' in panel
     assert 'updateParam("base_resolutions", [res])' in source
     assert "Cache latents to disk (reduces VRAM usage)" not in source
 

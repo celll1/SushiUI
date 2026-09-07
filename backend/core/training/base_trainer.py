@@ -1188,6 +1188,75 @@ def setup_fused_grad_norm(trainer, optimizers):
     return accumulator
 
 
+def _fused_clip_remedy(trainer) -> str:
+    """What this run's per-parameter clip is doing, for the global-clip warning.
+
+    A module function rather than a method: the warning is exercised against
+    stand-in trainers that carry only the attributes it reads.
+    """
+    clipper = getattr(trainer, "_fused_grad_clipper", None)
+    if clipper is None:
+        return ("fused_grad_clip_factor is what clips on this path: it bounds each "
+                "parameter's gradient at a multiple of that parameter's own running "
+                "scale, which IS knowable when the hook fires. It is off (0) for "
+                "this run. ")
+    return (f"fused_grad_clip_factor={clipper.factor:g} IS active and bounds each "
+            f"parameter's gradient at {clipper.factor:g}x its own running scale "
+            f"(a different quantity from the global norm, deliberately). ")
+
+
+#: Steps between gradient-spike notices on the training_log channel. The JSONL
+#: records every spike; this only bounds how often the operator is told, so a
+#: burst cannot bury the rest of a run's notices.
+_GRAD_SPIKE_WARN_INTERVAL = 500
+
+
+def setup_fused_grad_clip(trainer, optimizers):
+    """Arm the per-parameter outlier clip on every fused path, if it is on.
+
+    Sits beside ``setup_fused_grad_norm`` because it has the same reach problem:
+    the hooks are registered in four places and only the optimizer is in scope in
+    all of them.
+    """
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.training.optimizers.fused_grad_clip import (
+        FusedGradClipper,
+        attach_fused_grad_clipper,
+    )
+
+    config = getattr(trainer, "config", None) or {}
+    factor = config.get("fused_grad_clip_factor")
+    if factor is None:
+        factor = TRAINING_DEFAULTS["fused_grad_clip_factor"]
+    factor = float(factor or 0.0)
+    if factor <= 0:
+        trainer._fused_grad_clipper = None
+        for optimizer in optimizers:
+            attach_fused_grad_clipper(optimizer, None)
+        return None
+    warmup = config.get("fused_grad_clip_warmup_steps")
+    if warmup is None:
+        warmup = TRAINING_DEFAULTS["fused_grad_clip_warmup_steps"]
+    clipper = getattr(trainer, "_fused_grad_clipper", None)
+    if clipper is None:
+        clipper = FusedGradClipper(factor=factor, warmup_steps=int(warmup))
+        trainer._fused_grad_clipper = clipper
+        # Named so a clipped step can say WHICH parameter spiked. The map is the
+        # EMA shadow's, which already walks this trainer's modules.
+        try:
+            clipper.name_parameters(trainer._build_ema_param_name_map())
+        except Exception as exc:
+            print(f"{trainer.log_prefix} fused grad clip: parameter names "
+                  f"unavailable ({type(exc).__name__}); offenders will be "
+                  f"reported by index")
+    for optimizer in optimizers:
+        attach_fused_grad_clipper(optimizer, clipper)
+    print(f"{trainer.log_prefix} Fused per-parameter gradient clip: "
+          f"{clipper.factor:g}x each parameter's own running scale, after "
+          f"{clipper.warmup_steps} update(s) of warmup")
+    return clipper
+
+
 def setup_update_census(trainer, optimizers):
     """Arm the per-step updated-parameter census (G-RB3), if it is switched on.
 
@@ -7313,6 +7382,121 @@ class BaseTrainer(ABC):
             )
         return module
 
+    def _warn_fused_clip_ignored(self) -> None:
+        """Say once that ``fused_grad_clip_factor`` does nothing on this run.
+
+        The clip is armed from the two fused setups only. A run with a plain
+        optimizer, no Block Swap and no optimizer groups never reaches them, and
+        the setting would otherwise be accepted and silently dropped -- the same
+        failure the sibling notices exist for.
+        """
+        from api.param_defaults import TRAINING_DEFAULTS
+
+        config = getattr(self, "config", None) or {}
+        factor = config.get("fused_grad_clip_factor")
+        if factor is None:
+            factor = TRAINING_DEFAULTS["fused_grad_clip_factor"]
+        if not float(factor or 0.0) > 0:
+            return
+        if getattr(self, "_fused_grad_clipper", None) is not None:
+            return
+        emit_training_warning(
+            f"fused_grad_clip_factor={float(factor):g} is IGNORED on this run: it "
+            f"clips inside the fused backward pass's per-parameter hooks, and "
+            f"this run has none (no Block Swap, no optimizer groups, and an "
+            f"optimizer that steps normally). max_grad_norm is what clips here, "
+            f"and it applies the global norm this setting cannot see.",
+            code="fused_grad_clip_ignored",
+            prefix=self.log_prefix,
+        )
+
+    def _setup_grad_spike_log(self) -> None:
+        """Arm the spike recorder for this run (``grad_spike_log_factor``)."""
+        from api.param_defaults import TRAINING_DEFAULTS
+        from core.training.grad_spike_log import GradSpikeLog
+
+        config = getattr(self, "config", None) or {}
+        factor = config.get("grad_spike_log_factor")
+        if factor is None:
+            factor = TRAINING_DEFAULTS["grad_spike_log_factor"]
+        factor = float(factor or 0.0)
+        if factor <= 0:
+            self._grad_spike_log = None
+            return
+        self._grad_spike_log = GradSpikeLog(self.output_dir, factor,
+                                            log_prefix=self.log_prefix)
+        print(f"{self.log_prefix} Gradient spike log: a step whose gradient norm "
+              f"exceeds {factor:g}x the trailing median is recorded with its "
+              f"batch in {self._grad_spike_log.path.name}")
+
+    def _observe_grad_spike(self, grad_norm, *, step, epoch, loss,
+                            learning_rate, batch, timesteps) -> None:
+        """Hand this optimizer step to the spike log, and say so once per spike.
+
+        Never raises: a diagnostic that can abort a run is worse than no
+        diagnostic.
+        """
+        clipper = getattr(self, "_fused_grad_clipper", None)
+        log = getattr(self, "_grad_spike_log", None)
+        try:
+            # Drained every step a clipper exists: the counters are per step, and
+            # leaving them to a log that may be off would accumulate one running
+            # total for the whole run and report it as a single step's.
+            summary = clipper.take_step_summary() if clipper is not None else None
+            if summary is not None:
+                self._clipped_steps = getattr(self, "_clipped_steps", 0) + 1
+            if log is None or not log.enabled:
+                return
+            record = log.observe(
+                grad_norm, step=step, epoch=epoch, loss=loss,
+                learning_rate=learning_rate, batch=batch, timesteps=timesteps,
+                clip_summary=summary)
+        except Exception as exc:
+            print(f"{self.log_prefix} gradient spike log failed "
+                  f"({type(exc).__name__}: {exc})")
+            return
+        if record is None:
+            return
+        # This channel takes the first spike and then a periodic summary, so a
+        # burst cannot bury the rest of the run's notices (the file has its own
+        # record cap).
+        self._grad_spikes_since_warned = getattr(
+            self, "_grad_spikes_since_warned", 0) + 1
+        last = getattr(self, "_grad_spike_warned_step", None)
+        if last is not None and step - last < _GRAD_SPIKE_WARN_INTERVAL:
+            return
+        suppressed = self._grad_spikes_since_warned - 1
+        self._grad_spike_warned_step = step
+        self._grad_spikes_since_warned = 0
+        ratio = record.get("ratio")
+        clip = record.get("clip") or {}
+        detail = ""
+        if clip:
+            detail = (f" Clipped {clip.get('clipped_parameters')} parameter(s); "
+                      f"the largest was {clip.get('worst_parameter')} at "
+                      f"{clip.get('worst_ratio', 0.0):.1f}x its own scale.")
+        norm = record.get("grad_norm")
+        baseline = record.get("baseline_median")
+        measured = (f"norm {norm:.4g} against a trailing median of {baseline:.4g}"
+                    + (f" ({ratio:.1f}x)" if ratio else "")
+                    if norm is not None and baseline is not None
+                    else "gradient norm not measurable this step")
+        # An INFO event, not a warning: this is the one emitter in the codebase
+        # that repeats, and merge_run_warnings keeps the EARLIEST 50 notices per
+        # run and refuses the rest. As a warning it would close that list part way
+        # through a long run and every later notice -- from any subsystem -- would
+        # be silently dropped from the run record.
+        emit_training_event(
+            "info",
+            f"gradient spike at step {step}: {measured}.{detail} The batch behind "
+            f"it is recorded in {log.path.name} (image paths, bucket size, "
+            f"captions, timesteps)."
+            + (f" {suppressed} further spike(s) since the last notice are in the "
+               f"file but not repeated here." if suppressed else ""),
+            code="grad_spike",
+            prefix=self.log_prefix,
+        )
+
     def _warn_grad_clipping_ignored_under_fused(self, max_grad_norm: float) -> None:
         """Say once that ``max_grad_norm`` does nothing under fused backward.
 
@@ -7321,7 +7505,9 @@ class BaseTrainer(ABC):
         own gradient exists -- by the time the last one arrives the first is
         already applied. The two cannot coexist; the setting is ignored, and
         substituting a per-parameter clip under the same name would be a
-        different algorithm.
+        different algorithm -- which is why the per-parameter clip that IS
+        available here has its own setting, ``fused_grad_clip_factor``, and this
+        warning names it rather than claiming ``max_grad_norm`` now works.
         """
         if max_grad_norm is None or max_grad_norm <= 0:
             return
@@ -7354,7 +7540,8 @@ class BaseTrainer(ABC):
             f"{mode}. Gradient clipping by global norm has to see every gradient "
             f"before it can scale them, and this mode applies each parameter's update "
             f"as soon as that parameter's gradient exists, so no global norm is ever "
-            f"available. No clipping of any kind is applied. " + remedy,
+            f"available. No clipping of any kind is applied. "
+            + _fused_clip_remedy(self) + remedy,
             code="fused_grad_clipping_ignored",
             prefix=self.log_prefix,
         )
@@ -7453,6 +7640,7 @@ class BaseTrainer(ABC):
             )
 
         setup_fused_grad_norm(self, [self.optimizer])
+        setup_fused_grad_clip(self, [self.optimizer])
         # Before the branch below, which returns early for the ring-buffer
         # optimizers. param_groups are final by now, so the expectation set is.
         setup_update_census(self, [self.optimizer])
@@ -7493,6 +7681,7 @@ class BaseTrainer(ABC):
             return  # Skip the hook registration loop below
 
         # Register hooks for all trainable parameters
+        from .optimizers.fused_grad_clip import apply_fused_grad_clip
         from .optimizers.fused_grad_norm import (
             record_fused_grad_norm,
             record_fused_grad_observation,
@@ -7505,15 +7694,15 @@ class BaseTrainer(ABC):
 
                     def __grad_hook(tensor: torch.Tensor, pg=param_group):
                         """Hook called when gradient is ready for this parameter"""
-                        # No clipping here: a global-norm clip cannot be applied
-                        # per parameter (see _warn_grad_clipping_ignored_under_fused).
-
                         # Before the update, which is free to scale the gradient
                         # in place, and before the clear below.
                         record_fused_grad_norm(self.optimizer, tensor)
                         # Same window, and carried on the optimizer so every
                         # fused hook site feeds it -- see attach_grad_observer.
                         record_fused_grad_observation(self.optimizer, tensor)
+                        # The per-parameter clip max_grad_norm cannot express
+                        # here (fused_grad_clip's header says why).
+                        apply_fused_grad_clip(self.optimizer, tensor)
 
                         # Update THIS parameter immediately (while on GPU)
                         self.optimizer.step_param(tensor, pg)
@@ -7611,6 +7800,7 @@ class BaseTrainer(ABC):
         self.lr_schedulers = lr_schedulers
 
         setup_fused_grad_norm(self, optimizers)
+        setup_fused_grad_clip(self, optimizers)
 
         # Create FusedOptimizerGroups instance
         self.fused_optimizer_groups = FusedOptimizerGroups(
@@ -14361,6 +14551,8 @@ class BaseTrainer(ABC):
             or self.resume_from_checkpoint
         )
         self._partial_step_taint = None
+        self._setup_grad_spike_log()
+        self._warn_fused_clip_ignored()
 
         # Needs the datasets, so it cannot live in load_components.
         self.arch.calibrate_before_training(self, datasets, bucket_manager)
@@ -17061,6 +17253,14 @@ class BaseTrainer(ABC):
                                 self.writer.add_scalar("train/grad_norm_text_encoder_2", grad_norm_te2, global_step)
                             if grad_norm_ve > 0.0:
                                 self.writer.add_scalar("train/grad_norm_vision_encoder", grad_norm_ve, global_step)
+
+                            # What the loop was doing when the gradient spiked.
+                            # Here because this is the point where the norm and
+                            # the batch that produced it are both in scope.
+                            self._observe_grad_spike(
+                                grad_norm_total, step=global_step, epoch=epoch,
+                                loss=mnt_loss_value, learning_rate=mnt_current_lr,
+                                batch=batch, timesteps=timesteps)
 
                             # Label this norm null or conditional when every
                             # batch behind it was drawn the same way. Before the

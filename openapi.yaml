@@ -20106,6 +20106,10 @@ components:
             `fp8_base_dtype_ignored`,
             `fused_gradient_accumulation_ignored`,
             `fused_grad_clipping_ignored`,
+            `fused_grad_clip_ignored`,
+            `grad_spike` (level `info`, so it is broadcast but never persisted:
+            it is the one notice that repeats),
+            `interrupted_checkpoint_save`,
             `component_lr_mismatch`,
             `component_lr_zero`,
             `component_lr_flattened`,
@@ -22590,6 +22594,83 @@ components:
         max_grad_norm:
           type: 'number'
           default: 1.0
+        fused_grad_clip_factor:
+          type: 'number'
+          format: 'float'
+          minimum: 0
+          default: 0
+          description: |
+            Per-parameter gradient clip for the FUSED backward pass. `0` disables it.
+
+            `max_grad_norm` is a global norm: it needs every gradient in hand
+            before it can choose a scale. The fused backward pass (a
+            ring-buffer optimizer, or Block Swap's optimizer groups) applies each
+            parameter's update the moment that parameter's gradient exists, so no
+            global norm is ever available and `max_grad_norm` is ignored there —
+            reported once as `fused_grad_clipping_ignored`.
+
+            What IS available inside the hook is the parameter's own complete
+            gradient. A positive value here bounds it at that multiple of the
+            parameter's OWN running scale — an EMA of its recent gradient norms,
+            which on a clipped step is fed the PRE-spike scale rather than the
+            threshold, so a sustained burst leaves the bar where it was instead of
+            walking it up behind itself. It is a different quantity from the
+            global norm and does not replace `max_grad_norm` on the non-fused
+            path.
+
+            The running scales are not written to the checkpoint, so a resume
+            re-learns them and the first `fused_grad_clip_warmup_steps` updates
+            of each parameter after a restart are unclipped.
+
+            Costs roughly 25 tensor operations per trained parameter per step, of
+            which one or two read the whole gradient. Ignored on the non-fused
+            path, which is reported once as `fused_grad_clip_ignored`.
+
+            Relative to the parameter's own history because the absolute
+            per-parameter scale is not observable from the UI, and because the
+            failure it addresses is relative: a gradient orders of magnitude
+            larger than the usual one, entering unclipped, can move the weights
+            somewhere the run does not recover from.
+
+            The gradient norm charted for the step is the one the backward pass
+            produced, not the clipped value, so a spike stays visible.
+          example: 8.0
+        fused_grad_clip_warmup_steps:
+          type: 'integer'
+          minimum: 1
+          default: 200
+          description: |
+            Updates a parameter must contribute before `fused_grad_clip_factor`
+            starts clipping it. Below this its running scale is built from too
+            few gradients to separate an outlier from ordinary variance. Ignored
+            when the clip is off. Counted per parameter and per process, so it
+            applies again after every resume.
+          example: 200
+        grad_spike_log_factor:
+          type: 'number'
+          format: 'float'
+          minimum: 0
+          default: 8.0
+          description: |
+            Record a step whose gradient norm exceeds this multiple of the
+            trailing median, together with the batch that produced it. `0`
+            disables it. Never changes what the run does.
+
+            A gradient spike is unrepeatable: once it shows in the loss chart the
+            batch behind it is gone and nothing on disk says which samples were
+            in it. Each outlier appends one JSON line to `grad_spikes.jsonl` in
+            the run's output directory (up to 500 lines per process; every spike
+            past that is still counted and reported live) carrying the step,
+            epoch, gradient norm,
+            the trailing median and their ratio, the loss and learning rate, the
+            timesteps drawn, and per item: image path, bucket size and caption.
+            A step on which `fused_grad_clip_factor` clipped anything is recorded
+            whatever its norm — the clip is why the norm stayed down.
+
+            The baseline is a median over a trailing window rather than a mean,
+            so a burst of spikes cannot become the baseline and hide its own
+            successors. Nothing is written on a step that is not an outlier.
+          example: 8.0
         optimizer_cautious:
           type: 'boolean'
           default: false

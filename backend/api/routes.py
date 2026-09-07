@@ -15330,6 +15330,15 @@ class TrainingRunCreateRequest(BaseModel):
         default=TRAINING_DEFAULTS["gradient_accumulation_steps"], ge=1
     )
     max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
+    fused_grad_clip_factor: float = Field(
+        default=TRAINING_DEFAULTS["fused_grad_clip_factor"], ge=0
+    )
+    fused_grad_clip_warmup_steps: int = Field(
+        default=TRAINING_DEFAULTS["fused_grad_clip_warmup_steps"], ge=1
+    )
+    grad_spike_log_factor: float = Field(
+        default=TRAINING_DEFAULTS["grad_spike_log_factor"], ge=0
+    )
     # gt=0, not ge=0: 0 here trains nothing (every optimizer step a no-op),
     # unlike a component rate, which can legitimately hold at 0.
     learning_rate: float = Field(default=TRAINING_DEFAULTS["learning_rate"], gt=0)

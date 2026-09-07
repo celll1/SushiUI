@@ -21212,6 +21212,14 @@ components:
 
     LrScheduleTriggerAccepted:
       type: object
+      required:
+        - request_id
+        - run_id
+        - command
+        - queued_at
+        - pending_count
+        - max_pending
+        - trigger
       description: A trigger registration queued for the trainer to arm.
       properties:
         request_id:
@@ -21243,6 +21251,14 @@ components:
 
     LrScheduleTriggerCancelAccepted:
       type: object
+      required:
+        - request_id
+        - run_id
+        - command
+        - queued_at
+        - pending_count
+        - max_pending
+        - trigger_id
       description: A trigger cancellation queued for the trainer.
       properties:
         request_id:
@@ -21272,7 +21288,7 @@ components:
     LrScheduleTriggersResponse:
       type: object
       description: The run's registered triggers, pending changes and results.
-      required: [run_id, triggers, pending, results]
+      required: [run_id, is_running, max_pending, max_triggers, triggers, pending, results]
       properties:
         run_id:
           type: integer

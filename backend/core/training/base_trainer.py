@@ -479,10 +479,19 @@ def resolve_lr_group_specs(trainer, spec, total_steps):
 
     Each name is re-resolved through ``resolve_spec``, not name-substituted into
     the run's spec: an alias fixes its own start axis and end kind (§17.3).
+
+    Every returned spec carries its group's component name (D24), which is what
+    a ``groups``-scoped ``retarget`` is filtered on. Returning ``None`` leaves
+    the specs unstamped, and an unstamped spec takes every event -- so the
+    warned degenerate cases below behave exactly as they did before R2. Each
+    of those cases records WHY on the trainer, because "this run has no
+    lr_group_schedules" is false for two of them (D40).
     """
     config = getattr(trainer, "config", None) or {}
     mapping = config.get("lr_group_schedules")
+    trainer.lr_group_specs_ignored_reason = None
     if not mapping:
+        trainer.lr_group_specs_ignored_reason = "lr_group_schedules is not set"
         return None
     prefix = getattr(trainer, "log_prefix", "[Trainer]")
     if not isinstance(mapping, dict):
@@ -499,6 +508,8 @@ def resolve_lr_group_specs(trainer, spec, total_steps):
         # restarts for that group without saying so.
         print(f"{prefix} lr_group_schedules is ignored: ReLoRA's own restart "
               f"schedule applies to every param group")
+        trainer.lr_group_specs_ignored_reason = (
+            "lr_group_schedules is ignored on a ReLoRA run")
         return None
 
     groups = [g for optimizer in all_optimizers(trainer) if optimizer is not None
@@ -511,6 +522,9 @@ def resolve_lr_group_specs(trainer, spec, total_steps):
             f"component name, so there is no way to tell which schedule belongs "
             f"to which. Every group keeps the run's '{spec.name}'.",
             code="lr_group_schedules_unnamed_groups", prefix=prefix)
+        trainer.lr_group_specs_ignored_reason = (
+            "lr_group_schedules was set, but this run's param groups carry no "
+            "component name")
         return None
 
     wanted = {str(k).strip().lower(): str(v).strip().lower()
@@ -528,7 +542,7 @@ def resolve_lr_group_specs(trainer, spec, total_steps):
     for component in components:
         name = wanted.get(str(component).lower())
         if name is None or name == spec.name:
-            specs.append(spec)
+            specs.append(spec.for_group(component))
             continue
         if name not in LR_SCHEDULER_NAMES:
             raise ValueError(
@@ -536,7 +550,7 @@ def resolve_lr_group_specs(trainer, spec, total_steps):
                 f"name. Supported: {', '.join(LR_SCHEDULER_NAMES)}")
         if name not in resolved:
             resolved[name] = resolve_lr_schedule_spec(trainer, name, total_steps)
-        specs.append(resolved[name])
+        specs.append(resolved[name].for_group(component))
 
     if resolved:
         print(f"{prefix} LR group schedules: " + ", ".join(
@@ -5824,6 +5838,8 @@ class BaseTrainer(ABC):
     _configured_group_names = None
     #: One ScheduleSpec per param group (D16), or None = one schedule for all.
     lr_group_specs = None
+    # D40: why lr_group_schedules did not produce per-group specs, if it was set.
+    lr_group_specs_ignored_reason = None
 
     def _record_configured_group_lrs(self, requested_group_lrs=None):
         """Snapshot the BASE learning rate of every optimizer param group.
@@ -6734,7 +6750,8 @@ class BaseTrainer(ABC):
             self, self.lr_schedule_spec, total_steps)
         self.lr_scheduler = build_lr_scheduler(
             self.optimizer, self.lr_schedule_spec, self.lr_timeline,
-            group_specs=self.lr_group_specs)
+            group_specs=self.lr_group_specs,
+            ungrouped_reason=self.lr_group_specs_ignored_reason)
 
         # Initialize weight EMA (opt-in, default off). Must run after the
         # optimizer (and therefore the trainable param groups) exists.

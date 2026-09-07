@@ -312,6 +312,14 @@ class Trigger:
     window_sum: float = 0.0
     window_count: int = 0
 
+    # D64 makes a REFUSED firing hold the threshold predicates off for a
+    # cooldown too, so `cooldown_left > 0` has two causes that the operator
+    # has to be able to tell apart (D52).
+    refusals: int = 0
+    last_refusal: Optional[str] = None
+    last_refusal_step: Optional[int] = None
+    cooldown_from_refusal: bool = False
+
     @property
     def armed(self) -> bool:
         """D48: a trigger that has spent its fires stays, disarmed, so what it
@@ -365,6 +373,10 @@ class Trigger:
             return False
         if self.cooldown_left > 0:
             self.cooldown_left -= 1
+            if self.cooldown_left == 0:
+                # Nothing is held any more, so nothing is attributed: the flag
+                # says why the trigger is waiting, not what happened once.
+                self.cooldown_from_refusal = False
             return False
         if self.predicate == "plateau":
             if self.best is None or value < self.best - float(self.min_delta):
@@ -377,7 +389,8 @@ class Trigger:
             return value < float(self.threshold)
         return value > float(self.threshold)
 
-    def record_fire(self, refused: bool) -> None:
+    def record_fire(self, refused: bool, result: Optional[str] = None,
+                    step: Optional[int] = None) -> None:
         """Book a firing, or unbook a refused one (D51).
 
         A refusal costs neither a fire nor a cooldown -- a once-only trigger
@@ -388,17 +401,34 @@ class Trigger:
         Threshold predicates (below/above) have no patience counter, so a
         refusal debounces by one observation (or cooldown if configured) to
         prevent a warning storm on every single observation (D64).
+
+        `result` and `step` are the timeline's code and the GLOBAL step of the
+        observation that attempted it, kept so a stand-off is readable as the
+        refusal it came from rather than as an ordinary cooldown.
         """
         self.misses = 0
         if refused:
+            self.refusals += 1
+            if result:
+                self.last_refusal = str(result)
+            if step is not None:
+                self.last_refusal_step = int(step)
             if self.predicate != "plateau":
                 self.cooldown_left = int(self.cooldown or 1)
+                self.cooldown_from_refusal = True
+            else:
+                # A plateau refusal debounces through `misses` and holds
+                # nothing, so there is no stand-off here to attribute. Set on
+                # every path: a flag correct only under its reader's guard is
+                # wrong for the next reader.
+                self.cooldown_from_refusal = False
             return
         self.fires += 1
         # The best-so-far belongs to the LR the run had; after a change it is
         # not a baseline any more.
         self.best = None
         self.cooldown_left = int(self.cooldown or 0)
+        self.cooldown_from_refusal = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -413,10 +443,17 @@ class Trigger:
 
         `patience_used` / `observations_to_fire` are the two numbers "how much
         longer" needs; without them an automation is worse than watching.
+        `created_step` is what explains a trigger with no observations on a run
+        far past its start: it was armed a moment ago.
+
+        Every step here is a GLOBAL step, the axis the signal arrives on.
         """
         remaining = None
         if self.predicate == "plateau" and self.patience:
             remaining = max(0, int(self.patience) - self.misses)
+        cooldown_reason = None
+        if self.cooldown_left > 0:
+            cooldown_reason = "refusal" if self.cooldown_from_refusal else "firing"
         return {
             "id": self.id,
             "signal": self.signal,
@@ -429,9 +466,14 @@ class Trigger:
             "cooldown": self.cooldown,
             "action": dict(self.action),
             "armed": self.armed,
+            "created_step": self.created_step,
             "fires": self.fires,
             "fires_left": max(0, self.max_fires - self.fires),
             "cooldown_left": self.cooldown_left,
+            "cooldown_reason": cooldown_reason,
+            "refusals": self.refusals,
+            "last_refusal": self.last_refusal,
+            "last_refusal_step": self.last_refusal_step,
             "observations": self.observations,
             "observation": self.last_value,
             "observation_step": self.last_step,
@@ -527,7 +569,8 @@ class TriggerSet:
                     if not trigger.observe(observed):
                         continue
                     result = fire(trigger, observed, observed_step)
-                    trigger.record_fire(is_refused_result(result))
+                    trigger.record_fire(is_refused_result(result),
+                                        result=result, step=observed_step)
                     outcomes.append((trigger, result))
                 except Exception as e:
                     if on_error:
@@ -561,12 +604,23 @@ class TriggerSet:
             try:
                 trigger = Trigger.from_dict({**r, **validate_trigger(r)})
                 for key in ("created_step", "fires", "misses", "cooldown_left",
-                            "observations", "window_count", "window", "last_step"):
+                            "observations", "window_count", "window",
+                            "last_step", "refusals", "last_refusal_step"):
                     value = getattr(trigger, key)
-                    if value is None and key in ("window", "last_step"):
+                    if value is None and key in ("window", "last_step",
+                                                 "last_refusal_step"):
                         continue
                     if type(value) is not int or value < 0:
                         raise ValueError(f"Invalid trigger state {key}: {value!r}")
+                if trigger.last_refusal is not None and not isinstance(
+                        trigger.last_refusal, str):
+                    raise ValueError(
+                        f"Invalid trigger state last_refusal: "
+                        f"{trigger.last_refusal!r}")
+                if type(trigger.cooldown_from_refusal) is not bool:
+                    raise ValueError(
+                        f"Invalid trigger state cooldown_from_refusal: "
+                        f"{trigger.cooldown_from_refusal!r}")
                 for key in ("best", "last_value", "window_sum"):
                     value = getattr(trigger, key)
                     if value is None and key != "window_sum":
@@ -601,5 +655,6 @@ class TriggerSet:
         Ticks once per observation rather than once per step, which is what
         keeps a published patience counter from costing an atomic write a batch.
         """
-        return tuple((t.id, t.observations, t.fires, t.misses, t.cooldown_left)
+        return tuple((t.id, t.observations, t.fires, t.misses, t.cooldown_left,
+                      t.refusals)
                      for t in self.triggers)

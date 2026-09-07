@@ -1900,7 +1900,7 @@ API では `op` フィールドが選ぶ（`retarget` / `scale` / `hold` / `undo
 ```
 {"id": "...", "signal": "loss" | "grad_norm" | "extra:<name>",
  "predicate": "plateau" | "below" | "above",
- "interval": N,            # 観測 1 回あたりの step 数（必須、D47）
+ "interval": N,            # 観測 1 回あたりの step 数（**global step**、必須、D47）
  "patience": P,            # plateau のみ。改善なしを何観測許すか（必須）
  "min_delta": D,           # plateau のみ。これを超えた改善だけを改善と数える（必須）
  "threshold": T,           # below / above のみ（必須）
@@ -1908,6 +1908,13 @@ API では `op` フィールドが選ぶ（`retarget` / `scale` / `hold` / `undo
  "cooldown": C,            # max_fires > 1 のとき必須（観測回数）
  "action": {...}}          # 発行するコマンド。retarget ペイロードと同じ語彙（§19.5.3）
 ```
+
+`interval` の軸は **global step であり、`to_scheduler_axis` を通さない**。信号が生まれる軸が
+global であり、API の他の step 数と同じ軸（§19.5.3-1）だからである。曲線上の位置でも長さでもないので
+写像の対象ではなく、`gradient_accumulation_steps` で割ると `interval < gas` が 0 に潰れる
+（§18.5 と同型の欠陥だが、こちらは検出する番兵が無い）。`gas = 4`・`interval = 100` は
+「global 100 step ＝ optimizer 更新 25 回ぶんの平均で 1 観測」である。発火が materialize する
+**事象**の日付は従来どおり scheduler 軸（不変条件 4）。`created_step`・観測の step も global。
 
 `action` は §19 が既に定義したコマンドをそのまま取る。したがって **`scale` / `hold` / `undo` も
 トリガから発行できる**（D27 の派生操作は `retarget` の退化形なので、追加の場合分けが要らない）。
@@ -1932,7 +1939,8 @@ API では `op` フィールドが選ぶ（`retarget` / `scale` / `hold` / `undo
 
 ### 20.5 状態と resume
 
-armed、best-so-far、観測カウンタ、発火回数、cooldown 残りは state.json の新キーに保存する（D49）。
+armed、best-so-far、観測カウンタ、発火回数、cooldown 残り、そして**拒否の記録**（回数・直近の結果コード・その step）は
+state.json の新キーに保存する（D49）。
 発火前のチェックポイントから resume すると、materialize された事象は `issued` で切り詰められて落ち、
 トリガ状態もその時点に戻る。**したがって同じ条件が再び満たされれば再び発火する** — これは
 「条件は生きている」という意味であり、正しい。
@@ -1943,10 +1951,14 @@ armed、best-so-far、観測カウンタ、発火回数、cooldown 残りは sta
 ### 20.6 API と可視性
 
 - `POST /training/runs/{id}/lr-schedule/triggers` — 登録
-- `GET /training/runs/{id}/lr-schedule/triggers` — 一覧（armed、現在の観測値、`patience` の消化、残り発火数）
+- `GET /training/runs/{id}/lr-schedule/triggers` — 一覧（armed、登録 step、現在の観測値、`patience` の消化、
+  残り発火数、cooldown の**理由**）と資源上限 2 つ（`max_triggers` / `max_trigger_fires`）
 - `DELETE /training/runs/{id}/lr-schedule/triggers/{trigger_id}` — 取り消し
 
-`.lr_schedule.json` にも同じ状態を公開する（D52）。**仕掛けたものが何を見ていて、あとどれだけで
+`.lr_schedule.json` にも同じ状態を公開する（D52）。**cooldown 残りは 2 つの原因を持つ**: 成功した発火の
+`cooldown` と、D64 が拒否に課すデバウンスである。数値だけでは区別できないので、理由（`cooldown_reason`）と
+直近の拒否（`refusals` / `last_refusal` / `last_refusal_step`）も出す。
+**仕掛けたものが何を見ていて、あとどれだけで
 発火するかが見えないなら、自動化は監視より悪い。**
 
 ### 20.7 範囲外

@@ -24,7 +24,10 @@ What is checked:
   enum and `LR_SCHEDULER_NAMES` are the same vocabulary;
 * §8's REX numbers, which are the reason `rex` is a shape and not "cosine with
   a stronger exponent";
-* the preview endpoint samples the same lambda the trainer runs.
+* the preview endpoint samples the same lambda the trainer runs;
+* R6's trigger vocabulary: the trigger panel's four mirrors, the TS unions,
+  and the fire ceiling and `max_fires` default the spec would otherwise carry
+  as literals.
 
 CPU-only and hermetic: no model, no dataset, no GPU.
 """
@@ -45,10 +48,18 @@ REPO = BACKEND.parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from api.param_defaults import TRAINING_DEFAULTS  # noqa: E402
+from api.param_defaults import LR_TRIGGER_DEFAULTS, TRAINING_DEFAULTS  # noqa: E402
 from api.routes import (  # noqa: E402
     TrainingRunCreateRequest,
     _extract_request_params_from_yaml,
+)
+from core.training import lr_triggers  # noqa: E402
+from core.training.lr_triggers import (  # noqa: E402
+    EXTRA_SIGNAL_PREFIX,
+    MAX_TRIGGER_FIRES,
+    TRIGGER_ACTION_COMMANDS,
+    TRIGGER_PREDICATES,
+    TRIGGER_SIGNALS,
 )
 from core.training.lr_schedules import (  # noqa: E402
     BLEND_SHAPE_NAMES,
@@ -600,3 +611,91 @@ def test_the_typescript_op_union_is_the_registry():
     source = _API_TS.read_text(encoding="utf-8")
     line = re.search(r"export type LrRetargetOp = ([^;]+);", source).group(1)
     assert re.findall(r'"([a-z]+)"', line) == list(RETARGET_OPS)
+
+
+# ---------------------------------------------------------------------------
+# R6's trigger vocabulary (§20.2): the panel's mirrors, and the bounds and
+# default the spec would otherwise carry as literals
+# ---------------------------------------------------------------------------
+
+_TRIGGER_PANEL = REPO / "frontend/src/components/training/LrScheduleTriggerPanel.tsx"
+
+
+def _trigger_mirror(opening: str, closing: str = "\n];") -> str:
+    source = _TRIGGER_PANEL.read_text(encoding="utf-8")
+    start = source.index(opening)
+    return source[start:source.index(closing, start)]
+
+
+def test_the_trigger_form_offers_every_signal():
+    assert re.findall(r'value: "([a-z_]+)"',
+                      _trigger_mirror("const SIGNALS:")) == list(TRIGGER_SIGNALS)
+    # `extra:<name>` is one option plus a text box, outside the array by
+    # design: its value is not a member the array could enumerate.
+    source = _TRIGGER_PANEL.read_text(encoding="utf-8")
+    assert '<option value="extra">' in source
+    assert EXTRA_SIGNAL_PREFIX + "${extraName.trim()}" in source
+
+
+def test_the_trigger_form_offers_every_predicate():
+    assert re.findall(r'value: "([a-z_]+)"',
+                      _trigger_mirror("const PREDICATES:")) == list(TRIGGER_PREDICATES)
+
+
+def test_the_trigger_form_offers_every_action_command():
+    assert re.findall(r'value: "([a-z_]+)"',
+                      _trigger_mirror("const ACTION_COMMANDS:")) == \
+        list(TRIGGER_ACTION_COMMANDS)
+
+
+def test_the_trigger_form_asks_for_what_each_predicate_reads_and_no_more():
+    """A box the predicate does not read is refused, not ignored (D46), so the
+    form's map has to be the backend's."""
+    block = _trigger_mirror("const REQUIRED_FIELDS", "\n};")
+    mirrored = {predicate: re.findall(r'"([a-z_]+)"', fields)
+                for predicate, fields in re.findall(r"(\w+): \[([^\]]*)\]", block)}
+    # Reached through the module on purpose: `_REQUIRED_FIELDS` stays private
+    # (the panel's own comment names it that way), and this is its one reader
+    # outside lr_triggers.
+    assert mirrored == {k: list(v) for k, v in lr_triggers._REQUIRED_FIELDS.items()}
+
+
+def test_the_typescript_trigger_unions_are_the_registry():
+    source = _API_TS.read_text(encoding="utf-8")
+    predicate = re.search(r"export type LrTriggerPredicate = ([^;]+);", source)
+    assert re.findall(r'"([a-z_]+)"', predicate.group(1)) == list(TRIGGER_PREDICATES)
+    command = re.search(r"export type LrTriggerCommand = ([^;]+);", source)
+    assert re.findall(r'"([a-z_]+)"', command.group(1)) == \
+        list(TRIGGER_ACTION_COMMANDS)
+
+
+def test_the_openapi_trigger_vocabulary_is_the_registry():
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    schemas = spec["components"]["schemas"]
+    assert schemas["LrScheduleTriggerRequest"]["properties"]["predicate"]["enum"] \
+        == list(TRIGGER_PREDICATES)
+    assert schemas["LrScheduleTriggerState"]["properties"]["predicate"]["enum"] \
+        == list(TRIGGER_PREDICATES)
+    # The action's `command` is the only place the spec can carry the command
+    # union; without it nothing catches a drift in TS's LrTriggerCommand.
+    assert schemas["LrScheduleTriggerRequest"]["properties"]["action"][
+        "properties"]["command"]["enum"] == list(TRIGGER_ACTION_COMMANDS)
+
+
+def test_the_fire_ceiling_is_returned_and_not_only_documented():
+    """D61's bound is a resource limit rather than a tunable default, so a UI
+    can only state it if the run's own listing carries it. The request body's
+    `maximum` is pinned in lr_schedule_trigger_test.py."""
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    listing = spec["components"]["schemas"]["LrScheduleTriggersResponse"]
+    assert "max_trigger_fires" in listing["required"]
+    assert listing["properties"]["max_trigger_fires"]["example"] == MAX_TRIGGER_FIRES
+
+
+def test_the_schema_endpoints_trigger_default_is_the_shared_one():
+    """The /schema copy. The request body's is pinned in
+    lr_schedule_trigger_test.py."""
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    props = spec["components"]["schemas"]["LrTriggerDefaults"]["properties"]
+    for key, value in LR_TRIGGER_DEFAULTS.items():
+        assert props[key]["default"] == value, key

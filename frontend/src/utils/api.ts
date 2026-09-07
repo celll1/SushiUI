@@ -1728,6 +1728,17 @@ export interface LrRetargetDefaults {
 export const fetchLrRetargetDefaults = async (): Promise<LrRetargetDefaults> =>
   (await api.get("/schema/lr-retarget-defaults")).data;
 
+// The one field of a conditional LR trigger that has a default. `interval`,
+// `patience`, `min_delta` and `threshold` are absent from this payload on
+// purpose (D46): a usable value for any of them is a property of the run's own
+// loss scale, so the form asks for them and invents nothing.
+export interface LrTriggerDefaults {
+  max_fires: number;
+}
+
+export const fetchLrTriggerDefaults = async (): Promise<LrTriggerDefaults> =>
+  (await api.get("/schema/lr-trigger-defaults")).data;
+
 // Per-architecture default timestep_sampling configs (e.g. { _default: {...}, minit2i: {...} }).
 // The training UI applies the selected model's entry when the base model changes.
 export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Record<string, unknown>>> =>
@@ -7333,6 +7344,10 @@ export interface LrScheduleState {
   // and absent rather than approximated when the true value is unknown.
   global_total_steps?: number | null;
   groups: LrScheduleGroupState[];
+  // D52: the conditions registered on this run and how close each is to
+  // firing. They are NOT in `events` and never will be -- the multiplier is a
+  // pure function of the step and the events.
+  triggers?: LrScheduleTriggerState[];
   events: Record<string, any>[];
 }
 
@@ -7345,6 +7360,9 @@ export interface LrScheduleCommandResult {
   // only record of which one was pressed.
   op: LrRetargetOp | null;
   result: string;
+  // Set when the result belongs to a trigger: the registration itself, or an
+  // event one of them fired. Absent for an operator's own command.
+  trigger_id?: string | null;
   at: number;
   global_step: number;
   error: string | null;
@@ -7452,6 +7470,16 @@ const LR_SCHEDULE_RESULT_TEXT: Record<string, string> = {
     "Refused: the groups named are on different schedules, and one request carries one curve. Retarget them one at a time.",
   rejected_missing_gain: "Refused: a scale needs the factor to scale by.",
   rejected_unknown_command: "Refused: the trainer does not know that command.",
+  registered: "Armed. It watches from here on.",
+  removed: "Cancelled. What it already fired stays on the schedule.",
+  rejected_unknown_trigger:
+    "Refused: this run has no trigger with that id armed. It may have been cancelled already, or dropped by a resume from a checkpoint written before it was registered.",
+  rejected_duplicate_trigger_id:
+    "Refused: a trigger with that id is already armed on this run. Cancel it first, or choose another id.",
+  rejected_trigger_limit:
+    "Refused: this run is already holding as many triggers as it may. Cancel one to make room.",
+  rejected_invalid_trigger:
+    "Refused: the trainer could not arm that record. The message beside it is the same one the endpoint would have given.",
   error: "Failed while being applied.",
 };
 
@@ -7587,6 +7615,147 @@ export const queueLrScheduleRetarget = async (
 ): Promise<LrScheduleRetargetAccepted> => {
   const response = await api.post(
     `/training/runs/${runId}/lr-schedule/retarget`, request);
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// Conditional triggers (§20): a condition registered now, pressed by the run
+// ---------------------------------------------------------------------------
+
+export type LrTriggerPredicate = "plateau" | "below" | "above";
+
+// What a firing may issue: the two parameterless buttons, or a retarget, whose
+// own `op` covers scale / hold / undo.
+export type LrTriggerCommand = "start_decay" | "cancel_decay" | "retarget";
+
+// Every numeric field is optional HERE so a missing one comes back refused BY
+// NAME (D46) rather than filled in on this side. `interval` is always
+// required, `patience`/`min_delta` under plateau, `threshold` under
+// below/above, and `cooldown` exactly when max_fires > 1.
+export interface LrScheduleTriggerRequest {
+  id?: string;
+  // "loss", "grad_norm", or "extra:<name>". `learning_rate` and the run's own
+  // `extra:lr*` reporting are refused (D45).
+  signal?: string;
+  predicate?: LrTriggerPredicate;
+  // GLOBAL steps per observation; one observation is the MEAN over the window
+  // and `patience` counts observations, not steps.
+  interval?: number;
+  patience?: number;
+  min_delta?: number;
+  threshold?: number;
+  max_fires?: number;
+  // In observations.
+  cooldown?: number;
+  // A retarget body plus an optional `command`; `at` is refused.
+  action?: Record<string, any>;
+}
+
+export interface LrScheduleTriggerState {
+  id: string;
+  signal: string;
+  predicate: LrTriggerPredicate;
+  interval: number;
+  patience: number | null;
+  min_delta: number | null;
+  threshold: number | null;
+  max_fires: number;
+  cooldown: number | null;
+  action: Record<string, any>;
+  // False once max_fires is spent. The record stays, so what it did is
+  // still readable.
+  armed: boolean;
+  // GLOBAL step it was armed at: what explains a trigger with no observations
+  // on a run at step 40,000.
+  created_step: number;
+  fires: number;
+  fires_left: number;
+  cooldown_left: number;
+  // Why it is standing off, or null when cooldown_left is 0. The number alone
+  // cannot say: a configured cooldown after a firing that took effect and
+  // D64's debounce after a REFUSED one look identical.
+  cooldown_reason: "firing" | "refusal" | null;
+  // Matches the timeline refused. None of them cost a max_fires (D51).
+  refusals: number;
+  last_refusal: string | null;
+  last_refusal_step: number | null;
+  observations: number;
+  // The most recent observation (the window mean), null before the first one
+  // closes.
+  observation: number | null;
+  observation_step: number | null;
+  best: number | null;
+  patience_used: number | null;
+  // How many more observations without improvement would fire it. Null for
+  // below/above, which fire on the first observation past the threshold.
+  observations_to_fire: number | null;
+}
+
+export interface LrScheduleTriggerAccepted {
+  request_id: string;
+  run_id: number;
+  command: string;
+  queued_at: number;
+  pending_count: number;
+  max_pending: number;
+  // The validated record, carrying the generated id if none was named.
+  trigger: LrScheduleTriggerRequest;
+}
+
+export interface LrScheduleTriggerCancelAccepted {
+  request_id: string;
+  run_id: number;
+  command: string;
+  trigger_id: string;
+  queued_at: number;
+  pending_count: number;
+  max_pending: number;
+}
+
+export interface LrScheduleTriggersResponse {
+  run_id: number;
+  is_running: boolean;
+  max_pending: number;
+  max_triggers: number;
+  // The ceiling on one trigger's max_fires, returned so a client can state it
+  // rather than copy the spec's `maximum`. Both are resource bounds.
+  max_trigger_fires: number;
+  triggers: LrScheduleTriggerState[];
+  pending: {
+    request_id: string;
+    command: string;
+    trigger_id: string | null;
+    queued_at: number;
+  }[];
+  results: LrScheduleCommandResult[];
+}
+
+// Fire and forget, like every other schedule command: the 202 means the file
+// was written, and the trainer arms it at the head of its next batch.
+export const queueLrScheduleTrigger = async (
+  runId: number,
+  request: LrScheduleTriggerRequest
+): Promise<LrScheduleTriggerAccepted> => {
+  const response = await api.post(
+    `/training/runs/${runId}/lr-schedule/triggers`, request);
+  return response.data;
+};
+
+export const getLrScheduleTriggers = async (
+  runId: number
+): Promise<LrScheduleTriggersResponse> => {
+  const response = await api.get(`/training/runs/${runId}/lr-schedule/triggers`);
+  return response.data;
+};
+
+// Whether the id exists is the trainer's to answer, so an unknown one comes
+// back as `rejected_unknown_trigger` in the results, not as a 404 here.
+export const cancelLrScheduleTrigger = async (
+  runId: number,
+  triggerId: string
+): Promise<LrScheduleTriggerCancelAccepted> => {
+  const response = await api.delete(
+    `/training/runs/${runId}/lr-schedule/triggers/${encodeURIComponent(triggerId)}`);
   return response.data;
 };
 

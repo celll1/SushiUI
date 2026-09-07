@@ -5,6 +5,7 @@ import {
   LrRetargetOp,
   LrScheduleRetargetRequest,
   LrSchedulePreviewResult,
+  LrScheduleState,
   LrScheduleStatusResponse,
   lrScheduleResultExplanation,
   previewLrScheduleEvents,
@@ -51,6 +52,9 @@ const APPLIED_KINDS: Record<string, string> = {
   cancel: "cancel",
 };
 
+export const LR_FIELD_CLASS =
+  "w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500";
+
 /** `[step, multiplier]` samples as an SVG path in a 0..100 box. The only
  *  arithmetic here is the scaling: every multiplier comes from the endpoint
  *  (D20), and no schedule is evaluated in this file. */
@@ -63,29 +67,101 @@ const svgPath = (points: [number, number][], lastStep: number): string =>
     })
     .join(" ");
 
-interface Props {
-  runId: number;
-  status: LrScheduleStatusResponse | null;
-  /** Refetch the run's schedule state after a retarget is queued. */
-  onQueued: () => void;
+/** The retarget form's own state. Every field is a STRING and starts empty:
+ *  empty is absent from the request, and D44's "an omitted key keeps the value
+ *  in force" only holds if nothing is substituted on this side. */
+export interface RetargetFormState {
+  op: LrRetargetOp;
+  fields: Record<string, string>;
+  groups: string[];
 }
 
-export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Props) {
-  const [open, setOpen] = useState(false);
-  const [op, setOp] = useState<LrRetargetOp>("retarget");
-  // Every field is a STRING and starts empty. Empty is absent from the request
-  // -- D44's "an omitted key keeps the value in force" only holds if nothing
-  // is substituted on this side.
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const [groups, setGroups] = useState<string[]>([]);
-  const [preview, setPreview] = useState<LrSchedulePreviewResult | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [previewNonce, setPreviewNonce] = useState(0);
-  const [applying, setApplying] = useState(false);
-  const [applyError, setApplyError] = useState<string | null>(null);
-  const [queued, setQueued] = useState<string | null>(null);
+export const EMPTY_RETARGET_FORM: RetargetFormState = {
+  op: "retarget",
+  fields: {},
+  groups: [],
+};
 
+/** The request a form describes, carrying only the keys it named.
+ *
+ *  `includeAt` is false for a trigger's action: D59 refuses an `at` there,
+ *  because after the first firing that step is in the past for every later one.
+ */
+export const retargetPayload = (
+  form: RetargetFormState,
+  { includeAt }: { includeAt: boolean }
+): LrScheduleRetargetRequest => {
+  const { op, fields, groups } = form;
+  const out: LrScheduleRetargetRequest = { op };
+  const num = (key: string): number | undefined => {
+    const raw = (fields[key] ?? "").trim();
+    if (raw === "") return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const text = (key: string): string | undefined => {
+    const raw = (fields[key] ?? "").trim();
+    return raw === "" ? undefined : raw;
+  };
+
+  if (op === "retarget") {
+    out.lr_scheduler = text("lr_scheduler");
+    out.lr_warmup_steps = num("lr_warmup_steps");
+    out.lr_floor_ratio = num("lr_floor_ratio");
+    out.lr_decay_start_ratio = num("lr_decay_start_ratio");
+    out.lr_decay_start_step = num("lr_decay_start_step");
+    out.lr_decay_steps = num("lr_decay_steps");
+    out.lr_decay_shape = text("lr_decay_shape");
+    out.lr_cycle_steps = num("lr_cycle_steps");
+    out.lr_cycle_peak_decay = num("lr_cycle_peak_decay");
+    out.anchor = text("anchor") as "restart" | "continue" | undefined;
+    out.gain = num("gain");
+  } else if (op === "scale") {
+    // Required here, and refused for hold and undo, which have no factor.
+    out.gain = num("gain");
+  }
+  if (includeAt) out.at = num("at");
+  out.length = num("length");
+  out.shape = text("shape");
+  // An empty selection is refused by the server rather than read as "all",
+  // so it is sent as no key at all.
+  if (groups.length > 0) out.groups = groups;
+
+  for (const key of Object.keys(out) as (keyof LrScheduleRetargetRequest)[]) {
+    if (out[key] === undefined) delete out[key];
+  }
+  return out;
+};
+
+/** True while the form is missing the one thing its op cannot be derived
+ *  without. */
+export const retargetIncomplete = (form: RetargetFormState): boolean => {
+  const payload = retargetPayload(form, { includeAt: false });
+  return (
+    (form.op === "retarget" && !payload.lr_scheduler) ||
+    (form.op === "scale" && payload.gain === undefined)
+  );
+};
+
+/** The op picker and every field a retarget takes. Shared with the trigger
+ *  panel, where a trigger's action is this same payload (§20.2) — one form,
+ *  with `at` withheld, rather than a second one that can drift from it. It
+ *  lives in this file because lr_schedule_vocabulary_test.py pins OPS,
+ *  SHAPE_OPTIONS and the anchor `<select>` by scanning this path. */
+export function LrRetargetFields({
+  form,
+  onChange,
+  state,
+  includeAt,
+}: {
+  form: RetargetFormState;
+  onChange: (next: RetargetFormState) => void;
+  state: LrScheduleState | null;
+  includeAt: boolean;
+}) {
   const { lrRetargetDefaults: defaults, trainingDefaults } = useStartup();
+  const { op, fields, groups } = form;
+
   // What a blank box resolves to, stated rather than guessed. `length`, `at`
   // and `groups` are null on purpose: they resolve against the RUN, so only
   // their meaning can be named, never a number.
@@ -96,7 +172,6 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
   const anchorDefaultLabel = defaults ? `default (${defaults.anchor})` : "default";
   const shapeDefaultLabel = defaults ? `default (${defaults.shape})` : "default";
 
-  const state = status?.status ?? null;
   // Both halves are omitted rather than approximated: the global total is
   // absent when the trainer could not name it, and the two axes coincide at
   // interval 1.
@@ -106,8 +181,8 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
       : null,
     state && state.advance_interval > 1
       ? `It advances its scheduler once every ${state.advance_interval} global `
-        + `steps, so the boxes above are global steps while the preview below `
-        + `is in optimizer steps.`
+        + `steps, so the boxes above are global steps`
+        + (includeAt ? ` while the preview below is in optimizer steps.` : `.`)
       : null,
   ].filter(Boolean).join(" ");
   const scheduler = fields.lr_scheduler ?? "";
@@ -122,16 +197,6 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
       ? "default" : `default (${String(value)})`;
   };
 
-  // Invariant 17 keeps `op` off the event, so the only record of which form
-  // was pressed is the result the trainer wrote, keyed by request_id.
-  const opByRequest = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const r of status?.results ?? []) {
-      if (r.op && r.request_id) map[String(r.request_id)] = String(r.op);
-    }
-    return map;
-  }, [status]);
-
   const components = useMemo(() => {
     const names: string[] = [];
     for (const g of state?.groups ?? []) {
@@ -142,53 +207,209 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
   }, [state]);
 
   const setField = (key: string, value: string) =>
-    setFields((prev) => ({ ...prev, [key]: value }));
+    onChange({ ...form, fields: { ...fields, [key]: value } });
 
-  const payload = useMemo((): LrScheduleRetargetRequest => {
-    const out: LrScheduleRetargetRequest = { op };
-    const num = (key: string): number | undefined => {
-      const raw = (fields[key] ?? "").trim();
-      if (raw === "") return undefined;
-      const value = Number(raw);
-      return Number.isFinite(value) ? value : undefined;
-    };
-    const text = (key: string): string | undefined => {
-      const raw = (fields[key] ?? "").trim();
-      return raw === "" ? undefined : raw;
-    };
+  const numberField = (
+    key: string, label: string, placeholder: string, step?: string
+  ) => (
+    <label key={key} className="block">
+      <span className="block text-gray-400">{label}</span>
+      <input
+        type="number"
+        step={step}
+        value={fields[key] ?? ""}
+        placeholder={placeholder}
+        onChange={(e) => setField(key, e.target.value)}
+        className={LR_FIELD_CLASS}
+      />
+    </label>
+  );
 
-    if (op === "retarget") {
-      out.lr_scheduler = text("lr_scheduler");
-      out.lr_warmup_steps = num("lr_warmup_steps");
-      out.lr_floor_ratio = num("lr_floor_ratio");
-      out.lr_decay_start_ratio = num("lr_decay_start_ratio");
-      out.lr_decay_start_step = num("lr_decay_start_step");
-      out.lr_decay_steps = num("lr_decay_steps");
-      out.lr_decay_shape = text("lr_decay_shape");
-      out.lr_cycle_steps = num("lr_cycle_steps");
-      out.lr_cycle_peak_decay = num("lr_cycle_peak_decay");
-      out.anchor = text("anchor") as "restart" | "continue" | undefined;
-      out.gain = num("gain");
-    } else if (op === "scale") {
-      // Required here, and refused for hold and undo, which have no factor.
-      out.gain = num("gain");
+  return (
+    <div className="space-y-2 text-xxs">
+      <div className="flex gap-1">
+        {OPS.map((entry) => (
+          <button
+            key={entry.value}
+            onClick={() => onChange({ ...form, op: entry.value })}
+            className={`flex-1 px-2 py-1 rounded transition-colors ${
+              op === entry.value
+                ? "bg-blue-700 text-white"
+                : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+            }`}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
+      <p className="leading-relaxed text-gray-500">
+        {OPS.find((e) => e.value === op)?.note}
+      </p>
+
+      {op === "retarget" && (
+        <div className="grid grid-cols-2 gap-2">
+          <label className="col-span-2 block">
+            <span className="block text-gray-400">Schedule</span>
+            <select
+              value={scheduler}
+              onChange={(e) => setField("lr_scheduler", e.target.value)}
+              className={LR_FIELD_CLASS}
+            >
+              <option value="">Pick the schedule to switch to</option>
+              {LR_SCHEDULER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </label>
+          {numberField("lr_warmup_steps", "Warmup steps", "keep current")}
+          {numberField("lr_floor_ratio", "Floor ratio", "keep current", "any")}
+          {scheduler === "plateau_cosine_floor" &&
+            numberField("lr_decay_start_ratio", "Decay start ratio", keepOrDefault("lr_decay_start_ratio"), "any")}
+          {scheduler === "wsd" && (
+            <>
+              {numberField("lr_decay_start_step", "Decay start step", keepOrDefault("lr_decay_start_step"))}
+              {numberField("lr_decay_steps", "Decay length", keepOrDefault("lr_decay_steps"))}
+              <label className="block">
+                <span className="block text-gray-400">Decay shape</span>
+                <select
+                  value={fields.lr_decay_shape ?? ""}
+                  onChange={(e) => setField("lr_decay_shape", e.target.value)}
+                  className={LR_FIELD_CLASS}
+                >
+                  <option value="">{keepOrDefault("lr_decay_shape")}</option>
+                  {SHAPE_OPTIONS.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
+          {scheduler === "cosine_with_restarts" && (
+            <>
+              {numberField("lr_cycle_steps", "Cycle length", keepOrDefault("lr_cycle_steps"))}
+              {numberField("lr_cycle_peak_decay", "Cycle peak decay", keepOrDefault("lr_cycle_peak_decay"), "any")}
+            </>
+          )}
+          <label className="block">
+            <span className="block text-gray-400">Anchor</span>
+            <select
+              value={fields.anchor ?? ""}
+              onChange={(e) => setField("anchor", e.target.value)}
+              className={LR_FIELD_CLASS}
+            >
+              <option value="">{anchorDefaultLabel}</option>
+              <option value="restart">restart — start where the LR is now</option>
+              <option value="continue">continue — the new curve&apos;s own value here</option>
+            </select>
+          </label>
+          {numberField("gain", "Gain", gainPlaceholder, "any")}
+        </div>
+      )}
+
+      {op === "scale" && (
+        <div className="grid grid-cols-2 gap-2">
+          {numberField("gain", "Gain (required)", "required", "any")}
+        </div>
+      )}
+
+      <div className={`grid gap-2 ${includeAt ? "grid-cols-3" : "grid-cols-2"}`}>
+        {includeAt && numberField(
+          "at", "Apply at (global step)",
+          state?.global_step != null ? `now (${state.global_step})` : "now")}
+        {numberField("length", "Blend length (global steps)", lengthPlaceholder)}
+        <label className="block">
+          <span className="block text-gray-400">Blend shape</span>
+          <select
+            value={fields.shape ?? ""}
+            onChange={(e) => setField("shape", e.target.value)}
+            className={LR_FIELD_CLASS}
+          >
+            <option value="">{shapeDefaultLabel}</option>
+            {SHAPE_OPTIONS.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {components.length > 0 && (
+        <div>
+          <span className="block text-gray-400">Groups</span>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-0.5">
+            {components.map((name) => (
+              <label key={name} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groups.includes(name)}
+                  onChange={(e) =>
+                    onChange({
+                      ...form,
+                      groups: e.target.checked
+                        ? [...groups, name]
+                        : groups.filter((g) => g !== name),
+                    })
+                  }
+                  className="w-3 h-3"
+                />
+                <span className="font-mono text-gray-300">{name}</span>
+              </label>
+            ))}
+            <span className="text-gray-500">
+              {groups.length === 0 ? "none ticked = every group" : ""}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {!!axisNote && (
+        <p className="leading-relaxed text-gray-400">{axisNote}</p>
+      )}
+
+      <p className="leading-relaxed text-gray-500">
+        A blank field keeps the value the run is already on — it is left out of the
+        request rather than filled in here, so nothing moves that you did not name.
+        The decay and cycle boxes only inherit while the schedule name stays the same;
+        under a different name a blank one takes the training default. Step counts are
+        global steps.
+      </p>
+    </div>
+  );
+}
+
+interface Props {
+  runId: number;
+  status: LrScheduleStatusResponse | null;
+  /** Refetch the run's schedule state after a retarget is queued. */
+  onQueued: () => void;
+}
+
+export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Props) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<RetargetFormState>(EMPTY_RETARGET_FORM);
+  const [preview, setPreview] = useState<LrSchedulePreviewResult | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [queued, setQueued] = useState<string | null>(null);
+
+  const op = form.op;
+  const state = status?.status ?? null;
+
+  // Invariant 17 keeps `op` off the event, so the only record of which form
+  // was pressed is the result the trainer wrote, keyed by request_id.
+  const opByRequest = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const r of status?.results ?? []) {
+      if (r.op && r.request_id) map[String(r.request_id)] = String(r.op);
     }
-    out.at = num("at");
-    out.length = num("length");
-    out.shape = text("shape");
-    // An empty selection is refused by the server rather than read as "all",
-    // so it is sent as no key at all.
-    if (groups.length > 0) out.groups = groups;
+    return map;
+  }, [status]);
 
-    for (const key of Object.keys(out) as (keyof LrScheduleRetargetRequest)[]) {
-      if (out[key] === undefined) delete out[key];
-    }
-    return out;
-  }, [op, fields, groups]);
+  const payload = useMemo(
+    () => retargetPayload(form, { includeAt: true }), [form]);
 
-  const incomplete =
-    (op === "retarget" && !payload.lr_scheduler) ||
-    (op === "scale" && payload.gain === undefined);
+  const incomplete = retargetIncomplete(form);
 
   // D29: the curve is drawn before anything is committed, from the same code
   // the trainer runs. Debounced because it refires on every keystroke.
@@ -265,22 +486,6 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
       .filter((m) => Number.isFinite(m.at) && m.at >= 0 && m.at <= lastStep);
   }, [state, preview, lastStep, opByRequest]);
 
-  const numberField = (
-    key: string, label: string, placeholder: string, step?: string
-  ) => (
-    <label key={key} className="block">
-      <span className="block text-gray-400">{label}</span>
-      <input
-        type="number"
-        step={step}
-        value={fields[key] ?? ""}
-        placeholder={placeholder}
-        onChange={(e) => setField(key, e.target.value)}
-        className="w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500"
-      />
-    </label>
-  );
-
   return (
     <div className="space-y-2 rounded border border-gray-700 bg-gray-900/60 p-2">
       <button
@@ -293,149 +498,12 @@ export default function LrScheduleRetargetPanel({ runId, status, onQueued }: Pro
 
       {open && (
         <div className="space-y-2 text-xxs">
-          <div className="flex gap-1">
-            {OPS.map((entry) => (
-              <button
-                key={entry.value}
-                onClick={() => setOp(entry.value)}
-                className={`flex-1 px-2 py-1 rounded transition-colors ${
-                  op === entry.value
-                    ? "bg-blue-700 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-                }`}
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-          <p className="leading-relaxed text-gray-500">
-            {OPS.find((e) => e.value === op)?.note}
-          </p>
-
-          {op === "retarget" && (
-            <div className="grid grid-cols-2 gap-2">
-              <label className="col-span-2 block">
-                <span className="block text-gray-400">Schedule</span>
-                <select
-                  value={scheduler}
-                  onChange={(e) => setField("lr_scheduler", e.target.value)}
-                  className="w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">Pick the schedule to switch to</option>
-                  {LR_SCHEDULER_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </label>
-              {numberField("lr_warmup_steps", "Warmup steps", "keep current")}
-              {numberField("lr_floor_ratio", "Floor ratio", "keep current", "any")}
-              {scheduler === "plateau_cosine_floor" &&
-                numberField("lr_decay_start_ratio", "Decay start ratio", keepOrDefault("lr_decay_start_ratio"), "any")}
-              {scheduler === "wsd" && (
-                <>
-                  {numberField("lr_decay_start_step", "Decay start step", keepOrDefault("lr_decay_start_step"))}
-                  {numberField("lr_decay_steps", "Decay length", keepOrDefault("lr_decay_steps"))}
-                  <label className="block">
-                    <span className="block text-gray-400">Decay shape</span>
-                    <select
-                      value={fields.lr_decay_shape ?? ""}
-                      onChange={(e) => setField("lr_decay_shape", e.target.value)}
-                      className="w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500"
-                    >
-                      <option value="">{keepOrDefault("lr_decay_shape")}</option>
-                      {SHAPE_OPTIONS.map((name) => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
-                  </label>
-                </>
-              )}
-              {scheduler === "cosine_with_restarts" && (
-                <>
-                  {numberField("lr_cycle_steps", "Cycle length", keepOrDefault("lr_cycle_steps"))}
-                  {numberField("lr_cycle_peak_decay", "Cycle peak decay", keepOrDefault("lr_cycle_peak_decay"), "any")}
-                </>
-              )}
-              <label className="block">
-                <span className="block text-gray-400">Anchor</span>
-                <select
-                  value={fields.anchor ?? ""}
-                  onChange={(e) => setField("anchor", e.target.value)}
-                  className="w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500"
-                >
-                  <option value="">{anchorDefaultLabel}</option>
-                  <option value="restart">restart — start where the LR is now</option>
-                  <option value="continue">continue — the new curve&apos;s own value here</option>
-                </select>
-              </label>
-              {numberField("gain", "Gain", gainPlaceholder, "any")}
-            </div>
-          )}
-
-          {op === "scale" && (
-            <div className="grid grid-cols-2 gap-2">
-              {numberField("gain", "Gain (required)", "required", "any")}
-            </div>
-          )}
-
-          <div className="grid grid-cols-3 gap-2">
-            {numberField(
-              "at", "Apply at (global step)",
-              state?.global_step != null ? `now (${state.global_step})` : "now")}
-            {numberField("length", "Blend length (global steps)", lengthPlaceholder)}
-            <label className="block">
-              <span className="block text-gray-400">Blend shape</span>
-              <select
-                value={fields.shape ?? ""}
-                onChange={(e) => setField("shape", e.target.value)}
-                className="w-full px-1.5 py-1 bg-gray-900 border border-gray-700 rounded text-xxs focus:outline-none focus:border-blue-500"
-              >
-                <option value="">{shapeDefaultLabel}</option>
-                {SHAPE_OPTIONS.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {components.length > 0 && (
-            <div>
-              <span className="block text-gray-400">Groups</span>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 mt-0.5">
-                {components.map((name) => (
-                  <label key={name} className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={groups.includes(name)}
-                      onChange={(e) =>
-                        setGroups((prev) =>
-                          e.target.checked
-                            ? [...prev, name]
-                            : prev.filter((g) => g !== name))
-                      }
-                      className="w-3 h-3"
-                    />
-                    <span className="font-mono text-gray-300">{name}</span>
-                  </label>
-                ))}
-                <span className="text-gray-500">
-                  {groups.length === 0 ? "none ticked = every group" : ""}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {!!axisNote && (
-            <p className="leading-relaxed text-gray-400">{axisNote}</p>
-          )}
-
-          <p className="leading-relaxed text-gray-500">
-            A blank field keeps the value the run is already on — it is left out of the
-            request rather than filled in here, so nothing moves that you did not name.
-            The decay and cycle boxes only inherit while the schedule name stays the same;
-            under a different name a blank one takes the training default. Step counts are
-            global steps.
-          </p>
+          <LrRetargetFields
+            form={form}
+            onChange={setForm}
+            state={state}
+            includeAt
+          />
 
           {/* D29/D20: drawn before anything is committed, and every number in
               it comes from the endpoint. */}

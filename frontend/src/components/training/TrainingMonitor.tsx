@@ -11,6 +11,7 @@ import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableCh
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import CheckpointList from "./CheckpointList";
 import LrScheduleRetargetPanel from "./LrScheduleRetargetPanel";
+import LrScheduleTriggerPanel from "./LrScheduleTriggerPanel";
 import ImageViewer from "../common/ImageViewer";
 
 interface TrainingMonitorProps {
@@ -925,6 +926,12 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 status={lrSchedule}
                 onQueued={refreshLrSchedule}
               />
+              {/* §20: the same buttons, pressed by a registered condition
+                  instead of by hand. */}
+              <LrScheduleTriggerPanel
+                runId={currentRun.id}
+                status={lrSchedule}
+              />
               {!!lrSchedule?.pending?.length && (
                 <p className="text-xxs text-gray-300">
                   Queued:{" "}
@@ -941,6 +948,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                       : "text-yellow-400"
                   }`}
                 >
+                  {/* Registrations and firings alike carry it; the verb is
+                      the command's, not this line's. */}
+                  {r.trigger_id ? `trigger ${r.trigger_id} · ` : ""}
                   {r.op ?? r.command} at step {r.at}: {lrScheduleResultExplanation(r.result)}
                   {r.error ? ` (${r.error})` : ""}
                 </p>

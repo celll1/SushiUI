@@ -29,6 +29,11 @@ Differences from the sample queue, each load-bearing:
   the fused paths the optimizer hooks step during the BACKWARD, so a decay
   applied after the forward would not reach this batch's update (§5.6).
 
+A ``retarget`` request additionally carries ``payload``: the schedule keys the
+endpoint validated, in GLOBAL steps. The trainer resolves them into a
+``ScheduleSpec`` at claim time, because the conversion to the scheduler axis
+and the remaining span both need the run's own accumulation and totals.
+
 ``.lr_schedule.json`` is the trainer's display-only view of the timeline, read
 by the GET endpoint. It is never an input to a resume -- the authoritative event
 list is ``lr_schedule_events`` in ``training_state.json`` (D4).
@@ -56,10 +61,16 @@ REQUEST_PREFIX = ".control_request_"
 RESULT_PREFIX = ".control_result_"
 STATUS_FILENAME = ".lr_schedule.json"
 
-# The commands the API accepts, mapped to the ScheduleTimeline event kinds they
-# become. The trainer never invents a kind of its own from a command string.
+# The two parameterless commands, which is the enum of
+# `POST /training/runs/{id}/lr-schedule`. `retarget` (§19) has its own endpoint
+# because it carries a schedule; it shares this queue and nothing else.
 COMMANDS = ("start_decay", "cancel_decay")
-COMMAND_EVENT_KINDS = {"start_decay": "decay", "cancel_decay": "cancel"}
+RETARGET_COMMAND = "retarget"
+ALL_COMMANDS = COMMANDS + (RETARGET_COMMAND,)
+# Mapped to the ScheduleTimeline event kinds they become. The trainer never
+# invents a kind of its own from a command string.
+COMMAND_EVENT_KINDS = {"start_decay": "decay", "cancel_decay": "cancel",
+                       RETARGET_COMMAND: "retarget"}
 
 # A command costs a dict append, so the cap is only there to stop an unbounded
 # directory; it is not a throughput limit the way the sample queue's 3 is.
@@ -105,10 +116,15 @@ def queue_request(
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Write one command file. Raises ControlQueueFullError at the cap."""
-    if command not in COMMANDS:
+    if command not in ALL_COMMANDS:
         raise ValueError(
             f"Unknown LR schedule command '{command}'. "
-            f"Supported: {', '.join(COMMANDS)}")
+            f"Supported: {', '.join(ALL_COMMANDS)}")
+    if command == RETARGET_COMMAND and not (extra or {}).get("payload"):
+        raise ValueError(
+            "A retarget command carries the schedule to switch to in "
+            "extra={'payload': ...}; without it the trainer has nothing to "
+            "retarget onto.")
     out = Path(output_dir)
     existing = list_pending_requests(out, run_id)
     if len(existing) >= max_pending:

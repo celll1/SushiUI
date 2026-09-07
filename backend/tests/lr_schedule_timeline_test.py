@@ -681,6 +681,35 @@ def test_mnt_recomputation_keeps_the_saved_axis_offset():
     assert probe.fn(675) == pytest.approx(0.0)
 
 
+def test_a_retarget_survives_a_resume_that_changes_the_total_and_the_gas():
+    """R3's acceptance row: resume x extension x accumulation change x retarget.
+
+    The restart-anchored span is derived at evaluation from the nominal axis
+    (D23), so the extension moves the new curve's end with it instead of
+    leaving it burnt in at the total that was current when it was ordered.
+    """
+    first = _ResumeProbe("cosine", 0, 1000)
+    first.lr_timeline.add("retarget", at=400, issued=400,
+                          new_spec=_spec("linear", 0, 600), length=0)
+    before = first.fn(500)
+    assert first.fn(1000) == pytest.approx(0.0)
+
+    probe = _ResumeProbe("cosine", 0, 1500, gas=4,
+                         saved_events=first.lr_timeline.dump(500),
+                         scheduler_step=500)
+    probe._resume_scheduler_interval = 1
+    install_lr_schedule_events(probe, 2000)
+
+    assert probe.lr_timeline.current_total(0) == 1500
+    assert probe.fn(500) == pytest.approx(before)
+    assert probe.fn(1500) == pytest.approx(0.0)
+    # The step the burnt-in span would have ended at is where the stretched one
+    # is only part way down -- 1 - clock(1000)/600 of the way, warp included.
+    assert probe.fn(1000) == pytest.approx(first.fn(400) * (1 - 350 / 600))
+    values = [probe.fn(s) for s in range(500, 1501)]
+    assert all(a >= b for a, b in zip(values, values[1:]))
+
+
 class _StateHarness:
     """The real state file round trip, with a timeline attached."""
 

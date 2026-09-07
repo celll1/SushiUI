@@ -3112,6 +3112,37 @@ def resolve_bundle_vae(value, arch: str, vae_swapped: bool = False) -> bool:
     return bool(BUNDLE_VAE_DEFAULTS_BY_ARCH.get(
         arch, BUNDLE_VAE_DEFAULTS_BY_ARCH["_default"]))
 
+
+# ---------------------------------------------------------------------------
+# Runtime LR-schedule retarget (LrScheduleRetargetRequest)
+# ---------------------------------------------------------------------------
+# §19 of docs/guides/LR_SCHEDULER_DESIGN.md. The SCHEDULE the retarget switches
+# to is described with TRAINING_DEFAULTS' own lr_* keys, so a preview and a
+# retarget speak one vocabulary; only the keys below are specific to the
+# operation of replacing a curve mid-run.
+
+LR_RETARGET_DEFAULTS: Dict[str, Any] = {
+    # "restart" starts the new curve where the run's multiplier is now;
+    # "continue" evaluates the new schedule on the run's own axis, which jumps
+    # to whatever value that curve happens to have at the current step.
+    "anchor": "restart",
+    # Multiplies the new curve. 1.0 = the schedule as configured.
+    "gain": 1.0,
+    # Blend length in GLOBAL steps. null = the run's lr_warmup_steps (D31);
+    # 0 = switch on the spot.
+    "length": None,
+    # Weight function over the blend.
+    "shape": "linear",
+    # GLOBAL step the new curve takes effect at. null = the step the trainer
+    # claims the command at. A step already past is refused, never applied
+    # retroactively.
+    "at": None,
+    # Component names this retarget applies to. null = every param group; an
+    # empty list is refused, so an empty UI selection cannot mean "all".
+    "groups": None,
+}
+
+
 # ---------------------------------------------------------------------------
 # Tagger Training (TaggerTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------

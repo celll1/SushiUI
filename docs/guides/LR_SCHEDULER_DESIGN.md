@@ -61,7 +61,7 @@ Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変�
 | D30 | 混合区間の上限 | 混合中は `m(s) <= max(m_old(s), m_new(s))` を不変条件とする。**`w` を `[0,1]` に clamp すれば凸結合として自動的に従う**ので、要求はこれだけ。初稿の「`shape` に凸性を要求する」は撤回する: 不要であり、かつ `cosine`（smoothstep）は `[0,1]` で凸でないため、字義どおり読むと §19.1 が挙げる形を自ら禁じてしまう |
 | D31 | 混合長の既定 | **`length` の既定は `lr_warmup_steps`**（D5 の取り消し復帰長 `R` と同じ値）。「セット時点で LR が急に切り替わる」ことを既定で防ぐ。新しい数値は発明しない: run の warmup は「この設定でモデルが新しい LR に馴染むのにかける長さ」として**作者が既に選んだ値**であり、オンデマンド変更の緩衝として同じ根拠が使える（§16-12 の「未測定の数値を書かない」に抵触しない）。`length = 0` は明示指定で瞬時切替として使える。`lr_warmup_steps = 0` の run では既定も 0 になる |
 | D32 | 表示ファイルの軸 | `.lr_schedule.json`（D19）は step 値を**絶対位置**で書き、併せて `anchor_step`（`restart` の `S`、それ以外は 0）を出す。`anchor = restart` の spec が内部で持つ `warmup_steps` 等は **`S` からの相対長**だが、表示ファイルの他の値（現在 step、総長）は全て絶対位置であり、混在は §18 が記録した 3 件と同種の単位取り違えを読み手に強いる。変換は `絶対 = anchor + 相対` で一意 |
-| D33 | 時計の退化 | §17.2 の「旧総長ちょうど以降に固定された延長」が `clock()` を定数にする既存挙動は**変えない**（base curve が今日そうであり、変更は全 run の曲線を動かす。測定の裏付けが無い）。ただし `total_steps` 事象の受理時に `anchor >= nominal_total` を検出して**警告コードを出す**（§13）。黙って曲線が凍るのをやめる、が本決定の内容 |
+| D33 | 時計の退化 | §17.2 の「旧総長ちょうど以降に固定された延長」が `clock()` を定数にする既存挙動は**変えない**（base curve が今日そうであり、変更は全 run の曲線を動かす。測定の裏付けが無い）。ただし受理時に検出して**警告コードを出す**（§13）。黙って曲線が凍るのをやめる、が本決定の内容。**当初 `anchor >= nominal_total` と書いたのは誤り**: 実際に `clock()` が進まなくなるのは**新しい総長がその事象の anchor 以下**のとき（縮小）であり、名目終端より後ろに置かれた延長は名目写像が*減少*するだけで、進捗が 1 で clamp されるため定数に見えているにすぎない。さらに `nominal_total` は**最初の**アンカー、`clock` が比較するのは**直前の**アンカーなので、延長が 2 回あると当初の字義的判定と実際の退化が食い違う。判定条件は `new_total <= anchor` とする。空のタイムラインでは `nominal_total(0) == 0` なので、**最初のアンカーを警告しない番兵**が別途要る |
 | D34 | 空セレクタ | `groups` の**空配列は拒否**する（`null`＝全体とは別物）。UI で 1 つもチェックせずに送った選択が「全グループ」と読まれるのは、D24 が構造的に防ごうとしている無言の全体置換そのもの。`null`（キー不在）だけが「全体」を意味する |
 | D35 | グループ名の突き合わせ | **case-fold で統一**する。§10.1 は `lr_group_schedules` のキーを case-fold で解決するのに、R1 の規則 7（`known_groups`）は完全一致で比較していた。片方だけ厳密だと、`groups: ["UNet"]` が規則 7 を通過しつつ、マッピングが `unet` と呼ぶコンポーネントに届かない |
 | D36 | アドレス単位 | セレクタが指すのは**コンポーネント**であり、LLRD の深さ分割（`unet.d00` 等）ではない。`groups: ["unet"]` は `unet` の全深さに届く。§11 の LLRD はグループを分割するが、分割後も 1 つのアドレスとして扱う |
@@ -70,8 +70,9 @@ Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変�
 | D39 | scoped 事象の到達範囲の凍結 | `groups` 付き事象を `lr_group_schedules` 無効の run で受理したとき、D37 は**警告**を受理時点で固定したが**到達範囲**は評価時に再導出されたままだった。受理時に**決定済みスコープを事象へ書き込む**（`groups` は「何を頼まれたか」の記録として残す）。書き込まれていれば `_selects` は常に真を返す。これが無いと、未来予約が受理後に `lr_group_schedules` を足されて resume されたとき、**永続化された警告が run の実際の挙動について偽になる** |
 | D40 | 警告の文言 | D37 の警告は「この run には `lr_group_schedules` が無い」と書いてはならない。`resolve_lr_group_specs` は**マッピングが設定されていても無視される 2 経路**（param group が無名 / ReLoRA）で `None` を返すため、設定済みの運用者に存在しない config バグを探させる。「param group が全て同一スケジュールを共有している（マッピングは適用されなかった）」と、理由を添えて述べる |
 | D41 | 焼き込みと分岐の両立 | D38 が `shape` / `length` の焼き込みをやめたことで §5.4（不変条件 5）の「後の config 編集で、既に起きた減衰・取り消しの形を変えさせない」保証が、呼び出し側が明示した値にしか及ばなくなった。**束縛された全グループの値が一致するときは焼き、分岐するときだけ省く**。§10.1 により数値パラメータは run 共通（コンポーネントごとに変わるのはスケジュール**名**だけ）なので、一致は通常ケースであり、**平常運転では §5.4 の保証がそのまま残る**。分岐はグループ別 retarget が別 spec を入れたときだけ起き、そのときは各グループ自身の値を使うのが正しい |
-| D42 | retarget ペイロードと run 共通 config | `retarget` の `spec` は**スケジュールの形**であって run 共通の運転パラメータではない。`command_decay_length` / `command_decay_shape`（RPC の「今から減衰」が使う既定値）は §10.1 の run 共通値なので、**retarget ペイロードで運ばせない**。当初これを「R3 のエンドポイントが受理しない」と書いたが**不十分**だった: 経路は R1 の直列化で既に開いており、`to_dict()` がこの 2 つを載せ、`_retarget` が読み戻し、永続化された `lr_schedule_events` を R3 の `undo`（D27）がそのまま往復させる。**閉じるのは直列化側**である。`to_dict()` は `group` と同様にこの 2 つを落とし、`_retarget` は**置き換えられる曲線から再スタンプ**する（落とすだけだとデータクラス既定に戻り、run が設定した `lr_decay_steps` / `lr_decay_shape` を RPC 減衰が黙って失う）。実測: `unet` だけに `lr_decay_steps=321` を載せた retarget の後、**名指しされていない `text_encoder_1` が 321 / rex で減衰する** |
+| D42 | retarget ペイロードと run 共通 config | `retarget` の `spec` は**スケジュールの形**であって run 共通の運転パラメータではない。`command_decay_length` / `command_decay_shape`（RPC の「今から減衰」が使う既定値）は §10.1 の run 共通値なので、**retarget ペイロードで運ばせない**。当初これを「R3 のエンドポイントが受理しない」と書いたが**不十分**だった: 経路は R1 の直列化で既に開いており、`to_dict()` がこの 2 つを載せ、`_retarget` が読み戻し、永続化された `lr_schedule_events` を R3 の `undo`（D27）がそのまま往復させる。**閉じるのは直列化側**である。`to_dict()` は `group` と同様にこの 2 つを落とし、`_retarget` は**置き換えられる曲線から再スタンプ**する（落とすだけだとデータクラス既定に戻り、run が設定した `lr_decay_steps` / `lr_decay_shape` を RPC 減衰が黙って失う）。実測: `unet` だけに `lr_decay_steps=321` を載せた retarget の後、**名指しされていない `text_encoder_1` が 321 / rex で減衰する**。**ただし「retarget が `lr_decay_steps` を運んではならない」と読んではならない**: `command_decay_length` / `command_decay_shape` は `resolve_spec` が `lr_decay_steps` / `lr_decay_shape` から**導出する**フィールドであり、後者は `wsd` の retarget が曲線の形として正当に運ぶ config キーである。エンドポイントが拒否するのは**この 2 つのフィールド名を直接指定すること**だけで、漏れ自体は `to_dict()` の drop が閉じている |
 | D43 | 集約の優先順位 | scoped 事象の結果コードの集約は、**集合に対する明示的な優先順位**で決める（`applied` > `disarmed_scheduled_decay` > `ignored_already_decaying` / `ignored_already_recovering` > `ignored_no_active_decay` > 拒否コードの固定順）。リスト先頭順で決めてはならない: それは optimizer の param group 順であり、**同じ状態が group 順によって違う文字列を返す**。実測: `unet`(constant) + `te1`(wsd) の run で `cancel` を打つと、`te1` の予約減衰が恒久的に武装解除されているのに `ignored_no_active_decay`（何も起きなかった）が返り、`poll_lr_schedule_commands` も適用と数えない |
+| D44 | 未指定フィールドの継承 | retarget リクエストが指定しなかった spec フィールドは、**その時点で有効な spec から継承**する。API の新規 run 用既定値には落とさない。要求 3 は「パラメータを**変更**する」ことであり、指定しなかったものは据え置きが自然な意味論であること、`anchor = restart` の「今いる場所から続ける」思想（D22）と一貫すること、そして具体的な事故を防ぐこと: `lr_floor_ratio` の Pydantic 既定は 0.25 なので、YAML に当該キーが無い（＝§12.2 の互換規則で床 0.0 と読まれる）`cosine` の run で `cosine` へ retarget すると、**指定していない床が 0.25 に変わる** |
 
 ---
 
@@ -743,6 +744,7 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
 | warning | `lr_schedule_state_missing` | 事象キー無し／state.json 無しで resume（§5.5） |
 | warning | `lr_group_schedules_unnamed_groups` | §10.3 |
 | warning | `lr_retarget_group_selector_ignored` | D37。`groups` 付き retarget の受理時、run に `lr_group_schedules` が無いとき |
+| warning | `lr_schedule_clock_degenerate` | D33。`total_steps` 事象の受理時、`anchor >= nominal_total` のとき。挙動は変えない |
 | info | `lr_schedule_command` | §6.3 |
 | 起動ログ | `resolve_spec` が解決後の `spec` を 1 行で出す（現行 `:6586` の形式を全スケジュールへ） | 構築時 |
 
@@ -1632,6 +1634,38 @@ D25 が許可した予約が保存のたびに消える。
    `decay` の `length` は不在が「名目終端まで」という**モード**であって数値ではなく、全グループで同じ
    意味になるので焼く対象に含めない。
 
+### 19.5.3 R3 実装が確定させた事項（2026-09-07）
+
+1. **API のペイロードは config 語彙**（`lr_scheduler` / `lr_warmup_steps` / `lr_decay_*` / `lr_cycle_*`）
+   であり、`ScheduleSpec` の直列化形ではない。理由は 3 つ: プレビュー（D20/D29）と同じ語彙なので
+   「見た曲線が適用される」が構造的に成り立つ、内部 spec のフィールド（`curve` / `decay_start_axis` /
+   `total_steps`）が API に漏れない、そして単位変換を**トレーナー側の 1 箇所**に閉じ込められる。
+   数値は全て**global step**（config の他の数値と同じ）で受け、トレーナーが claim 時に
+   `to_scheduler_axis` / `blend_length_on_scheduler_axis` を通す。API プロセスは run の
+   `gradient_accumulation_steps` も残 span も権威的には知らない。
+2. **`total_steps` は API が決めない**。`anchor=restart` なら `current_total − at`、`continue` なら
+   `current_total` を claim 時に入れる（§19.4 規則 5 の span と同じ値）。
+3. **拒否の分割**: エンドポイントは「run を見ずに決まるもの」だけを 400 で同期的に返す
+   （語彙、範囲、`groups: []`、D42 の 2 キー、未知キー）。`resolve_spec` の**空撃ち**を 1 回行い、
+   config レベルの ValueError をそのままメッセージにする（規則を二重実装しない）。
+   run に照らして初めて決まるもの（`rejected_backdated` / `rejected_no_remaining_span` /
+   `rejected_warmup_exceeds_span` / `rejected_unknown_group`）は結果ファイル経由。
+4. **`known_groups` の出所は optimizer の param group の `component`**（`lr_group_schedules` ではない）。
+   空リストは `None` として渡す: 「コンポーネント名を持たない run」は「どの名前も存在しない run」ではなく、
+   照合できない run である（R1 の「照合しない」に落とす）。
+5. **`retarget` は `COMMANDS` に入れない**。`POST /training/runs/{id}/lr-schedule` の enum は
+   ボタン 2 つのままで、`retarget` は `RETARGET_COMMAND` として同じキュー（`ALL_COMMANDS`）に載る。
+   混ぜると、ペイロードを持たない `{"command": "retarget"}` が 202 で受理される。
+6. **表示ファイルは `anchor_step` と `warmup_end_step` を持つ**（D32）。`warmup_steps` は**長さ**として
+   残す（`cancel` の復帰長でもある）。「絶対位置で書く」は「長さを絶対値に書き換える」ではなく
+   「位置を名乗る値は絶対にする」であり、両方あって初めて `絶対 = anchor + 相対` が読み手に見える。
+   進行中の混合（§19.8）は `at` / `length` / `ends_at` / `shape` だけを出す: この 5 つは混合中
+   不変で、重みは毎 step 変わるためファイルの更新頻度と矛盾する。
+7. **未来予約は事象なしで発効する**ので、`.lr_schedule.json` の更新シグネチャに
+   `scheduler` と `anchor_step` を足した。事象数だけを見ていると、予約が効いた瞬間に
+   GET が古いスケジュール名を返し続ける（§17.3 が DECAYING→FLOOR で潰したのと同型の穴が、
+   retarget 側にもう 1 つあった）。
+
 ### 19.6 派生操作（D27）
 
 | 操作 | 実体 |
@@ -1652,7 +1686,8 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 
 ### 19.8 API・UI
 
-- `POST /training/runs/{id}/lr-schedule/retarget` — 事象を投函する（D6 の control RPC 経由）
+- `POST /training/runs/{id}/lr-schedule/retarget` — 事象を投函する（D6 の control RPC 経由）。
+  body は config 語彙・global step（§19.5.3-1）、応答は 202 と、既定を埋めた `payload` のエコー
 - `POST /training/lr-schedule/preview` — 候補事象列を受け取り標本点を返す（D29）
 - UI は「方式ピッカー + パラメータ + 適用 step（既定 = 現在）+ 混合長 + 形」と、
   **適用前にチャートへ重ねるプレビュー**を持つ。適用済み事象はチャート上にマーカーで出す
@@ -1673,7 +1708,7 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 | R0 | `_fold` が `(spec, state)` を返す形への変更（挙動不変） | LR 関連 13 ファイル 609 件（`lr_schedules` / `lr_schedule_*` / `lr_group_schedules_and_layer_decay` / `test_lr_resume_override` / `rewarmup_on_optimizer_reset` / `fused_optimizer_group_resume` / `component_lr_resume_alignment` / `params_roundtrip_defaults` / `config_edit_key_preservation`）が通り、乗数が bit 同一 |
 | R1 | `ScheduleSpec` の直列化、`retarget` 事象（`issued` / `gain` 込み）、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 8 件を網羅する試験。`warmup_steps > 0` の retarget 後に減衰コマンドが通ることを含む |
 | R2 | グループセレクタ（spec のグループ識別子を含む） | `lr_group_schedules` オン/オフ両方。識別子が**ペイロードに乗らない**こと（乗せると 2 度目の scoped retarget が全体に化ける）と、scoped 事象を無効化する変異体が捕捉されることを含む |
-| R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ |
+| R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ（実装済み: §19.5.3） |
 | R4 | プレビュー API と UI | サーバ実装と UI 表示の一致 |
 | R5 | 派生操作（scale / hold / undo） | いずれも `retarget` に落ちること |
 | R6 | 条件トリガ | 別途設計 |

@@ -51,9 +51,11 @@ from core.training.lr_schedules import (
     STATE_NAMES,
     ScheduleTimeline,
     apply_layer_decay,
+    blend_length_on_scheduler_axis,
     build_depth_map,
     build_lr_scheduler,
     describe_spec,
+    resolve_retarget_spec,
     resolve_spec,
     to_scheduler_axis,
 )
@@ -70,7 +72,8 @@ from core.training.checkpoint_space import (
     plan_retention,
     survivors_after_prune,
 )
-# SSoT: api/param_defaults.TRAINING_DEFAULTS.
+# SSoT: api/param_defaults.
+from api.param_defaults import LR_RETARGET_DEFAULTS
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP = _TRAINING_DEFAULTS["max_optimizer_saves_to_keep"]
@@ -735,13 +738,79 @@ def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dic
             "index": index,
             "name": (group.get("name") or (names[index] if names else None)
                      or f"group{index}"),
+            "component": group.get("component") or group.get("name"),
             "schedule": timeline.active_spec(group_spec, position).name,
+            "anchor_step": timeline.anchor_at(group_spec, position),
             "state": STATE_NAMES.get(int(state.code), "base"),
             "state_code": int(state.code),
             "multiplier": float(timeline.multiplier(group_spec, position)),
             "lr": float(group.get("lr", 0.0)),
         })
     return out
+
+
+def lr_known_group_names(trainer) -> List[str]:
+    """The component names a ``retarget``'s ``groups`` selector may name (D36).
+
+    The optimizer's param groups, not ``lr_group_schedules``: a run with no
+    mapping still has components, and §19.3's last row accepts a selector there
+    (it reaches all of them). LLRD's depth split keeps ``component``, so the
+    list stays one entry per component.
+    """
+    names = []
+    for optimizer in all_optimizers(trainer):
+        if optimizer is None:
+            continue
+        for group in optimizer.param_groups:
+            name = group.get("component") or group.get("name")
+            if name and str(name) not in names:
+                names.append(str(name))
+    return names
+
+
+def lr_retarget_add_kwargs(trainer, spec, timeline, payload: Dict[str, Any],
+                           position: int) -> Dict[str, Any]:
+    """Resolve a queued retarget payload into ``ScheduleTimeline.add`` kwargs.
+
+    The payload's step counts are GLOBAL steps, like every other number in a
+    training config; the conversion to the scheduler axis happens here because
+    only the trainer knows the run's accumulation. ``issued`` is this position:
+    the request may name any ``at``, and the timeline refuses a backdated one
+    against the step it was actually claimed at (D25).
+
+    D44's inheritance reads the REPRESENTATIVE spec in force at ``at``. §10.1
+    keeps the numeric parameters run-wide, so there is one value to inherit;
+    a payload is one curve and could not carry a per-group answer anyway.
+    """
+    interval = lr_scheduler_advance_interval(trainer)
+    anchor = str(payload.get("anchor")
+                 or LR_RETARGET_DEFAULTS["anchor"]).strip().lower()
+    raw_at = payload.get("at")
+    at = int(position) if raw_at is None else to_scheduler_axis(int(raw_at),
+                                                                interval)
+    current_total = timeline.current_total(spec.total_steps)
+    # §19.4 rule 5's span, so the new spec's own total matches the axis it will
+    # be evaluated on. A span of 0 or less is refused by rule 3; resolve_spec
+    # needs >= 1 to get that far.
+    span = current_total - at if anchor == "restart" else current_total
+    new_spec = resolve_retarget_spec(
+        payload, timeline.active_spec(spec, at),
+        total_steps=max(1, span), advance_interval=interval)
+    groups = payload.get("groups")
+    return {
+        "at": at,
+        "new_spec": new_spec,
+        "anchor": anchor,
+        "gain": payload.get("gain"),
+        "length": blend_length_on_scheduler_axis(payload.get("length"),
+                                                 interval),
+        "shape": payload.get("shape"),
+        "groups": None if groups is None else [str(g) for g in groups],
+        # None, not []: a run whose groups carry no component name cannot
+        # check one, which is R1's "accept it" rather than "refuse everything".
+        "known_groups": lr_known_group_names(trainer) or None,
+        "issued": int(position),
+    }
 
 
 def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -754,6 +823,11 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
     position = live_scheduler_step(trainer)
     state = timeline.state_at(spec, position)
     active = timeline.active_spec(spec, position)
+    # D32: every step VALUE in this file is an absolute position, and
+    # `anchor_step` is where a restart-anchored retarget put the curve's origin.
+    # The spec's own step fields are lengths from there; publishing them raw
+    # beside absolute ones is the unit mix-up §18 recorded three times.
+    anchor = timeline.anchor_at(spec, position)
     return {
         "version": 1,
         "run_id": getattr(trainer, "run_id", None),
@@ -761,7 +835,10 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
         "step": int(position),
         "global_step": None if global_step is None else int(global_step),
         "scheduler": active.name,
+        "anchor_step": int(anchor),
         "warmup_steps": int(active.warmup_steps),
+        "warmup_end_step": int(anchor + active.warmup_steps),
+        "blend": timeline.blend_at(spec, position),
         "state": STATE_NAMES.get(int(state.code), "base"),
         "state_code": int(state.code),
         "state_at": int(state.at),
@@ -789,7 +866,9 @@ def refresh_lr_schedule_status(trainer, global_step: Optional[int] = None,
             return False
         signature = (status["state_code"], status["state_at"],
                      status["decay_disarmed"], len(status["events"]),
-                     status["effective_total_steps"])
+                     status["effective_total_steps"],
+                     status["scheduler"], status["anchor_step"],
+                     None if status["blend"] is None else status["blend"]["at"])
         if not force and signature == getattr(trainer, "_lr_status_signature", None):
             return False
         control_rpc.write_status(trainer.output_dir, status)
@@ -844,9 +923,16 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
                 active = timeline.active_spec(spec, position)
                 result = timeline.add(kind, at=position, request_id=request_id,
                                       length=active.command_decay_length,
-                                      shape=active.command_decay_shape)
+                                      shape=active.command_decay_shape,
+                                      issued=position)
+            elif kind == "retarget":
+                kwargs = lr_retarget_add_kwargs(
+                    trainer, spec, timeline, dict(request.get("payload") or {}),
+                    position)
+                result = timeline.add(kind, request_id=request_id, **kwargs)
             else:
-                result = timeline.add(kind, at=position, request_id=request_id)
+                result = timeline.add(kind, at=position, request_id=request_id,
+                                      issued=position)
         except Exception as e:   # noqa: BLE001
             result, error = "error", str(e)
             print(f"{prefix} WARNING: LR schedule command {command} failed: {e}")

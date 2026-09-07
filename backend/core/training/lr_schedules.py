@@ -62,7 +62,8 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from torch.optim.lr_scheduler import LambdaLR
 
-# SSoT: api/param_defaults.TRAINING_DEFAULTS.
+# SSoT: api/param_defaults.
+from api.param_defaults import LR_RETARGET_DEFAULTS as _RETARGET_DEFAULTS
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 from core.training.training_events import emit_training_warning
 
@@ -89,6 +90,7 @@ __all__ = [
     "build_lr_scheduler",
     "describe_spec",
     "make_lambda",
+    "resolve_retarget_spec",
     "resolve_spec",
     "sample_curve",
     "to_scheduler_axis",
@@ -188,6 +190,10 @@ _RESULT_PRECEDENCE = (
 # §13's code for D37: a `groups` selector on a run whose param groups all share
 # one spec. Accepted (§19.3), and it reaches every group.
 WARN_SELECTOR_ON_UNGROUPED_RUN = "lr_retarget_group_selector_ignored"
+
+# §13's code for D33: a total_steps change anchored at or past the nominal end.
+# The clock is left as it is; what stops is the silence.
+WARN_CLOCK_DEGENERATE = "lr_schedule_clock_degenerate"
 
 
 @dataclass(frozen=True)
@@ -441,8 +447,29 @@ class ScheduleTimeline:
             # Totals are >= 1, so 0 stands for "no anchor recorded yet".
             if value == self.current_total(0):
                 return "ignored_unchanged"
-            self._append({"kind": kind, "at": at, "value": value,
-                          "request_id": request_id, "result": "applied"})
+            event = {"kind": kind, "at": at, "value": value,
+                     "request_id": request_id, "result": "applied"}
+            previous = self.current_total(0)
+            # D33: `clock` stops advancing exactly where its warp branch does --
+            # the NEW total at or below THIS anchor. Not `at >= nominal_total`:
+            # that fires on healthy extensions anchored past the nominal end
+            # (whose mapping still advances; it is the progress clamp that
+            # flattens them) and compares against the FIRST anchor where the
+            # warp uses the one immediately before. The guard is the empty
+            # timeline, where 0 is "no anchor yet" rather than a total.
+            if previous and value <= at:
+                event["warning"] = WARN_CLOCK_DEGENERATE
+                emit_training_warning(
+                    f"The new total of {value} scheduler steps is at or below "
+                    f"the step this change is anchored at ({at}), so the LR "
+                    f"schedule's clock stops there: every step from {at} on "
+                    f"reads as nominal step {previous}, and the multiplier "
+                    f"holds at the value the schedule ends on. The curve is "
+                    f"unchanged from what it has always done here. A retarget "
+                    f"replaces the curve from a step of your choosing if the "
+                    f"remaining steps should follow a new shape.",
+                    code=WARN_CLOCK_DEGENERATE)
+            self._append(event)
             return "applied"
 
         if kind == "restart":
@@ -474,6 +501,16 @@ class ScheduleTimeline:
         issued = payload.get("issued")
         if issued is not None:
             event["issued"] = int(issued)
+            if at < int(issued):
+                # D25 as §19.5.1 revised it: ONE backdating rule for every
+                # event kind. Every command is issued at `at` today, so this
+                # only bites once a request names its own step -- which is
+                # exactly when a per-kind rule would start to differ.
+                event["refused_kind"] = kind
+                event["kind"] = "noop"
+                event["result"] = "rejected_backdated"
+                self._append(event)
+                return "rejected_backdated"
         length = payload.get("length")
         if length is not None:
             event["length"] = int(length)
@@ -547,18 +584,28 @@ class ScheduleTimeline:
         new_spec = (raw if isinstance(raw, ScheduleSpec)
                     else ScheduleSpec.from_dict(raw))
 
-        anchor = str(payload.get("anchor") or "restart").strip().lower()
+        anchor = str(payload.get("anchor")
+                     or _RETARGET_DEFAULTS["anchor"]).strip().lower()
         if anchor not in RETARGET_ANCHORS:
             raise ValueError(
                 f"Unknown retarget anchor '{anchor}'. Supported: "
                 f"{', '.join(RETARGET_ANCHORS)}")
-        shape = str(payload.get("shape") or "linear").strip().lower()
+        shape = str(payload.get("shape")
+                    or _RETARGET_DEFAULTS["shape"]).strip().lower()
         _blend_weight(shape)
 
         gain = payload.get("gain")
-        gain = 1.0 if gain is None else float(gain)
+        gain = (float(_RETARGET_DEFAULTS["gain"]) if gain is None
+                else float(gain))
         length = payload.get("length")
-        length = 0 if length is None else int(length)
+        if length is None:
+            # D31: the run's own warmup -- the length its author already chose
+            # as "how long this model takes to settle into a new LR". NOT 0,
+            # which would make an omitted length an instant switch.
+            base = seed or self.spec
+            length = 0 if base is None else int(base.warmup_steps)
+        else:
+            length = int(length)
         issued = payload.get("issued")
         issued = at if issued is None else int(issued)
         groups = payload.get("groups")
@@ -751,6 +798,30 @@ class ScheduleTimeline:
         ``anchor="restart"`` its step-valued fields are lengths from the
         retarget's step, not positions on the run's axis."""
         return self._fold(spec, int(step))[0]
+
+    def anchor_at(self, spec: ScheduleSpec, step: int) -> int:
+        """The absolute step the spec in force at ``step`` is anchored at (D32).
+
+        0 unless an ``anchor="restart"`` retarget is in force, whose spec's
+        step-valued fields are lengths from here: ``absolute = anchor_at + relative``.
+        """
+        return int(self._fold_curve(spec, int(step)).origin)
+
+    def blend_at(self, spec: ScheduleSpec,
+                 step: int) -> Optional[Dict[str, Any]]:
+        """The retarget blend in progress at ``step``, or None (§19.8).
+
+        Absolute positions, and only the fields that hold still for the whole
+        blend -- the display file is rewritten on a state change, not per step,
+        so a weight would be stale between writes.
+        """
+        link = self._fold_curve(spec, int(step)).link
+        if link is None or link.length <= 0:
+            return None
+        if int(step) >= link.at + link.length:
+            return None
+        return {"at": int(link.at), "length": int(link.length),
+                "ends_at": int(link.at + link.length), "shape": str(link.shape)}
 
     def multiplier(self, spec: ScheduleSpec, step: int) -> float:
         """The LR multiplier: §4's base curve with the overlay on top, blended
@@ -1284,6 +1355,70 @@ def resolve_spec(
 
     curve = "constant" if key == "constant_with_warmup" else key
     return ScheduleSpec(name=key, curve=curve, **common)
+
+
+def resolve_retarget_spec(payload: Mapping[str, Any],
+                          active: Optional[ScheduleSpec], *,
+                          total_steps: int,
+                          advance_interval: int = 1) -> ScheduleSpec:
+    """The spec a `retarget` request means (D44).
+
+    A retarget is an EDIT to a running schedule, so a field the request does
+    not name keeps the value it has -- not the API default for a new run. The
+    named accident: a YAML with no ``lr_floor_ratio`` reads floor 0.0 under
+    §12.2, and falling back to the Pydantic 0.25 would move a floor the
+    operator never mentioned.
+
+    ``payload`` carries ONLY the keys the request supplied (a None is absent).
+    ``active`` is the spec in force at the retarget's step, or None where there
+    is no run to inherit from (the endpoint's validation probe), which makes
+    this plain ``resolve_spec``.
+
+    Inheritance is split by whether a key means the same thing under the new
+    name. ``warmup_steps`` and ``floor_ratio`` exist under every schedule and
+    are always inherited -- and are taken off the spec, already on the
+    scheduler axis, rather than converted a second time. The decay and cycle
+    keys are name-specific, so they are inherited only when the name is
+    unchanged; a new name's key that the old spec never had falls back to
+    ``TRAINING_DEFAULTS`` through ``resolve_spec``.
+    """
+    supplied = {k for k, v in dict(payload or {}).items() if v is not None}
+    config = dict(payload or {})
+    if active is not None and "lr_warmup_steps" not in supplied:
+        warmup = int(active.warmup_steps)
+    else:
+        warmup = to_scheduler_axis(int(config.get("lr_warmup_steps") or 0),
+                                   advance_interval)
+    if active is not None and "lr_floor_ratio" not in supplied:
+        config["lr_floor_ratio"] = active.floor_ratio
+
+    spec = resolve_spec(config, warmup_steps=warmup, total_steps=total_steps,
+                        name=str(config.get("lr_scheduler") or ""),
+                        advance_interval=advance_interval)
+    if active is None:
+        return spec
+
+    updates: Dict[str, Any] = {}
+    if "lr_floor_ratio" not in supplied:
+        # The flag says who chose the floor, and this request did not.
+        updates["floor_defaulted"] = active.floor_defaulted
+    if active.name == spec.name:
+        if not supplied & {"lr_decay_start_step", "lr_decay_start_ratio"}:
+            # One triple: only one of the two keys is read under any name, and
+            # the axis belongs to whichever supplied the start.
+            updates.update(decay_start_step=active.decay_start_step,
+                           decay_start_ratio=active.decay_start_ratio,
+                           decay_start_axis=active.decay_start_axis)
+        if "lr_decay_steps" not in supplied:
+            updates.update(decay_length=active.decay_length,
+                           decay_end_kind=active.decay_end_kind)
+        if "lr_decay_shape" not in supplied:
+            updates["decay_shape"] = active.decay_shape
+        if "lr_cycle_steps" not in supplied:
+            updates["cycle_steps"] = active.cycle_steps
+        if "lr_cycle_peak_decay" not in supplied:
+            updates["cycle_peak_decay"] = active.cycle_peak_decay
+    return replace(spec, **updates) if updates else spec
 
 
 def _decay_shape(name: str) -> Callable[[float], float]:

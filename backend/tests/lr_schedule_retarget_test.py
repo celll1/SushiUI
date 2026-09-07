@@ -47,11 +47,13 @@ from core.training.lr_schedules import (  # noqa: E402
     STATE_DECAYING,
     STATE_FLOOR,
     STATE_RECOVERING,
+    WARN_CLOCK_DEGENERATE,
     WARN_SELECTOR_ON_UNGROUPED_RUN,
     ScheduleSpec,
     ScheduleTimeline,
     blend_length_on_scheduler_axis,
     make_lambda,
+    resolve_retarget_spec,
     resolve_spec,
 )
 
@@ -1406,3 +1408,200 @@ def test_a_scoped_retarget_does_not_hand_its_decay_parameters_to_other_groups():
     te = specs["text_encoder_1"]
     assert timeline.multiplier(te, 500) == pytest.approx(0.5)
     assert timeline.multiplier(te, 600) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# R3: one backdating rule for every event kind (D25 / §19.5.1 item 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind", ["decay", "cancel"])
+def test_a_backdated_command_is_refused_like_a_backdated_retarget(kind):
+    """R1 checked `at >= issued` for `retarget` only. R3 is the phase that lets
+    a request name its own `at`, and the rule must not differ by kind."""
+    spec, timeline = _run("constant", W=0)
+    timeline.add("decay", at=1000, issued=1000)          # something to cancel
+    steps = range(0, TOTAL + 1, 500)
+    before = _curve(spec, timeline, steps)
+
+    assert timeline.add(kind, at=900, issued=2000) == "rejected_backdated"
+    event = next(e for e in timeline.dump(TOTAL) if e["kind"] == "noop")
+    assert (event["refused_kind"], event["at"], event["issued"]) ==         (kind, 900, 2000)
+    assert _curve(spec, timeline, steps) == before
+
+
+@pytest.mark.parametrize("kind", ["decay", "cancel"])
+def test_a_command_issued_at_its_own_step_is_still_accepted(kind):
+    spec, timeline = _run("constant")
+    timeline.add("decay", at=1000, issued=1000)
+    result = timeline.add(kind, at=2000, issued=2000)
+    assert result != "rejected_backdated"
+    assert timeline.dump(TOTAL)[-1]["kind"] == kind
+
+
+@pytest.mark.parametrize("kind", ["decay", "cancel"])
+def test_a_future_dated_command_is_still_accepted(kind):
+    """D25 permits a reservation; only the past is refused."""
+    spec, timeline = _run("constant")
+    timeline.add("decay", at=3000, issued=1000)
+    assert timeline.add(kind, at=5000, issued=1000) != "rejected_backdated"
+    assert [e["kind"] for e in timeline.dump(1000)] == \
+        ["total_steps", "decay", kind]
+
+
+def test_a_command_with_no_issued_is_not_refused():
+    """Every event written before R1 has no `issued`; it reads as its own
+    `at`, so loading one cannot start refusing it."""
+    spec, timeline = _run("constant")
+    assert timeline.add("decay", at=1000) == "applied"
+    assert "issued" not in timeline.dump(TOTAL)[-1]
+
+
+# ---------------------------------------------------------------------------
+# R3: the blend length defaults to the run's warmup (D31)
+# ---------------------------------------------------------------------------
+
+def test_an_omitted_blend_length_is_the_runs_warmup():
+    spec, timeline = _run("cosine", W=200)
+    assert timeline.add("retarget", at=4000,
+                        new_spec=_spec("constant")) == "applied"
+    assert timeline.dump(TOTAL)[-1]["length"] == 200
+    # Not an instant switch: halfway through the blend the value is between the
+    # two curves rather than on the new one.
+    at_switch = timeline.multiplier(spec, 4000)
+    assert timeline.multiplier(spec, 4100) != pytest.approx(at_switch)
+    assert timeline.multiplier(spec, 4200) == pytest.approx(at_switch)
+
+
+def test_the_default_length_comes_from_the_run_not_from_the_new_spec():
+    """D31 names `lr_warmup_steps` -- the value the run's author chose. The new
+    curve's own warmup is a different number with a different meaning."""
+    spec, timeline = _run("cosine", W=200)
+    timeline.add("retarget", at=4000, new_spec=_spec("cosine", W=50))
+    assert timeline.dump(TOTAL)[-1]["length"] == 200
+
+
+def test_a_run_with_no_warmup_defaults_to_an_instant_switch():
+    spec, timeline = _run("cosine", W=0)
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"))
+    assert timeline.dump(TOTAL)[-1]["length"] == 0
+
+
+def test_an_explicit_zero_length_stays_an_instant_switch():
+    spec, timeline = _run("cosine", W=200)
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0)
+    assert timeline.dump(TOTAL)[-1]["length"] == 0
+    assert timeline.multiplier(spec, 4001) == pytest.approx(
+        timeline.multiplier(spec, 4000))
+
+
+# ---------------------------------------------------------------------------
+# R3: the clock degeneracy warning (D33). The behaviour is NOT changed.
+# ---------------------------------------------------------------------------
+
+def test_a_reduction_to_or_below_the_anchor_warns(capsys):
+    spec, timeline = _run("cosine", T=1000)
+    assert timeline.add("total_steps", at=800, value=700) == "applied"
+    out = capsys.readouterr().out
+    assert WARN_CLOCK_DEGENERATE in out
+    assert timeline.dump(800)[-1]["warning"] == WARN_CLOCK_DEGENERATE
+
+
+def test_the_degenerate_clock_still_behaves_exactly_as_before(capsys):
+    """D33 changes the silence, not the curve: past the anchor the multiplier
+    holds at the value the nominal end had."""
+    spec, timeline = _run("cosine", T=1000)
+    timeline.add("total_steps", at=800, value=700)
+    capsys.readouterr()
+    held = timeline.multiplier(spec, 800)
+    assert [timeline.multiplier(spec, s) for s in (800, 850, 900)] == \
+        [held, held, held]
+
+
+def test_an_extension_anchored_inside_the_run_does_not_warn(capsys):
+    spec, timeline = _run("cosine", T=1000)
+    timeline.add("total_steps", at=999, value=2000)
+    assert WARN_CLOCK_DEGENERATE not in capsys.readouterr().out
+    assert "warning" not in timeline.dump(999)[-1]
+
+
+def test_an_extension_anchored_past_the_nominal_end_does_not_warn(capsys):
+    """D33: a healthy extension anchored past the nominal end still advances its
+    clock and is not degenerate, so it must not warn."""
+    spec, timeline = _run("cosine", T=1000)
+    timeline.add("total_steps", at=1200, value=2000)
+    assert WARN_CLOCK_DEGENERATE not in capsys.readouterr().out
+    assert "warning" not in timeline.dump(1200)[-1]
+
+
+def test_the_first_total_is_not_a_degenerate_clock(capsys):
+    """`set_total_steps` has no earlier anchor to be past, and `at=0 >= 0` on an
+    empty timeline must not be read as one."""
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(1000)
+    timeline.add("total_steps", at=10, value=2000)
+    assert WARN_CLOCK_DEGENERATE not in capsys.readouterr().out
+
+
+def test_the_warning_survives_a_state_round_trip(capsys):
+    """§19.5.2 item 8: the stdout sentinel is a subprocess path, so the code is
+    on the event too."""
+    spec, timeline = _run("cosine", T=1000)
+    timeline.add("total_steps", at=800, value=700)
+    capsys.readouterr()
+    restored = _reloaded(timeline)
+    assert [e.get("warning") for e in restored.dump(800)][-1] == \
+        WARN_CLOCK_DEGENERATE
+
+
+# ---------------------------------------------------------------------------
+# R3: inheritance of omitted fields (D44)
+# ---------------------------------------------------------------------------
+
+def test_retarget_inherits_omitted_floor_from_active_spec():
+    """D44: a YAML with no lr_floor_ratio gets floor 0.0 under §12.2. A retarget
+    that does not specify lr_floor_ratio must not move it to the Pydantic 0.25."""
+    active = resolve_spec({"lr_floor_ratio": 0.0}, warmup_steps=100,
+                          total_steps=1000, name="cosine")
+    assert active.floor_ratio == 0.0
+    retargeted = resolve_retarget_spec({"lr_scheduler": "cosine"}, active,
+                                       total_steps=500)
+    assert retargeted.floor_ratio == 0.0
+    assert retargeted.warmup_steps == 100
+
+
+def test_retarget_inherits_decay_params_only_under_same_name():
+    """D44: decay parameters are schedule-specific; they inherit when the name
+    is unchanged, but fall back to defaults when changing schedule."""
+    active = resolve_spec({
+        "lr_decay_start_step": 200, "lr_decay_steps": 400,
+        "lr_decay_shape": "rex", "lr_floor_ratio": 0.1,
+    }, warmup_steps=50, total_steps=1000, name="wsd")
+    assert active.decay_start_step == 200
+    assert active.decay_length == 400
+    assert active.decay_shape == "rex"
+
+    same_name = resolve_retarget_spec({"lr_scheduler": "wsd"}, active,
+                                      total_steps=600)
+    assert same_name.decay_start_step == 200
+    assert same_name.decay_length == 400
+    assert same_name.decay_shape == "rex"
+    assert same_name.floor_ratio == 0.1
+    assert same_name.warmup_steps == 50
+
+    diff_name = resolve_retarget_spec({"lr_scheduler": "linear"}, active,
+                                      total_steps=600)
+    assert diff_name.name == "linear"
+    assert diff_name.floor_ratio == 0.1
+    assert diff_name.warmup_steps == 50
+
+
+def test_retarget_with_no_active_spec_uses_defaults():
+    """D44: an endpoint probe has no active spec (active is None) and resolves
+    plain defaults through resolve_spec (§12.2 sets floor_ratio to 0.0)."""
+    probe = resolve_retarget_spec({"lr_scheduler": "cosine"}, None,
+                                  total_steps=1000)
+    assert probe.name == "cosine"
+    assert probe.warmup_steps == 0
+    assert probe.floor_ratio == 0.0
+    assert probe.floor_defaulted is True
+

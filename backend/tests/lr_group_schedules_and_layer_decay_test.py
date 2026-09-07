@@ -243,11 +243,14 @@ def test_a_default_run_is_bit_identical_to_the_previous_commit(
         BUSY_CONFIG, warmup_steps=20, total_steps=500, name=name,
         advance_interval=gas)
     # Two classes, so compare the fields rather than the dataclasses. R2's
-    # group identity has no counterpart in the old build; unset is what makes
-    # it inert, so it is asserted rather than compared.
+    # group identity is unset here and is what makes it inert, so it is
+    # asserted rather than compared -- and dropped from BOTH sides, because
+    # HEAD moves and the field is only absent from a build that predates it.
     fields_now = dataclasses.asdict(now)
+    fields_before = dataclasses.asdict(before)
     assert fields_now.pop("group") is None
-    assert fields_now == dataclasses.asdict(before)
+    fields_before.pop("group", None)
+    assert fields_now == fields_before
 
     timeline, old_timeline = ScheduleTimeline(), previous_lr_schedules.ScheduleTimeline()
     timeline.set_total_steps(now.total_steps)

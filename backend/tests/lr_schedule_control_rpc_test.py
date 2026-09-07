@@ -54,7 +54,9 @@ from core.training import training_file_rpc as file_rpc  # noqa: E402
 from core.training import training_sample_rpc as sample_rpc  # noqa: E402
 from core.training.base_trainer import (  # noqa: E402
     BaseTrainer,
+    install_lr_schedule_events,
     lr_decay_state_code,
+    lr_known_group_names,
     lr_schedule_status,
     poll_lr_schedule_commands,
     refresh_lr_schedule_status,
@@ -689,3 +691,516 @@ def test_the_get_reads_the_files_and_works_for_a_stopped_run():
     # No live process: fall back to the run row's directory rather than 409.
     assert "run.output_dir" in body
     assert "409" not in body
+
+
+# ---------------------------------------------------------------------------
+# R3: the `retarget` command over the same transport (§19.8)
+# ---------------------------------------------------------------------------
+
+# A linear decay to zero over 40 global steps, starting one step after the
+# retarget takes effect: `lr_decay_start_step = 0` is `wsd`'s "manual", so a
+# curve that decays on its own has to name a step.
+RETARGET_TO_WSD = {
+    "lr_scheduler": "wsd",
+    "lr_warmup_steps": 0,
+    "lr_floor_ratio": 0.0,
+    "lr_decay_start_step": 1,
+    "lr_decay_steps": 40,
+    "lr_decay_shape": "linear",
+    "anchor": "restart",
+    "length": 0,
+}
+
+
+class GroupedFakeTrainer(FakeTrainer):
+    """A trainer whose optimizer groups carry component names.
+
+    `known_groups` (§19.4 rule 7) is read off the optimizer, not off
+    `lr_group_schedules`: a run with no mapping still has components, and a
+    selector naming one of them is accepted (§19.3's last row).
+    """
+
+    def __init__(self, output_dir, components=("unet", "text_encoder_1"),
+                 **kwargs):
+        super().__init__(output_dir, **kwargs)
+        self.optimizer = torch.optim.SGD(
+            [{"params": [torch.nn.Parameter(torch.zeros(4))],
+              "component": c, "name": c, "lr": BASE_LR} for c in components],
+            lr=BASE_LR)
+        self.lr_scheduler = build_lr_scheduler(
+            self.optimizer, self.lr_schedule_spec, self.lr_timeline)
+
+
+def queue_retarget(output_dir, payload=None, run_id=RUN_ID, **overrides):
+    body = dict(RETARGET_TO_WSD if payload is None else payload)
+    body.update(overrides)
+    return control_rpc.queue_request(
+        output_dir, command=control_rpc.RETARGET_COMMAND, run_id=run_id,
+        extra={"payload": body})
+
+
+def test_the_retarget_command_shares_the_queue_but_not_the_button_enum():
+    # The two-button endpoint's enum must not grow a command that needs a body.
+    assert control_rpc.COMMANDS == ("start_decay", "cancel_decay")
+    assert control_rpc.RETARGET_COMMAND not in control_rpc.COMMANDS
+    assert control_rpc.COMMAND_EVENT_KINDS[control_rpc.RETARGET_COMMAND] == \
+        "retarget"
+
+
+def test_a_retarget_without_a_payload_is_refused_at_the_queue(tmp_path):
+    with pytest.raises(ValueError):
+        control_rpc.queue_request(tmp_path,
+                                  command=control_rpc.RETARGET_COMMAND,
+                                  run_id=RUN_ID)
+    assert control_rpc.list_pending_requests(tmp_path) == []
+
+
+def test_a_queued_retarget_reaches_the_timeline_and_switches_the_curve(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(20)
+    assert trainer.multiplier(20) == pytest.approx(1.0)
+
+    queued = queue_retarget(tmp_path)
+    assert poll(trainer, global_step=20) == 1
+
+    event = trainer.lr_timeline.dump(20)[-1]
+    assert (event["kind"], event["at"], event["issued"]) == ("retarget", 20, 20)
+    assert event["spec"]["name"] == "wsd"
+    # Linear over 40 scheduler steps from the multiplier it was at, on the
+    # retarget's own axis: the decay starts at 21, not at 1.
+    assert trainer.multiplier(21) == pytest.approx(1.0)
+    assert trainer.multiplier(41) == pytest.approx(0.5)
+    assert trainer.multiplier(61) == pytest.approx(0.0)
+    # And it took effect on the live optimizer in the same batch, not the next.
+    assert trainer.lr == pytest.approx(BASE_LR)
+
+    result = results_by_id(tmp_path)[queued["request_id"]]
+    assert (result["result"], result["command"], result["at"]) == \
+        ("applied", "retarget", 20)
+
+
+def test_a_retarget_result_is_idempotent_by_request_id(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(20)
+    queued = queue_retarget(tmp_path)
+    poll(trainer, global_step=20)
+    control_rpc.queue_request(
+        tmp_path, command=control_rpc.RETARGET_COMMAND, run_id=RUN_ID,
+        request_id=queued["request_id"], extra={"payload": RETARGET_TO_WSD})
+    trainer.seek(30)
+    poll(trainer, global_step=30)
+    assert [e["kind"] for e in trainer.lr_timeline.dump(30)].count("retarget") \
+        == 1
+
+
+def test_the_payload_step_counts_are_global_steps(tmp_path):
+    """gas=4: a 40-global-step decay is 10 scheduler steps, and a 20-step blend
+    is 5. Converting only some of them would draw a curve the run never
+    follows."""
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer._grad_accum_steps = 4
+    trainer.seek(20)
+    queue_retarget(tmp_path, length=20)
+    poll(trainer, global_step=80)
+
+    event = trainer.lr_timeline.dump(20)[-1]
+    assert event["length"] == 5
+    assert event["spec"]["decay_length"] == 10
+    # The 1-global-step start floors into the first accumulation window, so the
+    # decay begins at the anchor and reaches zero 10 scheduler steps later.
+    assert trainer.multiplier(25) == pytest.approx(0.5)
+    assert trainer.multiplier(30) == pytest.approx(0.0)
+
+
+def test_a_retarget_can_name_a_future_step(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(10)
+    queue_retarget(tmp_path, at=50)
+    assert poll(trainer, global_step=10) == 1
+
+    event = trainer.lr_timeline.dump(10)[-1]
+    assert (event["at"], event["issued"]) == (50, 10)
+    # Nothing before the reservation moves; the switch happens at 50.
+    assert trainer.multiplier(49) == pytest.approx(1.0)
+    assert trainer.multiplier(71) == pytest.approx(0.5)
+
+
+def test_a_retarget_naming_a_step_already_past_is_refused(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(60)
+    queued = queue_retarget(tmp_path, at=10)
+    poll(trainer, global_step=60)
+
+    assert results_by_id(tmp_path)[queued["request_id"]]["result"] == \
+        "rejected_backdated"
+    assert trainer.multiplier(80) == pytest.approx(1.0)
+
+
+def test_the_issued_step_is_the_trainers_not_the_requesters(tmp_path):
+    """The control path supplies `issued`; a request cannot pre-date its own
+    acceptance by claiming one."""
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(60)
+    queue_retarget(tmp_path, at=70)
+    poll(trainer, global_step=60)
+    assert trainer.lr_timeline.dump(60)[-1]["issued"] == 60
+
+
+def test_the_component_list_is_what_rule_7_validates_against(tmp_path):
+    trainer = GroupedFakeTrainer(tmp_path, name="constant", T=100)
+    assert lr_known_group_names(trainer) == ["unet", "text_encoder_1"]
+    trainer.seek(20)
+
+    bad = queue_retarget(tmp_path, groups=["vae"])
+    poll(trainer, global_step=20)
+    assert results_by_id(tmp_path)[bad["request_id"]]["result"] == \
+        "rejected_unknown_group"
+
+    good = queue_retarget(tmp_path, groups=["UNet"])   # D35: case-folded
+    poll(trainer, global_step=20)
+    assert results_by_id(tmp_path)[good["request_id"]]["result"] == "applied"
+
+
+def test_without_a_component_list_a_group_name_cannot_be_checked(tmp_path):
+    """The plain FakeTrainer's one param group carries no component, so there
+    is nothing to validate against and the name is accepted (R1's behaviour)."""
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    assert lr_known_group_names(trainer) == []
+    trainer.seek(20)
+    queued = queue_retarget(tmp_path, groups=["nowhere"])
+    poll(trainer, global_step=20)
+    assert results_by_id(tmp_path)[queued["request_id"]]["result"] == "applied"
+
+
+def test_an_omitted_length_becomes_the_runs_warmup(tmp_path):
+    """D31, through the real command path: the endpoint sends no length and the
+    run's own warmup fills it in -- on the scheduler axis."""
+    trainer = FakeTrainer(tmp_path, name="constant", W=8, T=100)
+    trainer.seek(20)
+    payload = dict(RETARGET_TO_WSD)
+    del payload["length"]
+    queue_retarget(tmp_path, payload=payload)
+    poll(trainer, global_step=20)
+    assert trainer.lr_timeline.dump(20)[-1]["length"] == 8
+
+
+def test_a_retarget_the_trainer_cannot_build_comes_back_as_an_error(tmp_path):
+    """resolve_spec raises on a payload the endpoint would have refused; the
+    poll records it instead of letting it into the training loop."""
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(20)
+    queued = queue_retarget(tmp_path, lr_decay_shape="quadratic")
+    poll(trainer, global_step=20)
+    result = results_by_id(tmp_path)[queued["request_id"]]
+    assert result["result"] == "error"
+    assert "quadratic" in result["error"]
+    assert [e["kind"] for e in trainer.lr_timeline.dump(20)] == ["total_steps"]
+
+
+# ---------------------------------------------------------------------------
+# R3: the display file writes absolute positions (D32 / §19.8)
+# ---------------------------------------------------------------------------
+
+def test_the_status_file_carries_the_anchor_and_absolute_positions(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=200)
+    trainer.seek(50)
+    queue_retarget(tmp_path, lr_warmup_steps=10, lr_decay_steps=0, length=20)
+    poll(trainer, global_step=50)
+
+    status = control_rpc.read_status(tmp_path)
+    assert status["anchor_step"] == 50
+    # The spec's own warmup is a LENGTH from the anchor; the file also states
+    # where it ends, so no reader has to know which of the two it was given.
+    assert status["warmup_steps"] == 10
+    assert status["warmup_end_step"] == 60
+    assert status["blend"] == {"at": 50, "length": 20, "ends_at": 70,
+                               "shape": "linear"}
+    assert status["step"] == 50
+    assert status["groups"][0]["anchor_step"] == 50
+
+
+def test_the_status_file_anchor_is_zero_without_a_retarget(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", W=5, T=200)
+    trainer.seek(50)
+    refresh_lr_schedule_status(trainer, global_step=50, force=True)
+    status = control_rpc.read_status(tmp_path)
+    assert (status["anchor_step"], status["warmup_end_step"]) == (0, 5)
+    assert status["blend"] is None
+
+
+def test_a_finished_blend_leaves_the_status_file(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="constant", T=200)
+    trainer.seek(50)
+    queue_retarget(tmp_path, length=20)
+    poll(trainer, global_step=50)
+    trainer.seek(70)
+    refresh_lr_schedule_status(trainer, global_step=70, force=True)
+    assert control_rpc.read_status(tmp_path)["blend"] is None
+
+
+def test_a_reservation_firing_rewrites_the_status_file(tmp_path):
+    """A future-dated retarget takes effect with NO new event, so an
+    event-count signature would leave GET naming the old schedule forever."""
+    trainer = FakeTrainer(tmp_path, name="constant", T=200)
+    trainer.seek(10)
+    queue_retarget(tmp_path, at=100)
+    poll(trainer, global_step=10)
+    assert control_rpc.read_status(tmp_path)["scheduler"] == "constant"
+
+    trainer.seek(120)
+    assert poll(trainer, global_step=120) == 0
+    status = control_rpc.read_status(tmp_path)
+    assert (status["scheduler"], status["anchor_step"]) == ("wsd", 100)
+
+
+# ---------------------------------------------------------------------------
+# R3: the real state.json round trip (§19.5, invariant 6)
+# ---------------------------------------------------------------------------
+
+class StateHarness(GroupedFakeTrainer):
+    """FakeTrainer plus what the real save/load path reads."""
+
+    from core.training.base_trainer import BaseTrainer as _B
+
+    save_training_state = _B.save_training_state
+    load_training_state = _B.load_training_state
+    del _B
+
+    def __init__(self, output_dir, **kwargs):
+        super().__init__(output_dir, **kwargs)
+        self.run_name = "20260101_000000_deadbeef"
+        self._grad_accum_steps = 1
+        self._dataset_fingerprint = None
+        self._batches_per_epoch = 10
+        self._crop_plan_fingerprint = None
+        self.lr_group_specs = [self.lr_schedule_spec.for_group(c)
+                               for c in ("unet", "text_encoder_1")]
+        self.lr_scheduler = build_lr_scheduler(
+            self.optimizer, self.lr_schedule_spec, self.lr_timeline,
+            group_specs=self.lr_group_specs)
+
+
+def test_a_reservation_and_a_scoped_retarget_survive_the_state_file(tmp_path):
+    saver = StateHarness(tmp_path, name="cosine", T=200)
+    saver.seek(100)
+    timeline = saver.lr_timeline
+    timeline.add("retarget", at=60, issued=60, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=140, name="constant"),
+        length=0, groups=["unet"], known_groups=lr_known_group_names(saver))
+    # Ordered now, effective later: `at` is in the future, `issued` is not.
+    timeline.add("retarget", at=180, issued=100, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=20, name="linear"), length=0)
+    before = {c: [timeline.multiplier(s, step) for step in range(0, 201, 7)]
+              for c, s in zip(("unet", "text_encoder_1"), saver.lr_group_specs)}
+
+    with redirect_stdout(io.StringIO()):
+        saver.save_training_state(step=100, epoch=0, batch_idx=3)
+        loader = StateHarness(tmp_path, name="cosine", T=200)
+        state = loader.load_training_state(100)
+        install_lr_schedule_events(loader, 100)
+
+    kinds = [e["kind"] for e in state["lr_schedule_events"]]
+    assert kinds == ["total_steps", "retarget", "retarget"]
+    # The reservation is stored with its own `at`, cut by `issued` (invariant 6).
+    assert [e["at"] for e in state["lr_schedule_events"]] == [0, 60, 180]
+    after = {c: [loader.lr_timeline.multiplier(s, step)
+                 for step in range(0, 201, 7)]
+             for c, s in zip(("unet", "text_encoder_1"), loader.lr_group_specs)}
+    assert after == before
+    # The scoped one still knows whose chain it is on after the round trip.
+    assert loader.lr_timeline.active_spec(
+        loader.lr_group_specs[0], 100).name == "constant"
+    assert loader.lr_timeline.active_spec(
+        loader.lr_group_specs[1], 100).name == "cosine"
+
+
+def test_a_checkpoint_before_the_order_drops_the_reservation(tmp_path):
+    """The truncation is by `issued`: rewinding to before the command was given
+    un-does it, exactly as it does for a decay."""
+    saver = StateHarness(tmp_path, name="cosine", T=200)
+    saver.seek(100)
+    saver.lr_timeline.add("retarget", at=180, issued=100, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=20, name="linear"), length=0)
+    assert len(saver.lr_timeline.dump(99)) == 1
+    assert len(saver.lr_timeline.dump(100)) == 2
+
+
+# ---------------------------------------------------------------------------
+# R3: the endpoint (§19.8)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def routes():
+    """The API module. Imported lazily -- it pulls in the whole app."""
+    import api.routes as module
+    return module
+
+
+class _FakeProc:
+    def __init__(self, output_dir, running=True):
+        self.output_dir = str(output_dir)
+        self.is_running = running
+
+
+class _FakeDb:
+    """`db.query(TrainingRun).filter(...).first()` and nothing else."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def query(self, *a, **k):
+        return self
+
+    def filter(self, *a, **k):
+        return self
+
+    def first(self):
+        return self._row
+
+
+def call_retarget(routes, tmp_path, body=None, run=object(), proc=True,
+                  monkeypatch=None, **overrides):
+    import asyncio
+    from core.training.training_process import training_process_manager
+
+    payload = dict(body or {"lr_scheduler": "wsd", "lr_decay_steps": 40})
+    payload.update(overrides)
+    processes = training_process_manager.processes
+    if proc:
+        processes[RUN_ID] = _FakeProc(tmp_path, running=proc != "stopped")
+    else:
+        processes.pop(RUN_ID, None)
+    try:
+        return asyncio.run(routes.queue_lr_schedule_retarget(
+            RUN_ID, routes.LrScheduleRetargetRequest(**payload),
+            db=_FakeDb(run)))
+    finally:
+        processes.pop(RUN_ID, None)
+
+
+def status_of(excinfo):
+    return excinfo.value.status_code
+
+
+def test_the_endpoint_queues_a_retarget_the_trainer_can_apply(routes, tmp_path):
+    accepted = call_retarget(routes, tmp_path, body={
+        "lr_scheduler": "wsd", "lr_decay_start_step": 1, "lr_decay_steps": 40,
+        "lr_decay_shape": "linear", "lr_floor_ratio": 0.0, "length": 0})
+    assert accepted["command"] == "retarget"
+    assert accepted["pending_count"] == 1
+    # D44: the payload carries only what was supplied; omitted keys are
+    # inherited by the trainer from the active spec.
+    assert accepted["payload"]["lr_scheduler"] == "wsd"
+    assert accepted["payload"]["length"] == 0
+    assert "anchor" not in accepted["payload"]
+    assert "gain" not in accepted["payload"]
+    assert "command_decay_length" not in accepted["payload"]
+    assert "length" not in call_retarget(routes, tmp_path / "other")["payload"]
+
+    trainer = FakeTrainer(tmp_path, name="constant", T=100)
+    trainer.seek(20)
+    poll(trainer, global_step=20)
+    assert results_by_id(tmp_path)[accepted["request_id"]]["result"] == "applied"
+    assert trainer.multiplier(41) == pytest.approx(0.5)
+
+
+def test_the_endpoint_refuses_the_runs_own_decay_parameters(routes, tmp_path):
+    """D42: `command_decay_*` are run-wide `start_decay` settings. Carried in a
+    retarget, a scoped one would hand them to groups it never named."""
+    for key in ("command_decay_length", "command_decay_shape"):
+        with pytest.raises(routes.HTTPException) as e:
+            call_retarget(routes, tmp_path, **{key: 321 if "length" in key
+                                               else "rex"})
+        assert status_of(e) == 400
+        assert "lr_decay_steps" in e.value.detail
+    assert control_rpc.list_pending_requests(tmp_path) == []
+
+
+@pytest.mark.parametrize("bad,message", [
+    ({"lr_scheduler": "relora"}, "lr_scheduler"),
+    ({"lr_scheduler": "not_a_schedule"}, "lr_scheduler"),
+    ({"anchor": "sideways"}, "anchor"),
+    ({"shape": "exp"}, "blend shape"),
+    ({"gain": 0}, "gain"),
+    ({"gain": -1.0}, "gain"),
+    ({"length": -5}, "length"),
+    ({"groups": []}, "groups"),
+    ({"lr_decay_shape": "quadratic"}, "lr_decay_shape"),
+    ({"lr_floor_ratio": 1.5}, "lr_floor_ratio"),
+    ({"lr_scheduler": "cosine_with_restarts", "lr_cycle_peak_decay": 0.0},
+     "lr_cycle_peak_decay"),
+    ({"lr_decay_steps": -1}, "lr_decay_steps"),
+])
+def test_the_endpoint_refuses_what_it_can_decide_without_the_run(
+        routes, tmp_path, bad, message):
+    with pytest.raises(routes.HTTPException) as e:
+        call_retarget(routes, tmp_path, **bad)
+    assert status_of(e) == 400
+    assert message in e.value.detail
+    assert control_rpc.list_pending_requests(tmp_path) == []
+
+
+def test_the_endpoint_rejects_an_unknown_key_rather_than_ignoring_it(routes):
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        routes.LrScheduleRetargetRequest(lr_scheduler="wsd", lr_decay_stps=40)
+
+
+def test_a_missing_run_is_a_404(routes, tmp_path):
+    with pytest.raises(routes.HTTPException) as e:
+        call_retarget(routes, tmp_path, run=None)
+    assert status_of(e) == 404
+
+
+def test_a_run_that_is_not_executing_is_a_409(routes, tmp_path):
+    for proc in (False, "stopped"):
+        with pytest.raises(routes.HTTPException) as e:
+            call_retarget(routes, tmp_path, proc=proc)
+        assert status_of(e) == 409
+    assert control_rpc.list_pending_requests(tmp_path) == []
+
+
+def test_a_full_queue_is_a_429(routes, tmp_path):
+    for _ in range(control_rpc.MAX_PENDING_REQUESTS):
+        control_rpc.queue_request(tmp_path, command="start_decay",
+                                  run_id=RUN_ID)
+    with pytest.raises(routes.HTTPException) as e:
+        call_retarget(routes, tmp_path)
+    assert status_of(e) == 429
+
+
+def test_the_retarget_endpoint_is_documented_in_openapi():
+    import yaml
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    path = spec["paths"]["/training/runs/{run_id}/lr-schedule/retarget"]["post"]
+    assert set(path["responses"]) == {"202", "400", "404", "409", "429", "500"}
+    body = path["requestBody"]["content"]["application/json"]["schema"]
+    assert body["$ref"].endswith("/LrScheduleRetargetRequest")
+
+    schema = spec["components"]["schemas"]["LrScheduleRetargetRequest"]
+    from core.training.lr_schedules import (
+        BLEND_SHAPE_NAMES, LR_SCHEDULER_NAMES, RETARGET_ANCHORS,
+    )
+    assert schema["properties"]["lr_scheduler"]["enum"] == list(LR_SCHEDULER_NAMES)
+    assert schema["properties"]["anchor"]["enum"] == list(RETARGET_ANCHORS)
+    assert schema["properties"]["shape"]["enum"] == list(BLEND_SHAPE_NAMES)
+    # D42's two keys are refused, so they are not part of the documented body.
+    assert not {"command_decay_length", "command_decay_shape"} & set(
+        schema["properties"])
+
+    documented = set(spec["components"]["schemas"]["LrScheduleCommandResult"]
+                     ["properties"]["result"]["enum"])
+    assert {"rejected_backdated", "rejected_unknown_group",
+            "rejected_no_remaining_span", "rejected_warmup_exceeds_span",
+            "rejected_empty_group_selector"} <= documented
+
+
+def test_the_documented_defaults_are_the_ones_the_endpoint_uses():
+    """Invariant 7: one defaults table, and openapi says what it says."""
+    import yaml
+    from api.param_defaults import LR_RETARGET_DEFAULTS
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    props = spec["components"]["schemas"]["LrScheduleRetargetRequest"]["properties"]
+    for key, value in LR_RETARGET_DEFAULTS.items():
+        assert props[key]["default"] == value, key
+    assert "LR_RETARGET_DEFAULTS" in ROUTES_SRC

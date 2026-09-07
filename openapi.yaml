@@ -6179,6 +6179,9 @@ paths:
         **Re-delivery is idempotent.** Repeating a `request_id` that was already
         applied returns the same result code rather than acting twice.
 
+        To change the SHAPE of the schedule rather than start or stop a decay,
+        use `POST /training/runs/{run_id}/lr-schedule/retarget`.
+
         **A command lives in the checkpoint, not forever.** The applied event is
         saved with the training state and truncated to the checkpoint's step, so
         resuming from a checkpoint written BEFORE the command un-does it — the
@@ -6317,6 +6320,103 @@ paths:
                     completed_at: 1772500401.109
         '404':
           description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/lr-schedule/retarget:
+    post:
+      tags: [training]
+      summary: Replace a running run's LR schedule from a step of your choosing
+      description: |
+        Switch the run onto a different schedule mid-flight, blending out of the
+        curve it is on (§19 of `docs/guides/LR_SCHEDULER_DESIGN.md`). The
+        schedule is described with the same `lr_*` keys as
+        `GET /training/lr-schedule/preview`, so the curve previewed is the curve
+        applied.
+
+        **Every step count here is a GLOBAL step**, like every other number in a
+        training config. The trainer converts them with the run's own
+        `gradient_accumulation_steps` when it claims the command.
+
+        **Anchors.** `restart` (the default) starts the new curve from the
+        multiplier the run is at, so the LR is continuous at the switch; the new
+        schedule's total is the steps remaining, derived at evaluation time so a
+        later `total_steps` edit moves the end with it. `continue` evaluates the
+        new schedule on the run's own axis instead, which lands on whatever
+        value that curve has at that step.
+
+        A new schedule with `lr_warmup_steps > 0` means "warm up again from
+        here": the blended curve comes DOWN to the start of that ramp. That is
+        an instruction, not a mistake, and it is not refused.
+
+        **Fire and forget**, like the two-button commands: 202 once the file is
+        written, and the outcome appears in
+        `GET /training/runs/{run_id}/lr-schedule` under its `request_id`. What
+        this endpoint refuses synchronously is what can be decided without the
+        run — vocabulary, ranges, an empty `groups`. What is measured against
+        the live schedule comes back as a result code:
+        `rejected_backdated` (the `at` had already passed when the trainer
+        claimed it), `rejected_no_remaining_span`, `rejected_warmup_exceeds_span`,
+        `rejected_unknown_group`.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LrScheduleRetargetRequest'
+            example:
+              lr_scheduler: wsd
+              lr_warmup_steps: 0
+              lr_decay_steps: 4000
+              lr_decay_shape: cosine
+              lr_floor_ratio: 0.1
+              anchor: restart
+              length: 200
+              shape: linear
+      responses:
+        '202':
+          description: Retarget queued. Not yet applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleRetargetAccepted'
+        '400':
+          description: |
+            The payload is not a schedule this build can build: an unknown
+            scheduler, anchor, blend shape or decay shape, a value out of range,
+            an empty `groups`, or `command_decay_length`/`command_decay_shape`,
+            which are the run's own settings rather than part of a curve.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing, so nothing would claim the retarget.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The pending command queue for this run is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The command file could not be written.
           content:
             application/json:
               schema:
@@ -19887,6 +19987,207 @@ components:
         pending_count: 1
         max_pending: 20
 
+    LrScheduleRetargetRequest:
+      type: object
+      description: |
+        A replacement schedule for a running run, plus how to enter it. The
+        `lr_*` keys are the ones `POST /training/runs` takes and
+        `GET /training/lr-schedule/preview` draws; the rest describe the switch
+        itself. Step counts are GLOBAL steps.
+
+        **A retarget is an edit, so an omitted field keeps the value it has**
+        (D44). Only `lr_scheduler` is required. Every other key defaults to
+        null, and null means "inherit from the schedule this run is on" — not
+        "use the default for a new run". That distinction is load-bearing: a
+        run whose YAML carries no `lr_floor_ratio` runs at floor 0.0, and
+        falling back to the 0.25 a new run gets would move a floor the request
+        never mentioned.
+
+        `lr_warmup_steps` and `lr_floor_ratio` exist under every schedule and
+        are inherited whatever the new name is. The decay and cycle keys are
+        specific to a name, so they are inherited only when `lr_scheduler` is
+        the name the run is already on; under a new name, a key the request
+        does not supply takes the training default.
+
+        Unknown keys are rejected rather than ignored, so a misspelling is not
+        silently an inheritance.
+      required: [lr_scheduler]
+      properties:
+        lr_scheduler:
+          type: string
+          enum: [constant, constant_with_warmup, linear, cosine, cosine_with_restarts,
+                 polynomial, plateau_cosine_floor, wsd, rex]
+          description: The schedule to switch to. The one required field.
+          example: wsd
+        lr_warmup_steps:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: |
+            Warmup of the NEW curve, measured from the step it takes effect at
+            under `anchor: restart`. Above 0 this is a deliberate "ramp up
+            again from here", and the blend descends into the ramp. Null keeps
+            the warmup the run is on.
+          example: 0
+        lr_floor_ratio:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          default: null
+          description: |
+            Fraction of the base LR the new curve decays to. Null keeps the
+            floor the run is running at, including the 0.0 a YAML written
+            before this key gets.
+          example: 0.1
+        lr_decay_start_ratio:
+          type: number
+          format: double
+          nullable: true
+          default: null
+          description: "`plateau_cosine_floor` only: the fraction of the new curve's span at which its plateau ends."
+          example: 0.85
+        lr_decay_start_step:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: "`wsd` only: 0 leaves the decay to a `start_decay` command."
+          example: 0
+        lr_decay_steps:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: "`wsd` only: 0 decays to the end of the new curve's span."
+          example: 4000
+        lr_decay_shape:
+          type: string
+          nullable: true
+          enum: [cosine, linear, rex]
+          default: null
+          example: cosine
+        lr_cycle_steps:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: "`cosine_with_restarts` only: 0 is one cycle over the whole span."
+          example: 0
+        lr_cycle_peak_decay:
+          type: number
+          format: double
+          nullable: true
+          default: null
+          description: "`cosine_with_restarts` only: the factor each cycle's peak is multiplied by."
+          example: 1.0
+        anchor:
+          type: string
+          nullable: true
+          enum: [restart, continue]
+          default: restart
+          description: |
+            `restart` starts the new curve at the multiplier the run is at now;
+            `continue` evaluates it on the run's own axis. Null is `restart`.
+          example: restart
+        gain:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: 0
+          default: 1.0
+          description: |
+            Multiplies the new curve under both anchors. Above 1 raises the LR,
+            which is allowed. Null is 1.0.
+          example: 1.0
+        length:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: |
+            Blend length in global steps. Null uses the run's
+            `lr_warmup_steps`; 0 switches on the spot. A positive value shorter
+            than one accumulation window is refused rather than rounded to an
+            instant switch.
+          example: 200
+        shape:
+          type: string
+          nullable: true
+          enum: [cosine, linear, rex]
+          default: linear
+          description: Weight function over the blend. Null is `linear`.
+          example: linear
+        at:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: |
+            Global step the new curve takes effect at. Null means the step the
+            trainer claims the command at. A step already past is refused
+            (`rejected_backdated`), never applied retroactively; a future step
+            is a reservation that survives checkpoints.
+          example: null
+        groups:
+          type: array
+          nullable: true
+          default: null
+          items:
+            type: string
+          description: |
+            Component names this retarget applies to, matched case-insensitively
+            against the run's optimizer param groups. Null is every group. An
+            empty array is refused, so an empty UI selection cannot be read as
+            "all". On a run whose groups all share one schedule the retarget
+            reaches all of them, with a warning saying so.
+          example: ["unet"]
+      example:
+        lr_scheduler: wsd
+        lr_decay_steps: 4000
+        lr_floor_ratio: 0.1
+        anchor: restart
+        length: 200
+
+    LrScheduleRetargetAccepted:
+      type: object
+      description: |
+        Acknowledgement of a queued retarget. The file has been written; the
+        trainer claims it at the head of its next batch and scores it there.
+      required: [request_id, run_id, command, queued_at, pending_count, max_pending, payload]
+      properties:
+        request_id:
+          type: string
+          example: "9c1d40aa77b3e015"
+        run_id:
+          type: integer
+          example: 112
+        command:
+          type: string
+          enum: [retarget]
+          example: retarget
+        queued_at:
+          type: number
+          format: double
+          example: 1772500401.002
+        pending_count:
+          type: integer
+          description: Commands queued for this run including this one; the cap is shared with `start_decay`/`cancel_decay`.
+          example: 1
+        max_pending:
+          type: integer
+          example: 20
+        payload:
+          allOf:
+            - $ref: '#/components/schemas/LrScheduleRetargetRequest'
+          description: |
+            The request as queued, carrying ONLY the keys it named (D44). What
+            the omitted ones become is decided against the run's own schedule
+            when the trainer claims it, so this is the payload a preview must
+            be drawn from together with the run's current state.
+
     LrScheduleGroupState:
       type: object
       description: |
@@ -19901,9 +20202,24 @@ components:
           type: string
           description: The component this group trains, when the trainer can name it.
           example: U-Net
+        component:
+          type: string
+          nullable: true
+          description: |
+            The name a retarget's `groups` selector matches against, when the
+            group carries one. An LLRD depth split keeps its component, so all
+            of a component's depths answer to one name.
+          example: unet
         schedule:
           type: string
           example: plateau_cosine_floor
+        anchor_step:
+          type: integer
+          description: |
+            Absolute step this group's schedule is anchored at: 0, or the step a
+            `restart`-anchored retarget took effect at. A scoped retarget moves
+            this for the named groups only.
+          example: 0
         state:
           type: string
           enum: [base, decaying, floor, recovering]
@@ -19953,13 +20269,52 @@ components:
           example: 9137
         scheduler:
           type: string
+          description: The schedule in force, which a retarget replaces.
           example: plateau_cosine_floor
+        anchor_step:
+          type: integer
+          description: |
+            Absolute scheduler step the schedule in force is anchored at (D32):
+            0, or the step a `restart`-anchored retarget took effect at. That
+            spec's step-valued fields are LENGTHS from here, and every other
+            step value in this file is an absolute position:
+            `absolute = anchor_step + relative`.
+          example: 0
         warmup_steps:
           type: integer
           description: |
-            On the scheduler axis (`lr_warmup_steps // gradient_accumulation_steps`),
-            like `step`. Also the length of the linear return a `cancel_decay` uses.
+            The warmup LENGTH on the scheduler axis
+            (`lr_warmup_steps // gradient_accumulation_steps`). Also the length
+            of the linear return a `cancel_decay` uses.
           example: 100
+        warmup_end_step:
+          type: integer
+          description: "`anchor_step + warmup_steps`: the absolute step warmup ends at."
+          example: 100
+        blend:
+          type: object
+          nullable: true
+          description: |
+            The retarget blend in progress, or null. Only fields that hold still
+            for the whole blend, because this file is rewritten when the state
+            changes rather than every step.
+          properties:
+            at:
+              type: integer
+              description: Absolute step the blend started at.
+              example: 9137
+            length:
+              type: integer
+              description: Blend length on the scheduler axis.
+              example: 200
+            ends_at:
+              type: integer
+              description: "`at + length`, the absolute step the new curve is alone from."
+              example: 9337
+            shape:
+              type: string
+              enum: [linear, cosine, rex]
+              example: linear
         state:
           type: string
           enum: [base, decaying, floor, recovering]
@@ -19999,8 +20354,10 @@ components:
           type: array
           description: |
             The runtime event list, in application order. `total_steps` records
-            a nominal-axis re-anchor, `decay`/`cancel` a command, `noop` a
-            command that was refused before it could take effect.
+            a nominal-axis re-anchor, `decay`/`cancel` a command, `retarget` a
+            schedule replacement, `noop` a command that was refused before it
+            could take effect. An event carries `issued` (the step it was
+            accepted at) when the request could have named a different `at`.
           items:
             type: object
             additionalProperties: true
@@ -20014,7 +20371,7 @@ components:
           example: "3f0c9ab41d7e5602"
         command:
           type: string
-          enum: [start_decay, cancel_decay]
+          enum: [start_decay, cancel_decay, retarget]
           example: start_decay
         queued_at:
           type: number
@@ -20047,6 +20404,15 @@ components:
             - ignored_no_active_decay
             - rejected_during_warmup
             - rejected_zero_length
+            - rejected_backdated
+            - rejected_unknown_scheduler
+            - rejected_non_positive_gain
+            - rejected_negative_length
+            - rejected_floor_out_of_range
+            - rejected_no_remaining_span
+            - rejected_warmup_exceeds_span
+            - rejected_empty_group_selector
+            - rejected_unknown_group
             - rejected_unknown_command
             - error
           description: |
@@ -20059,8 +20425,16 @@ components:
               still ramping up.
             - `rejected_zero_length` — the decay would have had no room left to
               run in.
-            - `rejected_unknown_command` — the command string was not one of the
-              two the trainer knows.
+            - `rejected_backdated` — the `at` the request named had already
+              passed when the trainer claimed it. Events are append-only, so a
+              past step would rewrite the curve behind the run.
+            - the remaining `rejected_*` — a retarget the trainer could not
+              build: an unknown schedule name, a gain of 0 or less, a negative
+              blend length, a floor outside [0, 1], no span left after the
+              anchor, a warmup at least as long as the span, an empty `groups`,
+              or a component this run has no param group for.
+            - `rejected_unknown_command` — the command string was not one the
+              trainer knows.
             - `error` — applying it raised; `error` carries the text.
           example: applied
         at:

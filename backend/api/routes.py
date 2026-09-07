@@ -49,6 +49,7 @@ from api.param_defaults import (
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
+    LR_RETARGET_DEFAULTS,
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -18590,6 +18591,160 @@ async def queue_lr_schedule_command(
         "queued_at": payload["queued_at"],
         "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
         "max_pending": MAX_PENDING_REQUESTS,
+    }
+
+
+class LrScheduleRetargetRequest(BaseModel):
+    """§19.1's retarget, described in the config vocabulary of the preview.
+
+    Every step count is a GLOBAL step, like every other number in a training
+    config; the trainer converts them with the run's own
+    gradient_accumulation_steps when it claims the command.
+
+    D44: every field but the schedule name is OPTIONAL AND NULL BY DEFAULT,
+    because null has to mean "leave it as it is" rather than "use the default
+    for a new run". A retarget is an edit to a running schedule; a floor the
+    request never mentioned must not move because `param_defaults` says 0.25
+    and this run's YAML said nothing (§12.2 reads that as 0.0). What the
+    absent keys fall back to is the run itself, in `resolve_retarget_spec`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    # The one field a retarget must carry: replacing the schedule is the point.
+    lr_scheduler: str
+    lr_warmup_steps: Optional[int] = None
+    lr_floor_ratio: Optional[float] = None
+    lr_decay_start_ratio: Optional[float] = None
+    lr_decay_start_step: Optional[int] = None
+    lr_decay_steps: Optional[int] = None
+    lr_decay_shape: Optional[str] = None
+    lr_cycle_steps: Optional[int] = None
+    lr_cycle_peak_decay: Optional[float] = None
+    anchor: Optional[str] = None
+    gain: Optional[float] = None
+    length: Optional[int] = None
+    shape: Optional[str] = None
+    at: Optional[int] = None
+    groups: Optional[List[str]] = None
+    # D42: declared only so the refusal can name them. They are the RUN's
+    # start_decay parameters, and a retarget that carried them would hand one
+    # group's decay length to groups it never named. Not to be confused with
+    # lr_decay_steps / lr_decay_shape, which a `wsd` retarget carries as the
+    # shape of its own curve.
+    command_decay_length: Optional[int] = None
+    command_decay_shape: Optional[str] = None
+
+
+@router.post("/training/runs/{run_id}/lr-schedule/retarget", status_code=202)
+async def queue_lr_schedule_retarget(
+    run_id: int,
+    request: LrScheduleRetargetRequest,
+    db: Session = Depends(get_training_db),
+):
+    """Queue a runtime schedule replacement (§19.8).
+
+    Refuses here only what is decidable without the run: vocabulary, ranges and
+    the payload's shape. Anything measured against the live schedule -- a step
+    already past, no span left, a warmup longer than what remains, a component
+    this run has no group for -- is scored by the trainer when it claims the
+    command, and comes back in `GET /training/runs/{run_id}/lr-schedule`.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        MAX_PENDING_REQUESTS, RETARGET_COMMAND, ControlQueueFullError,
+        list_pending_requests, queue_request,
+    )
+    from core.training.lr_schedules import (
+        BLEND_SHAPE_NAMES, LR_SCHEDULER_NAMES, RETARGET_ANCHORS,
+        resolve_retarget_spec,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if (request.command_decay_length is not None
+            or request.command_decay_shape is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="command_decay_length / command_decay_shape do not belong "
+                   "in a retarget: they are the run's own start_decay "
+                   "parameters (lr_decay_steps / lr_decay_shape), shared by "
+                   "every param group, and a retarget carries a curve rather "
+                   "than run-wide settings. Edit the run's config for those.")
+
+    # D44: only what the request actually said travels. An absent key is
+    # inherited from the run's own schedule when the trainer resolves this.
+    payload = request.model_dump(
+        exclude={"command_decay_length", "command_decay_shape"},
+        exclude_none=True)
+
+    if request.lr_scheduler not in LR_SCHEDULER_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown lr_scheduler '{request.lr_scheduler}'. "
+                   f"Supported: {', '.join(LR_SCHEDULER_NAMES)}")
+    if request.anchor is not None and request.anchor not in RETARGET_ANCHORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown anchor '{request.anchor}'. "
+                   f"Supported: {', '.join(RETARGET_ANCHORS)}")
+    if request.shape is not None and request.shape not in BLEND_SHAPE_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown blend shape '{request.shape}'. "
+                   f"Supported: {', '.join(BLEND_SHAPE_NAMES)}")
+    if request.gain is not None and request.gain <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"gain must be > 0 (got {request.gain}): it multiplies the "
+                   f"new curve, and 0 would switch the run's LR off.")
+    if request.length is not None and request.length < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"length must be >= 0 (got {request.length}): 0 switches on "
+                   f"the spot, and omitting it uses the run's lr_warmup_steps.")
+    if request.groups is not None and not request.groups:
+        raise HTTPException(
+            status_code=400,
+            detail="groups must name at least one component. Omit it (null) to "
+                   "retarget every param group; an empty selection is not the "
+                   "same request.")
+    try:
+        # The trainer resolves this payload for real once it knows the span and
+        # the spec to inherit from; a probe with nothing to inherit answers
+        # every config-level refusal synchronously, with the same messages,
+        # instead of leaving them in a result file.
+        warmup = max(0, int(request.lr_warmup_steps or 0))
+        resolve_retarget_spec(payload, None, total_steps=warmup + 1)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick "
+                   f"the retarget up")
+
+    try:
+        queued = queue_request(proc.output_dir, command=RETARGET_COMMAND,
+                               run_id=int(run_id), extra={"payload": payload})
+    except ControlQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue LR schedule retarget: {e}")
+
+    return {
+        "request_id": queued["request_id"],
+        "run_id": int(run_id),
+        "command": RETARGET_COMMAND,
+        "queued_at": queued["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "payload": payload,
     }
 
 

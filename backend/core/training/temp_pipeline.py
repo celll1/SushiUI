@@ -131,6 +131,42 @@ class NoLoraStackingTempPipeline(TempPipeline):
         raise self._refusal()
 
 
+class _SchedulerSource:
+    """Minimal ``pipeline``-shaped object for ``get_scheduler``."""
+
+    def __init__(self, scheduler: Any):
+        self.scheduler = scheduler
+
+
+def sampling_scheduler_source(trainer) -> "_SchedulerSource":
+    """Scheduler ``get_scheduler`` builds the sample-generation sampler from.
+
+    ``trainer.prediction_target`` decides and the scheduler's own config is only
+    the fallback, because a single-file SD/SDXL load reports
+    ``prediction_type="epsilon"`` whatever the checkpoint holds (diffusers
+    ``single_file_utils``) — which denoises a v-pred run's samples with an
+    epsilon solver while its loss trains velocity. The DDPM-family gate is the
+    predicate the loader already uses (``pipeline.py``): a flow run has no FM
+    sampler to realign, and on a Z-Image resume this object *is* the training
+    scheduler.
+    """
+    scheduler = getattr(trainer, "original_scheduler", None)
+    source = _SchedulerSource(scheduler)
+    if scheduler is None:
+        return source
+
+    target = str(getattr(trainer, "prediction_target", "") or "").strip().lower()
+    process = str(getattr(trainer, "noise_process", "ddpm") or "ddpm").strip().lower()
+    if target != "velocity" or process != "ddpm":
+        return source
+
+    config = getattr(scheduler, "config", None) or {}
+    if config.get("prediction_type") != "v_prediction":
+        from core.model_loader import ModelLoader
+        ModelLoader._configure_v_prediction_scheduler(source)
+    return source
+
+
 def _sd_temp_pipeline_classes():
     """Built lazily so importing this module does not pull in diffusers for
     callers that only want the sampling facade."""

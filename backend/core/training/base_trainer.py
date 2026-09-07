@@ -18,7 +18,7 @@ import os
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, List, Tuple, Union, Sequence
+from typing import Optional, Callable, Dict, Any, List, Mapping, Tuple, Union, Sequence
 from io import BytesIO
 from PIL import Image, PngImagePlugin
 from tqdm import tqdm
@@ -55,9 +55,18 @@ from core.training.lr_schedules import (
     build_depth_map,
     build_lr_scheduler,
     describe_spec,
+    is_refused_result,
     resolve_spec,
     retarget_add_kwargs,
     to_scheduler_axis,
+)
+from core.training.lr_triggers import (
+    EXTRA_SIGNAL_PREFIX,
+    INFO_TRIGGER_FIRED,
+    WARN_CORRUPT_TRIGGER_RECORD,
+    WARN_TRIGGER_REFUSED,
+    TriggerSet,
+    validate_trigger,
 )
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_event, emit_training_warning
@@ -610,6 +619,36 @@ def resume_scheduler_position(trainer, global_step: int) -> int:
     return estimate
 
 
+def trigger_set(trainer) -> TriggerSet:
+    """The run's triggers, creating the holder for a trainer built before R6."""
+    triggers = getattr(trainer, "lr_triggers", None)
+    if triggers is None:
+        triggers = TriggerSet()
+        trainer.lr_triggers = triggers
+    return triggers
+
+
+def dump_lr_triggers(trainer) -> List[Dict[str, Any]]:
+    """D49: trigger state belongs in state.json, NOT in the event list.
+
+    Not truncated the way the events are: this IS the state at the step being
+    saved, so resuming an earlier checkpoint restores the counters that
+    checkpoint had, and a condition that has since fired is armed again --
+    which is what "the condition is still live" means (§20.5).
+    """
+    return trigger_set(trainer).dump()
+
+
+def install_lr_schedule_triggers(trainer) -> None:
+    """Restore the saved triggers. Invariant 19: no lambda reads any of this."""
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    trigger_set(trainer).load(
+        getattr(trainer, "_resume_lr_triggers", None),
+        warn=lambda msg: emit_training_warning(
+            msg, code=WARN_CORRUPT_TRIGGER_RECORD, prefix=prefix),
+        signals=getattr(trainer, "_resume_lr_trigger_signals", None))
+
+
 def dump_lr_schedule_events(trainer) -> List[Dict[str, Any]]:
     """The timeline, truncated to the position being saved (§5.5)."""
     timeline = getattr(trainer, "lr_timeline", None)
@@ -658,6 +697,8 @@ def install_lr_schedule_events(trainer, global_step: int) -> None:
     restore_legacy = getattr(trainer, "_restore_legacy_lr_restarts", None)
     if callable(restore_legacy):
         restore_legacy(position)
+
+    install_lr_schedule_triggers(trainer)
 
     remaining = max(0, spec.total_steps - to_scheduler_axis(
         global_step, lr_scheduler_advance_interval(trainer)))
@@ -862,6 +903,10 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
         # read as a run that ends immediately.
         "global_total_steps": lr_global_total_steps(trainer, timeline, active),
         "groups": lr_schedule_group_states(trainer, spec, timeline, position),
+        # D52: what each registered condition watches, where its observation
+        # is, and how much is left before it fires. An automation nobody can
+        # see coming is worse than watching the chart.
+        "triggers": trigger_set(trainer).status(),
         "events": timeline.dump(position),
     }
 
@@ -883,7 +928,10 @@ def refresh_lr_schedule_status(trainer, global_step: Optional[int] = None,
                      status["decay_disarmed"], len(status["events"]),
                      status["effective_total_steps"],
                      status["scheduler"], status["anchor_step"],
-                     None if status["blend"] is None else status["blend"]["at"])
+                     None if status["blend"] is None else status["blend"]["at"],
+                     # Ticks once per observation, not once per step, so a
+                     # published patience counter does not cost a write a batch.
+                     trigger_set(trainer).signature())
         if not force and signature == getattr(trainer, "_lr_status_signature", None):
             return False
         control_rpc.write_status(trainer.output_dir, status)
@@ -895,13 +943,138 @@ def refresh_lr_schedule_status(trainer, global_step: Optional[int] = None,
         return False
 
 
+def apply_lr_schedule_command(trainer, spec, timeline, command: str,
+                              payload: Dict[str, Any], position: int,
+                              request_id: str
+                              ) -> Tuple[str, Optional[str], Optional[str]]:
+    """Turn one command into one timeline event. ``(result, op, error)``.
+
+    Shared by the RPC claim and by a trigger firing (§20.4), which is what makes
+    a fired `scale`/`hold`/`undo` need no branch of its own: the four retarget
+    forms are one payload vocabulary and land as one event kind.
+    """
+    kind = control_rpc.COMMAND_EVENT_KINDS.get(command)
+    op = None
+    try:
+        if kind is None:
+            return "rejected_unknown_command", None, None
+        if kind == "decay":
+            # §12.1: the command carries no length or shape; both come from
+            # the run's config, through the spec in force here. Not
+            # decay_shape -- that is the BASE curve's, which the two
+            # aliases fix to their own definition.
+            active = timeline.active_spec(spec, position)
+            return timeline.add(kind, at=position, request_id=request_id,
+                                length=active.command_decay_length,
+                                shape=active.command_decay_shape,
+                                issued=position), None, None
+        if kind == "retarget":
+            op = str(payload.get("op") or LR_RETARGET_DEFAULTS["op"])
+            kwargs = lr_retarget_add_kwargs(trainer, spec, timeline,
+                                            payload, position)
+            return timeline.add(kind, request_id=request_id, **kwargs), op, None
+        return timeline.add(kind, at=position, request_id=request_id,
+                            issued=position), None, None
+    except DerivedRetargetError as e:
+        # §19.6: refused against the live timeline, so it is named rather
+        # than an `error` the operator has to read a traceback for.
+        return e.result, op, str(e)
+
+
+def apply_lr_trigger_command(trainer, command: str, request: Mapping[str, Any],
+                             global_step: int) -> str:
+    """Register or cancel a condition (§20.6). Produces no event."""
+    triggers = getattr(trainer, "lr_triggers", None)
+    if triggers is None:
+        return "error"
+    if command == control_rpc.REMOVE_TRIGGER_COMMAND:
+        return triggers.remove(str(request.get("trigger_id") or ""))
+    # Validated in the API process; re-validated here because a record can also
+    # arrive from a state file written by another build.
+    record = validate_trigger(dict(request.get("trigger") or {}))
+    return triggers.register(record, int(global_step))
+
+
+def fire_lr_trigger(trainer, spec, timeline, trigger, position: int,
+                    global_step: int) -> str:
+    """Materialise one trigger's action as a dated event (D50).
+
+    ``at = issued = the current scheduler step``, so the event is
+    indistinguishable from one the operator queued and obeys every §19 rule --
+    including the refusals, which D51 then declines to charge the trigger for.
+    """
+    action = dict(trigger.action or {})
+    command = str(action.pop("command", control_rpc.RETARGET_COMMAND))
+    request_id = control_rpc.make_request_id()
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    result, op, error = apply_lr_schedule_command(
+        trainer, spec, timeline, command, action, position, request_id)
+    if is_refused_result(result):
+        emit_training_warning(
+            f"LR trigger '{trigger.id}' matched at scheduler step {position} "
+            f"but its {command} was refused ({result}). A refused firing is not "
+            f"a firing (D51): the trigger keeps its remaining "
+            f"{max(0, trigger.max_fires - trigger.fires)} fire(s), starts no "
+            f"cooldown, and tries again once the condition is met afresh.",
+            code=WARN_TRIGGER_REFUSED, prefix=prefix)
+    else:
+        emit_training_event(
+            "info",
+            f"LR trigger '{trigger.id}' fired at scheduler step {position}: "
+            f"{trigger.signal} {trigger.predicate} on an observation of "
+            f"{trigger.last_value} -> {command} = {result}.",
+            code=INFO_TRIGGER_FIRED, prefix=prefix)
+    try:
+        control_rpc.write_result(trainer.output_dir, request_id, {
+            "request_id": request_id,
+            "run_id": getattr(trainer, "run_id", None),
+            "command": command,
+            "op": op,
+            "trigger_id": trigger.id,
+            "result": result,
+            "at": int(position),
+            "global_step": int(global_step),
+            "error": error,
+        })
+    except Exception as e:   # noqa: BLE001
+        print(f"{prefix} WARNING: could not record LR trigger result "
+              f"{request_id}: {e}")
+    return result
+
+
+def evaluate_lr_triggers(trainer, spec, timeline, position: int,
+                         global_step: int) -> int:
+    """Seam (c)'s other half: close observations and fire what is due (§20.3).
+
+    Reads the in-memory ring the metrics site fills, never the database (D45).
+    Returns the number of firings that took effect, so the caller rewrites the
+    param groups exactly as it does for a claimed command.
+    """
+    triggers = getattr(trainer, "lr_triggers", None)
+    if not triggers:
+        return 0
+    prefix = getattr(trainer, "log_prefix", "[Trainer]")
+    def _on_error(trigger, e):
+        print(f"{prefix} WARNING: LR trigger evaluation failed ({trigger.id}): {e}")
+        emit_training_warning(
+            f"LR trigger '{trigger.id}' evaluation failed: {e}",
+            code="lr_trigger_evaluation_failed", prefix=prefix)
+    outcomes = triggers.evaluate(
+        lambda trigger, value, step: fire_lr_trigger(
+            trainer, spec, timeline, trigger, position, global_step),
+        on_error=_on_error)
+    return sum(1 for _, result in outcomes
+               if result in ("applied", "disarmed_scheduled_decay"))
+
+
 def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
     """Seam (c) of §5.2: apply the run's queued LR-schedule commands.
 
     Called at the HEAD of the batch, BEFORE the forward. Under the fused paths
     the optimizer update runs from a backward hook, so a multiplier written any
     later than this would not reach the update this batch is about to make
-    (§5.6). Never raises into the loop.
+    (§5.6). Never raises into the loop -- which R6's trigger evaluation, sharing
+    this seam, has to honour too.
     """
     timeline = getattr(trainer, "lr_timeline", None)
     spec = getattr(trainer, "lr_schedule_spec", None)
@@ -925,36 +1098,24 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
     for request in requests:
         request_id = str(request.get("request_id") or "") or control_rpc.make_request_id()
         command = str(request.get("command") or "")
-        kind = control_rpc.COMMAND_EVENT_KINDS.get(command)
         op = None
         error = None
         try:
-            if kind is None:
-                result = "rejected_unknown_command"
-            elif kind == "decay":
-                # §12.1: the command carries no length or shape; both come from
-                # the run's config, through the spec in force here. Not
-                # decay_shape -- that is the BASE curve's, which the two
-                # aliases fix to their own definition.
-                active = timeline.active_spec(spec, position)
-                result = timeline.add(kind, at=position, request_id=request_id,
-                                      length=active.command_decay_length,
-                                      shape=active.command_decay_shape,
-                                      issued=position)
-            elif kind == "retarget":
-                payload = dict(request.get("payload") or {})
-                op = str(payload.get("op") or LR_RETARGET_DEFAULTS["op"])
-                kwargs = lr_retarget_add_kwargs(
-                    trainer, spec, timeline, payload, position)
-                result = timeline.add(kind, request_id=request_id, **kwargs)
+            if command in control_rpc.TRIGGER_COMMANDS:
+                try:
+                    result = apply_lr_trigger_command(trainer, command, request,
+                                                      global_step)
+                except ValueError as e:
+                    # A trigger record this build cannot express. Named rather
+                    # than a traceback: the endpoint checked the same rules.
+                    result, error = "rejected_invalid_trigger", str(e)
+                    print(f"{prefix} LR trigger {command} refused: {e}")
             else:
-                result = timeline.add(kind, at=position, request_id=request_id,
-                                      issued=position)
-        except DerivedRetargetError as e:
-            # §19.6: refused against the live timeline, so it is named rather
-            # than an `error` the operator has to read a traceback for.
-            result, error = e.result, str(e)
-            print(f"{prefix} LR schedule {command} refused: {e}")
+                result, op, error = apply_lr_schedule_command(
+                    trainer, spec, timeline, command,
+                    dict(request.get("payload") or {}), position, request_id)
+                if error is not None:
+                    print(f"{prefix} LR schedule {command} refused: {error}")
         except Exception as e:   # noqa: BLE001
             result, error = "error", str(e)
             print(f"{prefix} WARNING: LR schedule command {command} failed: {e}")
@@ -967,6 +1128,9 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
                 "run_id": run_id,
                 "command": command,
                 "op": op,
+                **({"trigger_id": (request.get("trigger") or {}).get("id")
+                    or request.get("trigger_id")}
+                   if command in control_rpc.TRIGGER_COMMANDS else {}),
                 "result": result,
                 "at": int(position),
                 "global_step": int(global_step),
@@ -975,6 +1139,12 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
         except Exception as e:   # noqa: BLE001
             print(f"{prefix} WARNING: could not record LR schedule result "
                   f"{request_id}: {e}")
+
+    try:
+        applied += evaluate_lr_triggers(trainer, spec, timeline, position,
+                                        global_step)
+    except Exception as e:   # noqa: BLE001
+        print(f"{prefix} WARNING: LR trigger evaluation failed: {e}")
 
     if applied:
         reapply_lr_schedule_position(trainer)
@@ -2056,6 +2226,12 @@ class BaseTrainer(ABC):
         # {name: float} dict (TrainingMetrics.extra_metrics JSON). Cleared after
         # each capture so a metric emitted only every N steps never goes stale.
         self._extra_metrics = {}
+        # §20's conditional LR triggers and the in-memory ring they read. Here
+        # rather than beside lr_timeline because the ring is fed from the
+        # metrics site, which runs for trainers that never build a timeline.
+        self.lr_triggers = TriggerSet()
+        self._resume_lr_triggers = None
+        self._resume_lr_trigger_signals = None
         # Epoch / resume-session tags recorded with each metric (for the UI's
         # epoch-boundary lines and resume markers). resume_seq is recomputed at
         # run start; _current_epoch is updated in the epoch loop.
@@ -4533,6 +4709,13 @@ class BaseTrainer(ABC):
             # position, so rewinding to an earlier checkpoint drops the commands
             # issued after it -- the same semantics as _cleanup_future_metrics.
             "lr_schedule_events": dump_lr_schedule_events(self),
+            # §20.5/D49: armed, best-so-far, the partial observation window,
+            # the patience counter, the fire count and the cooldown. Trainer
+            # state, deliberately not events -- a condition in the event list
+            # would make the multiplier depend on the training history and stop
+            # being replayable (invariant 2).
+            "lr_schedule_triggers": dump_lr_triggers(self),
+            "lr_schedule_trigger_signals": trigger_set(self).dump_signals(),
         }
 
         with open(state_file, 'w') as f:
@@ -4581,6 +4764,8 @@ class BaseTrainer(ABC):
             self._resume_scheduler_step = None
             self._resume_scheduler_interval = None
             self._resume_lr_schedule_events = None
+            self._resume_lr_triggers = None
+            self._resume_lr_trigger_signals = None
             return None
 
         with open(state_file, 'r') as f:
@@ -4591,6 +4776,8 @@ class BaseTrainer(ABC):
         self._resume_scheduler_step = state.get("scheduler_step")
         self._resume_scheduler_interval = state.get("lr_scheduler_advance_interval")
         self._resume_lr_schedule_events = state.get("lr_schedule_events")
+        self._resume_lr_triggers = state.get("lr_schedule_triggers")
+        self._resume_lr_trigger_signals = state.get("lr_schedule_trigger_signals")
 
         # Restore random_state from serialized format
         random_state_dict = state["random_state"]
@@ -17795,6 +17982,29 @@ class BaseTrainer(ABC):
             return
         self._extra_metrics[name] = v
 
+    def _feed_lr_trigger_signals(self, step, loss, grad_norm):
+        """Push this step's signals onto the LR triggers' in-memory ring (D45).
+
+        Here rather than at `_flush_metrics_to_db`: the flush is buffered and
+        runs on a background thread, which would make what a trigger sees
+        depend on the flush interval and cross a thread boundary. Here rather
+        than at each loss site: this is the one funnel all three signal
+        families already pass through, including `_extra_metrics`, which is
+        read before the two branches below clear it -- so `extra:<name>` sees
+        exactly the value the chart does.
+
+        `learning_rate` is deliberately not pushed (D45).
+        """
+        triggers = getattr(self, "lr_triggers", None)
+        if triggers is None or not triggers.triggers:
+            return
+        if loss is not None:
+            triggers.push(step, "loss", loss)
+        if grad_norm is not None:
+            triggers.push(step, "grad_norm", grad_norm)
+        for name, value in (self._extra_metrics or {}).items():
+            triggers.push(step, EXTRA_SIGNAL_PREFIX + name, value)
+
     def _log_metrics_to_db(
         self,
         step: int,
@@ -17846,6 +18056,8 @@ class BaseTrainer(ABC):
             This allows monitoring pred_loss and recon_loss separately in DB.
             Combined loss can be calculated as: (1-β)*loss + β*recon_loss
         """
+        self._feed_lr_trigger_signals(step, loss, grad_norm)
+
         # Buffer the metrics (merge if same step already exists in buffer)
         # This handles the case where loss and grad_norm are logged separately for the same step
         existing_entry = None

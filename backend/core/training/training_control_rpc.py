@@ -29,6 +29,10 @@ Differences from the sample queue, each load-bearing:
   the fused paths the optimizer hooks step during the BACKWARD, so a decay
   applied after the forward would not reach this batch's update (§5.6).
 
+``add_trigger`` / ``remove_trigger`` (§20.6) ride the same queue and are the
+only commands that produce no timeline event: they install or cancel a
+condition, whose FIRING later materialises an ordinary one.
+
 A ``retarget`` request additionally carries ``payload``: the schedule keys the
 endpoint validated, in GLOBAL steps. The trainer resolves them into a
 ``ScheduleSpec`` at claim time, because the conversion to the scheduler axis
@@ -66,9 +70,16 @@ STATUS_FILENAME = ".lr_schedule.json"
 # because it carries a schedule; it shares this queue and nothing else.
 COMMANDS = ("start_decay", "cancel_decay")
 RETARGET_COMMAND = "retarget"
-ALL_COMMANDS = COMMANDS + (RETARGET_COMMAND,)
+# §20.6/D53: registering and cancelling a condition is an operation on the run,
+# not on the curve, so it rides this queue but produces NO event. What the
+# condition later fires does.
+ADD_TRIGGER_COMMAND = "add_trigger"
+REMOVE_TRIGGER_COMMAND = "remove_trigger"
+TRIGGER_COMMANDS = (ADD_TRIGGER_COMMAND, REMOVE_TRIGGER_COMMAND)
+ALL_COMMANDS = COMMANDS + (RETARGET_COMMAND,) + TRIGGER_COMMANDS
 # Mapped to the ScheduleTimeline event kinds they become. The trainer never
-# invents a kind of its own from a command string.
+# invents a kind of its own from a command string. The trigger commands are
+# absent on purpose: a registration is not an event (invariant 18).
 COMMAND_EVENT_KINDS = {"start_decay": "decay", "cancel_decay": "cancel",
                        RETARGET_COMMAND: "retarget"}
 
@@ -77,6 +88,10 @@ COMMAND_EVENT_KINDS = {"start_decay": "decay", "cancel_decay": "cancel",
 MAX_PENDING_REQUESTS = 20
 # Above the pending cap, so the results of one full burst all survive to be read.
 MAX_KEPT_RESULTS = 40
+# D60: Resource bounds, not schedule defaults (param_defaults.py).
+MAX_TRIGGERS = 20
+# D61: Bound total firings per trigger to keep the timeline event chain finite.
+MAX_TRIGGER_FIRES = 10
 
 
 class ControlQueueFullError(RuntimeError):
@@ -125,6 +140,14 @@ def queue_request(
             "A retarget command carries the schedule to switch to in "
             "extra={'payload': ...}; without it the trainer has nothing to "
             "retarget onto.")
+    if command == ADD_TRIGGER_COMMAND and not (extra or {}).get("trigger"):
+        raise ValueError(
+            "An add_trigger command carries the validated trigger record in "
+            "extra={'trigger': ...}.")
+    if command == REMOVE_TRIGGER_COMMAND and not (extra or {}).get("trigger_id"):
+        raise ValueError(
+            "A remove_trigger command carries the id to cancel in "
+            "extra={'trigger_id': ...}.")
     out = Path(output_dir)
     existing = list_pending_requests(out, run_id)
     if len(existing) >= max_pending:

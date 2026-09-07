@@ -121,6 +121,29 @@ paths:
                 at: null
                 groups: null
                 n_points: 256
+  /schema/lr-trigger-defaults:
+    get:
+      summary: Get what an omitted field of a conditional LR trigger resolves to
+      description: |
+        Single source of truth for the one field of
+        `POST /training/runs/{run_id}/lr-schedule/triggers` that has a default
+        (`backend/api/param_defaults.py` `LR_TRIGGER_DEFAULTS`).
+
+        `interval`, `patience`, `min_delta` and `threshold` are deliberately
+        absent: a usable value for any of them depends on the loss scale of
+        this model and this dataset, so the API asks for them rather than
+        supplying a number nobody measured. A trigger that omits one is
+        refused, by name.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Trigger defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrTriggerDefaults'
+              example:
+                max_fires: 1
   /schema/timestep-defaults-by-arch:
     get:
       summary: Per-architecture default timestep_sampling configs
@@ -6453,6 +6476,212 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: The run is not currently executing, so nothing would claim the retarget.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The pending command queue for this run is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The command file could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/lr-schedule/triggers:
+    post:
+      tags: [training]
+      summary: Register a condition that changes the LR schedule automatically
+      description: |
+        Set a condition now and let the run press the button when it is met
+        (§20 of `docs/guides/LR_SCHEDULER_DESIGN.md`). A trigger is not a new
+        control: firing issues one of the commands you already have, and what
+        lands in the schedule's event list is an ordinary `retarget` / `decay` /
+        `cancel`. The condition itself never enters that list.
+
+        **The signal is smoothed, and that is structural.** One observation is
+        the MEAN of the samples in a window of `interval` steps, and `patience`
+        counts observations, not steps. Diffusion training draws a random
+        timestep per step, so the step-to-step variance of the loss dominates
+        its trend; a plateau detector on raw per-step values fires on noise.
+        There is no un-smoothed mode and `interval` has no default.
+
+        **`interval` is in GLOBAL steps**, like every other step count in this
+        API. It is a count of signal, not a position on the schedule, so
+        `gradient_accumulation_steps` does not divide it: with `gas = 4` and
+        `interval = 100`, one observation covers 100 global steps, i.e. 25
+        optimizer updates. `grad_norm` only exists on update boundaries, so a
+        window holds fewer samples than steps — the mean is over the samples
+        that arrived, and a window with none produces no observation and spends
+        no patience.
+
+        **No numbers are supplied for you.** `interval` is required always,
+        `patience` and `min_delta` for `plateau`, `threshold` for `below` /
+        `above`. A missing one is a 400 that names it. Setting a field the
+        chosen predicate does not read is also refused, so `patience` on a
+        `below` trigger cannot look like a debounce it is not.
+
+        **`action` is a retarget body** — the same payload
+        `POST /training/runs/{run_id}/lr-schedule/retarget` takes, `op` included,
+        so `scale` / `hold` / `undo` fire exactly as they queue. It may name `at`
+        nowhere: a firing takes effect where it fires. `{"command":
+        "start_decay"}` and `{"command": "cancel_decay"}` are the two
+        parameterless buttons.
+
+        **A refused firing is not a firing.** If the materialised event is
+        refused (a decay ordered during a warmup, a retarget with no span left),
+        the trigger spends no `max_fires`, starts no cooldown, and warns.
+
+        **Triggers live in the checkpoint.** They are saved with the training
+        state, so resuming from a checkpoint written before a firing restores
+        the trigger as it was then AND drops the event it fired — the condition
+        is still live and can fire again. A trigger registered after that
+        checkpoint is gone with it.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LrScheduleTriggerRequest'
+            example:
+              signal: loss
+              predicate: plateau
+              interval: 200
+              patience: 3
+              min_delta: 0.002
+              max_fires: 3
+              cooldown: 2
+              action:
+                op: scale
+                gain: 0.5
+      responses:
+        '202':
+          description: Trigger queued for registration. Not yet armed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleTriggerAccepted'
+        '400':
+          description: |
+            The trigger is not one this build can arm: an unknown signal or
+            predicate, `learning_rate` (a trigger changes the learning rate, so
+            watching it is an undefined feedback loop), a required numeric field
+            missing, a field the predicate does not read, a `cooldown` without
+            `max_fires > 1` or missing with it, or an `action` the retarget
+            endpoint would itself refuse.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing, so nothing would arm the trigger.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The pending command queue for this run is already full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The command file could not be written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [training]
+      summary: The run's registered LR triggers and how close each is to firing
+      description: |
+        What each trigger watches, its current observation, how much of its
+        `patience` is used and how many fires it has left. Read from the state
+        the trainer publishes, so it works for a stopped run and is at most one
+        batch old.
+
+        `pending` is the registrations and cancellations the trainer has not
+        claimed yet; `results` carries both what registering answered and what
+        each firing did (`trigger_id` names the trigger).
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Registered triggers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleTriggersResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/lr-schedule/triggers/{trigger_id}:
+    delete:
+      tags: [training]
+      summary: Cancel a registered LR trigger
+      description: |
+        Disarms and removes the trigger. It does NOT undo what the trigger
+        already fired: those are ordinary schedule events, and
+        `POST .../lr-schedule/retarget` with `op: undo` reverses one.
+
+        Whether the id exists is the trainer's to answer — the published list is
+        display state and can be a batch old — so an unknown id comes back as
+        `rejected_unknown_trigger` in the results rather than as a 404 here.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: trigger_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Cancellation queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrScheduleTriggerCancelAccepted'
+        '400':
+          description: Empty trigger_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The run is not currently executing, so nothing would pick the cancellation up.
           content:
             application/json:
               schema:
@@ -20571,6 +20800,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LrScheduleGroupState'
+        triggers:
+          type: array
+          description: |
+            The conditions registered on this run and how close each is to
+            firing. Published here because an automation nobody can see coming
+            is worse than watching the chart. The conditions are NOT in
+            `events`, and never will be: the multiplier is a pure function of
+            the step and the events, which a condition on the training history
+            would break.
+          items:
+            $ref: '#/components/schemas/LrScheduleTriggerState'
         events:
           type: array
           description: |
@@ -20592,7 +20832,7 @@ components:
           example: "3f0c9ab41d7e5602"
         command:
           type: string
-          enum: [start_decay, cancel_decay, retarget]
+          enum: [start_decay, cancel_decay, retarget, add_trigger, remove_trigger]
           example: start_decay
         op:
           type: string
@@ -20656,6 +20896,12 @@ components:
             - rejected_ambiguous_group_scope
             - rejected_missing_gain
             - rejected_unknown_command
+            - registered
+            - removed
+            - rejected_unknown_trigger
+            - rejected_duplicate_trigger_id
+            - rejected_trigger_limit
+            - rejected_invalid_trigger
             - error
           description: |
             - `applied` — the state machine moved.
@@ -20685,8 +20931,24 @@ components:
               curve), or a scale with no factor.
             - `rejected_unknown_command` — the command string was not one the
               trainer knows.
+            - `registered` / `removed` — a trigger was armed or cancelled.
+              These change no curve and produce no event.
+            - `rejected_unknown_trigger` — no trigger with that id is armed.
+            - `rejected_duplicate_trigger_id` — one already is.
+            - `rejected_trigger_limit` — the run holds the maximum number of
+              triggers.
+            - `rejected_invalid_trigger` — the record is not one this build can
+              arm; `error` carries the same message the endpoint would have
+              given synchronously.
             - `error` — applying it raised; `error` carries the text.
           example: applied
+        trigger_id:
+          type: string
+          nullable: true
+          description: |
+            Set when this result belongs to a trigger: the registration itself,
+            or an event one of them fired. Absent for an operator's own command.
+          example: null
         at:
           type: integer
           description: Scheduler-axis step the command was applied at.
@@ -20732,6 +20994,325 @@ components:
         results:
           type: array
           description: Most recent first.
+          items:
+            $ref: '#/components/schemas/LrScheduleCommandResult'
+
+    LrTriggerDefaults:
+      type: object
+      description: |
+        The one field of a conditional LR trigger with a default. Everything
+        numeric a predicate reads is required and absent here on purpose (D46).
+      properties:
+        max_fires:
+          type: integer
+          default: 1
+          description: |
+            How many times the trigger may fire before it disarms. A decay is
+            not worth repeating; more than one is for `scale` ("halve it on
+            every plateau"), which then also needs a `cooldown`.
+          example: 1
+
+    LrScheduleTriggerRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        A condition registered on a running run (§20.2). It carries no numbers
+        this build chose: `interval` is always required, `patience` and
+        `min_delta` for `plateau`, `threshold` for `below`/`above`.
+      required: [signal, predicate, interval, action]
+      properties:
+        id:
+          type: string
+          nullable: true
+          description: Yours to choose, or generated. Must be unique on the run.
+          example: halve-on-plateau
+        signal:
+          type: string
+          description: |
+            What to watch, out of what the trainer already computes every step.
+            `extra:<name>` reaches any metric the run logs on the loss chart.
+
+            `learning_rate` is refused, as is `extra:lr*` (the run's own
+            LR reporting): a trigger changes the learning rate, so conditioning
+            it on the learning rate is a feedback loop with no defined meaning.
+          example: loss
+        predicate:
+          type: string
+          enum: [plateau, below, above]
+          description: |
+            - `plateau` — no improvement greater than `min_delta` over the best
+              observation so far, for `patience` consecutive observations.
+              Improvement means a DECREASE: every admissible signal is
+              minimised.
+            - `below` / `above` — the observation crossed `threshold`.
+          example: plateau
+        interval:
+          type: integer
+          minimum: 1
+          description: |
+            GLOBAL steps per observation. One observation is the MEAN over the
+            window; `patience` counts observations, not steps. Required under
+            every predicate — a threshold on a raw per-step diffusion loss is as
+            noisy as a plateau on one. Not divided by
+            `gradient_accumulation_steps`: it counts signal, not schedule
+            position.
+          example: 200
+        patience:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            `plateau` only, and required there. How many consecutive
+            observations without improvement fire the trigger. Refused on
+            `below`/`above`, which read only `threshold`.
+          example: 3
+        min_delta:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+          description: |
+            `plateau` only, and required there. An improvement smaller than
+            this does not count as one. In the signal's own units, which is why
+            there is no default.
+          example: 0.002
+        threshold:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            `below`/`above` only, and required there. Compared against the
+            observation (the window mean), never against a single step.
+          example: 0.08
+        max_fires:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+          description: |
+            After this many firings the trigger disarms but stays visible. More
+            than 1 requires `cooldown`. Capped at 10 (D61) to bound the timeline
+            event chain.
+          example: 3
+        cooldown:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: |
+            Observations to skip after a firing, required exactly when
+            `max_fires > 1` and refused otherwise. Must be >= 1 (D62).
+            Without it the same plateau fires the trigger again on the very next
+            observation and spends every fire at once.
+          example: 2
+        action:
+          type: object
+          additionalProperties: true
+          description: |
+            The command to issue, in the retarget vocabulary: the body
+            `POST /training/runs/{run_id}/lr-schedule/retarget` takes, `op`
+            included, so `scale`/`hold`/`undo` need nothing extra. `at` is
+            refused — a firing takes effect where it fires. The two
+            parameterless buttons are `{"command": "start_decay"}` and
+            `{"command": "cancel_decay"}`.
+          example:
+            op: scale
+            gain: 0.5
+
+    LrScheduleTriggerState:
+      type: object
+      description: One registered trigger, as the trainer last published it.
+      properties:
+        id:
+          type: string
+          example: halve-on-plateau
+        signal:
+          type: string
+          example: loss
+        predicate:
+          type: string
+          enum: [plateau, below, above]
+          example: plateau
+        interval:
+          type: integer
+          example: 200
+        patience:
+          type: integer
+          nullable: true
+          example: 3
+        min_delta:
+          type: number
+          format: double
+          nullable: true
+          example: 0.002
+        threshold:
+          type: number
+          format: double
+          nullable: true
+          example: null
+        max_fires:
+          type: integer
+          example: 3
+        cooldown:
+          type: integer
+          nullable: true
+          example: 2
+        action:
+          type: object
+          additionalProperties: true
+        armed:
+          type: boolean
+          description: False once `max_fires` is spent. The record stays, so
+            what it did is still readable.
+          example: true
+        fires:
+          type: integer
+          example: 1
+        fires_left:
+          type: integer
+          example: 2
+        cooldown_left:
+          type: integer
+          description: Observations still to skip after the last firing.
+          example: 0
+        observations:
+          type: integer
+          description: How many observations this trigger has scored.
+          example: 46
+        observation:
+          type: number
+          format: double
+          nullable: true
+          description: The most recent observation (the window mean), or null
+            before the first one closes.
+          example: 0.0921
+        observation_step:
+          type: integer
+          nullable: true
+          description: The GLOBAL step that window ended on.
+          example: 9199
+        best:
+          type: number
+          format: double
+          nullable: true
+          description: Best observation since the last firing (`plateau`).
+          example: 0.0904
+        patience_used:
+          type: integer
+          nullable: true
+          description: Observations without improvement so far (`plateau`).
+          example: 1
+        observations_to_fire:
+          type: integer
+          nullable: true
+          description: |
+            `patience - patience_used` — how many more observations without
+            improvement would fire it. Null for `below`/`above`, which fire on
+            the first observation past the threshold.
+          example: 2
+
+    LrScheduleTriggerAccepted:
+      type: object
+      description: A trigger registration queued for the trainer to arm.
+      properties:
+        request_id:
+          type: string
+          example: "5b1d0c7a9e3f4412"
+        run_id:
+          type: integer
+          example: 112
+        command:
+          type: string
+          enum: [add_trigger]
+          example: add_trigger
+        queued_at:
+          type: number
+          format: double
+          example: 1772500401.002
+        pending_count:
+          type: integer
+          example: 1
+        max_pending:
+          type: integer
+          example: 20
+        trigger:
+          allOf:
+            - $ref: '#/components/schemas/LrScheduleTriggerRequest'
+          description: |
+            The validated record, with the generated `id` if the request did
+            not name one. This is what the trainer arms.
+
+    LrScheduleTriggerCancelAccepted:
+      type: object
+      description: A trigger cancellation queued for the trainer.
+      properties:
+        request_id:
+          type: string
+          example: "7c2e1f04ab8d5530"
+        run_id:
+          type: integer
+          example: 112
+        command:
+          type: string
+          enum: [remove_trigger]
+          example: remove_trigger
+        trigger_id:
+          type: string
+          example: halve-on-plateau
+        queued_at:
+          type: number
+          format: double
+          example: 1772500402.114
+        pending_count:
+          type: integer
+          example: 1
+        max_pending:
+          type: integer
+          example: 20
+
+    LrScheduleTriggersResponse:
+      type: object
+      description: The run's registered triggers, pending changes and results.
+      required: [run_id, triggers, pending, results]
+      properties:
+        run_id:
+          type: integer
+          example: 112
+        is_running:
+          type: boolean
+          example: true
+        max_pending:
+          type: integer
+          example: 20
+        max_triggers:
+          type: integer
+          description: How many triggers one run may hold at once.
+          example: 20
+        triggers:
+          type: array
+          items:
+            $ref: '#/components/schemas/LrScheduleTriggerState'
+        pending:
+          type: array
+          description: Registrations and cancellations not yet claimed.
+          items:
+            type: object
+            properties:
+              request_id:
+                type: string
+              command:
+                type: string
+                enum: [add_trigger, remove_trigger]
+              trigger_id:
+                type: string
+                nullable: true
+              queued_at:
+                type: number
+                format: double
+        results:
+          type: array
+          description: |
+            Most recent first: what registering each trigger answered, and what
+            each firing did.
           items:
             $ref: '#/components/schemas/LrScheduleCommandResult'
 

@@ -244,6 +244,16 @@ class ReLoRATrainer(LoRATrainer):
         )
         print(f"{self.log_prefix} Reset optimizer state (strategy={self.optimizer_reset_strategy})")
 
+        # The fused clip's running scales describe the gradients of the adapters
+        # that were just merged away and re-initialised, so every one of them is
+        # about to change scale legitimately. Kept, they would clip the new
+        # adapters against the old ones' history.
+        clipper = getattr(self, "_fused_grad_clipper", None)
+        if clipper is not None:
+            clipper.reset_scales()
+            print(f"{self.log_prefix} Reset fused gradient-clip scales "
+                  f"(warmup restarts for every parameter)")
+
         # If fused optimizer groups, reset all optimizers
         if self.fused_optimizer_groups is not None:
             for i, optimizer in enumerate(self.fused_optimizer_groups.optimizers):

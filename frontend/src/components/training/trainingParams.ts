@@ -30,6 +30,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "weight_decompose", "adapter_config",
   "total_steps", "epochs",
   "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
+  "fused_grad_clip_factor", "fused_grad_clip_warmup_steps", "grad_spike_log_factor",
   "lr_decay_start_ratio", "lr_floor_ratio", "rewarmup_on_optimizer_reset",
   "lr_decay_start_step", "lr_decay_steps", "lr_decay_shape",
   "lr_cycle_steps", "lr_cycle_peak_decay",

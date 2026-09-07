@@ -6487,6 +6487,9 @@ export interface TrainingRunCreateRequest {
   batch_size?: number;
   gradient_accumulation_steps?: number;
   max_grad_norm?: number;
+  fused_grad_clip_factor?: number;
+  fused_grad_clip_warmup_steps?: number;
+  grad_spike_log_factor?: number;
   learning_rate?: number;
   // One of LR_SCHEDULER_NAMES; the backend rejects anything else.
   lr_scheduler?: string;

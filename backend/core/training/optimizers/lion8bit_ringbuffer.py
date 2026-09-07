@@ -49,6 +49,7 @@ from .quantization_map import create_quantization_map
 from .fused_backward_registration import register_fused_backward_hooks
 
 # Gradient-norm recording (the hooks clear param.grad before it can be measured)
+from .fused_grad_clip import apply_fused_grad_clip
 from .fused_grad_norm import record_fused_grad_norm, record_fused_grad_observation
 
 # Updated-parameter census (G-RB3): which parameters an update actually reached
@@ -726,6 +727,9 @@ def register_lion8bit_fused_backward(optimizer, model):
             # trainer's grad-norm reporting runs after the whole backward.
             record_fused_grad_norm(optimizer, param)
             record_fused_grad_observation(optimizer, param)
+            # After both readers, so the charted norm is the one the backward
+            # produced; before the update, which is what the clip protects.
+            apply_fused_grad_clip(optimizer, param)
 
             # Initialize state if needed
             if len(optimizer.state[param]) == 0:

@@ -57,6 +57,15 @@ class FusedGradNormAccumulator:
     def has(self, param: torch.nn.Parameter) -> bool:
         return id(param) in self._squares
 
+    def squared(self, param: torch.nn.Parameter) -> Optional[torch.Tensor]:
+        """``||grad||^2`` as recorded for ``param`` this step, still on device.
+
+        For a second reader that would otherwise take its own full pass over the
+        same gradient -- the clip does, and at 8.1B parameters one pass is
+        ~16 GB of memory traffic per step.
+        """
+        return self._squares.get(id(param))
+
     def squared_norms(self) -> Dict[int, float]:
         """``id(param) -> ||grad||^2``, with one device->host sync per device."""
         if not self._squares:

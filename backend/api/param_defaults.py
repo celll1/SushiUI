@@ -2183,6 +2183,20 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "batch_size": 1,
     "gradient_accumulation_steps": 1,
     "max_grad_norm": 1.0,
+    # Per-parameter outlier clip for the fused backward pass, where
+    # max_grad_norm's global norm is not knowable in time (see
+    # optimizers/fused_grad_clip.py). 0 = off. A positive value bounds each
+    # parameter's gradient at that multiple of the parameter's OWN running
+    # scale; it is not a global-norm clip and does not replace max_grad_norm on
+    # the non-fused path.
+    "fused_grad_clip_factor": 0.0,
+    # Updates a parameter must contribute before its running scale is treated as
+    # known. Below this the clip would be measuring noise.
+    "fused_grad_clip_warmup_steps": 200,
+    # Record a step whose gradient norm exceeds this multiple of the trailing
+    # median, with the batch that produced it, in <output_dir>/grad_spikes.jsonl.
+    # 0 = off. Writes nothing on a step that is not an outlier.
+    "grad_spike_log_factor": 8.0,
     "learning_rate": 1e-4,
     "lr_scheduler": "constant",
     "lr_warmup_steps": 0,

@@ -26,6 +26,7 @@ from typing import List, Dict, Any
 import torch
 from torch.optim import Optimizer
 
+from .fused_grad_clip import apply_fused_grad_clip
 from .fused_grad_norm import record_fused_grad_norm, record_fused_grad_observation
 from .update_census import note_update_applied
 
@@ -86,15 +87,11 @@ class FusedOptimizerGroups:
 
                         def optimizer_hook(tensor: torch.Tensor, idx=opt_idx):
                             """Hook called when gradient is ready for this parameter"""
-                            # No clipping: a per-parameter clip is not the global-norm
-                            # clip max_grad_norm names, so BaseTrainer constructs this
-                            # class with max_grad_norm=0.0 and says so once through
-                            # _warn_grad_clipping_ignored_under_fused.
-
                             # Before the group's zero_grad(set_to_none=True) below,
                             # which is what leaves the trainer nothing to measure.
                             record_fused_grad_norm(self.optimizers[idx], tensor)
                             record_fused_grad_observation(self.optimizers[idx], tensor)
+                            apply_fused_grad_clip(self.optimizers[idx], tensor)
 
                             # Get optimizer index for this parameter
                             i = self.parameter_optimizer_map[tensor]

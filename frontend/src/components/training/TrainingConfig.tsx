@@ -181,6 +181,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   batch_size: 1,
   gradient_accumulation_steps: 1,
   max_grad_norm: 1.0,
+  fused_grad_clip_factor: 0,
+  fused_grad_clip_warmup_steps: 200,
+  grad_spike_log_factor: 8.0,
   learning_rate: 1e-5,
   lr_scheduler: "constant",
   lr_warmup_steps: 0,
@@ -3565,6 +3568,74 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               {gradClippingIgnoredReason && (
                 <p className="text-xs text-amber-400 mt-1">{gradClippingIgnoredReason}</p>
               )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Fused Per-Parameter Grad Clip
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={params.fused_grad_clip_factor ?? 0}
+                onChange={(e) => updateParam("fused_grad_clip_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("fused_grad_clip_factor", 0); }}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                0 disables. Under the fused backward pass Max Grad Norm cannot apply —
+                the global norm is not known until every parameter has already been
+                updated. This bounds each parameter&apos;s gradient at N × that
+                parameter&apos;s own running scale, which IS known when its hook fires.
+                A different quantity from the global norm, so the two are separate
+                settings. The running scales are not saved with the checkpoint, so
+                a resume re-learns them and the warmup below applies again.
+              </p>
+              {(params.fused_grad_clip_factor ?? 0) > 0 && (
+                <div className="mt-2">
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Clip warmup (updates per parameter)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={params.fused_grad_clip_warmup_steps ?? 200}
+                    onChange={(e) => updateParam("fused_grad_clip_warmup_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("fused_grad_clip_warmup_steps", 200); }}
+                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Updates a parameter contributes before its running scale is used
+                    to clip. Below this the scale is built from too few gradients.
+                    Counted per process, so it starts again after every resume.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Gradient Spike Log
+              </label>
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={params.grad_spike_log_factor ?? 8.0}
+                onChange={(e) => updateParam("grad_spike_log_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("grad_spike_log_factor", 8.0); }}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                0 disables. A step whose gradient norm exceeds N × the trailing median
+                is written to grad_spikes.jsonl in the run&apos;s output directory with
+                the batch that produced it: image paths, bucket size, captions, the
+                timesteps drawn, the loss and the learning rate. Nothing is written on
+                a step that is not an outlier, and the file stops at 500 records per
+                process — later spikes are still counted and reported live.
+              </p>
             </div>
 
             <div>

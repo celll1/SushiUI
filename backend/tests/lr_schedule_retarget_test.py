@@ -47,6 +47,7 @@ from core.training.lr_schedules import (  # noqa: E402
     STATE_DECAYING,
     STATE_FLOOR,
     STATE_RECOVERING,
+    WARN_SELECTOR_ON_UNGROUPED_RUN,
     ScheduleSpec,
     ScheduleTimeline,
     blend_length_on_scheduler_axis,
@@ -108,9 +109,13 @@ def test_a_spec_round_trips_through_json(name, config):
     payload = json.loads(json.dumps(spec.to_dict()))
     assert payload["v"] == SPEC_VERSION
     # An alias's derived start does not travel (invariant 15); the ratio it is
-    # re-derived from does, so the restored spec evaluates identically.
-    expected = (replace(spec, decay_start_step=None)
-                if spec.decay_start_ratio is not None else spec)
+    # re-derived from does, so the restored spec evaluates identically. The
+    # run's own start_decay parameters do not travel either (D42) and come back
+    # at the dataclass defaults, which is what `_retarget` re-stamps over.
+    expected = replace(spec, command_decay_length=None,
+                       command_decay_shape="cosine")
+    if spec.decay_start_ratio is not None:
+        expected = replace(expected, decay_start_step=None)
     assert ScheduleSpec.from_dict(payload) == expected
 
 
@@ -843,3 +848,561 @@ def test_a_decay_and_a_cancel_with_no_retarget_follow_the_closed_form():
     for step in (2300, 2350, 2400, 2500):
         ratio = min(1.0, (step - 2300) / 100.0)
         assert fn(step) == pytest.approx(m_c + (1.0 - m_c) * ratio), step
+
+# ---------------------------------------------------------------------------
+# R2: the `groups` selector (D24, §19.3's last row)
+# ---------------------------------------------------------------------------
+
+def _grouped(names, name: str = "cosine", W: int = 0, T: int = TOTAL,
+             config=None):
+    """One spec per named param group off one run spec, sharing a timeline."""
+    run, timeline = _run(name, W, T, config)
+    specs = {group: run.for_group(group) for group in names}
+    # What build_lr_scheduler binds: with identities installed, D37's warning
+    # about a selector on a one-spec run does not apply.
+    timeline.bind_spec(run, group_specs=list(specs.values()))
+    return specs, timeline
+
+
+def test_a_scoped_retarget_moves_only_the_named_group():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    untouched, pristine = _grouped(("text_encoder_1",))
+    steps = list(range(0, TOTAL + 1, 137))
+    expected = _curve(untouched["text_encoder_1"], pristine, steps)
+
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=["unet"]) == "applied"
+    assert timeline.active_spec(specs["unet"], 5000).name == "constant"
+    assert timeline.active_spec(specs["text_encoder_1"], 5000).name == "cosine"
+    assert _curve(specs["unet"], timeline, steps) != expected
+    # Bit-identical, not approx: the fold has to skip the event, not re-derive
+    # a curve that happens to agree.
+    assert _curve(specs["text_encoder_1"], timeline, steps) == expected
+
+
+def test_a_null_selector_still_reaches_every_group():
+    """R1's meaning, which every event written before R2 also has."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=None) == "applied"
+    for spec in specs.values():
+        assert timeline.active_spec(spec, 5000).name == "constant"
+        assert timeline.multiplier(spec, 6000) == pytest.approx(
+            timeline.multiplier(spec, 4000))
+
+
+def test_an_omitted_selector_is_the_same_as_null():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0)
+    assert timeline.dump(TOTAL)[-1]["groups"] is None
+    for spec in specs.values():
+        assert timeline.active_spec(spec, 5000).name == "constant"
+
+
+def test_a_scoped_retarget_applies_to_all_when_the_specs_have_no_identity():
+    """§19.3's last row: `lr_group_schedules` off means one spec on every
+    group, so the selector is honoured by applying it rather than refused."""
+    spec_a, timeline = _run("constant")
+    spec_b = _spec("linear")
+    assert timeline.add("retarget", at=2000, new_spec=_spec("cosine"),
+                        length=0, groups=["unet"],
+                        known_groups=("unet", "text_encoder_1")) == "applied"
+    for spec in (spec_a, spec_b):
+        assert timeline.active_spec(spec, 3000).name == "cosine"
+        assert timeline.multiplier(spec, 3000) != pytest.approx(
+            timeline.multiplier(spec, 8000))
+
+
+def test_two_scoped_retargets_on_different_groups_coexist():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    solo_specs, solo = _grouped(("unet",))
+    steps = list(range(0, TOTAL + 1, 137))
+
+    timeline.add("retarget", at=3000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    solo.add("retarget", at=3000, new_spec=_spec("constant"), length=0,
+             groups=["unet"])
+    timeline.add("retarget", at=5000, new_spec=_spec("linear"), length=0,
+                 groups=["text_encoder_1"])
+
+    assert timeline.active_spec(specs["unet"], 6000).name == "constant"
+    assert timeline.active_spec(specs["text_encoder_1"], 6000).name == "linear"
+    # The second event leaves the first group's chain exactly where it was.
+    assert (_curve(specs["unet"], timeline, steps)
+            == _curve(solo_specs["unet"], solo, steps))
+
+
+def test_one_selector_naming_both_groups_reaches_both():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0,
+                 groups=["text_encoder_1", "unet"])
+    for spec in specs.values():
+        assert timeline.active_spec(spec, 5000).name == "constant"
+
+
+def test_a_second_retarget_on_the_same_group_still_knows_the_group():
+    """The identity has to survive the replacement: the spec an event carries
+    is serialized without one (§19.5), so the fold re-stamps it from the curve
+    it replaces. Otherwise the second event would read as unscoped."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    untouched, pristine = _grouped(("text_encoder_1",))
+    steps = list(range(0, TOTAL + 1, 137))
+    expected = _curve(untouched["text_encoder_1"], pristine, steps)
+
+    timeline.add("retarget", at=3000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    timeline.add("retarget", at=6000, new_spec=_spec("linear"), length=0,
+                 groups=["unet"])
+    assert timeline.active_spec(specs["unet"], 7000).name == "linear"
+    assert timeline.active_spec(specs["text_encoder_1"], 7000).name == "cosine"
+    assert _curve(specs["text_encoder_1"], timeline, steps) == expected
+
+
+def test_an_unscoped_retarget_after_a_scoped_one_reaches_both_chains():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=3000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    timeline.add("retarget", at=6000, new_spec=_spec("linear"), length=0)
+    for spec in specs.values():
+        assert timeline.active_spec(spec, 7000).name == "linear"
+
+
+def test_a_group_name_matches_case_insensitively():
+    """`lr_group_schedules` resolves its component names case-folded, so a
+    selector that passed rule 7 cannot then miss the group it named."""
+    specs, timeline = _grouped(("Text_Encoder_1",))
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0,
+                 groups=["text_encoder_1"])
+    assert timeline.active_spec(specs["Text_Encoder_1"], 5000).name == "constant"
+
+
+def test_a_scoped_retarget_blends_only_the_named_group():
+    """The blend, not just the spec swap: a length > 0 must leave the other
+    group's realized multiplier untouched for the whole blend."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "constant")
+    untouched, pristine = _grouped(("text_encoder_1",), "constant")
+    timeline.add("retarget", at=2000, new_spec=_spec("cosine"), length=1000,
+                 gain=0.5, groups=["unet"])
+    for step in range(2100, 3200, 100):   # 2000 itself is w = 0, i.e. m_old
+        assert timeline.multiplier(specs["unet"], step) < 1.0
+        assert (timeline.multiplier(specs["text_encoder_1"], step)
+                == pristine.multiplier(untouched["text_encoder_1"], step))
+
+
+def test_rule_7_still_refuses_an_unknown_group_and_moves_no_curve():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    steps = list(range(0, TOTAL + 1, 137))
+    before = {name: _curve(spec, timeline, steps)
+              for name, spec in specs.items()}
+    assert timeline.add(
+        "retarget", at=4000, new_spec=_spec("constant"),
+        groups=["unet", "typo_encoder"],
+        known_groups=("unet", "text_encoder_1")) == "rejected_unknown_group"
+    assert timeline.dump(TOTAL)[-1]["kind"] == "noop"
+    for name, spec in specs.items():
+        assert _curve(spec, timeline, steps) == before[name]
+
+
+def test_the_serialized_spec_carries_no_group_identity():
+    """Invariant 15's neighbour: the payload is the SHAPE. Who a retarget
+    reaches is the event's `groups`, so an identity inside the spec could claim
+    a group the spec was never installed on."""
+    assert "group" not in _spec("cosine").for_group("unet").to_dict()
+    specs, timeline = _grouped(("unet",))
+    timeline.add("retarget", at=4000, new_spec=specs["unet"], length=0,
+                 groups=["unet"])
+    assert "group" not in timeline.dump(TOTAL)[-1]["spec"]
+
+
+def test_a_stale_identity_in_a_payload_does_not_redirect_the_event():
+    """A hand-written (or newer-build) payload carrying a `group` key is folded
+    onto the curve the selector chose, not onto the one the payload names."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    payload = _spec("constant").to_dict()
+    payload["group"] = "text_encoder_1"
+    timeline.add("retarget", at=4000, new_spec=payload, length=0,
+                 groups=["unet"])
+    assert timeline.active_spec(specs["unet"], 5000).group == "unet"
+    assert timeline.active_spec(specs["text_encoder_1"], 5000).name == "cosine"
+
+
+def test_a_scoped_retarget_survives_a_save_and_reload_per_group():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=3000, new_spec=_spec("constant"), length=800,
+                 groups=["unet"])
+    twin = ScheduleTimeline(json.loads(json.dumps(timeline.dump(TOTAL))))
+    steps = list(range(0, TOTAL + 1, 61))
+    for spec in specs.values():
+        assert _curve(spec, twin, steps) == _curve(spec, timeline, steps)
+
+
+def test_a_decay_command_still_reaches_a_group_a_retarget_skipped():
+    """§17.3: the event list is shared and `decay` has no selector, so scoping
+    a retarget must not scope the overlay."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "constant")
+    timeline.add("retarget", at=2000, new_spec=_spec("linear"), length=0,
+                 groups=["unet"])
+    timeline.add("decay", at=4000, length=500, spec=specs["text_encoder_1"])
+    assert timeline.multiplier(specs["text_encoder_1"], 4500) == pytest.approx(0.0)
+
+# ---------------------------------------------------------------------------
+# D34: an empty selector names no group
+# ---------------------------------------------------------------------------
+
+def test_an_empty_selector_is_refused():
+    """`null` is the only spelling of "every group". An array the UI sent with
+    nothing checked, read as "all", is the silent global replacement D24 is
+    there to prevent."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    steps = list(range(0, TOTAL + 1, 137))
+    before = {name: _curve(spec, timeline, steps)
+              for name, spec in specs.items()}
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=[]) == "rejected_empty_group_selector"
+    event = timeline.dump(TOTAL)[-1]
+    assert event["kind"] == "noop" and event["refused_kind"] == "retarget"
+    for name, spec in specs.items():
+        assert _curve(spec, timeline, steps) == before[name]
+
+
+def test_an_empty_selector_is_refused_before_the_name_check():
+    """It is refused whether or not the caller said what components exist:
+    there is no name in it to check against `known_groups`."""
+    _, timeline = _run()
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        groups=[], known_groups=("unet",)
+                        ) == "rejected_empty_group_selector"
+
+
+def test_an_empty_selector_stored_before_d34_reaches_no_group():
+    """A refused event never reaches the fold, so this can only arrive from an
+    older state file. "Every group" is the one reading D34 rules out."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    steps = list(range(0, TOTAL + 1, 137))
+    before = {name: _curve(spec, timeline, steps)
+              for name, spec in specs.items()}
+    legacy = dict(timeline.dump(TOTAL)[0])          # the total_steps anchor
+    twin = ScheduleTimeline([legacy, {
+        "kind": "retarget", "at": 4000, "issued": 4000, "seq": 1,
+        "spec": _spec("constant").to_dict(), "anchor": "restart",
+        "gain": 1.0, "length": 0, "shape": "linear", "groups": []}])
+    for name, spec in specs.items():
+        assert _curve(spec, twin, steps) == before[name]
+
+
+# ---------------------------------------------------------------------------
+# D35: one spelling of a component name
+# ---------------------------------------------------------------------------
+
+def test_rule_7_accepts_a_group_name_in_another_case():
+    """§10.1 resolves the mapping case-folded, so an exact-match acceptance
+    could admit a name that then addresses nothing."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=["UNet"],
+                        known_groups=("unet", "text_encoder_1")) == "applied"
+    assert timeline.active_spec(specs["unet"], 5000).name == "constant"
+    assert timeline.active_spec(specs["text_encoder_1"], 5000).name == "cosine"
+
+
+def test_rule_7_case_folds_the_component_list_too():
+    specs, timeline = _grouped(("Unet",))
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=["unet"],
+                        known_groups=("UNET",)) == "applied"
+    assert timeline.active_spec(specs["Unet"], 5000).name == "constant"
+
+
+def test_rule_7_still_refuses_a_name_that_is_not_a_case_variant():
+    spec, timeline = _run()
+    _assert_refused(timeline, spec, timeline.add(
+        "retarget", at=4000, new_spec=_spec("constant"), groups=["Typo_Encoder"],
+        known_groups=("unet", "text_encoder_1")), "rejected_unknown_group")
+
+
+# ---------------------------------------------------------------------------
+# D37: a selector on a run whose groups all share one spec
+# ---------------------------------------------------------------------------
+
+def test_a_selector_on_an_ungrouped_run_is_accepted_with_a_warning(capsys):
+    spec, timeline = _run("constant")
+    assert timeline.add("retarget", at=2000, new_spec=_spec("cosine"),
+                        length=0, groups=["unet"]) == "applied"
+    assert (timeline.dump(TOTAL)[-1]["warning"]
+            == WARN_SELECTOR_ON_UNGROUPED_RUN)
+    out = capsys.readouterr().out
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN in out and "unet" in out
+    assert timeline.active_spec(spec, 3000).name == "cosine"
+
+
+def test_the_warning_is_decided_at_acceptance_not_at_evaluation(capsys):
+    """D37/D25: a reservation for a future step must not change meaning if the
+    config is edited between the order and its effect."""
+    _, timeline = _run("constant")
+    timeline.add("retarget", at=9000, issued=1000, new_spec=_spec("cosine"),
+                 length=0, groups=["unet"])
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN in capsys.readouterr().out
+    assert (timeline.dump(1000)[-1]["warning"]
+            == WARN_SELECTOR_ON_UNGROUPED_RUN), "and it is saved with the event"
+
+
+def test_a_grouped_run_takes_a_selector_without_the_warning(capsys):
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
+                        length=0, groups=["unet"]) == "applied"
+    assert "warning" not in timeline.dump(TOTAL)[-1]
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
+
+
+def test_an_unscoped_retarget_never_warns(capsys):
+    _, timeline = _run("constant")
+    timeline.add("retarget", at=2000, new_spec=_spec("cosine"), length=0)
+    assert "warning" not in timeline.dump(TOTAL)[-1]
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
+
+
+def test_a_refused_selector_does_not_also_warn(capsys):
+    _, timeline = _run("constant")
+    timeline.add("retarget", at=2000, new_spec=_spec("constant"), groups=[])
+    assert "warning" not in timeline.dump(TOTAL)[-1]
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
+
+# ---------------------------------------------------------------------------
+# D38: a decay/cancel is scored per group, not on the representative spec
+# ---------------------------------------------------------------------------
+
+SHORT = 1000
+
+
+def test_a_group_the_retarget_skipped_still_gets_the_decay():
+    """The representative spec is UNSTAMPED, so it absorbs a scoped retarget no
+    param group received. Scoring the command on it alone refused the decay
+    inside the retarget's new warmup and stored a `noop`, which deleted the
+    decay for the group that was never named."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "constant", 0, SHORT)
+    plain_specs, plain = _grouped(("text_encoder_1",), "constant", 0, SHORT)
+
+    timeline.add("retarget", at=400, length=0, groups=["unet"],
+                 new_spec=_spec("constant", 200, SHORT))
+    assert timeline.add("decay", at=450) == "applied"
+    assert timeline.dump(SHORT)[-1]["kind"] == "decay"
+    plain.add("decay", at=450)
+
+    te = specs["text_encoder_1"]
+    steps = (450, 600, 800, 999)
+    assert [round(timeline.multiplier(te, s), 4) for s in steps] == [
+        1.0, 0.8274, 0.2923, 0.0]
+    assert ([timeline.multiplier(te, s) for s in range(0, SHORT + 1, 7)]
+            == [plain.multiplier(plain_specs["text_encoder_1"], s)
+                for s in range(0, SHORT + 1, 7)])
+    # And the group the command WAS refused for keeps climbing its new ramp.
+    assert timeline.multiplier(specs["unet"], 450) == pytest.approx(0.25)
+    assert timeline.multiplier(specs["unet"], 800) == 1.0
+
+
+def test_a_cancel_takes_its_recovery_length_from_each_group_s_own_spec():
+    """The recovery length was baked from the representative spec, so a scoped
+    retarget onto a longer warmup stretched every group's recovery."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "cosine", 50, SHORT)
+    plain_specs, plain = _grouped(("text_encoder_1",), "cosine", 50, SHORT)
+
+    for line in (timeline, plain):
+        line.add("decay", at=300, length=200)
+    timeline.add("retarget", at=310, length=0, groups=["unet"],
+                 new_spec=_spec("cosine", 400, SHORT))
+    assert timeline.add("cancel", at=500) == "applied"
+    plain.add("cancel", at=500)
+    assert "length" not in timeline.dump(SHORT)[-1], "nothing to bake: R = W"
+
+    te = specs["text_encoder_1"]
+    assert [round(timeline.multiplier(te, s), 4) for s in (520, 550, 600)] == [
+        0.2033, 0.4587, 0.3773]
+    assert ([timeline.multiplier(te, s) for s in range(0, SHORT + 1, 7)]
+            == [plain.multiplier(plain_specs["text_encoder_1"], s)
+                for s in range(0, SHORT + 1, 7)])
+
+
+def test_a_command_every_group_refuses_is_still_a_noop():
+    """The `noop` conversion is not gone, only narrowed to unanimity."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "constant", 200,
+                               SHORT)
+    assert timeline.add("decay", at=100) == "rejected_during_warmup"
+    event = timeline.dump(SHORT)[-1]
+    assert event["kind"] == "noop" and event["refused_kind"] == "decay"
+    for spec in specs.values():
+        assert timeline.state_at(spec, 300).code == STATE_BASE
+
+
+def test_a_caller_supplied_length_and_shape_are_still_baked():
+    """§5.4 for what the caller fixed: the RPC path passes both from config."""
+    _, timeline = _grouped(("unet",), "constant", 0, SHORT)
+    timeline.add("decay", at=300, length=200, shape="linear")
+    event = timeline.dump(SHORT)[-1]
+    assert event["length"] == 200 and event["shape"] == "linear"
+
+
+# ---------------------------------------------------------------------------
+# D39: the reach a scoped event was accepted with is frozen on the event
+# ---------------------------------------------------------------------------
+
+LONG = 10000
+
+
+def test_a_future_dated_selector_keeps_its_reach_across_a_grouped_resume():
+    """D39: accepted on a run with one schedule, warned as "every group". If
+    adding `lr_group_schedules` before it fires narrowed it to `unet`, the
+    warning saved beside it would be false about what the run did."""
+    run_spec, timeline = _run("cosine", 0, LONG)
+    assert timeline.add("retarget", at=9000, issued=1000, length=0,
+                        new_spec=_spec("constant", 0, LONG),
+                        groups=["unet"]) == "applied"
+    event = timeline.dump(1000)[-1]
+    assert event["scope"] == "all" and event["groups"] == ["unet"]
+
+    # The operator adds lr_group_schedules and resumes: same events, but the
+    # specs now carry identities.
+    resumed = ScheduleTimeline(json.loads(json.dumps(timeline.dump(1000))))
+    specs = {name: run_spec.for_group(name)
+             for name in ("unet", "text_encoder_1")}
+    resumed.bind_spec(run_spec, group_specs=list(specs.values()))
+    assert resumed.multiplier(specs["unet"], 8999) == pytest.approx(0.024520,
+                                                                   abs=5e-6)
+    for spec in specs.values():
+        assert resumed.multiplier(spec, 9500) == pytest.approx(0.024472,
+                                                               abs=5e-6)
+
+
+def test_a_scoped_event_on_a_grouped_run_carries_no_frozen_scope():
+    """Only the decided-all case is frozen: with identities present the
+    selector itself is the record, and it is honoured group by group."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=4000, length=0, groups=["unet"],
+                 new_spec=_spec("constant"))
+    assert "scope" not in timeline.dump(TOTAL)[-1]
+    assert timeline.active_spec(specs["text_encoder_1"], 5000).name == "cosine"
+
+
+# ---------------------------------------------------------------------------
+# D41: bake the fallback when the bound groups agree
+# ---------------------------------------------------------------------------
+
+def test_the_recovery_length_is_baked_when_every_group_agrees():
+    """§10.1 keeps the numeric parameters run-wide, so agreement is the normal
+    case and §5.4's baking survives D38's per-group scoring."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "cosine", 50, SHORT)
+    timeline.add("decay", at=300, length=200)
+    assert timeline.add("cancel", at=500) == "applied"
+    assert timeline.dump(SHORT)[-1]["length"] == 50
+    for spec in specs.values():
+        assert timeline.state_at(spec, 549).code == STATE_RECOVERING
+        assert timeline.state_at(spec, 550).code == STATE_BASE
+
+
+def test_the_decay_shape_is_baked_when_every_group_agrees():
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "wsd", 0, SHORT,
+                               {"lr_decay_shape": "linear"})
+    assert timeline.add("decay", at=300) == "applied"
+    assert timeline.dump(SHORT)[-1]["shape"] == "linear"
+
+
+def test_a_warmup_edit_across_a_resume_does_not_reshape_a_past_cancel():
+    """The guarantee D38's narrowing had lost: the recovery length went into
+    the event, so re-resolving the spec with a different lr_warmup_steps cannot
+    stretch a cancel that already happened."""
+    spec, timeline = _run("cosine", 50, SHORT)
+    timeline.add("decay", at=300, length=200)
+    assert timeline.add("cancel", at=500) == "applied"
+    assert timeline.dump(SHORT)[-1]["length"] == 50
+
+    # Edited to 200, not past the decay's step: a warmup that swallowed the
+    # decay would refuse it at fold time and prove nothing about the recovery.
+    edited = _spec("cosine", 200, SHORT)
+    resumed = ScheduleTimeline(json.loads(json.dumps(timeline.dump(SHORT))))
+    resumed.bind_spec(edited)
+    assert resumed.state_at(edited, 549).code == STATE_RECOVERING
+    assert resumed.state_at(edited, 550).code == STATE_BASE
+
+
+# ---------------------------------------------------------------------------
+# D43: the reported result does not depend on param-group order
+# ---------------------------------------------------------------------------
+
+def _bound(order, name="constant", W=0, T=1000, config=None):
+    _, timeline = _run(name, W, T, config)
+    timeline.bind_spec(order[0], group_specs=list(order))
+    return timeline
+
+
+def test_a_mixed_outcome_reports_the_effect_not_whichever_group_sorts_first():
+    """`unet` has nothing to cancel and `text_encoder_1` has a scheduled decay
+    to disarm. Ranking by list position told the operator "nothing happened"
+    while a decay was permanently disarmed -- and `poll_lr_schedule_commands`
+    does not count that string as applied."""
+    config = {"lr_decay_start_step": 700, "lr_floor_ratio": 0.0}
+    unet = _spec("constant", 0, SHORT, config).for_group("unet")
+    te = _spec("wsd", 0, SHORT, config).for_group("text_encoder_1")
+    for order in ((unet, te), (te, unet)):
+        timeline = _bound(order, "constant", 0, SHORT, config)
+        assert timeline.add("cancel", at=300) == "disarmed_scheduled_decay"
+        assert timeline.state_at(te, 400).decay_disarmed is True
+        assert timeline.state_at(unet, 400).code == STATE_BASE
+
+
+def test_a_command_one_group_refuses_reports_applied_in_either_order():
+    ramping = _spec("constant", 200, SHORT).for_group("unet")
+    ready = _spec("constant", 0, SHORT).for_group("text_encoder_1")
+    for order in ((ramping, ready), (ready, ramping)):
+        timeline = _bound(order, "constant", 0, SHORT)
+        assert timeline.add("decay", at=100) == "applied"
+        assert timeline.state_at(ready, 100).code == STATE_DECAYING
+        assert timeline.state_at(ramping, 100).code == STATE_BASE
+
+
+def test_a_command_every_group_refuses_reports_the_same_refusal_either_way():
+    a = _spec("constant", 200, SHORT).for_group("unet")
+    b = _spec("constant", 300, SHORT).for_group("text_encoder_1")
+    for order in ((a, b), (b, a)):
+        timeline = _bound(order, "constant", 200, SHORT)
+        assert timeline.add("decay", at=100) == "rejected_during_warmup"
+        assert timeline.dump(SHORT)[-1]["kind"] == "noop"
+
+
+# ---------------------------------------------------------------------------
+# D42: the run's start_decay parameters are not part of a retarget's payload
+# ---------------------------------------------------------------------------
+
+COMMAND_CONFIG = {"lr_decay_steps": 200, "lr_decay_shape": "linear",
+                  "lr_floor_ratio": 0.0}
+
+
+def test_a_payload_cannot_carry_the_runs_decay_command_parameters():
+    spec = _spec("wsd", 0, SHORT, COMMAND_CONFIG)
+    assert (spec.command_decay_length, spec.command_decay_shape) == (
+        200, "linear")
+    payload = spec.to_dict()
+    assert "command_decay_length" not in payload
+    assert "command_decay_shape" not in payload
+
+
+def test_a_scoped_retarget_does_not_hand_its_decay_parameters_to_other_groups():
+    """The RPC path reads `length`/`shape` off the spec in force
+    (`base_trainer.poll_lr_schedule_commands`), and the representative spec
+    absorbs every scoped retarget. If the payload carried them, a retarget
+    scoped to `unet` would decay `text_encoder_1` with 321 steps of `rex`."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "constant", 0, SHORT,
+                               COMMAND_CONFIG)
+    run_spec = _spec("constant", 0, SHORT, COMMAND_CONFIG)
+    timeline.add("retarget", at=300, length=0, groups=["unet"],
+                 new_spec=_spec("constant", 0, SHORT,
+                                {"lr_decay_steps": 321,
+                                 "lr_decay_shape": "rex",
+                                 "lr_floor_ratio": 0.0}))
+
+    active = timeline.active_spec(run_spec, 400)
+    assert (active.command_decay_length, active.command_decay_shape) == (
+        200, "linear")
+    timeline.add("decay", at=400, length=active.command_decay_length,
+                 shape=active.command_decay_shape)
+    te = specs["text_encoder_1"]
+    assert timeline.multiplier(te, 500) == pytest.approx(0.5)
+    assert timeline.multiplier(te, 600) == pytest.approx(0.0)

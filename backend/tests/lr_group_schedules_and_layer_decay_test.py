@@ -73,6 +73,7 @@ from core.training.base_trainer import (  # noqa: E402
 )
 from core.training.lr_schedules import (  # noqa: E402
     LR_SCHEDULER_NAMES,
+    WARN_SELECTOR_ON_UNGROUPED_RUN,
     ScheduleTimeline,
     apply_layer_decay,
     build_depth_map,
@@ -241,8 +242,12 @@ def test_a_default_run_is_bit_identical_to_the_previous_commit(
     before = previous_lr_schedules.resolve_spec(
         BUSY_CONFIG, warmup_steps=20, total_steps=500, name=name,
         advance_interval=gas)
-    # Two classes, so compare the fields rather than the dataclasses.
-    assert dataclasses.asdict(now) == dataclasses.asdict(before)
+    # Two classes, so compare the fields rather than the dataclasses. R2's
+    # group identity has no counterpart in the old build; unset is what makes
+    # it inert, so it is asserted rather than compared.
+    fields_now = dataclasses.asdict(now)
+    assert fields_now.pop("group") is None
+    assert fields_now == dataclasses.asdict(before)
 
     timeline, old_timeline = ScheduleTimeline(), previous_lr_schedules.ScheduleTimeline()
     timeline.set_total_steps(now.total_steps)
@@ -373,7 +378,7 @@ def test_a_component_no_group_carries_is_reported_not_applied():
     spec = resolve_spec(probe.config, warmup_steps=0, total_steps=100,
                         name="cosine")
     specs, output = _quiet(resolve_lr_group_specs, probe, spec, 100)
-    assert specs == [spec]
+    assert specs == [spec.for_group("unet")]
     assert "text_encoder_2" in output and "lr_group_schedules" in output
 
 
@@ -408,6 +413,175 @@ def test_relora_ignores_the_mapping_and_says_so():
     specs, output = _quiet(resolve_lr_group_specs, probe, spec, 100)
     assert specs is None
     assert "ReLoRA" in output
+
+
+# ---------------------------------------------------------------------------
+# R2: a `groups`-scoped retarget through the lambdas the trainer builds
+# ---------------------------------------------------------------------------
+
+def test_the_resolved_group_specs_carry_their_component_name():
+    """D24's identity comes from the optimizer group's `component`, which is
+    what `lr_group_schedules` itself resolves against."""
+    probe, spec, timeline, scheduler = _two_group_probe(
+        {"text_encoder_1": "constant"})
+    assert [s.group for s in probe.lr_group_specs] == ["unet", "text_encoder_1"]
+
+
+def test_a_scoped_retarget_reaches_only_that_component_s_lambda():
+    # `linear`, not `constant`: a group held at 1.0 would read the same whether
+    # the retarget skipped it or replaced it with a curve anchored at 1.0.
+    probe, spec, timeline, scheduler = _two_group_probe(
+        {"text_encoder_1": "linear"})
+    unet, te = scheduler.lr_lambdas
+    before = [te(step) for step in range(0, 101, 5)]
+
+    assert timeline.add("retarget", at=50, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=100, name="constant"),
+        length=0, groups=["unet"]) == "applied"
+    # anchor=restart: the DiT holds the rate it had at 50, cosine(50) = 0.5.
+    assert unet(75) == pytest.approx(0.5)
+    assert [te(step) for step in range(0, 101, 5)] == before
+
+
+def test_with_group_schedules_off_a_scoped_retarget_reaches_every_lambda(capsys):
+    """§19.3's last row end to end: no mapping means no identities, so the
+    selector applies to all rather than being refused -- and D37 says so at
+    acceptance time."""
+    probe = _Probe(config={"lr_floor_ratio": 0.0})
+    probe.optimizer = torch.optim.AdamW([
+        {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-4,
+         "name": "unet", "component": "unet"},
+        {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-5,
+         "name": "text_encoder_1", "component": "text_encoder_1"},
+    ])
+    spec = resolve_spec(probe.config, warmup_steps=0, total_steps=100,
+                        name="cosine")
+    specs = resolve_lr_group_specs(probe, spec, 100)
+    assert specs is None
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    scheduler = build_lr_scheduler(probe.optimizer, spec, timeline,
+                                   group_specs=specs)
+    assert timeline.grouped_specs is False
+    timeline.add("retarget", at=50, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=100, name="constant"),
+        length=0, groups=["unet"])
+    for lambda_ in scheduler.lr_lambdas:
+        assert lambda_(75) == pytest.approx(lambda_(50))
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN in capsys.readouterr().out
+
+
+def test_the_build_tells_the_timeline_the_groups_carry_identities(capsys):
+    """D37's condition comes from what `build_lr_scheduler` installed, not
+    from the event: a run WITH per-component schedules takes a selector
+    silently."""
+    probe, spec, timeline, scheduler = _two_group_probe(
+        {"text_encoder_1": "linear"})
+    assert timeline.grouped_specs is True
+    timeline.add("retarget", at=50, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=100, name="constant"),
+        length=0, groups=["unet"])
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
+
+
+def test_a_depth_split_group_keeps_its_component_s_identity():
+    """§17.3: LLRD puts the depth in the group NAME and keeps `component`, so
+    a `groups: ["unet"]` retarget still reaches every depth of the DiT."""
+    probe = _Probe(config={"lr_group_schedules": {"text_encoder_1": "linear"},
+                           "lr_floor_ratio": 0.0})
+    probe.optimizer = torch.optim.AdamW([
+        {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-4,
+         "name": "unet.d00", "component": "unet"},
+        {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-4,
+         "name": "unet.d01", "component": "unet"},
+        {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-5,
+         "name": "text_encoder_1", "component": "text_encoder_1"},
+    ])
+    spec = resolve_spec(probe.config, warmup_steps=0, total_steps=100,
+                        name="cosine")
+    specs, _ = _quiet(resolve_lr_group_specs, probe, spec, 100)
+    assert [s.group for s in specs] == ["unet", "unet", "text_encoder_1"]
+
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    scheduler = build_lr_scheduler(probe.optimizer, spec, timeline,
+                                   group_specs=specs)
+    timeline.add("retarget", at=50, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=100, name="constant"),
+        length=0, groups=["unet"])
+    d00, d01, te = scheduler.lr_lambdas
+    assert d00(75) == d01(75) == pytest.approx(0.5)
+    assert te(75) == pytest.approx(0.25)   # still its own linear curve
+
+
+def test_the_group_states_report_a_scoped_retarget_only_where_it_landed():
+    probe, spec, timeline, scheduler = _two_group_probe(
+        {"text_encoder_1": "constant"})
+    timeline.add("retarget", at=25, new_spec=resolve_spec(
+        {}, warmup_steps=0, total_steps=100, name="linear"),
+        length=0, groups=["text_encoder_1"])
+    states = lr_schedule_group_states(probe, spec, timeline, 50)
+    assert [s["schedule"] for s in states] == ["cosine", "linear"]
+
+
+# ---------------------------------------------------------------------------
+# D40: the warning says why the groups share one schedule
+# ---------------------------------------------------------------------------
+
+def _one_group_probe(mapping, name="unet", component="unet", schedule="cosine"):
+    config = {"lr_floor_ratio": 0.0}
+    if mapping is not None:
+        config["lr_group_schedules"] = mapping
+    probe = _Probe(config=config)
+    group = {"params": [nn.Parameter(torch.zeros(2))], "lr": 1e-4}
+    if name:
+        group["name"] = name
+        group["component"] = component
+    probe.optimizer = torch.optim.AdamW([group])
+    spec = resolve_spec(probe.config, warmup_steps=0, total_steps=100,
+                        name=schedule)
+    specs, _ = _quiet(resolve_lr_group_specs, probe, spec, 100)
+    return probe, spec, specs
+
+
+@pytest.mark.parametrize("mapping,name,schedule,expected", [
+    (None, "unet", "cosine", "lr_group_schedules is not set"),
+    ({"unet": "linear"}, "unet", "relora", "ignored on a ReLoRA run"),
+    ({"unet": "linear"}, None, "cosine", "carry no component name"),
+])
+def test_every_ungrouped_path_records_why(mapping, name, schedule, expected):
+    probe, _, specs = _one_group_probe(mapping, name=name, schedule=schedule)
+    assert specs is None
+    assert expected in probe.lr_group_specs_ignored_reason
+
+
+def test_the_warning_gives_the_reason_instead_of_a_missing_key(capsys):
+    """Two of the three paths reach here with `lr_group_schedules` SET; telling
+    that operator the key is missing sends them after a bug that is not there."""
+    probe, spec, specs = _one_group_probe({"unet": "linear"}, name=None)
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    build_lr_scheduler(probe.optimizer, spec, timeline, group_specs=specs,
+                       ungrouped_reason=probe.lr_group_specs_ignored_reason)
+    timeline.add("retarget", at=50, length=0, groups=["unet"],
+                 new_spec=resolve_spec({}, warmup_steps=0, total_steps=100,
+                                       name="constant"))
+    out = capsys.readouterr().out
+    assert "carry no component name" in out
+    assert "has no lr_group_schedules" not in out
+    assert "share one LR schedule" in out
+
+
+def test_a_run_that_never_set_the_key_still_says_so(capsys):
+    probe, spec, specs = _one_group_probe(None)
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    build_lr_scheduler(probe.optimizer, spec, timeline, group_specs=specs,
+                       ungrouped_reason=probe.lr_group_specs_ignored_reason)
+    timeline.add("retarget", at=50, length=0, groups=["unet"],
+                 new_spec=resolve_spec({}, warmup_steps=0, total_steps=100,
+                                       name="constant"))
+    assert "lr_group_schedules is not set" in capsys.readouterr().out
 
 
 def test_a_spec_list_of_the_wrong_length_is_refused():

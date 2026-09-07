@@ -46,6 +46,12 @@ over ``length`` steps. The fold therefore returns a CHAIN of curves rather than
 one spec, and an ``anchor="restart"`` link is evaluated on its own axis whose
 origin is the event's step -- which is why every comparison between an event's
 ``at`` and a spec's ``warmup_steps`` rebases (§19.3's last row).
+
+R2 makes the ``groups`` selector real: a spec carries the identity of the param
+group it was resolved for (``ScheduleSpec.group``, D24), and the fold skips a
+scoped retarget for every other group. A spec with no identity -- which is
+every one a run without ``lr_group_schedules`` builds -- keeps R1's behaviour
+of taking every event.
 """
 
 from __future__ import annotations
@@ -58,6 +64,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 # SSoT: api/param_defaults.TRAINING_DEFAULTS.
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+from core.training.training_events import emit_training_warning
 
 __all__ = [
     "BLEND_SHAPE_NAMES",
@@ -72,6 +79,7 @@ __all__ = [
     "STATE_FLOOR",
     "STATE_NAMES",
     "STATE_RECOVERING",
+    "WARN_SELECTOR_ON_UNGROUPED_RUN",
     "ScheduleSpec",
     "ScheduleTimeline",
     "apply_layer_decay",
@@ -152,12 +160,34 @@ _CURVES = ("constant", "linear", "cosine", "cosine_with_restarts",
 
 # `add` results meaning "recorded, but the state machine must never fold it":
 # the request was refused, for every group, before it became an event.
-# The eight `retarget` ones are §19.4, in the order `_refuse_retarget` tests them.
+# The `retarget` ones are §19.4 in the order `_refuse_retarget` tests them;
+# rule 7 has two codes since D34 split the empty selector off.
 _REFUSED = ("rejected_during_warmup", "rejected_zero_length",
             "rejected_backdated", "rejected_unknown_scheduler",
             "rejected_non_positive_gain", "rejected_negative_length",
             "rejected_floor_out_of_range", "rejected_no_remaining_span",
-            "rejected_warmup_exceeds_span", "rejected_unknown_group")
+            "rejected_warmup_exceeds_span", "rejected_empty_group_selector",
+            "rejected_unknown_group")
+
+# D43: the order `_score` reports a mixed outcome in. Ranked by what the
+# operator has to know: an effect beats "nothing happened", and every
+# non-refusal beats every refusal (which is what keeps the `noop` conversion
+# unanimous). Positional tie-breaking made the answer depend on param-group
+# order.
+_RESULT_PRECEDENCE = (
+    "applied",
+    "disarmed_scheduled_decay",
+    "ignored_already_decaying",
+    "ignored_already_recovering",
+    "ignored_no_active_decay",
+    "rejected_during_warmup",
+    "rejected_zero_length",
+)
+
+
+# §13's code for D37: a `groups` selector on a run whose param groups all share
+# one spec. Accepted (§19.3), and it reaches every group.
+WARN_SELECTOR_ON_UNGROUPED_RUN = "lr_retarget_group_selector_ignored"
 
 
 @dataclass(frozen=True)
@@ -204,6 +234,20 @@ class ScheduleSpec:
     # `relora` only: the ramp length after a merge. The run's first warmup is
     # `warmup_steps`; every later segment uses this one (§4.2).
     relora_restart_warmup_steps: int = 0
+    # D24: which param group this spec belongs to, or None when the run puts
+    # one spec on every group (`lr_group_schedules` off, and every construction
+    # site that predates R2). None matches every `groups` selector, which is
+    # §19.3's last row; a name matches only its own.
+    group: Optional[str] = None
+
+    def for_group(self, name: Optional[str]) -> "ScheduleSpec":
+        """This spec as one param group's, carrying that group's identity.
+
+        The only place an identity is stamped: it comes from the optimizer
+        group's `component`, so an LLRD depth split (`unet.d03`) keeps its
+        component's identity rather than becoming a group of its own.
+        """
+        return replace(self, group=None if name is None else str(name))
 
     def to_dict(self) -> Dict[str, Any]:
         """The JSON form a ``retarget`` event carries (§19.5).
@@ -214,9 +258,24 @@ class ScheduleSpec:
         ``decay_start_ratio`` is its only source. ``wsd``'s configured ``D``
         (no ratio) stays: D8 makes it a real-axis quantity, read from the
         retarget's own origin.
+
+        ``group`` is dropped as well: it names the addressee, not the shape,
+        and who a retarget reaches is the event's own ``groups`` selector. A
+        payload that carried an identity could install a spec claiming a group
+        it was not put on.
+
+        ``command_decay_length`` / ``command_decay_shape`` are dropped for the
+        same reason (D42): they are the RUN's `start_decay` parameters, read by
+        the RPC path off whatever spec is in force, and the representative spec
+        absorbs every scoped retarget. Carried in the payload, a retarget
+        scoped to one group would hand its `lr_decay_steps` to the groups it
+        never named -- the defect D38/D41 removed, arriving by another route.
+        ``_retarget`` re-stamps them from the curve being replaced.
         """
         payload: Dict[str, Any] = {"v": SPEC_VERSION}
         payload.update(asdict(self))
+        for key in ("group", "command_decay_length", "command_decay_shape"):
+            payload.pop(key)
         if self.decay_start_ratio is not None:
             payload.pop("decay_start_step")
         return payload
@@ -345,6 +404,8 @@ class ScheduleTimeline:
         self.events: List[Dict[str, Any]] = []
         self._next_seq = 0
         self.spec: Optional[ScheduleSpec] = None
+        self.group_specs: List[ScheduleSpec] = []
+        self.ungrouped_reason: Optional[str] = None
         if events:
             self.load(events)
 
@@ -408,40 +469,61 @@ class ScheduleTimeline:
                 "decay/cancel need a spec: build_lr_scheduler binds the "
                 "representative one, or pass spec= explicitly")
 
-        # What gets baked in comes from the spec in force AT `at`, which the
-        # fold reports; `resolved` only seeds it.
-        curve = self._fold_curve(resolved, at)
-        active = curve.spec
-
         event: Dict[str, Any] = {"kind": kind, "at": at,
                                  "request_id": request_id}
         issued = payload.get("issued")
         if issued is not None:
             event["issued"] = int(issued)
         length = payload.get("length")
-        if kind == "decay":
-            event["length"] = None if length is None else int(length)
-            event["shape"] = str(payload.get("shape") or active.decay_shape)
+        if length is not None:
+            event["length"] = int(length)
+        shape = payload.get("shape") if kind == "decay" else None
+        if shape:
+            event["shape"] = str(shape)
             _decay_shape(event["shape"])  # refuse a P3 shape at the seam
-        else:
-            # §5.4: the recovery length is baked in, so a later config edit
-            # cannot reshape a cancel that already happened.
-            event["length"] = int(active.warmup_steps if length is None
-                                  else length)
 
-        if kind == "decay":
-            _, result = self._apply_decay(curve, event)
-        else:
-            _, result = self._apply_cancel(curve, event)
+        curves = [self._fold_curve(group_spec, at)
+                  for group_spec in (self.group_specs or [resolved])]
+        # D41: what the caller left open is baked when every bound group would
+        # use the SAME value, and only then. §10.1 keeps the numeric parameters
+        # run-wide, so that is every run until a scoped retarget installs a spec
+        # that differs -- which is the one case where per-group derivation at
+        # fold time is the right answer rather than a lost §5.4 guarantee.
+        if kind == "cancel" and length is None:
+            recoveries = {int(c.spec.warmup_steps) for c in curves}
+            if len(recoveries) == 1:
+                event["length"] = recoveries.pop()
+        elif kind == "decay" and not shape:
+            shapes = {str(c.spec.decay_shape) for c in curves}
+            if len(shapes) == 1:
+                event["shape"] = shapes.pop()
+
+        result = self._score(kind, event, curves)
         if result in _REFUSED:
             # Kept so re-delivering the request_id answers the same thing.
-            # `noop` is a kind the state machine does not know, so a refused
-            # command can never take effect for any group.
+            # `noop` is a kind the state machine does not know, so a command
+            # EVERY group refused can never take effect for any of them.
             event["refused_kind"] = event["kind"]
             event["kind"] = "noop"
         event["result"] = result
         self._append(event)
         return result
+
+    def _score(self, kind: str, event: Mapping[str, Any],
+               curves: Sequence["_Curve"]) -> str:
+        """One result code for a `decay`/`cancel`, scored per group (D38).
+
+        Scored on every bound group's curve, because the representative spec is
+        UNSTAMPED and therefore absorbs scoped retargets that no param group
+        received: scoring on it alone turned an event a group would have taken
+        into a `noop` for everyone. The aggregate is the highest-ranked outcome
+        (D43), never a positional one -- the per-group detail is R3's to
+        surface, but which string the operator gets must not depend on the
+        order the optimizer happens to list its param groups in.
+        """
+        state_fn = self._apply_decay if kind == "decay" else self._apply_cancel
+        results = [state_fn(curve, event)[1] for curve in curves]
+        return min(results, key=_result_rank)
 
     def _add_retarget(self, at: int, seed: Optional[ScheduleSpec],
                       request_id: Optional[str],
@@ -494,6 +576,21 @@ class ScheduleTimeline:
         if result in _REFUSED:
             event["refused_kind"] = event["kind"]
             event["kind"] = "noop"
+        elif groups and not self.grouped_specs:
+            # D37/D39: decided HERE, not at evaluation. `scope` freezes the
+            # REACH the warning describes; without it, adding
+            # lr_group_schedules before a future-dated event fires would make
+            # the stored warning false about what the run did.
+            event["scope"] = "all"
+            event["warning"] = WARN_SELECTOR_ON_UNGROUPED_RUN
+            reason = (f" ({self.ungrouped_reason})" if self.ungrouped_reason
+                      else "")
+            emit_training_warning(
+                f"LR retarget at step {at} names group(s) {sorted(groups)}, "
+                f"but this run's optimizer param groups all share one LR "
+                f"schedule{reason}, so the retarget applies to every one of "
+                f"them.",
+                code=WARN_SELECTOR_ON_UNGROUPED_RUN)
         event["result"] = result
         self._append(event)
         return result
@@ -530,9 +627,11 @@ class ScheduleTimeline:
         # warmup that ends exactly at the run's end leaves no step at peak.
         if new_spec.warmup_steps >= span:                           # 5
             return "rejected_warmup_exceeds_span"
-        if groups and known_groups is not None:                     # 7
-            allowed = {str(g) for g in known_groups}
-            if any(g not in allowed for g in groups):
+        if groups is not None and not groups:                       # 7 (D34)
+            return "rejected_empty_group_selector"
+        if groups and known_groups is not None:                     # 7 (D35)
+            allowed = {_fold_name(g) for g in known_groups}
+            if any(_fold_name(g) not in allowed for g in groups):
                 return "rejected_unknown_group"
         return None
 
@@ -569,10 +668,28 @@ class ScheduleTimeline:
         return [dict(e) for e in self._sorted()
                 if _issued(e) <= int(upto_step)]
 
-    def bind_spec(self, spec: ScheduleSpec) -> None:
-        """Name the representative spec `add` scores result codes against."""
+    def bind_spec(self, spec: ScheduleSpec,
+                  group_specs: Optional[Sequence[ScheduleSpec]] = None,
+                  ungrouped_reason: Optional[str] = None) -> None:
+        """Name the run's specs: the representative one, and this run's actual
+        per-group list (D38 scores against it, D37 asks it for identities).
+
+        Read only by `add`, never by a multiplier, so invariant 2 is untouched.
+        Build precedes every `add` in a process, resume included.
+        ``ungrouped_reason`` is D40's: why a run that DID set
+        ``lr_group_schedules`` still has one spec on every group.
+        """
         if self.spec is None:
             self.spec = spec
+        if group_specs is not None:
+            self.group_specs = list(group_specs)
+        if ungrouped_reason is not None:
+            self.ungrouped_reason = str(ungrouped_reason)
+
+    @property
+    def grouped_specs(self) -> bool:
+        """Whether this run's param groups carry identities (D37)."""
+        return any(s.group is not None for s in self.group_specs)
 
     # -- pure reads ------------------------------------------------------
 
@@ -685,6 +802,8 @@ class ScheduleTimeline:
                 curve = replace(curve,
                                 state=self._apply_cancel(curve, event)[0])
             elif kind == "retarget":
+                if not _selects(event, curve.spec):
+                    continue
                 curve = self._retarget(self._advanced(curve, at), event)
         return self._advanced(curve, step)
 
@@ -696,13 +815,18 @@ class ScheduleTimeline:
         or recovery included. ``decay_disarmed`` does not carry over: the new
         spec's own configured decay is armed.
 
-        R2 owns ``groups``: the event stores the selector, but a retarget here
-        replaces the curve of EVERY spec. Filtering needs a group identifier on
-        the spec (D24) -- without one, matching by name would apply the
-        retarget to whichever group happens to share a schedule.
+        Only reached for a curve the event's ``groups`` selects (``_selects``).
+        The payload is the SHAPE; what stays with the chain is the group
+        identity (D24 -- so a second scoped retarget still knows whose chain it
+        is on) and the run's `start_decay` parameters (D42 -- which are not the
+        shape, and without the re-stamp would fall back to the dataclass
+        defaults and lose the run's configured lr_decay_steps/shape).
         """
         at = int(event.get("at", 0))
-        spec = ScheduleSpec.from_dict(event["spec"])
+        spec = replace(ScheduleSpec.from_dict(event["spec"]),
+                       group=curve.spec.group,
+                       command_decay_length=curve.spec.command_decay_length,
+                       command_decay_shape=curve.spec.command_decay_shape)
         anchor = str(event.get("anchor") or "restart")
         gain = event.get("gain")
         gain = 1.0 if gain is None else float(gain)
@@ -864,6 +988,47 @@ class ScheduleTimeline:
     def _own_base(self, curve: _Curve, step: int, disarmed: bool) -> float:
         return base_multiplier(curve.spec, curve.view, step - curve.origin,
                                decay_disarmed=disarmed)
+
+
+def _result_rank(result: str) -> int:
+    """D43's order. An unlisted code sorts last so a new one cannot outrank a
+    refusal by accident."""
+    return (_RESULT_PRECEDENCE.index(result) if result in _RESULT_PRECEDENCE
+            else len(_RESULT_PRECEDENCE))
+
+
+def _fold_name(value: Any) -> str:
+    """One spelling for a component name (D35).
+
+    §10.1 resolves ``lr_group_schedules`` case-folded, so acceptance and the
+    fold have to agree: a name that passes rule 7 must reach its group.
+    """
+    return str(value).strip().lower()
+
+
+def _selects(event: Mapping[str, Any], spec: ScheduleSpec) -> bool:
+    """Whether a ``groups``-scoped event reaches this group's curve (D24).
+
+    ``groups: null`` is every group, R1's meaning and every earlier event's. A
+    spec with no identity is a run with one spec on every param group, where
+    §19.3's last row applies the selector to all rather than refusing it.
+    An empty list names NO group (D34): ``add`` refuses it, so one can only
+    arrive from a state file written before D34, where reading it as "every
+    group" would be the silent global replacement D24 exists to prevent.
+    """
+    if event.get("scope") == "all":
+        # D39: the reach was decided when the event was accepted. Re-deriving
+        # it here would let a config edit between issue and effect change what
+        # a stored event does -- and falsify the warning saved beside it.
+        return True
+    groups = event.get("groups")
+    if groups is None:
+        return True
+    if not groups:
+        return False
+    if spec.group is None:
+        return True
+    return _fold_name(spec.group) in {_fold_name(g) for g in groups}
 
 
 def _order(event: Mapping[str, Any]) -> Tuple[int, int]:
@@ -1314,6 +1479,7 @@ def build_lr_scheduler(
     spec: ScheduleSpec,
     timeline: ScheduleTimeline,
     group_specs: Optional[Sequence[ScheduleSpec]] = None,
+    ungrouped_reason: Optional[str] = None,
 ) -> LambdaLR:
     """The only place this project constructs an LR scheduler.
 
@@ -1326,8 +1492,13 @@ def build_lr_scheduler(
     spec on every group, which is what every run does unless
     ``lr_group_schedules`` is set. The specs share ONE timeline -- only the
     event list is shared, the overlay state is derived per spec (§17.3).
+
+    ``ungrouped_reason`` is why a run that DID set ``lr_group_schedules`` ended
+    up with one spec on every group anyway (D40); it only ever reaches a
+    warning message.
     """
-    timeline.bind_spec(spec)
+    timeline.bind_spec(spec, group_specs=group_specs,
+                       ungrouped_reason=ungrouped_reason)
     groups = list(optimizer.param_groups)
     if group_specs is None:
         lr_lambda = make_lambda(spec, timeline)

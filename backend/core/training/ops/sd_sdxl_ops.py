@@ -100,8 +100,8 @@ def load_components(trainer) -> None:
         trainer.tokenizer = temp_pipeline.tokenizer
         trainer.unet = temp_pipeline.unet
 
-        # Save original scheduler for inference (sample generation)
-        # This preserves the model's original scheduler config (prediction_type, timestep_spacing, etc.)
+        # Sample-generation scheduler; from_single_file always reports
+        # prediction_type="epsilon", so sampling_scheduler_source() realigns it.
         trainer.original_scheduler = temp_pipeline.scheduler
 
         # Use DDPMScheduler for training
@@ -1127,6 +1127,7 @@ def generate_sample(
     # SD/SDXL: Use custom_sampling_loop
     from core.inference.custom_sampling import custom_sampling_loop
     from core.inference.schedulers import get_scheduler
+    from core.training.temp_pipeline import sampling_scheduler_source
 
     # Set models to eval mode
     trainer.unet.eval()
@@ -1171,13 +1172,8 @@ def generate_sample(
                 schedule_type_mapped = "uniform"
 
             # Create scheduler using get_scheduler()
-            class SchedulerContainer:
-                def __init__(self, scheduler):
-                    self.scheduler = scheduler
-
-            scheduler_container = SchedulerContainer(trainer.original_scheduler)
             scheduler = get_scheduler(
-                pipeline=scheduler_container,
+                pipeline=sampling_scheduler_source(trainer),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
@@ -1212,13 +1208,8 @@ def generate_sample(
                 schedule_type_mapped = "uniform"
 
             # Create scheduler using get_scheduler()
-            class SchedulerContainer:
-                def __init__(self, scheduler):
-                    self.scheduler = scheduler
-
-            scheduler_container = SchedulerContainer(trainer.original_scheduler)
             scheduler = get_scheduler(
-                pipeline=scheduler_container,
+                pipeline=sampling_scheduler_source(trainer),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )

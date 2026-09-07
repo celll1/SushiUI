@@ -841,6 +841,7 @@ class ControlNetTrainer(BaseTrainer):
         from core.inference.custom_sampling import custom_sampling_loop
         from core.inference.schedulers import get_scheduler
         from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+        from core.training.temp_pipeline import sampling_scheduler_source
 
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
@@ -876,13 +877,8 @@ class ControlNetTrainer(BaseTrainer):
             if schedule_type == "sgm_uniform":
                 schedule_type_mapped = "uniform"
 
-            class SchedulerContainer:
-                def __init__(self, scheduler):
-                    self.scheduler = scheduler
-
-            scheduler_container = SchedulerContainer(self.original_scheduler)
             scheduler = get_scheduler(
-                pipeline=scheduler_container,
+                pipeline=sampling_scheduler_source(self),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
@@ -1056,6 +1052,7 @@ class ControlNetTrainer(BaseTrainer):
         from core.inference.custom_sampling import custom_sampling_loop
         from core.inference.schedulers import get_scheduler
         from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+        from core.training.temp_pipeline import sampling_scheduler_source
 
         # Resize condition image to sample dimensions
         condition_image = condition_image.resize((width, height), Image.LANCZOS)
@@ -1102,13 +1099,8 @@ class ControlNetTrainer(BaseTrainer):
             if schedule_type == "sgm_uniform":
                 schedule_type_mapped = "uniform"
 
-            class SchedulerContainer:
-                def __init__(self, scheduler):
-                    self.scheduler = scheduler
-
-            scheduler_container = SchedulerContainer(self.original_scheduler)
             scheduler = get_scheduler(
-                pipeline=scheduler_container,
+                pipeline=sampling_scheduler_source(self),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )

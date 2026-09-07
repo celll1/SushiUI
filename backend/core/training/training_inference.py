@@ -365,7 +365,10 @@ class TrainingPreviewGenerator:
             custom_img2img_sampling_loop,
             custom_inpaint_sampling_loop,
         )
-        from .temp_pipeline import build_temp_pipeline_for_trainer
+        from .temp_pipeline import (
+            build_temp_pipeline_for_trainer,
+            sampling_scheduler_source,
+        )
 
         t = self.trainer
         prompt = params.get("prompt") or ""
@@ -389,11 +392,8 @@ class TrainingPreviewGenerator:
         schedule_type_mapped = params.get("schedule_type", "uniform")
         if schedule_type_mapped == "sgm_uniform":
             schedule_type_mapped = "uniform"
-        # get_scheduler expects a "pipeline" with .scheduler attr
-        class _SchedHolder:
-            def __init__(self, sch): self.scheduler = sch
         scheduler = get_scheduler(
-            pipeline=_SchedHolder(t.original_scheduler),
+            pipeline=sampling_scheduler_source(t),
             sampler=params.get("sampler", "euler"),
             schedule_type=schedule_type_mapped,
         )

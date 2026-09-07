@@ -353,6 +353,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   bundle_vae: false,
   vae_swap_source: "",
   sensenova_gen_patch: 0,
+  sensenova_noise_scale_gain: 0,
+  sensenova_noise_scale_auto: false,
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
   activation_dispatch_seed_coef: 0.000024,
@@ -4063,6 +4065,57 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       arch={baseModelArch || null}
                       baseModelPath={baseModelPath || null}
                     />
+                  )}
+
+                  {baseModelArch === "sensenova" && trainingMethod === "full_finetune"
+                    && !!params.vae_swap_source && (
+                    <div className="border border-gray-700 rounded p-2 space-y-2">
+                      <label className="block text-xs text-gray-400">
+                        Generation noise scale (SenseNova, swapped latent space)
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!params.sensenova_noise_scale_auto}
+                          onChange={(e) => setParams(prev => ({
+                            ...prev,
+                            sensenova_noise_scale_auto: e.target.checked,
+                            sensenova_noise_scale_gain: e.target.checked
+                              ? 0 : prev.sensenova_noise_scale_gain,
+                          }))}
+                          className="w-3.5 h-3.5" />
+                        <span className="text-xs text-gray-300">
+                          Measure from this run&apos;s data at start
+                        </span>
+                      </label>
+                      {!params.sensenova_noise_scale_auto && (
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">
+                            Gain (0 = keep the checkpoint&apos;s value)
+                          </label>
+                          <input
+                            type="number" min={0} step={0.001}
+                            value={params.sensenova_noise_scale_gain ?? 0}
+                            onChange={(e) => updateParam(
+                              "sensenova_noise_scale_gain",
+                              parseFloat(e.target.value) || 0)}
+                            className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                        </div>
+                      )}
+                      <p className="text-xs text-gray-500">
+                        The noise-scale formula carries no data-scale term, so the
+                        checkpoint&apos;s constant encodes the RMS of the data it was
+                        trained on. That distribution is unpublished; this repo&apos;s
+                        training images stand in for it at 0.6842 in [-1,1]. A VAE
+                        normalises to unit variance, so a swapped run trains at a
+                        different signal-to-noise ratio than the schedule was
+                        calibrated for, and 1 / 0.6842 = 1.462 restores it. The scale
+                        is also a conditioning input, so a gain moves that too.
+                        Written into the checkpoint, so training and inference read
+                        one value; a checkpoint that already records a gain inherits
+                        it rather than re-measuring.
+                      </p>
+                    </div>
                   )}
 
                   <div>

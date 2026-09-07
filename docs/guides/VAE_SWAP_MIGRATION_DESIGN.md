@@ -965,7 +965,9 @@ ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを�
 
 - 8× VAE で `P = 8` はトークン幅 64px。1536px で 576 トークン（`P = 4` の 2304 に対し 1/4）。
 - `compute_noise_scale` は `sqrt(トークン数/64) × noise_scale` なので、1536px で
-  6.0 → 3.0 に下がる。**再較正はしない**（§10.4 の判断は据え置き）。swap 時に
+  6.0 → 3.0 に下がる。**この分の再較正はしない**: トークン数が実際に減っている以上、
+  式は設計どおりに応答しており、巻き戻す理由がない（§10.4 が入れる gain はデータ分散の
+  変化分だけを補正するもので、これとは独立）。swap 時に
   `code="sensenova_gen_patch_off_calibration"` の警告を 1 件出し、トークン数と
   `noise_scale` の実値を文面に載せる。
 - `_calculate_dynamic_mu` は影響を受けない。`_apply_time_schedule` は入口で
@@ -1016,13 +1018,37 @@ ViT patch-embed（カーネル 2）、`fm_head`（`k = 1`）だけがこれを�
 
 ### 10.4 決定: `noise_scale` と潜在の正規化
 
-トークン数が保存されるので `compute_noise_scale` の式と `noise_scale_base_image_seq_len`、
-`noise_scale_embedder` は**変更しない**。潜在は VAE の正規化（§8.4）で単位スケール付近に揃える。
-RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与える影響は未測定であり、
-§10.6 の smoke で `noise_scale` 値が学習済みレンジ（`:733` 「1024px で 4」、latent 版では
-1024 トークン、すなわち `128 × vae_scale_factor` px 四方で 4）に入っていることを確認する。
-較正の再導出（ブリーフ §4.7 (i)）と `noise_scale_mode` 変更（(iii)）は、smoke 後の実験結果で判断する
-（本書では決めない）。
+`compute_noise_scale` の式、`noise_scale_base_image_seq_len`、`noise_scale_embedder` は
+**変更しない**。潜在は VAE の正規化（§8.4）で単位スケール付近に揃える。
+
+**2026-09-07 追記（当初の保留を解除）**: RGB `[-1,1]` と単位分散潜在の分散差は測定された。
+実バケット解像度・トレーナー自身の前処理で、画像 500 枚（本リポジトリの 20 データセット）の
+RMS は **0.6842**（mean +0.2359、std 0.6423、データセット別 0.575–0.746）、
+SDXL 正規化潜在は 60 枚で **1.0130**（チャネル別 RMS 1.359 / 0.845 / 0.946 / 0.805）。
+std ではなく RMS を採るのは、平均が 0 でない（+0.236）一方でノイズは 0 平均であり、
+フロー標本の信号項が `t * RMS(x0)` だからである。
+
+`compute_noise_scale` はデータスケールの項を持たないので、この RMS はチェックポイントの
+`noise_scale` 定数に焼き込まれている。したがって swap 後の run は較正時と異なる SNR で学習する。
+補正は**式ではなく `config.noise_scale` に対する gain** として入れる:
+
+- パラメータ `sensenova_noise_scale_gain`（`0` = 継承、`INHERIT_NOISE_SCALE_GAIN`）と
+  `sensenova_noise_scale_auto`（run 自身のデータから測定）。既定はどちらも「何もしない」。
+- gain は再較正**前**の値（`gen_noise_scale_base` として 1 度だけ記録）に掛ける。
+  resume は `apply_vae_swap` を再実行するので、これが無いと gain が累乗する。
+- 結果は checkpoint 自身の config ブロックの `noise_scale` に書かれる。モデルはそこから
+  再構築されるため、**学習と推論が同じ 1 つの値を読む**（`latent_space.apply_noise_scale_gain`）。
+- full fine-tune 限定。LoRA は config ブロックを保存しないので、run 中だけ有効で
+  推論に伝わらない再較正になる（§10.2 と同じ、base 自身の `component.vae.*` 宣言経由で
+  `apply_vae_swap` に入る経路を塞ぐ必要がある）。
+- 名目値 `σ_latent := 1.0`（`scaling_factor` の定義）を採ると gain は `1/0.6842 = 1.462`。
+  実測比 1.0130/0.6842 = 1.481 とは標本誤差の範囲で一致し、名目値の方が VAE 非依存。
+
+0.6842 は本リポジトリのデータで測った**代用値**である。SenseNova の学習コーパスは非公開で
+測定できない。また gain は `noise_scale_embedder` への条件入力
+（`noise_scale / noise_scale_max_value`）も動かす。生成結果に対する効果は依然として未測定であり、
+品質の主張は §10.6-5 のとおり行わない。`noise_scale_mode` の変更（ブリーフ §4.7 (iii)）は
+引き続き行わない。
 
 ### 10.5 変更点一覧
 
@@ -1193,7 +1219,9 @@ RGB `[-1,1]` と単位分散潜在の分散差が `noise_scale` 較正に与え�
 - **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外で、任意の空間縮小率を受理する（§10.2）。
 - **生成側 override でのフルモデル抽出**: 提供しない（§7.2）。
 - **重みスケール補正・warmup/freeze スケジュール**: 行わない（D4）。効果の主張は実測後に限る。
-- **SenseNova の `noise_scale` 再較正と `encoder_pinv` ヘッド初期化**: 実験結果待ち（§10.3, §10.4）。
+- **SenseNova の `encoder_pinv` ヘッド初期化**: 実験結果待ち（§10.3）。
+- **SenseNova の `noise_scale` 再較正**: opt-in で実装済み（§10.4、2026-09-07）。既定は無効。
+  生成品質に対する効果は未測定。
 
 ---
 

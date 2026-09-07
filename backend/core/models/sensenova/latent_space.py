@@ -58,6 +58,25 @@ INHERIT_GEN_PATCH = 0
 NATIVE_GEN_LATENT_PATCH = 4
 
 
+#: RMS of a training image in ``[-1,1]``, the denominator of every noise-scale
+#: gain below. Measured 2026-09-06 over 500 images from this repo's 20 dataset
+#: roots, at real bucket resolution through the trainer's own preprocessing:
+#: 0.6842 (mean +0.2359, std 0.6423; per-dataset 0.575-0.746).
+#:
+#: A STAND-IN for the distribution the pixel checkpoint was actually calibrated
+#: on, which is unpublished and cannot be measured. RMS rather than std because
+#: the mean is not zero (+0.236) while the noise is, and the flow sample's
+#: signal term is ``t * RMS(x0)``.
+PIXEL_RMS = 0.6842
+
+#: ``sensenova_noise_scale_gain = 0`` means INHERIT: keep whatever noise scale
+#: the loaded checkpoint carries. Served as the default for the same reason as
+#: ``INHERIT_GEN_PATCH`` -- ``update_training_run`` materialises every Pydantic
+#: default, so a positive default would make an unrelated UI edit read as a
+#: request to recalibrate a run's noise schedule.
+INHERIT_NOISE_SCALE_GAIN = 0.0
+
+
 def validate_gen_patch(patch: Any, *, label: str = "generation patch") -> int:
     """The one rule on ``P``, asked in one place. Returns it as an int.
 
@@ -295,6 +314,67 @@ def latent_config_dict(config_dict: Optional[Dict[str, Any]], *, channels: int,
     out["gen_in_channels"] = int(channels)
     out["gen_patch_size"] = validate_gen_patch(patch)
     return out
+
+
+def noise_scale_gain_for_rms(latent_rms: float) -> float:
+    """The ``noise_scale`` multiplier that puts a latent run back on the pixel
+    checkpoint's SNR profile, given the measured RMS of its latents.
+
+    ``z = t*x0 + (1-t)*eps*noise_scale`` makes the signal-to-noise ratio
+    ``t*RMS(x0) / ((1-t)*noise_scale)``. The formula in ``compute_noise_scale``
+    carries no data-scale term, so ``RMS(x0)`` is baked into its constant; a VAE
+    swap changes it and this restores the ratio.
+    """
+    value = float(latent_rms)
+    if not value > 0:
+        raise ValueError(
+            f"latent RMS must be positive to derive a noise-scale gain, got {latent_rms!r}")
+    return value / PIXEL_RMS
+
+
+def apply_noise_scale_gain(transformer, config_dict, gain: float, *,
+                           provenance: str) -> Dict[str, Any]:
+    """Recalibrate the generation noise scale and return the new geometry block.
+
+    Idempotent by construction: the pre-recalibration value is recorded ONCE as
+    ``gen_noise_scale_base`` and every later application multiplies that, so a
+    resume -- which re-runs the swap against a checkpoint already carrying a
+    recalibrated ``noise_scale`` -- cannot compound the gain, and a changed gain
+    still lands on the right value.
+
+    Only ``noise_scale`` is read back by the model (``NEOChatConfig`` ->
+    ``transformer.noise_scale`` -> ``compute_noise_scale``), which is why the
+    same key serves training and inference with no second home.
+    """
+    value = float(gain)
+    if not value > 0:
+        raise ValueError(f"noise-scale gain must be positive, got {gain!r}")
+    out = dict(config_dict or {})
+    base = out.get("gen_noise_scale_base")
+    if base is None:
+        base = getattr(transformer, "noise_scale", None)
+        if base is None:
+            raise ValueError(
+                "this SenseNova tree declares no noise_scale, so there is "
+                "nothing to recalibrate")
+    scale = float(base) * value
+    out["gen_noise_scale_base"] = float(base)
+    out["gen_noise_scale_gain"] = value
+    out["gen_noise_scale_provenance"] = str(provenance)
+    out["noise_scale"] = scale
+    transformer.noise_scale = scale
+    # Mirrored like apply_latent_geometry's geometry keys: the last-resort
+    # `_serializable_sensenova_config` save path reads the config object.
+    config = getattr(transformer, "config", None)
+    if config is not None:
+        config.noise_scale = scale
+    return out
+
+
+def recalibrated_noise_scale_gain(config_dict) -> Optional[float]:
+    """The gain a checkpoint's geometry block already carries, or None."""
+    gain = (config_dict or {}).get("gen_noise_scale_gain")
+    return None if gain is None else float(gain)
 
 
 def stamp_vae_scale_factor(transformer, vae_scale_factor: int) -> None:

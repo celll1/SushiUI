@@ -662,6 +662,13 @@ class ArchHandler(ABC):
         trainer.vae_latent_channels = resolved.latent_channels
         return report
 
+    def calibrate_before_training(self, trainer, datasets, bucket_manager) -> None:
+        """A one-off calibration that needs the run's DATASETS, run once from
+        ``train()`` before the first step. No-op for every architecture whose
+        schedule is fixed by its checkpoint alone.
+        """
+        return None
+
     @abstractmethod
     def setup_block_swap(self, trainer) -> None:
         """Was ``setup_<arch>_block_swap`` — wrapper construction only; the

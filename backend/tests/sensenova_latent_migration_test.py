@@ -35,9 +35,14 @@ from sensenova_training_core_test import _Cache, _Layer  # noqa: E402
 from api.param_defaults import TRAINING_DEFAULTS  # noqa: E402
 from core.models.sensenova.latent_space import (  # noqa: E402
     INHERIT_GEN_PATCH,
+    INHERIT_NOISE_SCALE_GAIN,
     MIN_GEN_LATENT_PATCH,
     NATIVE_GEN_LATENT_PATCH,
+    PIXEL_RMS,
     apply_latent_geometry,
+    apply_noise_scale_gain,
+    noise_scale_gain_for_rms,
+    recalibrated_noise_scale_gain,
     gen_geometry,
     latent_config_dict,
     resolution_band_mp,
@@ -865,3 +870,155 @@ def test_a_p8_config_block_survives_the_metadata_codec(tmp_path):
         SimpleNamespace(latent_channels=CHANNELS, scale_factor=8,
                         provenance="registry:flux1"),
         path=written)
+
+
+# --- The noise-scale recalibration a swap needs (§10.4) -----------------------
+
+
+def test_the_gain_sentinel_and_its_one_contradiction():
+    """0 is the ABSENCE of a request, and auto/explicit cannot both decide."""
+    from core.training.arch.sensenova import SenseNovaArchHandler as _H
+
+    assert TRAINING_DEFAULTS["sensenova_noise_scale_gain"] == INHERIT_NOISE_SCALE_GAIN == 0
+    assert TRAINING_DEFAULTS["sensenova_noise_scale_auto"] is False
+    assert _H.resolve_noise_scale_config({}) == (0.0, False)
+    assert _H.resolve_noise_scale_config({"sensenova_noise_scale_gain": 1.462}) == (1.462, False)
+    assert _H.resolve_noise_scale_config({"sensenova_noise_scale_auto": True}) == (0.0, True)
+    with pytest.raises(ValueError, match="exactly one of them"):
+        _H.resolve_noise_scale_config({"sensenova_noise_scale_gain": 1.462,
+                                       "sensenova_noise_scale_auto": True})
+    with pytest.raises(ValueError, match="must be >= 0"):
+        _H.resolve_noise_scale_config({"sensenova_noise_scale_gain": -1})
+
+
+def test_the_gain_restores_the_pixel_era_signal_to_noise_ratio():
+    """The gain is the RATIO of data scales, so `t*RMS / ((1-t)*noise_scale)`
+    comes out the same in both spaces."""
+    gain = noise_scale_gain_for_rms(1.0)
+    assert gain == pytest.approx(1.0 / PIXEL_RMS)
+    for t in (0.2, 0.5, 0.8):
+        pixel = t * PIXEL_RMS / ((1 - t) * 3.0)
+        latent = t * 1.0 / ((1 - t) * 3.0 * gain)
+        assert latent == pytest.approx(pixel)
+
+
+def test_a_resume_cannot_compound_the_gain():
+    """apply_vae_swap re-runs on every resume, so the gain must land on the
+    value the checkpoint had BEFORE any earlier recalibration."""
+    tree = SimpleNamespace(noise_scale=1.0)
+    config = apply_noise_scale_gain(tree, {"noise_scale": 1.0}, 1.462,
+                                    provenance="config")
+    assert config["noise_scale"] == pytest.approx(1.462)
+    assert config["gen_noise_scale_base"] == 1.0
+    assert tree.noise_scale == pytest.approx(1.462)
+
+    again = apply_noise_scale_gain(tree, config, 1.462, provenance="config")
+    assert again["noise_scale"] == pytest.approx(1.462)
+    assert tree.noise_scale == pytest.approx(1.462)
+
+    # A CHANGED gain still lands on base * gain, not on the recalibrated value.
+    changed = apply_noise_scale_gain(tree, again, 2.0, provenance="config")
+    assert changed["noise_scale"] == pytest.approx(2.0)
+    assert changed["gen_noise_scale_base"] == 1.0
+
+
+def test_the_recalibrated_scale_survives_the_metadata_codec(tmp_path):
+    """Write -> read -> the value the model is rebuilt from, and a resume of the
+    RE-READ block still cannot compound the gain."""
+    import json
+
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.sensenova.loader import save_sensenova_full_finetune_checkpoint
+
+    tree, _decoder_cls = _decoder_with_fm_modules()
+    tree.noise_scale = 1.0
+    raw_config = latent_config_dict({"downsample_ratio": 0.5, "noise_scale": 1.0},
+                                    channels=CHANNELS, patch=8)
+    raw_config = apply_noise_scale_gain(tree, raw_config, 1.462,
+                                        provenance="measured")
+    written, _census = save_sensenova_full_finetune_checkpoint(
+        tree, str(tmp_path / "gain_step_000100"), branch="gen",
+        save_format="mixed", config=None, raw_config=raw_config, vae=None)
+
+    reread = json.loads(read_state_dict(written)[1]["sensenova_config"])
+    assert reread["noise_scale"] == pytest.approx(1.462)
+    assert reread["gen_noise_scale_base"] == 1.0
+    assert reread["gen_patch_size"] == 8
+    assert recalibrated_noise_scale_gain(reread) == pytest.approx(1.462)
+    assert recalibrated_noise_scale_gain({"noise_scale": 1.0}) is None
+
+    # What a resume does: rebuild from the re-read block, swap again, same gain.
+    resumed = SimpleNamespace(noise_scale=reread["noise_scale"])
+    again = apply_noise_scale_gain(resumed, reread, 1.462, provenance="config")
+    assert again["noise_scale"] == pytest.approx(1.462)
+    assert resumed.noise_scale == pytest.approx(1.462)
+
+
+def test_a_lora_may_not_recalibrate_the_noise_scale():
+    """A LoRA reaches apply_vae_swap through a latent base's OWN declaration and
+    saves no config block, so the scale would exist for the run and for nothing
+    that loads its output."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+    from core.training.train_runner import _check_sensenova_noise_scale
+
+    trainer = _lora_trainer(_latent_tree(8), {
+        "training_method": "lora", "vae_swap_source": "",
+        "sensenova_noise_scale_gain": 1.462})
+    with pytest.raises(ValueError, match="requires a full fine-tune"):
+        SenseNovaArchHandler(trainer).apply_vae_swap(
+            trainer, _RESOLVED_16CH_8X, module=object())
+
+    # And refused before the load, for both settings and with no swap source.
+    for asked in ({"sensenova_noise_scale_gain": 1.462},
+                  {"sensenova_noise_scale_auto": True}):
+        with pytest.raises(ValueError, match="requires training_method"):
+            _check_sensenova_noise_scale(dict(asked), "", is_full_finetune=False)
+
+
+def test_the_config_reads_refuse_python_truthiness():
+    """Every other SenseNova bool goes through the strict normaliser; a
+    hand-written "false" must not enable auto."""
+    from core.training.train_runner import _check_sensenova_noise_scale
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        _check_sensenova_noise_scale({"sensenova_noise_scale_auto": "yes"}, "",
+                                     is_full_finetune=True)
+    with pytest.raises(ValueError, match="must be a number"):
+        _check_sensenova_noise_scale({"sensenova_noise_scale_gain": True}, "",
+                                     is_full_finetune=True)
+    # "false" is a boolean here, not a non-empty truthy string.
+    _check_sensenova_noise_scale({"sensenova_noise_scale_auto": "false"}, "",
+                                 is_full_finetune=True)
+
+
+def test_an_explicit_gain_is_applied_at_swap_time():
+    """The config path stamps at apply_vae_swap, before the freeze/optimizer."""
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    tree = _PixelTree()
+    trainer = _swap_trainer(tree, {"training_method": "full_finetune",
+                                   "vae_swap_source": "registry:sdxl",
+                                   "sensenova_gen_patch": 8,
+                                   "base_resolutions": [1536],
+                                   "sensenova_noise_scale_gain": 1.462})
+    trainer.sensenova_config_dict = {"noise_scale": 1.0}
+    SenseNovaArchHandler(trainer).apply_vae_swap(
+        trainer, _RESOLVED_16CH_8X, module=object())
+
+    assert tree.noise_scale == pytest.approx(1.462)
+    assert trainer.sensenova_config_dict["noise_scale"] == pytest.approx(1.462)
+    assert trainer.sensenova_config_dict["gen_noise_scale_base"] == 1.0
+
+
+def test_a_pixel_space_run_may_not_recalibrate():
+    """Nothing to correct: the sample IS the data the schedule was calibrated on."""
+    from core.training.train_runner import _check_sensenova_noise_scale
+
+    _check_sensenova_noise_scale({"vae_swap_source": "registry:sdxl",
+                                  "sensenova_noise_scale_gain": 1.462}, "",
+                                 is_full_finetune=True)
+    for asked in ({"sensenova_noise_scale_gain": 1.462},
+                  {"sensenova_noise_scale_auto": True}):
+        with pytest.raises(ValueError, match="requires a latent space"):
+            _check_sensenova_noise_scale(dict(asked, vae_swap_source=""), "",
+                                         is_full_finetune=True)

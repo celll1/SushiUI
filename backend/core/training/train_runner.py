@@ -197,6 +197,11 @@ def _apply_sensenova_training_contract(
             "enable_bucketing so every item in a batch has the same resolution; "
             "batch_size=1 works without bucketing"
         )
+    # Both methods: a LoRA on an already-latent base reaches apply_vae_swap
+    # through the base's own component.vae declaration, with no
+    # vae_swap_source for the full-fine-tune gate to key on.
+    _check_sensenova_noise_scale(train_config, base_model_path,
+                                 is_full_finetune=is_full_finetune)
     if is_full_finetune:
         _apply_sensenova_full_finetune_contract(
             train_config, base_model_path=base_model_path)
@@ -589,6 +594,54 @@ def _warn_on_unresumable_sensenova_save_format(
     )
 
 
+def _check_sensenova_noise_scale(train_config: dict, base_model_path: str, *,
+                                 is_full_finetune: bool) -> None:
+    """The noise-scale recalibration's refusals, before the 17.6 GiB load.
+
+    Reached for BOTH methods: a LoRA on a base that declares its own VAE enters
+    ``apply_vae_swap`` from that declaration, so the ``vae_swap`` capability's
+    method gate -- which keys on ``vae_swap_source`` -- never sees it. Same hole
+    ``sensenova_gen_patch`` closes with its own trainer-side refusal.
+    """
+    from core.training.vae_swap import resolve_vae_swap_source
+
+    gain, auto = _resolve_noise_scale_request(train_config)
+    if not (gain or auto):
+        return
+    setting = ("sensenova_noise_scale_auto" if auto
+               else f"sensenova_noise_scale_gain={gain:g}")
+    if not is_full_finetune:
+        raise ValueError(
+            f"SenseNova {setting} requires training_method='full_finetune': the "
+            f"recalibrated scale lives in the checkpoint's own config block, "
+            f"and a LoRA save writes no config block, so the run would train on "
+            f"one noise schedule and every inference of the result would use "
+            f"the base's.")
+    if not (resolve_vae_swap_source(train_config)
+            or _base_declares_own_vae(base_model_path)):
+        raise ValueError(
+            f"SenseNova {setting} requires a latent space to calibrate against: "
+            f"this run has no vae_swap_source and its base declares no VAE, so "
+            f"the sample IS the [-1,1] image the checkpoint's noise schedule was "
+            f"calibrated on and there is nothing to correct.")
+
+
+def _resolve_noise_scale_request(train_config: dict) -> tuple:
+    """``(gain, auto)`` read through the strict normalisers, so a hand-written
+    ``"false"`` cannot enable auto by Python truthiness."""
+    from api.param_defaults import TRAINING_DEFAULTS
+    from core.training.arch.sensenova import SenseNovaArchHandler
+
+    gain = _normalize_sensenova_float(
+        train_config, "sensenova_noise_scale_gain",
+        float(TRAINING_DEFAULTS["sensenova_noise_scale_gain"]))
+    auto = _normalize_sensenova_bool(
+        train_config, "sensenova_noise_scale_auto",
+        bool(TRAINING_DEFAULTS["sensenova_noise_scale_auto"]))
+    return SenseNovaArchHandler.resolve_noise_scale_config(
+        {"sensenova_noise_scale_gain": gain, "sensenova_noise_scale_auto": auto})
+
+
 def _base_declares_own_vae(base_model_path: str) -> bool:
     """Does this checkpoint carry a ``component.vae.*`` block of its own?
 
@@ -625,6 +678,29 @@ def _normalize_sensenova_integer(
     else:
         raise ValueError(
             f"SenseNova {key} must be an integer, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    train_config[key] = normalized
+    return normalized
+
+
+def _normalize_sensenova_float(
+    train_config: Dict[str, Any], key: str, default: float
+) -> float:
+    """Normalize one SenseNova float field without accepting bools."""
+    value = train_config.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f"SenseNova {key} must be a number, got boolean {value!r}")
+    if isinstance(value, (int, float)):
+        normalized = float(value)
+    elif isinstance(value, str):
+        try:
+            normalized = float(value.strip())
+        except ValueError:
+            raise ValueError(f"SenseNova {key} must be a number, got {value!r}")
+    else:
+        raise ValueError(
+            f"SenseNova {key} must be a number, got {value!r} "
             f"({type(value).__name__})"
         )
     train_config[key] = normalized

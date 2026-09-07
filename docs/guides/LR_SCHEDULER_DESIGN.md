@@ -89,6 +89,10 @@ Status: **P0〜P7 実装済み（全フェーズ完了）。§18。P0 の軸変�
 | D58 | 発火後の best | 発火に成功したら `best`（走行最小値）を捨てる。**変更後の loss を変更前の記録と比べ続けると、その変更が何をしたかに関係なく `patience` ごとに再発火する**。拒否された発火では捨てない |
 | D59 | action の語彙と `at` | §20.2 の `action` は retarget ペイロードの語彙だが、それでは §20.1 が挙げる `decay` / `cancel` を表現できない（引数を持たない 2 つのボタンの居場所が無い）。任意項目 `command`（`start_decay` / `cancel_decay` / `retarget`、既定 `retarget`）を足す。**action が `at` を指定することは拒否する**: 初回発火の後、固定 `at` は以後の全発火で過去日付になり、トリガが黙って 1 回限りに化ける |
 | D60 | 登録の経路と資源上限 | 登録・削除は既存の制御キューに載せる（D53）。したがって `MAX_PENDING_REQUESTS` の上限と spawn 時の `clear_all` が同じように効く。**登録は事象を生まない**。`MAX_TRIGGERS` は資源上限であって調整可能な既定値ではないので、`param_defaults.py` ではなく `MAX_PENDING_REQUESTS` の隣に置く |
+| D61 | 発火の総量上限 | `MAX_TRIGGERS` は**登録数**を縛るだけで、**発火数を縛るものが無かった**。retarget 系の発火は毎回 restart アンカーの事象を積み、進行中の混合が重なるほど評価が連鎖を遡る。実測（この build）: 連鎖 25 で 0.85 ms/評価・13 KiB、100 で 6.34 ms・55 KiB、200 で 20.83 ms・111 KiB、400 で 85.25 ms・222 KiB。lambda は group ごとに毎 `scheduler.step()` で評価され、事象列は毎チェックポイントの state.json に入る。`{"max_fires": 1000000, "cooldown": 0, "interval": 1}` は**全項目が検証を通り 202 で受理され**、400 step で 154 秒の poll 時間と 231 KiB の事象列を生んだ。`MAX_TRIGGER_FIRES` を資源上限として `MAX_PENDING_REQUESTS` の隣に置き、超える要求を拒否する。値は上の実測に基づき、評価コストが step 時間に対して無視できる範囲で選ぶ |
+| D62 | `cooldown` の下限 | `cooldown: 0` は D48 が「これが無いと同一の横ばいで連続発火する」と述べた状態そのものである。**`max_fires > 1` のとき `cooldown >= 1`** を要求する（openapi の `minimum` も同様） |
+| D63 | 永続レコードの検証 | `TriggerSet.load()` は state ファイルのレコードを**無検証**で `Trigger` にしていた。実測の帰結は 2 つ: 必須キー欠落で `install_lr_schedule_triggers` が `TypeError` を投げ、**seam (b) には囲む `try` が無いので resume が死ぬ**。不正値（`interval: 0`）では `evaluate` に**トリガ単位の隔離が無い**ため、1 件の壊れたレコードが**同じ run の健全なトリガを永久に飢えさせる**（40 バッチで 40 警告、健全側は観測 0・発火 0）。**読み込み時に 1 件ずつ検証**し、使えないレコードは落として警告する。`evaluate` の `try/except` を**トリガごとのループの内側**に置く |
+| D64 | 閾値述語の再試行抑制 | D56 の抑制は `misses` を再開する形なので **`plateau` にしか効かない**。`below` / `above` は patience カウンタを持たないため、拒否条件が続く限り**全観測で再試行する**。実測 100 step あたり: `plateau`（D56 あり）2 回、`plateau`（D56 なし）6 回、**`below` 9 回** — D56 が「修正前」として記録した率そのもの。閾値述語にも拒否時のデバウンスを課す |
 
 ---
 

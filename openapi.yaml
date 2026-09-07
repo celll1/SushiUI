@@ -85,6 +85,42 @@ paths:
               example:
                 status: ok
                 version: 0.1.0
+  /schema/lr-retarget-defaults:
+    get:
+      summary: Get what an omitted field of a runtime LR retarget resolves to
+      description: |
+        Single source of truth for the operation half of
+        `POST /training/runs/{run_id}/lr-schedule/retarget`
+        (`backend/api/param_defaults.py` `LR_RETARGET_DEFAULTS`). The schedule
+        half is `GET /schema/training-defaults`, whose `lr_*` keys a retarget
+        speaks.
+
+        `null` is not 0 or "none": `length` null is the run's own
+        `lr_warmup_steps` (D31), `at` null is the step the trainer claims the
+        command at, and `groups` null is every param group. Those three resolve
+        against the RUN, so a client can only state them by name.
+
+        Defaults only. The vocabularies (ops, anchors, blend shapes) are
+        mirrored in the client and pinned against the registry by a test: a
+        drift fails a build, where a runtime list would empty a select if this
+        endpoint ever 404'd.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Retarget defaults and vocabularies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrRetargetDefaults'
+              example:
+                op: retarget
+                anchor: restart
+                gain: 1.0
+                length: null
+                shape: linear
+                at: null
+                groups: null
+                n_points: 256
   /schema/timestep-defaults-by-arch:
     get:
       summary: Per-architecture default timestep_sampling configs
@@ -6350,6 +6386,18 @@ paths:
         here": the blended curve comes DOWN to the start of that ramp. That is
         an instruction, not a mistake, and it is not refused.
 
+        **`op` also carries the three derived operations** — `scale` (times
+        `gain`, from here), `hold` (freeze the multiplier the run is at) and
+        `undo` (back to the schedule before the last retarget). They describe no
+        schedule of their own, so they refuse every `lr_*` key and `anchor`, and
+        they are recorded as ordinary `retarget` events: an undo APPENDS, and
+        never rewrites the event it reverses. What only the live timeline can
+        refuse comes back as a result code —
+        `rejected_nothing_to_undo`, `rejected_ambiguous_group_scope`.
+
+        Draw any of them before committing with
+        `POST /training/lr-schedule/preview`.
+
         **Fire and forget**, like the two-button commands: 202 once the file is
         written, and the outcome appears in
         `GET /training/runs/{run_id}/lr-schedule` under its `request_id`. What
@@ -6498,6 +6546,85 @@ paths:
                 points: [[0, 0.0], [200, 1.0], [400, 1.0], [600, 1.0], [800, 0.7], [1000, 0.1]]
         '400':
           description: Unknown scheduler name, unknown decay shape, or a total below the accumulation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [training]
+      summary: Sample the curve a not-yet-applied event list would produce
+      description: |
+        What a retarget WOULD do, before it is committed. The candidates are the
+        bodies `POST /training/runs/{run_id}/lr-schedule/retarget` takes, and
+        they are refused here for exactly the same reasons, so a curve that
+        draws is a curve that queues.
+
+        **Two sources, one of them required.** `run_id` draws the run's own
+        timeline — the schedule it was built with, every event applied so far,
+        its totals and its accumulation — read from the state the trainer
+        publishes. `config` draws a schedule that has no run yet, the same
+        keys as the GET on this path.
+
+        **Nothing is written.** The events are folded on a scratch timeline; no
+        command is queued, no state file is touched, and the run does not learn
+        that a preview happened. It reads what the trainer last PUBLISHED, so a
+        command already queued and not yet claimed is not in the picture.
+
+        The step the candidates are dated from is the run's own current step
+        while it is executing, not the published one — the display file is
+        rewritten only when the schedule's state changes, so on a run that has
+        had no LR command it still says step 0. `position_source` says which
+        was used.
+
+        Every curve comes with `baseline_points`, the same schedule WITHOUT the
+        candidates on the same step grid, so before and after can be drawn
+        together. A run whose param groups follow different schedules returns
+        one curve per group.
+
+        Only `retarget` candidates (including the derived `scale`/`hold`/`undo`)
+        can be previewed. `start_decay`/`cancel_decay` cannot: their length and
+        shape come from the run's own `lr_decay_steps`/`lr_decay_shape`, which
+        are deliberately stripped from every serialized schedule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LrSchedulePreviewRequest'
+            example:
+              run_id: 112
+              n_points: 128
+              events:
+                - lr_scheduler: wsd
+                  lr_decay_steps: 4000
+                  at: 9200
+                  length: 200
+      responses:
+        '200':
+          description: Curve samples, one set per param-group schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LrSchedulePreviewResult'
+        '400':
+          description: |
+            Neither or both sources given, or a candidate event this build
+            cannot make a schedule of — the same refusals the retarget endpoint
+            answers synchronously.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The run has not published a schedule yet (it writes one at its first
+            batch), so there is no timeline to preview against.
           content:
             application/json:
               schema:
@@ -20011,13 +20138,47 @@ components:
 
         Unknown keys are rejected rather than ignored, so a misspelling is not
         silently an inheritance.
-      required: [lr_scheduler]
+
+        **`op` chooses the form.** `retarget` describes a schedule with the
+        `lr_*` keys below. `scale`, `hold` and `undo` describe none: their
+        curve is derived from the one the run is on, so they refuse every
+        `lr_*` key and `anchor`. All four are recorded as one `retarget` event
+        — there is no separate event kind for a scale, a hold or an undo, and
+        an undo is an APPEND that never rewrites the history it reverses.
       properties:
+        op:
+          type: string
+          enum: [retarget, scale, hold, undo]
+          default: retarget
+          nullable: true
+          description: |
+            - `retarget` — switch to the schedule described by the `lr_*` keys.
+              `lr_scheduler` is required for this op and refused for the others.
+            - `scale` — keep the schedule in force, re-anchored here, times
+              `gain` (required). Its warmup is dropped: re-anchored, a warmup
+              means "ramp up again from here", which would take the LR to 0
+              before the scale took effect.
+            - `hold` — freeze the multiplier the run is at now (a `constant`
+              curve with no warmup, entered instantly).
+            - `undo` — go back to the schedule in force before the last
+              retarget on this curve, restored on the run's own axis when that
+              schedule was on it. `rejected_nothing_to_undo` if there is none.
+          example: retarget
         lr_scheduler:
           type: string
+          nullable: true
           enum: [constant, constant_with_warmup, linear, cosine, cosine_with_restarts,
-                 polynomial, plateau_cosine_floor, wsd, rex]
-          description: The schedule to switch to. The one required field.
+                 polynomial, plateau_cosine_floor, wsd, rex, relora]
+          description: |
+            The schedule to switch to. Required for `op: retarget`, refused for
+            the derived ops, which take the run's own.
+
+            `relora` is NOT selectable for a new run and is not offered in a
+            picker: it is shaped by merge events. It is listed here because a
+            ReLoRA run may retarget onto its OWN curve (to change its floor, for
+            instance). On any other run it comes back
+            `rejected_unknown_scheduler` — the check needs the run, so it is
+            scored by the trainer rather than refused synchronously.
           example: wsd
         lr_warmup_steps:
           type: integer
@@ -20100,7 +20261,8 @@ components:
           default: 1.0
           description: |
             Multiplies the new curve under both anchors. Above 1 raises the LR,
-            which is allowed. Null is 1.0.
+            which is allowed. Null is 1.0. Required for `op: scale`, where it
+            IS the factor; refused for `hold` and `undo`, which have none.
           example: 1.0
         length:
           type: integer
@@ -20213,6 +20375,22 @@ components:
         schedule:
           type: string
           example: plateau_cosine_floor
+        spec:
+          type: object
+          additionalProperties: true
+          description: |
+            This group's CONFIG schedule, serialized — the curve the event list
+            folds over, not the one in force. With `events` it is what
+            `POST /training/lr-schedule/preview` rebuilds this group's curve
+            from.
+        spec_group:
+          type: string
+          nullable: true
+          description: |
+            The identity the spec is stamped with, or null when one spec is on
+            every param group. Dropped from the serialized form itself, because
+            a spec names a shape and not an addressee.
+          example: null
         anchor_step:
           type: integer
           description: |
@@ -20267,6 +20445,33 @@ components:
           type: integer
           nullable: true
           example: 9137
+        advance_interval:
+          type: integer
+          description: |
+            Global steps per scheduler advance (the run's
+            `gradient_accumulation_steps`): what puts a candidate event's
+            global-step numbers on this file's axis.
+          example: 1
+        spec:
+          type: object
+          additionalProperties: true
+          description: |
+            The representative CONFIG schedule, serialized — what `events` fold
+            over, not the schedule in force (`scheduler` names that). Carries
+            no `command_decay_*`: those are the run's own `start_decay`
+            settings and are stripped from every serialized spec, so a rebuilt
+            timeline can draw curves but cannot score a `start_decay`.
+        ungrouped_reason:
+          type: string
+          nullable: true
+          description: |
+            Why one schedule is on every param group, or null when they carry
+            their own (D40). Not always "`lr_group_schedules` is not set": a
+            mapping that WAS set is ignored on a ReLoRA run and on one whose
+            param groups carry no component name, and a reader that says
+            otherwise sends the operator hunting a config bug that does not
+            exist. Quoted in the warning a `groups`-scoped retarget raises here.
+          example: lr_group_schedules is not set
         scheduler:
           type: string
           description: The schedule in force, which a retarget replaces.
@@ -20346,6 +20551,22 @@ components:
           type: integer
           description: The scheduler-axis step this session actually ends at.
           example: 20000
+        global_total_steps:
+          type: integer
+          nullable: true
+          description: |
+            The run's end on the GLOBAL step axis, or **null** when that is not
+            derivable. Published because `to_scheduler_axis` floors:
+            `effective_total_steps * advance_interval` does not recover it, and
+            doing that arithmetic elsewhere would be a second definition of the
+            axis map — which is why the unknown case is null rather than that
+            product. Never 0: a run does not end at step 0.
+
+            Null after a resume that re-anchored the total (the re-anchor is on
+            the scheduler axis and its shift cannot be mapped back), and for a
+            trainer that built its schedule without recording a configured
+            total.
+          example: 20000
         groups:
           type: array
           items:
@@ -20373,6 +20594,12 @@ components:
           type: string
           enum: [start_decay, cancel_decay, retarget]
           example: start_decay
+        op:
+          type: string
+          nullable: true
+          enum: [retarget, scale, hold, undo]
+          description: The queued retarget's form, or null for the two buttons.
+          example: null
         queued_at:
           type: number
           format: double
@@ -20394,6 +20621,16 @@ components:
         command:
           type: string
           example: start_decay
+        op:
+          type: string
+          nullable: true
+          enum: [retarget, scale, hold, undo]
+          description: |
+            Which form of retarget this was (§19.6). Null for `start_decay` /
+            `cancel_decay`. All four forms are `command: retarget` and land as
+            one `retarget` event, so this is the only record of which button
+            was pressed.
+          example: hold
         result:
           type: string
           enum:
@@ -20402,6 +20639,8 @@ components:
             - ignored_already_decaying
             - ignored_already_recovering
             - ignored_no_active_decay
+            - ignored_unchanged
+            - ignored_duplicate_restart
             - rejected_during_warmup
             - rejected_zero_length
             - rejected_backdated
@@ -20413,14 +20652,20 @@ components:
             - rejected_warmup_exceeds_span
             - rejected_empty_group_selector
             - rejected_unknown_group
+            - rejected_nothing_to_undo
+            - rejected_ambiguous_group_scope
+            - rejected_missing_gain
             - rejected_unknown_command
             - error
           description: |
             - `applied` — the state machine moved.
             - `disarmed_scheduled_decay` — a cancel arrived before the run's
               configured decay had started; the configured decay will not fire.
-            - `ignored_*` — the command was a no-op in the state the schedule
-              was in (already decaying, already recovering, nothing to cancel).
+            - `ignored_*` — the event changed nothing: the schedule was
+              already decaying or recovering, there was nothing to cancel, a
+              `total_steps` was the total already in force, or a ReLoRA restart
+              was already recorded at that step. The last two are the trainer's
+              own seams and no API command produces them.
             - `rejected_during_warmup` — a decay cannot start while the LR is
               still ramping up.
             - `rejected_zero_length` — the decay would have had no room left to
@@ -20433,6 +20678,11 @@ components:
               blend length, a floor outside [0, 1], no span left after the
               anchor, a warmup at least as long as the span, an empty `groups`,
               or a component this run has no param group for.
+            - `rejected_nothing_to_undo` / `rejected_ambiguous_group_scope` /
+              `rejected_missing_gain` — a derived op (`scale`/`hold`/`undo`)
+              the live timeline cannot express: nothing to undo on this curve,
+              named groups on different schedules (one payload carries one
+              curve), or a scale with no factor.
             - `rejected_unknown_command` — the command string was not one the
               trainer knows.
             - `error` — applying it raised; `error` carries the text.
@@ -20526,6 +20776,370 @@ components:
             items:
               type: number
           example: [[0, 0.0], [500, 1.0], [1000, 0.1]]
+
+    LrRetargetDefaults:
+      type: object
+      description: |
+        Defaults and vocabularies for a runtime retarget. Every key that can be
+        null resolves against the run rather than to a value.
+      properties:
+        op:
+          type: string
+          enum: [retarget, scale, hold, undo]
+          example: retarget
+        anchor:
+          type: string
+          enum: [restart, continue]
+          example: restart
+        gain:
+          type: number
+          format: double
+          example: 1.0
+        length:
+          type: integer
+          nullable: true
+          description: Null = the run's `lr_warmup_steps` (D31), not 0.
+          example: null
+        shape:
+          type: string
+          enum: [cosine, linear, rex]
+          example: linear
+        at:
+          type: integer
+          nullable: true
+          description: Null = the global step the trainer claims the command at.
+          example: null
+        groups:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Null = every param group. An empty array is refused.
+          example: null
+        n_points:
+          type: integer
+          description: Default sample count of the preview endpoints.
+          example: 256
+
+    LrSchedulePreviewConfig:
+      type: object
+      description: |
+        A schedule with no run behind it: the GET preview's query parameters as
+        a body. Step counts are GLOBAL steps and are divided by
+        `gradient_accumulation_steps` exactly as the trainer divides them.
+      properties:
+        lr_scheduler:
+          type: string
+          enum: [constant, constant_with_warmup, linear, cosine, cosine_with_restarts,
+                 polynomial, plateau_cosine_floor, wsd, rex]
+          default: constant
+          example: cosine
+        total_steps:
+          type: integer
+          minimum: 1
+          default: 1000
+          example: 10000
+        gradient_accumulation_steps:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 1
+        lr_warmup_steps:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 100
+        lr_floor_ratio:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          default: null
+          description: Omit for the compatibility reading of a floor-less config.
+          example: null
+        lr_decay_start_ratio:
+          type: number
+          format: double
+          default: 0.85
+          example: 0.85
+        lr_decay_start_step:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 0
+        lr_decay_steps:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 0
+        lr_decay_shape:
+          type: string
+          enum: [cosine, linear, rex]
+          default: cosine
+          example: cosine
+        lr_cycle_steps:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 0
+        lr_cycle_peak_decay:
+          type: number
+          format: double
+          default: 1.0
+          example: 1.0
+
+    LrSchedulePreviewRequest:
+      type: object
+      description: |
+        Candidate events and the timeline to draw them against. Exactly one of
+        `run_id` and `config` is required; unknown keys are rejected rather than
+        ignored.
+      properties:
+        run_id:
+          type: integer
+          nullable: true
+          default: null
+          description: Draw against this run's published timeline.
+          example: 112
+        config:
+          allOf:
+            - $ref: '#/components/schemas/LrSchedulePreviewConfig'
+          nullable: true
+          description: Draw a schedule that has no run yet.
+        events:
+          type: array
+          default: []
+          description: |
+            Retargets that have NOT been applied, in the order they would be
+            queued in. Each is a `POST .../lr-schedule/retarget` body, derived
+            ops included.
+          items:
+            $ref: '#/components/schemas/LrScheduleRetargetRequest'
+        n_points:
+          type: integer
+          default: 256
+          description: Samples per curve. Clamped to 2..512.
+          example: 256
+
+    LrSchedulePreviewEventResult:
+      type: object
+      description: What the scratch timeline answered for one candidate.
+      properties:
+        index:
+          type: integer
+          description: Position in the request's `events`.
+          example: 0
+        op:
+          type: string
+          enum: [retarget, scale, hold, undo]
+          example: retarget
+        result:
+          type: string
+          enum:
+            - applied
+            - rejected_backdated
+            - rejected_unknown_scheduler
+            - rejected_non_positive_gain
+            - rejected_negative_length
+            - rejected_floor_out_of_range
+            - rejected_no_remaining_span
+            - rejected_warmup_exceeds_span
+            - rejected_empty_group_selector
+            - rejected_unknown_group
+            - rejected_nothing_to_undo
+            - rejected_ambiguous_group_scope
+            - rejected_missing_gain
+          description: |
+            The same result code the trainer would record, from the same
+            `add()`. `applied` means the curve below includes it. The
+            decay/cancel codes cannot appear: only retargets are previewable.
+          example: applied
+        at:
+          type: integer
+          nullable: true
+          description: Scheduler-axis step it takes effect at.
+          example: 9200
+        kind:
+          type: string
+          nullable: true
+          description: "`retarget`, or `noop` for a refused one."
+          example: retarget
+        refused_kind:
+          type: string
+          nullable: true
+          example: null
+        warning:
+          type: string
+          nullable: true
+          description: |
+            Warning code carried by the event itself (D37's
+            `lr_retarget_group_selector_ignored`), or null. Read off the event
+            rather than the trainer's stdout channel, which has no reader in
+            the API process; the text is in the response's `warnings`.
+          example: null
+        detail:
+          type: string
+          nullable: true
+          description: Why a derived op could not be built, when it could not.
+          example: null
+
+    LrSchedulePreviewCurve:
+      type: object
+      description: One param-group schedule's samples, with and without the candidates.
+      properties:
+        group:
+          type: string
+          nullable: true
+          description: |
+            The component this curve belongs to, or null when one schedule is on
+            every param group.
+          example: unet
+        lr_scheduler:
+          type: string
+          description: |
+            The schedule in force at the end of THIS curve. A scoped candidate
+            moves only the groups it names, so this is what a chart of this
+            curve is labelled with — the response header is null whenever the
+            curves disagree.
+          example: constant
+        description:
+          type: string
+          description: The one-line spec the trainer would log for this curve.
+        points:
+          type: array
+          description: "`[step, multiplier]` with the candidate events applied."
+          items:
+            type: array
+            items:
+              type: number
+          example: [[0, 0.0], [500, 1.0], [1000, 0.1]]
+        baseline_points:
+          type: array
+          description: The same steps WITHOUT the candidates, for an overlay.
+          items:
+            type: array
+            items:
+              type: number
+          example: [[0, 0.0], [500, 1.0], [1000, 0.25]]
+
+    LrSchedulePreviewResult:
+      type: object
+      description: |
+        Samples of the curve a candidate event list would produce, evaluated by
+        the same timeline code the trainer runs.
+      required: [source, step, position_source, advance_interval,
+                 scheduler_total_steps, nominal_total_steps, lr_scheduler,
+                 description, warmup_steps, floor_ratio, floor_defaulted,
+                 results, warnings, n_points, curves]
+      properties:
+        source:
+          type: string
+          enum: [run, config]
+          example: run
+        run_id:
+          type: integer
+          nullable: true
+          example: 112
+        step:
+          type: integer
+          description: |
+            Scheduler-axis position the candidates are dated from when they name
+            no `at`, and the `issued` they are scored against. 0 for a config.
+          example: 9137
+        position_source:
+          type: string
+          enum: [run_row, status_file, config]
+          description: |
+            Where `step` came from. `run_row` is the live run's own step
+            (committed every training iteration) mapped onto the scheduler axis;
+            `status_file` is the schedule state the trainer published, which is
+            rewritten only when the schedule's state CHANGES and so can be many
+            steps old on a run that has had no LR command. The later of the two
+            is used while the run is executing.
+
+            `run_row` is an ESTIMATE: it divides a global step by
+            `advance_interval`, and §17.1's drift (a skipped batch, a CUDA
+            recovery) can put it ahead of the true scheduler position. A
+            candidate given an explicit `at` near it may therefore preview as
+            `rejected_backdated` and still be applied when the trainer claims
+            it — the safe direction, since the trainer re-scores every command
+            against its own position.
+          example: run_row
+        advance_interval:
+          type: integer
+          description: Global steps per scheduler advance, used to convert the candidates.
+          example: 1
+        lr_scheduler:
+          type: string
+          nullable: true
+          description: |
+            The schedule in force at the END of the previewed curve, or **null**
+            when the curves do not agree on one — a scoped candidate moves only
+            the groups it names, and the representative spec absorbs every
+            scoped event, so a header taken from it would name a schedule NO
+            param group is on. Per-curve names are on each entry of `curves`.
+            Never null for a run whose groups share one schedule, which is
+            every run that does not set `lr_group_schedules`.
+          example: wsd
+        description:
+          type: string
+          nullable: true
+          description: |
+            The one-line spec the trainer would log for that schedule. Null on
+            the same condition as `lr_scheduler`.
+        scheduler_total_steps:
+          type: integer
+          example: 10000
+        nominal_total_steps:
+          type: integer
+          description: The total the shape is defined against, which an extension does not move.
+          example: 10000
+        warmup_steps:
+          type: integer
+          nullable: true
+          description: Null when the curves disagree, like `lr_scheduler`.
+          example: 100
+        floor_ratio:
+          type: number
+          format: double
+          nullable: true
+          description: Null when the curves disagree, like `lr_scheduler`.
+          example: 0.1
+        floor_defaulted:
+          type: boolean
+          nullable: true
+          description: Null when the curves disagree, like `lr_scheduler`.
+          example: false
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/LrSchedulePreviewEventResult'
+        warnings:
+          type: array
+          description: |
+            Notices the candidates raised, with their text. Returned rather than
+            emitted: a preview runs in the API process, where the trainer's
+            stdout sentinel has no reader.
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                example: lr_retarget_group_selector_ignored
+              at:
+                type: integer
+                example: 9200
+              message:
+                type: string
+        n_points:
+          type: integer
+          description: Length of each curve's `points`.
+          example: 256
+        curves:
+          type: array
+          items:
+            $ref: '#/components/schemas/LrSchedulePreviewCurve'
 
     GpuStatsEntry:
       type: object

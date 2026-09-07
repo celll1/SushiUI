@@ -3122,6 +3122,10 @@ def resolve_bundle_vae(value, arch: str, vae_swapped: bool = False) -> bool:
 # operation of replacing a curve mid-run.
 
 LR_RETARGET_DEFAULTS: Dict[str, Any] = {
+    # Which form of retarget this is (§19.6/D27). "retarget" carries a schedule
+    # in the lr_* keys; "scale", "hold" and "undo" derive theirs from the curve
+    # the run is on and take none. All four land as one `retarget` event.
+    "op": "retarget",
     # "restart" starts the new curve where the run's multiplier is now;
     # "continue" evaluates the new schedule on the run's own axis, which jumps
     # to whatever value that curve happens to have at the current step.
@@ -3140,6 +3144,13 @@ LR_RETARGET_DEFAULTS: Dict[str, Any] = {
     # Component names this retarget applies to. null = every param group; an
     # empty list is refused, so an empty UI selection cannot mean "all".
     "groups": None,
+}
+
+
+# LR-schedule curve preview (D20/D29). Sampling is the whole cost, so the count
+# is the only knob.
+LR_PREVIEW_DEFAULTS: Dict[str, Any] = {
+    "n_points": 256,
 }
 
 

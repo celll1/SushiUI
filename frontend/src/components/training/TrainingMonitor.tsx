@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { X, Play, Square, Trash2, AlertTriangle } from "lucide-react";
-import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse } from "@/utils/api";
+import { TrainingRun, TrainingLogEvent, getTrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan, queueTrainingSample, getTrainingSampleQueue, TrainingSampleQueueResponse, trainingFeatureUnsupportedReason, getLrScheduleStatus, queueLrScheduleCommand, LrScheduleStatusResponse, lrScheduleResultExplanation } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { wsClient, DatasetScanProgress, TrainingLogMessage } from "@/utils/websocket";
 import { TrainingMetricsProvider } from "./TrainingMetricsContext";
@@ -10,6 +10,7 @@ import TrainingMetricsChart from "./TrainingMetricsChart";
 import ResizableChartRow, { ChartPaneCount, useChartLayout } from "./ResizableChartRow";
 import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import CheckpointList from "./CheckpointList";
+import LrScheduleRetargetPanel from "./LrScheduleRetargetPanel";
 import ImageViewer from "../common/ImageViewer";
 
 interface TrainingMonitorProps {
@@ -343,6 +344,14 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       cancelled = true;
     };
   }, [currentRun.id, currentRun.status]);
+
+  const refreshLrSchedule = useCallback(async () => {
+    try {
+      setLrSchedule(await getLrScheduleStatus(currentRun.id));
+    } catch {
+      setLrSchedule(null);
+    }
+  }, [currentRun.id]);
 
   const handleLrCommand = async (command: "start_decay" | "cancel_decay") => {
     setLrCommandPending(command);
@@ -911,9 +920,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                   {lrCommandPending === "cancel_decay" ? "Sending..." : "Cancel decay"}
                 </button>
               </div>
+              <LrScheduleRetargetPanel
+                runId={currentRun.id}
+                status={lrSchedule}
+                onQueued={refreshLrSchedule}
+              />
               {!!lrSchedule?.pending?.length && (
                 <p className="text-xxs text-gray-300">
-                  {lrSchedule.pending.length} queued (max {lrSchedule.max_pending})
+                  Queued:{" "}
+                  {lrSchedule.pending.map((p) => p.op ?? p.command).join(", ")} (max{" "}
+                  {lrSchedule.max_pending})
                 </p>
               )}
               {lrSchedule?.results?.slice(0, 3).map((r) => (
@@ -925,7 +941,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                       : "text-yellow-400"
                   }`}
                 >
-                  {r.command} at step {r.at}: {r.result}
+                  {r.op ?? r.command} at step {r.at}: {lrScheduleResultExplanation(r.result)}
                   {r.error ? ` (${r.error})` : ""}
                 </p>
               ))}

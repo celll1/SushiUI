@@ -40,6 +40,7 @@ import json
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -66,10 +67,14 @@ from core.training.lr_schedules import (  # noqa: E402
     STATE_DECAYING,
     STATE_FLOOR,
     STATE_RECOVERING,
+    WARN_SELECTOR_ON_UNGROUPED_RUN,
     ScheduleTimeline,
     build_lr_scheduler,
+    make_lambda,
     resolve_spec,
 )
+from core.training.training_events import TRAINING_EVENT_SENTINEL  # noqa: E402
+from api.param_defaults import LR_PREVIEW_DEFAULTS  # noqa: E402
 
 BASE_TRAINER_SRC = (BACKEND / "core" / "training" / "base_trainer.py").read_text(
     encoding="utf-8")
@@ -672,9 +677,14 @@ def test_the_endpoints_are_documented_in_openapi():
             "rejected_unknown_command"} <= documented
 
 
+def handler_body(name: str) -> str:
+    """One route handler's source, ending at the next decorator."""
+    start = ROUTES_SRC.index(f"async def {name}")
+    return ROUTES_SRC[start:ROUTES_SRC.index("\n@router.", start)]
+
+
 def test_the_post_is_fire_and_forget_and_refuses_a_dead_run():
-    body = ROUTES_SRC[ROUTES_SRC.index("async def queue_lr_schedule_command"):
-                      ROUTES_SRC.index("async def get_lr_schedule_status")]
+    body = handler_body("queue_lr_schedule_command")
     assert "status_code=202" in ROUTES_SRC[
         ROUTES_SRC.index('@router.post("/training/runs/{run_id}/lr-schedule"'):
         ROUTES_SRC.index("async def queue_lr_schedule_command")]
@@ -685,8 +695,7 @@ def test_the_post_is_fire_and_forget_and_refuses_a_dead_run():
 
 
 def test_the_get_reads_the_files_and_works_for_a_stopped_run():
-    body = ROUTES_SRC[ROUTES_SRC.index("async def get_lr_schedule_status"):
-                      ROUTES_SRC.index('@router.get("/training/runs/{run_id}/samples")')]
+    body = handler_body("get_lr_schedule_status")
     assert "read_status(output_dir)" in body
     # No live process: fall back to the run row's directory rather than 409.
     assert "run.output_dir" in body
@@ -1117,7 +1126,6 @@ def test_the_endpoint_refuses_the_runs_own_decay_parameters(routes, tmp_path):
 
 
 @pytest.mark.parametrize("bad,message", [
-    ({"lr_scheduler": "relora"}, "lr_scheduler"),
     ({"lr_scheduler": "not_a_schedule"}, "lr_scheduler"),
     ({"anchor": "sideways"}, "anchor"),
     ({"shape": "exp"}, "blend shape"),
@@ -1179,9 +1187,14 @@ def test_the_retarget_endpoint_is_documented_in_openapi():
 
     schema = spec["components"]["schemas"]["LrScheduleRetargetRequest"]
     from core.training.lr_schedules import (
-        BLEND_SHAPE_NAMES, LR_SCHEDULER_NAMES, RETARGET_ANCHORS,
+        BLEND_SHAPE_NAMES, INTERNAL_SCHEDULER_NAMES, LR_SCHEDULER_NAMES,
+        RETARGET_ANCHORS, RETARGET_OPS,
     )
-    assert schema["properties"]["lr_scheduler"]["enum"] == list(LR_SCHEDULER_NAMES)
+    # The internal name is legal HERE and nowhere else: only a run already on
+    # it may retarget onto it, which the timeline decides (§19.4 rule 2).
+    assert schema["properties"]["lr_scheduler"]["enum"] == (
+        list(LR_SCHEDULER_NAMES) + list(INTERNAL_SCHEDULER_NAMES))
+    assert schema["properties"]["op"]["enum"] == list(RETARGET_OPS)
     assert schema["properties"]["anchor"]["enum"] == list(RETARGET_ANCHORS)
     assert schema["properties"]["shape"]["enum"] == list(BLEND_SHAPE_NAMES)
     # D42's two keys are refused, so they are not part of the documented body.
@@ -1204,3 +1217,538 @@ def test_the_documented_defaults_are_the_ones_the_endpoint_uses():
     for key, value in LR_RETARGET_DEFAULTS.items():
         assert props[key]["default"] == value, key
     assert "LR_RETARGET_DEFAULTS" in ROUTES_SRC
+
+
+# ---------------------------------------------------------------------------
+# R4: the preview endpoint (D20/D29, §19.8)
+# ---------------------------------------------------------------------------
+
+def publish(trainer, global_step: int = 0):
+    """Write `.lr_schedule.json`, which is all the API process gets to read."""
+    with redirect_stdout(io.StringIO()):
+        refresh_lr_schedule_status(trainer, global_step=global_step, force=True)
+
+
+def call_preview(routes, tmp_path=None, live_step=None, **body):
+    """One preview. ``live_step`` makes the run LOOK live at that global step,
+    which is what the endpoint reads instead of the display file's."""
+    import asyncio
+    from core.training.training_process import training_process_manager
+
+    run = None if tmp_path is None else SimpleNamespace(
+        output_dir=str(tmp_path), current_step=live_step or 0)
+    processes = training_process_manager.processes
+    if live_step is not None:
+        processes[RUN_ID] = _FakeProc(tmp_path)
+    try:
+        return asyncio.run(routes.preview_lr_schedule_events(
+            routes.LrSchedulePreviewRequest(**body), db=_FakeDb(run)))
+    finally:
+        processes.pop(RUN_ID, None)
+
+
+def test_a_preview_draws_the_curve_the_trainer_would_produce(routes, tmp_path):
+    """The anti-duplication guarantee (D20): the preview's numbers ARE the
+    lambda's, because both fold the same events with the same code."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    publish(trainer, global_step=20)
+
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=12,
+                           events=[dict(RETARGET_TO_WSD)])
+    assert [r["result"] for r in preview["results"]] == ["applied"]
+
+    queue_retarget(tmp_path)
+    assert poll(trainer, global_step=20) == 1
+    applied = make_lambda(trainer.lr_schedule_spec, trainer.lr_timeline)
+    assert preview["curves"][0]["points"] == [
+        [step, applied(step)] for step, _ in preview["curves"][0]["points"]]
+    # And the baseline is the curve the run was on before the candidate.
+    assert preview["curves"][0]["baseline_points"] != \
+        preview["curves"][0]["points"]
+
+
+def test_a_preview_writes_nothing_and_moves_no_state(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    publish(trainer, global_step=20)
+    status_before = control_rpc.status_path(tmp_path).read_bytes()
+    events_before = json.dumps(trainer.lr_timeline.dump(10 ** 9))
+
+    for _ in range(2):
+        call_preview(routes, tmp_path, run_id=RUN_ID,
+                     events=[dict(RETARGET_TO_WSD), {"op": "hold"}])
+
+    assert control_rpc.status_path(tmp_path).read_bytes() == status_before
+    assert json.dumps(trainer.lr_timeline.dump(10 ** 9)) == events_before
+    assert control_rpc.list_pending_requests(tmp_path) == []
+    assert control_rpc.list_results(tmp_path) == []
+    # No file of any kind appeared beside the one the trainer had written.
+    assert [p.name for p in tmp_path.iterdir()] == [control_rpc.STATUS_FILENAME]
+
+
+def test_a_preview_returns_the_selector_warning_instead_of_emitting_it(
+        routes, tmp_path, capsys):
+    """§19.5.2-8: the API process has no reader for the trainer's stdout
+    sentinel, so the notice travels on the event and in the response."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer)
+    capsys.readouterr()
+
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, events=[
+        {"lr_scheduler": "constant", "length": 0, "groups": ["unet"]}])
+
+    assert preview["results"][0]["warning"] == WARN_SELECTOR_ON_UNGROUPED_RUN
+    assert [w["code"] for w in preview["warnings"]] == [
+        WARN_SELECTOR_ON_UNGROUPED_RUN]
+    assert "param groups all share one LR schedule" in \
+        preview["warnings"][0]["message"]
+    printed = capsys.readouterr().out
+    assert TRAINING_EVENT_SENTINEL not in printed
+    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in printed
+
+
+def test_a_preview_of_a_config_agrees_with_the_get_on_the_same_config(routes):
+    import asyncio
+    config = {"lr_scheduler": "wsd", "total_steps": 1000,
+              "lr_warmup_steps": 100, "lr_decay_start_step": 600,
+              "lr_floor_ratio": 0.1}
+    posted = call_preview(routes, config=config, n_points=32)
+    got = asyncio.run(routes.preview_lr_schedule(n_points=32, **config))
+    assert posted["curves"][0]["points"] == got["points"]
+    assert posted["description"] == got["description"]
+    assert posted["source"] == "config" and posted["run_id"] is None
+
+
+def test_a_preview_needs_exactly_one_source(routes, tmp_path):
+    for body in ({}, {"run_id": RUN_ID, "config": {"lr_scheduler": "cosine"}}):
+        with pytest.raises(routes.HTTPException) as e:
+            call_preview(routes, tmp_path, **body)
+        assert status_of(e) == 400
+
+
+def test_a_preview_of_a_missing_run_is_a_404(routes):
+    with pytest.raises(routes.HTTPException) as e:
+        call_preview(routes, None, run_id=RUN_ID)
+    assert status_of(e) == 404
+
+
+def test_a_run_that_has_published_nothing_yet_is_a_409(routes, tmp_path):
+    with pytest.raises(routes.HTTPException) as e:
+        call_preview(routes, tmp_path, run_id=RUN_ID)
+    assert status_of(e) == 409
+
+
+def test_a_preview_refuses_a_candidate_the_retarget_endpoint_refuses(
+        routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer)
+    for bad in ({"lr_scheduler": "not_a_schedule"}, {"lr_scheduler": "wsd",
+                                                     "groups": []},
+                {"op": "hold", "lr_scheduler": "wsd"},
+                {"op": "scale"}):
+        with pytest.raises(routes.HTTPException) as e:
+            call_preview(routes, tmp_path, run_id=RUN_ID, events=[bad])
+        assert status_of(e) == 400
+
+
+def test_a_preview_reports_a_refusal_the_run_decides(routes, tmp_path):
+    """Backdating is measured against the timeline, not the vocabulary, so it
+    comes back as a result code with the curve unchanged."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(50)
+    publish(trainer, global_step=50)
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8,
+                           events=[dict(RETARGET_TO_WSD, at=10)])
+    assert preview["results"][0]["result"] == "rejected_backdated"
+    assert preview["results"][0]["kind"] == "noop"
+    assert preview["curves"][0]["points"] == \
+        preview["curves"][0]["baseline_points"]
+
+
+def test_a_preview_draws_one_curve_per_diverging_group(routes, tmp_path):
+    trainer = GroupedFakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.lr_group_specs = [trainer.lr_schedule_spec.for_group(c)
+                              for c in ("unet", "text_encoder_1")]
+    publish(trainer)
+
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8, events=[
+        {"lr_scheduler": "constant", "length": 0, "groups": ["unet"]}])
+    assert preview["results"][0]["warning"] is None
+    curves = {c["group"]: c for c in preview["curves"]}
+    assert set(curves) == {"unet", "text_encoder_1"}
+    assert curves["unet"]["points"] != curves["unet"]["baseline_points"]
+    assert curves["text_encoder_1"]["points"] == \
+        curves["text_encoder_1"]["baseline_points"]
+
+
+def test_the_preview_endpoint_is_documented_in_openapi():
+    import yaml
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    path = spec["paths"]["/training/lr-schedule/preview"]
+    assert set(path) == {"get", "post"}
+    post = path["post"]
+    assert set(post["responses"]) == {"200", "400", "404", "409"}
+    body = post["requestBody"]["content"]["application/json"]["schema"]
+    assert body["$ref"].endswith("/LrSchedulePreviewRequest")
+    assert post["responses"]["200"]["content"]["application/json"]["schema"][
+        "$ref"].endswith("/LrSchedulePreviewResult")
+
+    schemas = spec["components"]["schemas"]
+    request = schemas["LrSchedulePreviewRequest"]["properties"]
+    # The candidates are retarget bodies, not a second vocabulary.
+    assert request["events"]["items"]["$ref"].endswith(
+        "/LrScheduleRetargetRequest")
+    assert request["n_points"]["default"] == LR_PREVIEW_DEFAULTS["n_points"]
+    assert request["config"]["allOf"][0]["$ref"].endswith(
+        "/LrSchedulePreviewConfig")
+
+
+# ---------------------------------------------------------------------------
+# R5: scale / hold / undo through the endpoint and the claim path (§19.6)
+# ---------------------------------------------------------------------------
+
+def test_every_derived_op_queues_as_a_retarget_and_lands_as_one(routes, tmp_path):
+    for index, body in enumerate(({"op": "scale", "gain": 0.5},
+                                  {"op": "hold"}, {"op": "undo"})):
+        directory = tmp_path / f"op{index}"
+        trainer = FakeTrainer(directory, name="cosine", T=100)
+        trainer.seek(20)
+        # `undo` needs something to undo; the others do not care.
+        queue_retarget(directory)
+        poll(trainer, global_step=20)
+        trainer.seek(30)
+
+        accepted = call_retarget(routes, directory, body=dict(body))
+        assert accepted["command"] == control_rpc.RETARGET_COMMAND
+        assert accepted["payload"]["op"] == body["op"]
+        assert poll(trainer, global_step=30) == 1
+        assert results_by_id(directory)[accepted["request_id"]]["result"] == \
+            "applied"
+        # D27/invariant 17: no new event kind, whatever the button said.
+        assert {e["kind"] for e in trainer.lr_timeline.dump(10 ** 9)} == \
+            {"total_steps", "retarget"}
+
+
+def test_a_held_run_stays_at_the_multiplier_it_was_holding(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    held = trainer.multiplier(20)
+    call_retarget(routes, tmp_path, body={"op": "hold"})
+    assert poll(trainer, global_step=20) == 1
+    assert trainer.lr == pytest.approx(BASE_LR * held)
+    for step in (20, 21, 60, 100):
+        assert trainer.multiplier(step) == pytest.approx(held)
+
+
+def test_an_undo_appends_and_restores_the_previous_schedule(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    baseline = [trainer.multiplier(s) for s in (60, 80, 100)]
+
+    queue_retarget(tmp_path)
+    poll(trainer, global_step=20)
+    assert [trainer.multiplier(s) for s in (60, 80, 100)] != baseline
+    before = json.dumps(trainer.lr_timeline.dump(10 ** 9))
+
+    trainer.seek(40)
+    call_retarget(routes, tmp_path, body={"op": "undo", "length": 0})
+    assert poll(trainer, global_step=40) == 1
+    events = trainer.lr_timeline.dump(10 ** 9)
+    assert json.dumps(events[:-1]) == before
+    assert events[-1]["at"] == 40
+    assert [trainer.multiplier(s) for s in (60, 80, 100)] == \
+        pytest.approx(baseline)
+
+
+def test_an_undo_with_nothing_to_undo_is_named_not_an_error(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    accepted = call_retarget(routes, tmp_path, body={"op": "undo"})
+    poll(trainer, global_step=20)
+    recorded = results_by_id(tmp_path)[accepted["request_id"]]
+    assert recorded["result"] == "rejected_nothing_to_undo"
+    assert recorded["error"]
+    assert trainer.lr_timeline.dump(10 ** 9) == [
+        e for e in trainer.lr_timeline.dump(10 ** 9)
+        if e["kind"] == "total_steps"]
+
+
+@pytest.mark.parametrize("bad,message", [
+    ({"op": "sideways"}, "op"),
+    ({"op": "hold", "lr_scheduler": "wsd"}, "lr_scheduler"),
+    ({"op": "scale", "gain": 0.5, "anchor": "continue"}, "anchor"),
+    ({"op": "scale"}, "gain"),
+    ({"op": "hold", "gain": 2.0}, "gain"),
+    ({"op": "undo", "gain": 2.0}, "gain"),
+    ({"lr_scheduler": None}, "lr_scheduler"),
+])
+def test_the_endpoint_refuses_a_derived_op_it_cannot_honour(
+        routes, tmp_path, bad, message):
+    with pytest.raises(routes.HTTPException) as e:
+        call_retarget(routes, tmp_path, body=dict(bad))
+    assert status_of(e) == 400
+    assert message in e.value.detail
+    assert control_rpc.list_pending_requests(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# F1: the position a preview dates its candidates from
+# ---------------------------------------------------------------------------
+
+def test_a_preview_reads_the_live_step_when_the_display_file_is_stale(
+        routes, tmp_path):
+    """`refresh_lr_schedule_status` writes on a STATE change, so a run that has
+    had no LR command publishes `step` once, at its first batch. Dating a
+    candidate there draws a curve the trainer will not follow -- and answers
+    `applied` where the trainer will answer `rejected_backdated`."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer, global_step=0)
+    trainer.seek(60)
+    # No second publish: nothing changed state, so the trainer writes nothing.
+    assert control_rpc.read_status(tmp_path)["step"] == 0
+
+    preview = call_preview(routes, tmp_path, live_step=60, run_id=RUN_ID,
+                           n_points=8, events=[{"op": "hold"}])
+    assert (preview["step"], preview["position_source"]) == (60, "run_row")
+    # What the trainer will actually hold at, not the 1.0 of step 0.
+    held = trainer.multiplier(60)
+    assert held != pytest.approx(1.0)
+    assert preview["curves"][0]["points"][-1][1] == pytest.approx(held)
+
+    call_retarget(routes, tmp_path, body={"op": "hold"})
+    poll(trainer, global_step=60)
+    assert trainer.multiplier(100) == pytest.approx(held)
+
+
+def test_a_stale_file_no_longer_backdates_a_candidate(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer, global_step=0)
+    trainer.seek(60)
+    preview = call_preview(routes, tmp_path, live_step=60, run_id=RUN_ID,
+                           n_points=8,
+                           events=[dict(RETARGET_TO_WSD, at=50)])
+    # `issued` is the live step, so a candidate at 50 is behind the run.
+    assert preview["results"][0]["result"] == "rejected_backdated"
+    queue_retarget(tmp_path, dict(RETARGET_TO_WSD, at=50))
+    poll(trainer, global_step=60)
+    assert list(results_by_id(tmp_path).values())[0]["result"] == \
+        "rejected_backdated"
+
+
+def test_a_stopped_run_still_previews_from_its_published_step(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(40)
+    publish(trainer, global_step=40)
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8)
+    assert (preview["step"], preview["position_source"]) == (40, "status_file")
+
+
+def test_the_live_step_is_converted_to_the_scheduler_axis(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer._grad_accum_steps = 4
+    publish(trainer, global_step=0)
+    preview = call_preview(routes, tmp_path, live_step=240, run_id=RUN_ID,
+                           n_points=4)
+    assert preview["advance_interval"] == 4
+    assert preview["step"] == 60
+
+
+# ---------------------------------------------------------------------------
+# The six gaps the frontend found
+# ---------------------------------------------------------------------------
+
+def test_the_endpoint_accepts_the_runs_own_internal_curve(routes, tmp_path):
+    """Gap 1: whether an internal name is legal needs the run, so the endpoint
+    queues it and the timeline scores it -- rather than a 400 that left a
+    ReLoRA run unable to retarget onto its own curve at all."""
+    accepted = call_retarget(routes, tmp_path,
+                             body={"lr_scheduler": "relora"})
+    assert accepted["payload"]["lr_scheduler"] == "relora"
+
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    poll(trainer, global_step=0)
+    assert results_by_id(tmp_path)[accepted["request_id"]]["result"] == \
+        "rejected_unknown_scheduler"
+
+
+def test_the_retarget_defaults_have_a_schema_endpoint(routes):
+    import asyncio
+    import yaml
+    from api.param_defaults import LR_RETARGET_DEFAULTS
+
+    payload = asyncio.run(routes.get_lr_retarget_defaults())
+    for key, value in LR_RETARGET_DEFAULTS.items():
+        assert payload[key] == value, key
+    assert payload["n_points"] == LR_PREVIEW_DEFAULTS["n_points"]
+    # Defaults only: the vocabularies are mirrored in the client and pinned by
+    # lr_schedule_vocabulary_test, which fails a build instead of a select.
+    assert set(payload) == set(LR_RETARGET_DEFAULTS) | {"n_points"}
+
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    assert set(spec["paths"]["/schema/lr-retarget-defaults"]) == {"get"}
+
+
+def _gas_trainer(tmp_path, gas=3, sched_total=333, global_total=1000):
+    """A trainer whose global total is NOT a multiple of its accumulation, so
+    the product the field exists to avoid gives a different answer."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer._grad_accum_steps = gas
+    trainer.lr_schedule_spec = resolve_spec({}, warmup_steps=0,
+                                            total_steps=sched_total,
+                                            name="cosine")
+    trainer.lr_timeline = ScheduleTimeline()
+    trainer.lr_timeline.set_total_steps(sched_total)
+    if global_total is not None:
+        trainer._lr_global_total_steps = global_total
+    return trainer
+
+
+def test_the_status_file_carries_a_global_axis_total(tmp_path):
+    """Gap 3: with gas > 1 the file's totals are all scheduler steps, leaving a
+    reader to map the axis itself -- which would be a second definition of it,
+    and a lossy one: to_scheduler_axis floors."""
+    status = lr_schedule_status(_gas_trainer(tmp_path), global_step=0)
+    assert status["advance_interval"] == 3
+    assert status["effective_total_steps"] == 333
+    assert status["global_total_steps"] == 1000
+    # The whole point: the product is NOT the answer.
+    assert status["global_total_steps"] != (status["effective_total_steps"]
+                                            * status["advance_interval"])
+
+
+def test_an_unknown_global_total_is_null_and_never_a_product(tmp_path):
+    """§19.5.4-16: publishing the floored product would be exactly the wrong
+    number, and 0 would render as a run that ends immediately."""
+    status = lr_schedule_status(_gas_trainer(tmp_path, global_total=None),
+                                global_step=0)
+    assert status["global_total_steps"] is None
+
+
+def test_a_re_anchored_total_drops_the_global_one(tmp_path):
+    """The third write site's blind spot: a resume re-anchors on the SCHEDULER
+    axis, so the configured global total is no longer this run's end."""
+    trainer = _gas_trainer(tmp_path)
+    trainer.lr_timeline.add("total_steps", at=100, value=400)
+    status = lr_schedule_status(trainer, global_step=0)
+    assert status["effective_total_steps"] == 400
+    assert status["global_total_steps"] is None
+
+
+def test_the_documented_result_codes_are_the_timeline_s():
+    """Gap 4: the enum is presented as complete, so it has to be."""
+    import yaml
+    from core.training import lr_schedules
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    documented = set(spec["components"]["schemas"]["LrScheduleCommandResult"]
+                     ["properties"]["result"]["enum"])
+    assert {"ignored_unchanged", "ignored_duplicate_restart"} <= documented
+    assert set(lr_schedules._REFUSED) <= documented
+    assert {lr_schedules.RESULT_NOTHING_TO_UNDO,
+            lr_schedules.RESULT_AMBIGUOUS_SCOPE,
+            lr_schedules.RESULT_MISSING_GAIN} <= documented
+    previewable = set(spec["components"]["schemas"]
+                      ["LrSchedulePreviewEventResult"]["properties"]
+                      ["result"]["enum"])
+    assert previewable <= documented
+    assert "applied" in previewable and "error" not in previewable
+    # Every refusal a retarget can hit is drawable; the decay/cancel ones are
+    # not, because only retargets are previewable.
+    assert {c for c in lr_schedules._REFUSED
+            if c not in ("rejected_during_warmup", "rejected_zero_length")
+            } <= previewable
+
+
+def test_the_op_survives_onto_the_result_and_the_queue_item(routes, tmp_path):
+    """Gap 5: all four forms queue as `retarget` and land as one event kind, so
+    the op is only recoverable if the result and the pending item carry it."""
+    import asyncio
+    accepted = call_retarget(routes, tmp_path, body={"op": "hold"})
+    pending = asyncio.run(routes.get_lr_schedule_status(
+        RUN_ID, db=_FakeDb(SimpleNamespace(output_dir=str(tmp_path)))))
+    assert pending["pending"][0]["op"] == "hold"
+    assert pending["pending"][0]["command"] == "retarget"
+
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.seek(20)
+    poll(trainer, global_step=20)
+    recorded = results_by_id(tmp_path)[accepted["request_id"]]
+    assert (recorded["command"], recorded["op"]) == ("retarget", "hold")
+    # The event itself is still an undifferentiated retarget (invariant 17).
+    assert {e["kind"] for e in trainer.lr_timeline.dump(10 ** 9)} == \
+        {"total_steps", "retarget"}
+
+
+def test_a_two_button_command_records_no_op(tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100, config=LATE_PLATEAU)
+    trainer.seek(20)
+    control_rpc.queue_request(tmp_path, command="start_decay", run_id=RUN_ID)
+    poll(trainer, global_step=20)
+    assert list(results_by_id(tmp_path).values())[0]["op"] is None
+
+
+def test_the_preview_header_is_null_when_the_curves_disagree(routes, tmp_path):
+    """§19.5.4-8 one level up: the representative absorbs every scoped
+    candidate, so a header taken from it named a schedule NO group is on."""
+    trainer = GroupedFakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.lr_group_specs = [trainer.lr_schedule_spec.for_group(c)
+                              for c in ("unet", "text_encoder_1")]
+    publish(trainer)
+
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8, events=[
+        {"lr_scheduler": "constant", "length": 0, "groups": ["unet"]}])
+    assert preview["lr_scheduler"] is None
+    assert preview["description"] is None
+    curves = {c["group"]: c for c in preview["curves"]}
+    assert curves["unet"]["lr_scheduler"] == "constant"
+    assert curves["text_encoder_1"]["lr_scheduler"] == "cosine"
+    assert "constant" in curves["unet"]["description"]
+
+
+def test_the_preview_header_survives_when_the_curves_agree(routes, tmp_path):
+    trainer = GroupedFakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.lr_group_specs = [trainer.lr_schedule_spec.for_group(c)
+                              for c in ("unet", "text_encoder_1")]
+    publish(trainer)
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8,
+                           events=[{"lr_scheduler": "constant", "length": 0}])
+    assert preview["lr_scheduler"] == "constant"
+    assert preview["warmup_steps"] is not None
+    assert {c["lr_scheduler"] for c in preview["curves"]} == {"constant"}
+
+
+def test_an_ungrouped_preview_still_names_its_one_schedule(routes, tmp_path):
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer)
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=8)
+    assert preview["lr_scheduler"] == "cosine"
+    assert preview["curves"][0]["lr_scheduler"] == "cosine"
+    assert preview["floor_defaulted"] is not None
+
+
+def test_the_preview_warning_carries_d40s_reason(routes, tmp_path):
+    """D40: "this run has no lr_group_schedules" is false on a ReLoRA run that
+    set one, and sends the operator hunting a config bug that does not exist."""
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    trainer.lr_group_specs_ignored_reason = (
+        "lr_group_schedules is ignored on a ReLoRA run")
+    publish(trainer)
+    assert control_rpc.read_status(tmp_path)["ungrouped_reason"]
+
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=4, events=[
+        {"lr_scheduler": "constant", "length": 0, "groups": ["unet"]}])
+    assert preview["results"][0]["warning"] == WARN_SELECTOR_ON_UNGROUPED_RUN
+    assert "ignored on a ReLoRA run" in preview["warnings"][0]["message"]
+
+
+def test_the_preview_result_contract_matches_what_is_returned(routes, tmp_path):
+    import yaml
+    trainer = FakeTrainer(tmp_path, name="cosine", T=100)
+    publish(trainer)
+    preview = call_preview(routes, tmp_path, run_id=RUN_ID, n_points=4)
+    spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
+    schema = spec["components"]["schemas"]["LrSchedulePreviewResult"]
+    assert set(schema["required"]) <= set(preview)
+    assert set(preview) - set(schema["properties"]) == set()
+    curve = spec["components"]["schemas"]["LrSchedulePreviewCurve"]["properties"]
+    assert set(preview["curves"][0]) - set(curve) == set()

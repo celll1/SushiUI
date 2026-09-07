@@ -51,8 +51,11 @@ from api.routes import (  # noqa: E402
     _extract_request_params_from_yaml,
 )
 from core.training.lr_schedules import (  # noqa: E402
+    BLEND_SHAPE_NAMES,
     DECAY_SHAPE_NAMES,
     LR_SCHEDULER_NAMES,
+    RETARGET_ANCHORS,
+    RETARGET_OPS,
     ScheduleTimeline,
     build_lr_scheduler,
     make_lambda,
@@ -558,3 +561,42 @@ def test_the_registry_shapes_are_the_documented_ones():
     assert mid["linear"] == pytest.approx(0.5)
     assert mid["rex"] == pytest.approx(2 / 3)
     assert math.isclose(mid["rex"], 2 / 3, rel_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# The runtime retarget form's mirrors (§12.4 stopped at the scheduler names)
+# ---------------------------------------------------------------------------
+
+_RETARGET_PANEL = REPO / "frontend/src/components/training/LrScheduleRetargetPanel.tsx"
+_API_TS = REPO / "frontend/src/utils/api.ts"
+
+
+def test_the_retarget_form_offers_the_registry_blend_shapes():
+    source = _RETARGET_PANEL.read_text(encoding="utf-8")
+    block = source[source.index("const SHAPE_OPTIONS"):]
+    offered = re.findall(r'"([a-z]+)"', block[:block.index("];")])
+    assert offered == list(BLEND_SHAPE_NAMES)
+    # The blend vocabulary IS the decay vocabulary; D22 adds no shape.
+    assert BLEND_SHAPE_NAMES == DECAY_SHAPE_NAMES
+
+
+def test_the_retarget_form_offers_every_op():
+    source = _RETARGET_PANEL.read_text(encoding="utf-8")
+    block = source[source.index("const OPS:"):]
+    offered = re.findall(r'value: "([a-z]+)"', block[:block.index("\n];")])
+    assert offered == list(RETARGET_OPS)
+
+
+def test_the_retarget_form_offers_every_anchor():
+    source = _RETARGET_PANEL.read_text(encoding="utf-8")
+    block = source[source.index('setField("anchor"'):]
+    block = block[:block.index("</select>")]
+    # The empty option is "leave it to the server default", not an anchor.
+    offered = [v for v in re.findall(r'<option value="([a-z]*)"', block) if v]
+    assert offered == list(RETARGET_ANCHORS)
+
+
+def test_the_typescript_op_union_is_the_registry():
+    source = _API_TS.read_text(encoding="utf-8")
+    line = re.search(r"export type LrRetargetOp = ([^;]+);", source).group(1)
+    assert re.findall(r'"([a-z]+)"', line) == list(RETARGET_OPS)

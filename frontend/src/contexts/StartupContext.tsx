@@ -7,6 +7,7 @@ import {
   fetchTaggerTrainingDefaults,
   fetchVaeTrainingDefaults,
   fetchLrRetargetDefaults,
+  fetchLrTriggerDefaults,
   fetchTimestepDefaultsByArch,
   fetchBundleVaeDefaultsByArch,
   fetchArchCapabilities,
@@ -15,6 +16,7 @@ import {
   GenerationDefaultsResponse,
   ArchCapabilities,
   LrRetargetDefaults,
+  LrTriggerDefaults,
 } from "@/utils/api";
 
 // Loaded-model info object returned by GET /models/current -> model_info.
@@ -76,6 +78,9 @@ interface StartupContextType {
   // What an omitted field of a runtime LR retarget resolves to, and the three
   // vocabularies its form offers.
   lrRetargetDefaults: LrRetargetDefaults | null;
+  // The one trigger field with a default (max_fires). Everything a predicate
+  // reads is required and deliberately absent (D46).
+  lrTriggerDefaults: LrTriggerDefaults | null;
   timestepDefaultsByArch: Record<string, Record<string, unknown>> | null;
   bundleVaeDefaultsByArch: Record<string, boolean> | null;
   // Per-architecture capability matrix (GET /schema/arch-capabilities).
@@ -122,6 +127,7 @@ const StartupContext = createContext<StartupContextType>({
   taggerTrainingDefaults: null,
   vaeTrainingDefaults: null,
   lrRetargetDefaults: null,
+  lrTriggerDefaults: null,
   timestepDefaultsByArch: null,
   bundleVaeDefaultsByArch: null,
   archCapabilities: null,
@@ -169,6 +175,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [lrRetargetDefaults, setLrRetargetDefaults] = useState<LrRetargetDefaults | null>(null);
+  const [lrTriggerDefaults, setLrTriggerDefaults] = useState<LrTriggerDefaults | null>(null);
   const [timestepDefaultsByArch, setTimestepDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [bundleVaeDefaultsByArch, setBundleVaeDefaultsByArch] = useState<Record<string, boolean> | null>(null);
   const [archCapabilities, setArchCapabilities] = useState<ArchCapabilities | null>(null);
@@ -196,7 +203,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
     const inFlight = (async () => {
       try {
-        const [genDef, trainDef, taggerDef, vaeDef, lrRetargetDef, tsByArch, bvByArch, archCaps, genSettings] = await Promise.all([
+        const [genDef, trainDef, taggerDef, vaeDef, lrRetargetDef, lrTriggerDef, tsByArch, bvByArch, archCaps, genSettings] = await Promise.all([
           fetchGenerationDefaults(),
           fetchTrainingDefaults(),
           fetchTaggerTrainingDefaults(),
@@ -205,6 +212,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
           // the backend, and the shared Promise.all has one catch for all
           // of them -- a 404 here would drop every other default too.
           fetchLrRetargetDefaults().catch(() => null),
+          fetchLrTriggerDefaults().catch(() => null),
           fetchTimestepDefaultsByArch(),
           fetchBundleVaeDefaultsByArch(),
           fetchArchCapabilities(),
@@ -219,6 +227,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
         setTaggerTrainingDefaults(taggerDef);
         setVaeTrainingDefaults(vaeDef);
         setLrRetargetDefaults(lrRetargetDef);
+        setLrTriggerDefaults(lrTriggerDef);
         setTimestepDefaultsByArch(tsByArch);
         setBundleVaeDefaultsByArch(bvByArch);
         setArchCapabilities(archCaps);
@@ -380,6 +389,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       taggerTrainingDefaults,
       vaeTrainingDefaults,
       lrRetargetDefaults,
+      lrTriggerDefaults,
       timestepDefaultsByArch,
       bundleVaeDefaultsByArch,
       archCapabilities,

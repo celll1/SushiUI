@@ -18998,7 +18998,7 @@ async def get_lr_schedule_triggers(
     not claimed yet.
     """
     from core.training.training_process import training_process_manager
-    from core.training.lr_triggers import MAX_TRIGGERS
+    from core.training.lr_triggers import MAX_TRIGGER_FIRES, MAX_TRIGGERS
     from core.training.training_control_rpc import (
         MAX_PENDING_REQUESTS, TRIGGER_COMMANDS, list_results, pending_requests,
         read_status,
@@ -19018,6 +19018,9 @@ async def get_lr_schedule_triggers(
         "is_running": bool(proc is not None and proc.is_running),
         "max_pending": MAX_PENDING_REQUESTS,
         "max_triggers": MAX_TRIGGERS,
+        # Both resource bounds, so a client can state the fire ceiling without
+        # copying the literal out of the spec (D61).
+        "max_trigger_fires": MAX_TRIGGER_FIRES,
         "triggers": (status or {}).get("triggers") or [],
         "pending": [
             {

@@ -1047,7 +1047,10 @@ def test_the_get_and_the_delete(routes, tmp_path):
         listed = asyncio.run(routes.get_lr_schedule_triggers(
             RUN_ID, db=_FakeDb(object())))
         assert [t["id"] for t in listed["triggers"]] == [trigger.id]
+        # Both resource bounds. Without the second one a UI can say "1 of 20
+        # registered" but has to copy the fire ceiling out of the spec.
         assert listed["max_triggers"] == MAX_TRIGGERS
+        assert listed["max_trigger_fires"] == control_rpc.MAX_TRIGGER_FIRES
 
         accepted = asyncio.run(routes.cancel_lr_schedule_trigger(
             RUN_ID, trigger.id, db=_FakeDb(object())))
@@ -1100,8 +1103,11 @@ def test_the_endpoints_are_documented_in_openapi():
 
     schema = spec["components"]["schemas"]["LrScheduleTriggerRequest"]
     assert schema["properties"]["predicate"]["enum"] == list(TRIGGER_PREDICATES)
-    assert set(schema["required"]) == {"signal", "predicate", "interval",
-                                       "action"}
+    # D46: nothing is `required`. Which fields a body needs depends on its
+    # predicate, and the contract is "send what you have and be refused by
+    # name" -- a required list makes a generated client block the request
+    # locally, and the named refusal never happens.
+    assert "required" not in schema
     # Invariant 20: the documented body carries a default for max_fires and for
     # nothing else. A documented `default: 0` would be the number D46 refuses.
     defaulted = {k for k, v in schema["properties"].items() if "default" in v}
@@ -1140,10 +1146,12 @@ def test_the_published_state_is_documented():
     state = spec["components"]["schemas"]["LrScheduleState"]
     assert state["properties"]["triggers"]["items"]["$ref"].endswith(
         "/LrScheduleTriggerState")
-    published = set(spec["components"]["schemas"]["LrScheduleTriggerState"]
-                    ["properties"])
+    schema = spec["components"]["schemas"]["LrScheduleTriggerState"]
     trigger = Trigger(**validate_trigger(PLATEAU))
-    assert set(trigger.status()) == published
+    assert set(trigger.status()) == set(schema["properties"])
+    # Against what `status()` returns, not against the property list: every
+    # key is always there, and nullable is not the same as absent (19.5.4-24).
+    assert set(schema["required"]) == set(trigger.status())
 
 
 # ---------------------------------------------------------------------------
@@ -1279,3 +1287,64 @@ def test_openapi_bounds_are_consistent_with_rpc():
     props = spec["components"]["schemas"]["LrScheduleTriggerRequest"]["properties"]
     assert props["max_fires"]["maximum"] == MAX_TRIGGER_FIRES
     assert props["cooldown"]["minimum"] == 1
+
+
+def test_a_refused_stand_off_is_readable_as_one(tmp_path):
+    """D52: `cooldown_left > 0` has two causes and the number cannot tell them
+    apart. Here nothing is configured to space out -- the hold is D64's
+    debounce after a refusal, and the published record has to say so."""
+    trainer = FakeTrainer(tmp_path, name="plateau_cosine_floor", W=400, T=1000,
+                          config=LATE_PLATEAU)
+    record = validate_trigger({
+        "signal": "loss", "predicate": "below", "interval": 10,
+        "threshold": 2.0, "max_fires": 1,
+        "action": {"command": "start_decay"},
+    })
+    trainer.lr_triggers.register(record, 12)
+    trainer.seek(100)
+    feed(trainer, [1.0] * 100, poll_every=10)
+
+    published = trainer.lr_triggers.status()[0]
+    assert published["created_step"] == 12
+    assert published["fires"] == 0
+    assert published["cooldown"] is None
+    # One fewer than the window count: registering at 12 discards the window
+    # already in progress rather than averaging a fraction of it.
+    assert published["refusals"] == 4
+    assert published["last_refusal"] == "rejected_during_warmup"
+    assert published["last_refusal_step"] == published["observation_step"]
+    assert published["cooldown_left"] > 0
+    assert published["cooldown_reason"] == "refusal"
+
+
+def test_the_refusal_flag_is_set_on_every_path_not_only_where_it_is_read():
+    """`cooldown_from_refusal` is read only while `cooldown_left > 0`, so a
+    path that leaves it stale is invisible through `status()`. It is persisted
+    state (D49), so a resume can hand a plateau trigger a True that its own
+    refusal -- which holds nothing -- has to clear rather than inherit."""
+    triggers = TriggerSet()
+    triggers.load([{**validate_trigger(PLATEAU), "cooldown_from_refusal": True}])
+    plateau = triggers.triggers[0]
+    assert plateau.cooldown_from_refusal is True      # restored, not defaulted
+
+    plateau.record_fire(True, result="rejected_during_warmup", step=100)
+    assert plateau.cooldown_left == 0
+    assert plateau.cooldown_from_refusal is False
+    plateau.record_fire(False, result="applied", step=200)
+    assert plateau.cooldown_from_refusal is False
+
+    below = Trigger(**validate_trigger({
+        "signal": "loss", "predicate": "below", "interval": 10,
+        "threshold": 2.0, "max_fires": 2, "cooldown": 2,
+        "action": {"command": "start_decay"}}))
+    below.record_fire(True, result="rejected_during_warmup", step=100)
+    assert below.cooldown_left == 2 and below.cooldown_from_refusal is True
+    # Expiry ends the stand-off, so it ends the attribution too: the flag says
+    # why the trigger is waiting, and after this it is not waiting.
+    assert below.observe(9.0) is False
+    assert below.cooldown_left == 1 and below.cooldown_from_refusal is True
+    assert below.observe(9.0) is False
+    assert below.cooldown_left == 0 and below.cooldown_from_refusal is False
+
+    below.record_fire(False, result="applied", step=200)
+    assert below.cooldown_left == 2 and below.cooldown_from_refusal is False

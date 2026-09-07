@@ -6619,6 +6619,10 @@ paths:
         `pending` is the registrations and cancellations the trainer has not
         claimed yet; `results` carries both what registering answered and what
         each firing did (`trigger_id` names the trigger).
+
+        `max_triggers` and `max_trigger_fires` are the two resource bounds
+        (D60, D61): how many conditions one run may hold, and how many times
+        one of them may fire.
       parameters:
         - name: run_id
           in: path
@@ -21017,9 +21021,33 @@ components:
       additionalProperties: false
       description: |
         A condition registered on a running run (§20.2). It carries no numbers
-        this build chose: `interval` is always required, `patience` and
-        `min_delta` for `plateau`, `threshold` for `below`/`above`.
-      required: [signal, predicate, interval, action]
+        this build chose.
+
+        **Nothing here is marked `required`, and that is deliberate.** Which
+        fields a body needs depends on its `predicate`, and the endpoint's
+        contract is "send what you have and be refused BY NAME" (D46). A
+        `required` list would make a generated client block the request
+        locally, and the named refusal — the one thing that tells the operator
+        which box to fill in — would never happen.
+
+        What a complete body carries:
+
+        - `signal`, `predicate` and `action`, always.
+        - `interval`, always: a threshold on a raw per-step diffusion loss is
+          as noisy as a plateau on one.
+        - `patience` and `min_delta` under `plateau`, refused under the others.
+        - `threshold` under `below` / `above`, refused under `plateau`.
+        - `cooldown` exactly when `max_fires > 1`, and refused at
+          `max_fires = 1`, where there is no second firing to space out.
+
+        A missing or misplaced field is a 400 naming it, not a transport error.
+        The refusals that need the run itself cannot be answered here — the 202
+        only means the registration was queued — and arrive in `results` as
+        `registered`, `rejected_duplicate_trigger_id` (the id is already
+        armed), `rejected_trigger_limit` (the run holds `max_triggers`) or
+        `rejected_invalid_trigger` (a record this build cannot arm, with the
+        same message the 400 would have carried). See
+        `LrScheduleCommandResult`.
       properties:
         id:
           type: string
@@ -21091,8 +21119,9 @@ components:
           default: 1
           description: |
             After this many firings the trigger disarms but stays visible. More
-            than 1 requires `cooldown`. Capped at 10 (D61) to bound the timeline
-            event chain.
+            than 1 requires `cooldown`. The `maximum` is a resource bound (D61)
+            on the timeline chain each firing anchors; `GET .../triggers`
+            returns the same ceiling as `max_trigger_fires`.
           example: 3
         cooldown:
           type: integer
@@ -21114,6 +21143,16 @@ components:
             refused — a firing takes effect where it fires. The two
             parameterless buttons are `{"command": "start_decay"}` and
             `{"command": "cancel_decay"}`.
+          properties:
+            command:
+              type: string
+              enum: [start_decay, cancel_decay, retarget]
+              description: |
+                Which button the firing presses. Omitted means `retarget`, and
+                the rest of the object is then the retarget body;
+                `start_decay` / `cancel_decay` take no other key, since both
+                use the run's own decay length and shape.
+              example: retarget
           example:
             op: scale
             gain: 0.5
@@ -21121,6 +21160,32 @@ components:
     LrScheduleTriggerState:
       type: object
       description: One registered trigger, as the trainer last published it.
+      required:
+        - id
+        - signal
+        - predicate
+        - interval
+        - patience
+        - min_delta
+        - threshold
+        - max_fires
+        - cooldown
+        - action
+        - armed
+        - created_step
+        - fires
+        - fires_left
+        - cooldown_left
+        - cooldown_reason
+        - refusals
+        - last_refusal
+        - last_refusal_step
+        - observations
+        - observation
+        - observation_step
+        - best
+        - patience_used
+        - observations_to_fire
       properties:
         id:
           type: string
@@ -21164,6 +21229,14 @@ components:
           description: False once `max_fires` is spent. The record stays, so
             what it did is still readable.
           example: true
+        created_step:
+          type: integer
+          description: |
+            The GLOBAL step the trigger was armed at. What explains a trigger
+            with no observations on a run at step 40,000: it was registered a
+            moment ago, and the window in progress then was discarded rather
+            than averaged over a fraction of its steps.
+          example: 8400
         fires:
           type: integer
           example: 1
@@ -21172,8 +21245,39 @@ components:
           example: 2
         cooldown_left:
           type: integer
-          description: Observations still to skip after the last firing.
+          description: Observations still to skip before this trigger may fire.
           example: 0
+        cooldown_reason:
+          type: string
+          nullable: true
+          enum: [firing, refusal]
+          description: |
+            Why it is standing off, or null when `cooldown_left` is 0. The two
+            causes are not the same thing and cannot be told apart from the
+            number: `firing` is the configured `cooldown` after a firing that
+            took effect, while `refusal` is D64's debounce after a firing the
+            timeline REFUSED — which spends no fire and can hold even when no
+            `cooldown` is configured.
+          example: null
+        refusals:
+          type: integer
+          description: |
+            How many times this trigger matched and the timeline refused the
+            event it materialised. A refusal is not a firing (D51), so none of
+            these cost a `max_fires`.
+          example: 0
+        last_refusal:
+          type: string
+          nullable: true
+          description: |
+            The result code of the most recent refused firing (a `rejected_*`
+            value of `LrScheduleCommandResult`), or null if none was refused.
+          example: null
+        last_refusal_step:
+          type: integer
+          nullable: true
+          description: The GLOBAL step of the observation that was refused.
+          example: null
         observations:
           type: integer
           description: How many observations this trigger has scored.
@@ -21288,7 +21392,8 @@ components:
     LrScheduleTriggersResponse:
       type: object
       description: The run's registered triggers, pending changes and results.
-      required: [run_id, is_running, max_pending, max_triggers, triggers, pending, results]
+      required: [run_id, is_running, max_pending, max_triggers,
+                 max_trigger_fires, triggers, pending, results]
       properties:
         run_id:
           type: integer
@@ -21303,6 +21408,14 @@ components:
           type: integer
           description: How many triggers one run may hold at once.
           example: 20
+        max_trigger_fires:
+          type: integer
+          description: |
+            The ceiling on one trigger's `max_fires` (D61), returned so a
+            client can state it without copying this spec's `maximum` as a
+            literal. Both bounds are resource limits, not tunable defaults, so
+            neither is in `param_defaults.py`.
+          example: 10
         triggers:
           type: array
           items:

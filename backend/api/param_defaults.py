@@ -3147,6 +3147,24 @@ LR_RETARGET_DEFAULTS: Dict[str, Any] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Conditional LR-schedule triggers (LrScheduleTriggerRequest)
+# ---------------------------------------------------------------------------
+# §20 of docs/guides/LR_SCHEDULER_DESIGN.md. D46 and invariant 20 forbid giving
+# a trigger numeric defaults: a usable `min_delta`, `threshold`, `patience` or
+# observation `interval` depends entirely on the model's and dataset's loss
+# scale, and this repo does not write numbers it has not measured. The operator
+# supplies all four; the only thing with a default is how many times a trigger
+# may fire.
+
+LR_TRIGGER_DEFAULTS: Dict[str, Any] = {
+    # D48: once. A decay is not worth repeating, and a trigger meant to fire
+    # again (`scale` on every plateau) has to say so -- and then name a
+    # `cooldown`, or the same plateau fires it on consecutive observations.
+    "max_fires": 1,
+}
+
+
 # LR-schedule curve preview (D20/D29). Sampling is the whole cost, so the count
 # is the only knob.
 LR_PREVIEW_DEFAULTS: Dict[str, Any] = {

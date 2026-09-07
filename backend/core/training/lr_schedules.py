@@ -89,6 +89,7 @@ __all__ = [
     "build_depth_map",
     "build_lr_scheduler",
     "describe_spec",
+    "is_refused_result",
     "make_lambda",
     "resolve_retarget_spec",
     "resolve_spec",
@@ -1106,6 +1107,17 @@ class ScheduleTimeline:
     def _own_base(self, curve: _Curve, step: int, disarmed: bool) -> float:
         return base_multiplier(curve.spec, curve.view, step - curve.origin,
                                decay_disarmed=disarmed)
+
+
+def is_refused_result(result: str) -> bool:
+    """Did `add()` (or a derived op) refuse this, rather than record it?
+
+    One definition, because R6 spends a trigger's `max_fires` on everything
+    that is NOT a refusal (D51) and `ignored_*` is not a refusal: the event was
+    recorded and folded, it simply changed nothing given the state. `error` is
+    not a result code at all -- the caller decides what an exception means.
+    """
+    return str(result).startswith("rejected_")
 
 
 def _result_rank(result: str) -> int:

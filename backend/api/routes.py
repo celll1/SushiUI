@@ -51,6 +51,7 @@ from api.param_defaults import (
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     LR_RETARGET_DEFAULTS,
     LR_PREVIEW_DEFAULTS,
+    LR_TRIGGER_DEFAULTS,
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -966,6 +967,16 @@ async def get_lr_retarget_defaults():
     """
     return {**LR_RETARGET_DEFAULTS,
             "n_points": LR_PREVIEW_DEFAULTS["n_points"]}
+
+@router.get("/schema/lr-trigger-defaults")
+async def get_lr_trigger_defaults():
+    """Return what an omitted field of a conditional LR trigger resolves to.
+
+    One key. `interval`, `patience`, `min_delta` and `threshold` are absent on
+    purpose (D46): a usable value for any of them depends on the run's own loss
+    scale, so this build asks for them rather than inventing one.
+    """
+    return dict(LR_TRIGGER_DEFAULTS)
 
 @router.get("/schema/timestep-defaults-by-arch")
 async def get_timestep_defaults_by_arch():
@@ -18858,6 +18869,231 @@ async def get_lr_schedule_status(
             for r in (pending_requests(output_dir, int(run_id)) if output_dir else [])
         ],
         "results": list_results(output_dir, int(run_id)) if output_dir else [],
+    }
+
+
+class LrScheduleTriggerRequest(BaseModel):
+    """§20.2's trigger: a condition registered now, pressed by the run later.
+
+    Every numeric field is optional HERE so that a missing one can be refused
+    by name with the reason (D46), not silently filled in: this build has no
+    default for `interval`, `patience`, `min_delta` or `threshold`, because a
+    usable value for any of them is a property of this model and dataset's loss
+    scale. `max_fires` is the one field with a default.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    id: Optional[str] = None
+    signal: Optional[str] = None
+    predicate: Optional[str] = None
+    # GLOBAL steps per observation, the axis the signal is produced on. One
+    # observation is the MEAN over the window (D47); `patience` counts
+    # observations, not steps.
+    interval: Optional[int] = None
+    patience: Optional[int] = None
+    min_delta: Optional[float] = None
+    threshold: Optional[float] = None
+    max_fires: int = LR_TRIGGER_DEFAULTS["max_fires"]
+    # In observations, and required exactly when max_fires > 1.
+    cooldown: Optional[int] = None
+    action: Optional[Dict[str, Any]] = None
+
+
+def _validated_trigger_record(request: LrScheduleTriggerRequest) -> Dict[str, Any]:
+    """The record to register, or a 400 naming what is missing or wrong.
+
+    A trigger is decidable without the run except for its id being free and the
+    cap, so almost everything is answered here. The `action` goes through the
+    RETARGET endpoint's own validator, so an action that registers is an action
+    that would have queued and drawn.
+    """
+    import pydantic
+
+    from core.training.lr_triggers import validate_trigger
+    from core.training.training_control_rpc import RETARGET_COMMAND
+
+    try:
+        record = validate_trigger(request.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    action = dict(record["action"])
+    if action.get("command") == RETARGET_COMMAND:
+        try:
+            candidate = LrScheduleRetargetRequest(
+                **{k: v for k, v in action.items() if k != "command"})
+        except pydantic.ValidationError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The trigger's action is not a retarget this build can "
+                       f"queue: {e}")
+        record["action"] = {"command": RETARGET_COMMAND,
+                            **_validated_retarget_payload(candidate)}
+    return record
+
+
+@router.post("/training/runs/{run_id}/lr-schedule/triggers", status_code=202)
+async def queue_lr_schedule_trigger(
+    run_id: int,
+    request: LrScheduleTriggerRequest,
+    db: Session = Depends(get_training_db),
+):
+    """Register a condition that presses an LR-schedule button for you (§20).
+
+    Fire and forget, like every other command: 202 once the file is written,
+    and the trainer installs it at the head of its next batch. What it fires
+    later is an ordinary event, refusable by the ordinary rules -- and a refused
+    firing is not a firing, so it costs the trigger neither a fire nor a
+    cooldown.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        ADD_TRIGGER_COMMAND, MAX_PENDING_REQUESTS, ControlQueueFullError,
+        list_pending_requests, queue_request,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    record = _validated_trigger_record(request)
+
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick "
+                   f"the trigger up")
+
+    try:
+        queued = queue_request(proc.output_dir, command=ADD_TRIGGER_COMMAND,
+                               run_id=int(run_id), extra={"trigger": record})
+    except ControlQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue LR schedule trigger: {e}")
+
+    return {
+        "request_id": queued["request_id"],
+        "run_id": int(run_id),
+        "command": ADD_TRIGGER_COMMAND,
+        "queued_at": queued["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "trigger": record,
+    }
+
+
+@router.get("/training/runs/{run_id}/lr-schedule/triggers")
+async def get_lr_schedule_triggers(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+):
+    """The run's registered triggers: what each watches and how close it is.
+
+    Read from the state the trainer publishes, so a stopped run answers with
+    what it last had. `pending` is the registrations and cancellations it has
+    not claimed yet.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.lr_triggers import MAX_TRIGGERS
+    from core.training.training_control_rpc import (
+        MAX_PENDING_REQUESTS, TRIGGER_COMMANDS, list_results, pending_requests,
+        read_status,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    output_dir = proc.output_dir if proc is not None else run.output_dir
+    status = read_status(output_dir) if output_dir else None
+    results = list_results(output_dir, int(run_id)) if output_dir else []
+
+    return {
+        "run_id": int(run_id),
+        "is_running": bool(proc is not None and proc.is_running),
+        "max_pending": MAX_PENDING_REQUESTS,
+        "max_triggers": MAX_TRIGGERS,
+        "triggers": (status or {}).get("triggers") or [],
+        "pending": [
+            {
+                "request_id": r.get("request_id"),
+                "command": r.get("command"),
+                "trigger_id": (r.get("trigger") or {}).get("id")
+                              or r.get("trigger_id"),
+                "queued_at": r.get("queued_at"),
+            }
+            for r in (pending_requests(output_dir, int(run_id)) if output_dir
+                      else [])
+            if r.get("command") in TRIGGER_COMMANDS
+        ],
+        # Both halves of a trigger's record: what registering it answered, and
+        # what its firings did.
+        "results": [r for r in results
+                    if r.get("command") in TRIGGER_COMMANDS
+                    or r.get("trigger_id")],
+    }
+
+
+@router.delete("/training/runs/{run_id}/lr-schedule/triggers/{trigger_id}",
+               status_code=202)
+async def cancel_lr_schedule_trigger(
+    run_id: int,
+    trigger_id: str,
+    db: Session = Depends(get_training_db),
+):
+    """Cancel a registered trigger (§20.6).
+
+    Whether the id exists is the trainer's to answer -- the published list is
+    display state and can be a batch old -- so an unknown one comes back as
+    `rejected_unknown_trigger` in the results rather than as a 404 here.
+    Cancelling does not undo what the trigger already fired: those are ordinary
+    events, and `undo` reverses one.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        MAX_PENDING_REQUESTS, REMOVE_TRIGGER_COMMAND, ControlQueueFullError,
+        list_pending_requests, queue_request,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    if not (trigger_id or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="trigger_id must not be empty")
+
+    proc = training_process_manager.processes.get(int(run_id))
+    if proc is None or not proc.is_running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run_id} is not executing; nothing would pick "
+                   f"the cancellation up")
+
+    try:
+        queued = queue_request(proc.output_dir, command=REMOVE_TRIGGER_COMMAND,
+                               run_id=int(run_id),
+                               extra={"trigger_id": str(trigger_id)})
+    except ControlQueueFullError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except OSError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not queue LR schedule trigger cancellation: {e}")
+
+    return {
+        "request_id": queued["request_id"],
+        "run_id": int(run_id),
+        "command": REMOVE_TRIGGER_COMMAND,
+        "trigger_id": str(trigger_id),
+        "queued_at": queued["queued_at"],
+        "pending_count": len(list_pending_requests(proc.output_dir, int(run_id))),
+        "max_pending": MAX_PENDING_REQUESTS,
     }
 
 

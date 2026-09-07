@@ -1711,6 +1711,23 @@ export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unkn
 export const fetchVaeTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/vae-training-defaults")).data;
 
+// What an omitted field of a runtime LR retarget resolves to, plus the three
+// vocabularies a retarget form offers. Backed by param_defaults.py
+// LR_RETARGET_DEFAULTS; a null value resolves against the RUN, not to a number.
+export interface LrRetargetDefaults {
+  op: string;
+  anchor: string;
+  gain: number;
+  length: number | null;
+  shape: string;
+  at: number | null;
+  groups: string[] | null;
+  n_points: number;
+}
+
+export const fetchLrRetargetDefaults = async (): Promise<LrRetargetDefaults> =>
+  (await api.get("/schema/lr-retarget-defaults")).data;
+
 // Per-architecture default timestep_sampling configs (e.g. { _default: {...}, minit2i: {...} }).
 // The training UI applies the selected model's entry when the base model changes.
 export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Record<string, unknown>>> =>
@@ -7275,7 +7292,12 @@ export const getTrainingSampleQueue = async (
 export interface LrScheduleGroupState {
   index: number;
   name: string;
+  // The name a retarget's `groups` selector matches, case-insensitively.
+  component: string | null;
   schedule: string;
+  spec: Record<string, any>;
+  spec_group: string | null;
+  anchor_step: number;
   state: string;
   state_code: number;
   multiplier: number;
@@ -7286,10 +7308,19 @@ export interface LrScheduleState {
   version: number;
   run_id: number | null;
   written_at: number;
+  // Scheduler axis (one unit per optimizer update), not global_step.
   step: number;
-  global_step: number;
+  global_step: number | null;
+  // Global steps per scheduler advance: what puts a retarget's global-step
+  // numbers on this file's axis.
+  advance_interval: number;
+  spec: Record<string, any>;
+  ungrouped_reason: string | null;
   scheduler: string;
+  anchor_step: number;
   warmup_steps: number;
+  warmup_end_step: number;
+  blend: { at: number; length: number; ends_at: number; shape: string } | null;
   state: string;
   state_code: number;
   state_at: number;
@@ -7297,6 +7328,10 @@ export interface LrScheduleState {
   multiplier: number;
   nominal_total_steps: number;
   effective_total_steps: number;
+  // The run's end on the GLOBAL axis. Published because to_scheduler_axis
+  // floors, so effective_total_steps * advance_interval does not recover it --
+  // and absent rather than approximated when the true value is unknown.
+  global_total_steps?: number | null;
   groups: LrScheduleGroupState[];
   events: Record<string, any>[];
 }
@@ -7305,6 +7340,10 @@ export interface LrScheduleCommandResult {
   request_id: string;
   run_id: number | null;
   command: string;
+  // Which form of retarget this was; null for start_decay / cancel_decay. All
+  // four forms are command "retarget" and land as one event, so this is the
+  // only record of which one was pressed.
+  op: LrRetargetOp | null;
   result: string;
   at: number;
   global_step: number;
@@ -7318,7 +7357,12 @@ export interface LrScheduleStatusResponse {
   max_pending: number;
   // Null until the trainer's first batch of this session wrote one.
   status: LrScheduleState | null;
-  pending: { request_id: string; command: string; queued_at: number }[];
+  pending: {
+    request_id: string;
+    command: string;
+    op: LrRetargetOp | null;
+    queued_at: number;
+  }[];
   results: LrScheduleCommandResult[];
 }
 
@@ -7366,6 +7410,183 @@ export const getLrSchedulePreview = async (
   params: Record<string, string | number | undefined>
 ): Promise<LrSchedulePreview> => {
   const response = await api.get(`/training/lr-schedule/preview`, { params });
+  return response.data;
+};
+
+// Every result code the trainer's timeline can answer with, in words. The
+// codes are the enum of LrScheduleCommandResult.result in openapi.yaml; an
+// unknown one falls through as itself rather than being hidden.
+const LR_SCHEDULE_RESULT_TEXT: Record<string, string> = {
+  applied: "Applied.",
+  disarmed_scheduled_decay:
+    "The decay this run had configured was called off before it began; nothing was decaying yet.",
+  ignored_already_decaying: "Nothing to do: the schedule was already decaying.",
+  ignored_already_recovering:
+    "Nothing to do: the schedule was already returning to its curve.",
+  ignored_no_active_decay: "Nothing to do: there was no decay to cancel.",
+  ignored_unchanged: "Nothing to do: the run's total was already that.",
+  ignored_duplicate_restart:
+    "Nothing to do: a restart was already recorded at that step.",
+  rejected_during_warmup:
+    "Refused: the LR is still climbing through its warmup, so there is nothing to decay from yet.",
+  rejected_zero_length: "Refused: no steps were left for the decay to run in.",
+  rejected_backdated:
+    "Refused: the step it named had already passed when the trainer claimed it. The schedule is only appended to, never rewritten behind the run.",
+  rejected_unknown_scheduler: "Refused: this build has no schedule by that name.",
+  rejected_non_positive_gain:
+    "Refused: the gain multiplies the new curve, and 0 or less would switch the LR off.",
+  rejected_negative_length:
+    "Refused: the blend length must be 0 or more, and a positive length shorter than one optimizer step is refused rather than rounded down to an instant switch.",
+  rejected_floor_out_of_range: "Refused: the floor must be between 0 and 1.",
+  rejected_no_remaining_span:
+    "Refused: no steps remain after the step it would start at, so the new curve has nowhere to run.",
+  rejected_warmup_exceeds_span:
+    "Refused: the new warmup is at least as long as the span left to run it in.",
+  rejected_empty_group_selector:
+    "Refused: the group selection was empty. Selecting no group at all is what means every group.",
+  rejected_unknown_group:
+    "Refused: this run has no optimizer parameter group by that component name.",
+  rejected_nothing_to_undo:
+    "Refused: no retarget is in force on this curve to undo. A “Decay now” is undone with “Cancel decay”.",
+  rejected_ambiguous_group_scope:
+    "Refused: the groups named are on different schedules, and one request carries one curve. Retarget them one at a time.",
+  rejected_missing_gain: "Refused: a scale needs the factor to scale by.",
+  rejected_unknown_command: "Refused: the trainer does not know that command.",
+  error: "Failed while being applied.",
+};
+
+export const lrScheduleResultExplanation = (result: string): string =>
+  LR_SCHEDULE_RESULT_TEXT[result] ?? result;
+
+export type LrRetargetOp = "retarget" | "scale" | "hold" | "undo";
+
+// D44: an omitted key is NOT a default, it is "keep what the run is on", so
+// every field is optional and nothing is filled in on this side.
+export interface LrScheduleRetargetRequest {
+  op?: LrRetargetOp;
+  lr_scheduler?: string;
+  lr_warmup_steps?: number;
+  lr_floor_ratio?: number;
+  lr_decay_start_ratio?: number;
+  lr_decay_start_step?: number;
+  lr_decay_steps?: number;
+  lr_decay_shape?: string;
+  lr_cycle_steps?: number;
+  lr_cycle_peak_decay?: number;
+  anchor?: "restart" | "continue";
+  gain?: number;
+  // Blend length and effect step are GLOBAL steps; the trainer converts them
+  // with the run's own gradient_accumulation_steps when it claims the command.
+  length?: number;
+  shape?: string;
+  at?: number;
+  groups?: string[];
+}
+
+export interface LrScheduleRetargetAccepted {
+  request_id: string;
+  run_id: number;
+  command: string;
+  queued_at: number;
+  pending_count: number;
+  max_pending: number;
+  // The request as queued, carrying only the keys it named.
+  payload: LrScheduleRetargetRequest;
+}
+
+export interface LrSchedulePreviewConfig {
+  lr_scheduler?: string;
+  total_steps?: number;
+  gradient_accumulation_steps?: number;
+  lr_warmup_steps?: number;
+  lr_floor_ratio?: number | null;
+  lr_decay_start_ratio?: number;
+  lr_decay_start_step?: number;
+  lr_decay_steps?: number;
+  lr_decay_shape?: string;
+  lr_cycle_steps?: number;
+  lr_cycle_peak_decay?: number;
+}
+
+export interface LrSchedulePreviewRequest {
+  // Exactly one source: a live run's published timeline, or a schedule with no
+  // run behind it.
+  run_id?: number | null;
+  config?: LrSchedulePreviewConfig | null;
+  events?: LrScheduleRetargetRequest[];
+  n_points?: number;
+}
+
+export interface LrSchedulePreviewEventResult {
+  index: number;
+  op: LrRetargetOp;
+  result: string;
+  at: number | null;
+  kind: string | null;
+  refused_kind: string | null;
+  warning: string | null;
+  detail: string | null;
+}
+
+export interface LrSchedulePreviewCurve {
+  group: string | null;
+  lr_scheduler: string;
+  description: string;
+  points: [number, number][];
+  baseline_points: [number, number][];
+}
+
+export interface LrSchedulePreviewWarning {
+  code: string;
+  at: number;
+  message: string;
+}
+
+export interface LrSchedulePreviewResult {
+  source: "run" | "config";
+  run_id: number | null;
+  step: number;
+  // Where `step` came from. `status_file` is the published state, rewritten
+  // only when the schedule CHANGES and so possibly many steps old; `run_row`
+  // is the run's own step. The later of the two is used while it executes.
+  position_source: "run_row" | "status_file" | "config";
+  advance_interval: number;
+  // Null unless every curve agrees: a scoped candidate moves only the groups
+  // it names, so a header taken from the representative spec would name a
+  // schedule no param group is on. Each curve names itself.
+  lr_scheduler: string | null;
+  description: string | null;
+  scheduler_total_steps: number;
+  nominal_total_steps: number;
+  warmup_steps: number | null;
+  floor_ratio: number | null;
+  floor_defaulted: boolean | null;
+  results: LrSchedulePreviewEventResult[];
+  // Returned rather than emitted: a preview runs in the API process, where the
+  // trainer's stdout channel has no reader. This is the only place they appear.
+  warnings: LrSchedulePreviewWarning[];
+  n_points: number;
+  curves: LrSchedulePreviewCurve[];
+}
+
+// What a candidate retarget WOULD do, drawn from the timeline the trainer last
+// published. Nothing is queued and the run is not told a preview happened.
+export const previewLrScheduleEvents = async (
+  request: LrSchedulePreviewRequest
+): Promise<LrSchedulePreviewResult> => {
+  const response = await api.post(`/training/lr-schedule/preview`, request);
+  return response.data;
+};
+
+// Fire and forget, like the two-button commands: the 202 means the file was
+// written. What only the live timeline can refuse comes back as a result code
+// in getLrScheduleStatus under the same request_id.
+export const queueLrScheduleRetarget = async (
+  runId: number,
+  request: LrScheduleRetargetRequest
+): Promise<LrScheduleRetargetAccepted> => {
+  const response = await api.post(
+    `/training/runs/${runId}/lr-schedule/retarget`, request);
   return response.data;
 };
 

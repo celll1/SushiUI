@@ -132,7 +132,10 @@ const ADAPTER_ALGORITHM_LABELS: Record<string, string> = {
 // What each schedule does, in the vocabulary the backend registry defines.
 // constant_with_warmup is accepted but not offered: it is the same curve as
 // constant, which now applies the warmup too.
-const LR_SCHEDULER_OPTIONS: { value: string; label: string; note: string }[] = [
+// Exported so the runtime retarget form offers the same vocabulary; this list
+// is the one mirror of LR_SCHEDULER_NAMES and lr_schedule_vocabulary_test.py
+// pins it against the registry.
+export const LR_SCHEDULER_OPTIONS: { value: string; label: string; note: string }[] = [
   { value: "constant", label: "Constant",
     note: "Warmup, then holds the base LR for the rest of training." },
   { value: "linear", label: "Linear",

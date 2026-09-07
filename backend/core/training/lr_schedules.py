@@ -130,6 +130,18 @@ BLEND_SHAPE_NAMES = DECAY_SHAPE_NAMES
 # evaluates it on the global axis.
 RETARGET_ANCHORS = ("restart", "continue")
 
+# §19.6/D27: the three degenerate retargets. They add NO event kind -- each
+# derives a `retarget` from the curve in force, so what lands in the event list
+# is indistinguishable from a hand-written one (invariant 17).
+RETARGET_OPS = ("retarget", "scale", "hold", "undo")
+DERIVED_RETARGET_OPS = RETARGET_OPS[1:]
+
+# Refusals a derived op hits BEFORE it becomes an event, so they are result
+# codes of the request and never appear in the timeline.
+RESULT_NOTHING_TO_UNDO = "rejected_nothing_to_undo"
+RESULT_AMBIGUOUS_SCOPE = "rejected_ambiguous_group_scope"
+RESULT_MISSING_GAIN = "rejected_missing_gain"
+
 # ScheduleSpec.to_dict's `v` (§19.5). Bump only for a change a reader cannot
 # absorb by ignoring unknown keys.
 SPEC_VERSION = 1
@@ -194,6 +206,19 @@ WARN_SELECTOR_ON_UNGROUPED_RUN = "lr_retarget_group_selector_ignored"
 # §13's code for D33: a total_steps change anchored at or past the nominal end.
 # The clock is left as it is; what stops is the silence.
 WARN_CLOCK_DEGENERATE = "lr_schedule_clock_degenerate"
+
+
+class DerivedRetargetError(ValueError):
+    """A `scale`/`hold`/`undo` the run's timeline cannot express (§19.6).
+
+    Carries the result code the claim path records, so a request that could
+    only be refused against the live timeline comes back named rather than as
+    a generic `error`.
+    """
+
+    def __init__(self, result: str, message: str) -> None:
+        super().__init__(message)
+        self.result = str(result)
 
 
 @dataclass(frozen=True)
@@ -406,14 +431,31 @@ class ScheduleTimeline:
     this OBJECT, so a resume can install saved events after construction.
     """
 
-    def __init__(self, events: Optional[Sequence[Mapping[str, Any]]] = None):
+    def __init__(self, events: Optional[Sequence[Mapping[str, Any]]] = None,
+                 *, announce: bool = True):
         self.events: List[Dict[str, Any]] = []
         self._next_seq = 0
         self.spec: Optional[ScheduleSpec] = None
         self.group_specs: List[ScheduleSpec] = []
         self.ungrouped_reason: Optional[str] = None
+        # §13 notices raised by `add`, newest last. Transient (not saved, not
+        # read by any multiplier); the durable record is the event's `warning`.
+        self.warnings: List[Dict[str, Any]] = []
+        self.announce = bool(announce)
         if events:
             self.load(events)
+
+    def _warn(self, code: str, at: int, message: str) -> None:
+        """Record a §13 notice, and emit it unless this timeline is a scratch one.
+
+        R4's preview calls `add()` in the API process, where nothing lifts the
+        stdout sentinel and `console=False` would silence the human line but not
+        the sentinel. The notice still reaches the caller: on the event, and here.
+        """
+        self.warnings.append({"code": str(code), "at": int(at),
+                              "message": str(message)})
+        if self.announce:
+            emit_training_warning(message, code=code)
 
     # -- seams -----------------------------------------------------------
 
@@ -459,7 +501,8 @@ class ScheduleTimeline:
             # timeline, where 0 is "no anchor yet" rather than a total.
             if previous and value <= at:
                 event["warning"] = WARN_CLOCK_DEGENERATE
-                emit_training_warning(
+                self._warn(
+                    WARN_CLOCK_DEGENERATE, at,
                     f"The new total of {value} scheduler steps is at or below "
                     f"the step this change is anchored at ({at}), so the LR "
                     f"schedule's clock stops there: every step from {at} on "
@@ -467,8 +510,7 @@ class ScheduleTimeline:
                     f"holds at the value the schedule ends on. The curve is "
                     f"unchanged from what it has always done here. A retarget "
                     f"replaces the curve from a step of your choosing if the "
-                    f"remaining steps should follow a new shape.",
-                    code=WARN_CLOCK_DEGENERATE)
+                    f"remaining steps should follow a new shape.")
             self._append(event)
             return "applied"
 
@@ -632,12 +674,12 @@ class ScheduleTimeline:
             event["warning"] = WARN_SELECTOR_ON_UNGROUPED_RUN
             reason = (f" ({self.ungrouped_reason})" if self.ungrouped_reason
                       else "")
-            emit_training_warning(
+            self._warn(
+                WARN_SELECTOR_ON_UNGROUPED_RUN, at,
                 f"LR retarget at step {at} names group(s) {sorted(groups)}, "
                 f"but this run's optimizer param groups all share one LR "
                 f"schedule{reason}, so the retarget applies to every one of "
-                f"them.",
-                code=WARN_SELECTOR_ON_UNGROUPED_RUN)
+                f"them.")
         event["result"] = result
         self._append(event)
         return result
@@ -650,8 +692,14 @@ class ScheduleTimeline:
         """§19.4's eight rules, in the order they are tested. None = accept."""
         if at < issued:                                             # 1 (D25)
             return "rejected_backdated"
+        base = seed or self.spec
         if new_spec.name not in LR_SCHEDULER_NAMES:                 # 2
-            return "rejected_unknown_scheduler"
+            # An internal name passes only when it is the one this run was
+            # BUILT with: that is a derived op (§19.6) handing back the run's
+            # own curve, not a payload asking for `relora` on a run with no
+            # merges. Without it a ReLoRA run could not be scaled or undone.
+            if base is None or new_spec.name != base.name:
+                return "rejected_unknown_scheduler"
         # Never trust a serialized (name, curve) pair: R3 takes this dict from
         # an endpoint, and name="cosine" with curve="relora" would install the
         # segmented ReLoRA curve on a run that has no merges. Resolved from the
@@ -665,8 +713,7 @@ class ScheduleTimeline:
             return "rejected_negative_length"
         if not 0.0 <= new_spec.floor_ratio <= 1.0:                  # 6
             return "rejected_floor_out_of_range"
-        total = self.current_total(
-            (seed or self.spec or new_spec).total_steps)
+        total = self.current_total((base or new_spec).total_steps)
         span = total - at if anchor == "restart" else total
         if anchor == "restart" and span <= 0:                       # 3
             return "rejected_no_remaining_span"
@@ -1419,6 +1466,159 @@ def resolve_retarget_spec(payload: Mapping[str, Any],
         if "lr_cycle_peak_decay" not in supplied:
             updates["cycle_peak_decay"] = active.cycle_peak_decay
     return replace(spec, **updates) if updates else spec
+
+
+def _retarget_span(timeline: ScheduleTimeline, spec: ScheduleSpec,
+                   anchor: str, at: int) -> int:
+    """§19.4 rule 5's span: what remains after ``at``, or the whole total."""
+    total = timeline.current_total(spec.total_steps)
+    return total - at if anchor == "restart" else total
+
+
+def _curve_key(curve: "_Curve") -> Tuple[Any, ...]:
+    """What makes two folded curves the same for a derived op.
+
+    The SHAPE, never the addressee: `group` is the one field two param groups on
+    the same schedule always differ in, and keying on it refused every derived
+    op on every grouped run -- including the default `groups: null`, which D24
+    defines as all of them.
+    """
+    def shape(c: "_Curve") -> Tuple[Any, ...]:
+        return (replace(c.spec, group=None), c.origin, c.scale)
+
+    link = curve.link
+    return shape(curve) + (None if link is None else shape(link.prev),)
+
+
+def _curve_in_force(timeline: ScheduleTimeline, spec: ScheduleSpec,
+                    groups: Optional[Sequence[str]], at: int) -> "_Curve":
+    """The one curve a derived op reads -- D38's trap, from the other side.
+
+    The representative spec absorbs every scoped retarget, so deriving a
+    `scale`/`hold`/`undo` from it would build the new spec off a curve no param
+    group is on. Fold the group specs the selector reaches instead, and refuse
+    rather than guess when they disagree: one payload carries one curve.
+    """
+    probe = {"groups": None if groups is None else list(groups)}
+    candidates = [s for s in (timeline.group_specs or []) if _selects(probe, s)]
+    curves = [timeline._fold_curve(s, at) for s in (candidates or [spec])]
+    if len({_curve_key(c) for c in curves}) > 1:
+        raise DerivedRetargetError(
+            RESULT_AMBIGUOUS_SCOPE,
+            "The named param groups are on different schedules, and one "
+            "retarget carries one curve. Send this op once per group.")
+    return curves[0]
+
+
+def _derive_retarget(op: str, timeline: ScheduleTimeline, spec: ScheduleSpec,
+                     at: int, *, groups: Optional[Sequence[str]],
+                     gain: Optional[float], length: Optional[int],
+                     ) -> Tuple[str, ScheduleSpec, Optional[float], Optional[int]]:
+    """``(anchor, new_spec, gain, length)`` for §19.6's degenerate retargets.
+
+    Shared by the trainer's claim path and R4's preview, so what an operator is
+    shown is what the trainer builds.
+    """
+    curve = _curve_in_force(timeline, spec, groups, at)
+    span = max(1, _retarget_span(timeline, spec, "restart", at))
+
+    if op == "scale":
+        if gain is None:
+            raise DerivedRetargetError(
+                RESULT_MISSING_GAIN,
+                "A scale needs the factor to scale by, in `gain`.")
+        # §19.6's spec-in-force, re-anchored here, times k -- WITHOUT its
+        # warmup: re-anchored, a warmup means "ramp up again from here"
+        # (§19.2), so keeping it would make a scale take the LR to 0 first.
+        return ("restart",
+                replace(curve.spec, warmup_steps=0, total_steps=span),
+                float(gain), length)
+
+    if op == "hold":
+        # `constant` with no warmup under anchor=restart is m_at_S * 1 * 1.
+        # D31's default length does not apply: a blend would keep the old curve
+        # moving, which is what hold exists to stop.
+        return ("restart",
+                resolve_spec({}, warmup_steps=0, total_steps=span,
+                             name="constant"),
+                1.0, 0 if length is None else length)
+
+    link = curve.link
+    if link is None:
+        raise DerivedRetargetError(
+            RESULT_NOTHING_TO_UNDO,
+            "There is no retarget in force on this schedule to undo. A "
+            "`start_decay` is undone by `cancel_decay`.")
+    prev = link.prev
+    if prev.origin == 0:
+        # The curve being restored was on the run's own axis, so `continue`
+        # reproduces it exactly -- its gain included, which `restart` would
+        # have folded into m_at_S.
+        return ("continue",
+                replace(prev.spec,
+                        total_steps=max(1, timeline.current_total(
+                            prev.spec.total_steps))),
+                float(prev.scale), length)
+    # It was itself anchored at a step and an event cannot name that origin
+    # (anchor is `restart` here or 0), so its shape restarts from here.
+    return ("restart", replace(prev.spec, total_steps=span), 1.0, length)
+
+
+def retarget_add_kwargs(payload: Mapping[str, Any], timeline: ScheduleTimeline,
+                        spec: ScheduleSpec, *, position: int,
+                        advance_interval: int = 1,
+                        known_groups: Optional[Sequence[str]] = None,
+                        ) -> Dict[str, Any]:
+    """Resolve a queued/candidate retarget payload into ``add()`` kwargs.
+
+    The payload's step counts are GLOBAL steps, like every other number in a
+    training config (§19.5.3-1); they are converted here because only a caller
+    holding the run knows its accumulation. ``issued`` is ``position``: the
+    request may name any ``at``, and the timeline refuses a backdated one
+    against the step it was actually claimed at (D25).
+
+    D44's inheritance reads the spec in force at ``at``. §10.1 keeps the
+    numeric parameters run-wide, so there is one value to inherit; a payload is
+    one curve and could not carry a per-group answer anyway.
+    """
+    interval = max(1, int(advance_interval))
+    op = str(payload.get("op") or _RETARGET_DEFAULTS["op"]).strip().lower()
+    if op not in RETARGET_OPS:
+        raise ValueError(f"Unknown retarget op '{op}'. Supported: "
+                         f"{', '.join(RETARGET_OPS)}")
+    raw_at = payload.get("at")
+    at = int(position) if raw_at is None else to_scheduler_axis(int(raw_at),
+                                                                interval)
+    groups = payload.get("groups")
+    groups = None if groups is None else [str(g) for g in groups]
+    length = blend_length_on_scheduler_axis(payload.get("length"), interval)
+    gain = payload.get("gain")
+
+    if op == "retarget":
+        anchor = str(payload.get("anchor")
+                     or _RETARGET_DEFAULTS["anchor"]).strip().lower()
+        # §19.4 rule 5's span, so the new spec's own total matches the axis it
+        # will be evaluated on. A span of 0 or less is refused by rule 3;
+        # resolve_spec needs >= 1 to get that far.
+        new_spec = resolve_retarget_spec(
+            payload, timeline.active_spec(spec, at),
+            total_steps=max(1, _retarget_span(timeline, spec, anchor, at)),
+            advance_interval=interval)
+    else:
+        anchor, new_spec, gain, length = _derive_retarget(
+            op, timeline, spec, at, groups=groups, gain=gain, length=length)
+
+    return {
+        "at": at,
+        "new_spec": new_spec,
+        "anchor": anchor,
+        "gain": gain,
+        "length": length,
+        "shape": payload.get("shape"),
+        "groups": groups,
+        "known_groups": list(known_groups) if known_groups else None,
+        "issued": int(position),
+    }
 
 
 def _decay_shape(name: str) -> Callable[[float], float]:

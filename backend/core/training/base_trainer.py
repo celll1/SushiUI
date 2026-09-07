@@ -49,14 +49,14 @@ from core.training.lr_schedules import (
     STATE_DECAYING,
     STATE_FLOOR,
     STATE_NAMES,
+    DerivedRetargetError,
     ScheduleTimeline,
     apply_layer_decay,
-    blend_length_on_scheduler_axis,
     build_depth_map,
     build_lr_scheduler,
     describe_spec,
-    resolve_retarget_spec,
     resolve_spec,
+    retarget_add_kwargs,
     to_scheduler_axis,
 )
 from core.training.lr_utils import reassert_config_lr
@@ -351,6 +351,9 @@ def scheduler_warmup_steps(trainer, warmup_steps: Optional[int] = None) -> int:
 
 
 def resolve_lr_schedule_spec(trainer, lr_scheduler_type: str, total_steps: int):
+    # The end on the GLOBAL axis, kept because to_scheduler_axis floors and the
+    # scheduler total cannot be multiplied back exactly.
+    trainer._lr_global_total_steps = int(total_steps)
     spec = resolve_spec(
         getattr(trainer, "config", None) or {},
         warmup_steps=scheduler_warmup_steps(trainer),
@@ -739,6 +742,11 @@ def lr_schedule_group_states(trainer, spec, timeline, position: int) -> List[Dic
             "name": (group.get("name") or (names[index] if names else None)
                      or f"group{index}"),
             "component": group.get("component") or group.get("name"),
+            # The CONFIG spec, serialized, and the identity it was stamped with
+            # (dropped by to_dict, D24). Together with the event list they are
+            # what R4's preview rebuilds this group's curve from.
+            "spec": group_spec.to_dict(),
+            "spec_group": group_spec.group,
             "schedule": timeline.active_spec(group_spec, position).name,
             "anchor_step": timeline.anchor_at(group_spec, position),
             "state": STATE_NAMES.get(int(state.code), "base"),
@@ -770,47 +778,38 @@ def lr_known_group_names(trainer) -> List[str]:
 
 def lr_retarget_add_kwargs(trainer, spec, timeline, payload: Dict[str, Any],
                            position: int) -> Dict[str, Any]:
-    """Resolve a queued retarget payload into ``ScheduleTimeline.add`` kwargs.
+    """This trainer's arguments to ``lr_schedules.retarget_add_kwargs``.
 
-    The payload's step counts are GLOBAL steps, like every other number in a
-    training config; the conversion to the scheduler axis happens here because
-    only the trainer knows the run's accumulation. ``issued`` is this position:
-    the request may name any ``at``, and the timeline refuses a backdated one
-    against the step it was actually claimed at (D25).
-
-    D44's inheritance reads the REPRESENTATIVE spec in force at ``at``. §10.1
-    keeps the numeric parameters run-wide, so there is one value to inherit;
-    a payload is one curve and could not carry a per-group answer anyway.
+    The resolution itself lives beside the timeline so that R4's preview, which
+    runs in the API process against a scratch copy of this run's events, builds
+    the event with the same code rather than a second reading of the payload.
+    ``known_groups`` is None rather than []: a run whose groups carry no
+    component name cannot check one, which is R1's "accept it" rather than
+    "refuse everything".
     """
+    return retarget_add_kwargs(
+        payload, timeline, spec, position=position,
+        advance_interval=lr_scheduler_advance_interval(trainer),
+        known_groups=lr_known_group_names(trainer) or None)
+
+
+def lr_global_total_steps(trainer, timeline, active) -> Optional[int]:
+    """The run's end on the GLOBAL axis, or None when that is not derivable.
+
+    Known only while the recorded configured total still maps onto the total in
+    force: a resume re-anchors on the SCHEDULER axis (`position + remaining`,
+    §17.1), which shifts the end by the drift between the true position and the
+    divided global step, and that shift cannot be mapped back. The VAE trainer
+    builds its spec without going through `resolve_lr_schedule_spec` at all.
+    """
+    configured = getattr(trainer, "_lr_global_total_steps", None)
+    if configured is None:
+        return None
     interval = lr_scheduler_advance_interval(trainer)
-    anchor = str(payload.get("anchor")
-                 or LR_RETARGET_DEFAULTS["anchor"]).strip().lower()
-    raw_at = payload.get("at")
-    at = int(position) if raw_at is None else to_scheduler_axis(int(raw_at),
-                                                                interval)
-    current_total = timeline.current_total(spec.total_steps)
-    # §19.4 rule 5's span, so the new spec's own total matches the axis it will
-    # be evaluated on. A span of 0 or less is refused by rule 3; resolve_spec
-    # needs >= 1 to get that far.
-    span = current_total - at if anchor == "restart" else current_total
-    new_spec = resolve_retarget_spec(
-        payload, timeline.active_spec(spec, at),
-        total_steps=max(1, span), advance_interval=interval)
-    groups = payload.get("groups")
-    return {
-        "at": at,
-        "new_spec": new_spec,
-        "anchor": anchor,
-        "gain": payload.get("gain"),
-        "length": blend_length_on_scheduler_axis(payload.get("length"),
-                                                 interval),
-        "shape": payload.get("shape"),
-        "groups": None if groups is None else [str(g) for g in groups],
-        # None, not []: a run whose groups carry no component name cannot
-        # check one, which is R1's "accept it" rather than "refuse everything".
-        "known_groups": lr_known_group_names(trainer) or None,
-        "issued": int(position),
-    }
+    if to_scheduler_axis(int(configured), interval) != timeline.current_total(
+            active.total_steps):
+        return None
+    return int(configured)
 
 
 def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -834,6 +833,16 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
         "written_at": time.time(),
         "step": int(position),
         "global_step": None if global_step is None else int(global_step),
+        # Global steps per scheduler advance: what a reader needs to put a
+        # candidate event's global-step numbers on this file's axis (R4).
+        "advance_interval": lr_scheduler_advance_interval(trainer),
+        # The CONFIG spec the events fold over, not the one in force -- a
+        # reader re-applies `events` itself. D42 keeps command_decay_* out of
+        # every serialized spec, so a rebuilt timeline can draw curves but
+        # cannot score a `start_decay`.
+        "spec": spec.to_dict(),
+        "ungrouped_reason": getattr(trainer, "lr_group_specs_ignored_reason",
+                                    None),
         "scheduler": active.name,
         "anchor_step": int(anchor),
         "warmup_steps": int(active.warmup_steps),
@@ -846,6 +855,12 @@ def lr_schedule_status(trainer, global_step: Optional[int] = None) -> Optional[D
         "multiplier": float(timeline.multiplier(spec, position)),
         "nominal_total_steps": int(timeline.nominal_total(active.total_steps)),
         "effective_total_steps": int(timeline.current_total(active.total_steps)),
+        # The same end on the GLOBAL axis, or null. Published rather than left
+        # to the reader (to_scheduler_axis floors, so the scheduler total
+        # cannot be multiplied back), and NULL rather than guessed: the product
+        # is exactly the wrong number this field exists to avoid, and 0 would
+        # read as a run that ends immediately.
+        "global_total_steps": lr_global_total_steps(trainer, timeline, active),
         "groups": lr_schedule_group_states(trainer, spec, timeline, position),
         "events": timeline.dump(position),
     }
@@ -911,6 +926,7 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
         request_id = str(request.get("request_id") or "") or control_rpc.make_request_id()
         command = str(request.get("command") or "")
         kind = control_rpc.COMMAND_EVENT_KINDS.get(command)
+        op = None
         error = None
         try:
             if kind is None:
@@ -926,13 +942,19 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
                                       shape=active.command_decay_shape,
                                       issued=position)
             elif kind == "retarget":
+                payload = dict(request.get("payload") or {})
+                op = str(payload.get("op") or LR_RETARGET_DEFAULTS["op"])
                 kwargs = lr_retarget_add_kwargs(
-                    trainer, spec, timeline, dict(request.get("payload") or {}),
-                    position)
+                    trainer, spec, timeline, payload, position)
                 result = timeline.add(kind, request_id=request_id, **kwargs)
             else:
                 result = timeline.add(kind, at=position, request_id=request_id,
                                       issued=position)
+        except DerivedRetargetError as e:
+            # §19.6: refused against the live timeline, so it is named rather
+            # than an `error` the operator has to read a traceback for.
+            result, error = e.result, str(e)
+            print(f"{prefix} LR schedule {command} refused: {e}")
         except Exception as e:   # noqa: BLE001
             result, error = "error", str(e)
             print(f"{prefix} WARNING: LR schedule command {command} failed: {e}")
@@ -944,6 +966,7 @@ def poll_lr_schedule_commands(trainer, global_step: int = 0) -> int:
                 "request_id": request_id,
                 "run_id": run_id,
                 "command": command,
+                "op": op,
                 "result": result,
                 "at": int(position),
                 "global_step": int(global_step),
@@ -4620,6 +4643,7 @@ class BaseTrainer(ABC):
         if new_total == previous:
             return
         timeline.add("total_steps", at=position, value=new_total)
+        self._lr_global_total_steps = int(total_steps)
         reapply_lr_schedule_position(self)
         emit_training_warning(
             f"total_steps changed to {total_steps} ({previous} -> {new_total} "

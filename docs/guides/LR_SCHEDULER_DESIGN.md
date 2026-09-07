@@ -1540,7 +1540,10 @@ m(s) = (1 − w(u))·m_old(s) + w(u)·m_new(s),      u = clamp((s − S)/L, 0, 1
 拒否は記録に残り、曲線は動かない。
 
 1. `at < issued`（受理時点の scheduler step より前。D25）
-2. 新 spec が語彙外のスケジュール名を指す（`LR_SCHEDULER_NAMES` 外。`INTERNAL_SCHEDULER_NAMES` も外）
+2. 新 spec が語彙外のスケジュール名を指す（`LR_SCHEDULER_NAMES` 外。`INTERNAL_SCHEDULER_NAMES` も外）。
+   **例外は 1 つ**: 内部名が **その run が構築された名前と一致する**ときだけ通す（R5、§19.5.4-9）。
+   ペイロードが `relora` を名乗って merge の無い run に区分曲線を入れる経路は閉じたまま、
+   ReLoRA run の `scale` / `undo`（有効 spec を返す派生操作）が拒否されなくなる
 3. `anchor = restart` で `current_total − S <= 0`（残り区間が無い）
 4. `L < 0`。「正の要求が `0` に丸まる単位変換」は `add()` の内側では検出できない（変換は呼び出し側で起きる）ので、
    番兵は 1 層外の `blend_length_on_scheduler_axis()` に置き、正の要求が floor で 0 になった場合に `-1` を返して
@@ -1666,15 +1669,146 @@ D25 が許可した予約が保存のたびに消える。
    GET が古いスケジュール名を返し続ける（§17.3 が DECAYING→FLOOR で潰したのと同型の穴が、
    retarget 側にもう 1 つあった）。
 
+### 19.5.4 R4 / R5 実装と監査が確定させた事項（2026-09-07）
+
+1. **`console=False` では足りない（§19.5.2-8 の訂正）**。`emit_training_event` は `console=False` でも
+   sentinel 行を必ず print する（`training_events.py:70`）ので、API プロセスのプレビューは
+   生の JSON 行をバックエンドのコンソールに出す。プレビューは `ScheduleTimeline(announce=False)` を使い、
+   警告は**事象の `warning` キー**と**`timeline.warnings`（コード・`at`・文面。永続化しない）**で返す。
+   文面は 1 箇所（`_warn`）で組み立て、emit と応答で共有する。
+2. **プレビューの run 側の入力は表示ファイル**（`.lr_schedule.json`）。事象適用のたびに更新されるのは
+   これだけで、state.json はチェックポイント時にしか書かれない。再構成に必要な 3 つを表示ファイルに足した:
+   `spec`（**config spec** の直列化形。有効 spec ではない — 読み手が `events` を畳み直す）、
+   `advance_interval`、グループごとの `spec` / `spec_group`。D19 の「resume の根拠にしない」は不変で、
+   プレビューは読むだけ・書かない（不変条件 2 と D4 に触れない）。
+   run 側の spec を config から再導出する案は採らない: それはトレーナーの構築（relora の
+   `restart_warmup_steps`、グループ spec、LLRD）を API 側に二重実装することになる。
+3. **プレビューできるのは `retarget`（と派生形）だけ**。`decay` / `cancel` の候補は原理的に扱えない:
+   焼き込む長さと形は run の `command_decay_length` / `command_decay_shape` から来るが、
+   D42 がそれを**あらゆる直列化形から落とす**ため、再構成した spec は持っていない。
+   §19.8 の「候補事象列」は事象種に依らない書き方だが、D42 の閉鎖と両立するのは retarget だけである。
+4. **派生操作（D27）はサーバ側で展開する**。API は `op ∈ {retarget, scale, hold, undo}` を受け、
+   展開は `lr_schedules.retarget_add_kwargs()` の 1 箇所（トレーナーの claim とプレビューが共有）。
+   クライアント合成を採らない理由は 3 つ: (a) `undo` は事象列を畳まないと直前の spec が分からない、
+   (b) `at` が未来のとき「有効な spec」は API プロセスには決められない（未適用の予約が効く）、
+   (c) D44 は名前が一致するときだけ name 固有キーを継承するので、クライアントが持つ**古い名前**は
+   拒否ではなく**無言で別の曲線**になる。`op` は事象列に載らない（載るのは `retarget` だけ。不変条件 17）。
+5. **`scale` は §19.6 の字義どおりでは壊れる**。「有効 spec・`anchor=restart`・`gain=k`」をそのまま実装すると、
+   `lr_warmup_steps > 0` の run では再アンカーされた warmup が §19.2 の「ここから warmup をやり直す」指示に
+   なり、**LR を 0 に落としてから k 倍する**。派生操作にその意図は無いので、`scale` の spec は
+   `warmup_steps = 0` にして焼く。`undo` は「直前の spec を復元する」が契約なのでフィールドを削らない。
+6. **`hold` の `length` 既定は 0**（D31 を適用しない）。混合は旧曲線を動かし続けるので、
+   「今の値で止める」という操作の意味と衝突する。明示された `length` は尊重する。
+7. **`undo` の anchor は復元先の origin で決まる**。`origin = 0`（config 曲線、＝ 1 回だけ retarget した
+   通常ケース）なら `continue` + `gain = prev.scale` で**元の曲線を厳密に復元**する。復元先自身が
+   `restart` 由来なら `restart`: 事象が名指せる origin は 0 か自分の `at` だけで、他人の origin は
+   表現できないため、形だけをここから再開する（値は復元されない）。
+   `undo` は**未来予約を取り消さない**（畳み込みは `at` 以前しか見ない）。予約の取り消しは別操作である。
+8. **派生操作が読む曲線はセレクタが届くグループの曲線**。代表 spec は無印なので scoped retarget を
+   全部吸収しており、そこから `scale` / `undo` を作ると**どの param group も乗っていない曲線**を
+   複製することになる（§19.5.1-4 の裏返し）。届くグループ spec を畳み、食い違うときは推測せず
+   `rejected_ambiguous_group_scope` で拒否する（1 つのペイロードは 1 つの曲線）。
+9. **§19.4 規則 2 に例外が要る**。派生操作は run 自身の spec を返すので、ReLoRA run では
+   `name = "relora"` の retarget になり、規則 2 が `rejected_unknown_scheduler` で拒否していた。
+   「内部名は run が構築された名前と一致するときだけ通す」に緩める。ペイロード由来の `relora` は
+   run の名前と一致しないので、閉じている経路は閉じたまま。
+10. **派生操作の拒否コード 3 つは事象にならない**（`rejected_nothing_to_undo` /
+   `rejected_ambiguous_group_scope` / `rejected_missing_gain`）。`add()` に届く前の拒否なので
+   `_REFUSED` には入れず、`DerivedRetargetError` で運んで結果ファイルと openapi の result enum にだけ載せる。
+11. **プレビューは未 claim のコマンドを含まない**。描くのは「トレーナーが最後に**公開した**タイムライン
+   ＋ 候補」であり、キュー済みで未適用のコマンドは入らない。位置もトレーナーの最終公開位置である。
+
+12. **プレビューの位置は表示ファイルから取ってはいけない（F1、監査で発見）**。
+   `refresh_lr_schedule_status` の変更シグネチャに `step` は入っておらず（入れてはいけない:
+   表示ファイルの書き込み方針は「状態が変わったとき」であり、プレビューのために毎バッチ
+   atomic write するのは割に合わない）、書き手は `poll_lr_schedule_commands` だけなので、
+   **LR コマンドを一度も受けていない run では `step` が最初のバッチの値で凍る**。
+   R4 はその値を候補事象の既定 `at` と `issued` にしていたため、実際には step 600 の run で
+   `hold` が「1.0 で平坦」と描かれ、トレーナーは 0.3455 で保持する、という食い違いが出た。
+   `issued = 0` は `rejected_backdated` を `applied` と誤って予告することにもなる。
+   **修正はエンドポイント側**: run が実行中なら run 行の `current_step`（トレーナーが
+   毎イテレーション commit する。ただし **global step**）を `to_scheduler_axis` で写像し、
+   公開値と**遅い方ではなく後の方**を採る。両者はどちらも一方向に外れうるためである
+   （公開値は正確だが古い。除算は §17.1 が resume で拒否した推定で、skip されたバッチや
+   CUDA 復帰でずれる）。どちらを使ったかは応答の `position_source` が言う。
+   停止した run では公開値だけを使う。
+13. **派生操作の一致判定は宛先ではなく形で行う（F2、監査で発見）**。`_curve_key` に
+   `ScheduleSpec.group` が入っていたため、**同じスケジュールに乗った 2 つの param group が
+   その 1 フィールドだけで別物と判定され**、グループ付き run では既定セレクタ
+   （`groups: null` ＝ D24 の「全グループ」）の `hold` / `scale` / `undo` が無条件に拒否され、
+   しかもメッセージは「別のスケジュールに乗っている」と嘘をついていた。§19.5.4-8 が言う
+   拒否条件は**不一致**であって**宛先が違うこと**ではない。`replace(spec, group=None)` で
+   比較する。**受理方向の試験が無いと、無条件拒否の変異体が全試験を通過する**（実測: 254 件全通過）。
+14. **API の語彙検査は timeline の規則と一致させる（gap 1）**。§19.5.4-9 が規則 2 を緩めたのに、
+   `_validated_retarget_payload` は `LR_SCHEDULER_NAMES` 外を同期 400 で弾いていたので、
+   ReLoRA run は自分の曲線へ retarget できず、緩和の恩恵は派生操作にしか届いていなかった。
+   内部名が正当かどうかは**run を見ないと決まらない**ので §19.5.3-3 の分割に従って非同期側に置く:
+   エンドポイントは `_RESOLVABLE_NAMES` を通し、run が違えば timeline が
+   `rejected_unknown_scheduler` を返す。openapi の enum は retarget リクエストに限り
+   `relora` を含める（新規 run 用の `TrainingRunCreateRequest` は含めない）。
+15. **`LR_RETARGET_DEFAULTS` にも `/schema/*` を出す（gap 2）**。他の 4 つの defaults dict と
+   同じ扱いにしないと、UI が「空欄の anchor / shape / length が何になるか」を
+   `param_defaults.py` の外に書き写すしかない。`GET /schema/lr-retarget-defaults` は
+   defaults に加えて `ops` / `anchors` / `shapes` / `n_points` も返す。
+16. **表示ファイルに global 軸の総長を出す（gap 3）**。`global_step` と `advance_interval` はあるのに
+   run がどこで終わるかは scheduler 軸しか無く、`gradient_accumulation_steps > 1` の run で
+   読み手が軸写像を自前で持つことになる（フロントは正しくそれを拒否した）。
+   `global_total_steps` を出す。`effective_total_steps × advance_interval` では復元できない:
+   `to_scheduler_axis` は floor するので、構築時の値を `_lr_global_total_steps` に残して出す。
+17. **result enum は timeline の全コードを持つ（gap 4）**。`ignored_unchanged` /
+   `ignored_duplicate_restart` は API コマンドからは到達しないが（トレーナー自身の seam）、
+   enum を「完全な一覧」として示している以上載せる。プレビューの結果コードにも enum を付ける
+   （retarget から到達しうるものだけ。decay/cancel のコードは出ない）。
+18. **`op` を結果とキュー項目に残す（gap 5）**。4 形すべてが `command: "retarget"` として
+   キューに載り 1 種類の事象になる（不変条件 17 のとおり）ので、どのボタンだったかは
+   **事象列以外**に残さないと UI がラベルを付けられない。事象列には足さない:
+   結果は `request_id` で引けるので、結合は既にあり、足りないのはデータだけである。
+19. **形の語彙にも TSX ミラーの固定を広げる（gap 6）**。§12.4 は `LR_SCHEDULER_NAMES` だけを
+   固定していたが、retarget フォームが `DECAY_SHAPE_NAMES` / `BLEND_SHAPE_NAMES`・
+   `RETARGET_OPS`・`RETARGET_ANCHORS`・TS の `LrRetargetOp` union をミラーしたので、
+   `lr_schedule_vocabulary_test.py` で 4 本とも突き合わせる。
+
+20. **`global_total_steps` は「分からないなら出さない」（再監査 2）**。フォールバックの
+   `current_total × advance_interval` は、このフィールドが避けるために存在する**まさにその
+   floor 済みの積**を事実として公開することになる。`0` も不可（読み手は `!= null` で
+   ガードしており、真の 0 総長バグを隠さないために `> 0` に広げていない。`0` は
+   「この run は global step 0 で終わる」と表示される）。**構築時に記録した config の総長が、
+   いま有効な scheduler 総長へ写像できるときだけ出す**（`to_scheduler_axis(configured) ==
+   current_total`）。写像できない 3 つ目のケースは resume の再アンカー
+   （`position + remaining` は scheduler 軸で、そのずれは global 軸へ戻せない）と、
+   `resolve_lr_schedule_spec` を通らない VAE トレーナーである。
+   **試験は非可除の値で書く**（gas=3 / 333 / 1000。積は 999）。可除の値だと
+   「積」実装と「記録値」実装が同じ答えを返し、フィールドを消しても LR 一式が全通過する（実測）。
+21. **プレビューのヘッダも代表 spec から取ってはいけない（再監査 3、§19.5.4-8 の 1 階層上）**。
+   無印の代表 spec は scoped 候補も吸収するので、`unet` だけを指した候補のプレビューで
+   ヘッダが `constant` を名乗り、`text_encoder_1` は cosine のままだった。曲線ごとに
+   `lr_scheduler` / `description` を持たせ、**曲線が一致しないときはヘッダの
+   `lr_scheduler` / `description` / `warmup_steps` / `floor_ratio` / `floor_defaulted` を null にする**。
+   どのグループも乗っていないスケジュール名でチャートにラベルを付ける方法を残さない、が要点。
+   曲線が 1 本の run（`lr_group_schedules` 未設定の全 run）は挙動不変。
+22. **表示ファイルに `ungrouped_reason` を出す（再監査 4）**。プレビューは API プロセスで
+   `bind_spec` を呼ぶが、表示ファイルが D40 の理由を運んでいなかったため、
+   `lr_group_schedules` を**設定した** ReLoRA run でも D37 の警告から括弧書きが落ちていた。
+   D40 はまさにその運用者を「存在しない config バグ」探しに送らないための決定である。
+23. **`/schema/lr-retarget-defaults` は defaults だけを返す（再監査 5）**。語彙（ops / anchors /
+   shapes）は TSX ミラーとして試験で固定した以上、実行時リストとしても返すのは二重の情報源で、
+   未消費の API 表面が将来のクライアントのドリフトを招く。CI の失敗はランタイムの空 select に勝る。
+   併せて `position_source` の説明に「`run_row` は推定であり先行しうる（§17.1 のずれ）ので、
+   明示 `at` の候補が `rejected_backdated` と予告されつつ適用されることがある」を書き足す。
+24. **`LrSchedulePreviewResult.required` を実際に必ず返すキーへ広げる（再監査 6）**。
+   null になりうることと、キーが無いことは別である。
+
 ### 19.6 派生操作（D27）
 
 | 操作 | 実体 |
 |---|---|
-| `scale k`（今から `×k`） | `spec` は現在のもの、`anchor = restart`、`gain = k` の retarget |
-| `hold` | `constant` spec への retarget（`gain = 1`、`L = 0`）。`m_at_S` で平坦になる |
-| `undo` | 直前の retarget の 1 つ前の spec への retarget。履歴は巻き戻さず追記する |
+| `scale k`（今から `×k`） | `spec` は現在のもの（ただし `warmup_steps = 0`、§19.5.4-5）、`anchor = restart`、`gain = k` の retarget |
+| `hold` | `constant` spec への retarget（`gain = 1`、`L = 0`。`L` の既定は D31 ではなく 0）。`m_at_S` で平坦になる |
+| `undo` | 直前の retarget の 1 つ前の spec への retarget。anchor は復元先の origin で決まる（§19.5.4-7）。履歴は巻き戻さず追記する |
 
 UI は 3 つとも独立したボタンとして出すが、事象列に落ちるのは `retarget` である。
+API では `op` フィールドが選ぶ（`retarget` / `scale` / `hold` / `undo`）。展開はサーバ側の 1 箇所で、
+トレーナーの claim とプレビューが同じ関数を通る（§19.5.4-4）。
 
 ### 19.7 条件トリガ（D28）
 
@@ -1688,7 +1822,10 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 
 - `POST /training/runs/{id}/lr-schedule/retarget` — 事象を投函する（D6 の control RPC 経由）。
   body は config 語彙・global step（§19.5.3-1）、応答は 202 と、既定を埋めた `payload` のエコー
-- `POST /training/lr-schedule/preview` — 候補事象列を受け取り標本点を返す（D29）
+- `POST /training/lr-schedule/preview` — 候補事象列を受け取り標本点を返す（D29）。
+  `run_id`（公開済みタイムライン）か `config`（run の無い仮定）のどちらか一方。候補は retarget
+  エンドポイントと同じ body で、同じ検証を通る。応答は候補適用後の曲線と、同じ step 格子の
+  `baseline_points`（適用前）。警告は emit せず応答で返す（§19.5.4-1、-3、-11）
 - UI は「方式ピッカー + パラメータ + 適用 step（既定 = 現在）+ 混合長 + 形」と、
   **適用前にチャートへ重ねるプレビュー**を持つ。適用済み事象はチャート上にマーカーで出す
 - `.lr_schedule.json`（D19）に有効 spec と進行中の混合を書く（表示専用、resume の根拠にしない）
@@ -1709,8 +1846,8 @@ UI は 3 つとも独立したボタンとして出すが、事象列に落ち�
 | R1 | `ScheduleSpec` の直列化、`retarget` 事象（`issued` / `gain` 込み）、混合、拒否規則 | 19.3 の相互作用表と 19.4 の 8 件を網羅する試験。`warmup_steps > 0` の retarget 後に減衰コマンドが通ることを含む |
 | R2 | グループセレクタ（spec のグループ識別子を含む） | `lr_group_schedules` オン/オフ両方。識別子が**ペイロードに乗らない**こと（乗せると 2 度目の scoped retarget が全体に化ける）と、scoped 事象を無効化する変異体が捕捉されることを含む |
 | R3 | control RPC・API・state.json 往復 | resume × 延長 × 蓄積数変更 × retarget の組み合わせ（実装済み: §19.5.3） |
-| R4 | プレビュー API と UI | サーバ実装と UI 表示の一致 |
-| R5 | 派生操作（scale / hold / undo） | いずれも `retarget` に落ちること |
+| R4 | プレビュー API と UI（バックエンド実装済み: §19.5.4） | サーバ実装と UI 表示の一致 |
+| R5 | 派生操作（scale / hold / undo。実装済み: §19.5.4） | いずれも `retarget` に落ちること |
 | R6 | 条件トリガ | 別途設計 |
 
 ### 19.11 範囲外

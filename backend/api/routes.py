@@ -50,6 +50,7 @@ from api.param_defaults import (
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     LR_RETARGET_DEFAULTS,
+    LR_PREVIEW_DEFAULTS,
     TRAINING_SAMPLE_DEFAULTS_BY_ARCH,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -950,6 +951,21 @@ async def get_vae_training_defaults():
     from `vae_source` onwards is written into a dedicated `process.vae` section.
     """
     return VAE_TRAINING_DEFAULTS
+
+@router.get("/schema/lr-retarget-defaults")
+async def get_lr_retarget_defaults():
+    """Return what an omitted field of a runtime LR retarget resolves to.
+
+    `null` for `length` is not 0: it means the run's own `lr_warmup_steps`
+    (D31), which only the run knows. Same for `at` (the claim step) and
+    `groups` (every param group).
+
+    Defaults only. The vocabularies (ops, anchors, shapes) are mirrored in the
+    client and pinned against the registry by a test, which fails a build
+    rather than emptying a select at runtime.
+    """
+    return {**LR_RETARGET_DEFAULTS,
+            "n_points": LR_PREVIEW_DEFAULTS["n_points"]}
 
 @router.get("/schema/timestep-defaults-by-arch")
 async def get_timestep_defaults_by_arch():
@@ -18611,8 +18627,12 @@ class LrScheduleRetargetRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    # The one field a retarget must carry: replacing the schedule is the point.
-    lr_scheduler: str
+    # §19.6/D27's degenerate forms. `scale`, `hold` and `undo` carry no
+    # schedule at all -- theirs is derived from the curve in force, which only
+    # the timeline knows -- and all four land as one `retarget` event.
+    op: Optional[str] = LR_RETARGET_DEFAULTS["op"]
+    # Required for `op: retarget`, refused for the derived ops.
+    lr_scheduler: Optional[str] = None
     lr_warmup_steps: Optional[int] = None
     lr_floor_ratio: Optional[float] = None
     lr_decay_start_ratio: Optional[float] = None
@@ -18636,33 +18656,19 @@ class LrScheduleRetargetRequest(BaseModel):
     command_decay_shape: Optional[str] = None
 
 
-@router.post("/training/runs/{run_id}/lr-schedule/retarget", status_code=202)
-async def queue_lr_schedule_retarget(
-    run_id: int,
-    request: LrScheduleRetargetRequest,
-    db: Session = Depends(get_training_db),
-):
-    """Queue a runtime schedule replacement (§19.8).
+def _validated_retarget_payload(request: LrScheduleRetargetRequest) -> Dict[str, Any]:
+    """What a retarget can be refused for without looking at the run (§19.5.3-3).
 
-    Refuses here only what is decidable without the run: vocabulary, ranges and
-    the payload's shape. Anything measured against the live schedule -- a step
-    already past, no span left, a warmup longer than what remains, a component
-    this run has no group for -- is scored by the trainer when it claims the
-    command, and comes back in `GET /training/runs/{run_id}/lr-schedule`.
+    Shared with the preview, so a candidate event that draws is a candidate
+    event that queues. Anything measured against the live schedule -- a step
+    already past, no span left, a component this run has no group for -- is
+    scored where the timeline is.
     """
-    from core.training.training_process import training_process_manager
-    from core.training.training_control_rpc import (
-        MAX_PENDING_REQUESTS, RETARGET_COMMAND, ControlQueueFullError,
-        list_pending_requests, queue_request,
-    )
     from core.training.lr_schedules import (
-        BLEND_SHAPE_NAMES, LR_SCHEDULER_NAMES, RETARGET_ANCHORS,
+        BLEND_SHAPE_NAMES, DERIVED_RETARGET_OPS, INTERNAL_SCHEDULER_NAMES,
+        LR_SCHEDULER_NAMES, RETARGET_ANCHORS, RETARGET_OPS,
         resolve_retarget_spec,
     )
-
-    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Training run not found")
 
     if (request.command_decay_length is not None
             or request.command_decay_shape is not None):
@@ -18674,22 +18680,20 @@ async def queue_lr_schedule_retarget(
                    "every param group, and a retarget carries a curve rather "
                    "than run-wide settings. Edit the run's config for those.")
 
+    op = str(request.op or LR_RETARGET_DEFAULTS["op"]).strip().lower()
+    if op not in RETARGET_OPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown op '{request.op}'. Supported: "
+                   f"{', '.join(RETARGET_OPS)}")
+
     # D44: only what the request actually said travels. An absent key is
     # inherited from the run's own schedule when the trainer resolves this.
     payload = request.model_dump(
         exclude={"command_decay_length", "command_decay_shape"},
         exclude_none=True)
+    payload["op"] = op
 
-    if request.lr_scheduler not in LR_SCHEDULER_NAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown lr_scheduler '{request.lr_scheduler}'. "
-                   f"Supported: {', '.join(LR_SCHEDULER_NAMES)}")
-    if request.anchor is not None and request.anchor not in RETARGET_ANCHORS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown anchor '{request.anchor}'. "
-                   f"Supported: {', '.join(RETARGET_ANCHORS)}")
     if request.shape is not None and request.shape not in BLEND_SHAPE_NAMES:
         raise HTTPException(
             status_code=400,
@@ -18711,6 +18715,49 @@ async def queue_lr_schedule_retarget(
             detail="groups must name at least one component. Omit it (null) to "
                    "retarget every param group; an empty selection is not the "
                    "same request.")
+
+    if op in DERIVED_RETARGET_OPS:
+        # The curve is the run's own, so naming any part of one is a request
+        # this endpoint cannot honour rather than one it can half-honour.
+        carried = sorted(k for k in payload
+                         if k.startswith("lr_") or k == "anchor")
+        if carried:
+            raise HTTPException(
+                status_code=400,
+                detail=f"op '{op}' derives its curve from the schedule the run "
+                       f"is on, so it cannot carry {', '.join(carried)}. Use "
+                       f"op 'retarget' to describe a schedule.")
+        if op == "scale" and request.gain is None:
+            raise HTTPException(
+                status_code=400,
+                detail="op 'scale' needs the factor to scale by, in `gain`.")
+        if op != "scale" and request.gain is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"op '{op}' has no gain: hold freezes the multiplier in "
+                       f"force and undo restores the one before the last "
+                       f"retarget. Use op 'scale' to multiply it.")
+        return payload
+
+    if not request.lr_scheduler:
+        raise HTTPException(
+            status_code=400,
+            detail="lr_scheduler is required for op 'retarget': it is the "
+                   "schedule to switch to.")
+    # An internal name is not decidable here: the timeline accepts it only when
+    # it is the curve the run was BUILT with (§19.4 rule 2's exception), which
+    # needs the run. Refusing it synchronously left a ReLoRA run unable to
+    # retarget onto its own curve at all.
+    if request.lr_scheduler not in LR_SCHEDULER_NAMES + INTERNAL_SCHEDULER_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown lr_scheduler '{request.lr_scheduler}'. "
+                   f"Supported: {', '.join(LR_SCHEDULER_NAMES)}")
+    if request.anchor is not None and request.anchor not in RETARGET_ANCHORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown anchor '{request.anchor}'. "
+                   f"Supported: {', '.join(RETARGET_ANCHORS)}")
     try:
         # The trainer resolves this payload for real once it knows the span and
         # the spec to inherit from; a probe with nothing to inherit answers
@@ -18720,6 +18767,34 @@ async def queue_lr_schedule_retarget(
         resolve_retarget_spec(payload, None, total_steps=warmup + 1)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return payload
+
+
+@router.post("/training/runs/{run_id}/lr-schedule/retarget", status_code=202)
+async def queue_lr_schedule_retarget(
+    run_id: int,
+    request: LrScheduleRetargetRequest,
+    db: Session = Depends(get_training_db),
+):
+    """Queue a runtime schedule replacement (§19.8).
+
+    Refuses here only what is decidable without the run: vocabulary, ranges and
+    the payload's shape. Anything measured against the live schedule -- a step
+    already past, no span left, a warmup longer than what remains, a component
+    this run has no group for -- is scored by the trainer when it claims the
+    command, and comes back in `GET /training/runs/{run_id}/lr-schedule`.
+    """
+    from core.training.training_process import training_process_manager
+    from core.training.training_control_rpc import (
+        MAX_PENDING_REQUESTS, RETARGET_COMMAND, ControlQueueFullError,
+        list_pending_requests, queue_request,
+    )
+
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Training run not found")
+
+    payload = _validated_retarget_payload(request)
 
     proc = training_process_manager.processes.get(int(run_id))
     if proc is None or not proc.is_running:
@@ -18775,11 +18850,281 @@ async def get_lr_schedule_status(
             {
                 "request_id": r.get("request_id"),
                 "command": r.get("command"),
+                # All four §19.6 forms queue as `retarget`; only this says
+                # which button it was. The event list stays one kind.
+                "op": (r.get("payload") or {}).get("op"),
                 "queued_at": r.get("queued_at"),
             }
             for r in (pending_requests(output_dir, int(run_id)) if output_dir else [])
         ],
         "results": list_results(output_dir, int(run_id)) if output_dir else [],
+    }
+
+
+def _preview_spec_from_config(config: Dict[str, Any], *, lr_scheduler: str,
+                              total_steps: int, gradient_accumulation_steps: int,
+                              lr_warmup_steps: int):
+    """`(spec, interval)` for a hypothetical run: the GET preview's resolution.
+
+    Every step count goes onto the scheduler axis exactly as the trainer does
+    it -- the two arguments here, and the config's own step keys inside
+    `resolve_spec`. A preview that divided only some of them would draw a curve
+    the run does not follow.
+    """
+    from core.training.lr_schedules import resolve_spec, to_scheduler_axis
+
+    if total_steps < 1:
+        raise HTTPException(status_code=400, detail="total_steps must be >= 1")
+    interval = max(1, int(gradient_accumulation_steps))
+    scheduler_total = to_scheduler_axis(total_steps, interval)
+    if scheduler_total < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"total_steps={total_steps} is smaller than "
+                   f"gradient_accumulation_steps={interval}: the optimizer "
+                   f"would never step.")
+    try:
+        spec = resolve_spec(
+            config, warmup_steps=to_scheduler_axis(lr_warmup_steps, interval),
+            total_steps=scheduler_total, name=lr_scheduler,
+            advance_interval=interval)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return spec, interval
+
+
+class LrSchedulePreviewConfig(BaseModel):
+    """A hypothetical run's schedule, in the GET preview's own query vocabulary."""
+
+    model_config = {"extra": "forbid"}
+
+    lr_scheduler: str = TRAINING_DEFAULTS["lr_scheduler"]
+    total_steps: int = TRAINING_DEFAULTS["total_steps"]
+    gradient_accumulation_steps: int = TRAINING_DEFAULTS["gradient_accumulation_steps"]
+    lr_warmup_steps: int = TRAINING_DEFAULTS["lr_warmup_steps"]
+    # Omitted asks for §12.2's reading of a floor-less config, as in the GET.
+    lr_floor_ratio: Optional[float] = None
+    lr_decay_start_ratio: float = TRAINING_DEFAULTS["lr_decay_start_ratio"]
+    lr_decay_start_step: int = TRAINING_DEFAULTS["lr_decay_start_step"]
+    lr_decay_steps: int = TRAINING_DEFAULTS["lr_decay_steps"]
+    lr_decay_shape: str = TRAINING_DEFAULTS["lr_decay_shape"]
+    lr_cycle_steps: int = TRAINING_DEFAULTS["lr_cycle_steps"]
+    lr_cycle_peak_decay: float = TRAINING_DEFAULTS["lr_cycle_peak_decay"]
+
+
+class LrSchedulePreviewRequest(BaseModel):
+    """Candidate retargets, and the timeline to draw them against (D29).
+
+    Exactly one source: `run_id` takes the run's published timeline -- its
+    events, totals and accumulation -- so the answer is "what will this do to
+    the run I am watching"; `config` takes a schedule that has no run yet.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    run_id: Optional[int] = None
+    config: Optional[LrSchedulePreviewConfig] = None
+    # The bodies `POST /training/runs/{id}/lr-schedule/retarget` takes, in the
+    # order they would be queued in. Refused the same way here as there.
+    events: List[LrScheduleRetargetRequest] = Field(default_factory=list)
+    n_points: int = LR_PREVIEW_DEFAULTS["n_points"]
+
+
+@router.post("/training/lr-schedule/preview")
+async def preview_lr_schedule_events(
+    request: LrSchedulePreviewRequest,
+    db: Session = Depends(get_training_db),
+):
+    """Sample the curve a not-yet-applied event list would produce (D29).
+
+    Runs the run's own `ScheduleTimeline` over a SCRATCH copy of its events:
+    nothing is written, no command is queued, and the run's state is untouched.
+    The D37 warning a candidate raises is returned rather than emitted -- this
+    is the API process, where the trainer's stdout sentinel has no reader.
+
+    What it draws is the timeline the trainer last PUBLISHED plus the
+    candidates; a command already queued but not yet claimed is not in it.
+    """
+    from core.training.lr_schedules import (
+        DerivedRetargetError, ScheduleSpec, ScheduleTimeline, describe_spec,
+        retarget_add_kwargs, sample_curve, to_scheduler_axis,
+    )
+    from core.training.training_control_rpc import read_status
+    from core.training.training_process import training_process_manager
+
+    if (request.run_id is None) == (request.config is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Send exactly one of run_id (preview against that run's "
+                   "live schedule) or config (preview a schedule with no run).")
+
+    events: List[Dict[str, Any]] = []
+    components: List[str] = []
+    # D40: WHY one spec is on every group. Without it the D37 warning tells a
+    # run that did set lr_group_schedules to go looking for a config bug.
+    ungrouped_reason: Optional[str] = None
+    # (component name or None, base spec) per curve to draw.
+    curve_specs: List[Tuple[Optional[str], Any]] = []
+
+    if request.config is not None:
+        source = "config"
+        cfg = request.config.model_dump()
+        spec, interval = _preview_spec_from_config(
+            {k: v for k, v in cfg.items() if v is not None},
+            lr_scheduler=cfg["lr_scheduler"], total_steps=cfg["total_steps"],
+            gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
+            lr_warmup_steps=cfg["lr_warmup_steps"])
+        position = 0
+        position_source = "config"
+        curve_specs = [(None, spec)]
+    else:
+        source = "run"
+        run = db.query(TrainingRun).filter(TrainingRun.id == request.run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Training run not found")
+        status = read_status(run.output_dir) if run.output_dir else None
+        if not status or not status.get("spec"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Training run {request.run_id} has not published an LR "
+                       f"schedule yet; a run writes one at its first batch. "
+                       f"Preview a config instead.")
+        spec = ScheduleSpec.from_dict(status["spec"])
+        interval = max(1, int(status.get("advance_interval") or 1))
+        # The display file is rewritten on a STATE change, so on a run that has
+        # had no LR command its `step` is still the first batch's -- and a
+        # preview dated there draws the wrong curve and mis-scores backdating.
+        # The run row's step is committed every training iteration, but it is a
+        # GLOBAL step, and dividing it is the estimate §17.1 refuses for a
+        # resume (a skipped batch or a CUDA recovery moves the two apart), so
+        # take the later of the two rather than trusting either alone.
+        position = int(status.get("step") or 0)
+        position_source = "status_file"
+        ungrouped_reason = status.get("ungrouped_reason")
+        proc = training_process_manager.processes.get(int(request.run_id))
+        if proc is not None and proc.is_running:
+            live = to_scheduler_axis(int(run.current_step or 0), interval)
+            if live > position:
+                position, position_source = live, "run_row"
+        events = list(status.get("events") or [])
+        seen = set()
+        for group in status.get("groups") or []:
+            if not group.get("spec"):
+                continue
+            group_spec = ScheduleSpec.from_dict(group["spec"]).for_group(
+                group.get("spec_group"))
+            component = group.get("component")
+            if component and str(component) not in components:
+                components.append(str(component))
+            # An LLRD depth split gives one component many param groups, and
+            # they share a curve; drawing it once per group would be the same
+            # line N times.
+            if group_spec in seen:
+                continue
+            seen.add(group_spec)
+            curve_specs.append((component, group_spec))
+        if not any(s.group is not None for _, s in curve_specs):
+            # No identities: one spec is on every group (§19.3's last row), so
+            # the representative curve IS every group's.
+            curve_specs = [(None, spec)]
+
+    group_specs = [s for _, s in curve_specs]
+    # None, not []: a run whose groups carry no component name cannot check
+    # one, which is R1's "accept it" rather than "refuse everything".
+    known_groups = components or None
+
+    def scratch() -> ScheduleTimeline:
+        # announce=False: nothing in this process lifts the trainer's stdout
+        # sentinel, so a preview would print a raw JSON line to the console.
+        timeline = ScheduleTimeline(announce=False)
+        if events:
+            timeline.load(events)
+        else:
+            timeline.set_total_steps(spec.total_steps)
+        timeline.bind_spec(spec, group_specs=group_specs,
+                           ungrouped_reason=ungrouped_reason)
+        return timeline
+
+    baseline = scratch()
+    candidate = scratch()
+
+    results: List[Dict[str, Any]] = []
+    for index, event in enumerate(request.events):
+        payload = _validated_retarget_payload(event)
+        request_id = f"preview-{index}"
+        try:
+            kwargs = retarget_add_kwargs(
+                payload, candidate, spec, position=position,
+                advance_interval=interval, known_groups=known_groups)
+            result = candidate.add("retarget", request_id=request_id, **kwargs)
+        except DerivedRetargetError as e:
+            results.append({"index": index, "op": payload["op"],
+                            "result": e.result, "at": None, "kind": None,
+                            "refused_kind": None, "warning": None,
+                            "detail": str(e)})
+            continue
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        applied = next((e for e in candidate.events
+                        if e.get("request_id") == request_id), {})
+        results.append({
+            "index": index,
+            "op": payload["op"],
+            "result": result,
+            "at": kwargs["at"],
+            "kind": applied.get("kind"),
+            "refused_kind": applied.get("refused_kind"),
+            # §19.5.2-8: the durable half of the warning. The message is in
+            # `warnings`, built once by the timeline.
+            "warning": applied.get("warning"),
+            "detail": None,
+        })
+
+    total = candidate.current_total(spec.total_steps)
+    curves = []
+    actives = []
+    for component, curve_spec in curve_specs:
+        active = candidate.active_spec(curve_spec, total)
+        actives.append(active)
+        curves.append({
+            "group": None if component is None else str(component),
+            "lr_scheduler": active.name,
+            "description": describe_spec(active),
+            "points": [[int(s), float(m)]
+                       for s, m in sample_curve(curve_spec, candidate,
+                                                n_points=request.n_points)],
+            "baseline_points": [[int(s), float(m)]
+                                for s, m in sample_curve(curve_spec, baseline,
+                                                         n_points=request.n_points)],
+        })
+
+    # §19.5.4-8 one level up: a header taken from the unstamped representative
+    # names a schedule that a scoped candidate put on NO group. Null when the
+    # curves disagree, so a chart cannot be labelled with a curve nobody is on;
+    # every ungrouped run has one curve and is unaffected.
+    def agreed(field):
+        values = {getattr(a, field) for a in actives}
+        return values.pop() if len(values) == 1 else None
+
+    header_name = agreed("name")
+    return {
+        "source": source,
+        "run_id": None if request.run_id is None else int(request.run_id),
+        "step": int(position),
+        "position_source": position_source,
+        "advance_interval": int(interval),
+        "lr_scheduler": header_name,
+        "description": (describe_spec(actives[0])
+                        if header_name is not None and actives else None),
+        "scheduler_total_steps": int(total),
+        "nominal_total_steps": int(candidate.nominal_total(spec.total_steps)),
+        "warmup_steps": agreed("warmup_steps"),
+        "floor_ratio": agreed("floor_ratio"),
+        "floor_defaulted": agreed("floor_defaulted"),
+        "results": results,
+        "warnings": list(candidate.warnings),
+        "n_points": len(curves[0]["points"]) if curves else 0,
+        "curves": curves,
     }
 
 
@@ -18796,29 +19141,19 @@ async def preview_lr_schedule(
     lr_decay_shape: str = TRAINING_DEFAULTS["lr_decay_shape"],
     lr_cycle_steps: int = TRAINING_DEFAULTS["lr_cycle_steps"],
     lr_cycle_peak_decay: float = TRAINING_DEFAULTS["lr_cycle_peak_decay"],
-    n_points: int = 256,
+    n_points: int = LR_PREVIEW_DEFAULTS["n_points"],
 ):
     """Sample the LR multiplier curve a config would produce (D20).
 
     Server-side so the schedule is never re-implemented in TypeScript. Omitting
     lr_floor_ratio applies the compatibility reading a YAML without the key
     gets, which is how an existing run's curve is drawn.
+
+    Candidate events and a live run's timeline are the POST on this path.
     """
     from core.training.lr_schedules import (
-        ScheduleTimeline, describe_spec, resolve_spec, sample_curve,
-        to_scheduler_axis,
+        ScheduleTimeline, describe_spec, sample_curve,
     )
-
-    if total_steps < 1:
-        raise HTTPException(status_code=400, detail="total_steps must be >= 1")
-    interval = max(1, int(gradient_accumulation_steps))
-    scheduler_total = to_scheduler_axis(total_steps, interval)
-    if scheduler_total < 1:
-        raise HTTPException(
-            status_code=400,
-            detail=f"total_steps={total_steps} is smaller than "
-                   f"gradient_accumulation_steps={interval}: the optimizer "
-                   f"would never step.")
 
     config = {
         "lr_decay_start_ratio": lr_decay_start_ratio,
@@ -18831,17 +19166,10 @@ async def preview_lr_schedule(
     if lr_floor_ratio is not None:
         config["lr_floor_ratio"] = lr_floor_ratio
 
-    try:
-        # Every step count goes onto the scheduler axis, exactly as the
-        # trainer does it -- the two arguments here, and the config's own step
-        # keys inside resolve_spec. A preview that divided only some of them
-        # would draw a curve the run does not follow.
-        spec = resolve_spec(
-            config, warmup_steps=to_scheduler_axis(lr_warmup_steps, interval),
-            total_steps=scheduler_total, name=lr_scheduler,
-            advance_interval=interval)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    spec, _interval = _preview_spec_from_config(
+        config, lr_scheduler=lr_scheduler, total_steps=total_steps,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        lr_warmup_steps=lr_warmup_steps)
 
     timeline = ScheduleTimeline()
     timeline.set_total_steps(spec.total_steps)

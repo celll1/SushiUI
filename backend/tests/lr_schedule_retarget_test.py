@@ -41,6 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.training.lr_schedules import (  # noqa: E402
     BLEND_SHAPE_NAMES,
+    RESULT_AMBIGUOUS_SCOPE,
+    RESULT_MISSING_GAIN,
+    RESULT_NOTHING_TO_UNDO,
     RETARGET_ANCHORS,
     SPEC_VERSION,
     STATE_BASE,
@@ -49,12 +52,14 @@ from core.training.lr_schedules import (  # noqa: E402
     STATE_RECOVERING,
     WARN_CLOCK_DEGENERATE,
     WARN_SELECTOR_ON_UNGROUPED_RUN,
+    DerivedRetargetError,
     ScheduleSpec,
     ScheduleTimeline,
     blend_length_on_scheduler_axis,
     make_lambda,
     resolve_retarget_spec,
     resolve_spec,
+    retarget_add_kwargs,
 )
 
 TOTAL = 10000
@@ -1605,3 +1610,237 @@ def test_retarget_with_no_active_spec_uses_defaults():
     assert probe.floor_ratio == 0.0
     assert probe.floor_defaulted is True
 
+
+
+# ---------------------------------------------------------------------------
+# R5: scale / hold / undo (D27, §19.6)
+# ---------------------------------------------------------------------------
+
+def _derived(timeline, spec, op, position, **payload):
+    """One derived op, resolved and applied the way the trainer applies it."""
+    payload["op"] = op
+    kwargs = retarget_add_kwargs(payload, timeline, spec, position=position)
+    return kwargs, timeline.add("retarget", **kwargs)
+
+
+def test_scale_is_the_spec_in_force_re_anchored_times_k():
+    spec, timeline = _run("cosine", W=100)
+    before = timeline.multiplier(spec, 4000)
+    kwargs, result = _derived(timeline, spec, "scale", 4000, gain=0.5, length=0)
+    assert result == "applied"
+    assert (kwargs["anchor"], kwargs["gain"]) == ("restart", 0.5)
+    assert kwargs["new_spec"].name == "cosine"
+    # A re-anchored warmup means "ramp up again from here" (§19.2), so keeping
+    # the run's would make a scale take the LR to 0 before scaling anything.
+    assert kwargs["new_spec"].warmup_steps == 0
+    assert timeline.multiplier(spec, 4000) == pytest.approx(before * 0.5)
+
+
+def test_hold_holds_the_multiplier_in_force():
+    spec, timeline = _run("cosine", W=100)
+    held = timeline.multiplier(spec, 4000)
+    kwargs, result = _derived(timeline, spec, "hold", 4000)
+    assert result == "applied"
+    # D31's default length does not apply: a blend would keep the old curve
+    # moving, which is what hold exists to stop.
+    assert kwargs["length"] == 0
+    assert kwargs["new_spec"].name == "constant"
+    for step in (4000, 4001, 7000, TOTAL):
+        assert timeline.multiplier(spec, step) == pytest.approx(held)
+
+
+def test_every_derived_op_lands_as_a_retarget_event():
+    """Invariant 17: three buttons, not three event kinds."""
+    for op, payload in (("scale", {"gain": 0.5}), ("hold", {}), ("undo", {})):
+        spec, timeline = _run("cosine")
+        timeline.add("retarget", at=1000, new_spec=_spec("constant"), length=0)
+        _derived(timeline, spec, op, 4000, **payload)
+        assert _events(timeline) == ["total_steps", "retarget", "retarget"]
+
+
+def test_undo_restores_the_curve_the_last_retarget_replaced():
+    spec, timeline = _run("cosine")
+    steps = list(range(6000, TOTAL + 1, 500))
+    expected = _curve(spec, timeline, steps)
+
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0)
+    assert _curve(spec, timeline, steps) != expected
+    kwargs, result = _derived(timeline, spec, "undo", 6000, length=0)
+    assert result == "applied"
+    # The replaced curve was on the run's own axis, so `continue` puts it back
+    # where it was rather than restarting its shape from here.
+    assert kwargs["anchor"] == "continue"
+    assert _curve(spec, timeline, steps) == expected
+
+
+def test_undo_appends_rather_than_rewinding_the_history():
+    spec, timeline = _run("cosine")
+    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0)
+    before = json.dumps(timeline.dump(10 ** 9))
+
+    _derived(timeline, spec, "undo", 6000, length=0)
+    events = timeline.dump(10 ** 9)
+    # D25/invariant 14: the reversed event is still there, unchanged, and the
+    # undo is dated after it rather than in its place.
+    assert json.dumps(events[:-1]) == before
+    assert events[-1]["kind"] == "retarget"
+    assert events[-1]["at"] == 6000
+    assert timeline.multiplier(spec, 5000) != pytest.approx(
+        timeline.multiplier(spec, 7000))
+
+
+def test_undo_of_an_undo_restores_the_shape_and_re_anchors_it():
+    """A `restart`-anchored curve's step fields are lengths from ITS origin, and
+    an event can name only 0 or its own step as an origin, so undoing back onto
+    one restarts its shape here instead of resurrecting the values it held."""
+    spec, timeline = _run("cosine")
+    timeline.add("retarget", at=2000, new_spec=_spec("constant"), length=0)
+    _derived(timeline, spec, "undo", 4000, length=0)
+    kwargs, result = _derived(timeline, spec, "undo", 6000, length=0)
+    assert result == "applied"
+    assert (kwargs["anchor"], kwargs["new_spec"].name) == ("restart", "constant")
+    held = timeline.multiplier(spec, 6000)
+    assert timeline.multiplier(spec, 9000) == pytest.approx(held)
+
+
+def test_undo_with_no_retarget_in_force_is_refused_by_name():
+    spec, timeline = _run("cosine")
+    with pytest.raises(DerivedRetargetError) as e:
+        retarget_add_kwargs({"op": "undo"}, timeline, spec, position=4000)
+    assert e.value.result == RESULT_NOTHING_TO_UNDO
+    assert _events(timeline) == ["total_steps"]
+
+
+def test_a_scale_needs_its_factor():
+    spec, timeline = _run("cosine")
+    with pytest.raises(DerivedRetargetError) as e:
+        retarget_add_kwargs({"op": "scale"}, timeline, spec, position=10)
+    assert e.value.result == RESULT_MISSING_GAIN
+
+
+def test_a_derived_op_reads_the_named_group_s_curve_not_the_representative():
+    """§19.5.1-4 from the other side: the unstamped representative absorbs every
+    scoped retarget, so deriving from it would hold `text_encoder_1` at a value
+    that only a curve no param group is on ever had."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=2000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    expected = timeline.multiplier(specs["text_encoder_1"], 4000)
+
+    kwargs = retarget_add_kwargs({"op": "hold", "groups": ["text_encoder_1"]},
+                                 timeline, timeline.spec, position=4000)
+    assert timeline.add("retarget", **kwargs) == "applied"
+    assert timeline.multiplier(specs["text_encoder_1"], 8000) == pytest.approx(
+        expected)
+    # The representative's own value at 4000 is `unet`'s constant, which is
+    # what a fold of the run spec would have held at.
+    assert timeline.multiplier(timeline.spec, 4000) != pytest.approx(expected)
+
+
+def test_a_derived_op_over_groups_on_different_curves_is_refused():
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=2000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    with pytest.raises(DerivedRetargetError) as e:
+        retarget_add_kwargs(
+            {"op": "scale", "gain": 0.5, "groups": ["unet", "text_encoder_1"]},
+            timeline, timeline.spec, position=4000)
+    assert e.value.result == RESULT_AMBIGUOUS_SCOPE
+
+
+def test_a_derived_payload_converts_its_steps_like_a_retarget():
+    """§19.5.3-1: the payload is global steps whatever the op is."""
+    spec, timeline = _run("cosine", W=400)
+    kwargs = retarget_add_kwargs({"op": "hold", "at": 4000}, timeline, spec,
+                                 position=0, advance_interval=4)
+    assert kwargs["at"] == 1000
+    assert kwargs["issued"] == 0
+
+
+def test_an_unknown_op_raises_at_the_seam():
+    spec, timeline = _run("cosine")
+    with pytest.raises(ValueError):
+        retarget_add_kwargs({"op": "sideways"}, timeline, spec, position=10)
+
+
+def test_a_scratch_timeline_records_its_warning_without_emitting_it(capsys):
+    """R4 runs `add` in the API process, where nothing lifts the sentinel."""
+    spec = _spec("cosine")
+    timeline = ScheduleTimeline(announce=False)
+    timeline.set_total_steps(spec.total_steps)
+    timeline.bind_spec(spec)
+    timeline.add("retarget", at=100, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    assert capsys.readouterr().out == ""
+    assert timeline.dump(TOTAL)[-1]["warning"] == WARN_SELECTOR_ON_UNGROUPED_RUN
+    assert [w["code"] for w in timeline.warnings] == [
+        WARN_SELECTOR_ON_UNGROUPED_RUN]
+    assert timeline.warnings[0]["message"]
+
+
+def test_a_relora_run_can_still_be_scaled():
+    """Rule 2 keeps `relora` out of the PAYLOAD vocabulary, but a derived op
+    hands back the run's own curve; refusing that leaves a ReLoRA run with no
+    scale and no undo."""
+    spec = resolve_spec({}, warmup_steps=0, total_steps=TOTAL, name="relora")
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    timeline.bind_spec(spec)
+    timeline.add("restart", at=2000)
+    before = timeline.multiplier(spec, 4000)
+
+    kwargs = retarget_add_kwargs({"op": "scale", "gain": 0.5, "length": 0},
+                                 timeline, spec, position=4000)
+    assert timeline.add("retarget", **kwargs) == "applied"
+    assert timeline.multiplier(spec, 4000) == pytest.approx(before * 0.5)
+
+
+def test_an_internal_name_in_a_payload_is_still_refused_on_that_run():
+    """The relaxation is "the run's own name", not "any internal name": a
+    payload cannot install a segmented curve, even on a ReLoRA run."""
+    spec = resolve_spec({}, warmup_steps=0, total_steps=TOTAL, name="relora")
+    timeline = ScheduleTimeline()
+    timeline.set_total_steps(spec.total_steps)
+    timeline.bind_spec(spec)
+    broken = replace(_spec("constant"), name="relora")
+    _assert_refused(timeline, spec,
+                    timeline.add("retarget", at=4000, new_spec=broken),
+                    "rejected_unknown_scheduler")
+
+
+@pytest.mark.parametrize("op,payload", [("scale", {"gain": 0.5}),
+                                        ("hold", {}), ("undo", {})])
+def test_a_derived_op_reaches_a_grouped_run_whose_groups_agree(op, payload):
+    """F2: the curves of two param groups on one schedule differ ONLY in their
+    addressee, and keying the agreement check on that refused every derived op
+    on every grouped run -- including the default selector, which D24 defines
+    as all of them."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    # Something for `undo` to undo, applied to both groups so they still agree.
+    timeline.add("retarget", at=1000, new_spec=_spec("constant"), length=0)
+    kwargs, result = _derived(timeline, timeline.spec, op, 4000, **payload)
+    assert result == "applied"
+    assert kwargs["groups"] is None
+    for spec in specs.values():
+        assert timeline.active_spec(spec, 5000).name == kwargs["new_spec"].name
+
+
+def test_a_grouped_hold_holds_every_group_at_its_own_value():
+    specs, timeline = _grouped(("unet", "text_encoder_1"), "cosine", W=100)
+    held = {name: timeline.multiplier(spec, 4000)
+            for name, spec in specs.items()}
+    _derived(timeline, timeline.spec, "hold", 4000)
+    for name, spec in specs.items():
+        assert timeline.multiplier(spec, 9000) == pytest.approx(held[name])
+
+
+def test_the_agreement_check_still_refuses_a_real_disagreement():
+    """The relaxation is "same shape", not "no check": one payload carries one
+    curve, and two groups on different schedules need two requests."""
+    specs, timeline = _grouped(("unet", "text_encoder_1"))
+    timeline.add("retarget", at=2000, new_spec=_spec("constant"), length=0,
+                 groups=["unet"])
+    with pytest.raises(DerivedRetargetError) as e:
+        retarget_add_kwargs({"op": "hold"}, timeline, timeline.spec,
+                            position=4000)
+    assert e.value.result == RESULT_AMBIGUOUS_SCOPE

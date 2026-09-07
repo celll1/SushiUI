@@ -2611,6 +2611,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # tokens. Nothing recalibrates the noise-scale schedule for a patch other
     # than 4 (warned at swap time).
     "sensenova_gen_patch": 0,
+    # SenseNova VAE swap only: multiplier on the checkpoint's own generation
+    # noise scale, 0 = inherit (see latent_space.apply_noise_scale_gain for why
+    # a swapped latent space needs one). Inherit is the default because every UI
+    # edit resends this field.
+    "sensenova_noise_scale_gain": 0.0,
+    # Measure that gain from this run's own latents instead of stating it.
+    "sensenova_noise_scale_auto": False,
     # Read-only back-compat alias of vae_swap_source, SDXL-only, registry keys
     # ("flux1"). Kept so an existing run's YAML still loads; nothing writes it.
     "sdxl_vae_type": "none",

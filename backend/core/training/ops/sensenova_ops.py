@@ -1854,6 +1854,77 @@ def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tens
     return latents.detach().to(dtype=trainer.training_dtype, device="cpu")
 
 
+#: Images sampled for `measure_latent_rms`. The quantity is a pooled RMS over
+#: tens of millions of latent elements, so the sampling error at this count is
+#: far below the per-dataset spread it averages over (0.86-1.24 measured across
+#: 20 dataset roots).
+_RMS_SAMPLE_IMAGES = 64
+
+
+def measure_latent_rms(trainer: Any, datasets: Any, *,
+                       images: int = _RMS_SAMPLE_IMAGES, seed: int = 1234) -> float:
+    """Pooled RMS of this run's images in the swapped latent space.
+
+    Encodes through ``trainer.encode_image`` at the dimensions the item ALREADY
+    carries, which is what the training loop itself reads (base_trainer's
+    ``item.get("width") or item.get("bucket_width")``). Re-deriving them from a
+    bucket manager would miss `_fit_items_to_base_area` -- whose absence made one
+    original-resolution encode transiently allocate >20GB -- and would redraw a
+    `multi_resolution_mode="random"` assignment from the global RNG.
+    """
+    import random
+
+    from PIL import Image
+
+    items = []
+    for dataset in datasets or []:
+        for item in getattr(dataset, "items", []) or []:
+            if not isinstance(item, dict) or item.get("item_type") == "video":
+                continue
+            path = item.get("image_path")
+            width = item.get("width") or item.get("bucket_width")
+            height = item.get("height") or item.get("bucket_height")
+            if path and width and height:
+                items.append((path, int(width), int(height)))
+    if not items:
+        raise ValueError(
+            "sensenova_noise_scale_auto found no bucketed images to measure the "
+            "latent scale on")
+    random.Random(seed).shuffle(items)
+
+    # `train()` takes the strategy as an argument and keeps it nowhere, so the
+    # config is the only place to read it back from.
+    strategy = str((getattr(trainer, "config", None) or {}).get(
+        "bucket_strategy") or "resize")
+    total = 0
+    squared = 0.0
+    measured = 0
+    for path, width, height in items[:images]:
+        try:
+            with Image.open(path) as handle:
+                latent = trainer.encode_image(
+                    handle.convert("RGB"), target_width=width,
+                    target_height=height, bucket_strategy=strategy)
+        except Exception as exc:
+            print(f"{getattr(trainer, 'log_prefix', '[SenseNova]')} latent RMS "
+                  f"sample skipped ({Path(str(path)).name}): "
+                  f"{type(exc).__name__}: {exc}")
+            continue
+        values = latent.detach().float()
+        total += values.numel()
+        squared += float(values.pow(2).sum())
+        measured += 1
+    if not total:
+        raise ValueError(
+            "sensenova_noise_scale_auto could not encode any of the sampled "
+            "images; the latent scale is unmeasured and the run would train on "
+            "an uncalibrated noise schedule")
+    rms = (squared / total) ** 0.5
+    print(f"{getattr(trainer, 'log_prefix', '[SenseNova]')} latent RMS measured "
+          f"over {measured} image(s), {total / 1e6:.1f}M elements: {rms:.4f}")
+    return rms
+
+
 def vae_decode(trainer: Any, latents: torch.Tensor) -> torch.Tensor:
     """Latent -> [-1,1] RGB. Pixel-space runs are already RGB and pass through."""
     vae = getattr(trainer, "vae", None)

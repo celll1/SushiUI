@@ -22177,6 +22177,82 @@ components:
             checkpoint's `gen_patch_size`, and the generation loader rebuilds
             the tree from it, so a checkpoint trained at 8 reloads at 8.
           example: 0
+        sensenova_noise_scale_gain:
+          type: 'number'
+          format: 'float'
+          minimum: 0
+          default: 0
+          description: |
+            SenseNova U1.5 only: a multiplier on the checkpoint's own generation
+            noise scale, for a run that trains in a SWAPPED latent space.
+            Ignored by every other architecture.
+
+            **`0` (the default) means INHERIT**: keep whatever noise scale the
+            loaded checkpoint carries. Every UI edit resends this field, so a
+            positive default would read as a request to change a run's noise
+            schedule.
+
+            Why a swap needs one: `compute_noise_scale` is
+            `sqrt(token_count / base) * noise_scale` and carries no data-scale
+            term, so the RMS of the data the checkpoint was trained on is baked
+            into its constant. That distribution is unpublished; this repo's own
+            training images stand in for it at RMS 0.6842 in `[-1,1]` (measured
+            over 500 images at real bucket resolution). A VAE's normalisation
+            targets unit variance by the definition of its `scaling_factor`, so
+            training in a swapped space with the pixel value runs at a different
+            signal-to-noise ratio than the schedule was calibrated for.
+            `1 / 0.6842 = 1.462` restores the ratio.
+
+            The scale is ALSO a conditioning input (`noise_scale /
+            noise_scale_max_value`, through `noise_scale_embedder`), so a gain
+            moves that input as well. For a swapped SenseNova run it moves it
+            back toward the range the pixel checkpoint saw, but any gain changes
+            what the model is conditioned on and none of this is measured
+            against generated output.
+
+            Applied to the value the checkpoint had BEFORE any earlier
+            recalibration (recorded as `gen_noise_scale_base`), so a resume —
+            which re-runs the swap against an already-recalibrated checkpoint —
+            cannot compound the gain, and a changed gain still lands on the
+            intended value.
+
+            The result is written into the saved checkpoint's own config block
+            as `noise_scale`, which is what the model is rebuilt from, so
+            training and inference read ONE value and cannot drift apart.
+
+            Requires a `vae_swap_source`, or a base that already carries its own
+            `component.vae.*` block: in pixel space the checkpoint's schedule is
+            already calibrated for the data, and the setting is refused rather
+            than silently dropped. Mutually exclusive with
+            `sensenova_noise_scale_auto`.
+
+            A `sensenova_noise_scale_clamped` warning is emitted on the
+            training_log channel when the recalibrated scale reaches the
+            checkpoint's `noise_scale_max_value`, where `compute_noise_scale`
+            silently clamps it.
+          example: 1.462
+        sensenova_noise_scale_auto:
+          type: 'boolean'
+          default: false
+          description: |
+            SenseNova U1.5 only: measure `sensenova_noise_scale_gain` from this
+            run's own data instead of stating it. Ignored by every other
+            architecture.
+
+            Samples images from the run's datasets, encodes them through the
+            run's own bucket manager and encode path, and takes
+            `pooled latent RMS / 0.6842` as the gain. Deterministic in its
+            sampling seed, so two runs over one dataset measure the same value.
+
+            Measured ONCE, then baked into the checkpoint: any run started from
+            a checkpoint that already records a gain INHERITS it instead of
+            re-measuring, so the objective does not move every time a run
+            restarts. To change it afterwards — including for a new run on a
+            different dataset — state `sensenova_noise_scale_gain` explicitly.
+
+            Same requirements and refusals as `sensenova_noise_scale_gain`,
+            with which it is mutually exclusive.
+          example: false
         sdxl_vae_type:
           type: 'string'
           default: 'none'

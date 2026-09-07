@@ -13998,6 +13998,9 @@ class BaseTrainer(ABC):
         )
         self._partial_step_taint = None
 
+        # Needs the datasets, so it cannot live in load_components.
+        self.arch.calibrate_before_training(self, datasets, bucket_manager)
+
         try:
             # resume_seq: 0 for a fresh run, one past the highest recorded seq when
             # resuming (this run already has metric rows from a prior session). New

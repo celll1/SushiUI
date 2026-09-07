@@ -258,6 +258,7 @@ class SenseNovaArchHandler(ArchHandler):
         trainer.sensenova_config_dict = latent_config_dict(
             getattr(trainer, "sensenova_config_dict", None),
             channels=resolved.latent_channels, patch=built.patch)
+        self._apply_noise_scale(trainer, config)
         self._warn_off_calibration(trainer, built, config)
         trainer.wiring = self.wiring.replace(
             latent_channels=resolved.latent_channels,
@@ -268,6 +269,148 @@ class SenseNovaArchHandler(ArchHandler):
         trainer.vae_identity = resolved
         trainer.vae_latent_channels = resolved.latent_channels
         return report
+
+    @staticmethod
+    def resolve_noise_scale_config(config) -> tuple:
+        """``(gain, auto)`` for this run, refusing the contradiction.
+
+        ``gain`` is 0 when the run does not ask for an explicit one
+        (``INHERIT_NOISE_SCALE_GAIN``).
+        """
+        from api.param_defaults import TRAINING_DEFAULTS
+        from core.training.train_runner import (
+            _normalize_sensenova_bool, _normalize_sensenova_float,
+        )
+
+        config = dict(config or {})
+        gain = _normalize_sensenova_float(
+            config, "sensenova_noise_scale_gain",
+            float(TRAINING_DEFAULTS["sensenova_noise_scale_gain"]))
+        if gain < 0:
+            raise ValueError(
+                f"sensenova_noise_scale_gain must be >= 0 "
+                f"(0 = inherit the checkpoint's own value), got {gain}")
+        auto = _normalize_sensenova_bool(
+            config, "sensenova_noise_scale_auto",
+            bool(TRAINING_DEFAULTS["sensenova_noise_scale_auto"]))
+        if auto and gain:
+            raise ValueError(
+                f"sensenova_noise_scale_auto measures the gain from this run's "
+                f"own data and sensenova_noise_scale_gain={gain} states one; "
+                f"exactly one of them can decide the noise schedule. Clear the "
+                f"gain to measure, or turn auto off to use the stated value.")
+        return gain, auto
+
+    def _apply_noise_scale(self, trainer, config) -> None:
+        """The explicit gain (§10.4). The measured one lands later, from
+        ``calibrate_before_training`` -- it needs the run's datasets, which do
+        not exist until ``train()``."""
+        from core.models.sensenova.latent_space import apply_noise_scale_gain
+
+        gain, _auto = self.resolve_noise_scale_config(config)
+        if not gain:
+            return
+        self._require_full_finetune_for_noise_scale(
+            trainer, f"sensenova_noise_scale_gain={gain:g}")
+        trainer.sensenova_config_dict = apply_noise_scale_gain(
+            trainer.transformer, getattr(trainer, "sensenova_config_dict", None),
+            gain, provenance="config")
+        print(f"{getattr(trainer, 'log_prefix', '[SenseNova]')} generation noise "
+              f"scale recalibrated x{gain:g} -> {trainer.transformer.noise_scale:g} "
+              f"(from the checkpoint's pre-recalibration "
+              f"{trainer.sensenova_config_dict['gen_noise_scale_base']:g})")
+        self._warn_noise_scale_clamp(trainer, config)
+
+    @staticmethod
+    def _require_full_finetune_for_noise_scale(trainer, setting: str) -> None:
+        """A LoRA reaches here through a latent base's OWN vae declaration, with
+        no vae_swap_source for the capability gate to key on -- and
+        SenseNovaLoRAAdapter saves no config block, so the recalibrated scale
+        would exist for the run and for nothing that loads its output."""
+        from core.training.ops.training_method import (
+            is_full_finetune, resolve_training_method,
+        )
+
+        if is_full_finetune(trainer):
+            return
+        raise ValueError(
+            f"SenseNova {setting} requires a full fine-tune and this run's "
+            f"training_method is {resolve_training_method(trainer)!r}: the "
+            f"recalibrated noise scale is written into the checkpoint's own "
+            f"config block, which a LoRA save does not write, so the run would "
+            f"train on one noise schedule and every inference of the result "
+            f"would use the base's.")
+
+    @staticmethod
+    def _warn_noise_scale_clamp(trainer, config) -> None:
+        """`compute_noise_scale` ends in `min(scale, noise_scale_max_value)`, so a
+        gain large enough to reach the ceiling is silently swallowed there."""
+        from core.models.sensenova.latent_space import gen_geometry
+        from core.models.sensenova.sensenova_pipeline_ops import compute_noise_scale
+        from core.training.training_events import emit_training_warning
+
+        transformer = trainer.transformer
+        ceiling = float(getattr(transformer, "noise_scale_max_value", 0) or 0)
+        if not ceiling:
+            return
+        geometry = gen_geometry(transformer)
+        merge = int(1 / transformer.downsample_ratio)
+        try:
+            reference = int(((config or {}).get("base_resolutions") or [1024])[0])
+        except (TypeError, ValueError, IndexError):
+            reference = 1024
+        side = max(1, reference // geometry.token_pixel_width)
+        scale = compute_noise_scale(transformer, side * merge, side * merge, merge)
+        if scale < ceiling:
+            return
+        emit_training_warning(
+            f"SenseNova recalibrated generation noise scale reaches the "
+            f"checkpoint's noise_scale_max_value ({ceiling:g}) at {reference}px, "
+            f"where compute_noise_scale clamps it. Part of the gain is not "
+            f"applied, and the clamp flattens the schedule across resolutions "
+            f"above this one.",
+            code="sensenova_noise_scale_clamped",
+            prefix=getattr(trainer, "log_prefix", "[SenseNova]"),
+        )
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager) -> None:
+        """Measure the noise-scale gain from this run's own latents, once.
+
+        Runs from ``train()`` because it needs the datasets. A checkpoint that
+        already carries a recalibrated scale INHERITS it: re-measuring on every
+        resume would move the objective each time the run restarts.
+        """
+        from core.models.sensenova.latent_space import (
+            PIXEL_RMS, apply_noise_scale_gain, noise_scale_gain_for_rms,
+            recalibrated_noise_scale_gain,
+        )
+        from core.training.ops import sensenova_ops
+
+        log = getattr(trainer, "log_prefix", "[SenseNova]")
+        _gain, auto = self.resolve_noise_scale_config(getattr(trainer, "config", None))
+        if not auto:
+            return
+        self._require_full_finetune_for_noise_scale(
+            trainer, "sensenova_noise_scale_auto")
+        if getattr(trainer, "vae", None) is None:
+            raise ValueError(
+                "sensenova_noise_scale_auto measures the RMS of this run's "
+                "LATENTS, and this run is pixel-space (no VAE swap): its data "
+                "scale is the one the checkpoint is already calibrated for.")
+        config_dict = getattr(trainer, "sensenova_config_dict", None)
+        carried = recalibrated_noise_scale_gain(config_dict)
+        if carried is not None:
+            print(f"{log} generation noise scale already recalibrated "
+                  f"(x{carried:g}); inheriting it rather than re-measuring.")
+            return
+        rms = sensenova_ops.measure_latent_rms(trainer, datasets)
+        gain = noise_scale_gain_for_rms(rms)
+        trainer.sensenova_config_dict = apply_noise_scale_gain(
+            trainer.transformer, config_dict, gain, provenance="measured")
+        print(f"{log} measured latent RMS {rms:.4f} against the pixel "
+              f"checkpoint's {PIXEL_RMS:.4f}: generation noise scale "
+              f"recalibrated x{gain:.4f} -> {trainer.transformer.noise_scale:g}")
+        self._warn_noise_scale_clamp(trainer, getattr(trainer, "config", None))
 
     def lora_adapter_class(self):
         from core.training.adapters import SenseNovaLoRAAdapter

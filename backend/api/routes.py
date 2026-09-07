@@ -15778,6 +15778,10 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_gen_patch: int = Field(
         default=TRAINING_DEFAULTS["sensenova_gen_patch"], ge=0
     )
+    sensenova_noise_scale_gain: float = Field(
+        default=TRAINING_DEFAULTS["sensenova_noise_scale_gain"], ge=0
+    )
+    sensenova_noise_scale_auto: bool = TRAINING_DEFAULTS["sensenova_noise_scale_auto"]
     sdxl_vae_type: str = TRAINING_DEFAULTS["sdxl_vae_type"]
     sdxl_te_type: str = TRAINING_DEFAULTS["sdxl_te_type"]
     sdxl_te_hidden_layer: int = TRAINING_DEFAULTS["sdxl_te_hidden_layer"]

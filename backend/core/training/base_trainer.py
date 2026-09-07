@@ -1460,6 +1460,20 @@ def _is_shard_member(name: str) -> bool:
     return bool(_SHARD_MEMBER_RE.search(name))
 
 
+def _is_provisional_shard(name: str) -> bool:
+    """True for a shard still under its writing-time name.
+
+    ``ShardedSafetensorsWriter`` writes ``<stem>-partNNNNN.tmp.safetensors`` and
+    only renames them to ``-NNNNN-of-NNNNN`` once the shard COUNT is known, in
+    ``close()``. A save killed between the first flush and that rename leaves
+    them behind (``abort()`` cleans them only when an exception unwinds), and
+    the name matches ``*_step_*.safetensors`` while ``_is_shard_member`` does
+    not recognise it -- so without this a fraction of one interrupted save reads
+    as the newest complete checkpoint.
+    """
+    return name.endswith(".tmp.safetensors")
+
+
 def _checkpoint_step_from_name(name: str) -> Optional[int]:
     """Parse the training step from a checkpoint entry filename.
 
@@ -1563,12 +1577,22 @@ def _list_checkpoint_entries(
             continue
         entries.append(p)
     for p in output_dir.glob("*_step_*.safetensors"):
-        if _is_shard_member(p.name):
+        if _is_shard_member(p.name) or _is_provisional_shard(p.name):
             continue
         if _is_excluded(p.name):
             continue
         entries.append(p)
     return entries
+
+
+def _interrupted_save_steps(output_dir: Path) -> Dict[int, int]:
+    """``{step: provisional shard count}`` for saves killed before their rename."""
+    found: Dict[int, int] = {}
+    for p in output_dir.glob("*_step_*.tmp.safetensors"):
+        step = _checkpoint_step_from_name(p.name.split("-part")[0] + ".safetensors")
+        if step is not None:
+            found[step] = found.get(step, 0) + 1
+    return found
 
 
 def _checkpoint_member_files(entry_path: Path) -> List[Path]:
@@ -2768,6 +2792,7 @@ class BaseTrainer(ABC):
                     latest_checkpoint = max(checkpoint_files, key=get_step)
                     checkpoint_to_load = str(latest_checkpoint)
                     print(f"{self.log_prefix} Found checkpoint to resume from: {checkpoint_to_load}")
+                    self._warn_interrupted_saves(get_step(latest_checkpoint))
             else:
                 # Specific checkpoint path provided (treat as relative to output_dir first, then absolute)
                 checkpoint_path_obj = self.output_dir / self.resume_from_checkpoint
@@ -3704,6 +3729,31 @@ class BaseTrainer(ABC):
         """
         from core.training.ops import flux2_ops
         return flux2_ops.wire_block_swap_driver(self)
+
+    def _warn_interrupted_saves(self, resuming_step: int) -> None:
+        """Say what an interrupted save left behind, and what it cost.
+
+        Silence here would be the worst outcome: the run resumes from an older
+        step, the newer step's part files still occupy the volume, and nothing
+        connects the two.
+        """
+        from core.training.training_events import emit_training_warning
+
+        orphans = _interrupted_save_steps(self.output_dir)
+        for step in sorted(orphans):
+            if step <= resuming_step:
+                continue
+            shards = orphans[step]
+            emit_training_warning(
+                f"step {step} has {shards} provisional shard file(s) "
+                f"(*-partNNNNN.tmp.safetensors) and no index: that save was "
+                f"killed before it finished, so the checkpoint does not exist "
+                f"and this resume starts from step {resuming_step} instead, "
+                f"losing {step - resuming_step} step(s). The part files are "
+                f"unusable on their own -- delete them to reclaim the space.",
+                code="interrupted_checkpoint_save",
+                prefix=self.log_prefix,
+            )
 
     def _load_checkpoint_as_base(self, checkpoint_path: str):
         """

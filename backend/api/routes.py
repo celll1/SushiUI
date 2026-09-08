@@ -17332,10 +17332,16 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                                         print(f"[Training {run_id}] Skipping latent cache "
                                               f"cleanup: the rescan it would trust failed")
                                     elif _ds is not None and getattr(_ds, "unique_id", None):
-                                        removed = cleanup_orphan_latent_cache(
-                                            dataset_unique_id=_ds.unique_id,
-                                            datasets_db=ddb,
-                                            dataset_id=ds_id,
+                                        # Off the event loop, like the drift walk
+                                        # above: md5 per row plus one file open
+                                        # per unmatched cache entry.
+                                        removed = await _ev_loop.run_in_executor(
+                                            None,
+                                            lambda _uid=_ds.unique_id: cleanup_orphan_latent_cache(
+                                                dataset_unique_id=_uid,
+                                                datasets_db=ddb,
+                                                dataset_id=ds_id,
+                                            ),
                                         )
                                         if removed:
                                             print(f"[Training {run_id}] Cleaned {removed} orphan latent cache files")

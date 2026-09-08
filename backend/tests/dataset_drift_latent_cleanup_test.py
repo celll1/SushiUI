@@ -138,6 +138,26 @@ def test_orphans_are_removed(tmp_path):
     assert not cache.has_audio_latent(gone_audio, None, 44100)
 
 
+def test_an_orphan_at_a_default_resolution_is_still_removed(tmp_path):
+    """The resolution fast path skips opening files, never deletions.
+
+    It is built by striking live keys out of the keys on disk, so a bug in
+    that direction would spare exactly the orphans cached at one of the six
+    default resolutions — the common ones.
+    """
+    live = str(tmp_path / "ds" / "kept.png")
+    gone = str(tmp_path / "ds" / "deleted.png")
+    cache = _cache(tmp_path)
+    cache.save_latent(live, 1024, 1024, torch.zeros(1, 4, 128, 128))
+    cache.save_latent(gone, 1024, 1024, torch.zeros(1, 4, 128, 128))
+
+    removed = _cleanup(_db([{"image_path": live}]))
+
+    assert removed == 1
+    assert cache.has_latent(live, 1024, 1024)
+    assert not cache.has_latent(gone, 1024, 1024)
+
+
 def test_a_dataset_with_no_rows_loses_nothing(tmp_path):
     """No rows is an absence of evidence. A source that went briefly
     unreachable, or a purge that is about to be rolled back, must not read as

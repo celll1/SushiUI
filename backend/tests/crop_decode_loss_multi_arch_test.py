@@ -314,3 +314,4 @@ def test_vae_cpu_offload_device_safety(base_trainer):
     )
     assert aux_loss is not None
     assert raw_val > 0.0
+

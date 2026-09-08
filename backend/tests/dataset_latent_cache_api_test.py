@@ -27,6 +27,8 @@ torch.cuda.get_device_capability = lambda *a, **k: (8, 9)
 torch.cuda._lazy_init = lambda *a, **k: None
 torch._C._cuda_init = lambda *a, **k: None
 
+_CUDA_LIVE_BEFORE_IMPORT = torch.cuda.is_initialized()
+
 from fastapi import HTTPException  # noqa: E402
 
 import api.routes as routes  # noqa: E402
@@ -34,7 +36,11 @@ from core.training import latent_cache as latent_cache_module  # noqa: E402
 from core.training.train_runner import _warn_removed_cache_keys  # noqa: E402
 from core.training.training_config import TrainingConfigGenerator  # noqa: E402
 
-assert not torch.cuda.is_initialized()
+# Only these imports are ours to answer for. An earlier test file in the same
+# session may already hold a context, and asserting the absolute state made a
+# combined run die during collection instead of reporting a failure.
+if not _CUDA_LIVE_BEFORE_IMPORT:
+    assert not torch.cuda.is_initialized(), "importing api.routes initialised CUDA"
 
 
 class _FakeQuery:

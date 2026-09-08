@@ -24,9 +24,11 @@ import yaml
 from PIL import Image
 
 BACKEND = Path(__file__).resolve().parents[1]
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
+for _p in (BACKEND, Path(__file__).resolve().parent):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
+from source_scan import frontend_definition  # noqa: E402
 from api.arch_capabilities import (  # noqa: E402
     TRAINING_SAMPLE_KEY_PARAM, TRAINING_SAMPLE_SUPPORTED_PARAMS,
     training_sample_key_supported,
@@ -240,7 +242,6 @@ def test_the_generated_yaml_round_trips(tmp_path):
 # on the helper directly above it in the same file already stated the opposite
 # policy.
 
-_UTILS_TS = BACKEND.parent / "frontend" / "src" / "utils"
 _PANEL_TS = (BACKEND.parent / "frontend" / "src" / "components" / "training"
              / "TrainingConfig.tsx").read_text(encoding="utf-8")
 
@@ -249,16 +250,9 @@ def _helper_body():
     """The gate's definition, wherever it lives.
 
     It has already moved once (api.ts -> trainingCapabilities.ts, which
-    re-exports through api.ts), so search the utils modules for the definition
-    rather than naming the file that happened to hold it.
+    re-exports through api.ts), so it is looked up by symbol.
     """
-    marker = "export const trainingSampleParameterSupported = ("
-    for path in sorted(_UTILS_TS.glob("*.ts")):
-        text = path.read_text(encoding="utf-8")
-        start = text.find(marker)
-        if start >= 0:
-            return text[start:text.index("};", start)]
-    raise AssertionError(f"{marker} is defined in no module under {_UTILS_TS}")
+    return frontend_definition("trainingSampleParameterSupported")
 
 
 def test_the_frontend_gate_fails_open_on_an_unloaded_matrix():

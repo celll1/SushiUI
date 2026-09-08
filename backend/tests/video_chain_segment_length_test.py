@@ -24,23 +24,17 @@ import unittest
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _BACKEND = os.path.join(_REPO, "backend")
-for _p in (_REPO, _BACKEND):
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+for _p in (_REPO, _BACKEND, _TESTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from source_scan import frontend_definition  # noqa: E402
 
 
 def _read(*parts: str) -> str:
     with open(os.path.join(_REPO, *parts), encoding="utf-8") as handle:
         return handle.read()
-
-
-def _function_source(source: str, name: str) -> str:
-    """Slice out one `export const NAME = (...` arrow-function definition,
-    the same convention `video_block_swap_threading_test.py`'s
-    `FrontendApiTest._function_source` uses."""
-    start = source.index(f"export const {name} =")
-    end = source.find("\nexport const ", start + 1)
-    return source[start:end if end >= 0 else None]
 
 
 # ---------------------------------------------------------------------------
@@ -72,38 +66,38 @@ class VideoConstraintsFieldTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 2. api.ts: the four chain-arithmetic helpers all take an optional
-#    `segmentFrames` parameter, and share one `chainSegmentCap` resolver
-#    rather than each re-deriving the fallback chain independently.
+# 2. The four chain-arithmetic helpers all take an optional `segmentFrames`
+#    parameter, and share one `chainSegmentCap` resolver rather than each
+#    re-deriving the fallback chain independently. (They started out in
+#    api.ts and now live in utils/videoChainMath.ts, which api.ts re-exports,
+#    so each is looked up by symbol.)
 # ---------------------------------------------------------------------------
 class ChainHelperSignatureTest(unittest.TestCase):
-    def setUp(self):
-        self.source = _read("frontend", "src", "utils", "api.ts")
-
     def test_chain_segment_cap_resolver_exists(self):
-        self.assertIn("const chainSegmentCap = (", self.source)
+        fn = frontend_definition("chainSegmentCap")
+        self.assertIn("const chainSegmentCap = (", fn)
         # Falls back to the architecture's own max_frames before Infinity --
         # NOT straight to Infinity -- so a still-hard-capped architecture
         # keeps chaining automatically with the control left at its default.
-        self.assertIn("return c?.max_frames ?? Number.POSITIVE_INFINITY;", self.source)
+        self.assertIn("return c?.max_frames ?? Number.POSITIVE_INFINITY;", fn)
 
     def test_next_video_chain_total_frames_takes_segment_frames(self):
-        fn = _function_source(self.source, "nextVideoChainTotalFrames")
+        fn = frontend_definition("nextVideoChainTotalFrames")
         self.assertIn("segmentFrames?: number | null", fn)
         self.assertIn("chainSegmentCap(c, segmentFrames)", fn)
 
     def test_plan_video_chain_takes_segment_frames(self):
-        fn = _function_source(self.source, "planVideoChain")
+        fn = frontend_definition("planVideoChain")
         self.assertIn("segmentFrames?: number | null", fn)
         self.assertIn("chainSegmentCap(c, segmentFrames)", fn)
 
     def test_plan_video_chain_segments_takes_segment_frames(self):
-        fn = _function_source(self.source, "planVideoChainSegments")
+        fn = frontend_definition("planVideoChainSegments")
         self.assertIn("segmentFrames?: number | null", fn)
         self.assertIn("chainSegmentCap(c, segmentFrames)", fn)
 
     def test_effective_segment_frames_takes_segment_frames(self):
-        fn = _function_source(self.source, "effectiveSegmentFrames")
+        fn = frontend_definition("effectiveSegmentFrames")
         self.assertIn("segmentFrames?: number | null", fn)
         self.assertIn("chainSegmentCap(c, segmentFrames)", fn)
 
@@ -112,28 +106,25 @@ class ChainHelperSignatureTest(unittest.TestCase):
         overrides the max_frames/Infinity fallback -- null/undefined/0/NaN
         all fall through, which is what makes null the "never split unless
         the architecture still has a hard wall" default."""
-        fn = self.source[self.source.index("const chainSegmentCap = ("):]
-        fn = fn[:fn.index("\n};") + 3]
+        fn = frontend_definition("chainSegmentCap")
         self.assertIn("segmentFrames != null", fn)
         self.assertIn("Number.isFinite(segmentFrames)", fn)
         self.assertIn("segmentFrames > 0", fn)
 
 
 # ---------------------------------------------------------------------------
-# 3. api.ts: videoFrameLabel always states the floor, even with no ceiling.
+# 3. videoFrameLabel always states the floor, even with no ceiling.
 # ---------------------------------------------------------------------------
 class VideoFrameLabelTest(unittest.TestCase):
     def setUp(self):
-        self.source = _read("frontend", "src", "utils", "api.ts")
+        self.fn = frontend_definition("videoFrameLabel")
 
     def test_label_states_trained_ceiling_when_max_frames_is_null(self):
-        fn = _function_source(self.source, "videoFrameLabel")
-        self.assertIn("c.trained_max_frames != null", fn)
-        self.assertIn("trained to ${c.trained_max_frames}", fn)
+        self.assertIn("c.trained_max_frames != null", self.fn)
+        self.assertIn("trained to ${c.trained_max_frames}", self.fn)
 
     def test_label_states_bare_floor_when_neither_ceiling_is_known(self):
-        fn = _function_source(self.source, "videoFrameLabel")
-        self.assertIn("`, ${c.min_frames}+`", fn)
+        self.assertIn("`, ${c.min_frames}+`", self.fn)
 
 
 # ---------------------------------------------------------------------------

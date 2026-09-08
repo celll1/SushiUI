@@ -9,9 +9,9 @@ calling ``from_config`` with no kwargs:
   an SD1.5 single-file load lists exactly ``prediction_type`` and
   ``timestep_spacing`` there, so a v-pred SD1.5 checkpoint sampled as epsilon
   with ``linspace`` spacing from its first generation onward.
-* With spacing dropped, ``uniform`` and ``exponential`` produced identical
-  sigmas on SD1.5 (measured, 20 steps: linspace/trailing sigma0=14.6146,
-  leading sigma0=11.0283).
+* With spacing dropped, ``uniform`` and ``exponential`` (which then meant
+  trailing spacing) produced identical sigmas on SD1.5 (measured, 20 steps:
+  linspace/trailing sigma0=14.6146, leading sigma0=11.0283).
 * Keys only written for the schedule that needs them survived into the next
   request, because ``get_scheduler`` reads back the scheduler it last returned.
 
@@ -130,6 +130,7 @@ def schedule_of(scheduler):
     return {
         "prediction_type": scheduler.config.get("prediction_type"),
         "use_karras_sigmas": scheduler.config.get("use_karras_sigmas"),
+        "use_exponential_sigmas": scheduler.config.get("use_exponential_sigmas"),
         "timestep_spacing": scheduler.config.get("timestep_spacing"),
     }
 
@@ -260,6 +261,19 @@ def test_exponential_after_karras_is_not_karras():
     assert torch.allclose(sigmas_of(pipe.scheduler), sigmas_of(plain))
 
 
+def test_karras_after_exponential_is_not_exponential():
+    pipe = sd15_source()
+    pipe.scheduler = get_scheduler(pipeline=pipe, sampler="euler",
+                                   schedule_type="exponential")
+    pipe.scheduler = get_scheduler(pipeline=pipe, sampler="euler",
+                                   schedule_type="karras")
+
+    assert pipe.scheduler.config["use_exponential_sigmas"] is False
+    plain = get_scheduler(pipeline=sd15_source(), sampler="euler",
+                          schedule_type="karras")
+    assert torch.allclose(sigmas_of(pipe.scheduler), sigmas_of(plain))
+
+
 def test_karras_spacing_does_not_depend_on_the_previous_schedule():
     from_exponential = sd15_source()
     from_exponential.scheduler = get_scheduler(
@@ -289,13 +303,46 @@ def test_sd15_uniform_and_exponential_differ():
     exponential = get_scheduler(pipeline=sd15_source(), sampler="euler",
                                 schedule_type="exponential")
 
+    # exponential chooses sigmas, so it leaves spacing where uniform puts it.
     assert uniform.config["timestep_spacing"] == "leading"
-    assert exponential.config["timestep_spacing"] == "trailing"
+    assert exponential.config["timestep_spacing"] == "leading"
+    assert exponential.config["use_exponential_sigmas"] is True
     assert not torch.allclose(sigmas_of(uniform), sigmas_of(exponential))
     assert not torch.allclose(step_once(uniform), step_once(exponential))
-    # The measured endpoints these two spacings produce on the SD1.5 betas.
+    # Measured on the SD1.5 betas at 20 steps: same endpoint, different curve.
     assert float(sigmas_of(uniform)[0]) == pytest.approx(11.0283, abs=1e-3)
-    assert float(sigmas_of(exponential)[0]) == pytest.approx(14.6146, abs=1e-3)
+    assert float(sigmas_of(exponential)[0]) == pytest.approx(11.0283, abs=1e-3)
+    assert float(sigmas_of(uniform)[5]) == pytest.approx(3.3478, abs=1e-3)
+    assert float(sigmas_of(exponential)[5]) == pytest.approx(2.5350, abs=1e-3)
+
+
+def test_exponential_is_the_exponential_sigma_schedule():
+    exponential = get_scheduler(pipeline=sdxl_source(), sampler="euler",
+                                schedule_type="exponential")
+    reference = EulerDiscreteScheduler.from_config(
+        dict(SDXL_SCHEDULER_CONFIG), use_exponential_sigmas=True,
+        use_karras_sigmas=False, timestep_spacing="leading",
+        prediction_type="epsilon")
+
+    assert torch.allclose(sigmas_of(exponential), sigmas_of(reference))
+    assert torch.allclose(step_once(exponential), step_once(reference))
+
+    karras = get_scheduler(pipeline=sdxl_source(), sampler="euler",
+                           schedule_type="karras")
+    assert not torch.allclose(sigmas_of(exponential), sigmas_of(karras))
+
+
+@pytest.mark.parametrize("schedule_type", ["uniform", "karras"])
+def test_exponential_key_does_not_disturb_the_other_schedules(schedule_type):
+    scheduler = get_scheduler(pipeline=sdxl_source(), sampler="euler",
+                              schedule_type=schedule_type)
+    reference = EulerDiscreteScheduler.from_config(
+        dict(SDXL_SCHEDULER_CONFIG), use_karras_sigmas=(schedule_type == "karras"),
+        timestep_spacing="leading", prediction_type="epsilon")
+
+    assert scheduler.config["use_exponential_sigmas"] is False
+    assert torch.allclose(sigmas_of(scheduler), sigmas_of(reference))
+    assert torch.allclose(step_once(scheduler), step_once(reference))
 
 
 def test_karras_changes_the_sigma_schedule():
@@ -334,14 +381,26 @@ def test_no_warning_when_the_dropped_override_is_the_neutral_value():
 
 
 def test_dpmpp_sde_ignores_timestep_spacing_and_says_so():
-    # DPMSolverSinglestepScheduler has no timestep_spacing argument at all.
-    assert [w["code"] for w in
-            unsupported_schedule_overrides("dpmpp_sde", "exponential")] == \
-        ["unsupported_param"]
-    assert unsupported_schedule_overrides("dpmpp_sde", "uniform") == []
+    # DPMSolverSinglestepScheduler has no timestep_spacing argument at all, so
+    # only a v-prediction model -- the one thing that asks for spacing other
+    # than the default -- has anything to be told about.
+    for schedule_type in SCHEDULE_TYPES:
+        assert unsupported_schedule_overrides("dpmpp_sde", schedule_type) == [], \
+            schedule_type
     v_pred = unsupported_schedule_overrides("dpmpp_sde", "uniform", "v_prediction")
     assert [w["code"] for w in v_pred] == ["unsupported_param"]
     assert "trailing" in v_pred[0]["message"]
+
+
+def test_exponential_on_a_sampler_without_exponential_sigmas_warns():
+    for sampler in ("euler_a", "ddim", "ddpm", "pndm"):
+        warnings = unsupported_schedule_overrides(sampler, "exponential")
+        assert [w["code"] for w in warnings] == ["unsupported_param"], sampler
+        assert "use_exponential_sigmas" in warnings[0]["message"]
+
+    for sampler in ("euler", "dpmpp_2m", "dpmpp_sde", "unipc", "heun", "lms",
+                    "dpm2", "dpm2_a"):
+        assert unsupported_schedule_overrides(sampler, "exponential") == [], sampler
 
 
 def test_warnings_reach_the_generation_status_store():

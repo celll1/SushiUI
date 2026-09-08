@@ -11929,16 +11929,19 @@ components:
               v-prediction model).
             * `karras` — Karras sigma spacing (`use_karras_sigmas`), with the
               same timestep spacing as `uniform`.
-            * `exponential` — `trailing` timestep spacing. Despite the name
-              this is NOT an exponential sigma schedule (diffusers'
-              `use_exponential_sigmas`); the id is kept for compatibility.
+            * `exponential` — exponential sigma spacing
+              (`use_exponential_sigmas`), with the same timestep spacing as
+              `uniform`. This id previously selected `trailing` timestep
+              spacing and no sigma schedule, so seeds from before 2026-09-09 do
+              not reproduce.
 
-            Not every sampler honours every setting: schedulers without a
-            `use_karras_sigmas` argument (`euler_a`, `ddim`, `ddpm`, `pndm`)
-            ignore `karras`, and `dpmpp_sde` has no `timestep_spacing`
-            argument at all, so `exponential` and a v-prediction model's
-            `trailing` spacing do nothing there. Each such combination returns
-            an `unsupported_param` entry in `warnings[]`.
+            Not every sampler honours every setting: the schedulers that take
+            neither a `use_karras_sigmas` nor a `use_exponential_sigmas`
+            argument (`euler_a`, `ddim`, `ddpm`, `pndm`) sample `karras` and
+            `exponential` exactly as `uniform`, and `dpmpp_sde` has no
+            `timestep_spacing` argument at all, so a v-prediction model's
+            `trailing` spacing does nothing there. Each such combination
+            returns an `unsupported_param` entry in `warnings[]`.
         developer_mode:
           type: boolean
           default: false
@@ -16269,7 +16272,7 @@ components:
         schedule_type:
           type: string
           default: uniform
-          description: "Noise schedule type used for each tile's img2img pass (diffusion backend only). Same values as `GenerationParams.schedule_type`; `exponential` selects trailing timestep spacing, not an exponential sigma schedule."
+          description: "Noise schedule type used for each tile's img2img pass (diffusion backend only). Same values as `GenerationParams.schedule_type`."
           example: uniform
         attention_type:
           type: string

@@ -810,7 +810,7 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       setScheduleTypes([
         { id: "uniform", name: "Uniform" },
         { id: "karras", name: "Karras" },
-        { id: "exponential", name: "Trailing spacing (not exponential sigmas)" },
+        { id: "exponential", name: "Exponential" },
       ]);
     }
   };

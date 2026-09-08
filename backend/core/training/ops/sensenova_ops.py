@@ -2087,8 +2087,13 @@ def train_step(
     debug_save_path: Optional[Path] = None,
     debug_captions: Optional[List[str]] = None,
     debug_reference_image_paths: Optional[List[Optional[str]]] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, float, float]:
-    """Run one B1 pixel-space flow-matching forward pass."""
+    """Run one B1 pixel-space flow-matching forward pass.
+
+    ``repa_pixels`` is the clean-image [B,3,S,S] batch in [-1,1] for the REPA
+    teacher, or None (no alignment term this step).
+    """
     del profile_vram  # Central profiling owns peak-memory reporting.
     if not isinstance(prefix, SenseNovaTrainingPrefix):
         raise TypeError("SenseNova train_step requires SenseNovaTrainingPrefix")
@@ -2271,6 +2276,41 @@ def train_step(
         )
         if aux_loss is not None:
             loss = loss + aux_loss
+
+    # REPA: align the generation stream the decoder loop stashed at the tap
+    # depth with frozen clean-image patch features, through the trainable
+    # projector. Added to the backward loss; the reported `value` / `recon_value`
+    # above stay diffusion-only.
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import apply_repa_loss, take_repa_tap
+
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                f"REPA is enabled but SenseNova's generation decoder loop stashed "
+                f"nothing at tap depth {getattr(trainer, 'repa_align_depth', None)} "
+                f"for this step, so the alignment term would drop out of the loss "
+                f"with the run still reporting progress. forward_gen_decoder_layers "
+                f"is the only loop the training forward runs and it always writes "
+                f"the tap, so this means the forward ran another module entirely."
+            )
+        tokens = token_h * token_w
+        if tap.dim() != 3 or tap.shape[0] not in (batch, 1) \
+                or tap.shape[0] * tap.shape[1] != batch * tokens:
+            raise RuntimeError(
+                f"REPA read a tap of shape {tuple(tap.shape)} at the SenseNova "
+                f"generation decoder, which is neither [{batch}, {tokens}, D] nor "
+                f"the packed [1, {batch * tokens}, D]; the teacher targets would "
+                f"not correspond row for row to a token grid of "
+                f"{token_h}x{token_w}."
+            )
+        # The regrouping the fm_head line below the loop performs on the same
+        # stream: packed or not, item i's tokens are contiguous and row-major
+        # (h*token_w + w), the order patchify builds the sequence in and the one
+        # encode_repa_targets builds its grid in.
+        tap = tap.reshape(batch, tokens, tap.shape[-1])
+        loss = apply_repa_loss(trainer, loss, tap, repa_pixels, token_h, token_w)
 
     if debug_save_path is not None:
         try:
@@ -2680,7 +2720,15 @@ def forward_gen_decoder_layers(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )
 
-    for layer in layers:
+    # REPA tap (training-only): the depth is armed on ``model`` by
+    # BaseTrainer._setup_repa. Unarmed it is None, and the clear below is what
+    # keeps a step whose tap does not fire from reading the previous step's
+    # tokens.
+    repa_tap_depth = getattr(model, "_repa_tap_depth", None)
+    if repa_tap_depth is not None:
+        model._repa_tap_out = None
+
+    for layer_index, layer in enumerate(layers):
         def layer_forward(states: torch.Tensor, _layer=layer) -> torch.Tensor:
             # Skip only Transformers' cache-dropping wrapper; keep Module hooks.
             return nn.Module.__call__(
@@ -2701,5 +2749,10 @@ def forward_gen_decoder_layers(
             hidden_states = checkpoint(layer_forward, hidden_states, use_reentrant=False)
         else:
             hidden_states = layer_forward(hidden_states)
+        # Assignment rather than a forward hook: the tap is then the tensor the
+        # loss differentiates, with no hook ordering or checkpoint recompute
+        # behaviour to reason about.
+        if layer_index == repa_tap_depth:
+            model._repa_tap_out = hidden_states
 
     return model.norm_mot_gen(hidden_states)

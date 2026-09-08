@@ -299,8 +299,8 @@ _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
     "by design, but each architecture is wired one at a time; 'minit2i', 'anima', "
-    "'lens', 'krea2' and 'ideogram4' are wired today. Either set repa_enable=false "
-    "or wire {arch}'s tap first."
+    "'lens', 'krea2', 'ideogram4' and 'sensenova' are wired today. Either set "
+    "repa_enable=false or wire {arch}'s tap first."
 )
 
 
@@ -384,16 +384,22 @@ def repa_enabled(trainer) -> bool:
             and getattr(trainer, "repa_projector", None) is not None)
 
 
+#: Longest first: an index path also ends in the shorter suffix.
+CHECKPOINT_SUFFIXES = (".safetensors.index.json", ".safetensors")
+
+
 def repa_sidecar_path(checkpoint_path) -> str:
     """REPA projector sidecar path next to a checkpoint (suffix-precise).
 
-    Replaces only a trailing ``.safetensors`` so a directory component containing
-    ``.safetensors`` cannot corrupt the path. The resume loader in
-    ``BaseTrainer._setup_repa`` reads the same name.
+    Replaces only a trailing checkpoint suffix so a directory component
+    containing ``.safetensors`` cannot corrupt the path. Both suffixes matter:
+    a sharded save writes an index and returns THAT path, and the resume loader
+    in ``BaseTrainer._setup_repa`` reads the same names back.
     """
     checkpoint_path = str(checkpoint_path)
-    if checkpoint_path.endswith(".safetensors"):
-        return checkpoint_path[: -len(".safetensors")] + ".repa.safetensors"
+    for suffix in CHECKPOINT_SUFFIXES:
+        if checkpoint_path.endswith(suffix):
+            return checkpoint_path[: -len(suffix)] + ".repa.safetensors"
     return checkpoint_path + ".repa.safetensors"
 
 

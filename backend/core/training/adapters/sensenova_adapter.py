@@ -570,3 +570,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             f"[SenseNovaFullParameterAdapter] step {step}: saved {len(targets)} "
             f"{branch} decoder Linear(s) as '{census['effective_format']}' -> {written}"
         )
+        # The resolved path, not the argument: the save appends the suffix and,
+        # past one shard, returns the index file. BaseFullParameterAdapter pairs
+        # the REPA projector sidecar with what was actually written.
+        return written

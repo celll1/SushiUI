@@ -3195,13 +3195,19 @@ class BaseTrainer(ABC):
         # Resume: load a sibling projector saved next to the base checkpoint, if present
         # (dims must match the current encoder/variant; otherwise keep the fresh head).
         try:
+            from core.training.repa import CHECKPOINT_SUFFIXES
             mp = str(getattr(self, "model_path", "") or "")
-            if mp.endswith(".safetensors"):
+            if mp.endswith(CHECKPOINT_SUFFIXES):
                 sib = repa_sidecar_path(mp)
                 if os.path.isfile(sib):
                     from safetensors.torch import load_file as _load_file
                     self.repa_projector.load_state_dict(_load_file(sib))
                     print(f"{self.log_prefix} [REPA] resumed projector from {sib}")
+                else:
+                    # Silence here used to mean a sharded resume threw away a
+                    # trained projector without saying so.
+                    print(f"{self.log_prefix} [REPA] no projector beside the base "
+                          f"({sib}); starting from a fresh head")
         except Exception as _e:
             print(f"{self.log_prefix} [REPA] projector resume skipped (using fresh head): {_e}")
 
@@ -10287,6 +10293,7 @@ class BaseTrainer(ABC):
                 debug_captions=batch_captions if debug_save_path else None,
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_zimage:

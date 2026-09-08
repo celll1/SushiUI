@@ -358,6 +358,7 @@ def train_step(
     debug_reference_image_paths: Optional[List[str]] = None,
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Anima training step (rectified flow / velocity prediction).
 
@@ -527,6 +528,35 @@ def train_step(
         )
         if aux_loss is not None:
             loss = loss + aux_loss
+
+    # REPA (representation alignment): align the DiT image stream captured at the
+    # tap depth with frozen clean-image patch features, via the trainable
+    # projector. Added to the backward loss; pred/recon above stay diffusion-only.
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import take_repa_tap, apply_repa_loss
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                f"REPA is enabled but Anima's block loop stashed nothing at tap depth "
+                f"{getattr(trainer, 'repa_align_depth', None)} for this step, so the "
+                f"alignment term would drop out of the loss with the run still "
+                f"reporting progress. Every path that can void the tap "
+                f"(TREAD / DiT-BlockSkip / stochastic depth) is refused at trainer "
+                f"construction, so this means the forward did not take the training "
+                f"block loop at all."
+            )
+        # [B, T, H, W, D] — already the patch grid, so no token slice. Flattening
+        # (T,H,W) is row-major over (h, w) at T == 1, the order the teacher grid
+        # from encode_repa_targets is in.
+        if tap.shape[1] != 1:
+            raise RuntimeError(
+                f"REPA read {tap.shape[1]} temporal frames at the Anima tap; the "
+                f"image teacher supplies one target grid per sample, so only the "
+                f"T == 1 image case aligns."
+            )
+        loss = apply_repa_loss(trainer, loss, tap.flatten(1, 3), repa_pixels,
+                               int(tap.shape[2]), int(tap.shape[3]))
 
     pred_loss_value = mse_loss.item()
 

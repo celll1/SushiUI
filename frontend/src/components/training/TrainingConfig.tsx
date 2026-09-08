@@ -998,6 +998,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     ((isFlux2Model(baseModelPath) || isSenseNovaModel(baseModelPath)) && useReferenceImages)
   );
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
+  const repaUnsupported = unsupportedTrainingFeature("repa");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const trainingSampleArch = getModelArchitecture(baseModelPath);
   const sampleSamplerSupported = trainingSampleParameterSupported(
@@ -1830,6 +1831,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     if (vaeSwapUnsupported && params.vae_swap_source) {
       updateParam("vae_swap_source", "");
+    }
+    if (repaUnsupported && params.repa_enable) {
+      updateParam("repa_enable", false);
     }
     if (motEvictionUnsupported) {
       if (params.sensenova_mot_phase_eviction) updateParam("sensenova_mot_phase_eviction", false);
@@ -2911,9 +2915,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
           )}
 
-          {/* REPA (Representation Alignment) — MiniT2I only. Aligns a DiT hidden state
-              with frozen clean-image features to accelerate convergence (arXiv:2410.06940). */}
-          {(isMiniT2IModel(baseModelPath) || fromScratchMiniT2I) && (
+          {/* REPA (Representation Alignment): aligns a DiT hidden state with frozen
+              clean-image features to accelerate convergence (arXiv:2410.06940). Offered
+              where the backend declares a tap, never from an architecture name here. */}
+          {!repaUnsupported && (
             <div className="mt-2 p-3 bg-gray-800/60 border border-gray-700 rounded space-y-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

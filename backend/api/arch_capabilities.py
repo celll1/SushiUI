@@ -301,6 +301,12 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # Layer-wise LR decay. Its depth axis is ArchHandler.depth_blocks, which
     # only exists where the blocks have a forward order to be deep in.
     "lr_layer_decay": ["lr_layer_decay"],
+    # REPA. Armed by repa_enable; the rest configure the encoder, the tap and
+    # the loss and are inert without it. Offered where the arch handler answers
+    # ArchHandler.repa_tap (core/training/repa.py refuses everywhere else).
+    "repa": ["repa_enable", "repa_encoder_source", "repa_tagger_model_dir",
+             "repa_siglip2_repo", "repa_align_depth", "repa_weight",
+             "repa_proj_lr_factor", "repa_encoder_resolution"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
@@ -318,6 +324,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_train_fm_modules": "SenseNova flow-matching module training (fm_modules)",
     "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
     "lr_layer_decay": "layer-wise learning-rate decay",
+    "repa": "REPA (representation alignment with a frozen vision encoder)",
 }
 
 TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -1262,6 +1269,25 @@ for _a in ("sd15", "sdxl"):
     _add_training_feature_unsupported(
         _a, "lr_layer_decay",
         "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
+
+# --- REPA (representation alignment) ----------------------------------------
+# REPA needs a block whose output is a full image-token grid, exposed by
+# `ArchHandler.repa_tap` and stashed by that architecture's own block loop. The
+# trainer refuses `repa_enable` for every architecture that does not answer it
+# (core/training/repa.py::refuse_repa), and this table is what keeps the control
+# from being offered in the first place. The three entries with a REASON OF
+# THEIR OWN mirror `repa.REPA_REFUSALS`; the rest are simply not wired yet.
+# repa_anima_tap_test.py asserts this set and the handlers' say the same thing.
+_REPA_UNSUPPORTED_REASONS = {
+    "acestep": "ACE-Step is audio: its sequence is a 1-D time axis with no spatial token grid, so there is no grid to align an image encoder's per-patch features to. Undefined for it, not merely expensive",
+    "ltx2": "REPA is held back for LTX-2.3: the frozen image teacher would have to encode every frame of every clip on every step, and the transformer trunk is shared with the audio stream, so the alignment term would also steer weights that produce audio",
+    "minimax_h3": "REPA is held back for MiniMax-H3: per-frame teacher cost as for LTX-2.3, a trunk shared with audio, and a packed sequence that interleaves condition frames with the frames being generated, so a tap returns rows the image teacher has no target for",
+}
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"minit2i", "anima"}):
+    _add_training_feature_unsupported(
+        _a, "repa",
+        _REPA_UNSUPPORTED_REASONS.get(_a) or
+        "REPA reads a chosen block's image-token grid, which each architecture has to expose itself (ArchHandler.repa_tap plus a block loop that stashes the stream); this one is not wired yet, and the trainer refuses repa_enable rather than accepting it and ignoring it")
 
 
 # ---------------------------------------------------------------------------

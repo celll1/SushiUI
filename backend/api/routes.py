@@ -15771,7 +15771,8 @@ class TrainingRunCreateRequest(BaseModel):
     krea2_lora_scope: str = TRAINING_DEFAULTS["krea2_lora_scope"]
     krea2_lr_factor: float = Field(default=TRAINING_DEFAULTS["krea2_lr_factor"], ge=0)
     krea2_discrete_flow_shift: float = TRAINING_DEFAULTS["krea2_discrete_flow_shift"]
-    # REPA (Representation Alignment) — MiniT2I only.
+    # REPA (Representation Alignment). Accepted for every architecture whose
+    # handler answers repa_tap(); refused (never ignored) for the others.
     repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]
     repa_encoder_source: str = TRAINING_DEFAULTS["repa_encoder_source"]
     repa_tagger_model_dir: str = TRAINING_DEFAULTS["repa_tagger_model_dir"]

@@ -165,6 +165,7 @@ Refused combinations:
 | TREAD token routing | `Anima._tread_config`, helpers in `core.training.token_routing` | training-only; requires `T == 1` |
 | Stochastic depth | `Anima._block_skip_config`, `core.training.block_dropout.compute_skip_mask` | training-only; inverted `1/(1-p)` residual scaling |
 | DiT-BlockSkip | `Anima._blockskip_config`, `Anima._blockskip_forward` | training-only; adapters gate LoRA/params to the middle span |
+| REPA tap | `Anima._repa_tap_depth` -> `Anima._repa_tap_out`, read by `core.training.ops.anima_ops` | training-only; written by the default loop and by `_blockskip_forward`'s gradient pass, cleared at every forward. Tap shape `[B, T, H, W, D]` is already the patch grid |
 | NAG wrapper | `core.inference.nag_anima.AnimaNAGWrapper` | patches every `block.cross_attn.forward` |
 | NegPip wrapper | `core.inference.negpip_anima.AnimaNegPipWrapper` | signed per-token V scale on cross-attention; folds into an existing NAG patch |
 

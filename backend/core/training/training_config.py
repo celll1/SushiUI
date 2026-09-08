@@ -520,7 +520,7 @@ def _build_train_section(
     # ---- ACE-Step 1.5 (turbo audio DiT) — other archs ignore. ----
     train["acestep_lora_scope"] = p.get("acestep_lora_scope", "attention")
 
-    # ---- REPA (Representation Alignment) — MiniT2I only. SSoT: param_defaults. ----
+    # ---- REPA (Representation Alignment). SSoT: param_defaults. ----
     train["repa_enable"] = p.get("repa_enable", False)
     train["repa_encoder_source"] = p.get("repa_encoder_source", "tagger")
     train["repa_tagger_model_dir"] = p.get("repa_tagger_model_dir", "")

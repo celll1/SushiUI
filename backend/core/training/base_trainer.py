@@ -3181,7 +3181,7 @@ class BaseTrainer(ABC):
             # Only worth checking where the architecture's forward reads these:
             # elsewhere the config keys are built and then ignored, so refusing
             # on them would reject a run that used to train.
-            assert_repa_depth_compatible(self.config, align, depth)
+            assert_repa_depth_compatible(self, align, depth)
         self.repa_align_depth = align
         self.repa_weight = float(self.config.get("repa_weight", 0.5))
         self.repa_proj_lr_factor = float(self.config.get("repa_proj_lr_factor", 1.0))
@@ -10322,6 +10322,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_ltx2:

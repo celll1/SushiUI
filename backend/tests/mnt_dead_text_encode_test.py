@@ -22,7 +22,9 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from source_scan import block_at as _block_at
 from core.training.base_trainer import BaseTrainer
 
 
@@ -39,25 +41,6 @@ def _batch_prep_source() -> str:
     """
     src = _train_source()
     return src[src.index("_te_recompute_per_mnt = ("):]
-
-
-def _block_at(source: str, header: str) -> str:
-    """`header`'s suite: its line plus every line indented deeper than it.
-
-    Cutting on indentation rather than on a character count -- a window sized
-    to the code that was there stops covering the branch as soon as someone
-    adds a comment to it.
-    """
-    at = source.index(header)
-    line_start = source.rindex("\n", 0, at) + 1
-    indent = len(source[line_start:at])
-    lines = source[line_start:].splitlines()
-    body = [lines[0]]
-    for line in lines[1:]:
-        if line.strip() and len(line) - len(line.lstrip()) <= indent:
-            break
-        body.append(line)
-    return "\n".join(body)
 
 
 class ThePredicateIsDefinedOncePerBatch(unittest.TestCase):

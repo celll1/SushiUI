@@ -23,10 +23,12 @@ import unittest
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _BACKEND = os.path.join(_REPO, "backend")
-for _p in (_REPO, _BACKEND):
+_TESTS = os.path.dirname(os.path.abspath(__file__))
+for _p in (_REPO, _BACKEND, _TESTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from source_scan import frontend_definition  # noqa: E402
 from api import routes  # noqa: E402
 from api.param_defaults import (  # noqa: E402
     IMG2VID_DEFAULTS,
@@ -224,7 +226,10 @@ class FrontendApiTest(unittest.TestCase):
                     'formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));', fn)
 
     def test_video_block_swap_max_constant_is_exported(self):
-        self.assertIn("export const VIDEO_BLOCK_SWAP_MAX", self.source)
+        """Defined in utils/archConstraints.ts now, re-exported through
+        api.ts, so ask for the symbol rather than for a file."""
+        self.assertIn("export const VIDEO_BLOCK_SWAP_MAX",
+                      frontend_definition("VIDEO_BLOCK_SWAP_MAX"))
 
 
 # ---------------------------------------------------------------------------

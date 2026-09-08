@@ -35,7 +35,9 @@ import pytest
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from source_scan import block_at, frontend_definition  # noqa: E402
 from api.param_defaults import IMG2VID_DEFAULTS  # noqa: E402
 from core.models.minimax_h3 import h3_pipeline_ops as ops  # noqa: E402
 from core.models.minimax_h3 import h3_references as refs  # noqa: E402
@@ -566,18 +568,19 @@ def test_the_panel_carries_the_track_onto_the_item_and_back_out_at_dequeue():
     with open(path, encoding="utf-8") as handle:
         panel = handle.read()
 
-    # Window it on the enqueue call itself, not on the first `return;` after
-    # the params object: an early return was added between the two (the
-    # over-cap chain choice), which silently shrank the window to a region
-    # that never contained the assertion's subject.
-    enqueue = panel[panel.index("const videoParams: Img2VidParams = {"):]
-    enqueue = enqueue[:enqueue.index('addToQueue({\n        type: "img2vid"') + 2000]
+    # The enqueue call itself, cut structurally: a fixed character window
+    # covers whatever happened to be there when it was written, and this call
+    # has already grown an early return (the over-cap chain choice) between
+    # the params object and the enqueue.
+    enqueue = block_at(panel, 'addToQueue({\n        type: "img2vid"')
     assert "inputAudio:" in enqueue
     assert "inputAudioTrack" in enqueue
 
-    dequeue = panel[panel.index('if (nextItem.type === "img2vid")'):]
-    dequeue = dequeue[:dequeue.index("generateImg2Vid(")]
-    assert "input_audio: nextItem.inputAudio" in dequeue
+    # The dequeue half left the panel with the rest of the queue runner; it is
+    # the img2vid dispatcher, wherever that lives.
+    dequeue = frontend_definition("runImg2Vid")
+    assert "generateImg2Vid(" in dequeue
+    assert "input_audio: item.inputAudio" in dequeue
 
     # The lane is gated on the capability, not on an arch string compare.
     assert 'archSupportsFeature(\n    archCapabilities, loadedArch, "audio_conditioning")' in panel

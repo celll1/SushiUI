@@ -10393,6 +10393,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+                repa_pixels=mnt_repa_pixels,
                 cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)

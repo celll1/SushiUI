@@ -511,7 +511,7 @@ def test_a_full_finetune_save_pairs_the_projector_with_the_file_it_wrote(tmp_pat
 # the capability table and the handlers say the same thing
 # ---------------------------------------------------------------------------
 
-_WIRED = {"minit2i", "anima"}
+_WIRED = {"minit2i", "anima", "lens"}
 
 
 @pytest.mark.parametrize("arch", sorted(ARCH_REGISTRY))

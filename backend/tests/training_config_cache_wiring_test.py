@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
     ],
 )
 def test_force_recache_reaches_the_dataset_section(generator):
+    """The removed run keys are dropped from the dataset section (invariant)."""
     text = generator(
         {
             "total_steps": 1,
@@ -42,8 +43,8 @@ def test_force_recache_reaches_the_dataset_section(generator):
 
     process = yaml.safe_load(text)["config"]["process"][0]
     dataset = process["datasets"][0]
-    assert dataset["cache_latents_to_disk"] is True
-    assert dataset["force_recache"] is True
+    assert "cache_latents_to_disk" not in dataset
+    assert "force_recache" not in dataset
     assert process["train"]["base_resolutions"] == [2048, 4096]
 
 

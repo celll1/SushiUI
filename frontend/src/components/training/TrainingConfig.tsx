@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -11,6 +11,7 @@ import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
+import { formatCacheBytes } from "../dataset/LatentCacheRow";
 import {
   PARAM_KEYS,
   PRESET_EXCLUDED_KEYS,
@@ -266,8 +267,6 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   full_crop_position_mode: "center",
   crop_microcond_mode: "kohya",
   crop_plan_seed: 0,
-  cache_latents_to_disk: false,
-  force_recache: false,
   train_unet: true,
   train_text_encoder: false,
   train_image_encoder: false,
@@ -762,7 +761,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const baseResolutions = params.base_resolutions ?? [1024];
   const bucketStrategy = (params.bucket_strategy ?? "resize") as "resize" | "crop" | "random_crop";
   const multiResolutionMode = (params.multi_resolution_mode ?? "max") as "max" | "random";
-  const forceRecache = params.force_recache ?? false;
 
   // Outside bucketing the trainer uses only max(base_resolutions) as an area
   // ceiling, so retain one value rather than presenting inert extra choices.
@@ -810,6 +808,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const latentEncodingMode = params.latent_encoding_mode ?? "swap_onthefly";
   const latentEncodingSwapInterval = params.latent_encoding_swap_interval ?? 256;
   const usesLatentDiskCache = latentEncodingMode === "pre_encoded_cache";
+
+  // What is already on disk for the selected datasets. Read-only here: the
+  // cache belongs to a (dataset, VAE) pair and is managed from the dataset
+  // screen; a run only fills what is missing when it starts.
+  const [latentCacheStatuses, setLatentCacheStatuses] =
+    useState<Record<number, LatentCacheStatus | null>>({});
+  const selectedDatasetIdsKey = datasetConfigs
+    .map(c => c.dataset_id).filter(id => id !== 0).join(",");
+  useEffect(() => {
+    if (!usesLatentDiskCache || !selectedDatasetIdsKey) {
+      setLatentCacheStatuses({});
+      return;
+    }
+    let cancelled = false;
+    const ids = selectedDatasetIdsKey.split(",").map(Number);
+    Promise.all(ids.map(async (id) => {
+      try {
+        return [id, await getDatasetLatentCache(id)] as const;
+      } catch {
+        return [id, null] as const;
+      }
+    })).then((entries) => {
+      if (!cancelled) setLatentCacheStatuses(Object.fromEntries(entries));
+    });
+    return () => { cancelled = true; };
+  }, [usesLatentDiskCache, selectedDatasetIdsKey]);
 
   // Block Swap settings (training VRAM optimization)
   const blocksToSwap = params.blocks_to_swap ?? 0;
@@ -1292,11 +1316,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Epoch-dynamic crop augmentation (SDXL only; requires bucketing)
       crop_augment_enable: params.enable_bucketing ? params.crop_augment_enable : false,
       crop_smaller_scale_range: params.crop_smaller_scale_range ?? [0.5, 0.9],
-      // Legacy dataset mirror. latent_encoding_mode is authoritative.
-      cache_latents_to_disk: params.latent_encoding_mode === "pre_encoded_cache",
-      force_recache: params.latent_encoding_mode === "pre_encoded_cache"
-        ? params.force_recache
-        : false,
       unet_lr: localUnetLrText ? parseFloat(localUnetLrText) : null,
       text_encoder_lr: localTextEncoderLrText ? parseFloat(localTextEncoderLrText) : null,
       text_encoder_1_lr: localTextEncoder1LrText ? parseFloat(localTextEncoder1LrText) : null,
@@ -1507,7 +1526,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       patch.base_resolutions = incoming.base_resolutions === null ? [1024] : incoming.base_resolutions;
     }
     // Migrate configs written before latent_encoding_mode became authoritative.
-    if (incoming.latent_encoding_mode === undefined && incoming.cache_latents_to_disk === true) {
+    // cache_latents_to_disk is no longer a request field, so it is read off the
+    // untyped payload — an old preset can still carry it.
+    if (incoming.latent_encoding_mode === undefined &&
+        (incoming as Record<string, unknown>).cache_latents_to_disk === true) {
       patch.latent_encoding_mode = "pre_encoded_cache";
     }
     // sample_prompts: only overwrite when non-empty (preserve default)
@@ -6366,74 +6388,165 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         </div>
 
-        {/* Text Encoding Mode */}
+        {/* Encoding: text and latent side by side. Both are residency choices
+            with the same three modes; text adds a CPU-prefetch worker. */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 mb-3">Text Encoding Mode</h3>
+          <h3 className="text-sm font-medium text-gray-300 mb-3">Encoding</h3>
 
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
-            <select
-              value={textEncodingMode}
-              onChange={(e) => updateParam("text_encoding_mode", e.target.value)}
-              disabled={!!requiredValue("text_encoding_mode")}
-              title={requiredValue("text_encoding_mode")?.reason}
-              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
-            >
-              <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
-              <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
-              <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
-              <option value="cpu_prefetch">CPU Prefetch (background thread; TE pinned to CPU)</option>
-            </select>
-            <RequiredValueNote entry={requiredValue("text_encoding_mode")} />
-          </div>
+          <div className={`grid grid-cols-1 gap-4 ${latentEncodingAvailable ? "lg:grid-cols-2" : ""}`}>
+            {/* Text */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-medium text-gray-300 uppercase tracking-wide">Text (Text Encoder)</h4>
 
-          {textEncodingMode === "cpu_prefetch" && (
-            <div>
-              <label htmlFor="text-encoding-prefetch-depth" className="block text-xs text-gray-400 mb-1">
-                Prefetch Depth (batches ahead)
-              </label>
-              <input
-                type="number"
-                id="text-encoding-prefetch-depth"
-                value={params.text_encoding_prefetch_depth ?? 4}
-                onChange={(e) => updateParam("text_encoding_prefetch_depth", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
-                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_prefetch_depth", 4); }}
-                min={1}
-                max={32}
-                step={1}
-                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                How many batches ahead the worker encodes. Stall ratio is logged at epoch end.
-              </p>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+                <select
+                  value={textEncodingMode}
+                  onChange={(e) => updateParam("text_encoding_mode", e.target.value)}
+                  disabled={!!requiredValue("text_encoding_mode")}
+                  title={requiredValue("text_encoding_mode")?.reason}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                >
+                  <option value="swap_onthefly">Swap On-the-Fly (default)</option>
+                  <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+                  <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+                  <option value="cpu_prefetch">CPU Prefetch (background thread; TE pinned to CPU)</option>
+                </select>
+                <RequiredValueNote entry={requiredValue("text_encoding_mode")} />
+              </div>
+
+              {textEncodingMode === "cpu_prefetch" && (
+                <div>
+                  <label htmlFor="text-encoding-prefetch-depth" className="block text-xs text-gray-400 mb-1">
+                    Prefetch Depth (batches ahead)
+                  </label>
+                  <input
+                    type="number"
+                    id="text-encoding-prefetch-depth"
+                    value={params.text_encoding_prefetch_depth ?? 4}
+                    onChange={(e) => updateParam("text_encoding_prefetch_depth", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_prefetch_depth", 4); }}
+                    min={1}
+                    max={32}
+                    step={1}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    How many batches ahead the worker encodes. Stall ratio is logged at epoch end.
+                  </p>
+                </div>
+              )}
+
+              {textEncodingMode === "swap_onthefly" && (
+                <div>
+                  <label htmlFor="text-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                    Swap Interval (steps)
+                  </label>
+                  <input
+                    type="number"
+                    id="text-encoding-swap-interval"
+                    value={textEncodingSwapInterval}
+                    onChange={(e) => updateParam("text_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_swap_interval", 256); }}
+                    min={1}
+                    max={1024}
+                    step={1}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Memory usage: ~{Math.ceil(textEncodingSwapInterval * 2 / 1024)}MB DRAM (swap_interval × 2MB)
+                  </p>
+                </div>
+              )}
+
+              <div className="text-xs text-gray-500 space-y-1">
+                <p><strong>Swap On-the-Fly:</strong> text encoder and main model take turns on the GPU every N steps; the embeddings for the interval are held in DRAM.</p>
+                <p><strong>Pre-Encoded Cache:</strong> captions are encoded to a disk cache before step 1, so the text encoder is not loaded during training.</p>
+                <p><strong>On-the-Fly GPU:</strong> text encoder stays on the GPU and encodes each batch.</p>
+                <p><strong>CPU Prefetch:</strong> text encoder is pinned to the CPU and a worker thread encodes ahead of the training loop.</p>
+              </div>
             </div>
-          )}
 
-          {textEncodingMode === "swap_onthefly" && (
-            <div>
-              <label htmlFor="text-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
-                Swap Interval (steps)
-              </label>
-              <input
-                type="number"
-                id="text-encoding-swap-interval"
-                value={textEncodingSwapInterval}
-                onChange={(e) => updateParam("text_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_swap_interval", 256); }}
-                min={1}
-                max={1024}
-                step={1}
-                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Memory usage: ~{Math.ceil(textEncodingSwapInterval * 2 / 1024)}MB DRAM (swap_interval × 2MB)
-              </p>
+            {/* Latent */}
+            {latentEncodingAvailable && (
+            <div className="space-y-3 lg:border-l lg:border-gray-800 lg:pl-4">
+              <h4 className="text-xs font-medium text-gray-300 uppercase tracking-wide">Latent (VAE)</h4>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
+                <select
+                  value={latentEncodingMode}
+                  onChange={(e) => updateParam("latent_encoding_mode", e.target.value)}
+                  disabled={!!requiredValue("latent_encoding_mode")}
+                  title={requiredValue("latent_encoding_mode")?.reason}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                >
+                  <option value="swap_onthefly">Swap On-the-Fly (default)</option>
+                  <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
+                  <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+                </select>
+                <RequiredValueNote entry={requiredValue("latent_encoding_mode")} />
+              </div>
+
+              {latentEncodingMode === "swap_onthefly" && (
+                <div>
+                  <label htmlFor="latent-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
+                    Swap Interval (steps)
+                  </label>
+                  <input
+                    type="number"
+                    id="latent-encoding-swap-interval"
+                    value={latentEncodingSwapInterval}
+                    onChange={(e) => updateParam("latent_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("latent_encoding_swap_interval", 256); }}
+                    min={1}
+                    max={1024}
+                    step={1}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Memory usage: ~{Math.ceil(latentEncodingSwapInterval * 0.25)}MB DRAM (swap_interval × 256KB)
+                  </p>
+                </div>
+              )}
+
+              {usesLatentDiskCache && (
+                <div className="bg-gray-900 border border-gray-700 rounded p-2 space-y-1 text-xs">
+                  <div className="text-gray-300">Latent cache on disk</div>
+                  {selectedDatasetIdsKey === "" && (
+                    <p className="text-gray-500">Select a dataset to see its cache.</p>
+                  )}
+                  {selectedDatasetIdsKey.split(",").filter(Boolean).map(Number).map((id) => {
+                    const st = latentCacheStatuses[id];
+                    const name = datasets.find(d => d.id === id)?.name ?? `Dataset ${id}`;
+                    return (
+                      <div key={id} className="text-gray-500">
+                        <span className="text-gray-400">{name}:</span>{" "}
+                        {st === undefined
+                          ? "checking..."
+                          : st === null
+                          ? "cache state unavailable"
+                          : st.namespaces.length === 0
+                          ? `no cache yet - generated when training starts (${st.item_count} items)`
+                          : `${st.total_entries} entries across ${st.namespaces.length} VAE namespace(s), ` +
+                            `${formatCacheBytes(st.total_bytes)} (${st.item_count} items)`}
+                      </div>
+                    );
+                  })}
+                  <p className="text-gray-500">
+                    A cache belongs to a (dataset, VAE) pair, not to this run: whatever is
+                    missing is encoded at start. Inspect, rebuild or delete it on the dataset
+                    screen — rebuilding is deleting, and the next run re-encodes.
+                  </p>
+                </div>
+              )}
+
+              <div className="text-xs text-gray-500 space-y-1">
+                <p><strong>Swap On-the-Fly:</strong> VAE and main model take turns on the GPU every N steps; the latents for the interval are held in DRAM.</p>
+                <p><strong>Pre-Encoded Cache:</strong> the whole dataset is encoded to disk before step 1 and the VAE then leaves the GPU. The encode is paid up front and the latents occupy disk, which fits dataset sizes of the LoRA kind.</p>
+                <p className="text-gray-400"><strong>Video datasets:</strong> a cached clip is addressed by its WINDOW, so this mode encodes and reuses ONE fixed (centred) window per video for the whole run — no temporal augmentation. The other two modes sample a fresh random window every time the clip is encoded.</p>
+                <p><strong>On-the-Fly GPU:</strong> VAE stays on the GPU and encodes each batch.</p>
+              </div>
             </div>
-          )}
-
-          <div className="text-xs text-gray-500 space-y-1">
-            <p><strong>Swap On-the-Fly:</strong> Text Encoder swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer. Recommended for large datasets.</p>
-            <p><strong>Pre-Encoded Cache:</strong> Pre-encode all captions to disk cache. Not recommended if cache size exceeds disk capacity.</p>
-            <p><strong>On-the-Fly GPU:</strong> Encode captions on GPU without cache. Slower, uses more VRAM.</p>
+            )}
           </div>
         </div>
 
@@ -6776,74 +6889,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
           )}
         </div>
-
-        {/* Latent Encoding Mode */}
-        {latentEncodingAvailable && (
-        <div className="border border-gray-700 rounded p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
-
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Encoding Mode</label>
-            <select
-              value={latentEncodingMode}
-              onChange={(e) => {
-                const mode = e.target.value;
-                updateParam("latent_encoding_mode", mode);
-                if (mode !== "pre_encoded_cache") updateParam("force_recache", false);
-              }}
-              disabled={!!requiredValue("latent_encoding_mode")}
-              title={requiredValue("latent_encoding_mode")?.reason}
-              className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-60"
-            >
-              <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
-              <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
-              <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
-            </select>
-            <RequiredValueNote entry={requiredValue("latent_encoding_mode")} />
-          </div>
-
-          {latentEncodingMode === "swap_onthefly" && (
-            <div>
-              <label htmlFor="latent-encoding-swap-interval" className="block text-xs text-gray-400 mb-1">
-                Swap Interval (steps)
-              </label>
-              <input
-                type="number"
-                id="latent-encoding-swap-interval"
-                value={latentEncodingSwapInterval}
-                onChange={(e) => updateParam("latent_encoding_swap_interval", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("latent_encoding_swap_interval", 256); }}
-                min={1}
-                max={1024}
-                step={1}
-                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Memory usage: ~{Math.ceil(latentEncodingSwapInterval * 0.25)}MB DRAM (swap_interval × 256KB)
-              </p>
-            </div>
-          )}
-
-          {usesLatentDiskCache && (
-            <label className="flex items-center space-x-2 cursor-pointer">
-              <input
-                type="checkbox"
-                id="force-recache"
-                checked={forceRecache}
-                onChange={(e) => updateParam("force_recache", e.target.checked)}
-                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-400">Force regenerate latent cache</span>
-            </label>
-          )}
-
-          <div className="text-xs text-gray-500 space-y-1">
-            <p><strong>Swap On-the-Fly:</strong> VAE swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer (~64MB for 256 steps). Recommended for VRAM efficiency.</p>
-            <p><strong>Pre-Encoded Cache:</strong> Pre-encode all images to latents and cache to disk. Uses more disk space but no VRAM for VAE during training.</p>
-            <p className="text-gray-400"><strong>Video datasets:</strong> a cached clip is addressed by its WINDOW, so this mode encodes and reuses ONE fixed (centred) window per video for the whole run — no temporal augmentation. The other two modes sample a fresh random window every time the clip is encoded.</p>
-            <p><strong>On-the-Fly GPU:</strong> Encode images on GPU without cache. VAE stays on GPU, uses more VRAM.</p>
-          </div>
-        </div>
-        )}
 
         {/* Advanced Settings */}
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">

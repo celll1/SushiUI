@@ -6057,6 +6057,63 @@ export const updateDatasetExifConfig = async (
 };
 
 // ============================================================
+// Latent cache API — the cache belongs to a (dataset, VAE) pair, not to a run.
+// Rebuild is delete: the next run with latent_encoding_mode=pre_encoded_cache
+// re-encodes what is missing. See openapi.yaml /datasets/{id}/latent-cache.
+// ============================================================
+
+export interface LatentCacheNamespace {
+  path: string;
+  namespace: string;
+  vae_namespace: string;
+  entries: number;
+  bytes: number;
+  vae_latent_hash?: string | null;
+  vae_family?: string | null;
+  model_path?: string | null;
+  created_at?: string | null;
+}
+
+export interface LatentCacheStatus {
+  dataset_id: number;
+  dataset_unique_id: string;
+  base_cache_dir: string;
+  item_count: number;
+  namespaces: LatentCacheNamespace[];
+  total_entries: number;
+  total_bytes: number;
+}
+
+export interface LatentCacheDeleteResponse {
+  dataset_id: number;
+  dry_run: boolean;
+  deleted: boolean;
+  targets: LatentCacheNamespace[];
+  total_entries: number;
+  total_bytes: number;
+  active_runs: string[];
+}
+
+export const getDatasetLatentCache = async (id: number): Promise<LatentCacheStatus> => {
+  const response = await api.get(`/datasets/${id}/latent-cache`);
+  return response.data;
+};
+
+export const deleteDatasetLatentCache = async (
+  id: number,
+  options?: { namespace?: string; vae_namespace?: string; dry_run?: boolean }
+): Promise<LatentCacheDeleteResponse> => {
+  const response = await api.delete(`/datasets/${id}/latent-cache`, {
+    params: {
+      ...(options?.namespace ? { namespace: options.namespace } : {}),
+      ...(options?.vae_namespace ? { vae_namespace: options.vae_namespace } : {}),
+      ...(options?.dry_run ? { dry_run: true } : {}),
+    },
+  });
+  return response.data;
+};
+
+// ============================================================
 // TXT File Synchronization API
 // ============================================================
 
@@ -6719,8 +6776,6 @@ export interface TrainingRunCreateRequest {
     alpha?: number;  // For beta
     beta?: number;   // For beta
   };
-  cache_latents_to_disk?: boolean;
-  force_recache?: boolean;
   // FLUX.2/SenseNova explicit arm; SD/SDXL mirrors a selected SigLIP2 VE.
   use_reference_images?: boolean;
   // Vision Encoder (SigLIP2) — SD/SDXL only

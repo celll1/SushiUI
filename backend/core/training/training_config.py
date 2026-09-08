@@ -809,8 +809,6 @@ class TrainingConfigGenerator:
         # Build datasets array
         # NOTE: caption_processing settings are NOT saved to YAML
         # They are read from the database (Dataset.caption_processing) at training time
-        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
-        force_recache = p.get("force_recache", False)
         base_resolutions = p.get("base_resolutions")
         datasets_array = []
         if dataset_configs:
@@ -821,8 +819,6 @@ class TrainingConfigGenerator:
                     "folder_path": ds_path,
                     "caption_ext": "txt",
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
-                    "cache_latents_to_disk": cache_latents_to_disk,
-                    "force_recache": force_recache,
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -831,8 +827,6 @@ class TrainingConfigGenerator:
             datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
-                "cache_latents_to_disk": cache_latents_to_disk,
-                "force_recache": force_recache,
                 "resolution": base_resolutions or [512, 768, 1024],
             })
 
@@ -983,8 +977,6 @@ class TrainingConfigGenerator:
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
-        force_recache = p.get("force_recache", False)
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
@@ -993,8 +985,6 @@ class TrainingConfigGenerator:
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
-                    "cache_latents_to_disk": cache_latents_to_disk,
-                    "force_recache": force_recache,
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -1003,8 +993,6 @@ class TrainingConfigGenerator:
             datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
-                "cache_latents_to_disk": cache_latents_to_disk,
-                "force_recache": force_recache,
             })
 
         # Full FT defaults differ from LoRA defaults
@@ -1113,8 +1101,6 @@ class TrainingConfigGenerator:
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        cache_latents_to_disk = p.get("cache_latents_to_disk", False)
-        force_recache = p.get("force_recache", False)
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
@@ -1123,8 +1109,6 @@ class TrainingConfigGenerator:
                 dataset_entry = {
                     "folder_path": ds_path,
                     "caption_ext": "txt",
-                    "cache_latents_to_disk": cache_latents_to_disk,
-                    "force_recache": force_recache,
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
                 dataset_entry.update(extract_dataset_params(ds_config))
@@ -1133,8 +1117,6 @@ class TrainingConfigGenerator:
             datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
-                "cache_latents_to_disk": cache_latents_to_disk,
-                "force_recache": force_recache,
             })
 
         # ControlNet-specific network config
@@ -1331,14 +1313,12 @@ class TrainingConfigGenerator:
         vae_section = {k: value_of(k) for k in VAE_TRAINING_DEFAULTS
                        if k not in run_shape_keys}
 
-        cache_latents_to_disk = False  # VAE training is raw-pixel by definition
         datasets_array = []
         if dataset_configs:
             for ds_config in dataset_configs:
                 dataset_entry = {
                     "folder_path": ds_config.get("path", ""),
                     "caption_ext": "txt",
-                    "cache_latents_to_disk": cache_latents_to_disk,
                     **({"dataset_id": ds_config["dataset_id"]}
                        if ds_config.get("dataset_id") else {}),
                 }
@@ -1348,7 +1328,6 @@ class TrainingConfigGenerator:
             datasets_array.append({
                 "folder_path": dataset_path,
                 "caption_ext": "txt",
-                "cache_latents_to_disk": cache_latents_to_disk,
             })
 
         config = {

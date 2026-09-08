@@ -2378,7 +2378,6 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Conditioning + seed:
     "crop_microcond_mode": "kohya",         # time_ids semantics: "kohya" = original_size is full image
     "crop_plan_seed": 0,                    # 0 = derive from global training seed
-    "cache_latents_to_disk": False,         # Fix: frontend had True
     # Component-specific
     "train_unet": True,
     "train_text_encoder": False,            # Fix: frontend had True
@@ -2389,7 +2388,6 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Frontend-only fields now accepted by backend
     "train_image_encoder": False,
     "image_encoder_lr": None,
-    "force_recache": False,
     "reconstruction_loss_weight": 0.0,
     # Precision
     "weight_dtype": "bf16",                 # bf16: works for both LoRA and full-FT

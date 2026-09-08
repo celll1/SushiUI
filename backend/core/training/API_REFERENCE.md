@@ -91,8 +91,13 @@ entry, so no per-file `stat`).
 
 `BaseTrainer._setup_latent_caches` calls it per dataset and logs the namespaces
 this run is **not** using, with their size and the VAE that wrote them.
-**Nothing deletes them** — that is the point of the layout, and reclaiming the
-space is a manual `rm` of a printed path.
+**Nothing here deletes them** — that is the point of the layout.
+
+It is also the only enumerator behind `GET`/`DELETE
+/datasets/{id}/latent-cache`, which is where a namespace is inspected and
+reclaimed (see `openapi.yaml` for that contract: a delete target must come from
+this listing, and rebuilding a cache *is* deleting it — the next run with
+`latent_encoding_mode: pre_encoded_cache` re-encodes what is missing).
 
 ### Constructor
 
@@ -1587,7 +1592,7 @@ Grouped by concern:
 | Sampling during training | `sample_every_n_steps`, `sample_prompts` (`Optional[List[Dict[str, str]]]` — entries are `{positive, negative, condition_image_path?}`), `sample_guidance_scale`, `sample_steps`, `sample_width`, `sample_height`, `sample_seed`, `sample_sampler`, `sample_schedule_type`, the `sample_cfg_schedule_*` and `sample_dynamic_threshold_*` group, the `sample_nag_*` group, and `sensenova_sample_timestep_shift` / `sensenova_sample_img_cfg_scale` / `sensenova_sample_cfg_norm` |
 | Optimization | `optimizer_type`, `lr_scheduler_type`, `gradient_accumulation_steps`, `max_grad_norm`, `timestep_sampling_config`, `priority_training` |
 | Bucketing | `enable_bucketing`, `base_resolutions`, `bucket_strategy` (`"resize"`, `"crop"`, `"random_crop"`), `multi_resolution_mode` (`"max"`, `"random"`) |
-| Encoding residency | `text_encoding_mode`, `text_encoding_swap_interval`, `text_encoding_prefetch_depth`, `latent_encoding_mode`, `latent_encoding_swap_interval`, `force_recache` |
+| Encoding residency | `text_encoding_mode`, `text_encoding_swap_interval`, `text_encoding_prefetch_depth`, `latent_encoding_mode`, `latent_encoding_swap_interval`, `force_recache` (still accepted, but no config reaches it any more: it is always `False`, and rebuilding a cache is `DELETE /datasets/{id}/latent-cache` — see `openapi.yaml`) |
 | Reference / vision encoder | `use_reference_images`, `train_vision_encoder`, `vision_encoder_path`, `vision_encoder_lr`, `gradient_routing_ve` |
 | Callbacks and instrumentation | `progress_callback`, `update_total_steps_callback`, `run_id`, `debug_latents`, `debug_latents_every`, `param_tracking`, `param_tracking_interval` |
 | Accepted but unused | `multi_noise_timesteps`, `multi_noise_mode`, `trajectory_blend_alpha` — multi-noise timesteps are disabled; these are kept for call-site compatibility |

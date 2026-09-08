@@ -122,7 +122,6 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "crop_min_area_ratio", "crop_min_short_side_px", "crop_aspect_mode",
   "crop_position_mode", "crop_smaller_bucket_mode", "crop_smaller_scale_range",
   "full_crop_position_mode", "crop_microcond_mode", "crop_plan_seed",
-  "cache_latents_to_disk", "force_recache",
   // Restored from the run being edited; excluded from PRESETS only
   // (a preset carries no dataset for a "force" to rescan).
   "rescan_before_training",
@@ -153,7 +152,7 @@ const COMPUTED_REQUEST_KEYS = new Set<string>([
   "outpaint_mask_channel", "outpaint_known_loss_weight", "outpaint_seam_loss_boost",
   "outpaint_seam_ring_width", "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
   "bucket_strategy", "multi_resolution_mode", "crop_augment_enable",
-  "crop_smaller_scale_range", "cache_latents_to_disk", "force_recache",
+  "crop_smaller_scale_range",
   "force", "rescan_before_training", "use_reference_images",
   "train_vision_encoder", "gradient_routing_ve", "vision_encoder_lr",
   "relora_merge_every", "relora_merge_unit", "restart_warmup_steps",

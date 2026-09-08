@@ -2203,6 +2203,25 @@ def update_training_progress(
         db.commit()
 
 
+def _warn_removed_cache_keys(process_config: Dict[str, Any]) -> None:
+    """Latent-cache lifecycle left the run surface: `latent_encoding_mode` is
+    all a run declares, and rebuilding/deleting a cache is a dataset operation
+    (`/datasets/{id}/latent-cache`). Old configs still carrying the removed keys
+    are read, not rejected.
+    """
+    stale = sorted({
+        key
+        for ds in (process_config.get('datasets') or [])
+        if isinstance(ds, dict)
+        for key in ('force_recache', 'cache_latents_to_disk')
+        if ds.get(key)
+    })
+    if stale:
+        print(f"[TrainRunner] Ignoring removed dataset key(s) {', '.join(stale)}: "
+              f"latent_encoding_mode decides latent caching, and a cache is rebuilt or "
+              f"deleted from the dataset screen")
+
+
 def _resolve_save_every_n_steps(save_every_unit: str, save_every: int,
                                  dataset_item_count: int, batch_size: int) -> int:
     """
@@ -2929,13 +2948,7 @@ def main():
             bucket_strategy = train_config.get('bucket_strategy', 'resize')
             multi_resolution_mode = train_config.get('multi_resolution_mode', 'max')
 
-            # Get latent caching parameters
-            # Check datasets config first, then fall back to train config
-            cache_latents_to_disk = True  # Default
-            force_recache = False  # Default
-            if 'datasets' in process_config and len(process_config['datasets']) > 0:
-                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
-                force_recache = process_config['datasets'][0].get('force_recache', False)
+            _warn_removed_cache_keys(process_config)
 
             # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
@@ -2969,10 +2982,6 @@ def main():
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
-
-            # Log force_recache setting
-            if force_recache:
-                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
@@ -3051,7 +3060,6 @@ def main():
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
-                force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
@@ -3361,12 +3369,7 @@ def main():
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
 
-            # Get latent caching parameters
-            cache_latents_to_disk = True
-            force_recache = False
-            if 'datasets' in process_config and len(process_config['datasets']) > 0:
-                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
-                force_recache = process_config['datasets'][0].get('force_recache', False)
+            _warn_removed_cache_keys(process_config)
 
             # Save settings
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
@@ -3397,9 +3400,6 @@ def main():
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
-
-            if force_recache:
-                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
             # Text/Latent encoding modes
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
@@ -3469,7 +3469,6 @@ def main():
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
-                force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
@@ -3831,12 +3830,7 @@ def main():
             bucket_strategy = train_config.get('bucket_strategy', 'resize')
             multi_resolution_mode = train_config.get('multi_resolution_mode', 'max')
 
-            # Get latent caching parameters
-            cache_latents_to_disk = True  # Default
-            force_recache = False  # Default
-            if 'datasets' in process_config and len(process_config['datasets']) > 0:
-                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
-                force_recache = process_config['datasets'][0].get('force_recache', False)
+            _warn_removed_cache_keys(process_config)
 
             # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
@@ -3870,10 +3864,6 @@ def main():
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
-
-            # Log force_recache setting
-            if force_recache:
-                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
@@ -3952,7 +3942,6 @@ def main():
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
-                force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
@@ -4210,12 +4199,7 @@ def main():
             enable_bucketing = train_config.get('enable_bucketing', False)
             base_resolutions = train_config.get('base_resolutions', [1024])
 
-            # Get latent caching parameters
-            cache_latents_to_disk = True  # Default
-            force_recache = False  # Default
-            if 'datasets' in process_config and len(process_config['datasets']) > 0:
-                cache_latents_to_disk = process_config['datasets'][0].get('cache_latents_to_disk', True)
-                force_recache = process_config['datasets'][0].get('force_recache', False)
+            _warn_removed_cache_keys(process_config)
 
             # Convert save_every parameters to new interface (save_every_n_steps)
             save_every_unit = process_config['save'].get('save_every_unit', 'steps')
@@ -4236,10 +4220,6 @@ def main():
             resume_from_checkpoint = train_config.get('resume_from_checkpoint')
             if resume_from_checkpoint:
                 print(f"[TrainRunner] Resume from checkpoint: {resume_from_checkpoint}")
-
-            # Log force_recache setting
-            if force_recache:
-                print(f"[TrainRunner] Force recache enabled: all latent caches will be regenerated")
 
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
@@ -4302,7 +4282,6 @@ def main():
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
                 resume_from_checkpoint=resume_from_checkpoint,
-                force_recache=force_recache,
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 max_optimizer_saves_to_keep=max_optimizer_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,

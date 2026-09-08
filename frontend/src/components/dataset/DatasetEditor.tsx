@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { X, Scan, Save } from "lucide-react";
 import { getDataset, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, ScanFieldSummary } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
+import LatentCacheRow from "./LatentCacheRow";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
 import { wsClient } from "@/utils/websocket";
 
@@ -257,6 +258,8 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
           </div>
         </div>
       )}
+
+      <LatentCacheRow datasetId={datasetId} />
 
       {/* Content */}
       <div className="flex-1 px-2 py-2 lg:px-4 lg:py-3 overflow-auto lg:overflow-hidden">

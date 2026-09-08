@@ -7930,6 +7930,126 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /datasets/{dataset_id}/latent-cache:
+    get:
+      tags: [datasets]
+      summary: Latent cache state for one dataset
+      description: |
+        Every VAE latent cache namespace on disk for this dataset, across all
+        architecture namespaces:
+        `{cache_dir}/datasets/{dataset_unique_id}/{namespace}/vae-{latent_hash}/`.
+
+        **The cache belongs to the (dataset, VAE) pair, not to a run.** A run
+        never carries a cache option: `latent_encoding_mode: pre_encoded_cache`
+        makes a run *fill* whatever is missing when it starts, and every
+        explicit lifecycle operation — inspect, rebuild, delete — is this
+        endpoint. The removed `force_recache` / `cache_latents_to_disk` run
+        parameters are ignored if still present in an old config.
+
+        **Rebuild is delete.** Deleting a namespace *is* the rebuild: the next
+        run that names the same dataset and VAE re-encodes it. Nothing here
+        loads a VAE, so this never competes with a running job for the GPU.
+
+        Listing is listing: no entry returned here is deleted as a side effect,
+        including namespaces no configured run can reach any more (the VAE was
+        replaced). Reclaiming one is an explicit `DELETE`.
+
+        `entries` counts `.pt` files, which is not the item count: one image can
+        hold several entries (one per bucket resolution), and video/audio
+        entries are keyed by clip window. Compare it with `item_count` for a
+        rough coverage figure only.
+      operationId: getDatasetLatentCache
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Cache state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetLatentCacheStatus'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [datasets]
+      summary: Delete (rebuild) latent cache namespaces of one dataset
+      description: |
+        Deletes whole `vae-*` namespaces for this dataset. With no
+        `namespace`/`vae_namespace` query parameter every namespace of the
+        dataset is targeted; with both, exactly one.
+
+        Deletion is irreversible, so the targets are enumerable first:
+        `dry_run=true` returns the same payload — path, entry count, byte size —
+        without touching the filesystem.
+
+        Only directories this dataset's own listing produced are deleted; a
+        target that does not resolve inside
+        `{cache_dir}/datasets/{dataset_unique_id}/` is refused. Text embeddings
+        live one level above the `vae-*` directories and are never deleted here:
+        they do not depend on the VAE, so a rebuild must not discard them.
+
+        Refused with 409 while a run that names this dataset is `running` or
+        `paused` — its latents may be the ones being deleted.
+      operationId: deleteDatasetLatentCache
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: namespace
+          in: query
+          required: false
+          description: Architecture namespace, e.g. `sdxl__c4__dtfloat16`. Must be paired with `vae_namespace`.
+          schema:
+            type: string
+        - name: vae_namespace
+          in: query
+          required: false
+          description: VAE namespace, e.g. `vae-e9a645c32c26a19e`. Must be paired with `namespace`.
+          schema:
+            type: string
+        - name: dry_run
+          in: query
+          required: false
+          description: Report the targets without deleting anything.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Deletion result (or, with dry_run, what would be deleted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatasetLatentCacheDeleteResponse'
+        '400':
+          description: Only one of namespace/vae_namespace given, or the pair names no cache of this dataset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: A run using this dataset is running or paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /datasets/{dataset_id}/scan/preview:
     post:
       tags: [datasets]
@@ -20012,6 +20132,110 @@ components:
           $ref: '#/components/schemas/StructureDetectionResult'
           description: Auto-detection result (only present when detection was performed)
 
+    DatasetLatentCacheNamespace:
+      type: object
+      description: One `vae-*` latent cache directory of a dataset.
+      required: [path, namespace, vae_namespace, entries, bytes]
+      properties:
+        path:
+          type: string
+          description: Absolute directory path
+          example: 'M:\sushiUI\cache\datasets\a1b2c3d4-.../sdxl__c4__dtfloat16\vae-e9a645c32c26a19e'
+        namespace:
+          type: string
+          description: Architecture namespace component
+          example: sdxl__c4__dtfloat16
+        vae_namespace:
+          type: string
+          example: vae-e9a645c32c26a19e
+        entries:
+          type: integer
+          description: Number of cached `.pt` latents (not the item count; see the endpoint description)
+          example: 986
+        bytes:
+          type: integer
+          format: int64
+          example: 402653184
+        vae_latent_hash:
+          type: string
+          nullable: true
+          description: VAE identity recorded in `cache_info.json`; null for a cache written before identities were stamped
+          example: e9a645c32c26a19e...
+        vae_family:
+          type: string
+          nullable: true
+          example: sdxl
+        model_path:
+          type: string
+          nullable: true
+          description: Base model of the run that wrote the stamp
+        created_at:
+          type: string
+          nullable: true
+          example: '2026-09-07T12:41:35.000Z'
+
+    DatasetLatentCacheStatus:
+      type: object
+      required: [dataset_id, dataset_unique_id, base_cache_dir, item_count, namespaces, total_entries, total_bytes]
+      properties:
+        dataset_id:
+          type: integer
+          example: 12
+        dataset_unique_id:
+          type: string
+          example: a1b2c3d4-1111-2222-3333-444455556666
+        base_cache_dir:
+          type: string
+          example: 'M:\sushiUI\cache\datasets'
+        item_count:
+          type: integer
+          description: Dataset items, for a coverage comparison against `entries`
+          example: 986
+        namespaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/DatasetLatentCacheNamespace'
+        total_entries:
+          type: integer
+          example: 986
+        total_bytes:
+          type: integer
+          format: int64
+          example: 402653184
+
+    DatasetLatentCacheDeleteResponse:
+      type: object
+      required: [dataset_id, dry_run, deleted, targets, total_entries, total_bytes]
+      properties:
+        dataset_id:
+          type: integer
+          example: 12
+        dry_run:
+          type: boolean
+          example: true
+        deleted:
+          type: boolean
+          description: False when `dry_run` was set — the targets are still on disk
+          example: false
+        targets:
+          type: array
+          description: Namespaces deleted, or that would be deleted
+          items:
+            $ref: '#/components/schemas/DatasetLatentCacheNamespace'
+        total_entries:
+          type: integer
+          example: 986
+        total_bytes:
+          type: integer
+          format: int64
+          example: 402653184
+        active_runs:
+          type: array
+          description: Runs using this dataset that are running or paused; non-empty means a real delete is refused with 409
+          items:
+            type: string
+          example: []
+
     # ========================================
     # Training Schemas
     # ========================================
@@ -22891,12 +23115,6 @@ components:
         crop_plan_seed:
           type: 'integer'
           default: 0
-        cache_latents_to_disk:
-          type: 'boolean'
-          default: false
-        force_recache:
-          type: 'boolean'
-          default: false
         reconstruction_loss_weight:
           type: 'number'
           default: 0.0

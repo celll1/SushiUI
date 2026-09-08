@@ -13372,6 +13372,127 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
     return statistics
 
 
+def _latent_cache_namespaces(dataset) -> tuple:
+    """``(base_cache_dir, [namespace dicts])`` for one dataset.
+
+    Enumeration is ``list_vae_namespaces`` — the only lister — so the delete
+    endpoint can only ever name a directory that was found on disk under this
+    dataset's own id.
+    """
+    from core.training.latent_cache import get_cache_base_dir, list_vae_namespaces
+
+    unique_id = str(dataset.unique_id or "")
+    if not unique_id or unique_id in (".", "..") or any(
+            sep in unique_id for sep in ("/", "\\", ":")):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dataset {dataset.id} has an unusable unique_id for a cache path")
+
+    base = get_cache_base_dir()
+    found = list_vae_namespaces(base, unique_id)
+    for entry in found:
+        entry["path"] = str(entry["path"])
+    return base, found
+
+
+@router.get("/datasets/{dataset_id}/latent-cache")
+async def get_dataset_latent_cache(dataset_id: int, db: Session = Depends(get_datasets_db)):
+    """Latent cache state per (dataset, VAE). See openapi.yaml for the contract."""
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    base, namespaces = _latent_cache_namespaces(dataset)
+    return {
+        "dataset_id": dataset.id,
+        "dataset_unique_id": dataset.unique_id,
+        "base_cache_dir": base,
+        "item_count": dataset.total_items or 0,
+        "namespaces": namespaces,
+        "total_entries": sum(n["entries"] for n in namespaces),
+        "total_bytes": sum(n["bytes"] for n in namespaces),
+    }
+
+
+@router.delete("/datasets/{dataset_id}/latent-cache")
+async def delete_dataset_latent_cache(
+    dataset_id: int,
+    namespace: Optional[str] = None,
+    vae_namespace: Optional[str] = None,
+    dry_run: bool = False,
+    db: Session = Depends(get_datasets_db),
+    training_db: Session = Depends(get_training_db),
+):
+    """Delete whole `vae-*` namespaces of a dataset; rebuilding is the next run's job.
+
+    See openapi.yaml for the contract. The deletion is bounded twice: the target
+    comes from the dataset's own listing (never from the query string), and the
+    resolved path is required to sit under the resolved
+    ``{cache_base}/{dataset_unique_id}`` before anything is removed.
+    """
+    import shutil
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if (namespace is None) != (vae_namespace is None):
+        raise HTTPException(
+            status_code=400,
+            detail="namespace and vae_namespace must be given together (or neither, "
+                   "to target every cache of this dataset)")
+
+    base, namespaces = _latent_cache_namespaces(dataset)
+    if namespace is not None:
+        targets = [n for n in namespaces
+                   if n["namespace"] == namespace and n["vae_namespace"] == vae_namespace]
+        if not targets:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No cache '{namespace}/{vae_namespace}' for dataset {dataset_id}")
+    else:
+        targets = list(namespaces)
+
+    active_runs = [
+        run.run_name for run in training_db.query(TrainingRun).filter(
+            TrainingRun.status.in_(("running", "paused"))).all()
+        if any((c or {}).get("dataset_id") == dataset_id
+               for c in (run.dataset_configs or []))
+        or run.dataset_id == dataset_id
+    ]
+
+    result = {
+        "dataset_id": dataset_id,
+        "dry_run": dry_run,
+        "deleted": False,
+        "targets": targets,
+        "total_entries": sum(n["entries"] for n in targets),
+        "total_bytes": sum(n["bytes"] for n in targets),
+        "active_runs": active_runs,
+    }
+    if dry_run:
+        return result
+    if active_runs:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to delete: run(s) {', '.join(active_runs)} use this dataset "
+                   f"and are running or paused")
+
+    root = Path(base).resolve() / str(dataset.unique_id)
+    for target in targets:
+        path = Path(target["path"]).resolve()
+        if path == root or root not in path.parents:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Refusing to delete a path outside the dataset cache root: {path}")
+        shutil.rmtree(path, ignore_errors=False)
+        print(f"[LatentCache] Deleted {path} ({target['entries']} entries, "
+              f"{target['bytes']} bytes) for dataset {dataset_id}")
+
+    result["deleted"] = True
+    return result
+
+
 @router.post("/datasets/{dataset_id}/scan/preview")
 async def scan_dataset_preview(dataset_id: int, db: Session = Depends(get_datasets_db)):
     """Preview dataset structure before importing.
@@ -15510,8 +15631,6 @@ class TrainingRunCreateRequest(BaseModel):
     full_crop_position_mode: str = TRAINING_DEFAULTS["full_crop_position_mode"]
     crop_microcond_mode: str = TRAINING_DEFAULTS["crop_microcond_mode"]
     crop_plan_seed: int = TRAINING_DEFAULTS["crop_plan_seed"]
-    cache_latents_to_disk: bool = False  # Cache VAE latents and text embeddings to disk (default: False, in-memory cache)
-    force_recache: bool = False  # Force regeneration of disk latent cache
     reconstruction_loss_weight: float = 0.0  # Additional reconstruction loss weight (0.0 = disabled)
 
     # Component-specific training
@@ -16445,7 +16564,6 @@ _CONTROLNET_ONLY_FIELDS = {
 # Fields excluded from auto-extraction (they need special handling outside the schema loop)
 _AUTO_EXTRACT_EXCLUDE = {
     "dataset_id", "dataset_configs", "run_name", "training_method",
-    "cache_latents_to_disk",  # Read from datasets[0], not train section
     # Whole nested section under process.vae, set explicitly by
     # get_training_run_params. Without this the generic fallback would look for
     # train["vae_config"], find nothing, and DROP the entire VAE config on the
@@ -16583,7 +16701,6 @@ async def get_training_run_params(
     elif not network_config:  # No network section means full fine-tune
         job = "full_finetune"
     # Otherwise keep job from config.job
-    datasets_config = process_config.get("datasets", [])
 
     # Build dataset_configs from YAML using the shared dataset_id-first
     # resolver (same semantics as train_runner.py and the write-boundary
@@ -16592,11 +16709,6 @@ async def get_training_run_params(
     dataset_start = time.time()
     from core.training.dataset_params import resolve_dataset_configs_from_yaml
     dataset_configs = resolve_dataset_configs_from_yaml(run.config_yaml, datasets_db) or []
-    cache_latents_to_disk = False  # Default
-    for ds_config in datasets_config:
-        # Extract cache_latents_to_disk from first dataset
-        if ds_config.get("cache_latents_to_disk") is not None:
-            cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
     print(f"[get_training_run_params] Dataset lookup took {time.time() - dataset_start:.3f}s, found {len(dataset_configs)} datasets")
 
     # Extract training parameters using schema-driven helper
@@ -16611,7 +16723,6 @@ async def get_training_run_params(
         else "full_finetune"
     )
     params["dataset_configs"] = dataset_configs if dataset_configs else None
-    params["cache_latents_to_disk"] = cache_latents_to_disk
     # process.vae is a whole nested section, not a train key -- carry it through
     # verbatim so /params -> edit form -> PUT regenerates an identical config.
     vae_section = process_config.get("vae")

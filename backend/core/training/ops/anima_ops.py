@@ -508,6 +508,26 @@ def train_step(
             recon_loss_value = recon_loss.item()
         loss = loss + trainer.reconstruction_loss_weight * recon_loss
 
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
+    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+        pred_x0_val = noisy_latents - sigma_view * model_pred
+        aux_loss, _ = compute_crop_decode_loss(
+            trainer=trainer,
+            model_pred=model_pred,
+            noisy_latents=noisy_latents,
+            timesteps=timesteps,
+            clean_latents=latents,
+            noise_process="flow",
+            prediction_target="velocity",
+            noise_scheduler=trainer.noise_scheduler,
+            velocity_sign="eps_minus_x0",
+            predicted_latent=pred_x0_val,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
+
     pred_loss_value = mse_loss.item()
 
     # Debug save if requested

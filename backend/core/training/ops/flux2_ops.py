@@ -663,6 +663,42 @@ def train_step(
 
         loss = mse_loss + regularization_loss
 
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
+    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+
+        # Unpack sequence -> 2x2 packed 4D -> unpatchify to 2D [B, 32, H, W]
+        def _to_2d_flux2(seq_t: torch.Tensor) -> torch.Tensor:
+            packed_4d = trainer._flux2_unpack_latents_with_ids(seq_t, img_ids)
+            if hasattr(trainer, "_flux2_unpatchify_latents"):
+                return trainer._flux2_unpatchify_latents(packed_4d)
+            return packed_4d
+
+        latents_2d = _to_2d_flux2(latents)
+        noisy_2d = _to_2d_flux2(noisy_latents)
+        v_pred_2d = _to_2d_flux2(model_pred)
+
+        t_val = timesteps.float()
+        while t_val.dim() < noisy_2d.dim():
+            t_val = t_val.unsqueeze(-1)
+        pred_x0_2d = noisy_2d - t_val.to(v_pred_2d.dtype) * v_pred_2d
+
+        aux_loss, _ = compute_crop_decode_loss(
+            trainer=trainer,
+            model_pred=v_pred_2d,
+            noisy_latents=noisy_2d,
+            timesteps=timesteps,
+            clean_latents=latents_2d,
+            noise_process="flow",
+            prediction_target="velocity",
+            noise_scheduler=trainer.noise_scheduler,
+            velocity_sign="eps_minus_x0",
+            predicted_latent=pred_x0_2d,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
+
     if profile_vram:
         print_vram_usage("[train_step_flux2] After loss calculation")
 

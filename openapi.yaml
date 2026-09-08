@@ -24191,7 +24191,7 @@ components:
         sample_schedule_type:
           type: 'string'
           default: 'sgm_uniform'
-          description: Timestep schedule requested for training previews; support is architecture-specific.
+          description: Timestep schedule requested for training previews; support is architecture-specific. Resolved by the same code as `GenerationParams.schedule_type`, so the 2026-09-09 change to `exponential` moves preview images for runs that select it.
         sample_cfg_schedule_type:
           type: string
           default: constant

@@ -7,6 +7,7 @@ negative control, because the two are both correct and differ only in WHAT they
 train. ``float64`` keeps the arithmetic checkable without a GPU.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -1198,19 +1199,33 @@ def test_the_rest_api_and_spec_carry_both_settings():
     assert props["sensenova_four_phase_grad_reduction"]["default"] == "sum"
 
 
+def _ts_array(source: str, name: str) -> str:
+    """The elements of the `name` array/set declaration in a .ts module."""
+    match = re.search(rf"const {name}\b[^=]*=[^\[]*\[", source)
+    assert match, name
+    return source[match.end():source.index("]", match.end())]
+
+
 def test_the_frontend_exposes_both_settings_and_clears_them_with_the_split():
     root = Path(__file__).resolve().parents[2] / "frontend" / "src"
     tsx = (root / "components" / "training" / "TrainingConfig.tsx").read_text(
         encoding="utf-8"
     )
     api_ts = (root / "utils" / "api.ts").read_text(encoding="utf-8")
+    # The form no longer copies each field into the request by hand: PARAM_KEYS
+    # minus COMPUTED_REQUEST_KEYS is what passThroughParams() sends (e256f8a7),
+    # so membership there is what "the frontend submits this" now means.
+    param_keys = (root / "components" / "training"
+                  / "trainingParams.ts").read_text(encoding="utf-8")
 
     assert "sensenova_four_phase_shared_prefix?: boolean;" in api_ts
     assert 'sensenova_four_phase_grad_reduction?: "sum" | "mean";' in api_ts
     assert "sensenova_four_phase_shared_prefix: false," in tsx
     assert 'sensenova_four_phase_grad_reduction: "sum",' in tsx
-    assert ('sensenova_four_phase_shared_prefix: params.sensenova_four_phase_shared_prefix,'
-            in tsx)
+    for key in ("sensenova_four_phase_shared_prefix",
+                "sensenova_four_phase_grad_reduction"):
+        assert f'"{key}"' in _ts_array(param_keys, "PARAM_KEYS"), key
+        assert f'"{key}"' not in _ts_array(param_keys, "COMPUTED_REQUEST_KEYS")
     assert 'updateParam("sensenova_four_phase_shared_prefix", false);' in tsx
     assert "sensenova-four-phase-shared-prefix" in tsx
 

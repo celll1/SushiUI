@@ -16,8 +16,12 @@ Run:
 """
 
 import inspect
+import os
 import re
+import sys
 import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.training.base_trainer import BaseTrainer
 
@@ -35,6 +39,25 @@ def _batch_prep_source() -> str:
     """
     src = _train_source()
     return src[src.index("_te_recompute_per_mnt = ("):]
+
+
+def _block_at(source: str, header: str) -> str:
+    """`header`'s suite: its line plus every line indented deeper than it.
+
+    Cutting on indentation rather than on a character count -- a window sized
+    to the code that was there stops covering the branch as soon as someone
+    adds a comment to it.
+    """
+    at = source.index(header)
+    line_start = source.rindex("\n", 0, at) + 1
+    indent = len(source[line_start:at])
+    lines = source[line_start:].splitlines()
+    body = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        body.append(line)
+    return "\n".join(body)
 
 
 class ThePredicateIsDefinedOncePerBatch(unittest.TestCase):
@@ -161,12 +184,28 @@ class ThePlaceholdersKeepTheListsIndexAligned(unittest.TestCase):
 
 
 class SenseNovaIsUnaffected(unittest.TestCase):
-    def test_its_prefix_branch_still_encodes_during_assembly(self):
+    """Its prompts are encoded whatever the MNT predicate says.
+
+    Since 71672449 the assembly branch only collects the batch's prompts; the
+    encode itself is _encode_sensenova_batch_prefix, run once per batch after
+    the latent-size filter. Both halves must stay clear of the bypass.
+    """
+
+    def test_its_assembly_branch_collects_without_consulting_the_bypass(self):
+        branch = _block_at(_batch_prep_source(), "if self.is_sensenova:")
+        self.assertIn("sensenova_prompt_items.append(", branch)
+        self.assertNotIn("_te_recompute_per_mnt", branch)
+
+    def test_the_per_batch_encode_is_unconditional(self):
         src = _batch_prep_source()
-        i = src.index("if self.is_sensenova:")
-        window = src[i : i + 1400]
-        self.assertIn("self.encode_caption(", window)
-        self.assertNotIn("_te_recompute_per_mnt", window)
+        at = src.index("self._encode_sensenova_batch_prefix(")
+        guard = src.rindex("if self.is_sensenova:", 0, at)
+        self.assertNotIn("_te_recompute_per_mnt", src[guard:at])
+
+    def test_that_encode_really_encodes(self):
+        encode = inspect.getsource(BaseTrainer._encode_sensenova_batch_prefix)
+        self.assertIn("self.encode_caption(", encode)
+        self.assertIn("encode_prompts(", encode)
 
 
 if __name__ == "__main__":

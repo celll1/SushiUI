@@ -240,15 +240,25 @@ def test_the_generated_yaml_round_trips(tmp_path):
 # on the helper directly above it in the same file already stated the opposite
 # policy.
 
-_API_TS = (BACKEND.parent / "frontend" / "src" / "utils"
-           / "api.ts").read_text(encoding="utf-8")
+_UTILS_TS = BACKEND.parent / "frontend" / "src" / "utils"
 _PANEL_TS = (BACKEND.parent / "frontend" / "src" / "components" / "training"
              / "TrainingConfig.tsx").read_text(encoding="utf-8")
 
 
 def _helper_body():
-    start = _API_TS.index("export const trainingSampleParameterSupported")
-    return _API_TS[start:_API_TS.index("};", start)]
+    """The gate's definition, wherever it lives.
+
+    It has already moved once (api.ts -> trainingCapabilities.ts, which
+    re-exports through api.ts), so search the utils modules for the definition
+    rather than naming the file that happened to hold it.
+    """
+    marker = "export const trainingSampleParameterSupported = ("
+    for path in sorted(_UTILS_TS.glob("*.ts")):
+        text = path.read_text(encoding="utf-8")
+        start = text.find(marker)
+        if start >= 0:
+            return text[start:text.index("};", start)]
+    raise AssertionError(f"{marker} is defined in no module under {_UTILS_TS}")
 
 
 def test_the_frontend_gate_fails_open_on_an_unloaded_matrix():

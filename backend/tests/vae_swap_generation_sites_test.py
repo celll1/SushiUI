@@ -167,6 +167,70 @@ class TestPreviewDecode:
         assert seen == {}  # never reached a decoder
 
 
+class TestPreviewScaling:
+    """The preview undoes the LOADED VAE's scaling factor, not the family's.
+
+    A replaced 4-channel VAE keeps the architecture's tiny decoder -- the
+    routing above never fires -- so a differing `scaling_factor` would show up
+    only as a wrongly-exposed preview.
+    """
+
+    def _manager_with_recording_decoder(self):
+        from core.utils.taesd import TAESDManager
+
+        class _Decoder:
+            def decode(self, latent):
+                self.seen = latent
+                return SimpleNamespace(sample=torch.zeros(1, 3, 8, 8))
+
+        manager = TAESDManager()
+        manager.device = "cpu"   # decode_latent moves the latent there
+        decoder = _Decoder()
+        manager.load_taesd = lambda *a, **k: decoder
+        return manager, decoder
+
+    @pytest.mark.parametrize("flags,constant", [
+        (dict(is_sdxl=True), 0.13025),
+        (dict(), 0.18215),
+        (dict(is_zimage=True), 0.3611),
+    ])
+    def test_a_native_model_still_divides_by_its_familys_constant(self, flags, constant):
+        manager, decoder = self._manager_with_recording_decoder()
+        manager.decode_latent(torch.ones(1, 4, 8, 8), **flags)
+        # in the decoder's own dtype: the taef1 path casts to bf16 first
+        expected = torch.ones(1, 4, 8, 8, dtype=decoder.seen.dtype) / constant
+        torch.testing.assert_close(decoder.seen.float(), expected.float())
+
+    def test_a_replaced_vae_divides_by_its_own_factor(self):
+        manager, decoder = self._manager_with_recording_decoder()
+        manager.decode_latent(torch.ones(1, 4, 8, 8), is_sdxl=True,
+                              latent_scaling_factor=0.5)
+        torch.testing.assert_close(decoder.seen.float(), torch.full((1, 4, 8, 8), 2.0))
+
+    @pytest.mark.parametrize("unusable", [None, 0.0, float("nan"), float("inf"), "x"])
+    def test_an_unusable_factor_falls_back_rather_than_blanking_the_preview(self, unusable):
+        manager, decoder = self._manager_with_recording_decoder()
+        preview = manager.decode_latent(torch.ones(1, 4, 8, 8), is_sdxl=True,
+                                        latent_scaling_factor=unusable)
+        assert preview is not None
+        torch.testing.assert_close(decoder.seen.float(),
+                                   torch.full((1, 4, 8, 8), 1.0 / 0.13025))
+
+    def test_the_kwargs_report_the_loaded_vaes_factor(self):
+        from core.utils.taesd import latent_scaling_of
+
+        pipeline = SimpleNamespace(vae=SimpleNamespace(
+            config=SimpleNamespace(scaling_factor=0.5)))
+        assert gu.preview_arch_kwargs(_manager(NATIVE_SDXL),
+                                      pipeline)["latent_scaling_factor"] == 0.5
+        # A BatchNorm / per-channel VAE has no scalar factor, and no tiny
+        # decoder either; the constants are never reached with it.
+        assert latent_scaling_of(SimpleNamespace(
+            config=SimpleNamespace(scaling_factor=None))) is None
+        assert gu.preview_arch_kwargs(_manager(NATIVE_SDXL),
+                                      SimpleNamespace())["latent_scaling_factor"] is None
+
+
 # --- 2. the inpaint channel test -------------------------------------------
 
 class TestInpaintChannelGate:

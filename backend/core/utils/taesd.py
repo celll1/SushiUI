@@ -14,6 +14,32 @@ import numpy as np
 _VAE_PREVIEW_KINDS = ("taesd", "taesdxl", "taef1", "matrix16", "matrix32")
 
 
+def latent_scaling_of(vae) -> Optional[float]:
+    """A VAE's ``config.scaling_factor`` as a usable divisor, else None.
+
+    None for every VAE whose latents are not scaled by one scalar (BatchNorm /
+    per-channel families), which is also every VAE the tiny decoders below do
+    not serve.
+    """
+    return _usable_scaling(
+        getattr(getattr(vae, "config", None), "scaling_factor", None), None)
+
+
+def _usable_scaling(value, fallback):
+    """``value`` as a float divisor, or ``fallback`` when it is not one.
+
+    The preview is display-only, so an unusable factor degrades to the caller's
+    default rather than blanking the preview.
+    """
+    try:
+        scaling = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if scaling == 0.0 or scaling != scaling or scaling in (float("inf"), float("-inf")):
+        return fallback
+    return scaling
+
+
 class TAESDManager:
     def __init__(self):
         self.taesd = None
@@ -213,7 +239,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix", vae_preview_kind: Optional[str] = None, latent_scaling_factor: Optional[float] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -230,6 +256,11 @@ class TAESDManager:
                 replaced, chosen from that VAE's family rather than from the
                 architecture (`generation_utils._preview_vae_kind`). Overrides
                 every is_* flag above. None for a native model.
+            latent_scaling_factor: `scaling_factor` of the VAE that produced
+                this latent (`latent_scaling_of`). A replaced 4-channel VAE
+                keeps the architecture's tiny decoder but need not keep its
+                scaling factor, and the preview is the only thing that would
+                show it. None falls back to the per-family constant.
         """
         import time
         decode_start_time = time.time()
@@ -333,17 +364,19 @@ class TAESDManager:
                     target_dtype = torch.float16 if self.device == "cuda" else torch.float32
                     latent = latent.to(device=self.device, dtype=target_dtype)
 
-                # TAESD expects latents to be scaled
+                # TAESD decodes the UNSCALED latent, so undo the VAE's scaling
+                # factor. The run's own VAE answers when the caller could reach
+                # it; the per-family constants are the fallback for a caller
+                # that cannot (a training-preview frame from an older writer).
                 if is_zimage:
-                    # Z-Image (FLUX-based) use scaling factor 0.3611
-                    # Same as FLUX.1: https://huggingface.co/black-forest-labs/FLUX.1-dev
-                    scaled_latent = latent / 0.3611
+                    # FLUX.1: https://huggingface.co/black-forest-labs/FLUX.1-dev
+                    default_scaling = 0.3611
                 elif is_sdxl:
-                    # SDXL uses scaling factor 0.13025
-                    scaled_latent = latent / 0.13025
+                    default_scaling = 0.13025
                 else:
-                    # SD1.5 uses scaling factor 0.18215
-                    scaled_latent = latent / 0.18215
+                    default_scaling = 0.18215
+                scaled_latent = latent / _usable_scaling(latent_scaling_factor,
+                                                         default_scaling)
 
                 # Decode using the decode method
                 image = decoder.decode(scaled_latent).sample

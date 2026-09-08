@@ -22,6 +22,7 @@ Run with:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
 import sys
 import types
@@ -41,8 +42,12 @@ from diffusers import (  # noqa: E402
     EulerDiscreteScheduler,
     PNDMScheduler,
 )
+from diffusers.configuration_utils import ConfigMixin, register_to_config  # noqa: E402
+from diffusers.schedulers.scheduling_utils import SchedulerMixin  # noqa: E402
 
 from core.inference.schedulers import (  # noqa: E402
+    SAMPLER_MAP,
+    _accepted_config_keys,
     get_scheduler,
     unsupported_schedule_overrides,
 )
@@ -368,3 +373,53 @@ def test_unknown_sampler_still_raises():
     with pytest.raises(ValueError):
         get_scheduler(pipeline=sdxl_source(), sampler="nope",
                       schedule_type="uniform")
+
+
+# ---------------------------------------------------------------------------
+# 6. The accepted-key set is the one diffusers actually filters against
+# ---------------------------------------------------------------------------
+
+class StandInScheduler(SchedulerMixin, ConfigMixin):
+    """Takes ``use_karras_sigmas`` but lists it in ``ignore_for_config``.
+
+    That is the one case where a key is in the ``__init__`` signature and still
+    never reaches it: ``extract_init_dict`` subtracts ``ignore_for_config`` from
+    its expected keys, so the kwarg lands in ``unused_kwargs``. No class in
+    ``SAMPLER_MAP`` uses it today (pinned below), so only a stand-in can show it.
+    """
+
+    ignore_for_config = ["use_karras_sigmas"]
+
+    @register_to_config
+    def __init__(self, num_train_timesteps=1000, prediction_type="epsilon",
+                 timestep_spacing="leading", use_karras_sigmas=False):
+        self.received_karras_sigmas = use_karras_sigmas
+
+
+def test_no_current_sampler_ignores_any_config_key():
+    """The measurement the stand-in above stands in for."""
+    for sampler, scheduler_class in SAMPLER_MAP.items():
+        assert list(scheduler_class.ignore_for_config) == [], sampler
+
+
+def test_ignored_key_is_not_counted_as_accepted():
+    assert "use_karras_sigmas" in inspect.signature(
+        StandInScheduler.__init__).parameters
+    assert "use_karras_sigmas" not in _accepted_config_keys(StandInScheduler)
+    assert {"prediction_type", "timestep_spacing"} <= _accepted_config_keys(
+        StandInScheduler)
+
+
+def test_ignored_override_is_reported_not_silently_dropped(monkeypatch):
+    monkeypatch.setitem(SAMPLER_MAP, "stand_in", StandInScheduler)
+
+    with captured_warnings() as recorded:
+        scheduler = get_scheduler(pipeline=sdxl_source(), sampler="stand_in",
+                                  schedule_type="karras")
+
+    # diffusers dropped the kwarg, so karras was not applied ...
+    assert scheduler.received_karras_sigmas is False
+    # ... and nothing may read back as if it had been.
+    assert "use_karras_sigmas" not in scheduler.config
+    assert [w["code"] for w in recorded] == ["unsupported_param"]
+    assert "use_karras_sigmas" in recorded[0]["message"]

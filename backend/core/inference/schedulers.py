@@ -97,9 +97,13 @@ def _accepted_config_keys(scheduler_class) -> set:
         keys = set(scheduler_class._get_init_keys(scheduler_class))
     except Exception:
         keys = set(inspect.signature(scheduler_class.__init__).parameters)
-    # A **kwargs catch-all does not receive config keys either: diffusers drops
-    # it from the expected keys before matching.
-    return keys - {"self", "kwargs"}
+    # The four names extract_init_dict removes from its expected keys: a kwarg
+    # called any of them never reaches __init__. The latter two are empty or
+    # absent on all 12 classes in SAMPLER_MAP, so this only matters for a class
+    # added later -- which must warn rather than pretend the setting applied.
+    keys -= {"self", "kwargs"}
+    keys -= set(getattr(scheduler_class, "_flax_internal_args", ()) or ())
+    return keys - set(getattr(scheduler_class, "ignore_for_config", ()) or ())
 
 
 def unsupported_schedule_overrides(sampler: str, schedule_type: str,

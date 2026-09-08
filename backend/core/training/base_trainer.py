@@ -2205,6 +2205,19 @@ from core.training.parameter_change_tracker import ParameterChangeTracker
 from core.training.periodic_intervals import due as interval_due, normalize_interval
 
 
+#: Host-RAM ceiling for the REPA teacher-pixel LRU (``_get_repa_pixels_for_item``).
+#: Measured 1.72 MiB per entry at the default repa_size=384 and 3.04 MiB at 512, so
+#: an entry cap is a budget that moves with an unrelated setting (the old 4096 was
+#: 6.9 GiB / 12.1 GiB respectively). A byte budget holds whatever the size is and
+#: whatever varies the region -- crop augmentation, and random_crop, which redraws
+#: its window every iteration with no config key to condition on.
+_REPA_PIXEL_CACHE_BYTES = 1024 * 1024 * 1024
+
+#: Entry cap for the REPA source-size memo. Its entries are fixed-size (a path key
+#: and a (w,h) tuple, measured 142 B), so a count states the same ~9 MiB budget.
+_REPA_SRC_SIZE_ENTRIES = 65536
+
+
 # ============================================================
 # Base Trainer Class
 # ============================================================
@@ -3237,9 +3250,11 @@ class BaseTrainer(ABC):
         """
         m = getattr(self, "_repa_src_size", None)
         if m is None:
-            m = self._repa_src_size = {}
+            from collections import OrderedDict
+            m = self._repa_src_size = OrderedDict()
         key = item.get("image_path")
         if key and key in m:
+            m.move_to_end(key)
             return m[key]
         _b = item.get("_danbooru_image_bytes")
         if _b is not None:
@@ -3253,8 +3268,11 @@ class BaseTrainer(ABC):
         if key:
             m[key] = wh
             # Bounded like the pixel cache beside it: one entry per unique path
-            # over a million-item dataset is host RAM that never comes back.
-            while len(m) > 65536:
+            # over a million-item dataset is host RAM that never comes back. An
+            # OrderedDict because a plain dict's popitem() takes no `last`, and the
+            # TypeError landed in _repa_source_region's except -> REPA silently off
+            # for every path first seen past the cap.
+            while len(m) > _REPA_SRC_SIZE_ENTRIES:
                 m.popitem(last=False)
         return wh
 
@@ -3295,10 +3313,12 @@ class BaseTrainer(ABC):
 
         SigLIP2 normalization is mean=std=0.5 (i.e. [-1,1]); the encoder squishes to
         a fixed square (aspect handled by interpolating its features to the DiT grid).
-        Returns None on load failure (the affected batch then skips REPA). A bounded
-        in-memory LRU amortizes re-decoding the same images across the swap window;
-        it is keyed by region as well as path, because crop augmentation gives the
-        same path a different box every epoch.
+        Returns None on load failure (the affected batch then skips REPA). An LRU
+        bounded in BYTES (``_REPA_PIXEL_CACHE_BYTES``) amortizes re-decoding the same
+        images across the swap window; it is keyed by region as well as path, because
+        crop augmentation gives the same path a different box every epoch -- which is
+        also why the bound cannot be an entry count: with the region in the key, one
+        path holds as many entries as it has been cropped.
         """
         if region is None:
             if not getattr(self, "_repa_region_warned", False):
@@ -3338,10 +3358,18 @@ class BaseTrainer(ABC):
             t = t * 2.0 - 1.0  # -> [-1,1]
 
             if cache_key is not None:
-                cache[cache_key] = t
+                cache[cache_key] = t  # never a re-insert: a hit returned above
                 cache.move_to_end(cache_key)
-                while len(cache) > 4096:
-                    cache.popitem(last=False)
+                used = getattr(self, "_repa_pix_cache_bytes", 0) + t.nbytes
+                n_before = len(cache)
+                while used > _REPA_PIXEL_CACHE_BYTES and cache:
+                    used -= cache.popitem(last=False)[1].nbytes
+                self._repa_pix_cache_bytes = used
+                if len(cache) < n_before and not getattr(self, "_repa_pix_cap_logged", False):
+                    self._repa_pix_cap_logged = True
+                    print(f"{self.log_prefix} [REPA] teacher-pixel cache at its "
+                          f"{_REPA_PIXEL_CACHE_BYTES / 2**30:g} GiB budget "
+                          f"(holds {len(cache)} x {S}x{S}); evicted regions are re-decoded")
             return t
         except Exception as _e:
             if not getattr(self, "_repa_pix_warned", False):

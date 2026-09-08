@@ -12,7 +12,8 @@ What is pinned here:
   (b) "crop" and "random_crop" put the teacher on the latent's region, and the
       pre-change behaviour would have failed the same assertion;
   (c) the pixel LRU is keyed by region, so two epochs' crops of one path do not
-      collide;
+      collide -- and is bounded in BYTES, because that same region key lets one
+      path hold arbitrarily many entries;
   (d) repa_enable=false neither refuses nor changes encode_image's output, and
       the batch loop touches none of this.
 
@@ -33,6 +34,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.training import base_trainer  # noqa: E402
 from core.training import repa as repa_module  # noqa: E402
 from core.training.base_trainer import BaseTrainer  # noqa: E402
 from core.training.crop_planner import CropSpec  # noqa: E402
@@ -276,14 +278,93 @@ def test_pixel_cache_does_not_confuse_two_regions_of_one_path(tmp_path):
     assert np.abs(_fingerprint(left) - _fingerprint(right)).max() > 0.3
 
 
-def test_pixel_cache_stays_bounded(tmp_path):
-    path = _striped(tmp_path)
-    item = {"image_path": path}
-    t = _trainer()
-    for x in range(4100):
-        _teacher(t, item, (0, 0, 1 + (x % 200), 128))
+def _fill(trainer, item, n, y1=128):
+    for x in range(n):
+        _teacher(trainer, item, (0, 0, 1 + x, y1))
 
-    assert len(t._repa_pix_cache) <= 4096
+
+def _resident_bytes(trainer):
+    return sum(v.nbytes for v in trainer._repa_pix_cache.values())
+
+
+def test_pixel_cache_is_bounded_in_bytes_not_in_entries(tmp_path, monkeypatch):
+    """The region key means one path can hold thousands of entries, so an entry cap
+    is a budget that scales with repa_size (measured 1.72 MiB/entry at 384, 3.04 at
+    512: 4096 entries was 6.9 GiB / 12.1 GiB)."""
+    budget = 20 * 3 * S * S * 4
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", budget)
+    t = _trainer()
+    item = {"image_path": _striped(tmp_path)}
+
+    _fill(t, item, 500)
+
+    assert _resident_bytes(t) <= budget
+    assert len(t._repa_pix_cache) == 20
+
+
+def test_pixel_cache_budget_does_not_move_with_the_teacher_square(tmp_path,
+                                                                  monkeypatch):
+    """Doubling repa_size quadruples the entry, so the count must quarter -- the
+    property an entry cap does not have."""
+    budget = 64 * 3 * S * S * 4
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", budget)
+    item = {"image_path": _striped(tmp_path)}
+
+    small, big = _trainer(), _trainer(repa_size=2 * S)
+    _fill(small, item, 300)
+    _fill(big, item, 300)
+
+    assert len(small._repa_pix_cache) == 64
+    assert len(big._repa_pix_cache) == 16
+    assert _resident_bytes(small) <= budget and _resident_bytes(big) <= budget
+
+
+def test_pixel_cache_byte_count_tracks_what_is_resident(tmp_path, monkeypatch):
+    """A drifting counter would under-evict forever (the leak this replaced) or
+    evict everything on every insert."""
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", 10 * 3 * S * S * 4)
+    t = _trainer()
+    item = {"image_path": _striped(tmp_path)}
+
+    _fill(t, item, 40)
+    _teacher(t, item, (0, 0, 40, 128))  # a hit: must not be counted twice
+    _fill(t, item, 5)
+
+    assert t._repa_pix_cache_bytes == _resident_bytes(t)
+
+
+def test_an_evicted_region_is_re_decoded_as_itself(tmp_path, monkeypatch):
+    """Eviction must not resurrect the collision the region key closed: the entry
+    that comes back has to be the region asked for, not the survivor beside it."""
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", 4 * 3 * S * S * 4)
+    t = _trainer()
+    item = {"image_path": _striped(tmp_path)}
+    left_box, right_box = (0, 0, 128, 128), (128, 0, 256, 128)
+
+    left = _teacher(t, item, left_box)
+    _fill(t, item, 20)  # pushes both boxes out
+    assert (item["image_path"], left_box) not in t._repa_pix_cache
+    right = _teacher(t, item, right_box)
+    left_again = _teacher(t, item, left_box)
+
+    torch.testing.assert_close(left_again, left, rtol=0, atol=0)
+    assert np.abs(_fingerprint(left_again) - _fingerprint(right)).max() > 0.3
+
+
+def test_source_size_memo_keeps_working_past_its_cap(tmp_path, monkeypatch):
+    """The cap used to call ``popitem(last=False)`` on a plain dict: the TypeError
+    landed in _repa_source_region's except, so every path first seen past the cap
+    silently lost REPA for its batch."""
+    monkeypatch.setattr(base_trainer, "_REPA_SRC_SIZE_ENTRIES", 4)
+    t = _trainer()
+    paths = [_striped(tmp_path, name=f"m{i}.png", size=(32 + i, 16)) for i in range(12)]
+
+    sizes = [BaseTrainer._repa_source_size(t, {"image_path": p}) for p in paths]
+
+    assert sizes == [(32 + i, 16) for i in range(12)]
+    assert len(t._repa_src_size) <= 4
+    fresh = _striped(tmp_path, name="fresh.png", size=(48, 16))
+    assert _region(t, {"image_path": fresh}, 8, 8, "resize") == (0, 0, 48, 16)
 
 
 # ---------------------------------------------------------------------------

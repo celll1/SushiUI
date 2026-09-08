@@ -430,6 +430,28 @@ class SenseNovaArchHandler(ArchHandler):
         model = getattr(getattr(trainer, "transformer", None), "language_model", None)
         return getattr(getattr(model, "model", None), "layers", None)
 
+    def repa_tap(self, trainer):
+        # The tap is the Qwen3 decoder the GENERATION forward runs against the
+        # understanding half's prefix K/V (ops/sensenova_ops.train_step ->
+        # forward_gen_decoder_layers), whose loop stashes the generation stream.
+        # Same module and same layer list depth_blocks reports: one depth axis
+        # for both MoT halves.
+        from core.training.repa import RepaTapPoint
+
+        model = trainer.transformer.language_model.model
+        # The width is read off the live gen-branch final norm rather than
+        # config.hidden_size, so a config that no longer describes the loaded
+        # tree cannot size the projector.
+        weight = getattr(getattr(model, "norm_mot_gen", None), "weight", None)
+        if weight is None:
+            raise ValueError(
+                "SenseNova's REPA tap needs the generation-branch final norm "
+                "(language_model.model.norm_mot_gen) to read the decoder width "
+                "from; this tree is not the MoT decoder training runs on.")
+        return RepaTapPoint(module=model,
+                            hidden_size=int(weight.shape[-1]),
+                            depth=len(model.layers))
+
     def setup_attention_backend(self, trainer) -> None:
         from core.training.ops import sensenova_ops
 
@@ -519,6 +541,7 @@ class SenseNovaArchHandler(ArchHandler):
             debug_save_path=ctx.debug_save_path,
             debug_captions=ctx.debug_captions,
             debug_reference_image_paths=ctx.debug_reference_image_paths,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

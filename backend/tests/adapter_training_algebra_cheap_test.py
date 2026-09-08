@@ -86,7 +86,7 @@ class _Adapter(BaseLoRAAdapter):
     def apply_lora_to_text_encoders(self, lora_layers):
         return 0
 
-    def setup_trainable_parameters(self, lora_layers):
+    def arch_param_groups(self, lora_layers):
         return self.component_param_groups(
             lora_layers, {LORA_COMPONENT_UNET: lambda: 1e-4})
 

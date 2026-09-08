@@ -17,6 +17,9 @@ from core.training.components.wiring import ANIMA_WIRING
 
 
 class AnimaArchHandler(ArchHandler):
+
+    # Its forward installs these on the inner module (ops/anima_ops.py).
+    consumes_block_loop_features = True
     name = "anima"
     wiring = ANIMA_WIRING
     adapter_capability = declare_adapter_capability(

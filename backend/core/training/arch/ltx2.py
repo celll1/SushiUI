@@ -17,6 +17,9 @@ from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
 
 class Ltx2ArchHandler(ArchHandler):
+
+    # Its forward installs these on the inner module (ops/ltx2_ops.py).
+    consumes_block_loop_features = True
     name = "ltx2"
     wiring = LTX2_WIRING
     adapter_capability = declare_adapter_capability(

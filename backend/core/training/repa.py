@@ -1,28 +1,36 @@
 """REPA (REPresentation Alignment) for diffusion-transformer training.
 
-Aligns an intermediate hidden state of the MiniT2I DiT (the image tokens at a
-chosen block depth) with clean-image per-patch features from a frozen pretrained
-vision encoder, via a small trainable MLP projector and a cosine-similarity
-regularization. The aligned encoder representation accelerates convergence of the
-generator (Yu et al., "Representation Alignment for Generation: Training Diffusion
-Transformers Is Easier Than You Think", ICLR 2025, arXiv:2410.06940).
+Aligns an intermediate hidden state of a diffusion transformer (the image tokens
+at a chosen block depth) with clean-image per-patch features from a frozen
+pretrained vision encoder, via a small trainable MLP projector and a
+cosine-similarity regularization. The aligned encoder representation accelerates
+convergence of the generator (Yu et al., "Representation Alignment for Generation:
+Training Diffusion Transformers Is Easier Than You Think", ICLR 2025,
+arXiv:2410.06940).
 
 Two encoder sources are supported, both SigLIP2 so400m (1152-dim, no CLS token):
   - "tagger" : our Danbooru/anime fine-tuned SigLIP2 (domain-matched; default).
   - "siglip2": an off-the-shelf google/siglip2 checkpoint.
 
 The encoder runs on the CLEAN image, squished to its native square resolution
-(SigLIP2 normalization is mean=std=0.5, i.e. the [-1,1] range MiniT2I already uses).
-Patch features are bilinearly interpolated from the encoder's g x g grid to the DiT
-token grid (gh x gw); both use row-major (h*gw + w) ordering, so tokens correspond.
-The projector is training-only and is not part of the exported inference model.
+(SigLIP2 normalization is mean=std=0.5, i.e. the [-1,1] range training images are
+already in). Patch features are bilinearly interpolated from the encoder's g x g
+grid to the DiT token grid (gh x gw); both use row-major (h*gw + w) ordering, so
+tokens correspond. The projector is training-only and is not part of the exported
+inference model.
+
+Everything here is architecture-neutral. What an architecture supplies is a
+``RepaTapPoint`` (from its arch handler) and the token grid its own geometry
+defines; an architecture with neither is refused by ``refuse_repa`` rather than
+silently ignored.
 """
 
 import os
 import json
 import math
 import glob
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -220,3 +228,199 @@ def repa_loss(
     tgt = F.normalize(targets.float(), dim=-1)
     cos = (proj * tgt).sum(dim=-1)  # [B, N]
     return 1.0 - cos.mean()
+
+
+# ------------------------------------------------------------------
+# Architecture support: tap point, refusals, depth compatibility
+# ------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RepaTapPoint:
+    """Where one architecture exposes its REPA tap.
+
+    ``module`` carries ``_repa_tap_depth`` (written once at setup) and
+    ``_repa_tap_out`` (written by the forward at that depth) — which is NOT
+    ``trainer.transformer`` for every architecture: MiniT2I's is
+    ``transformer.model.net``, and several architectures wrap the transformer in
+    a training wrapper. ``depth`` is the number of blocks the tap index
+    addresses; ``hidden_size`` is the width of the tapped state and so fixes the
+    projector's input dim.
+    """
+
+    module: nn.Module
+    hidden_size: int
+    depth: int
+
+
+#: Why REPA is refused for an architecture where it cannot work, or where it
+#: could but is deliberately held back. Anything absent from here (and without an
+#: arch-handler ``repa_tap``) is refused as merely unwired.
+REPA_REFUSALS: Dict[str, str] = {
+    "acestep": (
+        "ACE-Step is audio: its sequence is a 1-D time axis with no spatial token "
+        "grid, so there is no grid to align to an image encoder's per-patch "
+        "features. The alignment target is undefined for it, not merely expensive."
+    ),
+    "ltx2": (
+        "LTX-2.3 is video and REPA is held back for it: the frozen image teacher "
+        "would have to encode EVERY frame of every clip on every step, and the "
+        "transformer trunk is shared with the audio stream, so the alignment term "
+        "would also steer weights that produce audio. A deliberate hold, not a "
+        "missing line of code."
+    ),
+    "minimax_h3": (
+        "MiniMax-H3 is video and REPA is held back for it: per-frame teacher cost "
+        "as for LTX-2.3, a trunk shared with audio, and its packed sequence "
+        "interleaves CONDITION frames with the frames being generated, so a tap "
+        "returns rows the image teacher has no matching target for. A deliberate hold."
+    ),
+}
+
+_REPA_UNWIRED = (
+    "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
+    "forward that stashes the aligned hidden state. REPA is architecture-neutral "
+    "by design, but each architecture is wired one at a time and only 'minit2i' is "
+    "wired today. Either set repa_enable=false or wire {arch}'s tap first."
+)
+
+
+def refuse_repa(arch_name: str):
+    """Refuse REPA for ``arch_name``, saying why. Never returns."""
+    reason = REPA_REFUSALS.get(arch_name) or _REPA_UNWIRED.format(arch=arch_name)
+    raise ValueError(f"repa_enable is not supported for architecture '{arch_name}'. {reason}")
+
+
+def assert_repa_depth_compatible(config, align_depth: int, num_blocks: int) -> None:
+    """Refuse a tap depth that another training-time depth feature would void.
+
+    Both combinations below leave REPA running and reporting a loss while its
+    gradient is wrong or zero, which is why they are refused rather than warned.
+    """
+    get = config.get if hasattr(config, "get") else (lambda k, d=None: d)
+
+    if bool(get("tread_enable", False)):
+        start = int(get("tread_start_block", 0) or 0)
+        end = int(get("tread_end_block", 0) or 0)
+        if start <= align_depth < end:
+            raise ValueError(
+                f"repa_align_depth={align_depth} is inside the TREAD routed span "
+                f"[{start}, {end}). Inside that span a block sees only the kept subset "
+                f"of tokens (routing reshapes them to [B,1,1,keep,D]), so the tapped "
+                f"rows are neither the whole token grid nor in grid order and the "
+                f"alignment loss would be taken against mismatched targets. Options: "
+                f"(1) set repa_align_depth outside [{start}, {end}), (2) narrow the "
+                f"TREAD span, (3) disable one of the two."
+            )
+
+    if bool(get("blockskip_enable", False)):
+        front = int(get("blockskip_front", 0) or 0)
+        back = int(get("blockskip_back", 0) or 0)
+        last = num_blocks - back
+        if not (front <= align_depth < last):
+            raise ValueError(
+                f"repa_align_depth={align_depth} is inside a DiT-BlockSkip skipped span. "
+                f"BlockSkip runs blocks [0, {front}) and [{last}, {num_blocks}) only under "
+                f"no_grad (their contribution re-enters as a detached residual), so a tap "
+                f"there fires on the no-grad pass and the REPA gradient is exactly zero. "
+                f"The span that trains is [{front}, {last}). Options: (1) set "
+                f"repa_align_depth inside it, (2) reduce blockskip_front/blockskip_back, "
+                f"(3) disable one of the two."
+            )
+
+
+# ------------------------------------------------------------------
+# Projector plumbing shared by every training adapter
+# ------------------------------------------------------------------
+
+def repa_enabled(trainer) -> bool:
+    """True when this run has a live REPA projector to train and save."""
+    return (bool(getattr(trainer, "repa_enable", False))
+            and getattr(trainer, "repa_projector", None) is not None)
+
+
+def repa_sidecar_path(checkpoint_path) -> str:
+    """REPA projector sidecar path next to a checkpoint (suffix-precise).
+
+    Replaces only a trailing ``.safetensors`` so a directory component containing
+    ``.safetensors`` cannot corrupt the path. The resume loader in
+    ``BaseTrainer._setup_repa`` reads the same name.
+    """
+    checkpoint_path = str(checkpoint_path)
+    if checkpoint_path.endswith(".safetensors"):
+        return checkpoint_path[: -len(".safetensors")] + ".repa.safetensors"
+    return checkpoint_path + ".repa.safetensors"
+
+
+def projector_param_groups(trainer, *, label: str) -> List[Dict[str, Any]]:
+    """The optimizer group for the REPA projector, or none when REPA is off.
+
+    Without this group the projector never updates: the alignment target stays a
+    random frozen head and the loss term is noise added to the diffusion loss,
+    with no error anywhere. The base adapters append it last so param-group order
+    is stable across resume.
+    """
+    if not repa_enabled(trainer):
+        return []
+    params = [p for p in trainer.repa_projector.parameters() if p.requires_grad]
+    if not params:
+        return []
+    from core.training.adapters.base_adapter import resolve_component_lr
+    base_lr = resolve_component_lr(trainer, "unet_lr", label=f"{label} REPA projector")
+    lr = base_lr * float(getattr(trainer, "repa_proj_lr_factor", 1.0))
+    print(f"[{label}] {sum(p.numel() for p in params):,} trainable params (REPA projector), lr={lr}")
+    return [{"params": params, "lr": lr, "name": "repa_projector", "component": "repa_projector"}]
+
+
+def save_projector_sidecar(trainer, checkpoint_path, *, label: str) -> None:
+    """Write the projector beside ``checkpoint_path`` so a resume can pick it up.
+
+    Training-only state: never embedded in the inference checkpoint.
+    """
+    if not repa_enabled(trainer):
+        return
+    try:
+        from safetensors.torch import save_file as _save_file
+        sib = repa_sidecar_path(checkpoint_path)
+        sd = {k: v.detach().cpu().contiguous().float()
+              for k, v in trainer.repa_projector.state_dict().items()}
+        _save_file(sd, sib)
+        print(f"[{label}] Saved REPA projector -> {sib}")
+    except Exception as _e:
+        print(f"[{label}] WARNING: REPA projector save failed: {_e}")
+
+
+# ------------------------------------------------------------------
+# Per-step use
+# ------------------------------------------------------------------
+
+def take_repa_tap(trainer) -> Optional[torch.Tensor]:
+    """Read and clear the hidden state the forward stashed at the tap depth.
+
+    Clearing releases this reference into the activation graph; the caller holds
+    the only remaining one, for the length of the loss computation.
+    """
+    module = getattr(trainer, "_repa_tap_module", None)
+    if module is None:
+        return None
+    out = getattr(module, "_repa_tap_out", None)
+    module._repa_tap_out = None
+    return out
+
+
+def apply_repa_loss(trainer, loss, image_tokens, repa_pixels, gh: int, gw: int):
+    """Add the alignment term for ``image_tokens`` [B, gh*gw, hidden] to ``loss``.
+
+    The token grid (gh, gw) is the ARCHITECTURE's to compute — pixel-space,
+    latent-space and packed-sequence architectures each derive it differently —
+    as is any slicing that reduces the tap to image tokens.
+    """
+    targets = encode_repa_targets(
+        trainer.repa_encoder,
+        repa_pixels.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True),
+        gh, gw, trainer.repa_size,
+    )
+    rloss = repa_loss(image_tokens, targets, trainer.repa_projector)
+    loss = loss + trainer.repa_weight * rloss
+    trainer.log_extra_metric("repa_loss", float(rloss.detach().item()))
+    del targets
+    return loss

@@ -70,8 +70,8 @@ _DATA_VOLUME_PEAK = {**_DATA_VOLUME, "scale_group": "gibibytes_peak"}
 _COUNT = {"family": "count", "scale_group": "counts", "range": _AUTO_0, "sampling": "dense"}
 
 EXTRA_METRIC_DEFS = {
-    # REPA representation-alignment loss (MiniT2I). Formerly the dedicated
-    # repa_loss column (backfilled into extra_metrics by auto_migrate).
+    # REPA representation-alignment loss. Formerly the dedicated repa_loss
+    # column (backfilled into extra_metrics by auto_migrate).
     "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known

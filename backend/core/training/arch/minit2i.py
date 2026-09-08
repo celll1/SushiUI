@@ -158,6 +158,17 @@ class MiniT2IArchHandler(ArchHandler):
         from core.training.ops import minit2i_ops
         minit2i_ops.setup_block_swap(trainer)
 
+    def repa_tap(self, trainer):
+        # The tap sits on the MM-JiT net (transformer -> DiffusionModel -> MMJiT),
+        # which is where the double-block loop can stash its image stream; the tap
+        # index addresses double_blocks only, so depth is depth_double.
+        from core.training.repa import RepaTapPoint
+
+        cfg = trainer.transformer.mmjit_config
+        return RepaTapPoint(module=trainer.transformer.model.net,
+                            hidden_size=int(cfg.hidden_size),
+                            depth=int(cfg.depth_double))
+
     def depth_blocks(self, trainer):
         # Forward order (vendor/mmjit.py): the text preamble blocks, then the
         # MM-JiT double blocks.

@@ -608,6 +608,25 @@ class ArchHandler(ABC):
         """
         return self.wiring
 
+    #: Whether this architecture's forward actually reads ``trainer.tread_config``
+    #: / ``blockskip_config``. Both are built centrally for every run, so only the
+    #: handler knows whether they mean anything here — and a REPA tap can only
+    #: collide with a block-loop feature the architecture consumes.
+    consumes_block_loop_features: bool = False
+
+    def repa_tap(self, trainer) -> "RepaTapPoint":
+        """Where REPA reads this architecture's intermediate image tokens.
+
+        An architecture is REPA-capable only once it answers this AND its
+        forward stashes ``_repa_tap_out`` at ``_repa_tap_depth``; both live with
+        the architecture because the module carrying the tap, the block count
+        and the hidden width all differ. Refusing by default is what keeps
+        ``repa_enable`` from being accepted and silently ignored.
+        """
+        from core.training.repa import refuse_repa
+
+        refuse_repa(self.name)
+
     def check_vae_compatibility(self, facts, *, trainer=None,
                                 base_model_path=None):
         """``(compatible, reason)`` for a candidate VAE against this arch (§7.4).

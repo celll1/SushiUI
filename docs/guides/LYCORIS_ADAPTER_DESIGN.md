@@ -158,6 +158,10 @@ class and its module supply:
 
 The shared base now owns the bodies of `setup_trainable_parameters` and
 `save_checkpoint`, with resume tensor discovery delegated to each adapter leaf.
+Both are concrete: a leaf supplies `arch_param_groups` (and, for full
+parameter training, `write_checkpoint`, returning the path it resolved), and the
+base appends the REPA projector's optimizer group and writes its sidecar for
+every architecture.
 Training adapter selection has also moved into `ARCH_REGISTRY`:
 `ArchHandler.lora_adapter_plan()` supplies the adapter class and
 architecture-specific constructor arguments to `LoRATrainer._create_adapter`.

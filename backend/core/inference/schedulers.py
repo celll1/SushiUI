@@ -60,7 +60,7 @@ SCHEDULE_TYPES = {
 # a scheduler built here can never inherit a value from the previously selected
 # schedule (get_scheduler reads back the scheduler it last returned).
 _SCHEDULE_KEYS = ("prediction_type", "use_karras_sigmas",
-                  "use_exponential_sigmas", "timestep_spacing")
+                  "use_exponential_sigmas", "use_beta_sigmas", "timestep_spacing")
 
 
 def _schedule_overrides(schedule_type: str, prediction_type: str) -> dict:
@@ -69,6 +69,11 @@ def _schedule_overrides(schedule_type: str, prediction_type: str) -> dict:
         "prediction_type": prediction_type,
         "use_karras_sigmas": schedule_type == "karras",
         "use_exponential_sigmas": schedule_type == "exponential",
+        # Not offered as a schedule, but owned all the same: the samplers reject
+        # more than one sigma selector at once, and a source config that sets
+        # this would send karras and exponential into the except branch below,
+        # which builds a scheduler with none of the model's betas.
+        "use_beta_sigmas": False,
         # Both named schedules pick sigmas, not timestep spacing, so spacing is
         # decided by the model alone rather than by whichever schedule ran
         # before it.
@@ -182,8 +187,11 @@ def get_scheduler(pipeline, sampler: str, schedule_type: str = "uniform"):
 
         return scheduler_class.from_config(base, **applied)
     except Exception as e:
-        print(f"Warning: Could not create {sampler} scheduler with {schedule_type}: {e}")
-        # Fallback to creating with default config
+        message = (f"Could not build the {sampler} scheduler for "
+                   f"schedule_type='{schedule_type}' ({e}); falling back to a "
+                   f"default one, which does not carry this model's betas.")
+        print(f"Warning: {message}")
+        _emit_warnings([{"code": "unsupported_param", "message": message}])
         return scheduler_class()
 
 def get_available_samplers():

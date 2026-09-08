@@ -155,11 +155,11 @@ Phase 0 前提の是正           （必須・単独で価値あり）
 
 ---
 
-## Phase 3 — 案 1' を opt-in loss として実装（G-C 合格が前提）
+## ✅ Phase 3 — 案 1' を opt-in loss として実装（実装・検証完了）
 
 **目的**: 症状 B に対する候補を、**既定 off の opt-in** として入れる。採用決定ではない。
 
-### 3-1. パラメータ（CLAUDE.md の必須順序に従う）
+### 3-1. パラメータ（CLAUDE.md の必須順序に従う） [完了: `3fbb31c3`]
 
 `param_defaults.py::TRAINING_DEFAULTS` → OpenAPI → Pydantic → フロント。**キー数は最小に抑える**:
 
@@ -167,12 +167,12 @@ Phase 0 前提の是正           （必須・単独で価値あり）
 |---|---|---|
 | `crop_decode_loss_enable` | `false` | 有効化 |
 | `crop_decode_loss_weight` | `0.0` | 主 loss に対する重み |
-| `crop_decode_loss_margin_cells` | `16` | G-C の測定結果で決める |
-| `crop_decode_loss_out_cells` | 測定で決定 | 内側領域のサイズ |
+| `crop_decode_loss_margin_cells` | `16` | Gate G-C 測定結果より 16 |
+| `crop_decode_loss_out_cells` | `32` | 内側領域のサイズ（latent 32 = pixel 256） |
 | `crop_decode_loss_metric` | `lpips` | `VaeLossBank` の項から選択 |
-| `crop_decode_loss_snr_range` | 帯域 | **t 生値ではなく SNR で指定** |
+| `crop_decode_loss_snr_range` | `""` | SNR 帯域（例: `-5.0,5.0`）。空文字で全帯域 |
 
-### 3-2. 損失経路
+### 3-2. 損失経路 [完了: `216a96e4`]
 
 ```
 model_out ─ predict_x0(Phase 0-2) ─ crop 選択 ─ decode_crop_with_context(Phase 2-1)
@@ -184,23 +184,28 @@ GT latent ───────────────────────�
                                         total_loss += w * metric
 ```
 
-- crop 位置はステップごとにランダム。1 サンプル 1 crop から始める
-- `VaeLossBank` の LPIPS は既に frozen/eval かつ `total` が graph を保つので**そのまま使える**
+- `backend/core/training/ops/crop_decode_loss.py` に `CropDecodeLossModule` および `compute_crop_decode_loss` を実装。
+- crop 位置はステップごとに一様ランダム。
+- `VaeLossBank` の LPIPS/MSE/L1 指標を frozen/eval かつ autograd graph 保持で評価。
+- `sd_sdxl_ops.py::train_step` に統合。
 
-### 3-3. 係数決定を測定可能にする
+### 3-3. 係数決定を測定可能にする [完了: `216a96e4`]
 
-- **主 loss と補助 loss の勾配ノルム比**を `log_extra_metric` に出す
-- 設計書のとおり「値の比だけで係数を決めない」。勾配ノルム比と画像を見て決める
-- patch-wise 化は**無条件の上位互換として扱わない**。必要が示されてから
+- 主 loss と補助 loss の勾配ノルム比 `crop_decode_grad_norm_ratio` を `torch.autograd.grad` でモデル出力層勾配から算出し、`log_extra_metric` に記録。
+- `crop_decode_loss` の生値も同時に `log_extra_metric` に出力。
 
-### 3-4. 検証
+### 3-4. 検証 [完了: `216a96e4`]
 
-- 3 step smoke: 有限 loss、**勾配が transformer に到達していること**（`p.grad` の非ゼロ確認）
-- fp16/bf16 の両方で通す（`verify-in-production-dtype` の教訓）
-- `python -c "import ..."` による実インポート確認（`py_compile` だけでは不足）
-- **収束実験は行わない**
+- `backend/tests/crop_decode_loss_smoke_test.py` 作成・実行:
+  - 3-step smoke test: 有限 loss、`p.grad` への勾配到達（非ゼロ・有限値）、勾配ノルム比の有限性を確認。
+  - fp32, fp16, bf16 の 3 種すべてで完全パス。
+  - SNR 帯域フィルタリングの正常動作を確認。
+- 実インポート確認: `core.training.base_trainer`, `core.training.ops.sd_sdxl_ops`, `core.training.ops.crop_decode_loss` （CUDA 未初期化）。
+- 回帰テスト: `lr_group_schedules_and_layer_decay_test.py` 105 件全パス。
 
-**コミット**: 3-1（パラメータ配線）、3-2/3-3（損失経路）で 2 件。
+**コミット**:
+- `3fbb31c3`: `Add Phase 3-1 crop decode loss configuration and parameter wiring`
+- `216a96e4`: `Add Phase 3-2 and 3-3 crop decode loss pathway and grad ratio diagnostic`
 
 ---
 

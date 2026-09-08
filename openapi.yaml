@@ -23310,10 +23310,17 @@ components:
             Only architectures with a wired REPA tap accept this. Enabling it
             for any other architecture is REFUSED at trainer construction with
             the reason, never accepted and ignored. Currently wired: MiniT2I,
-            Anima, Lens, Krea 2, Ideogram 4, SenseNova U1.5.
+            Anima, Lens, Krea 2, Ideogram 4, SenseNova U1.5, SD1.5, SDXL.
             `GET /schema/arch-capabilities`
             carries the same fact as the `repa` training feature, so a client can
             hide the control rather than discover the refusal after queuing a run.
+
+            On SD1.5 and SDXL the tapped state is a conv feature map rather than
+            a token sequence, and the alignment target is that map's own grid.
+            REPA was published for diffusion TRANSFORMERS (the paper above);
+            applying it to a U-Net block is an extrapolation from it, not a
+            result that paper reports. A ControlNet run refuses: its forward
+            never reads the tap and its U-Net is frozen.
           example: false
         repa_encoder_source:
           type: 'string'
@@ -23348,6 +23355,13 @@ components:
             0-based transformer block index whose output is aligned. -1 = auto
             (one third of the architecture's block depth). Clamped into
             [0, depth-1].
+
+            On the conv U-Nets (SD1.5, SDXL) it is not a block index: their
+            blocks have no total order by depth, so this indexes a three-site
+            menu — `0` the deepest down block, `1` the mid block (the auto
+            default), `2` the first up block. A value outside it is REFUSED
+            there rather than clamped, because the same key means a block
+            number on every other architecture.
 
             Refused when another depth feature would void it: a depth inside
             TREAD's routed span (the block sees only the kept token subset, so

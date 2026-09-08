@@ -618,7 +618,8 @@ class ArchHandler(ABC):
         """Where REPA reads this architecture's intermediate image tokens.
 
         An architecture is REPA-capable only once it answers this AND its
-        forward stashes ``_repa_tap_out`` at ``_repa_tap_depth``; both live with
+        forward stashes ``_repa_tap_out`` at ``_repa_tap_depth`` (by assignment
+        in a block loop we own, or by a hook where we do not); both live with
         the architecture because the module carrying the tap, the block count
         and the hidden width all differ. Refusing by default is what keeps
         ``repa_enable`` from being accepted and silently ignored.

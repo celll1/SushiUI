@@ -610,6 +610,54 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     return latents
 
 
+def repa_tap(trainer, arch_name: str):
+    """Where REPA reads the U-Net (shared by ``sd15`` and ``sdxl``).
+
+    The tapped state is a feature MAP, not a token sequence, so the "depth" is
+    not a block index: a U-Net's blocks have no total order by depth (the same
+    reason ``ArchHandler.depth_blocks`` stays None here). It is an index into
+    ``repa.spatial_tap_sites`` -- the deepest down block, the mid block, the
+    first up block -- which puts the shared ``depth // 3`` default on the mid
+    block. An out-of-range ``repa_align_depth`` is refused rather than clamped
+    into that menu, because the same key means a block number everywhere else.
+    """
+    from core.training.repa import (RepaTapPoint, resolve_align_depth,
+                                    spatial_site_width, spatial_tap_sites)
+
+    if getattr(trainer, "use_condition_images", False):
+        raise ValueError(
+            f"repa_enable is not supported for architecture '{arch_name}'. This is "
+            f"a ControlNet run: its forward is train_step_controlnet, which never "
+            f"reads the tap, so the alignment term would be absent from the loss "
+            f"with the projector still in the optimizer. The U-Net is frozen there "
+            f"in any case -- REPA aligns the model being trained.")
+
+    unet = getattr(trainer, "unet", None)
+    if unet is None:
+        raise ValueError(
+            f"repa_enable is not supported for architecture '{arch_name}' without a "
+            f"loaded U-Net: the tap is one of its blocks.")
+
+    sites = spatial_tap_sites(unet)
+    requested = int(trainer.config.get("repa_align_depth", -1))
+    if requested >= len(sites):
+        raise ValueError(
+            f"repa_align_depth={requested} is out of range for '{arch_name}': a "
+            f"U-Net exposes {len(sites)} REPA sites, not a block sequence: "
+            f"{', '.join(f'{i}={name}' for i, (name, _) in enumerate(sites))} "
+            f"(-1 = auto, the mid block).")
+
+    # The same resolution BaseTrainer._setup_repa will apply, so the width read
+    # here belongs to the site the hook will arm. All three sites happen to carry
+    # block_out_channels[-1] channels, so a disagreement would not raise -- it
+    # would align a different map.
+    label, block = sites[resolve_align_depth(requested, len(sites))]
+    return RepaTapPoint(module=unet,
+                        hidden_size=spatial_site_width(label, block),
+                        depth=len(sites),
+                        site_labels=tuple(name for name, _ in sites))
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -622,6 +670,7 @@ def train_step(
     debug_reference_image_paths: Optional[List[str]] = None,
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float]:
     """
     Perform single training step (SD1.5/SDXL).
@@ -749,9 +798,37 @@ def train_step(
     if pooled_embeddings is not None:
         pooled_embeddings.requires_grad_(True)
 
+    # REPA: arm the tap for THIS forward only. diffusers owns the block loop, so
+    # the tap is a forward hook rather than an assignment; registering it here
+    # and removing it below keeps it off the sampling forwards and leaves a
+    # disabled run with nothing installed at all.
+    repa_armed = bool(getattr(trainer, "repa_enable", False)) and repa_pixels is not None
+    repa_handle = None
+    if repa_armed:
+        from core.training.repa import arm_spatial_tap, spatial_tap_sites
+        # Site off the U-Net that is about to run; container off the module
+        # take_repa_tap reads, so the two cannot drift apart.
+        _site = spatial_tap_sites(trainer.unet)[trainer.repa_align_depth][1]
+        repa_handle = arm_spatial_tap(trainer._repa_tap_module, _site)
+
     # Predict noise using UNet
-    if trainer.mixed_precision:
-        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+    try:
+        if trainer.mixed_precision:
+            with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                if trainer.is_sdxl and added_cond_kwargs is not None:
+                    model_pred = trainer.unet(
+                        noisy_latents,
+                        timesteps,
+                        text_embeddings,
+                        added_cond_kwargs=added_cond_kwargs
+                    ).sample
+                else:
+                    model_pred = trainer.unet(
+                        noisy_latents,
+                        timesteps,
+                        text_embeddings
+                    ).sample
+        else:
             if trainer.is_sdxl and added_cond_kwargs is not None:
                 model_pred = trainer.unet(
                     noisy_latents,
@@ -765,20 +842,9 @@ def train_step(
                     timesteps,
                     text_embeddings
                 ).sample
-    else:
-        if trainer.is_sdxl and added_cond_kwargs is not None:
-            model_pred = trainer.unet(
-                noisy_latents,
-                timesteps,
-                text_embeddings,
-                added_cond_kwargs=added_cond_kwargs
-            ).sample
-        else:
-            model_pred = trainer.unet(
-                noisy_latents,
-                timesteps,
-                text_embeddings
-            ).sample
+    finally:
+        if repa_handle is not None:
+            repa_handle.remove()
 
     if profile_vram:
         print_vram_usage("[train_step] After UNet forward")
@@ -1051,6 +1117,23 @@ def train_step(
     # The training loop will call .backward() on the loss tensor.
     pred_loss_value = mse_loss.item()
     recon_loss_value = recon_loss.item()
+
+    # REPA: align the feature map the hook stashed at the tapped block with
+    # frozen clean-image patch features, through the trainable projector. Added
+    # to the backward loss; the reported pred loss above stays diffusion-only.
+    if repa_armed:
+        from core.training.repa import apply_repa_loss_spatial, take_repa_tap
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                f"REPA is enabled but the U-Net forward stashed nothing at tap site "
+                f"{getattr(trainer, 'repa_align_depth', None)} for this step, so the "
+                f"alignment term would drop out of the loss with the run still "
+                f"reporting progress. The hook is registered on that block just "
+                f"above, so this means the forward ran another module entirely.")
+        # The grid is the map's own (h, w) -- see repa.apply_repa_loss_spatial.
+        loss = apply_repa_loss_spatial(trainer, loss, tap, repa_pixels)
 
     # Free intermediate tensors explicitly to reduce VRAM usage
     # But keep 'loss' tensor for backward pass

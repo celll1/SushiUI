@@ -3143,7 +3143,7 @@ class BaseTrainer(ABC):
 
         from core.training.repa import (
             load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
-            repa_sidecar_path,
+            repa_sidecar_path, resolve_align_depth,
         )
 
         # Before the encoder is downloaded/read: an arch with no tap, and the two
@@ -3173,10 +3173,7 @@ class BaseTrainer(ABC):
 
         hidden = tap.hidden_size
         depth = tap.depth
-        align = int(self.config.get("repa_align_depth", -1))
-        if align < 0:
-            align = max(0, depth // 3)
-        align = max(0, min(align, depth - 1))
+        align = resolve_align_depth(self.config.get("repa_align_depth", -1), depth)
         if getattr(self.arch, "consumes_block_loop_features", False):
             # Only worth checking where the architecture's forward reads these:
             # elsewhere the config keys are built and then ignored, so refusing
@@ -3211,9 +3208,10 @@ class BaseTrainer(ABC):
         except Exception as _e:
             print(f"{self.log_prefix} [REPA] projector resume skipped (using fresh head): {_e}")
 
+        site = f" ({tap.site_labels[align]})" if align < len(tap.site_labels) else ""
         print(f"{self.log_prefix} [REPA] enabled: source={source}, enc_dim={enc_dim}, "
-              f"size={self.repa_size}, align_depth={align}/{depth}, weight={self.repa_weight}, "
-              f"proj_lr_factor={self.repa_proj_lr_factor}")
+              f"size={self.repa_size}, align_depth={align}/{depth}{site}, "
+              f"weight={self.repa_weight}, proj_lr_factor={self.repa_proj_lr_factor}")
 
     def _ensure_repa_on_device(self):
         """Idempotently ensure the REPA encoder + projector live on the training device."""
@@ -9100,6 +9098,14 @@ class BaseTrainer(ABC):
                 flx.clear_activations()
             except Exception:
                 pass
+        tap = getattr(self, "_repa_tap_module", None)
+        if tap is not None:
+            # The stashed map holds the forward graph, so it would survive this
+            # cleanup and go into the retry with it.
+            try:
+                tap._repa_tap_out = None
+            except Exception:
+                pass
         gc.collect()
         try:
             torch.cuda.synchronize()
@@ -10517,6 +10523,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
 
@@ -10735,6 +10742,7 @@ class BaseTrainer(ABC):
         debug_reference_image_paths: Optional[List[str]] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
+        repa_pixels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float]:
         """SD1.5/SDXL training step — thin delegator (P6a).
 
@@ -10757,6 +10765,7 @@ class BaseTrainer(ABC):
             debug_reference_image_paths=debug_reference_image_paths,
             profile_vram=profile_vram,
             alphas_cumprod_cached=alphas_cumprod_cached,
+            repa_pixels=repa_pixels,
         )
     def train_step_controlnet(
         self,

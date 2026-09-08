@@ -153,6 +153,16 @@ Phase 0 前提の是正           （必須・単独で価値あり）
 
 **結論**: 案 1'（context crop decode loss）は勾配方向・値の精度・計算効率のすべてにおいて成立することを確認。Phase 4 への分岐は不要とし、**Phase 3（opt-in 補助損失の実装）へ進行可能**。
 
+> **上表の測定条件についての注記（後日判明）**: probe は `torch.randn` を decoder 入力に
+> 直接与えている（`probes/probe_crop_decode_autograd.py`）。両アームが同一テンソルを使うので
+> margin 比較そのものは実 decoder の性質として有効だが、振幅は σ=1 ＝**正規化済み latent の
+> 側**であり、本番の decoder 入力（denormalize 後、SD1.5/SDXL なら σ≈5.5）ではない。
+> 入力は白色ノイズで画像構造も持たない。
+> **margin ≥ 8–16 セルで全 decode の勾配方向が回復する、という定性的な結論は受容野と
+> GroupNorm の性質なので振幅に対して頑健**だが、**MAE の絶対値（5.30 → 0.41 /255）は
+> 振幅に比例するため、本番作用点での値ではない**。再測定するなら probe の `base_latent` を
+> `1/scaling_factor` 倍するか実画像を encode する（1 行）。
+
 ---
 
 ## ✅ Phase 3 — 案 1' を opt-in loss として実装（実装・検証完了）

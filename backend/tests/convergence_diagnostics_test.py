@@ -14,6 +14,12 @@ import pytest
 import torch
 from PIL import Image
 
+import sys
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = REPO_ROOT / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 # Importing trainer/routes must not take the GPU the owner's run holds.
 torch.cuda.get_device_capability = lambda *a, **k: (8, 9)
 torch.cuda._lazy_init = lambda *a, **k: None

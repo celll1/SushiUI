@@ -289,3 +289,6 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         total_params = sum(t.numel() for t in combined.values())
         print(f"[LensFullParameterAdapter] Saved {len(combined)} tensors "
               f"({total_params:,} params) -> {output_path}")
+        # The resolved path, not the argument: BaseFullParameterAdapter pairs the
+        # REPA projector sidecar with the file actually written.
+        return output_path

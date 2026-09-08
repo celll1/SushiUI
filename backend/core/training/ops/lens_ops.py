@@ -280,6 +280,7 @@ def train_step(
     profile_vram: bool = False,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Lens DiT training step (flow-matching, velocity prediction).
 
@@ -292,6 +293,8 @@ def train_step(
                           Required for non-square latents; inferred from N for square.
         latent_w:         Spatial width of the latent grid (width // 16).
                           Required for non-square latents; inferred from N for square.
+        repa_pixels:      Clean-image [B,3,S,S] in [-1,1] for the REPA teacher, or
+                          None (no alignment term this step).
 
     Returns:
         (loss tensor, prediction loss value, reconstruction loss value)
@@ -419,6 +422,33 @@ def train_step(
         )
         if aux_loss is not None:
             loss = loss + aux_loss
+
+    # REPA: align the image stream the block loop stashed at the tap depth with
+    # frozen clean-image patch features, through the trainable projector. Added
+    # to the backward loss; pred/recon above stay diffusion-only.
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import take_repa_tap, apply_repa_loss
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                f"REPA is enabled but Lens's block loop stashed nothing at tap depth "
+                f"{getattr(trainer, 'repa_align_depth', None)} for this step, so the "
+                f"alignment term would drop out of the loss with the run still "
+                f"reporting progress. The training forward takes the default block "
+                f"loop, which always writes the tap, so this means the forward ran "
+                f"the FBCache branch (inference-only) or another module entirely."
+            )
+        if tap.shape[1] != latent_h * latent_w:
+            raise RuntimeError(
+                f"REPA read {tap.shape[1]} image tokens at the Lens tap but the grid "
+                f"is {latent_h}x{latent_w}={latent_h * latent_w}; the teacher targets "
+                f"would not correspond row for row."
+            )
+        # Row-major (h*latent_w + w), the order lens_pipeline_ops.vae_encode packs
+        # the sequence in ("b c (h p1) (w p2) -> b (h w) (c p1 p2)") and the one
+        # encode_repa_targets builds its grid in.
+        loss = apply_repa_loss(trainer, loss, tap, repa_pixels, latent_h, latent_w)
 
     # Backward is performed by _execute_forward_backward (single backward per
     # MNT iteration); do not call loss.backward() here.

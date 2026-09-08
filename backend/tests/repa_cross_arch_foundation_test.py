@@ -327,9 +327,9 @@ REFUSAL_MARKERS = {
 }
 
 # Architectures whose handler answers repa_tap. Their own tap behavior is
-# pinned per architecture (repa_anima_tap_test.py for anima); here they are
-# only excluded from the refusal sweep.
-WIRED_ARCHS = {"minit2i", "anima"}
+# pinned per architecture (repa_anima_tap_test.py for anima, repa_lens_tap_test.py
+# for lens); here they are only excluded from the refusal sweep.
+WIRED_ARCHS = {"minit2i", "anima", "lens"}
 
 
 @pytest.mark.parametrize("arch_name", sorted(ARCH_REGISTRY))

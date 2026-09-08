@@ -71,6 +71,19 @@ class LensArchHandler(ArchHandler):
         transformer = getattr(trainer, "transformer", None)
         return getattr(transformer, "transformer_blocks", None)
 
+    def repa_tap(self, trainer):
+        # The tap is the Lens DiT itself: its block loop stashes the IMAGE
+        # stream [B, N_img, inner_dim], which is dual-stream, so no token slice.
+        # No unwrap -- Lens has no training wrapper (load_components keeps
+        # transformer_original IS transformer). inner_dim is the value __init__
+        # recomputes as heads * head_dim, not the config key of that name.
+        from core.training.repa import RepaTapPoint
+
+        transformer = trainer.transformer
+        return RepaTapPoint(module=transformer,
+                            hidden_size=int(transformer.inner_dim),
+                            depth=len(transformer.transformer_blocks))
+
     def setup_attention_backend(self, trainer) -> None:
         # P3b: body lives in ops/lens_ops (shared with base_trainer delegator).
         from core.training.ops import lens_ops
@@ -116,6 +129,7 @@ class LensArchHandler(ArchHandler):
             profile_vram=ctx.profile_vram,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

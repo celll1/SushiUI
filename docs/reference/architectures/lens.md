@@ -176,6 +176,7 @@ Refused combinations:
 | NAG wrapper | `core.inference.nag_lens.LensNAGWrapper`; per-module `_nag_enabled`, `_nag_scale`, `_nag_tau`, `_nag_alpha` | applied in attention-output space on the image tokens |
 | NegPip | `core.inference.negpip_lens.install_negpip` / `scale_text_value`; per-module `_negpip_enabled`, `_negpip_weights` | scales `txt_v` pre-transpose; Q/K untouched |
 | Text-encoder lifecycle | `LensMixin._reload_lens_text_encoder` → `lens_loader.reload_lens_text_encoder` | arch-specific: drop-and-reload replaces an offload, to release untracked mxfp4 CUDA buffers |
+| REPA tap | `LensTransformer2DModel._repa_tap_depth` -> `_repa_tap_out`, read by `core.training.ops.lens_ops.train_step` | training-only; written by the default block loop (never by the inference-only FBCache branch), cleared at every forward. Tap shape `[B, N_img, inner_dim]` is the image stream itself — dual-stream, so no token slice — and its rows are row-major `h*latent_w + w` |
 | TREAD / stochastic depth / DiT-BlockSkip | **unsupported** — no `_tread_config`, `_block_skip_config`, or `_blockskip_config` path exists in `LensTransformer2DModel.forward` | contrast with `core.models.anima.anima_models.Anima`, which implements all three |
 | Reasoner stage | `core.models.lens.vendor.reasoner.PromptReasoner`, reachable only via `LensPipeline.refine_prompt` | **not wired** into `LensMixin`; see *Generation path* |
 

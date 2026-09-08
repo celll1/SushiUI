@@ -1283,7 +1283,26 @@ _REPA_UNSUPPORTED_REASONS = {
     "ltx2": "REPA is held back for LTX-2.3: the frozen image teacher would have to encode every frame of every clip on every step, and the transformer trunk is shared with the audio stream, so the alignment term would also steer weights that produce audio",
     "minimax_h3": "REPA is held back for MiniMax-H3: per-frame teacher cost as for LTX-2.3, a trunk shared with audio, and a packed sequence that interleaves condition frames with the frames being generated, so a tap returns rows the image teacher has no target for",
 }
-for _a in sorted(TRAINING_DECLARED_ARCHS - {"minit2i", "anima"}):
+
+# The phrase each reason above shares with `repa.REPA_REFUSALS`, whose own copy
+# of this dict is checked the same way at import. Being a paraphrase is what the
+# two are allowed to be; describing a DIFFERENT fact is what this forbids. Only
+# a test can compare the two dicts: base_trainer imports THIS module, so
+# importing core.training back would close the cycle -- repa_lens_tap_test.py
+# pins them equal.
+_REPA_REFUSAL_MARKERS = {
+    "acestep": "1-D time axis",
+    "ltx2": "shared with the audio stream",
+    "minimax_h3": "packed sequence",
+}
+for _a, _marker in _REPA_REFUSAL_MARKERS.items():
+    if _marker not in _REPA_UNSUPPORTED_REASONS[_a]:
+        raise RuntimeError(
+            f"_REPA_UNSUPPORTED_REASONS['{_a}'] no longer states {_marker!r}, "
+            f"which is the phrase it shares with core/training/repa.py's "
+            f"REPA_REFUSALS entry for the same architecture.")
+
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"minit2i", "anima", "lens"}):
     _add_training_feature_unsupported(
         _a, "repa",
         _REPA_UNSUPPORTED_REASONS.get(_a) or

@@ -406,6 +406,12 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
     # generation without a style reference never touches this mechanism at all.
     _style_ctx = None
 
+    # REPA tap: when ``_repa_tap_depth`` is set (0-based block index, armed by
+    # BaseTrainer._setup_repa), the block loop stashes that block's IMAGE stream
+    # [B, N_img, inner_dim] in ``_repa_tap_out``. None = disabled (no-op).
+    _repa_tap_depth = None
+    _repa_tap_out = None
+
     def _stamp_style_context(self) -> None:
         """Propagate ``self._style_ctx`` (and each block's static index) onto every
         ``transformer_blocks[i].attn`` module. Cheap no-op assignment loop when
@@ -488,6 +494,12 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         # streams each block's weights between CPU and GPU around its forward.
         offloader = getattr(self, "_block_offloader", None)
 
+        # REPA tap (training-only): drop any stream a previous forward stashed, so
+        # a step whose tap does not fire reads None rather than stale tokens.
+        repa_tap_depth = self._repa_tap_depth
+        if repa_tap_depth is not None:
+            self._repa_tap_out = None
+
         # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
         # including the block-swap wait/submit path below). When a FirstBlockCache is attached
         # by the Lens denoising loop, run only transformer_blocks[0], take its residual on the
@@ -527,6 +539,11 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states,
                     temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
+                # Assignment rather than a forward hook: the tap is then the
+                # tensor the loss sees, with no hook ordering or checkpoint
+                # recompute semantics to reason about.
+                if block_idx == repa_tap_depth:
+                    self._repa_tap_out = hidden_states
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)
         hidden_states = self.norm_out(hidden_states, temb)

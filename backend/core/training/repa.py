@@ -276,11 +276,31 @@ REPA_REFUSALS: Dict[str, str] = {
     ),
 }
 
+#: Phrases that must survive any rewording of the refusals above. api/
+#: arch_capabilities.py carries its own copy rather than importing this module:
+#: base_trainer imports THAT module (lazily), so a module-level edge back would
+#: close the cycle. repa_lens_tap_test.py pins the two dicts equal.
+REPA_REFUSAL_MARKERS: Dict[str, str] = {
+    "acestep": "1-D time axis",
+    "ltx2": "shared with the audio stream",
+    "minimax_h3": "packed sequence",
+}
+
+for _arch, _marker in REPA_REFUSAL_MARKERS.items():
+    if _marker not in REPA_REFUSALS[_arch]:
+        raise RuntimeError(
+            f"REPA_REFUSALS['{_arch}'] no longer states {_marker!r}; the API "
+            f"capability table's reason for it is checked against that phrase "
+            f"(api/arch_capabilities._REPA_REFUSAL_MARKERS), so the two would "
+            f"now be free to describe different facts."
+        )
+
 _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
-    "by design, but each architecture is wired one at a time; 'minit2i' and 'anima' "
-    "are wired today. Either set repa_enable=false or wire {arch}'s tap first."
+    "by design, but each architecture is wired one at a time; 'minit2i', 'anima' "
+    "and 'lens' are wired today. Either set repa_enable=false or wire {arch}'s "
+    "tap first."
 )
 
 

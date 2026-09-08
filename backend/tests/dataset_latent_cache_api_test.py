@@ -13,6 +13,8 @@ anything.
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,15 +45,38 @@ if not _CUDA_LIVE_BEFORE_IMPORT:
     assert not torch.cuda.is_initialized(), "importing api.routes initialised CUDA"
 
 
+def _apply_criterion(rows, criterion):
+    """Evaluate ``status.in_(...)`` and ``id == n`` against fake rows.
+
+    A fake that ignored the criteria would pass a run of any status to the
+    guard, which is how a `starting` run went unnoticed.
+    """
+    key = getattr(getattr(criterion, "left", None), "key", None)
+    operator = getattr(getattr(criterion, "operator", None), "__name__", "")
+    value = getattr(getattr(criterion, "right", None), "value", None)
+    if key is None or operator not in ("in_op", "eq"):
+        return rows
+    if operator == "in_op":
+        return [row for row in rows if getattr(row, key, None) in (value or ())]
+    return [row for row in rows if getattr(row, key, None) == value]
+
+
 class _FakeQuery:
     def __init__(self, result):
         self._result = result
 
-    def filter(self, *args, **kwargs):
-        return self
+    def filter(self, *criteria, **kwargs):
+        if not isinstance(self._result, list):
+            return self
+        rows = self._result
+        for criterion in criteria:
+            rows = _apply_criterion(rows, criterion)
+        return _FakeQuery(rows)
 
     def first(self):
-        return None if isinstance(self._result, list) else self._result
+        if isinstance(self._result, list):
+            return self._result[0] if self._result else None
+        return self._result
 
     def all(self):
         return self._result if isinstance(self._result, list) else [self._result]
@@ -67,6 +92,29 @@ class _FakeDB:
 
 def _dataset(unique_id="ds-uuid", dataset_id=7, total_items=3):
     return SimpleNamespace(id=dataset_id, unique_id=unique_id, total_items=total_items)
+
+
+def _run(run_id=1, run_name="run112", status="running", dataset_id=None,
+         dataset_configs=None):
+    return SimpleNamespace(id=run_id, run_name=run_name, status=status,
+                           dataset_id=dataset_id, dataset_configs=dataset_configs)
+
+
+def _junction(link: Path, target: Path) -> None:
+    """A Windows junction, or skip the test. Non-admins can make one, and an
+    operator moving the cache to another drive does."""
+    if sys.platform != "win32":
+        pytest.skip("junctions are Windows-only")
+    done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                          capture_output=True, text=True)
+    if done.returncode != 0 or not link.exists():
+        pytest.skip(f"could not create a junction: {done.stdout}{done.stderr}")
+
+
+def _listing_entry(path, namespace="ns", vae_namespace="vae-aaa", entries=1, size=1):
+    return {"path": path, "namespace": namespace, "vae_namespace": vae_namespace,
+            "entries": entries, "bytes": size, "vae_latent_hash": None,
+            "vae_family": None, "model_path": None, "created_at": None}
 
 
 def _make_cache(base: Path, unique_id: str, namespace: str, vae_namespace: str,
@@ -241,11 +289,8 @@ def test_a_listed_path_outside_the_dataset_root_is_still_refused(cache_root, mon
     (outside / "latents").mkdir(parents=True)
     (outside / "latents" / "0.pt").write_bytes(b"x")
 
-    monkeypatch.setattr(latent_cache_module, "list_vae_namespaces", lambda *a, **k: [{
-        "path": outside, "namespace": "ns", "vae_namespace": "vae-aaa",
-        "entries": 1, "bytes": 1, "vae_latent_hash": None, "vae_family": None,
-        "model_path": None, "created_at": None,
-    }])
+    monkeypatch.setattr(latent_cache_module, "list_vae_namespaces",
+                        lambda *a, **k: [_listing_entry(outside)])
 
     with pytest.raises(HTTPException) as excinfo:
         _delete(dataset)
@@ -258,11 +303,8 @@ def test_the_dataset_root_itself_is_not_a_deletable_target(cache_root, monkeypat
     dataset = _dataset()
     root = cache_root / "ds-uuid"
     root.mkdir(parents=True)
-    monkeypatch.setattr(latent_cache_module, "list_vae_namespaces", lambda *a, **k: [{
-        "path": root, "namespace": "ns", "vae_namespace": "vae-aaa",
-        "entries": 0, "bytes": 0, "vae_latent_hash": None, "vae_family": None,
-        "model_path": None, "created_at": None,
-    }])
+    monkeypatch.setattr(latent_cache_module, "list_vae_namespaces",
+                        lambda *a, **k: [_listing_entry(root, entries=0, size=0)])
 
     with pytest.raises(HTTPException) as excinfo:
         _delete(dataset)
@@ -271,11 +313,23 @@ def test_the_dataset_root_itself_is_not_a_deletable_target(cache_root, monkeypat
     assert root.exists()
 
 
-def test_a_running_run_on_this_dataset_blocks_the_delete(cache_root):
+# ------------------------------------------------------ the active-run guard
+
+@pytest.mark.parametrize("status", ["running", "paused", "starting"])
+@pytest.mark.parametrize("attach", ["dataset_configs", "string_dataset_id", "legacy"])
+def test_an_unfinished_run_on_this_dataset_blocks_the_delete(cache_root, status, attach):
+    """`starting` is the one that matters: the status becomes `running` only
+    once a training step is parsed, so the whole pre-encode phase — hours on a
+    large dataset — is `starting`, and deleting under it makes the next
+    save_latent fail with FileNotFoundError and takes the run down."""
     dataset = _dataset()
     kept = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
-    run = SimpleNamespace(run_name="run112", dataset_id=None,
-                          dataset_configs=[{"dataset_id": dataset.id}])
+    attached = {
+        "dataset_configs": dict(dataset_configs=[{"dataset_id": dataset.id}]),
+        "string_dataset_id": dict(dataset_configs=[{"dataset_id": str(dataset.id)}]),
+        "legacy": dict(dataset_id=dataset.id),
+    }[attach]
+    run = _run(status=status, **attached)
 
     with pytest.raises(HTTPException) as excinfo:
         _delete(dataset, runs=[run])
@@ -284,6 +338,143 @@ def test_a_running_run_on_this_dataset_blocks_the_delete(cache_root):
     preview = _delete(dataset, runs=[run], dry_run=True)
     assert preview["active_runs"] == ["run112"]
     assert kept.exists()
+
+
+def test_a_finished_run_does_not_block_the_delete(cache_root):
+    dataset = _dataset()
+    doomed = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    run = _run(status="completed", dataset_configs=[{"dataset_id": dataset.id}])
+
+    assert _delete(dataset, runs=[run])["deleted"] is True
+    assert not doomed.exists()
+
+
+def test_a_run_on_another_dataset_does_not_block_the_delete(cache_root):
+    dataset = _dataset()
+    doomed = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    run = _run(status="starting", dataset_configs=[{"dataset_id": dataset.id + 1}])
+
+    assert _delete(dataset, runs=[run])["deleted"] is True
+    assert not doomed.exists()
+
+
+def test_a_live_training_process_blocks_a_run_whose_row_says_otherwise(cache_root, monkeypatch):
+    """The DB status is not liveness: a child is registered before its status
+    is written, which is the window between this check and the rmtree."""
+    dataset = _dataset()
+    kept = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    run = _run(run_id=42, status="failed", dataset_configs=[{"dataset_id": dataset.id}])
+    monkeypatch.setitem(routes.training_process_manager.processes, 42,
+                        SimpleNamespace(process=None))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _delete(dataset, runs=[run])
+
+    assert excinfo.value.status_code == 409
+    assert kept.exists()
+
+
+# ------------------------------------------------- batch is all-or-nothing (P3)
+
+def test_a_batch_with_one_refused_target_deletes_nothing(cache_root, monkeypatch):
+    dataset = _dataset()
+    good = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=2)
+    outside = cache_root.parent / "outside"
+    (outside / "latents").mkdir(parents=True)
+    (outside / "latents" / "0.pt").write_bytes(b"x")
+    monkeypatch.setattr(latent_cache_module, "list_vae_namespaces", lambda *a, **k: [
+        _listing_entry(good, vae_namespace="vae-aaa", entries=2),
+        _listing_entry(outside, vae_namespace="vae-bad"),
+    ])
+
+    with pytest.raises(HTTPException) as excinfo:
+        _delete(dataset)
+
+    assert excinfo.value.status_code == 500
+    assert "nothing was removed" in excinfo.value.detail
+    assert len(list((good / "latents").glob("*.pt"))) == 2
+    assert (outside / "latents" / "0.pt").exists()
+
+
+def test_a_failed_rmtree_reports_how_far_the_batch_got(cache_root, monkeypatch):
+    dataset = _dataset()
+    first = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    second = _make_cache(cache_root, "ds-uuid", "ns", "vae-bbb", entries=1)
+    real_rmtree = shutil.rmtree
+
+    def flaky(path, *args, **kwargs):
+        if Path(path).name == "vae-bbb":
+            raise OSError("device or resource busy")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", flaky)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _delete(dataset)
+
+    detail = excinfo.value.detail
+    assert excinfo.value.status_code == 500
+    assert "Deleted 1 of 2" in detail
+    assert str(first) in detail and str(second) in detail
+    assert not first.exists() and second.exists()
+
+
+def test_deleting_a_dataset_with_no_cache_is_a_reported_no_op(cache_root):
+    result = _delete(_dataset())
+
+    assert result["deleted"] is True
+    assert result["targets"] == []
+    assert result["total_entries"] == 0 and result["total_bytes"] == 0
+    assert result["active_runs"] == []
+
+
+# ------------------------------------------------------------- junctions (P2)
+
+def test_a_vae_junction_onto_its_own_architecture_namespace_is_refused(cache_root):
+    """Measured before the fix: this deleted the architecture namespace, text
+    embeddings included, because containment alone accepted the resolved path."""
+    dataset = _dataset()
+    kept = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    embeddings = _text_embeddings(cache_root, "ds-uuid", "ns")
+    arch_dir = cache_root / "ds-uuid" / "ns"
+    _junction(arch_dir / "vae-evil", arch_dir)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _delete(dataset)
+
+    assert excinfo.value.status_code == 500
+    assert (embeddings / "caption.pt").read_bytes() == b"keep me"
+    assert (kept / "latents").exists()
+
+
+def test_a_vae_junction_pointing_outside_the_cache_is_refused(cache_root):
+    dataset = _dataset()
+    outside = cache_root.parent / "outside"
+    (outside / "latents").mkdir(parents=True)
+    (outside / "latents" / "0.pt").write_bytes(b"x")
+    arch_dir = cache_root / "ds-uuid" / "ns"
+    arch_dir.mkdir(parents=True)
+    _junction(arch_dir / "vae-out", outside)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _delete(dataset)
+
+    assert excinfo.value.status_code == 500
+    assert (outside / "latents" / "0.pt").exists()
+
+
+def test_a_junction_inside_a_real_namespace_is_removed_without_its_target(cache_root):
+    dataset = _dataset()
+    vae_dir = _make_cache(cache_root, "ds-uuid", "ns", "vae-aaa", entries=1)
+    outside = cache_root.parent / "outside"
+    outside.mkdir()
+    (outside / "keep.pt").write_bytes(b"x")
+    _junction(vae_dir / "elsewhere", outside)
+
+    result = _delete(dataset)
+
+    assert result["deleted"] is True and not vae_dir.exists()
+    assert (outside / "keep.pt").read_bytes() == b"x"
 
 
 # ----------------------------------------------------- removed run keys (d)

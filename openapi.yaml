@@ -7978,6 +7978,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The dataset's `unique_id` cannot name a cache directory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags: [datasets]
       summary: Delete (rebuild) latent cache namespaces of one dataset
@@ -7990,14 +7996,25 @@ paths:
         `dry_run=true` returns the same payload — path, entry count, byte size —
         without touching the filesystem.
 
-        Only directories this dataset's own listing produced are deleted; a
-        target that does not resolve inside
-        `{cache_dir}/datasets/{dataset_unique_id}/` is refused. Text embeddings
-        live one level above the `vae-*` directories and are never deleted here:
-        they do not depend on the VAE, so a rebuild must not discard them.
+        Only directories this dataset's own listing produced are deleted, and
+        each one must be a `vae-*` directory directly under an architecture
+        namespace of `{cache_dir}/datasets/{dataset_unique_id}/` — both as
+        listed and after resolving links. Anything else is refused with 500.
+        Text embeddings live one level above the `vae-*` directories and are
+        never deleted here: they do not depend on the VAE, so a rebuild must
+        not discard them.
 
-        Refused with 409 while a run that names this dataset is `running` or
-        `paused` — its latents may be the ones being deleted.
+        The batch is all-or-nothing up to the filesystem: every target is
+        validated before any is removed, so a refused batch removes nothing.
+        Past that point only a failing `rmtree` can leave a batch half deleted,
+        and its 500 names what was deleted, what is partially deleted, and what
+        was never touched.
+
+        Refused with 409 while a run that names this dataset is `starting`,
+        `running` or `paused`, or has a live training process — its latents may
+        be the ones being deleted. `starting` matters most: a run stays in that
+        status for the whole pre-encode phase, which is where the cache is
+        written.
       operationId: deleteDatasetLatentCache
       parameters:
         - name: dataset_id
@@ -8044,7 +8061,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: A run using this dataset is running or paused
+          description: A run using this dataset is starting, running or paused, or has a live training process
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The dataset's `unique_id` cannot name a cache directory, a target is
+            not a `vae-*` directory directly under an architecture namespace of
+            this dataset's cache root (nothing was removed), or a deletion
+            failed midway (the message names what was and was not removed).
           content:
             application/json:
               schema:
@@ -20231,7 +20258,7 @@ components:
           example: 402653184
         active_runs:
           type: array
-          description: Runs using this dataset that are running or paused; non-empty means a real delete is refused with 409
+          description: Runs using this dataset that are starting, running or paused, or have a live training process; non-empty means a real delete is refused with 409
           items:
             type: string
           example: []

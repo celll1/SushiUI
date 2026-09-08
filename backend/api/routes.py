@@ -13383,7 +13383,7 @@ def _latent_cache_namespaces(dataset) -> tuple:
 
     unique_id = str(dataset.unique_id or "")
     if not unique_id or unique_id in (".", "..") or any(
-            sep in unique_id for sep in ("/", "\\", ":")):
+            sep in unique_id for sep in ("/", "\\", ":", "\x00")):
         raise HTTPException(
             status_code=500,
             detail=f"Dataset {dataset.id} has an unusable unique_id for a cache path")
@@ -13393,6 +13393,75 @@ def _latent_cache_namespaces(dataset) -> tuple:
     for entry in found:
         entry["path"] = str(entry["path"])
     return base, found
+
+
+# "starting" is the whole pre-encode phase: the status becomes "running" only
+# when the parent parses a training step, so encoding 1M latents happens
+# entirely under "starting". Matches the ["running", "starting"] liveness test
+# used everywhere else in this file.
+_CACHE_BUSY_STATUSES = ("starting", "running", "paused")
+
+
+def _run_uses_dataset(run, dataset_id: int) -> bool:
+    """Whether ``run`` trains on ``dataset_id``, by either config shape."""
+    for config in (run.dataset_configs or []):
+        try:
+            if int((config or {}).get("dataset_id") or -1) == dataset_id:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return run.dataset_id == dataset_id
+
+
+def _runs_blocking_cache_delete(training_db, dataset_id: int) -> List[str]:
+    """Names of runs that may still write this dataset's latent cache.
+
+    The DB status is not liveness (a live child can precede its own status
+    write), so the registry's is_live is consulted as well; together they leave
+    no window between this check and the rmtree, which does not await.
+    """
+    names: List[str] = []
+    seen = set()
+    for run in training_db.query(TrainingRun).filter(
+            TrainingRun.status.in_(_CACHE_BUSY_STATUSES)).all():
+        if run.id in seen or not _run_uses_dataset(run, dataset_id):
+            continue
+        seen.add(run.id)
+        names.append(run.run_name)
+    for run_id in tuple(training_process_manager.processes):
+        if run_id in seen or not training_process_manager.is_live(run_id):
+            continue
+        run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        if run is not None and _run_uses_dataset(run, dataset_id):
+            seen.add(run_id)
+            names.append(run.run_name)
+    return names
+
+
+def _same_path(a, b) -> bool:
+    return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+
+
+def _cache_target_refusal(path_str: str, listed_root: Path, resolved_root: Path) -> Optional[str]:
+    """Why ``path_str`` may not be deleted, or None if it may.
+
+    Deletable is exactly ``{dataset root}/{arch namespace}/{vae-*}``, checked
+    both as listed and after resolution: a junction named ``vae-*`` pointing at
+    its own parent passed a root-containment-only test and took the whole
+    architecture namespace with it.
+    """
+    literal = Path(path_str)
+    try:
+        resolved = Path(os.path.realpath(literal))
+    except (OSError, ValueError) as exc:
+        return f"{literal}: cannot be resolved ({exc})"
+    for candidate, root in ((literal, listed_root), (resolved, resolved_root)):
+        if not candidate.name.startswith("vae-"):
+            return f"{literal}: not a vae-* namespace directory (resolves to {candidate})"
+        if not _same_path(candidate.parent.parent, root):
+            return (f"{literal}: not directly under an architecture namespace of "
+                    f"{root} (resolves to {candidate})")
+    return None
 
 
 @router.get("/datasets/{dataset_id}/latent-cache")
@@ -13426,9 +13495,12 @@ async def delete_dataset_latent_cache(
     """Delete whole `vae-*` namespaces of a dataset; rebuilding is the next run's job.
 
     See openapi.yaml for the contract. The deletion is bounded twice: the target
-    comes from the dataset's own listing (never from the query string), and the
-    resolved path is required to sit under the resolved
-    ``{cache_base}/{dataset_unique_id}`` before anything is removed.
+    comes from the dataset's own listing (never from the query string), and
+    every target must be a ``vae-*`` directory directly under an architecture
+    namespace of ``{cache_base}/{dataset_unique_id}`` — as listed and after
+    resolution. All targets are checked before any is removed, so a refused
+    batch removes nothing; only an rmtree failing midway can leave part of a
+    batch deleted, and its 500 says which parts.
     """
     import shutil
 
@@ -13453,13 +13525,7 @@ async def delete_dataset_latent_cache(
     else:
         targets = list(namespaces)
 
-    active_runs = [
-        run.run_name for run in training_db.query(TrainingRun).filter(
-            TrainingRun.status.in_(("running", "paused"))).all()
-        if any((c or {}).get("dataset_id") == dataset_id
-               for c in (run.dataset_configs or []))
-        or run.dataset_id == dataset_id
-    ]
+    active_runs = _runs_blocking_cache_delete(training_db, dataset_id)
 
     result = {
         "dataset_id": dataset_id,
@@ -13476,16 +13542,33 @@ async def delete_dataset_latent_cache(
         raise HTTPException(
             status_code=409,
             detail=f"Refusing to delete: run(s) {', '.join(active_runs)} use this dataset "
-                   f"and are running or paused")
+                   f"and have not finished (starting, running or paused, or a live "
+                   f"training process)")
 
-    root = Path(base).resolve() / str(dataset.unique_id)
+    listed_root = Path(base) / str(dataset.unique_id)
+    resolved_root = Path(base).resolve() / str(dataset.unique_id)
+    refusals = [reason for reason in
+                (_cache_target_refusal(t["path"], listed_root, resolved_root) for t in targets)
+                if reason]
+    if refusals:
+        raise HTTPException(
+            status_code=500,
+            detail="Refusing to delete, nothing was removed: " + "; ".join(refusals))
+
+    removed: List[str] = []
     for target in targets:
-        path = Path(target["path"]).resolve()
-        if path == root or root not in path.parents:
+        path = Path(target["path"])
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+        except OSError as exc:
+            pending = [t["path"] for t in targets[len(removed) + 1:]]
             raise HTTPException(
                 status_code=500,
-                detail=f"Refusing to delete a path outside the dataset cache root: {path}")
-        shutil.rmtree(path, ignore_errors=False)
+                detail=(f"Deleted {len(removed)} of {len(targets)} namespace(s) before "
+                        f"failing on {path}: {exc}. Deleted: "
+                        f"{', '.join(removed) if removed else 'none'}. Partially deleted: "
+                        f"{path}. Untouched: {', '.join(pending) if pending else 'none'}"))
+        removed.append(str(path))
         print(f"[LatentCache] Deleted {path} ({target['entries']} entries, "
               f"{target['bytes']} bytes) for dataset {dataset_id}")
 

@@ -70,7 +70,11 @@ from core.training.lr_triggers import (
 )
 from core.training.lr_utils import reassert_config_lr
 from core.training.training_events import emit_training_event, emit_training_warning
-from core.training.image_preprocessing import flatten_to_rgb
+from core.training.image_preprocessing import (
+    crop_window_in_original,
+    flatten_to_rgb,
+    source_region_for_strategy,
+)
 from core.training.checkpoint_space import (
     KEEP_FLOOR_AFTER_WRITE,
     KEEP_FLOOR_BEFORE_WRITE,
@@ -3143,12 +3147,17 @@ class BaseTrainer(ABC):
 
         from core.training.repa import (
             load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
-            repa_sidecar_path, resolve_align_depth,
+            assert_repa_region_reconstructible, repa_sidecar_path,
+            resolve_align_depth,
         )
 
         # Before the encoder is downloaded/read: an arch with no tap, and the two
         # video archs held back, refuse here.
         tap = self.arch.repa_tap(self)
+
+        # Likewise before the encoder loads: a preprocessing configuration whose
+        # per-item crop the teacher cannot follow.
+        assert_repa_region_reconstructible(self.config)
 
         source = str(self.config.get("repa_encoder_source", "tagger") or "tagger").strip().lower()
         tagger_dir = str(self.config.get("repa_tagger_model_dir", "") or "").strip()
@@ -3224,24 +3233,88 @@ class BaseTrainer(ABC):
             self.repa_projector = self.repa_projector.to(device=self.device, dtype=repa_dtype)
         self._repa_moved = True
 
-    def _get_repa_pixels_for_item(self, item) -> Optional[torch.Tensor]:
+    def _repa_source_size(self, item) -> Tuple[int, int]:
+        """Source (w, h) read from the image itself, memoized per path.
+
+        Deliberately not ``_get_original_size_for_item``: that one prefers the DB's
+        recorded dims, and a row that disagrees with the file would place the
+        teacher's crop window where the latent never looked.
+        """
+        m = getattr(self, "_repa_src_size", None)
+        if m is None:
+            m = self._repa_src_size = {}
+        key = item.get("image_path")
+        if key and key in m:
+            return m[key]
+        _b = item.get("_danbooru_image_bytes")
+        if _b is not None:
+            with Image.open(BytesIO(_b)) as im:
+                wh = im.size
+        elif key:
+            with Image.open(key) as im:
+                wh = im.size
+        else:
+            raise ValueError("REPA: item carries neither image_path nor image bytes")
+        if key:
+            m[key] = wh
+        return wh
+
+    def _repa_source_region(self, item, target_w, target_h,
+                            strategy: str) -> Optional[Tuple[int, int, int, int]]:
+        """The original-image pixel box (x0,y0,x1,y1) this item's latent encoded.
+
+        ``encode_image``'s capture from this same iteration wins when there is one:
+        it is exact for ``random_crop`` and for a crop-augment window, neither of
+        which is a function of the sizes. A latent served from the disk cache or
+        the swap buffer was encoded earlier, so its box is recomputed from the
+        strategy that wrote it -- possible for ``resize``/``crop`` only, which is
+        what ``assert_repa_region_reconstructible`` refuses the rest at setup for.
+
+        None means the source is unreadable (a Danbooru-injected item's bytes are
+        freed once its latent is buffered), which skips REPA for the batch exactly
+        as a failed pixel load does. A strategy with no reconstruction RAISES
+        instead: skipping there would hide a configuration that cannot align.
+        """
+        captured = getattr(self, "_last_source_region", None)
+        self._last_source_region = None
+        if captured is not None:
+            return captured
+        try:
+            ow, oh = self._repa_source_size(item)
+        except Exception:
+            return None
+        return source_region_for_strategy(ow, oh, int(target_w), int(target_h), strategy)
+
+    def _get_repa_pixels_for_item(self, item, region) -> Optional[torch.Tensor]:
         """Load + cache an S x S clean-image tensor [1,3,S,S] in [-1,1] for REPA.
+
+        ``region`` is the original-pixel box the item's latent encoded (see
+        ``_repa_source_region``): the teacher has to describe that region and no
+        other, or the per-position alignment is against the wrong pixels. The crop
+        comes first and the square squish second, so the teacher sees the latent's
+        content under the shape distortion the encoder imposes on everything.
 
         SigLIP2 normalization is mean=std=0.5 (i.e. [-1,1]); the encoder squishes to
         a fixed square (aspect handled by interpolating its features to the DiT grid).
         Returns None on load failure (the affected batch then skips REPA). A bounded
-        in-memory LRU amortizes re-decoding the same images across the swap window.
+        in-memory LRU amortizes re-decoding the same images across the swap window;
+        it is keyed by region as well as path, because crop augmentation gives the
+        same path a different box every epoch.
         """
+        if region is None:
+            return None
         try:
             S = int(getattr(self, "repa_size", 384) or 384)
+            box = tuple(int(v) for v in region)
             key = item.get("image_path")
+            cache_key = (key, box) if key else None
             cache = getattr(self, "_repa_pix_cache", None)
             if cache is None:
                 from collections import OrderedDict
                 cache = self._repa_pix_cache = OrderedDict()
-            if key and key in cache:
-                cache.move_to_end(key)
-                return cache[key]
+            if cache_key is not None and cache_key in cache:
+                cache.move_to_end(cache_key)
+                return cache[cache_key]
 
             _b = item.get("_danbooru_image_bytes")
             if _b is not None:
@@ -3250,16 +3323,19 @@ class BaseTrainer(ABC):
                 img = Image.open(key)
             else:
                 return None
-            img = flatten_to_rgb(img).resize((S, S), Image.BICUBIC)
+            img = flatten_to_rgb(img)
+            if box != (0, 0, img.width, img.height):
+                img = img.crop(box)
+            img = img.resize((S, S), Image.BICUBIC)
 
             import numpy as _np
             arr = _np.asarray(img, dtype=_np.float32) / 255.0  # [S,S,3] in [0,1]
             t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()  # [1,3,S,S]
             t = t * 2.0 - 1.0  # -> [-1,1]
 
-            if key:
-                cache[key] = t
-                cache.move_to_end(key)
+            if cache_key is not None:
+                cache[cache_key] = t
+                cache.move_to_end(cache_key)
                 while len(cache) > 4096:
                     cache.popitem(last=False)
             return t
@@ -8833,6 +8909,11 @@ class BaseTrainer(ABC):
         # Planner-provided time_ids for the crop_box path (None for the strategy path).
         _microcond_override = None
 
+        # The original-pixel box this encode keeps, published as _last_source_region
+        # below. REPA's teacher must encode the same region as the latent, and for
+        # random_crop / crop-augment this is the only record of which one it was.
+        _src_region = None
+
         if crop_box is not None:
             # Epoch-dynamic crop path (CropPlanner): crop the exact region from the
             # original and resize to the target bucket, bypassing bucket_strategy. The
@@ -8847,6 +8928,7 @@ class BaseTrainer(ABC):
                 region = region.resize((width, height), Image.LANCZOS)
             image = region
             crop_left, crop_top = cx, cy
+            _src_region = (cx, cy, cx + cw, cy + ch)
             _microcond_override = (
                 tuple(time_ids_override) if time_ids_override is not None
                 else (orig_h, orig_w, cy, cx, height, width)
@@ -8859,6 +8941,7 @@ class BaseTrainer(ABC):
             if bucket_strategy == "resize":
                 # Direct resize (may distort aspect ratio)
                 image = image.resize((width, height), Image.LANCZOS)
+                _src_region = (0, 0, orig_w, orig_h)
 
             elif bucket_strategy == "crop":
                 # Aspect ratio preserving resize + center crop (default)
@@ -8873,6 +8956,8 @@ class BaseTrainer(ABC):
                 top = (new_height - height) // 2
                 crop_left, crop_top = left, top
                 image = image.crop((left, top, left + width, top + height))
+                _src_region = crop_window_in_original(
+                    orig_w, orig_h, new_width, new_height, left, top, width, height)
 
             elif bucket_strategy == "random_crop":
                 # Random crop at original resolution (no resize)
@@ -8894,6 +8979,10 @@ class BaseTrainer(ABC):
                 top = random.randint(0, max_top) if max_top > 0 else 0
                 crop_left, crop_top = left, top
                 image = image.crop((left, top, left + width, top + height))
+                # img_width/img_height are the post-upscale dims the window was
+                # drawn in; orig_w/orig_h are still the file's.
+                _src_region = crop_window_in_original(
+                    orig_w, orig_h, img_width, img_height, left, top, width, height)
 
             else:
                 raise ValueError(f"Unknown bucket_strategy: {bucket_strategy}. Must be 'resize', 'crop', or 'random_crop'")
@@ -8909,6 +8998,9 @@ class BaseTrainer(ABC):
             _microcond_override if _microcond_override is not None
             else (orig_h, orig_w, crop_top, crop_left, height, width)
         )
+        # Read (and cleared) per item by _repa_source_region, on the same
+        # consume-once contract as _last_micro_cond above.
+        self._last_source_region = _src_region
 
         # Convert to tensor and normalize
         image_array = np.array(image).astype(np.float32) / 255.0
@@ -14292,6 +14384,15 @@ class BaseTrainer(ABC):
 
         self._refuse_unsupported_audio_only_items(datasets)
 
+        # REPA's teacher has to encode the same pixels as the latent, so it needs the
+        # strategy the latent's ACTUAL producer used -- pre_encoded_cache overrides the
+        # configured one, and the forcings above have settled the mode by now (the
+        # setup-time refusal could only read the config).
+        from core.training.repa import latent_source_strategy as _repa_latent_source_strategy
+        _repa_latent_strategy = (
+            _repa_latent_source_strategy(latent_encoding_mode, bucket_strategy)
+            if getattr(self, "repa_enable", False) else None)
+
         # Setup latent caches (mode-dependent)
         latent_caches = None
         print(f"{self.log_prefix} Latent encoding mode: {latent_encoding_mode}")
@@ -16074,6 +16175,13 @@ class BaseTrainer(ABC):
                         # be absorbed as a corrupt image (run 121).
                         self._assert_item_pixel_align(item, width, height)
 
+                        if _repa_active:
+                            # Cleared before the encode that may set it, so a capture
+                            # left by any earlier encode (a previous item's reference
+                            # image, a calibration pass) can never be read as this
+                            # item's region.
+                            self._last_source_region = None
+
                         # Load latent (mode-specific)
                         if latent_encoding_mode == "swap_onthefly":
                             # Get from swap buffer using image_path as key (dict lookup)
@@ -16280,7 +16388,11 @@ class BaseTrainer(ABC):
                         # A latent was appended above for this item (corrupted items break
                         # earlier), so this keeps 1:1 alignment. None -> REPA skipped for batch.
                         if _repa_active:
-                            repa_pixels_list.append(self._get_repa_pixels_for_item(item))
+                            repa_pixels_list.append(self._get_repa_pixels_for_item(
+                                item,
+                                self._repa_source_region(item, width, height,
+                                                         _repa_latent_strategy),
+                            ))
 
                         # SDXL micro-conditioning per item: prefer the exact values
                         # captured by encode_image (onthefly path; exact even for

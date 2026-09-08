@@ -331,6 +331,62 @@ def refuse_repa(arch_name: str):
     raise ValueError(f"repa_enable is not supported for architecture '{arch_name}'. {reason}")
 
 
+def latent_source_strategy(latent_encoding_mode: str, bucket_strategy: str) -> str:
+    """The bucket strategy the latent a run consumes was ACTUALLY encoded with.
+
+    The disk latent cache is written by ``encode_image`` calls that pass no
+    ``bucket_strategy`` (``_validate_and_generate_latent_caches``,
+    ``_regenerate_single_latent``), i.e. by its default center crop, whatever the
+    config asks for. ``controlnet_trainer`` refuses outpaint on
+    ``pre_encoded_cache`` over this same fact. The two on-the-fly modes pass the
+    configured strategy through.
+    """
+    mode = str(latent_encoding_mode or "swap_onthefly")
+    if mode == "pre_encoded_cache":
+        return "crop"
+    return str(bucket_strategy or "resize")
+
+
+def assert_repa_region_reconstructible(config) -> None:
+    """Refuse a preprocessing configuration whose latent crop the teacher cannot follow.
+
+    REPA aligns student tokens to teacher patches position by position, so the
+    teacher has to encode the same pixels the latent did. A ``random_crop``
+    window is drawn inside ``encode_image`` and recorded nowhere, so it can only
+    be followed when the encode runs in the same batch-loop iteration that reads
+    it -- which is ``onthefly_gpu`` and nothing else.
+
+    Called from ``_setup_repa`` before the encoder loads, so a run that cannot be
+    aligned fails at startup rather than training on a mismatch.
+    """
+    config = config or {}
+    mode = str(config.get("latent_encoding_mode", "swap_onthefly") or "swap_onthefly")
+    strategy = latent_source_strategy(
+        mode, str(config.get("bucket_strategy", "resize") or "resize"))
+
+    if strategy in ("resize", "crop"):
+        return
+    if strategy == "random_crop":
+        if mode == "onthefly_gpu":
+            return
+        raise ValueError(
+            f"repa_enable cannot be combined with bucket_strategy='random_crop' "
+            f"under latent_encoding_mode={mode!r}. The random window is drawn "
+            f"inside encode_image and stored nowhere, so a latent taken from the "
+            f"swap buffer cannot tell the REPA teacher which region it holds, and "
+            f"the alignment would be taken against a different part of the image. "
+            f"Options: (1) latent_encoding_mode='onthefly_gpu', which encodes each "
+            f"item in the iteration that reads it (set it explicitly -- this check "
+            f"runs before the model loads and can only see the configured value), "
+            f"(2) bucket_strategy='resize' or 'crop', (3) repa_enable=false."
+        )
+    raise ValueError(
+        f"repa_enable cannot be combined with bucket_strategy={strategy!r}: REPA "
+        f"reconstructs the encoded region per item and knows only 'resize', "
+        f"'crop' and 'random_crop'."
+    )
+
+
 def resolve_align_depth(configured: int, depth: int) -> int:
     """The tap index a run arms: ``-1`` = auto (a third of the way in), clamped.
 

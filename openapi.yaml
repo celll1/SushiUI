@@ -7939,6 +7939,12 @@ paths:
         architecture namespaces:
         `{cache_dir}/datasets/{dataset_unique_id}/{namespace}/vae-{latent_hash}/`.
 
+        Caches written in the two layouts that predate that one
+        (`{dataset_unique_id}/{namespace}/latents/` and
+        `{dataset_unique_id}/latents/`) are listed too, so nothing occupying
+        disk is reported as zero. They carry `layout` other than `vae` and
+        `deletable: false`; see the schema.
+
         **The cache belongs to the (dataset, VAE) pair, not to a run.** A run
         never carries a cache option: `latent_encoding_mode: pre_encoded_cache`
         makes a run *fill* whatever is missing when it starts, and every
@@ -7991,6 +7997,10 @@ paths:
         Deletes whole `vae-*` namespaces for this dataset. With no
         `namespace`/`vae_namespace` query parameter every namespace of the
         dataset is targeted; with both, exactly one.
+
+        Only entries the listing marks `deletable` are ever targeted. A cache
+        in a pre-`vae-*` layout is therefore reported by `GET` but never
+        deleted here — reclaim it by removing its `path` by hand.
 
         Deletion is irreversible, so the targets are enumerable first:
         `dry_run=true` returns the same payload — path, entry count, byte size —
@@ -8049,7 +8059,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DatasetLatentCacheDeleteResponse'
         '400':
-          description: Only one of namespace/vae_namespace given, or the pair names no cache of this dataset
+          description: Only one of namespace/vae_namespace given, or the pair names no deletable cache of this dataset
           content:
             application/json:
               schema:
@@ -20164,20 +20174,44 @@ components:
 
     DatasetLatentCacheNamespace:
       type: object
-      description: One `vae-*` latent cache directory of a dataset.
-      required: [path, namespace, vae_namespace, entries, bytes]
+      description: |
+        One latent cache directory of a dataset: a `vae-*` namespace, or a
+        `latents` directory left by one of the two layouts that predate them.
+      required: [path, layout, namespace, vae_namespace, deletable, entries, bytes]
       properties:
         path:
           type: string
-          description: Absolute directory path
+          description: |
+            Absolute directory path. The `vae-*` namespace for `layout: vae`,
+            and the `latents` directory itself for the older layouts.
           example: 'M:\sushiUI\cache\datasets\a1b2c3d4-.../sdxl__c4__dtfloat16\vae-e9a645c32c26a19e'
+        layout:
+          type: string
+          enum: [vae, arch, dataset]
+          description: |
+            Which directory layout this cache was written in.
+            `vae` = `{dataset}/{namespace}/vae-*/` (current);
+            `arch` = `{dataset}/{namespace}/latents/`;
+            `dataset` = `{dataset}/latents/` (oldest).
+          example: vae
         namespace:
           type: string
-          description: Architecture namespace component
+          nullable: true
+          description: Architecture namespace component; null for the oldest layout, which predates namespaces
           example: sdxl__c4__dtfloat16
         vae_namespace:
           type: string
+          nullable: true
+          description: VAE namespace component; null for every layout older than `vae`
           example: vae-e9a645c32c26a19e
+        deletable:
+          type: boolean
+          description: |
+            Whether `DELETE` can reclaim this cache. False for the older
+            layouts: they have no directory of their own to remove, since the
+            parent also holds the VAE-independent `text_embeddings/`. Reclaim
+            one by deleting `path` from the filesystem by hand.
+          example: true
         entries:
           type: integer
           description: Number of cached `.pt` latents (not the item count; see the endpoint description)

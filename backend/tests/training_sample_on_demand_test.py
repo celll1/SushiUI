@@ -275,7 +275,7 @@ def test_trainer_uses_the_shared_filename_builder():
 def test_step0_marker_is_not_set_by_an_on_demand_sample():
     """The marker records that THIS run wrote its step-0 verification sample; an
     on-demand sample that happens to land on the first batch must not claim it."""
-    loop = BASE_TRAINER_SRC.index("for sample_step, on_demand_request in sample_jobs:")
+    loop = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
     idx = BASE_TRAINER_SRC.index("self._mark_step0_sample_done()", loop)
     guard = BASE_TRAINER_SRC[:idx].rsplit("\n", 2)[-2].strip()
     assert guard.startswith("if on_demand_request is None and sample_step == 0")
@@ -310,8 +310,8 @@ def test_queued_request_always_carries_a_concrete_seed(tmp_path):
 def test_a_seed_read_off_disk_is_re_resolved_before_use():
     """The request file is not trusted: a negative value in it would reach the
     arch ops as generator=None and draw from the training RNG."""
-    idx = BASE_TRAINER_SRC.index("for sample_step, on_demand_request in sample_jobs:")
-    block = BASE_TRAINER_SRC[idx:idx + 2000]
+    idx = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
+    block = BASE_TRAINER_SRC[idx:idx + 4000]
     assert '_req_seed = int(on_demand_request.get("seed", -1))' in block
     assert "actual_seed = self._resolve_sample_seed(_req_seed)" in block
 
@@ -375,7 +375,7 @@ def test_an_on_demand_failure_does_not_kill_the_run_but_a_scheduled_one_still_do
     behaviour), an on-demand one is recorded and training continues. There is no
     enclosing try between this block and the batch loop, so without the wrapper
     a button press could abort a multi-hour run."""
-    idx = BASE_TRAINER_SRC.index("for sample_step, on_demand_request in sample_jobs:")
+    idx = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
     block = BASE_TRAINER_SRC[idx:BASE_TRAINER_SRC.index(
         "# Note: Progress callback is now called per-MNT-iteration", idx)]
     assert "try:" in block and "except Exception as sample_err:" in block
@@ -392,7 +392,7 @@ def test_an_on_demand_failure_does_not_kill_the_run_but_a_scheduled_one_still_do
 def test_the_result_is_recorded_in_a_finally():
     """claim_next_request already unlinked the request, so a raise anywhere in
     the job must not leave it neither pending nor resulted."""
-    idx = BASE_TRAINER_SRC.index("for sample_step, on_demand_request in sample_jobs:")
+    idx = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
     block = BASE_TRAINER_SRC[idx:BASE_TRAINER_SRC.index(
         "# Note: Progress callback is now called per-MNT-iteration", idx)]
     assert block.count("self._record_on_demand_sample_result(") == 1
@@ -487,7 +487,7 @@ def test_on_demand_goes_through_the_scheduled_sample_block():
     """Not a second sampling path: the job loop wraps the existing block, so the
     save call, the metadata, the TensorBoard write and the onthefly_gpu TE
     re-home are the same code for both kinds of sample."""
-    idx = BASE_TRAINER_SRC.index("for sample_step, on_demand_request in sample_jobs:")
+    idx = BASE_TRAINER_SRC.index("for job_idx, (sample_step, on_demand_request) in enumerate(sample_jobs):")
     block = BASE_TRAINER_SRC[idx:BASE_TRAINER_SRC.index(
         "# Note: Progress callback is now called per-MNT-iteration", idx)]
     assert block.count("self._dispatch_sample(") == 1

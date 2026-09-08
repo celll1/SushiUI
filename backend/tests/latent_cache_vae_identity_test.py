@@ -1,10 +1,12 @@
 """Which VAE wrote a latent cache, and what happens when the next run has another.
 
-The cache namespace only grows a ``vae-`` token for a DECLARED swap, so two
-checkpoints with different embedded VAEs land in the SAME namespace: nothing but
-the recorded identity keeps the second run from training against the first VAE's
-latent space. Drives the real ``_setup_latent_caches`` wiring; why a mismatch
-deletes rather than flags is in API_REFERENCE.md (``discard_latents``).
+The stamp is the LAST line of defence, behind the ``vae-<hash>`` namespace
+(``latent_cache_vae_namespace_test.py``): it is what catches the cases the
+namespace cannot separate — a token collision, a directory written before
+identities were recorded, and the shared ``vae-unknown`` bucket. Most tests here
+therefore force the two VAEs into one namespace. Drives the real
+``_setup_latent_caches`` wiring; why a mismatch deletes rather than flags is in
+API_REFERENCE.md (``discard_latents``).
 """
 
 import sys
@@ -48,6 +50,7 @@ def _trainer(vae, model_path="M:/model/sdxl/base_a.safetensors"):
     )
     stub._build_cache_namespace = lambda: NAMESPACE
     stub._run_vae_identity = MethodType(BaseTrainer._run_vae_identity, stub)
+    stub._log_other_vae_caches = MethodType(BaseTrainer._log_other_vae_caches, stub)
     return stub
 
 
@@ -70,6 +73,14 @@ def _cache_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def _one_namespace(monkeypatch):
+    """Every VAE addresses the same directory, i.e. what a token collision looks
+    like from the stamp's side. Two random 64-bit hashes will not collide on
+    their own."""
+    monkeypatch.setattr(lc, "vae_cache_namespace", lambda _hash: "vae-collision")
+
+
 # --- the identity that gets recorded ----------------------------------------
 
 def test_a_fresh_cache_records_this_run_s_vae():
@@ -79,6 +90,7 @@ def test_a_fresh_cache_records_this_run_s_vae():
     info = cache.load_cache_info()
     assert info["vae_latent_hash"] == module_latent_hash(vae)
     assert info["namespace"] == NAMESPACE
+    assert info["vae_namespace"] == f"vae-{module_latent_hash(vae)}"
 
 
 def test_the_recorded_identity_is_the_encoding_module_not_the_resolver():
@@ -88,9 +100,13 @@ def test_the_recorded_identity_is_the_encoding_module_not_the_resolver():
     trainer = _trainer(vae)
     trainer.vae_identity = SimpleNamespace(family="flux1", latent_hash="deadbeefdeadbeef")
 
-    info = _setup(trainer)["ds1"].load_cache_info()
+    cache = _setup(trainer)["ds1"]
+    info = cache.load_cache_info()
     assert info["vae_latent_hash"] == module_latent_hash(vae)
     assert info["vae_family"] == "flux1"
+    # The family is recorded, never in the path: the same VAE must address one
+    # directory whether or not this run declared a swap.
+    assert cache.cache_dir.name == f"vae-{module_latent_hash(vae)}"
 
 
 # --- (b) same VAE: the cache is reused --------------------------------------
@@ -117,9 +133,10 @@ def test_a_different_base_model_with_the_same_vae_keeps_the_cache(capsys):
     assert "Model path differs" in out and "Validation passed" in out
 
 
-# --- (a)+(c) different VAE: separated, and said out loud ---------------------
+# --- a collision in one namespace: separated by the stamp, and said out loud --
 
-def test_a_different_vae_discards_the_cache_and_logs_what_differed(capsys):
+def test_two_vaes_sharing_a_namespace_discard_the_cache_and_log_what_differed(
+        capsys, _one_namespace):
     first, second = _tiny_vae(), _tiny_vae()
     _write_latent(_setup(_trainer(first))["ds1"])
     capsys.readouterr()
@@ -136,20 +153,24 @@ def test_a_different_vae_discards_the_cache_and_logs_what_differed(capsys):
     assert again.load_cache_info()["vae_latent_hash"] == module_latent_hash(second)
 
 
-def test_an_unlabelled_legacy_cache_is_not_adopted(tmp_path, capsys):
-    # Pre-existing caches carry no cache_info.json at all: their VAE is unknown,
-    # which is exactly the case that must not be read back.
-    cache = LatentCache("ds1", base_cache_dir=str(tmp_path), namespace=NAMESPACE)
+def test_an_unlabelled_cache_is_not_adopted(tmp_path, capsys):
+    # A directory with no cache_info.json — one written before identities were
+    # recorded, or left by a run that could not hash its VAE — is the case that
+    # must not be read back even when this run's hash addresses it.
+    vae = _tiny_vae()
+    cache = LatentCache("ds1", base_cache_dir=str(tmp_path), namespace=NAMESPACE,
+                        vae_namespace=lc.vae_cache_namespace(module_latent_hash(vae)))
     _write_latent(cache)
     assert not cache.cache_info_path.exists()
 
-    again = _setup(_trainer(_tiny_vae()))["ds1"]
+    again = _setup(_trainer(vae))["ds1"]
 
+    assert again.cache_dir == cache.cache_dir
     assert not again.has_latent("a.png", 512, 512)
     assert "No cache_info.json found" in capsys.readouterr().out
 
 
-def test_one_stale_dataset_does_not_discard_the_others():
+def test_one_stale_dataset_does_not_discard_the_others(_one_namespace):
     first, second = _tiny_vae(), _tiny_vae()
     datasets = [_dataset("ds1"), _dataset("ds2")]
     for dataset in datasets:
@@ -167,7 +188,7 @@ def test_one_stale_dataset_does_not_discard_the_others():
 
 # --- the three paths a flag-based invalidation missed ------------------------
 
-def test_the_video_and_audio_hit_paths_see_a_mismatched_cache_as_empty():
+def test_the_video_and_audio_hit_paths_see_a_mismatched_cache_as_empty(_one_namespace):
     # LTX-2.3 / MiniMax-H3 / ACE-Step decide a cache hit with load_clip_record /
     # load_clip_latent / load_audio_latent, never with has_*: an entry that is
     # merely flagged would be returned and never re-encoded.
@@ -184,7 +205,7 @@ def test_the_video_and_audio_hit_paths_see_a_mismatched_cache_as_empty():
     assert again.load_audio_latent("a.wav", 4.0, 48000, device="cpu") is None
 
 
-def test_entries_this_run_never_visits_are_gone_too():
+def test_entries_this_run_never_visits_are_gone_too(_one_namespace):
     # The encode pass only walks the current items at their current bucket size,
     # so a 1024 entry left by the previous VAE would survive a flag and be read
     # by the resolution-curriculum switch (base_trainer.py's second pass).
@@ -201,7 +222,8 @@ def test_entries_this_run_never_visits_are_gone_too():
     assert not again.has_latent("a.png", 512, 512)
 
 
-def test_an_interrupted_regeneration_leaves_no_stamp_the_old_vae_can_use(capsys):
+def test_an_interrupted_regeneration_leaves_no_stamp_the_old_vae_can_use(
+        capsys, _one_namespace):
     # The stamp is written after the delete, so what it claims is true of every
     # file on disk even if the encode pass dies halfway.
     first, second = _tiny_vae(), _tiny_vae()
@@ -236,12 +258,15 @@ class _UnhashableVAE(torch.nn.Module):
 
 
 def test_an_unhashable_vae_keeps_the_latents_and_drops_the_stamp(capsys):
-    cache = _setup(_trainer(_tiny_vae()))["ds1"]
+    # Every run that cannot name its VAE shares the vae-unknown bucket, so this
+    # is where an unverifiable run meets someone else's entries.
+    cache = _setup(_trainer(None))["ds1"]
     _write_latent(cache, value=1.0)
     capsys.readouterr()
 
     again = _setup(_trainer(_UnhashableVAE()))["ds1"]
 
+    assert again.cache_dir == cache.cache_dir
     out = capsys.readouterr().out
     assert "used UNVERIFIED" in out
     # Kept: a hash failure is not evidence of a different VAE, and deleting is
@@ -258,16 +283,15 @@ def test_an_unhashable_vae_does_not_stamp_an_empty_cache(capsys):
     assert "cannot identify this run's VAE" in capsys.readouterr().out
 
 
-def test_the_next_healthy_run_does_not_trust_an_unverified_cache(capsys):
-    # The whole point of dropping the stamp: run 1 (VAE A) stamps, run 2 cannot
-    # identify its VAE and writes into the same directory, so run 3 -- even back
-    # on VAE A -- must not read the mixture.
-    vae = _tiny_vae()
-    _write_latent(_setup(_trainer(vae))["ds1"], value=1.0)
+def test_the_next_run_in_that_bucket_does_not_trust_an_unverified_cache(capsys):
+    # The whole point of dropping the stamp: run 1 stamps vae-unknown, run 2
+    # cannot identify its VAE and writes into the same directory, so run 3 must
+    # not read the mixture.
+    _write_latent(_setup(_trainer(None))["ds1"], value=1.0)
     _setup(_trainer(_UnhashableVAE()))
     capsys.readouterr()
 
-    again = _setup(_trainer(vae))["ds1"]
+    again = _setup(_trainer(None))["ds1"]
 
     assert "No cache_info.json found" in capsys.readouterr().out
     assert not again.has_latent("a.png", 512, 512)
@@ -339,7 +363,7 @@ def test_a_run_without_a_vae_records_no_identity_and_still_matches_itself():
     assert _setup(_trainer(None))["ds1"].has_latent("a.png", 512, 512)
 
 
-def test_an_unavailable_identity_does_not_adopt_a_labelled_cache(capsys):
+def test_an_unavailable_identity_does_not_adopt_a_labelled_cache(capsys, _one_namespace):
     _write_latent(_setup(_trainer(_tiny_vae()))["ds1"])
     capsys.readouterr()
 

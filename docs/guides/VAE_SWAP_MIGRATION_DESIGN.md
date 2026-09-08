@@ -44,7 +44,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 | D9 | 生成時の VAE 優先順位 | 現行の「ユーザー override > 宣言 > 埋め込み > arch 既定」を維持。ただし宣言値を正直に伝播させ、`_check_vae_compat` が構造不一致（チャネル・縮小率・ndim）で 400、同構造で hash 不一致の VAE で警告を出すようにする |
 | D10 | LoRA 整合 | 書き側: 全 arch のアダプタメタデータに base の潜在 identity（C、family、hash、`struct_native`、`identity_native`）を記録。読み側: チャネル不一致は **hard refusal**（`lora_incompatible`）、同チャネルで VAE hash 不一致は **warning**。メタデータ無しのアダプタは、base が `struct_native="0"` なら **refusal**、`struct_native="1"` かつ `identity_native="0"`（同構造・別 hash の VAE）なら **warning**、`identity_native="1"` なら現状どおり無検査 |
 | D11 | swap 済み base への LoRA 学習 | **許可**する（base は自己整合しており、LoRA は Linear のみ学習する）。拒否するのは「swap を要求しつつ method が full でない」場合のみ（現行どおり） |
-| D12 | latent cache | namespace に `vae-<family>-<hash8>` トークンを**加算的**に追加。トークンの有無は `identity_native` で決める: `"1"` はトークン無し（既存 namespace を壊さない）、`"0"` は同チャネル・同 family の別 VAE でもトークン付き（hash で分離） |
+| D12 | latent cache | **廃止（§8.5 参照）**。namespace に `vae-<family>-<hash8>` トークンを**加算的**に追加。トークンの有無は `identity_native` で決める: `"1"` はトークン無し（既存 namespace を壊さない）、`"0"` は同チャネル・同 family の別 VAE でもトークン付き（hash で分離） |
 | D13 | SenseNova | 生成側パッチ（潜在格子上）は **`P = 4` 固定**で `vae_scale_factor` に依らない。`fm_head` の `ps1(2)`/`ps2(2)`/`ps3(k)` の総拡大率 `4k` に対する最小の合法値であり、`conv1`・`ps1`・`ps2`・`dense_embedding` を無傷に保つ。ViT patch-embed カーネル = P/2 = 2、最終 PixelShuffle 係数 k = P/4 = 1、`fm_head.conv2` 出力 = C。1 トークンが覆う画素幅は `4 × vae_scale_factor`（8× → 32px、16× → 64px）で、トークン数は `vae_scale_factor` に比例して伸びる解像度で保存される。**任意の `vae_scale_factor` を受理**する。トークン幅・推奨解像度帯は VAE 選択時と生成時に提示し、黙って変えない。patch-embed は小さい標準偏差の切断正規分布で初期化、`fm_head.conv2` はゼロ初期化。`sensenova_train_fm_modules` を必須値化 |
 
 ---
@@ -645,7 +645,11 @@ fp16/bf16 で最大 1.0%（fp32 では bit 同一）動く。同じ理由で den
 `torch.as_tensor(...).to(dtype)` で 3 dtype とも bit 同一（Qwen-Image の定数では二重丸めも起きない）。
 ltx2 の `(z - mean) * scaling_factor / std` は演算順ごと維持する。
 
-### 8.5 latent cache namespace（D12）
+### 8.5 latent cache namespace（D12・廃止）
+
+**この節の設計は置き換えられた。** 現行仕様は `backend/core/training/API_REFERENCE.md`
+の "Cache Directory Structure"（VAE は latent 側の `vae-<latent_hash>` サブ名前空間、
+共有 namespace には VAE トークンを置かない）。以下は経緯として残す。
 
 `base_trainer.py:10554-10557` の
 

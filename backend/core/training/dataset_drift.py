@@ -435,12 +435,14 @@ def cleanup_orphan_latent_cache(
     if not dataset_root.is_dir():
         return 0
 
-    # Latents live under per-architecture namespaces:
-    #   {dataset_root}/{namespace}/latents/*.pt
-    # plus the legacy pre-namespace layout {dataset_root}/latents/*.pt.
-    # The orphan hash set is architecture-independent (path + w + h only),
-    # so every latents dir across namespaces is scanned with the same set.
-    latents_dirs = [d for d in dataset_root.glob("*/latents") if d.is_dir()]
+    # Latents live under per-architecture, per-VAE namespaces:
+    #   {dataset_root}/{namespace}/{vae_namespace}/latents/*.pt
+    # plus two older layouts that may still be on disk: {namespace}/latents and
+    # the pre-namespace {dataset_root}/latents. The orphan hash set is
+    # architecture- and VAE-independent (path + w + h only), so every latents
+    # dir is scanned with the same set.
+    latents_dirs = [d for d in dataset_root.glob("*/*/latents") if d.is_dir()]
+    latents_dirs += [d for d in dataset_root.glob("*/latents") if d.is_dir()]
     legacy_dir = dataset_root / "latents"
     if legacy_dir.is_dir():
         latents_dirs.append(legacy_dir)

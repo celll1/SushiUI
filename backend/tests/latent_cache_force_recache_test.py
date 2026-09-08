@@ -236,6 +236,7 @@ def _stamp_trainer(vae, dtype=torch.float16):
     )
     stub._build_cache_namespace = lambda: NAMESPACE
     stub._run_vae_identity = MethodType(BaseTrainer._run_vae_identity, stub)
+    stub._log_other_vae_caches = MethodType(BaseTrainer._log_other_vae_caches, stub)
     return stub
 
 
@@ -249,6 +250,13 @@ def _setup(trainer, force_recache=False):
 def _cache_root(tmp_path, monkeypatch):
     monkeypatch.setattr(lc, "get_cache_base_dir", lambda: str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture
+def _one_namespace(monkeypatch):
+    """Both VAEs address one directory, so a force pass really does overwrite
+    the other one's entries (see latent_cache_vae_identity_test)."""
+    monkeypatch.setattr(lc, "vae_cache_namespace", lambda _hash: "vae-collision")
 
 
 def test_a_force_pass_restamps_a_cache_it_is_about_to_overwrite(_cache_root):
@@ -275,7 +283,7 @@ def test_without_force_a_validated_cache_keeps_the_stamp_that_describes_it(_cach
     assert again.load_cache_info()["training_dtype"] == "torch.float16"
 
 
-def test_a_force_pass_never_stamps_a_vae_that_did_not_encode(_cache_root):
+def test_a_force_pass_never_stamps_a_vae_that_did_not_encode(_cache_root, _one_namespace):
     first, second = _tiny_vae(), _tiny_vae()
     _setup(_stamp_trainer(first)).save_latent("a.png", 512, 512, _latent(1.0, 512))
 
@@ -286,7 +294,8 @@ def test_a_force_pass_never_stamps_a_vae_that_did_not_encode(_cache_root):
     assert again.load_cache_info()["vae_latent_hash"] == module_latent_hash(second)
 
 
-def test_a_force_pass_with_an_unhashable_vae_still_leaves_no_stamp(_cache_root):
+def test_a_force_pass_with_an_unhashable_vae_still_leaves_no_stamp(
+        _cache_root, _one_namespace):
     class _UnhashableVAE(torch.nn.Module):
         def state_dict(self, *args, **kwargs):
             raise RuntimeError("state_dict unavailable")

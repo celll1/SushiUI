@@ -342,23 +342,20 @@ def test_batch_loop_touches_the_region_only_under_repa_active():
     ("random_crop", "pre_encoded_cache"),  # the cache center-crops instead
 ])
 def test_reconstructible_configurations_are_accepted(strategy, mode):
-    repa_module.assert_repa_region_reconstructible(
-        {"bucket_strategy": strategy, "latent_encoding_mode": mode})
+    repa_module.assert_repa_region_reconstructible(mode, strategy)
 
 
 def test_random_crop_on_a_buffered_mode_is_refused():
     with pytest.raises(ValueError, match="random_crop"):
-        repa_module.assert_repa_region_reconstructible(
-            {"bucket_strategy": "random_crop", "latent_encoding_mode": "swap_onthefly"})
+        repa_module.assert_repa_region_reconstructible("swap_onthefly", "random_crop")
 
 
 def test_unknown_strategy_is_refused():
     with pytest.raises(ValueError, match="reconstructs the encoded region"):
-        repa_module.assert_repa_region_reconstructible(
-            {"bucket_strategy": "smart_crop", "latent_encoding_mode": "onthefly_gpu"})
+        repa_module.assert_repa_region_reconstructible("onthefly_gpu", "smart_crop")
 
 
-def test_setup_repa_refuses_before_loading_the_encoder(monkeypatch):
+def test_setup_does_not_refuse_on_a_config_key_train_overrides(monkeypatch):
     from core.training.arch import ARCH_REGISTRY
 
     calls = []
@@ -378,7 +375,11 @@ def test_setup_repa_refuses_before_loading_the_encoder(monkeypatch):
         tread_config=None, block_skip_config=None, blockskip_config=None,
     )
 
-    with pytest.raises(ValueError, match="random_crop"):
-        BaseTrainer._setup_repa(t)
+    # train_runner hands train() bucket_strategy="resize" whatever the config
+    # says, so refusing here would reject a run that aligns perfectly. The
+    # refusal lives on train()'s own arguments instead.
+    BaseTrainer._setup_repa(t)
+    assert calls, "the encoder should have loaded: nothing here is unalignable"
 
-    assert calls == [], "the encoder loaded before the refusal"
+    with pytest.raises(ValueError, match="random_crop"):
+        repa_module.assert_repa_region_reconstructible("swap_onthefly", "random_crop")

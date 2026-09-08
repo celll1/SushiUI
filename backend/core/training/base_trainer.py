@@ -3147,17 +3147,12 @@ class BaseTrainer(ABC):
 
         from core.training.repa import (
             load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
-            assert_repa_region_reconstructible, repa_sidecar_path,
-            resolve_align_depth,
+            repa_sidecar_path, resolve_align_depth,
         )
 
         # Before the encoder is downloaded/read: an arch with no tap, and the two
         # video archs held back, refuse here.
         tap = self.arch.repa_tap(self)
-
-        # Likewise before the encoder loads: a preprocessing configuration whose
-        # per-item crop the teacher cannot follow.
-        assert_repa_region_reconstructible(self.config)
 
         source = str(self.config.get("repa_encoder_source", "tagger") or "tagger").strip().lower()
         tagger_dir = str(self.config.get("repa_tagger_model_dir", "") or "").strip()
@@ -3257,6 +3252,10 @@ class BaseTrainer(ABC):
             raise ValueError("REPA: item carries neither image_path nor image bytes")
         if key:
             m[key] = wh
+            # Bounded like the pixel cache beside it: one entry per unique path
+            # over a million-item dataset is host RAM that never comes back.
+            while len(m) > 65536:
+                m.popitem(last=False)
         return wh
 
     def _repa_source_region(self, item, target_w, target_h,
@@ -3302,6 +3301,11 @@ class BaseTrainer(ABC):
         same path a different box every epoch.
         """
         if region is None:
+            if not getattr(self, "_repa_region_warned", False):
+                print(f"{self.log_prefix} [REPA] source region unavailable for some "
+                      f"items (freed injected bytes, or a file gone since it was "
+                      f"cached); REPA is skipped for the affected batches")
+                self._repa_region_warned = True
             return None
         try:
             S = int(getattr(self, "repa_size", 384) or 384)
@@ -14388,10 +14392,16 @@ class BaseTrainer(ABC):
         # strategy the latent's ACTUAL producer used -- pre_encoded_cache overrides the
         # configured one, and the forcings above have settled the mode by now (the
         # setup-time refusal could only read the config).
-        from core.training.repa import latent_source_strategy as _repa_latent_source_strategy
-        _repa_latent_strategy = (
-            _repa_latent_source_strategy(latent_encoding_mode, bucket_strategy)
-            if getattr(self, "repa_enable", False) else None)
+        from core.training.repa import (assert_repa_region_reconstructible,
+                                        latent_source_strategy as _repa_latent_source_strategy)
+        _repa_latent_strategy = None
+        if getattr(self, "repa_enable", False):
+            # On the arguments train() was handed, not the config: train_runner
+            # passes bucket_strategy="resize" regardless of what the config says,
+            # so refusing on the config would reject runs that align perfectly.
+            assert_repa_region_reconstructible(latent_encoding_mode, bucket_strategy)
+            _repa_latent_strategy = _repa_latent_source_strategy(
+                latent_encoding_mode, bucket_strategy)
 
         # Setup latent caches (mode-dependent)
         latent_caches = None

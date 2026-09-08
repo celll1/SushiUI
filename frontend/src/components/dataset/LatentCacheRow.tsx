@@ -19,7 +19,8 @@ export function formatCacheBytes(bytes: number): string {
 }
 
 function nsLabel(ns: LatentCacheNamespace): string {
-  return `${ns.namespace} / ${ns.vae_namespace}`;
+  if (ns.namespace && ns.vae_namespace) return `${ns.namespace} / ${ns.vae_namespace}`;
+  return ns.path;
 }
 
 export default function LatentCacheRow({ datasetId }: { datasetId: number }) {
@@ -147,12 +148,21 @@ export default function LatentCacheRow({ datasetId }: { datasetId: number }) {
                   {ns.model_path ? ` · written by ${ns.model_path}` : ""}
                 </div>
               </div>
-              <button
-                onClick={() => preview(ns)}
-                className="ml-auto px-2 py-1 bg-red-900/40 hover:bg-red-900/70 border border-red-800 rounded text-red-300 shrink-0"
-              >
-                Delete
-              </button>
+              {ns.deletable === false ? (
+                // Deleting this one would take the text embeddings beside it, so
+                // the endpoint refuses. A Delete button here would drop both
+                // query parameters and target every other namespace instead.
+                <span className="ml-auto text-xs text-gray-500 shrink-0">
+                  remove by hand
+                </span>
+              ) : (
+                <button
+                  onClick={() => preview(ns)}
+                  className="ml-auto px-2 py-1 bg-red-900/40 hover:bg-red-900/70 border border-red-800 rounded text-red-300 shrink-0"
+                >
+                  Delete
+                </button>
+              )}
             </div>
           ))}
         </div>

@@ -23337,6 +23337,8 @@ components:
           type: 'boolean'
           default: false
           description: |
+
+            Refused for `bucket_strategy: random_crop` unless `latent_encoding_mode: onthefly_gpu`: the random window is drawn inside the encoder and recorded nowhere, so a latent taken from a buffer cannot tell the teacher which region it holds.
             REPA (Representation Alignment, arXiv:2410.06940): align the DiT's
             intermediate image tokens with clean-image patch features from a
             frozen vision encoder, through a trainable MLP projector and a

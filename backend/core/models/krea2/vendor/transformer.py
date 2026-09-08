@@ -399,6 +399,12 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
     _no_split_modules = ["Krea2TransformerBlock", "Krea2TextFusionBlock", "Krea2FinalLayer"]
     _keep_in_fp32_modules = ["norm", "norm1", "norm2", "norm_q", "norm_k"]
 
+    # REPA tap: when ``_repa_tap_depth`` is set (0-based block index, armed by
+    # BaseTrainer._setup_repa), the block loop stashes that block's IMAGE tokens
+    # [B, N_img, hidden_size] in ``_repa_tap_out``. None = disabled (no-op).
+    _repa_tap_depth = None
+    _repa_tap_out = None
+
     @register_to_config
     def __init__(
         self,
@@ -544,13 +550,25 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
 
         image_rotary_emb = self.rotary_emb(position_ids)
 
-        for block in self.transformer_blocks:
+        # REPA tap (training-only): drop what a previous forward stashed, so a
+        # step whose tap does not fire reads None rather than stale tokens.
+        repa_tap_depth = self._repa_tap_depth
+        if repa_tap_depth is not None:
+            self._repa_tap_out = None
+
+        for block_idx, block in enumerate(self.transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
                     block, hidden_states, temb_mod, image_rotary_emb, attention_mask
                 )
             else:
                 hidden_states = block(hidden_states, temb_mod, image_rotary_emb, attention_mask)
+            # Assignment rather than a forward hook: the tap is then the tensor
+            # the loss differentiates, with no hook ordering or checkpoint
+            # recompute semantics to reason about. Sliced the same way as the
+            # post-loop line below, so the tap is image tokens only.
+            if block_idx == repa_tap_depth:
+                self._repa_tap_out = hidden_states[:, text_seq_len:]
 
         hidden_states = hidden_states[:, text_seq_len:]
         output = self.final_layer(hidden_states, temb)

@@ -69,6 +69,21 @@ class Ideogram4ArchHandler(ArchHandler):
         return [([block] + ([uncond_layers[j]] if j < len(uncond_layers) else []))
                 for j, block in enumerate(layers)]
 
+    def repa_tap(self, trainer):
+        # The tap is the CONDITIONAL Ideogram 4 DiT: its block loop stashes the
+        # packed sequence [B, max_text + N_img, hidden_size], which train_step
+        # slices past the text prefix. The unconditional twin is a separate
+        # instance and is never armed -- one grid, one teacher, one tap. No
+        # unwrap: load_components keeps transformer_original IS transformer.
+        # hidden_size is the attribute __init__ computes as
+        # attention_head_dim * num_attention_heads; the config has no such key.
+        from core.training.repa import RepaTapPoint
+
+        transformer = trainer.transformer
+        return RepaTapPoint(module=transformer,
+                            hidden_size=int(transformer.hidden_size),
+                            depth=len(transformer.layers))
+
     def setup_attention_backend(self, trainer) -> None:
         # P3b: body lives in ops/ideogram4_ops (shared with base_trainer delegator).
         from core.training.ops import ideogram4_ops
@@ -103,6 +118,7 @@ class Ideogram4ArchHandler(ArchHandler):
             profile_vram=ctx.profile_vram,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

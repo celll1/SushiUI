@@ -10409,6 +10409,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_krea2:
@@ -10425,6 +10426,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+                repa_pixels=mnt_repa_pixels,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_minit2i:

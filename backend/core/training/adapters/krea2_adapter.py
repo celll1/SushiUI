@@ -173,3 +173,6 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
             extra_metadata=extra,
         )
         print(f"[Krea2FullParameterAdapter] Saved single-file (transformer) -> {output_path}")
+        # The resolved path, not the argument: BaseFullParameterAdapter pairs the
+        # REPA projector sidecar with the file actually written.
+        return output_path

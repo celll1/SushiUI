@@ -1302,7 +1302,8 @@ for _a, _marker in _REPA_REFUSAL_MARKERS.items():
             f"which is the phrase it shares with core/training/repa.py's "
             f"REPA_REFUSALS entry for the same architecture.")
 
-for _a in sorted(TRAINING_DECLARED_ARCHS - {"minit2i", "anima", "lens"}):
+for _a in sorted(TRAINING_DECLARED_ARCHS
+                 - {"minit2i", "anima", "lens", "krea2", "ideogram4"}):
     _add_training_feature_unsupported(
         _a, "repa",
         _REPA_UNSUPPORTED_REASONS.get(_a) or

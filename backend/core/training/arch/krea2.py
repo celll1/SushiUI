@@ -59,6 +59,19 @@ class Krea2ArchHandler(ArchHandler):
         transformer = getattr(trainer, "transformer", None)
         return getattr(transformer, "transformer_blocks", None)
 
+    def repa_tap(self, trainer):
+        # The tap is the Krea 2 DiT itself: its block loop stashes the image
+        # tokens [B, N_img, hidden_size], already past the text prefix. No
+        # unwrap -- load_components keeps transformer_original IS transformer.
+        # hidden_size is the attribute __init__ computes as
+        # attention_head_dim * num_attention_heads; the config has no such key.
+        from core.training.repa import RepaTapPoint
+
+        transformer = trainer.transformer
+        return RepaTapPoint(module=transformer,
+                            hidden_size=int(transformer.hidden_size),
+                            depth=len(transformer.transformer_blocks))
+
     def setup_attention_backend(self, trainer) -> None:
         # P3c: body lives in ops/krea2_ops (shared with base_trainer delegator).
         from core.training.ops import krea2_ops
@@ -93,6 +106,7 @@ class Krea2ArchHandler(ArchHandler):
             profile_vram=ctx.profile_vram,
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

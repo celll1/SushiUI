@@ -266,6 +266,23 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     return latents
 
 
+def _predict_x0_zimage(noisy_latents, model_pred, timesteps):
+    """x_0 for Z-Image's inverted velocity (v = x_0 - eps, so x_0 = x_t + t * v).
+
+    flow/velocity are pinned rather than read from ``trainer``: the inline formula
+    this replaced was flow-shaped whatever ``trainer.noise_process`` said.
+    """
+    from core.training.ops.x0_recovery import predict_x0
+    return predict_x0(
+        noise_process="flow",
+        prediction_target="velocity",
+        noisy_latents=noisy_latents,
+        model_pred=model_pred,
+        timesteps=timesteps,
+        velocity_sign="x0_minus_eps",
+    )
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -381,14 +398,9 @@ def train_step(
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 
     # Compute predicted latent once (used by regularization losses and dual loss)
-    # Z-Image inverse velocity: v = latents - noise, so x_0 = x_t + t * v
     predicted_latent_for_reg = None
     if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None or trainer.reconstruction_loss_weight > 0:
-        # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-        t = timesteps.float()
-        while t.dim() < noisy_latents.dim():
-            t = t.unsqueeze(-1)
-        predicted_latent_for_reg = noisy_latents + t * model_pred
+        predicted_latent_for_reg = _predict_x0_zimage(noisy_latents, model_pred, timesteps)
 
     # SNR regularization (周波数領域の過剰デノイズ抑制)
     if trainer.snr_regularization_loss is not None:
@@ -418,11 +430,7 @@ def train_step(
         if predicted_latent_for_reg is not None:
             predicted_latent_for_recon = predicted_latent_for_reg
         else:
-            # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-            t = timesteps.float()
-            while t.dim() < noisy_latents.dim():
-                t = t.unsqueeze(-1)
-            predicted_latent_for_recon = noisy_latents + t * model_pred
+            predicted_latent_for_recon = _predict_x0_zimage(noisy_latents, model_pred, timesteps)
 
         recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
         recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
@@ -443,11 +451,7 @@ def train_step(
             if predicted_latent_for_reg is not None:
                 predicted_latent_for_recon = predicted_latent_for_reg.detach()
             else:
-                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-                t = timesteps.float()
-                while t.dim() < noisy_latents.dim():
-                    t = t.unsqueeze(-1)
-                predicted_latent_for_recon = noisy_latents + t * model_pred
+                predicted_latent_for_recon = _predict_x0_zimage(noisy_latents, model_pred, timesteps)
 
             recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
             recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
@@ -485,11 +489,7 @@ def train_step(
             timestep_value = timesteps[0].item()
 
             with torch.no_grad():
-                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-                t = timesteps.float()
-                while t.dim() < noisy_latents.dim():
-                    t = t.unsqueeze(-1)
-                predicted_latent = noisy_latents + t * model_pred
+                predicted_latent = _predict_x0_zimage(noisy_latents, model_pred, timesteps)
 
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),

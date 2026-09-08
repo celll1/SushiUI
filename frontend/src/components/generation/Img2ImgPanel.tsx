@@ -1674,7 +1674,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       setScheduleTypes([
         { id: "uniform", name: "Uniform" },
         { id: "karras", name: "Karras" },
-        { id: "exponential", name: "Exponential" },
+        { id: "exponential", name: "Trailing spacing (not exponential sigmas)" },
         { id: "sgm_uniform", name: "SGM Uniform" },
         { id: "simple", name: "Simple" },
         { id: "ddim_uniform", name: "DDIM Uniform" },

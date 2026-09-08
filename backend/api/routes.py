@@ -10360,7 +10360,7 @@ async def get_schedule_types():
             "schedule_types": [
                 {"id": "uniform", "name": "Uniform"},
                 {"id": "karras", "name": "Karras"},
-                {"id": "exponential", "name": "Exponential"},
+                {"id": "exponential", "name": "Trailing spacing (not exponential sigmas)"},
             ]
         }
 

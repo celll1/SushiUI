@@ -27,18 +27,37 @@ for _p in (str(_REPO), str(_BACKEND)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from diffusers import EulerDiscreteScheduler  # noqa: E402
-from diffusers.loaders.single_file_utils import (  # noqa: E402
-    SCHEDULER_DEFAULT_CONFIG,
-)
+from diffusers import EulerDiscreteScheduler, PNDMScheduler  # noqa: E402
 
 from core.inference.schedulers import get_scheduler  # noqa: E402
 from core.training.temp_pipeline import sampling_scheduler_source  # noqa: E402
 
+# scheduler/scheduler_config.json of the repo an SD1.5 single-file load resolves
+# its scheduler from. Verbatim: the two keys it OMITS are the whole point --
+# they land in ``_use_default_values``, which ``from_config`` discards.
+# ``single_file_utils.SCHEDULER_DEFAULT_CONFIG`` (the legacy ldm path) sets both
+# explicitly and so cannot reproduce this.
+SD15_SCHEDULER_CONFIG = {
+    "_class_name": "PNDMScheduler",
+    "_diffusers_version": "0.6.0",
+    "beta_end": 0.012,
+    "beta_schedule": "scaled_linear",
+    "beta_start": 0.00085,
+    "num_train_timesteps": 1000,
+    "set_alpha_to_one": False,
+    "skip_prk_steps": True,
+    "steps_offset": 1,
+    "trained_betas": None,
+    "clip_sample": False,
+}
+
 
 def single_file_scheduler():
     """What ``StableDiffusion(XL)Pipeline.from_single_file`` hands the trainer."""
-    return EulerDiscreteScheduler.from_config(dict(SCHEDULER_DEFAULT_CONFIG))
+    scheduler = PNDMScheduler.from_config(dict(SD15_SCHEDULER_CONFIG))
+    assert sorted(scheduler.config["_use_default_values"]) == [
+        "prediction_type", "timestep_spacing"]
+    return scheduler
 
 
 def fake_trainer(**overrides):
@@ -87,8 +106,9 @@ def test_v_pred_sample_scheduler_solves_velocity():
     assert isinstance(scheduler, EulerDiscreteScheduler)
 
     reference = EulerDiscreteScheduler.from_config(
-        dict(SCHEDULER_DEFAULT_CONFIG,
-             prediction_type="v_prediction", timestep_spacing="trailing"),
+        dict(SD15_SCHEDULER_CONFIG),
+        prediction_type="v_prediction", timestep_spacing="trailing",
+        use_karras_sigmas=False,
     )
     assert torch.allclose(step_once(scheduler), step_once(reference))
 
@@ -112,8 +132,9 @@ def test_epsilon_run_scheduler_untouched():
         schedule_type="uniform",
     )
 
-    assert dict(trainer.original_scheduler.config) == dict(
-        before, use_karras_sigmas=False)  # written by get_scheduler, as before
+    # get_scheduler builds from a copy; the trainer's own scheduler, which the
+    # run keeps training with, must come back untouched.
+    assert dict(trainer.original_scheduler.config) == before
     assert scheduler.config["prediction_type"] == "epsilon"
     assert scheduler.config["timestep_spacing"] == "leading"
 
@@ -130,9 +151,11 @@ def test_flow_arch_scheduler_untouched():
 
 
 def test_diffusers_directory_v_pred_not_rewritten():
+    # A directory load whose scheduler_config.json states both keys, so neither
+    # is a default value.
     scheduler = EulerDiscreteScheduler.from_config(
-        dict(SCHEDULER_DEFAULT_CONFIG,
-             prediction_type="v_prediction", timestep_spacing="trailing"),
+        dict(SD15_SCHEDULER_CONFIG),
+        prediction_type="v_prediction", timestep_spacing="trailing",
     )
     trainer = fake_trainer(original_scheduler=scheduler, prediction_target="velocity")
     before = dict(scheduler.config)

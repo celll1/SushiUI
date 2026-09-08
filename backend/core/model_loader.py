@@ -23,11 +23,10 @@ class ModelLoader:
         1. prediction_type = "v_prediction"
         2. timestep_spacing = "trailing" (recommended for v-prediction)
 
-        Note: rescale_betas_zero_snr is intentionally set to False by default.
-        While some v-prediction models were trained with zero terminal SNR,
-        many SDXL v-prediction models (especially newer ones) work better
-        WITHOUT rescale_betas_zero_snr=True, as it can cause extreme sigma
-        values (e.g., 4096) leading to black or blurry outputs.
+        rescale_betas_zero_snr is left alone rather than pinned False: True has
+        produced extreme sigmas (e.g. 4096) and black output on many SDXL
+        v-pred models. A config that sets it still wins, so this is a choice
+        not to interfere, not a guarantee of False.
 
         References:
         - https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/16567
@@ -35,16 +34,16 @@ class ModelLoader:
         - https://github.com/comfyanonymous/ComfyUI/discussions/2794
         """
         try:
-            # Register to scheduler config (this modifies the scheduler's configuration)
-            # Note: rescale_betas_zero_snr is omitted (defaults to False in most schedulers)
             pipeline.scheduler.register_to_config(
                 prediction_type="v_prediction",
                 timestep_spacing="trailing"
             )
 
+            config = getattr(pipeline.scheduler, "config", None) or {}
             print(f"[ModelLoader] V-prediction scheduler configured:")
             print(f"  - prediction_type: v_prediction")
-            print(f"  - rescale_betas_zero_snr: False (default, avoids extreme sigma values)")
+            print(f"  - rescale_betas_zero_snr: "
+                  f"{config.get('rescale_betas_zero_snr', 'unset (class default)')} (left as-is)")
             print(f"  - timestep_spacing: trailing")
 
         except Exception as e:

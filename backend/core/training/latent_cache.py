@@ -160,13 +160,57 @@ def _latents_usage(latents_dir: Path) -> Tuple[int, int]:
     return count, total
 
 
+def _cache_entry(path: Path, latents_dir: Path, *, layout: str,
+                 namespace: Optional[str], vae_namespace: Optional[str],
+                 deletable: bool) -> Dict[str, Any]:
+    """One listing entry. ``cache_info.json`` sits beside ``latents/`` in all
+    three layouts, so it is always read from its parent."""
+    entries, total = _latents_usage(latents_dir)
+    info: Dict[str, Any] = {}
+    try:
+        with open(latents_dir.parent / "cache_info.json", "r") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            info = loaded
+    except Exception:
+        pass
+    return {
+        "path": path,
+        "layout": layout,
+        "namespace": namespace,
+        "vae_namespace": vae_namespace,
+        "deletable": deletable,
+        "entries": entries,
+        "bytes": total,
+        "vae_latent_hash": info.get("vae_latent_hash"),
+        "vae_family": info.get("vae_family"),
+        "model_path": info.get("model_path"),
+        "created_at": info.get("created_at"),
+    }
+
+
 def list_vae_namespaces(base_cache_dir: str, dataset_unique_id: str) -> List[Dict[str, Any]]:
-    """Every ``vae-*`` latent namespace on disk for one dataset, across all
-    architecture namespaces, with what each cost and which VAE wrote it.
+    """Every latent cache on disk for one dataset, with what each cost and
+    which VAE wrote it.
 
     Switching a run's VAE leaves the previous namespace in place — that is the
     point of the layout — so this is how an operator finds what is no longer
     reachable. Listing only: nothing here deletes, and no caller may.
+
+    All three layouts ``dataset_drift`` cleans are listed, so nothing on disk is
+    reported as zero bytes:
+
+    ``layout="vae"``   ``{dataset}/{arch}/vae-*/`` — the current one.
+    ``layout="arch"``  ``{dataset}/{arch}/latents/`` — pre-VAE-namespace.
+    ``layout="dataset"`` ``{dataset}/latents/`` — pre-namespace.
+
+    The two older ones are ``deletable=False`` and their ``path`` is the
+    ``latents`` directory itself. They have no directory of their own to remove:
+    their parent also holds the VAE-independent ``text_embeddings/``, which a
+    rebuild must never discard, and the delete endpoint's boundary check
+    (a ``vae-*`` directory exactly one level under an architecture namespace)
+    is what keeps that guarantee cheap to verify. Reclaiming one is a manual
+    delete of the listed path.
     """
     root = Path(base_cache_dir) / dataset_unique_id
     found: List[Dict[str, Any]] = []
@@ -176,31 +220,26 @@ def list_vae_namespaces(base_cache_dir: str, dataset_unique_id: str) -> List[Dic
         return found
     for arch_dir in arch_dirs:
         try:
-            vae_dirs = sorted(p for p in arch_dir.iterdir()
-                              if p.is_dir() and p.name.startswith("vae-"))
+            children = sorted(p for p in arch_dir.iterdir() if p.is_dir())
         except OSError:
             continue
-        for vae_dir in vae_dirs:
-            entries, total = _latents_usage(vae_dir / "latents")
-            info: Dict[str, Any] = {}
-            try:
-                with open(vae_dir / "cache_info.json", "r") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    info = loaded
-            except Exception:
-                pass
-            found.append({
-                "path": vae_dir,
-                "namespace": arch_dir.name,
-                "vae_namespace": vae_dir.name,
-                "entries": entries,
-                "bytes": total,
-                "vae_latent_hash": info.get("vae_latent_hash"),
-                "vae_family": info.get("vae_family"),
-                "model_path": info.get("model_path"),
-                "created_at": info.get("created_at"),
-            })
+        for vae_dir in children:
+            if not vae_dir.name.startswith("vae-"):
+                continue
+            found.append(_cache_entry(
+                vae_dir, vae_dir / "latents", layout="vae",
+                namespace=arch_dir.name, vae_namespace=vae_dir.name,
+                deletable=True))
+        arch_latents = arch_dir / "latents"
+        if arch_latents.is_dir():
+            found.append(_cache_entry(
+                arch_latents, arch_latents, layout="arch",
+                namespace=arch_dir.name, vae_namespace=None, deletable=False))
+    dataset_latents = root / "latents"
+    if dataset_latents.is_dir():
+        found.append(_cache_entry(
+            dataset_latents, dataset_latents, layout="dataset",
+            namespace=None, vae_namespace=None, deletable=False))
     return found
 
 

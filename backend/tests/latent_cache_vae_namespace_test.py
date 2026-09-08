@@ -186,6 +186,34 @@ def test_the_listing_names_every_vae_cache_with_what_it_cost(tmp_path):
     assert found[cache_b.cache_dir]["model_path"] == "M:/model/sdxl/base_b.safetensors"
 
 
+def test_the_older_layouts_are_listed_but_never_deletable(tmp_path):
+    """Caches written before the vae- level existed were invisible to the API,
+    so tens of GB could sit on disk while it reported nothing. They are listed
+    now -- but their directory also holds text_embeddings, so removing it is
+    not the delete this endpoint offers.
+    """
+    vae = _tiny_vae()
+    current = _setup(_trainer(vae))
+    _write_latent(current, "a.png")
+
+    arch_dir = current.arch_cache_dir
+    (arch_dir / "text_embeddings").mkdir(parents=True, exist_ok=True)
+    (arch_dir / "text_embeddings" / "cap.pt").write_bytes(b"keep me")
+    for latents in (arch_dir / "latents", tmp_path / "ds1" / "latents"):
+        latents.mkdir(parents=True, exist_ok=True)
+        (latents / "old.pt").write_bytes(b"x" * 32)
+
+    found = {e["path"]: e for e in lc.list_vae_namespaces(str(tmp_path), "ds1")}
+
+    assert current.cache_dir in found
+    assert found[current.cache_dir]["deletable"] is True
+    older = [e for p, e in found.items() if p != current.cache_dir]
+    assert len(older) == 2, sorted(str(p) for p in found)
+    for entry in older:
+        assert entry["deletable"] is False
+        assert entry["entries"] == 1
+
+
 def test_an_empty_namespace_is_not_reported(capsys):
     vae = _tiny_vae()
     _setup(_trainer(None))  # a vae-unknown directory that never got an entry

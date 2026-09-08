@@ -77,6 +77,18 @@ class AnimaArchHandler(ArchHandler):
         transformer = getattr(trainer, "transformer", None)
         return getattr(transformer, "blocks", None)
 
+    def repa_tap(self, trainer):
+        # The tap sits on the Anima DiT itself, whose block loop stashes the
+        # image stream [B, T, H, W, D] — already a grid, so no token slice.
+        # Same `inner` resolution as the TREAD/BlockSkip arming in
+        # ops/anima_ops.train_step, so both write to one module.
+        from core.training.repa import RepaTapPoint
+
+        inner = getattr(trainer.transformer, "module", trainer.transformer)
+        return RepaTapPoint(module=inner,
+                            hidden_size=int(inner.model_channels),
+                            depth=len(inner.blocks))
+
     def setup_attention_backend(self, trainer) -> None:
         # P3b: body lives in ops/anima_ops (shared with base_trainer delegator).
         from core.training.ops import anima_ops
@@ -121,6 +133,7 @@ class AnimaArchHandler(ArchHandler):
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             profile_vram=ctx.profile_vram,
             alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

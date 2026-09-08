@@ -1081,6 +1081,13 @@ class Anima(nn.Module):
         )
 
         self.t_embedding_norm = RMSNorm(model_channels, eps=1e-6)
+
+        # REPA tap: when _repa_tap_depth is set (0-based block index, armed by
+        # BaseTrainer._setup_repa), the block loop stashes that block's output
+        # stream [B,T,H,W,D] in _repa_tap_out. None = disabled (no-op).
+        self._repa_tap_depth = None
+        self._repa_tap_out = None
+
         self.init_weights()
 
     def init_weights(self) -> None:
@@ -1266,10 +1273,15 @@ class Anima(nn.Module):
         if writer is not None:
             delta_front, delta_back = writer(delta_front, delta_back)
 
-        # Pass 2: gradient forward over the middle blocks only.
+        # Pass 2: gradient forward over the middle blocks only. A REPA tap can
+        # only be armed inside [lo, hi) (repa.assert_repa_depth_compatible), so
+        # it is read here and never off pass 1's no_grad stream.
+        tap_depth = self._repa_tap_depth
         x = x0 + delta_front
-        for blk in self.blocks[lo:hi]:
+        for i, blk in enumerate(self.blocks[lo:hi], start=lo):
             x = _run(x, blk)
+            if i == tap_depth:
+                self._repa_tap_out = x
         x = x + delta_back
         return x
 
@@ -1327,6 +1339,13 @@ class Anima(nn.Module):
         # self.training (sampling/validation always run the full network) and never
         # composes with FBCache (inference-only) or block-swap (guarded off).
         blockskip = getattr(self, "_blockskip_config", None) if self.training else None
+
+        # REPA tap (training-only): drop any stream a previous forward stashed,
+        # so a step whose tap does not fire reads None rather than stale tokens.
+        repa_tap_depth = self._repa_tap_depth
+        if repa_tap_depth is not None:
+            self._repa_tap_out = None
+
         if blockskip is not None:
             x_B_T_H_W_D = self._blockskip_forward(
                 blockskip, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
@@ -1483,6 +1502,9 @@ class Anima(nn.Module):
 
                 if scale_delta:
                     x_B_T_H_W_D = x_before + (x_B_T_H_W_D - x_before) * inv_keep
+
+                if block_idx == repa_tap_depth:
+                    self._repa_tap_out = x_B_T_H_W_D
 
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)

@@ -279,8 +279,8 @@ REPA_REFUSALS: Dict[str, str] = {
 _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
-    "by design, but each architecture is wired one at a time and only 'minit2i' is "
-    "wired today. Either set repa_enable=false or wire {arch}'s tap first."
+    "by design, but each architecture is wired one at a time; 'minit2i' and 'anima' "
+    "are wired today. Either set repa_enable=false or wire {arch}'s tap first."
 )
 
 
@@ -290,17 +290,25 @@ def refuse_repa(arch_name: str):
     raise ValueError(f"repa_enable is not supported for architecture '{arch_name}'. {reason}")
 
 
-def assert_repa_depth_compatible(config, align_depth: int, num_blocks: int) -> None:
+def assert_repa_depth_compatible(trainer, align_depth: int, num_blocks: int) -> None:
     """Refuse a tap depth that another training-time depth feature would void.
 
-    Both combinations below leave REPA running and reporting a loss while its
-    gradient is wrong or zero, which is why they are refused rather than warned.
-    """
-    get = config.get if hasattr(config, "get") else (lambda k, d=None: d)
+    Reads the configs the FORWARD will receive (``trainer.tread_config`` etc.,
+    built earlier in ``__init__``) rather than the raw config keys: those carry
+    per-key fallbacks of their own, so re-reading them here would check a span
+    the run does not use.
 
-    if bool(get("tread_enable", False)):
-        start = int(get("tread_start_block", 0) or 0)
-        end = int(get("tread_end_block", 0) or 0)
+    All three combinations below leave REPA running and reporting a loss while
+    its gradient is wrong, zero, or absent on part of the steps, which is why
+    they are refused rather than warned.
+    """
+    tread = getattr(trainer, "tread_config", None)
+    blockskip = getattr(trainer, "blockskip_config", None)
+    stochastic = getattr(trainer, "block_skip_config", None)
+
+    if tread is not None:
+        start = int(tread.get("start_block", 0) or 0)
+        end = int(tread.get("end_block", 0) or 0)
         if start <= align_depth < end:
             raise ValueError(
                 f"repa_align_depth={align_depth} is inside the TREAD routed span "
@@ -312,9 +320,9 @@ def assert_repa_depth_compatible(config, align_depth: int, num_blocks: int) -> N
                 f"TREAD span, (3) disable one of the two."
             )
 
-    if bool(get("blockskip_enable", False)):
-        front = int(get("blockskip_front", 0) or 0)
-        back = int(get("blockskip_back", 0) or 0)
+    if blockskip is not None:
+        front = int(blockskip.get("front", 0) or 0)
+        back = int(blockskip.get("back", 0) or 0)
         last = num_blocks - back
         if not (front <= align_depth < last):
             raise ValueError(
@@ -325,6 +333,24 @@ def assert_repa_depth_compatible(config, align_depth: int, num_blocks: int) -> N
                 f"The span that trains is [{front}, {last}). Options: (1) set "
                 f"repa_align_depth inside it, (2) reduce blockskip_front/blockskip_back, "
                 f"(3) disable one of the two."
+            )
+
+    if stochastic is not None:
+        from core.training.block_dropout import eligible_blocks
+        protect_start = int(stochastic.get("protect_start", 0) or 0)
+        protect_end = int(stochastic.get("protect_end", 0) or 0)
+        rate = float(stochastic.get("skip_rate", 0.0) or 0.0)
+        if align_depth in eligible_blocks(num_blocks, protect_start, protect_end):
+            raise ValueError(
+                f"repa_align_depth={align_depth} is a block stochastic depth may drop "
+                f"(block_skip_rate={rate}; the protected span is "
+                f"[{protect_start}, {protect_end}) and every block outside it is "
+                f"eligible). A dropped block is replaced by identity and never writes "
+                f"the tap, so on roughly {rate:.0%} of the steps REPA would contribute "
+                f"nothing at all — silently, since the run still trains. Options: "
+                f"(1) set repa_align_depth inside [{protect_start}, {protect_end}), "
+                f"(2) widen block_skip_protect_start/end to cover it, (3) disable one "
+                f"of the two."
             )
 
 

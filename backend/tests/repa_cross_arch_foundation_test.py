@@ -33,6 +33,7 @@ from core.training.adapters.base_adapter import (BaseFullParameterAdapter,
                                                  BaseLoRAAdapter,
                                                  LORA_COMPONENT_UNET)
 from core.training.arch import ARCH_REGISTRY
+from core.training.arch.base_arch import ArchHandler
 from core.training.base_trainer import BaseTrainer
 
 HIDDEN = 16
@@ -72,6 +73,11 @@ def _minit2i_trainer(**config):
         training_dtype=torch.float32,
         model_path="",
         log_prefix="[test]",
+        # The built block-loop configs the forward will receive, which is what
+        # the depth check reads (None = that feature is off for this run).
+        tread_config=None,
+        block_skip_config=None,
+        blockskip_config=None,
     )
 
 
@@ -320,13 +326,21 @@ REFUSAL_MARKERS = {
     "minimax_h3": "CONDITION frames",
 }
 
+# Architectures whose handler answers repa_tap. Their own tap behavior is
+# pinned per architecture (repa_anima_tap_test.py for anima); here they are
+# only excluded from the refusal sweep.
+WIRED_ARCHS = {"minit2i", "anima"}
+
 
 @pytest.mark.parametrize("arch_name", sorted(ARCH_REGISTRY))
-def test_only_minit2i_answers_with_a_tap(arch_name):
+def test_every_unwired_arch_refuses_rather_than_ignoring_the_flag(arch_name):
     handler = ARCH_REGISTRY[arch_name]()
     if arch_name == "minit2i":
         trainer = _minit2i_trainer()
         assert handler.repa_tap(trainer).depth == DEPTH
+        return
+    if arch_name in WIRED_ARCHS:
+        assert type(handler).repa_tap is not ArchHandler.repa_tap
         return
 
     with pytest.raises(ValueError) as excinfo:
@@ -366,39 +380,74 @@ def test_setup_repa_is_inert_when_disabled():
 # (d) depth-feature conflicts
 # ---------------------------------------------------------------------------
 
+def _feature_trainer(**built):
+    """A trainer carrying only the built block-loop configs the check reads."""
+    configs = {"tread_config": None, "block_skip_config": None,
+               "blockskip_config": None}
+    configs.update(built)
+    return SimpleNamespace(**configs)
+
+
 def test_tread_routed_span_conflicts_with_the_tap():
-    config = {"tread_enable": True, "tread_start_block": 2, "tread_end_block": 26}
+    trainer = _feature_trainer(tread_config={"start_block": 2, "end_block": 26,
+                                             "drop_ratio": 0.5})
 
     # Anima is the architecture that consumes both, and its 28 blocks put the
     # auto tap at 9 -- inside the shipped TREAD span [2, 26).
     with pytest.raises(ValueError, match="TREAD routed span"):
-        repa_module.assert_repa_depth_compatible(config, 9, DEPTH)
+        repa_module.assert_repa_depth_compatible(trainer, 9, DEPTH)
 
     # Outside the span both ends are fine (end is exclusive).
-    repa_module.assert_repa_depth_compatible(config, 1, DEPTH)
-    repa_module.assert_repa_depth_compatible(config, 26, DEPTH)
+    repa_module.assert_repa_depth_compatible(trainer, 1, DEPTH)
+    repa_module.assert_repa_depth_compatible(trainer, 26, DEPTH)
     # And nothing is checked when TREAD is off.
-    repa_module.assert_repa_depth_compatible({"tread_start_block": 2,
-                                              "tread_end_block": 26}, 9, DEPTH)
+    repa_module.assert_repa_depth_compatible(_feature_trainer(), 9, DEPTH)
 
 
 def test_blockskip_skipped_span_conflicts_with_the_tap():
-    config = {"blockskip_enable": True, "blockskip_front": 4, "blockskip_back": 4}
+    trainer = _feature_trainer(blockskip_config={"front": 4, "back": 4})
 
     for depth in (0, 3, 24, 27):
         with pytest.raises(ValueError, match="BlockSkip"):
-            repa_module.assert_repa_depth_compatible(config, depth, DEPTH)
+            repa_module.assert_repa_depth_compatible(trainer, depth, DEPTH)
 
     # The trainable middle span [4, 24) is accepted, including the default tap.
     for depth in (4, 9, 23):
-        repa_module.assert_repa_depth_compatible(config, depth, DEPTH)
+        repa_module.assert_repa_depth_compatible(trainer, depth, DEPTH)
+
+
+def test_stochastic_depth_conflicts_with_a_tap_it_may_drop():
+    """A dropped block is identity and writes no tap: the term would vanish on
+    those steps with nothing raised and the run still training."""
+    trainer = _feature_trainer(block_skip_config={"skip_rate": 0.1,
+                                                  "protect_start": 6,
+                                                  "protect_end": 22})
+
+    for depth in (0, 5, 22, 27):
+        with pytest.raises(ValueError, match="stochastic depth may drop"):
+            repa_module.assert_repa_depth_compatible(trainer, depth, DEPTH)
+
+    # The protected middle span is never dropped, so a tap there is safe.
+    for depth in (6, 9, 21):
+        repa_module.assert_repa_depth_compatible(trainer, depth, DEPTH)
+
+
+def test_the_check_reads_the_built_config_not_the_raw_keys():
+    """`tread_start_block`/`tread_end_block` carry their own defaults where the
+    run config is built, so re-reading the raw keys here would check a span the
+    forward does not use."""
+    raw_only = _feature_trainer()
+    raw_only.config = {"tread_enable": True, "tread_start_block": 2,
+                       "tread_end_block": 26}
+
+    repa_module.assert_repa_depth_compatible(raw_only, 9, DEPTH)
 
 
 def test_setup_repa_refuses_a_conflicting_tap_depth(monkeypatch):
     """Same trainer, but with the architecture declared as a consumer."""
     _stub_encoder(monkeypatch)
-    trainer = _minit2i_trainer(tread_enable=True, tread_start_block=2,
-                               tread_end_block=26)
+    trainer = _minit2i_trainer()
+    trainer.tread_config = {"start_block": 2, "end_block": 26, "drop_ratio": 0.5}
     monkeypatch.setattr(type(trainer.arch), "consumes_block_loop_features", True,
                         raising=False)
 
@@ -415,8 +464,8 @@ def test_the_conflict_check_is_skipped_where_the_arch_ignores_those_features(mon
     assert MiniT2IArchHandler.consumes_block_loop_features is False
     assert AnimaArchHandler.consumes_block_loop_features is True
 
-    trainer = _minit2i_trainer(tread_enable=True,
-                               tread_start_block=2, tread_end_block=26)
+    trainer = _minit2i_trainer()
+    trainer.tread_config = {"start_block": 2, "end_block": 26, "drop_ratio": 0.5}
     _stub_encoder(monkeypatch)
 
     # Reaches the projector rather than raising: the tap depth would collide,

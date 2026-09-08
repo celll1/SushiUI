@@ -23309,7 +23309,10 @@ components:
 
             Only architectures with a wired REPA tap accept this. Enabling it
             for any other architecture is REFUSED at trainer construction with
-            the reason, never accepted and ignored. Currently wired: MiniT2I.
+            the reason, never accepted and ignored. Currently wired: MiniT2I,
+            Anima. `GET /schema/arch-capabilities` carries the same fact as the
+            `repa` training feature, so a client can hide the control rather
+            than discover the refusal after queuing a run.
           example: false
         repa_encoder_source:
           type: 'string'
@@ -23347,9 +23350,11 @@ components:
 
             Refused when another depth feature would void it: a depth inside
             TREAD's routed span (the block sees only the kept token subset, so
-            the tapped rows are not the token grid), or inside a DiT-BlockSkip
+            the tapped rows are not the token grid), inside a DiT-BlockSkip
             skipped span (those blocks run under no_grad, so the REPA gradient
-            would be exactly zero).
+            would be exactly zero), or on a block `block_skip_rate` stochastic
+            depth may drop (a dropped block never writes the tap, so REPA
+            would contribute nothing on those steps).
           example: -1
         repa_weight:
           type: 'number'

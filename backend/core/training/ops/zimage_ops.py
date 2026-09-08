@@ -260,7 +260,7 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         h = trainer.vae.quant_conv(h)
     mean, logvar = torch.chunk(h, 2, dim=1)
     latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
-    latents = normalize(latents, trainer.vae)
+    latents = normalize(latents, trainer.vae, getattr(trainer, "wiring", None))
     # Clean up intermediate tensors
     del h, mean, logvar
     return latents
@@ -876,7 +876,7 @@ def _run_zimage_denoising_loop(
 
 def _decode_zimage_latents(trainer, latents: torch.Tensor) -> Image.Image:
     """Decode Z-Image latents to image."""
-    latents = denormalize(latents, trainer.vae)
+    latents = denormalize(latents, trainer.vae, getattr(trainer, "wiring", None))
 
     # Decode (convert to VAE dtype to match decoder weights)
     with torch.no_grad():

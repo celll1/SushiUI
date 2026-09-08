@@ -4,9 +4,9 @@ Integrates autograd-enabled context crop decoding with VaeLossBank
 to provide an opt-in auxiliary pixel-space reconstruction loss during diffusion training.
 
 Flow:
-    model_pred -> predict_x0 -> random crop rect -> decode_crop_with_context
+    model_pred -> predict_x0 -> denormalise -> crop rect -> decode_crop_with_context
                                                                 │
-    clean GT latents -> random crop rect -> decode_crop_with_context (detached)
+    clean GT latents -> denormalise -> crop rect -> decode_crop_with_context (detached)
                                                                 ▼
                                                     VaeLossBank (LPIPS/L1/MSE/YCbCr-DC)
                                                                 ▼
@@ -27,6 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.inference.context_tiled_decode import spatial_compression_of
+from core.models.components.vae_registry import denormalize
 from core.training.ops.crop_decode import decode_crop_with_context, make_crop_rect
 from core.training.ops.x0_recovery import predict_x0, snr_band_mask
 from core.training.vae.vae_losses import VaeLossBank
@@ -190,6 +191,19 @@ def compute_crop_decode_loss(
     if clean_latents_sub.ndim == 5 and clean_latents_sub.shape[2] == 1:
         clean_latents_sub = clean_latents_sub.squeeze(2)
 
+    # Every caller's latents are NORMALISED, so the decoder's own domain is one
+    # denormalisation away -- cast first, then denormalise, as latent_space.decode
+    # does. Whole-tensor, before the crop: a 2x2-packed domain (FLUX.2, Lens) is
+    # not slice-invariant.
+    spec = getattr(trainer, "wiring", None)
+    vae_param = next(loss_module.vae.parameters(), None)
+    cast = ({"device": vae_param.device, "dtype": vae_param.dtype}
+            if vae_param is not None else {})
+    pred_x0_sub = denormalize(pred_x0_sub.to(**cast), loss_module.vae, spec)
+    with torch.no_grad():
+        clean_latents_sub = denormalize(
+            clean_latents_sub.detach().to(**cast), loss_module.vae, spec)
+
     lat_h, lat_w = pred_x0_sub.shape[-2], pred_x0_sub.shape[-1]
     out_c = loss_module.out_cells
     margin = loss_module.margin_cells
@@ -212,7 +226,7 @@ def compute_crop_decode_loss(
 
     # Decode target crop (detached GT)
     with torch.no_grad():
-        gt_crop_rgb = decode_crop_with_context(loss_module.vae, clean_latents_sub.detach(), rect, scale=scale)
+        gt_crop_rgb = decode_crop_with_context(loss_module.vae, clean_latents_sub, rect, scale=scale)
 
     # VAE Loss Bank evaluation
     bank_out = loss_module.loss_bank(pred_crop_rgb, gt_crop_rgb)

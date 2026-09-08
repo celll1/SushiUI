@@ -37,6 +37,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -78,6 +79,10 @@ class MockVAE(nn.Module):
         super().__init__()
         self.scale = scale
         self.spatial_compression_ratio = scale
+        # The probe decodes raw latents directly, but a caller that normalises
+        # (ops/crop_decode_loss) needs this mock to declare a method like a real VAE.
+        self.config = SimpleNamespace(
+            latent_channels=in_channels, scaling_factor=0.18215, shift_factor=None)
         # 3-stage conv + group norm hierarchy
         self.conv_in = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
         self.gn1 = nn.GroupNorm(4, 32)
@@ -100,7 +105,6 @@ class MockVAE(nn.Module):
         h = F.silu(self.gn3(self.up2(h)))
         out = self.up3(h)
         if return_dict:
-            from types import SimpleNamespace
             return SimpleNamespace(sample=out)
         return (out,)
 

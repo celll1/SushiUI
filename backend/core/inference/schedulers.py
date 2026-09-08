@@ -53,29 +53,27 @@ SAMPLER_NAMES = {
 SCHEDULE_TYPES = {
     "uniform": "Uniform",
     "karras": "Karras",
-    # "exponential" selects trailing timestep spacing, not an exponential sigma
-    # schedule (diffusers' use_exponential_sigmas); the id is kept for API
-    # compatibility, the label states what it does.
-    "exponential": "Trailing spacing (not exponential sigmas)",
+    "exponential": "Exponential",
 }
 
 # Config keys this module owns: every one of them is written on every call, so
 # a scheduler built here can never inherit a value from the previously selected
 # schedule (get_scheduler reads back the scheduler it last returned).
-_SCHEDULE_KEYS = ("prediction_type", "use_karras_sigmas", "timestep_spacing")
+_SCHEDULE_KEYS = ("prediction_type", "use_karras_sigmas",
+                  "use_exponential_sigmas", "timestep_spacing")
 
 
 def _schedule_overrides(schedule_type: str, prediction_type: str) -> dict:
     """Resolved value for every key in ``_SCHEDULE_KEYS``."""
-    is_v_prediction = prediction_type == "v_prediction"
     return {
         "prediction_type": prediction_type,
         "use_karras_sigmas": schedule_type == "karras",
-        # Karras picks sigmas, not timestep spacing, so it takes the same
-        # spacing as "uniform" rather than whichever spacing ran before it.
+        "use_exponential_sigmas": schedule_type == "exponential",
+        # Both named schedules pick sigmas, not timestep spacing, so spacing is
+        # decided by the model alone rather than by whichever schedule ran
+        # before it.
         "timestep_spacing": (
-            "trailing" if (schedule_type == "exponential" or is_v_prediction)
-            else "leading"
+            "trailing" if prediction_type == "v_prediction" else "leading"
         ),
     }
 

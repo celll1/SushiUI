@@ -19,13 +19,16 @@ This module provides:
   - ``rescan_dataset_inline(dataset_id, datasets_db)`` — calls the
     existing ``scan_dataset`` route function in-process to fix drift.
   - ``cleanup_orphan_latent_cache(...)`` — removes ``.pt`` files in
-    the cache whose source row is no longer in the DB (LoRA only;
-    tagger doesn't latent-cache).
+    the cache whose stamped source path is no longer in the DB (LoRA
+    only; tagger doesn't latent-cache).
 """
 from __future__ import annotations
 
+import io
 import os
+import pickle
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -404,6 +407,91 @@ async def rescan_dataset_inline(
 # Latent cache orphan cleanup (LoRA / Full-FT only)
 # ---------------------------------------------------------------------------
 
+class _HeaderUnpickler(pickle.Unpickler):
+    """Reads a torch record's structure without building anything from it:
+    every class resolves to a stub and every storage to None."""
+
+    def find_class(self, module, name):
+        return lambda *a, **kw: None
+
+    def persistent_load(self, pid):
+        return None
+
+
+def _cache_record_source_path(cache_file: Path) -> Optional[str]:
+    """Source media path stamped inside a latent cache ``.pt``, or None when it
+    cannot be read.
+
+    Every writer records its source (``image_path`` / ``video_path`` /
+    ``audio_path``; see ``latent_cache.save_latent`` and friends). That stamp is
+    the only way to tell a live entry from an orphan, since the filename is an
+    md5 that cannot be inverted. Only torch's pickle header is read, so the
+    tensor payload is never touched (measured: 95 us/file warm vs 262 us for
+    ``torch.load``).
+    """
+    try:
+        with zipfile.ZipFile(cache_file) as zf:
+            member = next(n for n in zf.namelist() if n.endswith("data.pkl"))
+            payload = zf.read(member)
+        record = _HeaderUnpickler(io.BytesIO(payload)).load()
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    for key in ("image_path", "video_path", "audio_path"):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _path_variants(path: str) -> Set[str]:
+    """Both forms a stored path can take: as written, and normalized absolute."""
+    variants = {path}
+    try:
+        variants.add(os.path.normcase(os.path.abspath(path)))
+    except Exception:
+        pass
+    return variants
+
+
+def _live_source_paths(datasets_db, dataset_id: int) -> Set[str]:
+    """Every source path the dataset's current rows claim, in both path forms.
+
+    Video / audio items cache under the path in ``exif_data``, which
+    ``train_runner._apply_video_metadata`` prefers over ``image_path``, so both
+    are collected; the JSON column is only read for those rows.
+    """
+    from database.models import DatasetItem
+
+    live: Set[str] = set()
+    rows = (
+        datasets_db.query(DatasetItem.image_path)
+        .filter(DatasetItem.dataset_id == dataset_id)
+        .yield_per(5000)
+    )
+    for (p,) in rows:
+        if p:
+            live |= _path_variants(p)
+
+    media_rows = (
+        datasets_db.query(DatasetItem.exif_data)
+        .filter(
+            DatasetItem.dataset_id == dataset_id,
+            DatasetItem.item_type.in_(("video", "audio")),
+        )
+        .yield_per(1000)
+    )
+    for (meta,) in media_rows:
+        if not isinstance(meta, dict):
+            continue
+        for key in ("video_path", "audio_path"):
+            value = meta.get(key)
+            if isinstance(value, str) and value:
+                live |= _path_variants(value)
+    return live
+
+
 def cleanup_orphan_latent_cache(
     dataset_unique_id: str,
     datasets_db,
@@ -411,24 +499,21 @@ def cleanup_orphan_latent_cache(
     *,
     bucket_resolutions: Optional[List[tuple]] = None,
 ) -> int:
-    """Remove latent cache ``.pt`` files whose source DatasetItem is no
-    longer in the DB (i.e. removed by a fresh rescan).
+    """Remove latent cache ``.pt`` files whose source is no longer in the DB
+    (i.e. removed by a fresh rescan).
 
-    The cache filename is ``{md5(<abs_path>_<w>_<h>)}.pt`` — we cannot
-    invert the hash, so the strategy is:
+    Deletion requires positive evidence: a file goes only when the source path
+    stamped inside it is absent from the dataset's current rows. Enumerating
+    instead what a live item *could* be named is not safe here — the key space
+    is open-ended (any bucket resolution, any video clip window, any audio
+    duration/sample-rate), and one missed member deletes a live latent. A file
+    whose stamp cannot be read is kept.
 
-      1. Build a set of "expected" hashes by iterating every current
-         DatasetItem × every bucket (width, height) the trainer might
-         use.
-      2. Delete any cache file whose stem (== hash) isn't in that set.
+    ``bucket_resolutions`` is a fast path only: an entry that matches a live
+    item at one of these resolutions is kept without opening the file.
 
     Returns the number of files removed.
-
-    For the bucket resolutions, the caller passes the same list it
-    intends to train with (typically ``[(512,512), (768,768), (1024,1024)]``
-    or finer bucketing).  When omitted, a sensible default list is used.
     """
-    from database.models import DatasetItem
     from core.training.latent_cache import LatentCache, get_cache_base_dir
 
     dataset_root = Path(get_cache_base_dir()) / dataset_unique_id
@@ -438,9 +523,9 @@ def cleanup_orphan_latent_cache(
     # Latents live under per-architecture, per-VAE namespaces:
     #   {dataset_root}/{namespace}/{vae_namespace}/latents/*.pt
     # plus two older layouts that may still be on disk: {namespace}/latents and
-    # the pre-namespace {dataset_root}/latents. The orphan hash set is
-    # architecture- and VAE-independent (path + w + h only), so every latents
-    # dir is scanned with the same set.
+    # the pre-namespace {dataset_root}/latents. Liveness is architecture- and
+    # VAE-independent (source path only), so every latents dir is scanned the
+    # same way. `text_embeddings/` is keyed by caption and never matched here.
     latents_dirs = [d for d in dataset_root.glob("*/*/latents") if d.is_dir()]
     latents_dirs += [d for d in dataset_root.glob("*/latents") if d.is_dir()]
     legacy_dir = dataset_root / "latents"
@@ -449,36 +534,31 @@ def cleanup_orphan_latent_cache(
     if not latents_dirs:
         return 0
 
-    # 1) Build set of expected hashes from current DB rows.
+    live_paths = _live_source_paths(datasets_db, dataset_id)
+
     if bucket_resolutions is None:
-        # Conservative default — covers most SDXL/SD15 setups.
         bucket_resolutions = [
             (512, 512), (640, 640), (768, 768),
             (832, 1216), (1024, 1024), (1216, 832),
         ]
-
-    expected: Set[str] = set()
-    rows = (
-        datasets_db.query(DatasetItem.image_path)
-        .filter(DatasetItem.dataset_id == dataset_id)
-        .yield_per(5000)
-    )
-    for (p,) in rows:
-        if not p:
-            continue
-        abs_p = os.path.abspath(p)
+    known_live_hashes: Set[str] = set()
+    for p in live_paths:
         for (w, h) in bucket_resolutions:
-            expected.add(LatentCache.compute_image_hash(abs_p, w, h))
+            known_live_hashes.add(LatentCache.compute_image_hash(p, w, h))
 
-    # 2) Iterate cache files across every namespace; delete any not in expected.
     removed = 0
     for cache_dir in latents_dirs:
         for entry in cache_dir.glob("*.pt"):
-            stem = entry.stem
-            if stem not in expected:
-                try:
-                    entry.unlink()
-                    removed += 1
-                except OSError:
-                    pass
+            if entry.stem in known_live_hashes:
+                continue
+            source = _cache_record_source_path(entry)
+            if source is None:
+                continue  # Unreadable stamp: not provably an orphan.
+            if _path_variants(source) & live_paths:
+                continue
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError:
+                pass
     return removed

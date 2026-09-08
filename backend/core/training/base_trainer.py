@@ -13460,6 +13460,12 @@ class BaseTrainer(ABC):
         debug_latents_every: int = 50,
         convergence_diagnostics_enable: bool = False,
         convergence_diagnostics_interval: int = 100,
+        crop_decode_loss_enable: bool = False,
+        crop_decode_loss_weight: float = 0.0,
+        crop_decode_loss_margin_cells: int = 16,
+        crop_decode_loss_out_cells: int = 32,
+        crop_decode_loss_metric: str = "lpips",
+        crop_decode_loss_snr_range: str = "",
         progress_callback: Optional[Callable] = None,
         update_total_steps_callback: Optional[Callable[[int], None]] = None,
         run_id: Optional[int] = None,
@@ -13569,11 +13575,20 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
         self.convergence_diagnostics_enable = bool(convergence_diagnostics_enable)
         self.convergence_diagnostics_interval = convergence_diagnostics_interval
+        self.crop_decode_loss_enable = bool(crop_decode_loss_enable)
+        self.crop_decode_loss_weight = float(crop_decode_loss_weight)
+        self.crop_decode_loss_margin_cells = int(crop_decode_loss_margin_cells)
+        self.crop_decode_loss_out_cells = int(crop_decode_loss_out_cells)
+        self.crop_decode_loss_metric = str(crop_decode_loss_metric)
+        self.crop_decode_loss_snr_range = str(crop_decode_loss_snr_range)
+        self._crop_decode_loss_module = None
         self._diag_gt_img: Optional[Image.Image] = None
         self._diag_gt_latent: Optional[torch.Tensor] = None
         self._last_predicted_latent: Optional[torch.Tensor] = None
         if self.convergence_diagnostics_enable:
             print(f"{self.log_prefix} Convergence diagnostics: ENABLED (every {self.convergence_diagnostics_interval} steps)")
+        if self.crop_decode_loss_enable and self.crop_decode_loss_weight > 0:
+            print(f"{self.log_prefix} Crop decode auxiliary loss: ENABLED (weight={self.crop_decode_loss_weight}, metric={self.crop_decode_loss_metric}, margin={self.crop_decode_loss_margin_cells}, out={self.crop_decode_loss_out_cells})")
         if save_every_n_steps == 0:
             print(f"{self.log_prefix} Periodic checkpointing: DISABLED (save_every=0); "
                   f"only interrupt/emergency saves will write a checkpoint")

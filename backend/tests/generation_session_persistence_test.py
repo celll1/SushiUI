@@ -43,7 +43,12 @@ def test_generation_panels_restore_progress_and_completed_preview() -> None:
         assert "progressSnapshot" in source, panel
         assert f"completedResults.{panel}" in source, panel
         assert f'panel: "{panel}"' in source, panel
-        assert "isGeneratingRef.current" in source, panel
+        # A remounted panel derives "generating" from the queue's currentItem
+        # and adopts the context snapshot only for THAT item -- named after the
+        # behaviour, not after the ref that used to carry it (isGeneratingRef
+        # became isOwnRunRef in 97f1ecb9, and two panels need no such ref).
+        assert "setIsGenerating(true)" in source, panel
+        assert "progressSnapshot?.itemId !== currentItem.id" in source, panel
 
     # The txt2img panel must CLAIM every queue type it can produce, in both the
     # startNextInQueue allow-list and the remount/restore type list -- claiming

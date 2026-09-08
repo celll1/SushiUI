@@ -2,9 +2,10 @@
 
 Covers the five things that can silently go wrong: the resize being driven by
 the shared arch handler rather than an SDXL-only block, a legacy
-``sdxl_vae_type`` config still resolving, the latent cache namespace staying
-ADDITIVE, the preflight refusing a source that cannot be saved, and a bundled
-VAE surviving the save/read round trip.
+``sdxl_vae_type`` config still resolving, the latent cache namespace keeping the
+VAE off the shared arch component and on the latents, the preflight refusing a
+source that cannot be saved, and a bundled VAE surviving the save/read round
+trip.
 """
 
 import json
@@ -167,7 +168,7 @@ def test_the_value_reaches_the_yaml_and_comes_back(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. The cache namespace token is additive
+# 3. The VAE keys the latents, not the namespace the text embeddings share
 # ---------------------------------------------------------------------------
 
 def _namespace(**attrs):
@@ -183,39 +184,48 @@ def _namespace(**attrs):
     return BaseTrainer._build_cache_namespace(stub)
 
 
-def test_a_native_run_gets_no_vae_token():
+def _module(scaling_factor=0.18215, weight=0.0):
+    """A live VAE as far as ``module_latent_hash`` is concerned: weights plus the
+    normalisation config."""
+    module = torch.nn.Module()
+    module.w = torch.nn.Parameter(torch.full((2,), weight))
+    module.config = {"scaling_factor": scaling_factor}
+    return module
+
+
+def test_the_shared_namespace_carries_no_vae_token():
+    # It is shared with the text-embedding cache, which does not depend on the
+    # VAE: a declared swap changes only what the new latents' shape changes.
     native = _namespace()
     assert native == "sdxl__c4__dtfloat16"
-    # An identity-native resolution is the same "no swap" answer.
     assert _namespace(vae_identity=_resolved(4, identity_native=True,
                                              struct_native=True)) == native
+    assert _namespace(vae_identity=_resolved(4)) == native
+    assert _namespace(vae_identity=_resolved(16),
+                      vae_latent_channels=16) == "sdxl__c16__dtfloat16"
 
 
-def test_a_swapped_run_adds_one_token_and_changes_nothing_else():
-    native = _namespace()
-    swapped = _namespace(vae_identity=_resolved(16), vae_latent_channels=16)
-    assert swapped == f"sdxl__vae-flux1-{_resolved(16).latent_hash[:8]}__c16__dtfloat16"
-    # Additive: every component of the native namespace survives in order.
-    assert [p for p in swapped.split("__") if not p.startswith("vae-")] == \
-        [p if p != "c4" else p for p in native.replace("c4", "c16").split("__")]
+def test_the_latents_are_addressed_by_the_encoding_module_s_hash():
+    from core.training.latent_cache import vae_cache_namespace
+    from core.training.vae_swap import module_latent_hash
 
-
-def test_same_channels_different_vae_still_separates_by_hash():
-    a = _namespace(vae_identity=_resolved(4, family="sdxl", content_hash="1111111122222222"))
-    b = _namespace(vae_identity=_resolved(4, family="sdxl", content_hash="3333333344444444"))
-    assert a != b
-    identity = _resolved(4, family="sdxl", content_hash="1111111122222222")
-    assert a == f"sdxl__vae-sdxl-{identity.latent_hash[:8]}__c4__dtfloat16"
+    a, b = _module(weight=0.0), _module(weight=1.0)
+    assert vae_cache_namespace(module_latent_hash(a)) == f"vae-{module_latent_hash(a)}"
+    assert vae_cache_namespace(module_latent_hash(a)) != \
+        vae_cache_namespace(module_latent_hash(b))
 
 
 def test_same_weights_different_scaling_separates_cache_and_adapter_identity():
     from dataclasses import replace
     from core.adapters.base_identity import BaseLatentIdentity, check_base_latent
+    from core.training.latent_cache import vae_cache_namespace
+    from core.training.vae_swap import module_latent_hash
     from core.training.adapters.base_adapter import base_latent_metadata
 
     original = _resolved(4, struct_native=True)
     changed = replace(original, scaling_factor=0.5)
-    assert _namespace(vae_identity=original) != _namespace(vae_identity=changed)
+    assert vae_cache_namespace(module_latent_hash(_module(0.18215))) != \
+        vae_cache_namespace(module_latent_hash(_module(0.5)))
     trainer = SimpleNamespace(vae_identity=original, vae_latent_channels=4)
     adapter = BaseLatentIdentity.from_metadata(base_latent_metadata(trainer))
     assert check_base_latent(adapter, BaseLatentIdentity.from_facts(original.facts())).ok

@@ -28,16 +28,71 @@ Manages disk cache for VAE latents and optionally text embeddings to reduce VRAM
 
 ```
 cache/datasets/{dataset_unique_id}/
-├── latents/
-│   ├── {image_hash}.pt
-│   └── ...
-├── text_embeddings/  (optional)
-│   ├── {caption_hash}_clip1.pt
-│   ├── {caption_hash}_clip2.pt  (SDXL only)
-│   ├── {caption_hash}_pooled.pt (SDXL only)
-│   └── ...
-└── cache_info.json
+└── {namespace}/                       # architecture identity, e.g. sdxl__c4__dtfloat16
+    ├── vae-{latent_hash}/             # ONE per VAE that has encoded this dataset
+    │   ├── latents/
+    │   │   ├── {image_hash}.pt        # image, video-clip and audio entries
+    │   │   └── ...
+    │   └── cache_info.json
+    ├── vae-{another_latent_hash}/     # kept, not deleted, when the VAE changes
+    │   └── ...
+    └── text_embeddings/               # (optional) VAE-INDEPENDENT, so one level up
+        ├── {caption_hash}_clip1.pt
+        ├── {caption_hash}_clip2.pt    (SDXL only)
+        ├── {caption_hash}_pooled.pt   (SDXL only)
+        └── ...
 ```
+
+Two components, built by two functions, because they have different scopes:
+
+- `build_cache_namespace(arch, te_type, latent_channels, latent_dtype)` — the
+  architecture identity, **shared with the text-embedding cache**. It carries no
+  VAE token: text embeddings do not depend on the VAE, and a token here would
+  orphan them on every VAE switch.
+- `vae_cache_namespace(vae_latent_hash)` — `vae-<latent_hash>`, on the latents
+  only. The hash is `module_latent_hash()` of the **live VAE module** (weights +
+  normalisation config), never `ResolvedVAE.latent_hash`: the two are not
+  comparable, a native run has no `ResolvedVAE` at all, and the family name is
+  deliberately absent from the path so the same VAE addresses one directory
+  whether or not that run declared a swap.
+
+**Why the VAE is in the path and not only in the stamp.** Both were true at
+different times. A stamp alone means one directory per dataset, so alternating
+between two VAEs re-encodes the whole dataset every time — the cost of a VAE
+comparison is then paid on each leg of the round trip. With the VAE in the path,
+switching away and back is free; what the switch leaves behind is kept, never
+deleted, and reported (see below).
+
+The hash is used **whole**: `latent_space_hash` already truncates to 16 hex, and
+`validate()` would still catch a prefix collision — it compares the full value
+the stamp records — but the colliding VAEs would share one directory and resume
+deleting each other's latents, which is the thrash this path component removes.
+`vae-unknown` is the shared bucket for runs whose VAE cannot be hashed at all
+(`module_latent_hash` returned `None`); it is the stamp that separates them,
+which is why an unverifiable run drops the stamp instead of writing one — and
+why two unhashable runs in a row are separated by nothing but the warning.
+
+`cache_info.json` (below) remains the **last line of defence**, for what the path
+cannot separate: the `vae-unknown` bucket, a directory written before identities
+were recorded, and `audio_vae`, whose latents share the LTX-2.3 / MiniMax-H3
+clip records.
+
+#### `list_vae_namespaces`
+
+```python
+def list_vae_namespaces(base_cache_dir: str, dataset_unique_id: str) -> List[Dict]
+```
+
+Every `vae-*` latent namespace on disk for one dataset, across all architecture
+namespaces: `path`, `namespace`, `vae_namespace`, `entries`, `bytes`, and
+`vae_latent_hash` / `vae_family` / `model_path` / `created_at` read from each
+stamp. One `scandir` per directory (on Windows the size comes from the directory
+entry, so no per-file `stat`).
+
+`BaseTrainer._setup_latent_caches` calls it per dataset and logs the namespaces
+this run is **not** using, with their size and the VAE that wrote them.
+**Nothing deletes them** — that is the point of the layout, and reclaiming the
+space is a manual `rm` of a printed path.
 
 ### Constructor
 
@@ -45,18 +100,22 @@ cache/datasets/{dataset_unique_id}/
 LatentCache(
     dataset_unique_id: str,
     base_cache_dir: str = None,
-    namespace: str = None
+    namespace: str = None,
+    vae_namespace: str = None
 )
 ```
 
 **Parameters**:
 - `dataset_unique_id` (str): Dataset unique ID (UUID)
 - `base_cache_dir` (str, optional): Base directory for cache. Defaults to user settings (`cache/datasets`)
-- `namespace` (str, optional): Architecture/VAE identity component (see
-  `build_cache_namespace`). With it the cache lives at
+- `namespace` (str, optional): Architecture identity component (see
+  `build_cache_namespace`). With it the cache lives under
   `{base}/{dataset_id}/{namespace}/`; without it the legacy
   `{base}/{dataset_id}/` layout is used, and those entries are unlabeled and
   must not be shared across architectures.
+- `vae_namespace` (str, optional): VAE identity component (see
+  `vae_cache_namespace`), which applies to the **latents only** —
+  `embeddings_dir` stays at the architecture level either way.
 
 **Behavior**:
 - Automatically creates cache directories (`latents/`, `text_embeddings/`)
@@ -75,9 +134,10 @@ cache = LatentCache(dataset_unique_id="a1b2c3d4-...")
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `dataset_unique_id` | str | Dataset UUID |
-| `cache_dir` | Path | Cache root directory |
+| `arch_cache_dir` | Path | `{base}/{dataset_id}/{namespace}` — shared by every VAE |
+| `cache_dir` | Path | This VAE's cache root (`arch_cache_dir/{vae_namespace}`) |
 | `latents_dir` | Path | Latent tensors directory |
-| `embeddings_dir` | Path | Text embeddings directory |
+| `embeddings_dir` | Path | Text embeddings directory — under `arch_cache_dir`, **not** under `cache_dir` |
 | `cache_info_path` | Path | Path to `cache_info.json` |
 
 ### Static Methods
@@ -340,9 +400,9 @@ neither destroy a cache nor leave a stamp a later run would trust.
 - `training_dtype` (str): Training dtype, as `str(trainer.training_dtype)` writes it
   (`'torch.bfloat16'`, `'torch.float16'`, ...); the comparison in `validate()` is a
   plain string equality, so a caller that normalises the prefix away will not match
-- `vae_latent_hash` (str | None): `module_latent_hash()` of the encoding VAE.
-  The namespace carries a `vae-` token only for a declared swap, so this is the
-  only record of which VAE wrote a native run's latents. `None` = not computable
+- `vae_latent_hash` (str | None): `module_latent_hash()` of the encoding VAE —
+  the same value `vae_cache_namespace` puts in the path, recorded whole so
+  `validate()` can catch what the path cannot separate. `None` = not computable
 - `vae_family` (str | None): VAE family name, for the mismatch log only
 
 **Metadata Format**:
@@ -350,6 +410,7 @@ neither destroy a cache nor leave a stamp a later run would trust.
 {
     "dataset_unique_id": "a1b2c3d4-...",
     "namespace": "sdxl__c4__dtfloat16",
+    "vae_namespace": "vae-e9a645c32c26a19e",
     "model_path": "models/model.safetensors",
     "model_type": "sdxl",
     "training_dtype": "torch.bfloat16",
@@ -490,7 +551,11 @@ def discard_latents(self) -> int
 
 Delete every cached latent (`latents/*.pt`, image + video-clip + audio) and the
 `cache_info.json` stamp; returns the number of files removed. Text embeddings
-are kept — they do not depend on the VAE.
+are kept — they do not depend on the VAE, and they live outside `cache_dir`.
+
+Only this run's `vae-<hash>` directory is ever touched: the caches other VAEs
+wrote for the same dataset are not reachable from here, and no code path deletes
+them.
 
 Used by `BaseTrainer._setup_latent_caches` when `validate()` returns
 `vae_identity` or `no_cache_info`. **This is the durable note on why deletion

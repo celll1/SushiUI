@@ -11817,30 +11817,34 @@ class BaseTrainer(ABC):
         Returns:
             Dictionary mapping dataset_unique_id to LatentCache instance
         """
-        from core.training.latent_cache import LatentCache, get_cache_base_dir
+        from core.training.latent_cache import (
+            LatentCache, get_cache_base_dir, vae_cache_namespace,
+        )
 
         latent_caches = {}
         # Use global cache directory (shared across all training runs)
         # This allows cache reuse when training the same dataset multiple times
         base_cache_dir = get_cache_base_dir()
         namespace = self._build_cache_namespace()
-        print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
-        print(f"{self.log_prefix} Latent cache namespace (arch/VAE identity): {namespace}")
-
         vae_hash, vae_family = self._run_vae_identity()
+        vae_namespace = vae_cache_namespace(vae_hash)
         family_note = "" if vae_family is None else f" (family={vae_family})"
+        print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
+        print(f"{self.log_prefix} Latent cache namespace (arch identity): {namespace}")
         print(f"{self.log_prefix} Latent cache VAE identity: "
-              f"{vae_hash or 'unavailable'}{family_note}")
+              f"{vae_hash or 'unavailable'}{family_note} -> {vae_namespace}")
 
         for dataset in datasets:
             cache = LatentCache(
                 dataset_unique_id=dataset.unique_id,
                 base_cache_dir=str(base_cache_dir),
                 namespace=namespace,
+                vae_namespace=vae_namespace,
             )
             latent_caches[dataset.unique_id] = cache
-            cache_dir = Path(base_cache_dir) / dataset.unique_id / namespace
+            cache_dir = cache.cache_dir
             print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.unique_id}': {cache_dir}")
+            self._log_other_vae_caches(base_cache_dir, dataset.unique_id, cache_dir)
 
             info = dict(
                 model_path=str(getattr(self, "model_path", "") or ""),
@@ -11898,6 +11902,38 @@ class BaseTrainer(ABC):
 
         return latent_caches
 
+    def _log_other_vae_caches(self, base_cache_dir: str, dataset_unique_id: str,
+                              current_dir: Path) -> None:
+        """Name the latent caches this dataset holds for OTHER VAEs. Switching
+        VAEs is meant to leave them addressable, so nothing here deletes; the
+        operator is told where they are and decides.
+        """
+        from core.training.latent_cache import list_vae_namespaces
+
+        try:
+            others = [e for e in list_vae_namespaces(base_cache_dir, dataset_unique_id)
+                      if e["path"] != current_dir and e["entries"]]
+        except Exception as e:
+            print(f"{self.log_prefix} Could not list other VAE latent caches "
+                  f"({type(e).__name__}: {e})")
+            return
+        if not others:
+            return
+
+        total = sum(e["bytes"] for e in others)
+        print(f"{self.log_prefix} {len(others)} other VAE latent cache(s) for dataset "
+              f"'{dataset_unique_id}' ({total / 2**30:.2f} GiB) are KEPT, not deleted - "
+              f"switching back to one of these VAEs reuses it. Delete a directory by "
+              f"hand to reclaim the space:")
+        for entry in others:
+            family = entry["vae_family"]
+            family_note = "" if family is None else f" (family={family})"
+            print(f"{self.log_prefix}   {entry['path']}: {entry['entries']} latents, "
+                  f"{entry['bytes'] / 2**30:.2f} GiB, VAE "
+                  f"{entry['vae_latent_hash'] or 'unrecorded'}{family_note}, written "
+                  f"{entry['created_at'] or 'at an unknown time'} by "
+                  f"{entry['model_path'] or 'an unknown model'}")
+
     def _run_vae_identity(self) -> Tuple[Optional[str], Optional[str]]:
         """``(latent_hash, family)`` of the VAE this run encodes with; 0.08s for
         an SDXL-sized VAE (measured, CPU). The module hash, never
@@ -11918,13 +11954,13 @@ class BaseTrainer(ABC):
 
     def _build_cache_namespace(self) -> str:
         """
-        Build the architecture/VAE-identity namespace for this run's disk caches.
+        Build the architecture-identity namespace for this run's disk caches.
 
-        Latents (and text embeddings) are stored under
-        ``{base}/{dataset_id}/{namespace}/`` so that caches encoded for one
-        model family / VAE are never read back for another that shares the
-        dataset. Reuses the trainer's own architecture flags (no parallel
-        naming) — the same names ``ModelLoader.detect_model_type`` produces.
+        Text embeddings live at ``{base}/{dataset_id}/{namespace}/`` and latents
+        one level below it, under this run's VAE, so caches written for one
+        model family are never read back for another that shares the dataset.
+        Reuses the trainer's own architecture flags (no parallel naming) — the
+        same names ``ModelLoader.detect_model_type`` produces.
         """
         from core.training.latent_cache import build_cache_namespace
 
@@ -11936,21 +11972,9 @@ class BaseTrainer(ABC):
         # byte-identical to the pre-P8 chain for every arch/config.
         arch = self.arch.name
 
-        # VAE identity: a run whose latents come from a VAE that is not this
-        # architecture's own gets a `vae-<family>-<hash8>` token, so caches
-        # written in two different latent spaces can never be read back for one
-        # another. Keys on identity_native (the latent space), NOT struct_native
-        # (the shape): a fine-tuned copy of the native VAE has the same shape and
-        # different latents. A native run adds no token, which is what keeps
-        # every existing cache addressable (base_arch.py cache-stability
-        # invariant).
-        identity = getattr(self, "vae_identity", None)
-        if identity is not None and identity.identity_native is False:
-            vae_type = f"{identity.family}-{identity.latent_hash[:8]}"
-        else:
-            # Pre-P2 fallback for a trainer that never resolved an identity;
-            # "sdxl"/None add no token.
-            vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
+        # No VAE token here: this namespace is shared with the text-embedding
+        # cache, which does not depend on the VAE. The VAE keys the latents one
+        # level down (``vae_cache_namespace``, API_REFERENCE.md).
         te_type = getattr(self, "sdxl_te_type", None) if arch == "sdxl" else None
 
         # Latent channel count directly encodes the shape that triggered the
@@ -11969,7 +11993,6 @@ class BaseTrainer(ABC):
 
         return build_cache_namespace(
             arch=arch,
-            vae_type=vae_type,
             te_type=te_type,
             latent_channels=latent_channels,
             latent_dtype=latent_dtype,

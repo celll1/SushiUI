@@ -23310,9 +23310,9 @@ components:
             Only architectures with a wired REPA tap accept this. Enabling it
             for any other architecture is REFUSED at trainer construction with
             the reason, never accepted and ignored. Currently wired: MiniT2I,
-            Anima, Lens. `GET /schema/arch-capabilities` carries the same fact as the
-            `repa` training feature, so a client can hide the control rather
-            than discover the refusal after queuing a run.
+            Anima, Lens, Krea 2, Ideogram 4. `GET /schema/arch-capabilities`
+            carries the same fact as the `repa` training feature, so a client can
+            hide the control rather than discover the refusal after queuing a run.
           example: false
         repa_encoder_source:
           type: 'string'

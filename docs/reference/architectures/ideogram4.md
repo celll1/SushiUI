@@ -312,6 +312,7 @@ Refusals / gates:
 | Reference-style KV injection | yes (conditional branch only) | `style_ideogram4.install_ideogram4_style_processors` / `set_ideogram4_style_context` / `restore_ideogram4_style_processors`; driven by `_ideogram4_style_step` / `_ideogram4_style_step_multi` |
 | Arch-specific wrapper | yes | `core/inference/nag_ideogram4.Ideogram4NAGWrapper` (peeled by `_unwrap_ideogram4_transformer` before FBCache attachment); NegPip installs processors in place (`negpip_ideogram4.set_negpip_ideogram4_processors`) |
 | LoRA at inference | yes (both branches) | `Ideogram4Mixin._load_lora_ideogram4` / `_unload_lora_ideogram4` → `ideogram4_lora.apply_lora_group` / `restore_originals` |
+| REPA tap | yes (training-only, conditional transformer) | `Ideogram4Transformer2DModel._repa_tap_depth` -> `_repa_tap_out`, read by `core.training.ops.ideogram4_ops.train_step`; written by the default block loop only (never by the inference-only FBCache branch), cleared at every forward. The stashed tensor is the PACKED `[B, max_text + N_img, hidden_size]` sequence; `train_step` slices `[:, max_text:]`, the same boundary it takes `v_pred` at, and the image rows are row-major `h*grid_w + w` (`build_training_conditioning`). The unconditional twin is never armed |
 | Gradient checkpointing | yes | `Ideogram4Transformer2DModel._supports_gradient_checkpointing`, enabled in `ideogram4_ops.load_components` |
 | VAE tiling | yes | `PipelineManager._apply_vae_tiling`, called from each `_generate_*_ideogram4` |
 

@@ -235,6 +235,7 @@ def train_step(
     profile_vram: bool = False,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Ideogram 4 training step (flow-matching, velocity prediction).
 
@@ -250,6 +251,8 @@ def train_step(
         encoder_features: 13-layer Qwen3-VL features [B, 13, L, 4096].
         encoder_mask:     Text token mask [B, L].
         latent_h/latent_w: latent grid (height//16, width//16).
+        repa_pixels:      Clean-image [B,3,S,S] in [-1,1] for the REPA teacher, or
+                          None (no alignment term this step).
     """
     from core.models.ideogram4.ideogram4_pipeline_ops import (
         concat_layer_features, build_training_conditioning,
@@ -380,6 +383,39 @@ def train_step(
             loss = loss + aux_loss
 
     pred_loss_value = loss.item()
+
+    # REPA: align the image tokens the CONDITIONAL block loop stashed at the tap
+    # depth with frozen clean-image patch features, through the trainable
+    # projector. Added to the backward loss; the reported pred loss above stays
+    # diffusion-only. The uncond twin is a separate module and never taps.
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import take_repa_tap, apply_repa_loss
+        trainer._ensure_repa_on_device()
+        packed = take_repa_tap(trainer)
+        if packed is None:
+            raise RuntimeError(
+                f"REPA is enabled but Ideogram 4's block loop stashed nothing at tap "
+                f"depth {getattr(trainer, 'repa_align_depth', None)} for this step, so "
+                f"the alignment term would drop out of the loss with the run still "
+                f"reporting progress. The training forward takes the default block "
+                f"loop, which always writes the tap, so this means the forward ran the "
+                f"FBCache branch (inference-only) or another module entirely."
+            )
+        # The same slice as v_pred above: the packed sequence is [text | image],
+        # and max_text is where build_training_conditioning put the boundary.
+        tap = packed[:, max_text:]
+        if tap.shape[1] != latent_h * latent_w:
+            raise RuntimeError(
+                f"REPA read {tap.shape[1]} image tokens at the Ideogram 4 tap (packed "
+                f"length {packed.shape[1]}, max_text={max_text}) but the grid is "
+                f"{latent_h}x{latent_w}={latent_h * latent_w}; the teacher targets "
+                f"would not correspond row for row."
+            )
+        # Row-major (h*latent_w + w), the order build_training_conditioning lays
+        # the image position ids out in and the one encode_repa_targets builds
+        # its grid in.
+        loss = apply_repa_loss(trainer, loss, tap, repa_pixels, latent_h, latent_w)
+
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target, pos_z, llm_features
     return loss, pred_loss_value, 0.0

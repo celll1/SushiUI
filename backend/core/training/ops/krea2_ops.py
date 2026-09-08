@@ -219,12 +219,16 @@ def train_step(
     profile_vram: bool = False,
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Krea 2 training step (flow matching, velocity prediction).
 
     VERBATIM body of ``BaseTrainer.train_step_krea2`` (P6c; ``self.`` ->
     ``trainer.`` receiver rename only). See the original docstring for the
     flow-matching conventions (v = noise - x0, timestep = sigma, musubi shift).
+
+    ``repa_pixels`` is the clean-image [B,3,S,S] batch in [-1,1] for the REPA
+    teacher, or None (no alignment term this step).
     """
     from core.models.krea2.krea2_pipeline_ops import prepare_position_ids
 
@@ -321,6 +325,34 @@ def train_step(
             loss = loss + aux_loss
 
     pred_loss_value = loss.item()
+
+    # REPA: align the image tokens the block loop stashed at the tap depth with
+    # frozen clean-image patch features, through the trainable projector. Added
+    # to the backward loss; the reported pred loss above stays diffusion-only.
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import take_repa_tap, apply_repa_loss
+        trainer._ensure_repa_on_device()
+        tap = take_repa_tap(trainer)
+        if tap is None:
+            raise RuntimeError(
+                f"REPA is enabled but Krea 2's block loop stashed nothing at tap depth "
+                f"{getattr(trainer, 'repa_align_depth', None)} for this step, so the "
+                f"alignment term would drop out of the loss with the run still "
+                f"reporting progress. The transformer's only block loop always writes "
+                f"the tap, so this means the forward ran another module entirely."
+            )
+        if tap.shape[1] != latent_h * latent_w:
+            raise RuntimeError(
+                f"REPA read {tap.shape[1]} image tokens at the Krea 2 tap but the grid "
+                f"is {latent_h}x{latent_w}={latent_h * latent_w}; the teacher targets "
+                f"would not correspond row for row. The tap is sliced past the text "
+                f"prefix inside the block loop."
+            )
+        # Row-major (h*latent_w + w), the order krea2_pipeline_ops.pack_latents
+        # packs the sequence in and prepare_position_ids lays the (h, w) mRoPE
+        # axes out in, and the one encode_repa_targets builds its grid in.
+        loss = apply_repa_loss(trainer, loss, tap, repa_pixels, latent_h, latent_w)
+
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target
     return loss, pred_loss_value, 0.0

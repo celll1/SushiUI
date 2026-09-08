@@ -473,6 +473,14 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
     _repeated_blocks = ["Ideogram4TransformerBlock"]
     _skip_layerwise_casting_patterns = ["t_embedding", "adaln_proj", "embed_image_indicator"]
 
+    # REPA tap: when ``_repa_tap_depth`` is set (0-based block index, armed by
+    # BaseTrainer._setup_repa), the default block loop stashes that block's
+    # PACKED sequence [B, max_text + N_img, hidden_size] in ``_repa_tap_out``;
+    # the text prefix is dropped by the caller, which knows max_text
+    # (ops/ideogram4_ops.train_step). None = disabled (no-op).
+    _repa_tap_depth = None
+    _repa_tap_out = None
+
     @register_to_config
     def __init__(
         self,
@@ -580,6 +588,13 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         # streams each block's weights between CPU and GPU around its forward.
         offloader = getattr(self, "_block_offloader", None)
 
+        # REPA tap (training-only): drop what a previous forward stashed, so a
+        # step whose tap does not fire reads None rather than stale tokens. The
+        # FBCache branch below deliberately never writes it (inference-only).
+        repa_tap_depth = self._repa_tap_depth
+        if repa_tap_depth is not None:
+            self._repa_tap_out = None
+
         # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
         # including the block-swap wait/submit and gradient-checkpointing paths below). When a
         # FirstBlockCache is attached by the Ideogram4 denoise loop, run only layers[0], take its
@@ -614,6 +629,11 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                     )
                 else:
                     hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
+                # Assignment rather than a forward hook: the tap is then the
+                # tensor the loss differentiates, with no hook ordering or
+                # checkpoint recompute semantics to reason about.
+                if block_idx == repa_tap_depth:
+                    self._repa_tap_out = hidden_states
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)
 

@@ -268,6 +268,7 @@ Refusals / gates:
 | Reference-style KV injection | yes | `Krea2Attention.forward` style block + `Krea2Transformer2DModel._stamp_style_context`; contexts built in `krea2_pipeline_ops._run_loop` from `core.inference.reference_style.StyleContext` / `inject_kv` / `inject_kv_multi` |
 | NAG / NegPip / ControlNet | **unsupported** | `arch_capabilities` `_add("krea2", "nag", …)`, `_add("krea2", "controlnets", …)` |
 | LoRA at inference | **unsupported** | `core/models/krea2/krea2_lora.py` defines `apply_lora_group` / `restore_originals`, but no `pipeline_backends/krea2.py` path calls them — LoRA is training-side only for this arch (see the note in `Krea2Mixin._krea2_kh_setup`) |
+| REPA tap | yes (training-only) | `Krea2Transformer2DModel._repa_tap_depth` -> `_repa_tap_out`, read by `core.training.ops.krea2_ops.train_step`; written by the single block loop, cleared at every forward. The stashed tensor is `hidden_states[:, text_seq_len:]` — the same slice the post-loop line takes — so it is `[B, N_img, hidden_size]` with rows in row-major `h*grid_w + w` order (`krea2_pipeline_ops.pack_latents` / `prepare_position_ids`) |
 | Gradient checkpointing | yes | `Krea2Transformer2DModel.enable_gradient_checkpointing` |
 | VAE tiling | yes | `PipelineManager._apply_vae_tiling`, called from each `_generate_*_krea2` |
 

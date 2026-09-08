@@ -298,9 +298,9 @@ for _arch, _marker in REPA_REFUSAL_MARKERS.items():
 _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
-    "by design, but each architecture is wired one at a time; 'minit2i', 'anima' "
-    "and 'lens' are wired today. Either set repa_enable=false or wire {arch}'s "
-    "tap first."
+    "by design, but each architecture is wired one at a time; 'minit2i', 'anima', "
+    "'lens', 'krea2' and 'ideogram4' are wired today. Either set repa_enable=false "
+    "or wire {arch}'s tap first."
 )
 
 

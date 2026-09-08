@@ -599,6 +599,18 @@ def _build_train_section(
         p.get("convergence_diagnostics_enable", TRAINING_DEFAULTS["convergence_diagnostics_enable"]))
     train["convergence_diagnostics_interval"] = int(
         p.get("convergence_diagnostics_interval", TRAINING_DEFAULTS["convergence_diagnostics_interval"]))
+    train["crop_decode_loss_enable"] = bool(
+        p.get("crop_decode_loss_enable", TRAINING_DEFAULTS["crop_decode_loss_enable"]))
+    train["crop_decode_loss_weight"] = float(
+        p.get("crop_decode_loss_weight", TRAINING_DEFAULTS["crop_decode_loss_weight"]))
+    train["crop_decode_loss_margin_cells"] = int(
+        p.get("crop_decode_loss_margin_cells", TRAINING_DEFAULTS["crop_decode_loss_margin_cells"]))
+    train["crop_decode_loss_out_cells"] = int(
+        p.get("crop_decode_loss_out_cells", TRAINING_DEFAULTS["crop_decode_loss_out_cells"]))
+    train["crop_decode_loss_metric"] = str(
+        p.get("crop_decode_loss_metric", TRAINING_DEFAULTS["crop_decode_loss_metric"]))
+    train["crop_decode_loss_snr_range"] = str(
+        p.get("crop_decode_loss_snr_range", TRAINING_DEFAULTS["crop_decode_loss_snr_range"]))
 
     # Multi Noise-Timestep
     train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)

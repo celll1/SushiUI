@@ -6615,6 +6615,12 @@ export interface TrainingRunCreateRequest {
   debug_latents_every?: number;
   convergence_diagnostics_enable?: boolean;
   convergence_diagnostics_interval?: number;
+  crop_decode_loss_enable?: boolean;
+  crop_decode_loss_weight?: number;
+  crop_decode_loss_margin_cells?: number;
+  crop_decode_loss_out_cells?: number;
+  crop_decode_loss_metric?: "lpips" | "l1" | "mse" | "ycbcr_dc";
+  crop_decode_loss_snr_range?: string;
   enable_bucketing?: boolean;
   base_resolutions?: number[];
   bucket_strategy?: string;

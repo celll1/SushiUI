@@ -15617,6 +15617,14 @@ class TrainingRunCreateRequest(BaseModel):
     convergence_diagnostics_enable: bool = TRAINING_DEFAULTS["convergence_diagnostics_enable"]
     convergence_diagnostics_interval: int = Field(default=TRAINING_DEFAULTS["convergence_diagnostics_interval"], ge=0)
 
+    # Crop Decode Auxiliary Loss (Phase 3)
+    crop_decode_loss_enable: bool = TRAINING_DEFAULTS["crop_decode_loss_enable"]
+    crop_decode_loss_weight: float = Field(default=TRAINING_DEFAULTS["crop_decode_loss_weight"], ge=0.0)
+    crop_decode_loss_margin_cells: int = Field(default=TRAINING_DEFAULTS["crop_decode_loss_margin_cells"], ge=0)
+    crop_decode_loss_out_cells: int = Field(default=TRAINING_DEFAULTS["crop_decode_loss_out_cells"], ge=4)
+    crop_decode_loss_metric: str = TRAINING_DEFAULTS["crop_decode_loss_metric"]
+    crop_decode_loss_snr_range: str = TRAINING_DEFAULTS["crop_decode_loss_snr_range"]
+
     # Bucketing options
     enable_bucketing: bool = False
     base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]

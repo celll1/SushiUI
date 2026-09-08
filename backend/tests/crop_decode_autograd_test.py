@@ -141,3 +141,23 @@ class TestCropDecodeAutograd:
         # Margin 4 should have higher gradient cosine similarity than Margin 0
         assert r1["grad_cosine"] > r0["grad_cosine"]
 
+    def test_crop_decode_loss_parameter_defaults(self):
+        from api.param_defaults import TRAINING_DEFAULTS
+
+        assert "crop_decode_loss_enable" in TRAINING_DEFAULTS
+        assert TRAINING_DEFAULTS["crop_decode_loss_enable"] is False
+        assert TRAINING_DEFAULTS["crop_decode_loss_weight"] == 0.0
+        assert TRAINING_DEFAULTS["crop_decode_loss_margin_cells"] == 16
+        assert TRAINING_DEFAULTS["crop_decode_loss_out_cells"] == 32
+        assert TRAINING_DEFAULTS["crop_decode_loss_metric"] == "lpips"
+        assert TRAINING_DEFAULTS["crop_decode_loss_snr_range"] == ""
+
+    def test_crop_decode_loss_metrics_registered(self):
+        from core.training.metric_registry import EXTRA_METRIC_DEFS
+
+        assert "crop_decode_loss" in EXTRA_METRIC_DEFS
+        assert "crop_decode_grad_norm_ratio" in EXTRA_METRIC_DEFS
+        assert EXTRA_METRIC_DEFS["crop_decode_loss"]["family"] == "loss"
+        assert EXTRA_METRIC_DEFS["crop_decode_grad_norm_ratio"]["family"] == "bounded_diagnostic"
+
+

@@ -2943,6 +2943,12 @@ def main():
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
             convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+            crop_decode_loss_enable = train_config.get('crop_decode_loss_enable', False)
+            crop_decode_loss_weight = train_config.get('crop_decode_loss_weight', 0.0)
+            crop_decode_loss_margin_cells = train_config.get('crop_decode_loss_margin_cells', 16)
+            crop_decode_loss_out_cells = train_config.get('crop_decode_loss_out_cells', 32)
+            crop_decode_loss_metric = train_config.get('crop_decode_loss_metric', 'lpips')
+            crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
             # Get bucketing parameters from config
@@ -3061,6 +3067,12 @@ def main():
                 debug_latents_every=debug_latents_every,
                 convergence_diagnostics_enable=convergence_diagnostics_enable,
                 convergence_diagnostics_interval=convergence_diagnostics_interval,
+                crop_decode_loss_enable=crop_decode_loss_enable,
+                crop_decode_loss_weight=crop_decode_loss_weight,
+                crop_decode_loss_margin_cells=crop_decode_loss_margin_cells,
+                crop_decode_loss_out_cells=crop_decode_loss_out_cells,
+                crop_decode_loss_metric=crop_decode_loss_metric,
+                crop_decode_loss_snr_range=crop_decode_loss_snr_range,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -3371,6 +3383,12 @@ def main():
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
             convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+            crop_decode_loss_enable = train_config.get('crop_decode_loss_enable', False)
+            crop_decode_loss_weight = train_config.get('crop_decode_loss_weight', 0.0)
+            crop_decode_loss_margin_cells = train_config.get('crop_decode_loss_margin_cells', 16)
+            crop_decode_loss_out_cells = train_config.get('crop_decode_loss_out_cells', 32)
+            crop_decode_loss_metric = train_config.get('crop_decode_loss_metric', 'lpips')
+            crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
             # Get bucketing parameters
@@ -3475,6 +3493,12 @@ def main():
                 debug_latents_every=debug_latents_every,
                 convergence_diagnostics_enable=convergence_diagnostics_enable,
                 convergence_diagnostics_interval=convergence_diagnostics_interval,
+                crop_decode_loss_enable=crop_decode_loss_enable,
+                crop_decode_loss_weight=crop_decode_loss_weight,
+                crop_decode_loss_margin_cells=crop_decode_loss_margin_cells,
+                crop_decode_loss_out_cells=crop_decode_loss_out_cells,
+                crop_decode_loss_metric=crop_decode_loss_metric,
+                crop_decode_loss_snr_range=crop_decode_loss_snr_range,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -3835,6 +3859,12 @@ def main():
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
             convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+            crop_decode_loss_enable = train_config.get('crop_decode_loss_enable', False)
+            crop_decode_loss_weight = train_config.get('crop_decode_loss_weight', 0.0)
+            crop_decode_loss_margin_cells = train_config.get('crop_decode_loss_margin_cells', 16)
+            crop_decode_loss_out_cells = train_config.get('crop_decode_loss_out_cells', 32)
+            crop_decode_loss_metric = train_config.get('crop_decode_loss_metric', 'lpips')
+            crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
             # Get bucketing parameters from config
@@ -3953,6 +3983,12 @@ def main():
                 debug_latents_every=debug_latents_every,
                 convergence_diagnostics_enable=convergence_diagnostics_enable,
                 convergence_diagnostics_interval=convergence_diagnostics_interval,
+                crop_decode_loss_enable=crop_decode_loss_enable,
+                crop_decode_loss_weight=crop_decode_loss_weight,
+                crop_decode_loss_margin_cells=crop_decode_loss_margin_cells,
+                crop_decode_loss_out_cells=crop_decode_loss_out_cells,
+                crop_decode_loss_metric=crop_decode_loss_metric,
+                crop_decode_loss_snr_range=crop_decode_loss_snr_range,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -4211,6 +4247,12 @@ def main():
             debug_latents_every = train_config.get('debug_latents_every', 50)
             convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
             convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+            crop_decode_loss_enable = train_config.get('crop_decode_loss_enable', False)
+            crop_decode_loss_weight = train_config.get('crop_decode_loss_weight', 0.0)
+            crop_decode_loss_margin_cells = train_config.get('crop_decode_loss_margin_cells', 16)
+            crop_decode_loss_out_cells = train_config.get('crop_decode_loss_out_cells', 32)
+            crop_decode_loss_metric = train_config.get('crop_decode_loss_metric', 'lpips')
+            crop_decode_loss_snr_range = train_config.get('crop_decode_loss_snr_range', '')
 
 
             # Get bucketing parameters from config
@@ -4298,6 +4340,12 @@ def main():
                 debug_latents_every=debug_latents_every,
                 convergence_diagnostics_enable=convergence_diagnostics_enable,
                 convergence_diagnostics_interval=convergence_diagnostics_interval,
+                crop_decode_loss_enable=crop_decode_loss_enable,
+                crop_decode_loss_weight=crop_decode_loss_weight,
+                crop_decode_loss_margin_cells=crop_decode_loss_margin_cells,
+                crop_decode_loss_out_cells=crop_decode_loss_out_cells,
+                crop_decode_loss_metric=crop_decode_loss_metric,
+                crop_decode_loss_snr_range=crop_decode_loss_snr_range,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,

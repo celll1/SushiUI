@@ -11804,12 +11804,15 @@ class BaseTrainer(ABC):
     # Latent Cache Management (to be added in continuation)
     # ============================================================
 
-    def _setup_latent_caches(self, datasets: List[Any]) -> Dict[str, Any]:
+    def _setup_latent_caches(self, datasets: List[Any],
+                             force_recache: bool = False) -> Dict[str, Any]:
         """
         Setup per-dataset latent caches.
 
         Args:
             datasets: List of dataset objects
+            force_recache: This run overwrites every entry, so the stamp is
+                refreshed even for a cache that validated
 
         Returns:
             Dictionary mapping dataset_unique_id to LatentCache instance
@@ -11885,9 +11888,12 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Latent cache for dataset '{dataset.unique_id}' "
                           f"kept despite a {reason} mismatch (see the [LatentCache] lines "
                           f"above); only a VAE change discards cached latents")
-            if not has_entries:
+            if not has_entries or force_recache:
                 # Nothing but this run's VAE can be on disk now, so the stamp stays
-                # true even if the encode pass below is interrupted.
+                # true even if the encode pass below is interrupted. Reaching here
+                # under force_recache means validate() did not report vae_identity,
+                # so the recorded VAE is already this one; what would go stale is
+                # the rest of the stamp, describing entries about to be replaced.
                 cache.save_cache_info(**info)
 
         return latent_caches
@@ -12147,6 +12153,7 @@ class BaseTrainer(ABC):
                                 tiling_policy=self._clip_vae_tiling_policy(),
                                 audio_prep_version=self._clip_audio_prep_version(),
                                 audio_encode_window=self._clip_audio_seam(v_path),
+                                force_recache=force_recache,
                             )
                             iteration_count += 1
                             processed_items += 1
@@ -12177,6 +12184,7 @@ class BaseTrainer(ABC):
                                 vae_encode_audio=lambda wav: self.arch.vae_encode_audio(self, wav),
                                 sample_rate=sample_rate,
                                 device=str(self.device),
+                                force_recache=force_recache,
                             )
                             iteration_count += 1
                             processed_items += 1
@@ -12206,12 +12214,14 @@ class BaseTrainer(ABC):
                             target_height=height,
                         )
 
-                        # Save to cache
+                        # skip_existing defaults to True, which would encode and
+                        # then discard the result on a force pass.
                         cache.save_latent(
                             image_path=image_path,
                             width=width,
                             height=height,
                             latents=latent,
+                            skip_existing=not force_recache,
                         )
 
                         iteration_count += 1
@@ -14041,7 +14051,7 @@ class BaseTrainer(ABC):
             # No cache setup needed for swap mode
         elif latent_encoding_mode == "pre_encoded_cache":
             print(f"{self.log_prefix} Using pre-encoded latent disk cache mode")
-            latent_caches = self._setup_latent_caches(datasets)
+            latent_caches = self._setup_latent_caches(datasets, force_recache=force_recache)
             self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
             # Resolution curriculum: the up-front pass above cached the WARMUP-dim latents
             # (items currently hold warmup dims). Also pre-generate the TARGET-dim latents

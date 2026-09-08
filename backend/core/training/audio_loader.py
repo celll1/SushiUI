@@ -83,6 +83,7 @@ def encode_and_cache_audio(
     sample_rate: int = 48000,
     device: str = "cuda",
     skip_existing: bool = True,
+    force_recache: bool = False,
 ):
     """Encode-integration SEAM for ACE-Step training (mirrors
     ``video_loader.encode_and_cache_clip``).
@@ -110,13 +111,17 @@ def encode_and_cache_audio(
         sample_rate: Target sample rate (part of the cache key).
         device: Device to load a cache-hit latent onto.
         skip_existing: Passed through to ``save_audio_latent``.
+        force_recache: Re-encode and overwrite even on a cache hit; bypasses both
+            the read short-circuit below and ``skip_existing``, since either one
+            left in place throws the new latent away.
 
     Returns:
         3D latent tensor ``[1, T, 64]``.
     """
-    cached = cache.load_audio_latent(audio_path, clip_seconds, sample_rate, device=device)
-    if cached is not None:
-        return cached
+    if not force_recache:
+        cached = cache.load_audio_latent(audio_path, clip_seconds, sample_rate, device=device)
+        if cached is not None:
+            return cached
 
     waveform = load_audio(audio_path, clip_seconds=clip_seconds, sample_rate=sample_rate)  # [2, samples]
 
@@ -129,6 +134,7 @@ def encode_and_cache_audio(
         )
 
     cache.save_audio_latent(
-        audio_path, clip_seconds, sample_rate, latents, skip_existing=skip_existing,
+        audio_path, clip_seconds, sample_rate, latents,
+        skip_existing=skip_existing and not force_recache,
     )
     return latents

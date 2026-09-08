@@ -197,6 +197,7 @@ def measure_parity_and_cost(
     warmup: int = 1,
     repeat: int = 3,
     seed: int = 42,
+    latent_amplitude: str = "production",
 ) -> Dict[str, Any]:
     """Execute parity sweep across margins and benchmark compute / memory."""
     torch.manual_seed(seed)
@@ -236,8 +237,15 @@ def measure_parity_and_cost(
 
     target_crop = torch.randn(crop_pixel_shape, device=device, dtype=dtype)
 
-    # Base latent tensor (frozen master copy)
+    # Base latent tensor (frozen master copy). randn is a NORMALISED latent's
+    # amplitude; the decoder's own input is that divided by scaling_factor
+    # (5.5x for SD1.5/SDXL), and the absolute errors below scale with it.
     base_latent = torch.randn(1, latent_channels, lat_h, lat_w, device=device, dtype=dtype)
+    if latent_amplitude == "production":
+        sf = float(getattr(getattr(vae, "config", None), "scaling_factor", 0.0) or 0.0)
+        if sf <= 0:
+            raise ValueError("--latent-amplitude production needs a VAE with a scaling_factor")
+        base_latent = base_latent / sf
 
     is_cuda = (device.type == "cuda")
 
@@ -463,6 +471,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crop-cells", type=int, default=32, help="Crop interior cells (default: 32 = 256px)")
     parser.add_argument("--margins", type=str, default="0,4,8,12,16,20", help="Comma-separated margins (default: 0,4,8,12,16,20)")
     parser.add_argument("--crop-pos", choices=["center", "top_left", "arbitrary"], default="center", help="Crop positioning")
+    parser.add_argument("--latent-amplitude", choices=["production", "unit"], default="production",
+                        help="Decoder input scale: 'production' divides by the VAE's scaling_factor "
+                             "(the real operating point); 'unit' is raw randn, what the first sweep used")
     parser.add_argument("--criterion", choices=["l1", "mse"], default="l1", help="Autograd criterion (default: l1)")
     parser.add_argument("--warmup", type=int, default=1, help="Warmup iterations")
     parser.add_argument("--repeat", type=int, default=3, help="Benchmark repetitions")
@@ -523,6 +534,7 @@ def main() -> None:
         warmup=args.warmup,
         repeat=args.repeat,
         seed=args.seed,
+        latent_amplitude=args.latent_amplitude,
     )
 
     # Print human-readable report

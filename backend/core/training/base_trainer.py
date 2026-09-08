@@ -11824,16 +11824,91 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
         print(f"{self.log_prefix} Latent cache namespace (arch/VAE identity): {namespace}")
 
+        vae_hash, vae_family = self._run_vae_identity()
+        family_note = "" if vae_family is None else f" (family={vae_family})"
+        print(f"{self.log_prefix} Latent cache VAE identity: "
+              f"{vae_hash or 'unavailable'}{family_note}")
+
         for dataset in datasets:
-            latent_caches[dataset.unique_id] = LatentCache(
+            cache = LatentCache(
                 dataset_unique_id=dataset.unique_id,
                 base_cache_dir=str(base_cache_dir),
                 namespace=namespace,
             )
+            latent_caches[dataset.unique_id] = cache
             cache_dir = Path(base_cache_dir) / dataset.unique_id / namespace
             print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.unique_id}': {cache_dir}")
 
+            info = dict(
+                model_path=str(getattr(self, "model_path", "") or ""),
+                model_type=str(getattr(getattr(self, "arch", None), "name", None) or "unknown"),
+                item_count=len(getattr(dataset, "items", ()) or ()),
+                training_dtype=str(getattr(self, "training_dtype", None)),
+                vae_latent_hash=vae_hash,
+                vae_family=vae_family,
+            )
+            has_entries = any(cache.latents_dir.glob("*.pt"))
+            if vae_hash is None and getattr(self, "vae", None) is not None:
+                # module_latent_hash returns None on ANY exception, so an unhashable
+                # VAE is not evidence the cache belongs to another one, and deleting is
+                # irreversible; a run with no VAE at all falls through instead. The
+                # stamp goes even though the latents stay: this run writes into the
+                # directory, so no later run may trust what is recorded there.
+                cache.cache_info_path.unlink(missing_ok=True)
+                if has_entries:
+                    print(f"{self.log_prefix} WARNING: cannot identify this run's VAE, so the "
+                          f"latent cache for dataset '{dataset.unique_id}' is used UNVERIFIED "
+                          f"and its recorded VAE identity is dropped (later runs treat it as "
+                          f"unverifiable and re-encode). If it was encoded by a different VAE, "
+                          f"this run trains against the wrong latent space. Delete {cache_dir} "
+                          f"to force a re-encode.")
+                else:
+                    print(f"{self.log_prefix} WARNING: cannot identify this run's VAE; the "
+                          f"latent cache for dataset '{dataset.unique_id}' is left unlabelled "
+                          f"and a later run will re-encode it.")
+                continue
+            if has_entries:
+                reason = cache.validate(info["model_path"], info["model_type"],
+                                        info["training_dtype"], vae_latent_hash=vae_hash)
+                if reason in ("vae_identity", "no_cache_info"):
+                    # Unlike the unhashable VAE above, both of these are determinate
+                    # and one-off: a recorded identity that differs, or a cache written
+                    # before identities were recorded at all.
+                    removed = cache.discard_latents()
+                    print(f"{self.log_prefix} Latent cache for dataset '{dataset.unique_id}' does "
+                          f"not match this run (see the [LatentCache] lines above); deleted "
+                          f"{removed} cached latents in {cache_dir}, regenerating")
+                    has_entries = False
+                elif reason is not None:
+                    # Only the latent space justifies deleting hours of encoding; every
+                    # arch's train_step casts a loaded latent to training_dtype.
+                    print(f"{self.log_prefix} Latent cache for dataset '{dataset.unique_id}' "
+                          f"kept despite a {reason} mismatch (see the [LatentCache] lines "
+                          f"above); only a VAE change discards cached latents")
+            if not has_entries:
+                # Nothing but this run's VAE can be on disk now, so the stamp stays
+                # true even if the encode pass below is interrupted.
+                cache.save_cache_info(**info)
+
         return latent_caches
+
+    def _run_vae_identity(self) -> Tuple[Optional[str], Optional[str]]:
+        """``(latent_hash, family)`` of the VAE this run encodes with; 0.08s for
+        an SDXL-sized VAE (measured, CPU). The module hash, never
+        ``ResolvedVAE.latent_hash``, which covers the source state dict instead.
+        Does not cover ``audio_vae``, whose latents share the LTX-2.3 /
+        MiniMax-H3 clip records.
+        """
+        memo = getattr(self, "_run_vae_identity_memo", None)
+        if memo is not None:
+            return memo
+
+        from core.training.vae_swap import module_latent_hash
+        identity = getattr(self, "vae_identity", None)
+        result = (module_latent_hash(getattr(self, "vae", None)),
+                  None if identity is None else identity.family)
+        self._run_vae_identity_memo = result
+        return result
 
     def _build_cache_namespace(self) -> str:
         """

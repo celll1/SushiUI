@@ -317,25 +317,44 @@ def save_cache_info(
     model_path: str,
     model_type: str,
     item_count: int,
-    training_dtype: str = 'unknown'
+    training_dtype: str = 'unknown',
+    vae_latent_hash: Optional[str] = None,
+    vae_family: Optional[str] = None
 )
 ```
 
-Save cache metadata to `cache_info.json`.
+Save cache metadata to `cache_info.json` (written to a temp file and
+`os.replace`d, so a crash cannot leave a torn stamp that reads as absent and
+costs a whole re-encode). Called by `BaseTrainer._setup_latent_caches` for a
+cache with no entries — after a mismatch has been discarded, so the recorded
+identity is true of every file present even if the encode pass is interrupted.
+
+**Not** called when this run's VAE could not be hashed: the run then deletes any
+existing stamp instead, keeps the latents, and warns. An unverifiable run must
+neither destroy a cache nor leave a stamp a later run would trust.
 
 **Parameters**:
 - `model_path` (str): Path to base model
 - `model_type` (str): Model type ('sdxl', 'sd15', 'sd', 'zimage', 'z-image')
 - `item_count` (int): Number of items in dataset
-- `training_dtype` (str): Training dtype (e.g., 'bfloat16', 'float16', 'float32')
+- `training_dtype` (str): Training dtype, as `str(trainer.training_dtype)` writes it
+  (`'torch.bfloat16'`, `'torch.float16'`, ...); the comparison in `validate()` is a
+  plain string equality, so a caller that normalises the prefix away will not match
+- `vae_latent_hash` (str | None): `module_latent_hash()` of the encoding VAE.
+  The namespace carries a `vae-` token only for a declared swap, so this is the
+  only record of which VAE wrote a native run's latents. `None` = not computable
+- `vae_family` (str | None): VAE family name, for the mismatch log only
 
 **Metadata Format**:
 ```json
 {
     "dataset_unique_id": "a1b2c3d4-...",
+    "namespace": "sdxl__c4__dtfloat16",
     "model_path": "models/model.safetensors",
     "model_type": "sdxl",
-    "training_dtype": "bfloat16",
+    "training_dtype": "torch.bfloat16",
+    "vae_latent_hash": "e9a645c32c26a19e",
+    "vae_family": null,
     "created_at": "2025-12-15T10:30:00.000Z",
     "item_count": 150
 }
@@ -343,11 +362,14 @@ Save cache metadata to `cache_info.json`.
 
 **Example**:
 ```python
+from core.training.vae_swap import module_latent_hash
+
 cache.save_cache_info(
     model_path="models/sdxl_base.safetensors",
     model_type="sdxl",
     item_count=150,
-    training_dtype="bfloat16"
+    training_dtype=str(trainer.training_dtype),
+    vae_latent_hash=module_latent_hash(vae)
 )
 ```
 
@@ -370,44 +392,60 @@ if info:
     print(f"Type: {info['model_type']}")
 ```
 
-#### `is_valid`
+#### `validate` / `is_valid`
 
 ```python
-def is_valid(
+def validate(
     self,
     model_path: str,
     model_type: str,
-    training_dtype: str = 'unknown'
-) -> bool
+    training_dtype: str = 'unknown',
+    vae_latent_hash: Optional[str] = None
+) -> Optional[str]   # mismatch code, or None when valid
+
+def is_valid(...) -> bool   # validate(...) is None
 ```
 
-Check if cache is valid for current model.
+Check whether this cache fits the current run. `validate` names the mismatch so
+the caller can price it; `is_valid` is the same check with the reason dropped.
 
 **Parameters**:
 - `model_path` (str): Current model path
 - `model_type` (str): Current model type
 - `training_dtype` (str): Current training dtype
+- `vae_latent_hash` (str | None): This run's VAE identity, or `None` when it
+  could not be computed
 
 **Returns**:
-- `bool`: True if cache is valid
+- `str | None`: the first mismatch code below, or `None` when the cache is valid
+  (`is_valid` returns the corresponding bool)
 
-**Validation Checks**:
-1. `cache_info.json` exists
-2. Model path matches (normalized absolute paths)
-3. Model type matches
-4. Training dtype matches (if not 'unknown')
+**Mismatch codes**, in the order they are checked:
+
+| Code | Meaning | What the latents are worth |
+|---|---|---|
+| `no_cache_info` | no `cache_info.json`, or it records no `model_path` | Unknown VAE — discard |
+| `vae_identity` | recorded identity differs, or either side is unavailable | Wrong latent space — discard |
+| `model_type` | recorded arch differs | Still this VAE's latents — keep |
+| `training_dtype` | recorded dtype differs | Still this VAE's latents — keep; every arch's `train_step` casts a loaded latent to `training_dtype` |
+
+A differing `model_path` is **reported and tolerated**: latents depend on the
+VAE, not on which checkpoint carried it, so two bases sharing a VAE reuse one
+cache.
 
 **Important Notes**:
-- **This method also checks if cache exists** (returns False if `cache_info.json` is missing)
+- **This method also checks if cache exists** (returns `'no_cache_info'` if `cache_info.json` is missing)
 - No separate `exists()` method is needed
+- Only `no_cache_info` / `vae_identity` justify `discard_latents()`. Do not
+  respond to any code by merely skipping reads: the video/audio paths decide a
+  cache hit with `load_*`, never with `has_*`
 
 **Example**:
 ```python
-dtype_str = str(training_dtype).replace('torch.', '')  # 'torch.bfloat16' -> 'bfloat16'
-if cache.is_valid(model_path, model_type, dtype_str):
-    print("Cache is valid, reusing...")
-else:
-    print("Cache invalid, regenerating...")
+dtype_str = str(trainer.training_dtype)  # 'torch.bfloat16', as save_cache_info records it
+if cache.validate(model_path, model_type, dtype_str, vae_latent_hash=vae_hash) in (
+        "vae_identity", "no_cache_info"):
+    cache.discard_latents()
 ```
 
 #### `validate_cache_format`
@@ -442,6 +480,38 @@ if cache.validate_cache_format(expected_channels=expected_channels, sample_count
     print("Cache format is valid")
 else:
     print("Cache format validation failed, regenerating...")
+```
+
+#### `discard_latents`
+
+```python
+def discard_latents(self) -> int
+```
+
+Delete every cached latent (`latents/*.pt`, image + video-clip + audio) and the
+`cache_info.json` stamp; returns the number of files removed. Text embeddings
+are kept — they do not depend on the VAE.
+
+Used by `BaseTrainer._setup_latent_caches` when `validate()` returns
+`vae_identity` or `no_cache_info`. **This is the durable note on why deletion
+and not an "ignore these entries" flag** — a flag misses the
+`load_clip_record` / `load_clip_latent` / `load_audio_latent` hit tests (video,
+audio), leaves keys the run never visits (other buckets, dropped items) in
+place, and survives only in memory, so an interrupted run would leave a stamp
+that lies about what is on disk.
+
+The invariant it buys — *every latent present was written by the VAE the stamp
+names* — holds for one run at a time. **Two runs sharing a dataset + namespace
+must not run concurrently**: the second one's `discard_latents()` deletes files
+the first is still writing, and the first then re-encodes them (through
+`_regenerate_single_latent`) into a directory the second one has stamped. There
+is no lock; run such pairs sequentially, or give them different namespaces.
+
+**Example**:
+```python
+if not cache.is_valid(model_path, model_type, dtype_str, vae_latent_hash=vae_hash):
+    removed = cache.discard_latents()
+    print(f"Discarded {removed} latents encoded by another VAE")
 ```
 
 #### `clear`
@@ -1527,8 +1597,9 @@ from core.training.latent_cache import LatentCache
 cache = LatentCache(dataset_unique_id="a1b2c3d4-...")
 
 # Check if cache is valid
-dtype_str = "bfloat16"
-if cache.is_valid("models/sdxl_base.safetensors", "sdxl", dtype_str):
+dtype_str = str(trainer.training_dtype)  # 'torch.bfloat16'
+if cache.is_valid("models/sdxl_base.safetensors", "sdxl", dtype_str,
+                  vae_latent_hash=module_latent_hash(vae)):
     print("Cache is valid, reusing...")
 else:
     print("Cache invalid, regenerating...")

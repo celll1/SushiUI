@@ -124,9 +124,9 @@ def compute_crop_decode_loss(
     if vae is None:
         return None, 0.0
 
-    # Lazy initialization of module on trainer
+    # Lazy initialization of module on trainer (or re-init if VAE instance changed via VAE swap)
     loss_module: Optional[CropDecodeLossModule] = getattr(trainer, "_crop_decode_loss_module", None)
-    if loss_module is None:
+    if loss_module is None or getattr(loss_module, "vae", None) is not vae:
         loss_module = CropDecodeLossModule(
             vae=vae,
             metric=getattr(trainer, "crop_decode_loss_metric", "lpips"),
@@ -136,6 +136,12 @@ def compute_crop_decode_loss(
             device=trainer.device,
         )
         trainer._crop_decode_loss_module = loss_module
+
+    # Ensure VAE parameters are on the trainer's execution device (handles swap_onthefly CPU offload)
+    if hasattr(loss_module.vae, "parameters"):
+        vae_p = next(loss_module.vae.parameters(), None)
+        if vae_p is not None and vae_p.device != trainer.device:
+            loss_module.vae.to(device=trainer.device, dtype=getattr(trainer, "vae_dtype", None))
 
     # SNR Band Filtering
     if loss_module.snr_min is not None or loss_module.snr_max is not None:
@@ -198,16 +204,15 @@ def compute_crop_decode_loss(
     x0 = int(torch.randint(0, max_x + 1, (1,)).item()) if max_x > 0 else 0
     y1 = y0 + c_h
     x1 = x0 + c_w
-
     rect = make_crop_rect(lat_h, lat_w, y0, y1, x0, x1, margin_cells=margin)
-    scale = spatial_compression_of(vae)
+    scale = spatial_compression_of(loss_module.vae)
 
     # Decode predicted crop (differentiable into pred_x0_sub and model_pred_sub)
-    pred_crop_rgb = decode_crop_with_context(vae, pred_x0_sub, rect, scale=scale)
+    pred_crop_rgb = decode_crop_with_context(loss_module.vae, pred_x0_sub, rect, scale=scale)
 
     # Decode target crop (detached GT)
     with torch.no_grad():
-        gt_crop_rgb = decode_crop_with_context(vae, clean_latents_sub.detach(), rect, scale=scale)
+        gt_crop_rgb = decode_crop_with_context(loss_module.vae, clean_latents_sub.detach(), rect, scale=scale)
 
     # VAE Loss Bank evaluation
     bank_out = loss_module.loss_bank(pred_crop_rgb, gt_crop_rgb)

@@ -388,6 +388,38 @@ def train_step(
     pred_loss_value = mse_loss.item()
     recon_loss_value = 0.0
 
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
+    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.models.lens.lens_pipeline_ops import _unpatchify
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+
+        # Unpatchify packed sequence [B, N, C_packed] -> 2D [B, C, H*2, W*2]
+        def _to_2d(seq_t: torch.Tensor) -> torch.Tensor:
+            x_4d = seq_t.reshape(batch_size, latent_h, latent_w, -1).permute(0, 3, 1, 2).contiguous()
+            return _unpatchify(x_4d)
+
+        latents_2d = _to_2d(latents)
+        noisy_2d = _to_2d(noisy_latents)
+        v_pred_2d = _to_2d(v_pred)
+        sigma_view_2d = sigma.view(-1, 1, 1, 1).to(v_pred_2d.dtype)
+        pred_x0_2d = noisy_2d - sigma_view_2d * v_pred_2d
+
+        aux_loss, _ = compute_crop_decode_loss(
+            trainer=trainer,
+            model_pred=v_pred_2d,
+            noisy_latents=noisy_2d,
+            timesteps=timesteps,
+            clean_latents=latents_2d,
+            noise_process="flow",
+            prediction_target="velocity",
+            noise_scheduler=trainer.noise_scheduler,
+            velocity_sign="eps_minus_x0",
+            predicted_latent=pred_x0_2d,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
+
     # Backward is performed by _execute_forward_backward (single backward per
     # MNT iteration); do not call loss.backward() here.
     del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list

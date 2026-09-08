@@ -286,6 +286,40 @@ def train_step(
 
     v_pred = out.float()
     loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
+    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.models.krea2.krea2_pipeline_ops import unpack_latents
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+
+        # Unpack packed sequence [B, N, C_packed] -> 2D [B, C, H, W]
+        def _to_2d_krea2(seq_t: torch.Tensor) -> torch.Tensor:
+            unpacked_5d = unpack_latents(seq_t, latent_h, latent_w, patch_size=2)
+            return unpacked_5d.squeeze(2)
+
+        latents_2d = _to_2d_krea2(latents)
+        noisy_2d = _to_2d_krea2(noisy)
+        v_pred_2d = _to_2d_krea2(v_pred.to(latents.dtype))
+        sigma_view_2d = sigma.view(-1, 1, 1, 1).to(v_pred_2d.dtype)
+        # v = noise - x0 => x0 = noisy - sigma * v
+        pred_x0_2d = noisy_2d - sigma_view_2d * v_pred_2d
+
+        aux_loss, _ = compute_crop_decode_loss(
+            trainer=trainer,
+            model_pred=v_pred_2d,
+            noisy_latents=noisy_2d,
+            timesteps=timesteps,
+            clean_latents=latents_2d,
+            noise_process="flow",
+            prediction_target="velocity",
+            noise_scheduler=trainer.noise_scheduler,
+            velocity_sign="eps_minus_x0",
+            predicted_latent=pred_x0_2d,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
+
     pred_loss_value = loss.item()
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target

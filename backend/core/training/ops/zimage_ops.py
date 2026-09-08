@@ -456,6 +456,25 @@ def train_step(
         # Total loss (prediction loss + regularization)
         loss = mse_loss + regularization_loss
 
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
+    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+        aux_loss, _ = compute_crop_decode_loss(
+            trainer=trainer,
+            model_pred=model_pred,
+            noisy_latents=noisy_latents,
+            timesteps=timesteps,
+            clean_latents=latents,
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=trainer.noise_scheduler,
+            velocity_sign="x0_minus_eps",
+            predicted_latent=predicted_latent_for_reg if predicted_latent_for_reg is not None else predicted_latent_for_recon,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
+
     if profile_vram:
         print_vram_usage("[train_step_zimage] After loss calculation")
 

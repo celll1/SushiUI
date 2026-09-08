@@ -66,7 +66,12 @@ Phase 0 前提の是正           （必須・単独で価値あり）
 
 - `predict_x0(noise_process, z_t, model_out, t_or_sigma, scheduler)` を 1 箇所に集約。
   eps: `(z_t − σ ε̂)/α`（α≠0 をガード）／ flow: `x̂₀ = z_t − t v̂`（`z_t=(1−t)x₀+tε`）／ v 予測は別式
-- **t の向き規約をコメントで固定**（ノイズ側が t=1）。設計書の「完成側 t=1」表現とは逆であることを明記
+- **t の向き規約をコメントで固定**。**リポジトリ全体で一つの向きに揃ってはいない**:
+  どちらの端が clean かはアーキごとに `ArchHandler.timestep_convention`
+  （`core/training/arch/base_arch.py`）が宣言する。`t0`（t=0 が clean）が既定で、
+  **`t1`（t=1 が clean）は SenseNova と MiniT2I**。SD15/SDXL は `resolve_timestep_convention()`
+  で run の `noise_process` により両者を切り替える。
+  ヘルパ自身の引数がどちらの座標を取るかは、この宣言とは**別の語彙**なので混同しないこと
 - 帯域指定は t の生値ではなく **SNR** で行う API にする
 
 **配置**: `core/training/ops/` 配下（既存の ops レイヤ慣習に合わせる）

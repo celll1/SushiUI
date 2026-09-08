@@ -6064,8 +6064,12 @@ export const updateDatasetExifConfig = async (
 
 export interface LatentCacheNamespace {
   path: string;
-  namespace: string;
-  vae_namespace: string;
+  // Null on the two pre-`vae-` layouts: those directories also hold the text
+  // embeddings, so the endpoint lists them and refuses to delete them.
+  namespace: string | null;
+  vae_namespace: string | null;
+  layout?: "vae" | "arch" | "dataset";
+  deletable?: boolean;
   entries: number;
   bytes: number;
   vae_latent_hash?: string | null;

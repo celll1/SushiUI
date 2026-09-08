@@ -347,7 +347,7 @@ def latent_source_strategy(latent_encoding_mode: str, bucket_strategy: str) -> s
     return str(bucket_strategy or "resize")
 
 
-def assert_repa_region_reconstructible(config) -> None:
+def assert_repa_region_reconstructible(latent_encoding_mode, bucket_strategy) -> None:
     """Refuse a preprocessing configuration whose latent crop the teacher cannot follow.
 
     REPA aligns student tokens to teacher patches position by position, so the
@@ -356,13 +356,13 @@ def assert_repa_region_reconstructible(config) -> None:
     be followed when the encode runs in the same batch-loop iteration that reads
     it -- which is ``onthefly_gpu`` and nothing else.
 
-    Called from ``_setup_repa`` before the encoder loads, so a run that cannot be
-    aligned fails at startup rather than training on a mismatch.
+    Takes the values ``train()`` was handed rather than the config: train_runner
+    passes ``bucket_strategy="resize"`` whatever the config holds, so a
+    config-based check would refuse runs that align perfectly. Still called
+    before the first encode.
     """
-    config = config or {}
-    mode = str(config.get("latent_encoding_mode", "swap_onthefly") or "swap_onthefly")
-    strategy = latent_source_strategy(
-        mode, str(config.get("bucket_strategy", "resize") or "resize"))
+    mode = str(latent_encoding_mode or "swap_onthefly")
+    strategy = latent_source_strategy(mode, str(bucket_strategy or "resize"))
 
     if strategy in ("resize", "crop"):
         return
@@ -376,8 +376,7 @@ def assert_repa_region_reconstructible(config) -> None:
             f"swap buffer cannot tell the REPA teacher which region it holds, and "
             f"the alignment would be taken against a different part of the image. "
             f"Options: (1) latent_encoding_mode='onthefly_gpu', which encodes each "
-            f"item in the iteration that reads it (set it explicitly -- this check "
-            f"runs before the model loads and can only see the configured value), "
+            f"item in the iteration that reads it), "
             f"(2) bucket_strategy='resize' or 'crop', (3) repa_enable=false."
         )
     raise ValueError(

@@ -138,6 +138,20 @@ def test_orphans_are_removed(tmp_path):
     assert not cache.has_audio_latent(gone_audio, None, 44100)
 
 
+def test_a_dataset_with_no_rows_loses_nothing(tmp_path):
+    """No rows is an absence of evidence. A source that went briefly
+    unreachable, or a purge that is about to be rolled back, must not read as
+    'every latent here is an orphan'."""
+    path = str(tmp_path / "ds" / "a.png")
+    cache = _cache(tmp_path)
+    cache.save_latent(path, 900, 900, torch.zeros(1, 4, 112, 112))
+
+    removed = _cleanup(_db([]))
+
+    assert removed == 0
+    assert cache.has_latent(path, 900, 900)
+
+
 def test_legacy_layout_is_swept_and_text_embeddings_are_not(tmp_path):
     """Only directories named ``latents`` are candidates.
 

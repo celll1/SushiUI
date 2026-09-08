@@ -535,6 +535,11 @@ def cleanup_orphan_latent_cache(
         return 0
 
     live_paths = _live_source_paths(datasets_db, dataset_id)
+    if not live_paths:
+        # No rows is an absence of evidence, not evidence that every latent is
+        # an orphan. A dataset whose source went briefly unreachable would
+        # otherwise lose the whole cache it could have reused.
+        return 0
 
     if bucket_resolutions is None:
         bucket_resolutions = [

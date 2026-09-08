@@ -17233,6 +17233,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                             # mtimes for content-only caption drift.
                             should_rescan: bool
                             report = None
+                            _rescan_failed = False
                             if _rescan_mode == "force":
                                 should_rescan = True
                             else:
@@ -17309,6 +17310,12 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                                             pass
                                 except Exception as _re:
                                     print(f"[Training {run_id}] Rescan failed: {_re}")
+                                    # scan_dataset purges rows inside the same
+                                    # transaction; a failure after that point
+                                    # rolls the rows back, but a sweep running
+                                    # first would already have deleted their
+                                    # latents against the uncommitted state.
+                                    _rescan_failed = True
                                 # Cleanup orphan latent cache for this dataset
                                 try:
                                     manager.send_dataset_scan_progress(
@@ -17321,7 +17328,10 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                                     pass
                                 try:
                                     _ds = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
-                                    if _ds is not None and getattr(_ds, "unique_id", None):
+                                    if _rescan_failed:
+                                        print(f"[Training {run_id}] Skipping latent cache "
+                                              f"cleanup: the rescan it would trust failed")
+                                    elif _ds is not None and getattr(_ds, "unique_id", None):
                                         removed = cleanup_orphan_latent_cache(
                                             dataset_unique_id=_ds.unique_id,
                                             datasets_db=ddb,

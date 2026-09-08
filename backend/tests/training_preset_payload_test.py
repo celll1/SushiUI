@@ -169,6 +169,12 @@ LEGACY_TIMESTEP_KEYS = {
 }
 NON_REQUEST_PRESET_KEYS = {"useEpochs"}
 
+# Keys a preset on disk still carries for a parameter that no longer exists.
+# Cache operations moved to the dataset side, so these must be IGNORED on
+# load rather than resolved -- resolving one would mean the run parameter
+# came back.
+RETIRED_PRESET_KEYS = {"cacheLatentsToDisk", "forceRecache"}
+
 # Numeric-text controls a preset must be able to CLEAR, each paired with the
 # setter whose restore branch has to be null-safe.
 EXPECTED_CLEARABLE = (
@@ -204,7 +210,9 @@ class ScanSanityTest(unittest.TestCase):
         self.assertGreater(len(keys), 200, "PARAM_KEYS did not parse")
         self.assertIn("lora_rank", keys)
         self.assertIn("weight_decompose", keys)
-        self.assertGreater(len(_request_data(source)), 10_000)
+        # A found region is thousands of characters; retiring parameters
+        # shrinks it, so this only has to be far from zero.
+        self.assertGreater(len(_request_data(source)), 5_000)
 
 
 class CoverageGateTest(unittest.TestCase):
@@ -318,9 +326,19 @@ class OldPresetsStillLoadTest(unittest.TestCase):
             if key not in table
             and key not in LEGACY_TIMESTEP_KEYS
             and key not in NON_REQUEST_PRESET_KEYS
+            and key not in RETIRED_PRESET_KEYS
         ]
         self.assertEqual(unresolved, [],
                          f"presets on disk carry keys nothing reads: {unresolved}")
+
+    def test_a_retired_key_resolves_to_nothing_on_purpose(self):
+        """Cache operations are no longer run parameters. A preset written
+        before that still names them; loading it must ignore them, not restore
+        a knob that is gone."""
+        table = self._camel_table()
+        for key in RETIRED_PRESET_KEYS:
+            self.assertIn(key, LEGACY_PRESET_KEYS)
+            self.assertNotIn(key, table)
 
     def test_a_legacy_key_for_a_now_excluded_field_is_dropped_on_purpose(self):
         """`resumeFromCheckpoint` WAS saved before the payload was derived.

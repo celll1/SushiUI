@@ -22,7 +22,8 @@ inference model.
 Everything here is architecture-neutral. What an architecture supplies is a
 ``RepaTapPoint`` (from its arch handler) and the token grid its own geometry
 defines; an architecture with neither is refused by ``refuse_repa`` rather than
-silently ignored.
+silently ignored. Conv U-Nets tap a feature map instead of a token sequence and
+use the ``*_spatial`` entry points below, which take the grid from the map.
 """
 
 import os
@@ -239,7 +240,8 @@ class RepaTapPoint:
     """Where one architecture exposes its REPA tap.
 
     ``module`` carries ``_repa_tap_depth`` (written once at setup) and
-    ``_repa_tap_out`` (written by the forward at that depth) — which is NOT
+    ``_repa_tap_out`` (written by the forward at that depth, or by a forward
+    hook where the block loop is not ours) — which is NOT
     ``trainer.transformer`` for every architecture: MiniT2I's is
     ``transformer.model.net``, and several architectures wrap the transformer in
     a training wrapper. ``depth`` is the number of blocks the tap index
@@ -250,6 +252,10 @@ class RepaTapPoint:
     module: nn.Module
     hidden_size: int
     depth: int
+    #: Human names for indices 0..depth-1, when the index is not a block number.
+    #: The conv U-Nets set it: their "depth" is a three-site menu, so a bare
+    #: number in the log would read as a transformer block depth it is not.
+    site_labels: Tuple[str, ...] = ()
 
 
 #: Why REPA is refused for an architecture where it cannot work, or where it
@@ -274,6 +280,19 @@ REPA_REFUSALS: Dict[str, str] = {
         "interleaves CONDITION frames with the frames being generated, so a tap "
         "returns rows the image teacher has no matching target for. A deliberate hold."
     ),
+    "zimage": (
+        "Z-Image's tap is DEFERRED, not impossible: its block loop is vendored and "
+        "its sequence would need the same text-prefix slice Krea 2 and Ideogram 4 "
+        "took, and no owner has a base checkpoint here to measure the row order "
+        "against. Held until there is demand for it rather than wired untested."
+    ),
+    "flux2": (
+        "FLUX.2's tap is DEFERRED, not impossible: 8 dual-stream plus 48 "
+        "single-stream blocks are two different tap shapes in one depth axis, on "
+        "top of the packed text+image sequence, and no owner has a base checkpoint "
+        "here to measure the row order against. Held until there is demand for it "
+        "rather than wired untested."
+    ),
 }
 
 #: Phrases that must survive any rewording of the refusals above. api/
@@ -284,6 +303,8 @@ REPA_REFUSAL_MARKERS: Dict[str, str] = {
     "acestep": "1-D time axis",
     "ltx2": "shared with the audio stream",
     "minimax_h3": "packed sequence",
+    "zimage": "DEFERRED, not impossible",
+    "flux2": "two different tap shapes",
 }
 
 for _arch, _marker in REPA_REFUSAL_MARKERS.items():
@@ -299,8 +320,8 @@ _REPA_UNWIRED = (
     "{arch} has no REPA tap at this stage: no arch-handler repa_tap() and no "
     "forward that stashes the aligned hidden state. REPA is architecture-neutral "
     "by design, but each architecture is wired one at a time; 'minit2i', 'anima', "
-    "'lens', 'krea2', 'ideogram4' and 'sensenova' are wired today. Either set "
-    "repa_enable=false or wire {arch}'s tap first."
+    "'lens', 'krea2', 'ideogram4', 'sensenova', 'sd15' and 'sdxl' are wired today. "
+    "Either set repa_enable=false or wire {arch}'s tap first."
 )
 
 
@@ -308,6 +329,19 @@ def refuse_repa(arch_name: str):
     """Refuse REPA for ``arch_name``, saying why. Never returns."""
     reason = REPA_REFUSALS.get(arch_name) or _REPA_UNWIRED.format(arch=arch_name)
     raise ValueError(f"repa_enable is not supported for architecture '{arch_name}'. {reason}")
+
+
+def resolve_align_depth(configured: int, depth: int) -> int:
+    """The tap index a run arms: ``-1`` = auto (a third of the way in), clamped.
+
+    One rule, because an architecture that has to know the resolved index before
+    ``_setup_repa`` runs (the U-Nets read the tapped block's width from it) must
+    resolve it identically.
+    """
+    align = int(configured)
+    if align < 0:
+        align = max(0, depth // 3)
+    return max(0, min(align, depth - 1))
 
 
 def assert_repa_depth_compatible(trainer, align_depth: int, num_blocks: int) -> None:
@@ -372,6 +406,110 @@ def assert_repa_depth_compatible(trainer, align_depth: int, num_blocks: int) -> 
                 f"(2) widen block_skip_protect_start/end to cover it, (3) disable one "
                 f"of the two."
             )
+
+
+# ------------------------------------------------------------------
+# Spatial taps (conv U-Nets)
+# ------------------------------------------------------------------
+# A U-Net has no token sequence and no total depth order: down, mid and up are
+# joined by skip connections. What it does have is a feature MAP, [B, C, h, w],
+# whose cells already lie on a grid -- so the teacher is interpolated to that
+# (h, w) and the two correspond cell for cell, with no packing order to derive.
+#
+# REPA was published for DiTs (arXiv:2410.06940); aligning a conv U-Net's mid
+# block is an extrapolation from it, not something that paper measured.
+
+
+def spatial_tap_sites(unet: nn.Module) -> List[Tuple[str, nn.Module]]:
+    """The blocks REPA can read on a diffusers U-Net, in forward order.
+
+    Three, not every block: the shallow down blocks run at full latent
+    resolution, where a 27x27 teacher grid upsampled to 128x128 carries no
+    information the deep sites do not, at many times the projector cost. These
+    are the deepest down block, the mid block, and the first up block.
+    """
+    down = getattr(unet, "down_blocks", None)
+    mid = getattr(unet, "mid_block", None)
+    up = getattr(unet, "up_blocks", None)
+    if not down or mid is None or not up:
+        raise ValueError(
+            "REPA's spatial tap needs a U-Net with down_blocks, a mid_block and "
+            "up_blocks; this module exposes "
+            f"down={down is not None}, mid={mid is not None}, up={up is not None}.")
+    return [
+        (f"down_blocks[{len(down) - 1}]", down[len(down) - 1]),
+        ("mid_block", mid),
+        ("up_blocks[0]", up[0]),
+    ]
+
+
+def spatial_site_width(label: str, block: nn.Module) -> int:
+    """Channel count of ``block``'s output map, read off the live module.
+
+    The block's last resnet decides it; the optional down/up sampler that
+    follows keeps the channel count. Read here rather than from
+    ``config.block_out_channels`` so a config that no longer describes the
+    loaded tree cannot size the projector.
+    """
+    resnets = getattr(block, "resnets", None)
+    conv = getattr(resnets[-1], "conv2", None) if resnets else None
+    width = int(getattr(conv, "out_channels", 0) or 0)
+    if width <= 0:
+        raise ValueError(
+            f"REPA cannot read the output width of the U-Net site {label!r} "
+            f"({type(block).__name__}): it has no resnets[-1].conv2.out_channels.")
+    return width
+
+
+def arm_spatial_tap(container: nn.Module, block: nn.Module):
+    """Register the forward hook that stashes ``block``'s output on ``container``.
+
+    A hook rather than an assignment because the loop that calls the block is
+    diffusers' ``UNet2DConditionModel.forward``, which we do not own. It fires
+    once per forward and outside every checkpoint segment: diffusers checkpoints
+    each resnet/attention INSIDE a block, so the block's own output is an
+    ordinary graph tensor either way (measured on both archs, checkpointing on
+    and off). The caller must ``remove()`` the handle in a ``finally`` -- a hook
+    left installed would also fire during sampling.
+    """
+    container._repa_tap_out = None
+
+    def _stash(_module, _args, output):
+        # Down blocks return (sample, res_samples); mid and up return the sample.
+        container._repa_tap_out = output[0] if isinstance(output, tuple) else output
+
+    return block.register_forward_hook(_stash)
+
+
+def apply_repa_loss_spatial(trainer, loss, feature_map, repa_pixels):
+    """Add the alignment term for a conv feature map [B, C, h, w] to ``loss``.
+
+    The grid is the map's OWN (h, w), so the teacher is interpolated to exactly
+    what was tapped and student and target cannot disagree about it. Flattening
+    row-major (h*gw + w) is the order ``encode_repa_targets`` builds its grid in,
+    and it makes the projector's channel-axis Linear a 1x1 convolution over the
+    map.
+    """
+    if feature_map.dim() != 4:
+        raise RuntimeError(
+            f"REPA's spatial tap read a tensor of shape {tuple(feature_map.shape)}; "
+            f"it expects a conv feature map [B, C, h, w]. A token sequence belongs "
+            f"in apply_repa_loss, which takes the grid from the architecture.")
+    if torch.is_grad_enabled() and not feature_map.requires_grad:
+        raise RuntimeError(
+            "REPA's spatial tap read a detached tensor, so the alignment term "
+            "would be added to the loss and back-propagate into nothing. A "
+            "reentrant gradient checkpoint around the tapped block detaches its "
+            "hook output this way (diffusers checkpoints inside the block with "
+            "use_reentrant=False, which does not).")
+    batch, channels, gh, gw = feature_map.shape
+    if repa_pixels.shape[0] != batch:
+        raise RuntimeError(
+            f"REPA has {repa_pixels.shape[0]} clean image(s) for a tap of batch "
+            f"{batch}; the teacher targets would be broadcast across items rather "
+            f"than paired with them.")
+    tokens = feature_map.permute(0, 2, 3, 1).reshape(batch, gh * gw, channels)
+    return apply_repa_loss(trainer, loss, tokens, repa_pixels, gh, gw)
 
 
 # ------------------------------------------------------------------

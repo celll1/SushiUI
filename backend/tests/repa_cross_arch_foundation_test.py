@@ -324,6 +324,9 @@ REFUSAL_MARKERS = {
     "acestep": "1-D time axis",
     "ltx2": "EVERY frame",
     "minimax_h3": "CONDITION frames",
+    # Held back rather than impossible: implementable, waiting on demand.
+    "zimage": "DEFERRED, not impossible",
+    "flux2": "DEFERRED, not impossible",
 }
 
 # Architectures whose handler answers repa_tap. Their own tap behavior is
@@ -331,7 +334,8 @@ REFUSAL_MARKERS = {
 # for lens, repa_krea2_tap_test.py and repa_ideogram4_tap_test.py for the two
 # text-prefix architectures, repa_sensenova_tap_test.py for the MoT decoder);
 # here they are only excluded from the refusal sweep.
-WIRED_ARCHS = {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova"}
+WIRED_ARCHS = {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova",
+               "sd15", "sdxl"}
 
 
 @pytest.mark.parametrize("arch_name", sorted(ARCH_REGISTRY))
@@ -361,9 +365,9 @@ def test_setup_repa_refuses_before_the_encoder_is_loaded(monkeypatch):
     calls = []
     _stub_encoder(monkeypatch, calls=calls)
     trainer = _minit2i_trainer()
-    trainer.arch = ARCH_REGISTRY["sdxl"]()
+    trainer.arch = ARCH_REGISTRY["zimage"]()
 
-    with pytest.raises(ValueError, match="sdxl"):
+    with pytest.raises(ValueError, match="zimage"):
         BaseTrainer._setup_repa(trainer)
     assert calls == []
 

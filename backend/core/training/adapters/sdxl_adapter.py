@@ -471,3 +471,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
 
         total_params = sum(p.numel() for p in combined_state_dict.values())
         print(f"[SDXLFullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")
+
+        # The resolved path, not None: save_checkpoint pairs the REPA sidecar
+        # with the file this actually wrote (a directory argument resolves above).
+        return output_path

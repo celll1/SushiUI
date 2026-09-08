@@ -1271,17 +1271,21 @@ for _a in ("sd15", "sdxl"):
         "layer-wise LR decay needs the blocks in one forward order to measure depth on; a U-Net's down blocks, mid block and up blocks are joined by skip connections, so its blocks have no total order by depth (arch/sd15.py and arch/sdxl.py leave ArchHandler.depth_blocks at its None default)")
 
 # --- REPA (representation alignment) ----------------------------------------
-# REPA needs a block whose output is a full image-token grid, exposed by
-# `ArchHandler.repa_tap` and stashed by that architecture's own block loop. The
-# trainer refuses `repa_enable` for every architecture that does not answer it
+# REPA needs a block whose output is a full image grid, exposed by
+# `ArchHandler.repa_tap` and stashed by that architecture's own block loop (or,
+# on the conv U-Nets, by a forward hook on the tapped block). The trainer
+# refuses `repa_enable` for every architecture that does not answer it
 # (core/training/repa.py::refuse_repa), and this table is what keeps the control
-# from being offered in the first place. The three entries with a REASON OF
-# THEIR OWN mirror `repa.REPA_REFUSALS`; the rest are simply not wired yet.
+# from being offered in the first place. Every entry here has a REASON OF ITS
+# OWN mirroring `repa.REPA_REFUSALS`; a future architecture with neither gets
+# the generic "not wired yet" below.
 # repa_anima_tap_test.py asserts this set and the handlers' say the same thing.
 _REPA_UNSUPPORTED_REASONS = {
     "acestep": "ACE-Step is audio: its sequence is a 1-D time axis with no spatial token grid, so there is no grid to align an image encoder's per-patch features to. Undefined for it, not merely expensive",
     "ltx2": "REPA is held back for LTX-2.3: the frozen image teacher would have to encode every frame of every clip on every step, and the transformer trunk is shared with the audio stream, so the alignment term would also steer weights that produce audio",
     "minimax_h3": "REPA is held back for MiniMax-H3: per-frame teacher cost as for LTX-2.3, a trunk shared with audio, and a packed sequence that interleaves condition frames with the frames being generated, so a tap returns rows the image teacher has no target for",
+    "zimage": "Z-Image's REPA tap is DEFERRED, not impossible: it needs a vendor edit to its block loop plus the text-prefix slice Krea 2 and Ideogram 4 took, and no base checkpoint is available here to measure the row order against. Held until there is demand for it",
+    "flux2": "FLUX.2's REPA tap is DEFERRED, not impossible: its 8 dual-stream and 48 single-stream blocks are two different tap shapes in one depth axis, on top of a packed text+image sequence, and no base checkpoint is available here to measure the row order against. Held until there is demand for it",
 }
 
 # The phrase each reason above shares with `repa.REPA_REFUSALS`, whose own copy
@@ -1294,6 +1298,8 @@ _REPA_REFUSAL_MARKERS = {
     "acestep": "1-D time axis",
     "ltx2": "shared with the audio stream",
     "minimax_h3": "packed sequence",
+    "zimage": "DEFERRED, not impossible",
+    "flux2": "two different tap shapes",
 }
 for _a, _marker in _REPA_REFUSAL_MARKERS.items():
     if _marker not in _REPA_UNSUPPORTED_REASONS[_a]:
@@ -1303,7 +1309,8 @@ for _a, _marker in _REPA_REFUSAL_MARKERS.items():
             f"REPA_REFUSALS entry for the same architecture.")
 
 for _a in sorted(TRAINING_DECLARED_ARCHS
-                 - {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova"}):
+                 - {"minit2i", "anima", "lens", "krea2", "ideogram4", "sensenova",
+                    "sd15", "sdxl"}):
     _add_training_feature_unsupported(
         _a, "repa",
         _REPA_UNSUPPORTED_REASONS.get(_a) or

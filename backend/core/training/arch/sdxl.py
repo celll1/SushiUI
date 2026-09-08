@@ -59,6 +59,13 @@ class SDXLArchHandler(ArchHandler):
         from core.training.ops import sd_sdxl_ops
         sd_sdxl_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
+    def repa_tap(self, trainer):
+        # ONE body serves both U-Nets (ops/sd_sdxl_ops), as the loader and
+        # train_step do. The tap is a feature map on one of three sites, not a
+        # token sequence at a block index -- see that function.
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.repa_tap(trainer, self.name)
+
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         # P4: the SD/SDXL top dispatcher (BaseTrainer.encode_prompt) STAYS in the
         # spine — it selects custom-TE / simple / chunked and the three bodies
@@ -94,6 +101,7 @@ class SDXLArchHandler(ArchHandler):
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             profile_vram=ctx.profile_vram,
             alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+            repa_pixels=ctx.repa_pixels,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

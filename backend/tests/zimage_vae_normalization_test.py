@@ -12,6 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.models.components.vae_registry import normalize, denormalize
+from core.models.components.wiring import ZIMAGE_WIRING
 from core.training.ops import zimage_ops
 from core.pipeline_backends.zimage import ZImageMixin
 
@@ -76,3 +77,45 @@ def test_init_image_normalization_block(name):
     namespace = dict(vae=vae, init_latents=vae.raw, normalize=normalize)
     exec(compile(ast.Module(body=assignments, type_ignores=[]), "<encode block>", "exec"), namespace)
     torch.testing.assert_close(namespace["init_latents"], normalize(vae.raw, vae), rtol=0, atol=0)
+
+
+# --- the spec is the source, not the VAE ------------------------------------
+
+def test_the_runs_wiring_decides_the_normalisation_not_the_vae():
+    """Z-Image reads ``trainer.wiring`` like the other eleven architectures.
+
+    ``identity`` is the probe because it is the one method in the vocabulary
+    that observation can never return, so it fails iff the spec is ignored.
+    """
+    vae = Vae("shift_scale", torch.float32)
+    trainer = SimpleNamespace(vae=vae, wiring=ZIMAGE_WIRING.replace(vae_norm="identity"))
+
+    encoded = zimage_ops.vae_encode(trainer, torch.zeros(1, 3, 4, 4))
+    torch.testing.assert_close(encoded, vae.raw, rtol=0, atol=0)
+
+    zimage_ops._decode_zimage_latents(trainer, encoded)
+    torch.testing.assert_close(vae.decoded, encoded, rtol=0, atol=0)
+
+
+# pack 2 for batchnorm: this fixture's `bn` spans 16 channels over a 4-channel
+# latent, the 2x2-packed domain `resolved.norm_pack` would report.
+@pytest.mark.parametrize("method,pack", [("shift_scale", 1), ("batchnorm", 2),
+                                         ("per_channel", 1)])
+def test_passing_the_spec_does_not_change_what_a_swapped_vae_encodes(method, pack):
+    """A swap writes ``vae_norm``/``vae_norm_pack`` from the resolved VAE, and
+    those agree bit-for-bit with what the module alone was observed to say — so
+    reading the spec is a source change, not a numeric one."""
+    vae = Vae(method, torch.float32)
+    swapped = SimpleNamespace(vae=vae, wiring=ZIMAGE_WIRING.replace(
+        vae_norm=method, vae_norm_pack=pack))
+    observed = SimpleNamespace(vae=vae)
+
+    encoded = zimage_ops.vae_encode(swapped, torch.zeros(1, 3, 4, 4))
+    torch.testing.assert_close(
+        encoded, zimage_ops.vae_encode(observed, torch.zeros(1, 3, 4, 4)),
+        rtol=0, atol=0)
+
+    zimage_ops._decode_zimage_latents(swapped, encoded)
+    swapped_decode = vae.decoded
+    zimage_ops._decode_zimage_latents(observed, encoded)
+    torch.testing.assert_close(swapped_decode, vae.decoded, rtol=0, atol=0)

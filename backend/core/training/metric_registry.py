@@ -276,4 +276,22 @@ EXTRA_METRIC_DEFS = {
     # means the audio term never actually saw data.
     "h3_audio_present": {"label": "H3 audio present", "color": "#facc15",
                          "dashed": False, "axis": "right", **_BINARY},
+    # ---- Convergence Diagnostics (Phase 1) -------------------------------
+    # Instrumentation for symptoms A (global drift/graying) and B (8px grid noise).
+    # LIMITATION: Statistical consistency does not guarantee spatial structure, semantics,
+    # or future convergence. Do NOT decide convergence on these numbers alone; inspect
+    # the companion snapshot images (diag_single_x0, diag_rollout, diag_gt_roundtrip).
+    "diag_latent_mean_err": {"label": "Diag: Latent mean err", "color": "#e11d48",
+                             "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    "diag_latent_std_err": {"label": "Diag: Latent std err", "color": "#f97316",
+                            "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    "diag_low_freq_power_ratio": {"label": "Diag: Low-freq power", "color": "#06b6d4",
+                                  "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    "diag_pixel_luminance_err": {"label": "Diag: Pixel lum err", "color": "#8b5cf6",
+                                 "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    "diag_cell_periodicity_power": {"label": "Diag: 8px grid power", "color": "#ec4899",
+                                    "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    "diag_trajectory_gap": {"label": "Diag: Trajectory gap", "color": "#14b8a6",
+                            "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
 }
+

@@ -23063,6 +23063,15 @@ components:
           minimum: 0
           default: 50
           description: Debug-latent dump interval in steps. 0 = never dump.
+        convergence_diagnostics_enable:
+          type: 'boolean'
+          default: false
+          description: Enable convergence diagnostics instrumentation (Phase 1).
+        convergence_diagnostics_interval:
+          type: 'integer'
+          minimum: 0
+          default: 100
+          description: Convergence diagnostics evaluation interval in steps.
         enable_bucketing:
           type: 'boolean'
           default: false

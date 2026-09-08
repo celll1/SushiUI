@@ -595,6 +595,10 @@ def _build_train_section(
 
     train["debug_latents"] = p.get("debug_latents", False)
     train["debug_latents_every"] = p.get("debug_latents_every", 50)
+    train["convergence_diagnostics_enable"] = bool(
+        p.get("convergence_diagnostics_enable", TRAINING_DEFAULTS["convergence_diagnostics_enable"]))
+    train["convergence_diagnostics_interval"] = int(
+        p.get("convergence_diagnostics_interval", TRAINING_DEFAULTS["convergence_diagnostics_interval"]))
 
     # Multi Noise-Timestep
     train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)

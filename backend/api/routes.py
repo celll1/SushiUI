@@ -15613,6 +15613,10 @@ class TrainingRunCreateRequest(BaseModel):
     debug_latents: bool = False
     debug_latents_every: int = Field(default=TRAINING_DEFAULTS["debug_latents_every"], ge=0)
 
+    # Convergence Diagnostics (Phase 1)
+    convergence_diagnostics_enable: bool = TRAINING_DEFAULTS["convergence_diagnostics_enable"]
+    convergence_diagnostics_interval: int = Field(default=TRAINING_DEFAULTS["convergence_diagnostics_interval"], ge=0)
+
     # Bucketing options
     enable_bucketing: bool = False
     base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]

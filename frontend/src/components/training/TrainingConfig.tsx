@@ -247,6 +247,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sample_seed: -1,
   debug_latents: false,
   debug_latents_every: 50,
+  convergence_diagnostics_enable: false,
+  convergence_diagnostics_interval: 100,
   enable_bucketing: false,
   base_resolutions: [1024],
   bucket_strategy: "resize",
@@ -7067,6 +7069,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             />
             <p className="text-xs text-gray-500 mt-1">
               Set to 0 to disable sample generation during training
+            </p>
+          </div>
+
+          {/* Convergence Diagnostics (Phase 1) */}
+          <div className="pt-2 border-t border-gray-700/60">
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-gray-300">Convergence Diagnostics</label>
+              <input
+                type="checkbox"
+                checked={params.convergence_diagnostics_enable ?? false}
+                onChange={(e) => updateParam("convergence_diagnostics_enable", e.target.checked)}
+                className="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+              />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              Measures drift/graying and 8px grid noise without altering training dynamics. Saves 3 companion images (single-step x0, rollout, GT roundtrip) and records diagnostic metrics.
             </p>
           </div>
 

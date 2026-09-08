@@ -6613,6 +6613,8 @@ export interface TrainingRunCreateRequest {
   sensenova_sample_cfg_norm?: "none" | "global";
   debug_latents?: boolean;
   debug_latents_every?: number;
+  convergence_diagnostics_enable?: boolean;
+  convergence_diagnostics_interval?: number;
   enable_bucketing?: boolean;
   base_resolutions?: number[];
   bucket_strategy?: string;

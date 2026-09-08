@@ -117,6 +117,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "sample_nag_enable", "sample_nag_scale", "sample_nag_tau", "sample_nag_alpha", "sample_nag_sigma_end", "sample_nag_negative_prompt",
   "sensenova_sample_timestep_shift", "sensenova_sample_img_cfg_scale", "sensenova_sample_cfg_norm",
   "debug_latents", "debug_latents_every",
+  "convergence_diagnostics_enable", "convergence_diagnostics_interval",
   "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
   "crop_augment_enable", "crop_full_image_prob", "crop_max_bucket_prob",
   "crop_min_area_ratio", "crop_min_short_side_px", "crop_aspect_mode",

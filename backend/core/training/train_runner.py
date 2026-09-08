@@ -2941,6 +2941,9 @@ def main():
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
+            convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
+            convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+
 
             # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
@@ -3056,6 +3059,8 @@ def main():
                 max_grad_norm=train_config.get('max_grad_norm', 1.0),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
+                convergence_diagnostics_enable=convergence_diagnostics_enable,
+                convergence_diagnostics_interval=convergence_diagnostics_interval,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -3364,6 +3369,9 @@ def main():
             # Get debug parameters
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
+            convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
+            convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+
 
             # Get bucketing parameters
             enable_bucketing = train_config.get('enable_bucketing', False)
@@ -3465,6 +3473,8 @@ def main():
                 max_grad_norm=train_config.get('max_grad_norm', 1.0),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
+                convergence_diagnostics_enable=convergence_diagnostics_enable,
+                convergence_diagnostics_interval=convergence_diagnostics_interval,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -3823,6 +3833,9 @@ def main():
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
+            convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
+            convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+
 
             # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
@@ -3938,6 +3951,8 @@ def main():
                 max_grad_norm=train_config.get('max_grad_norm', 1.0),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
+                convergence_diagnostics_enable=convergence_diagnostics_enable,
+                convergence_diagnostics_interval=convergence_diagnostics_interval,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,
@@ -4194,6 +4209,9 @@ def main():
             # Get debug parameters from config
             debug_latents = train_config.get('debug_latents', False)
             debug_latents_every = train_config.get('debug_latents_every', 50)
+            convergence_diagnostics_enable = train_config.get('convergence_diagnostics_enable', False)
+            convergence_diagnostics_interval = train_config.get('convergence_diagnostics_interval', 100)
+
 
             # Get bucketing parameters from config
             enable_bucketing = train_config.get('enable_bucketing', False)
@@ -4278,6 +4296,8 @@ def main():
                 max_grad_norm=train_config.get('max_grad_norm', 1.0),
                 debug_latents=debug_latents,
                 debug_latents_every=debug_latents_every,
+                convergence_diagnostics_enable=convergence_diagnostics_enable,
+                convergence_diagnostics_interval=convergence_diagnostics_interval,
                 progress_callback=progress_callback,
                 update_total_steps_callback=update_total_steps_callback,
                 run_id=run_id,

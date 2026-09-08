@@ -2350,6 +2350,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Debug
     "debug_latents": False,
     "debug_latents_every": 50,
+    # Convergence Diagnostics (Phase 1)
+    "convergence_diagnostics_enable": False,
+    "convergence_diagnostics_interval": 100,
     # Bucketing
     "enable_bucketing": False,
     "base_resolutions": [1024],

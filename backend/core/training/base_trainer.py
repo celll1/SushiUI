@@ -11422,6 +11422,141 @@ class BaseTrainer(ABC):
         )
         return self.arch.sample(self, sample_ctx)
 
+    def _run_convergence_diagnostics(
+        self,
+        current_step: int,
+        rollout_sample: Optional[Image.Image] = None,
+        reference_image_path: Optional[str] = None,
+    ) -> None:
+        """Phase 1: Convergence diagnostics measurement and companion snapshot saving.
+
+        Saves up to 3 companion images:
+          1. Single-step x0 prediction (samples/step_{step:06d}_diag_single_x0.png)
+          2. Full rollout generation (samples/step_{step:06d}_diag_rollout.png)
+          3. GT roundtrip encode->decode (samples/step_{step:06d}_diag_gt_roundtrip.png)
+
+        Computes and logs via self.log_extra_metric:
+          - diag_latent_mean_err: Mean error across channels
+          - diag_latent_std_err: Std error across channels
+          - diag_low_freq_power_ratio: 2D FFT spectral energy in low frequencies
+          - diag_pixel_luminance_err: Deviation in RGB luminance
+          - diag_cell_periodicity_power: Spatial autocorrelation at lag 8 (grid artifact)
+          - diag_trajectory_gap: Discrepancy between single-step and rollout errors
+        """
+        try:
+            import torchvision.transforms.functional as TF
+            from core.training.diagnostics.convergence_stats import (
+                channel_mean_std_gap,
+                low_frequency_power_ratio,
+                pixel_stats_gap,
+                cell_periodicity_power,
+                trajectory_gap,
+            )
+
+            samples_dir = self.output_dir / "samples"
+            samples_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. Rollout image
+            rollout_t: Optional[torch.Tensor] = None
+            if rollout_sample is not None:
+                rollout_path = samples_dir / f"step_{current_step:06d}_diag_rollout.png"
+                rollout_sample.save(rollout_path)
+                rollout_t = TF.to_tensor(rollout_sample).unsqueeze(0)  # [1, 3, H, W] in [0, 1]
+
+            # 2. GT Reference / Roundtrip
+            gt_ref_path = reference_image_path
+            if not gt_ref_path and self._sample_prompts:
+                gt_ref_path = self._sample_prompts[0].get("condition_image_path") or self._sample_prompts[0].get("reference_image_path")
+
+            if self._diag_gt_img is None and gt_ref_path and Path(gt_ref_path).is_file():
+                try:
+                    ref_pil = Image.open(gt_ref_path).convert("RGB")
+                    # Try VAE encode -> decode roundtrip if trainer.vae exists
+                    roundtrip_pil = ref_pil
+                    if hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "encode") and hasattr(self.vae, "decode"):
+                        with torch.no_grad():
+                            ref_tensor = TF.to_tensor(ref_pil).unsqueeze(0).to(device=self.device, dtype=self.vae.dtype) * 2.0 - 1.0
+                            # VAE encode
+                            enc_out = self.vae.encode(ref_tensor)
+                            gt_latent = enc_out.latent_dist.sample() if hasattr(enc_out, "latent_dist") else getattr(enc_out, "latents", enc_out)
+                            self._diag_gt_latent = gt_latent.detach().cpu()
+                            # VAE decode
+                            dec_out = self.vae.decode(gt_latent)
+                            dec_sample = getattr(dec_out, "sample", dec_out)
+                            dec_sample = ((dec_sample.clamp(-1.0, 1.0) + 1.0) / 2.0).squeeze(0).cpu()
+                            roundtrip_pil = TF.to_pil_image(dec_sample)
+                    self._diag_gt_img = roundtrip_pil
+                    gt_path = samples_dir / f"step_{current_step:06d}_diag_gt_roundtrip.png"
+                    self._diag_gt_img.save(gt_path)
+                except Exception as gt_err:
+                    print(f"{self.log_prefix} [ConvergenceDiag] Failed to build GT roundtrip: {gt_err}")
+
+            gt_t: Optional[torch.Tensor] = None
+            if self._diag_gt_img is not None:
+                gt_t = TF.to_tensor(self._diag_gt_img).unsqueeze(0)
+
+            # 3. Single-step x0 prediction
+            single_x0_img: Optional[Image.Image] = None
+            single_x0_t: Optional[torch.Tensor] = None
+            if self._last_predicted_latent is not None and hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "decode"):
+                try:
+                    with torch.no_grad():
+                        z = self._last_predicted_latent.to(device=self.device, dtype=self.vae.dtype)
+                        dec_out = self.vae.decode(z)
+                        dec_sample = getattr(dec_out, "sample", dec_out)
+                        dec_sample = ((dec_sample.clamp(-1.0, 1.0) + 1.0) / 2.0).squeeze(0).cpu()
+                        single_x0_img = TF.to_pil_image(dec_sample)
+                except Exception as dec_err:
+                    print(f"{self.log_prefix} [ConvergenceDiag] Single-step x0 decode failed: {dec_err}")
+
+            if single_x0_img is not None:
+                single_path = samples_dir / f"step_{current_step:06d}_diag_single_x0.png"
+                single_x0_img.save(single_path)
+                single_x0_t = TF.to_tensor(single_x0_img).unsqueeze(0)
+
+            # 4. Statistical metrics computation
+            # (a) Pixel stats & Trajectory gap
+            lum_err_rollout = 0.0
+            lum_err_single = 0.0
+            if rollout_t is not None and gt_t is not None:
+                # Resize if spatial shapes differ
+                if rollout_t.shape[-2:] != gt_t.shape[-2:]:
+                    gt_aligned = TF.resize(gt_t, rollout_t.shape[-2:])
+                else:
+                    gt_aligned = gt_t
+                p_stats = pixel_stats_gap(rollout_t, gt_aligned)
+                lum_err_rollout = p_stats["lum_err"]
+                self.log_extra_metric("diag_pixel_luminance_err", float(lum_err_rollout))
+
+            if single_x0_t is not None and gt_t is not None:
+                if single_x0_t.shape[-2:] != gt_t.shape[-2:]:
+                    gt_aligned_s = TF.resize(gt_t, single_x0_t.shape[-2:])
+                else:
+                    gt_aligned_s = gt_t
+                s_stats = pixel_stats_gap(single_x0_t, gt_aligned_s)
+                lum_err_single = s_stats["lum_err"]
+
+            if rollout_t is not None:
+                traj_gap = trajectory_gap(lum_err_single, lum_err_rollout)
+                self.log_extra_metric("diag_trajectory_gap", float(traj_gap))
+
+                # (b) Spectral & periodicity metrics on rollout
+                low_ratio = low_frequency_power_ratio(rollout_t)
+                self.log_extra_metric("diag_low_freq_power_ratio", float(low_ratio))
+
+                period_power = cell_periodicity_power(rollout_t, period=8)
+                self.log_extra_metric("diag_cell_periodicity_power", float(period_power))
+
+            # (c) Latent metrics
+            if self._last_predicted_latent is not None and self._diag_gt_latent is not None:
+                mean_err, std_err = channel_mean_std_gap(self._last_predicted_latent, self._diag_gt_latent)
+                self.log_extra_metric("diag_latent_mean_err", float(mean_err))
+                self.log_extra_metric("diag_latent_std_err", float(std_err))
+
+        except Exception as diag_e:
+            print(f"{self.log_prefix} [ConvergenceDiag] Diagnostics evaluation failed: {diag_e}")
+
+
     def _make_sample_progress_reporter(
         self,
         progress_callback: Optional[Callable] = None,
@@ -11762,6 +11897,12 @@ class BaseTrainer(ABC):
             )
             self._mark_step0_sample_done()
             print(f"{self.log_prefix} [Step 0] Saved sample to {step0_sample_path.relative_to(self.output_dir)}")
+            if getattr(self, "convergence_diagnostics_enable", False):
+                self._run_convergence_diagnostics(
+                    0,
+                    rollout_sample=sample,
+                    reference_image_path=reference_image_path or condition_image_path,
+                )
 
     def _flux2_unpack_latents_with_ids(self, x: torch.Tensor, x_ids: torch.Tensor) -> torch.Tensor:
         """Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)"""
@@ -13317,6 +13458,8 @@ class BaseTrainer(ABC):
         timestep_sampling_config: Optional[Dict[str, Any]] = None,
         debug_latents: bool = False,
         debug_latents_every: int = 50,
+        convergence_diagnostics_enable: bool = False,
+        convergence_diagnostics_interval: int = 100,
         progress_callback: Optional[Callable] = None,
         update_total_steps_callback: Optional[Callable[[int], None]] = None,
         run_id: Optional[int] = None,
@@ -13379,6 +13522,7 @@ class BaseTrainer(ABC):
         save_every_n_steps = normalize_interval(save_every_n_steps)
         sample_every_n_steps = normalize_interval(sample_every_n_steps)
         debug_latents_every = normalize_interval(debug_latents_every)
+        convergence_diagnostics_interval = normalize_interval(convergence_diagnostics_interval)
         gradient_accumulation_steps = normalize_interval(gradient_accumulation_steps, minimum=1)
 
         if self.is_sensenova:
@@ -13423,6 +13567,13 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batch size: {batch_size}")
         print(f"{self.log_prefix} Gradient accumulation: {gradient_accumulation_steps}")
         print(f"{self.log_prefix} Debug latents: {debug_latents} (every {debug_latents_every} steps)")
+        self.convergence_diagnostics_enable = bool(convergence_diagnostics_enable)
+        self.convergence_diagnostics_interval = convergence_diagnostics_interval
+        self._diag_gt_img: Optional[Image.Image] = None
+        self._diag_gt_latent: Optional[torch.Tensor] = None
+        self._last_predicted_latent: Optional[torch.Tensor] = None
+        if self.convergence_diagnostics_enable:
+            print(f"{self.log_prefix} Convergence diagnostics: ENABLED (every {self.convergence_diagnostics_interval} steps)")
         if save_every_n_steps == 0:
             print(f"{self.log_prefix} Periodic checkpointing: DISABLED (save_every=0); "
                   f"only interrupt/emergency saves will write a checkpoint")
@@ -17680,6 +17831,12 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} Saved sample to {sample_path}")
                                 on_demand_files.append(sample_name)
                                 on_demand_seeds.append(actual_seed)
+                                if getattr(self, "convergence_diagnostics_enable", False) and sample_idx == 0:
+                                    self._run_convergence_diagnostics(
+                                        sample_step,
+                                        rollout_sample=sample,
+                                        reference_image_path=reference_image_path or condition_image_path,
+                                    )
 
                                 # Log to TensorBoard
                                 image_tensor = torchvision.transforms.ToTensor()(sample)

@@ -435,6 +435,7 @@ def encode_and_cache_clip(
     audio_prep_version: Optional[str] = None,
     audio_encode_window=None,
     return_record: bool = False,
+    force_recache: bool = False,
 ):
     """Encode-integration SEAM for P5 (ltx2 arch handler).
 
@@ -484,6 +485,9 @@ def encode_and_cache_clip(
         return_record: Return the whole record dict
             ``{"latents", "audio_latents", "has_audio"}`` instead of just the 5D
             video latent. Off by default so existing callers are unchanged.
+        force_recache: Re-encode and overwrite even on a cache hit; bypasses both
+            the read short-circuit below and ``skip_existing``, since either one
+            left in place throws the new latent away.
 
     Returns:
         5D latent tensor ``[1, C, T, H', W']``, or the record dict when
@@ -501,20 +505,21 @@ def encode_and_cache_clip(
         tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
     )
 
-    if return_record:
-        record = cache.load_clip_record(
-            video_path, width, height, clip_start, clip_length, stride, fps,
-            device=device, **key_extras,
-        )
-        if record is not None and record.get("latents") is not None:
-            return record
-    else:
-        cached = cache.load_clip_latent(
-            video_path, width, height, clip_start, clip_length, stride, fps,
-            device=device, **key_extras,
-        )
-        if cached is not None:
-            return cached
+    if not force_recache:
+        if return_record:
+            record = cache.load_clip_record(
+                video_path, width, height, clip_start, clip_length, stride, fps,
+                device=device, **key_extras,
+            )
+            if record is not None and record.get("latents") is not None:
+                return record
+        else:
+            cached = cache.load_clip_latent(
+                video_path, width, height, clip_start, clip_length, stride, fps,
+                device=device, **key_extras,
+            )
+            if cached is not None:
+                return cached
 
     clip = load_clip(
         video_path, clip_length, clip_start, stride, target_w=width, target_h=height,
@@ -577,7 +582,7 @@ def encode_and_cache_clip(
 
     cache.save_clip_latent(
         video_path, width, height, clip_start, clip_length, stride,
-        latents, fps=fps, skip_existing=skip_existing,
+        latents, fps=fps, skip_existing=skip_existing and not force_recache,
         audio_latents=audio_latents, has_audio=has_audio, **key_extras,
     )
     if return_record:

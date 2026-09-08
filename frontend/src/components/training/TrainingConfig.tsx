@@ -249,6 +249,12 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   debug_latents_every: 50,
   convergence_diagnostics_enable: false,
   convergence_diagnostics_interval: 100,
+  crop_decode_loss_enable: false,
+  crop_decode_loss_weight: 0.0,
+  crop_decode_loss_margin_cells: 16,
+  crop_decode_loss_out_cells: 32,
+  crop_decode_loss_metric: "lpips",
+  crop_decode_loss_snr_range: "",
   enable_bucketing: false,
   base_resolutions: [1024],
   bucket_strategy: "resize",
@@ -7086,6 +7092,80 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-400 mt-1">
               Measures drift/graying and 8px grid noise without altering training dynamics. Saves 3 companion images (single-step x0, rollout, GT roundtrip) and records diagnostic metrics.
             </p>
+          </div>
+
+          {/* Crop Decode Auxiliary Loss (Phase 3) */}
+          <div className="pt-2 border-t border-gray-700/60">
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-gray-300">Crop Decode Auxiliary Loss</label>
+              <input
+                type="checkbox"
+                checked={params.crop_decode_loss_enable ?? false}
+                onChange={(e) => updateParam("crop_decode_loss_enable", e.target.checked)}
+                className="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+              />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              Decodes a context-padded crop into pixel space to apply auxiliary reconstruction loss, eliminating grid artifacts without whole-image decode overhead.
+            </p>
+            {params.crop_decode_loss_enable && (
+              <div className="mt-3 grid grid-cols-2 gap-3 pl-2 border-l-2 border-blue-600/40">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Loss Weight</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={params.crop_decode_loss_weight ?? 0.0}
+                    onChange={(e) => updateParam("crop_decode_loss_weight", parseFloat(e.target.value) || 0.0)}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Metric</label>
+                  <select
+                    value={params.crop_decode_loss_metric ?? "lpips"}
+                    onChange={(e) => updateParam("crop_decode_loss_metric", e.target.value)}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  >
+                    <option value="lpips">LPIPS (Perceptual)</option>
+                    <option value="l1">L1 Loss</option>
+                    <option value="mse">MSE Loss</option>
+                    <option value="ycbcr_dc">YCbCr DC</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Margin Cells</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={params.crop_decode_loss_margin_cells ?? 16}
+                    onChange={(e) => updateParam("crop_decode_loss_margin_cells", parseInt(e.target.value) || 0)}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Out Cells (Interior)</label>
+                  <input
+                    type="number"
+                    min="4"
+                    value={params.crop_decode_loss_out_cells ?? 32}
+                    onChange={(e) => updateParam("crop_decode_loss_out_cells", parseInt(e.target.value) || 32)}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs text-gray-400 mb-1">SNR Range (min,max or empty)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 0.1,10.0 or leave empty for full range"
+                    value={params.crop_decode_loss_snr_range ?? ""}
+                    onChange={(e) => updateParam("crop_decode_loss_snr_range", e.target.value)}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs text-white"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Sample Prompts */}

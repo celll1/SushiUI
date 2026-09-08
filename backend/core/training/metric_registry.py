@@ -293,5 +293,15 @@ EXTRA_METRIC_DEFS = {
                                     "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
     "diag_trajectory_gap": {"label": "Diag: Trajectory gap", "color": "#14b8a6",
                             "dashed": True, "axis": "right", **_UNIT_DIAG_PERIODIC},
+    # ---- Crop Decode Auxiliary Loss (Phase 3) ----------------------------
+    # Auxiliary pixel-space reconstruction loss on context-padded crop to eliminate grid artifacts.
+    "crop_decode_loss": {"label": "Crop decode loss", "color": "#10b981",
+                         "dashed": True, **_LOSS},
+    # Gradient norm ratio: ||grad_aux|| / ||grad_main||. Critical diagnostic to balance
+    # auxiliary loss weight without overwhelming main diffusion task gradient.
+    "crop_decode_grad_norm_ratio": {"label": "Crop/Main grad norm ratio", "color": "#84cc16",
+                                    "dashed": True, "axis": "right",
+                                    "family": "bounded_diagnostic", "scale_group": "grad_ratio",
+                                    "range": _AUTO_0, "sampling": "dense"},
 }
 

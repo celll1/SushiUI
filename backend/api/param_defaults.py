@@ -2353,6 +2353,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Convergence Diagnostics (Phase 1)
     "convergence_diagnostics_enable": False,
     "convergence_diagnostics_interval": 100,
+    # Crop Decode Auxiliary Loss (Phase 3)
+    "crop_decode_loss_enable": False,
+    "crop_decode_loss_weight": 0.0,
+    "crop_decode_loss_margin_cells": 16,
+    "crop_decode_loss_out_cells": 32,
+    "crop_decode_loss_metric": "lpips",
+    "crop_decode_loss_snr_range": "",
     # Bucketing
     "enable_bucketing": False,
     "base_resolutions": [1024],

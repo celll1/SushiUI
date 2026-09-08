@@ -118,6 +118,8 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "sensenova_sample_timestep_shift", "sensenova_sample_img_cfg_scale", "sensenova_sample_cfg_norm",
   "debug_latents", "debug_latents_every",
   "convergence_diagnostics_enable", "convergence_diagnostics_interval",
+  "crop_decode_loss_enable", "crop_decode_loss_weight", "crop_decode_loss_margin_cells",
+  "crop_decode_loss_out_cells", "crop_decode_loss_metric", "crop_decode_loss_snr_range",
   "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
   "crop_augment_enable", "crop_full_image_prob", "crop_max_bucket_prob",
   "crop_min_area_ratio", "crop_min_short_side_px", "crop_aspect_mode",

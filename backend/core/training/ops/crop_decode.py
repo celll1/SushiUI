@@ -88,3 +88,4 @@ def decode_crop_with_context(
     # Slice interior region (differentiable)
     interior = dec[..., ty0:ty0 + th, tx0:tx0 + tw]
     return interior
+

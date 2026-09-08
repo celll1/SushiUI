@@ -53,6 +53,11 @@ four audit rounds. Each of these cost a full round trip.
   numerically sensitive code, and cross-architecture changes; for a small additive
   change whose tests demonstrably fail without it, verifying the two riskiest claims
   yourself is enough.
+- **Dispatch in the same tool block as the decision to dispatch.** Ending a turn on
+  "I'll send this to audit next" leaves nothing running and finished work
+  uncommitted; it happened twice in one session, the second time immediately
+  after promising it would not. Writing the sentence is not the act. Before
+  closing a turn that mentions further work, confirm a call was made.
 - **Exhaust what is on disk before spending a user turn** — logs, `training.db`,
   checkpoint metadata answer most questions about a run.
 

@@ -11773,6 +11773,25 @@ components:
           type: string
           default: uniform
           example: "karras"
+          description: |
+            Noise schedule for the SD1.5/SDXL sampling loop. The values served
+            by `GET /schedule-types` are the implemented ones; any other value
+            is accepted and treated as `uniform`.
+
+            * `uniform` — `leading` timestep spacing (`trailing` on a
+              v-prediction model).
+            * `karras` — Karras sigma spacing (`use_karras_sigmas`), with the
+              same timestep spacing as `uniform`.
+            * `exponential` — `trailing` timestep spacing. Despite the name
+              this is NOT an exponential sigma schedule (diffusers'
+              `use_exponential_sigmas`); the id is kept for compatibility.
+
+            Not every sampler honours every setting: schedulers without a
+            `use_karras_sigmas` argument (`euler_a`, `ddim`, `ddpm`, `pndm`)
+            ignore `karras`, and `dpmpp_sde` has no `timestep_spacing`
+            argument at all, so `exponential` and a v-prediction model's
+            `trailing` spacing do nothing there. Each such combination returns
+            an `unsupported_param` entry in `warnings[]`.
         developer_mode:
           type: boolean
           default: false
@@ -16103,7 +16122,7 @@ components:
         schedule_type:
           type: string
           default: uniform
-          description: "Noise schedule type used for each tile's img2img pass (diffusion backend only)."
+          description: "Noise schedule type used for each tile's img2img pass (diffusion backend only). Same values as `GenerationParams.schedule_type`; `exponential` selects trailing timestep spacing, not an exponential sigma schedule."
           example: uniform
         attention_type:
           type: string

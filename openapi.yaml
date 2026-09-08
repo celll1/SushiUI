@@ -23299,21 +23299,66 @@ components:
         repa_enable:
           type: 'boolean'
           default: false
+          description: |
+            REPA (Representation Alignment, arXiv:2410.06940): align the DiT's
+            intermediate image tokens with clean-image patch features from a
+            frozen vision encoder, through a trainable MLP projector and a
+            cosine-similarity loss added to the diffusion loss. Training-only —
+            the projector is written as a `.repa.safetensors` sidecar next to
+            each checkpoint and is never part of the saved model.
+
+            Only architectures with a wired REPA tap accept this. Enabling it
+            for any other architecture is REFUSED at trainer construction with
+            the reason, never accepted and ignored. Currently wired: MiniT2I.
+          example: false
         repa_encoder_source:
           type: 'string'
           default: 'tagger'
+          description: |
+            Which frozen vision encoder supplies the alignment targets, both
+            SigLIP2 so400m: `tagger` = this repo's Danbooru/anime fine-tuned
+            tagger encoder (domain-matched), `siglip2` = an off-the-shelf
+            checkpoint from `repa_siglip2_repo`.
+          example: 'tagger'
         repa_tagger_model_dir:
           type: 'string'
           default: ''
+          description: |
+            Tagger model directory used when `repa_encoder_source` is `tagger`.
+            Empty auto-selects the newest usable directory under the repo's
+            `tagger_models/` (one holding `base_model_metadata.json` and at
+            least one `.safetensors`).
+          example: ''
         repa_siglip2_repo:
           type: 'string'
           default: 'google/siglip2-so400m-patch14-384'
+          description: |
+            HuggingFace repo id for the off-the-shelf encoder, read only when
+            `repa_encoder_source` is `siglip2`. Loaded locally first, then from
+            the hub.
+          example: 'google/siglip2-so400m-patch14-384'
         repa_align_depth:
           type: 'integer'
           default: -1
+          description: |
+            0-based transformer block index whose output is aligned. -1 = auto
+            (one third of the architecture's block depth). Clamped into
+            [0, depth-1].
+
+            Refused when another depth feature would void it: a depth inside
+            TREAD's routed span (the block sees only the kept token subset, so
+            the tapped rows are not the token grid), or inside a DiT-BlockSkip
+            skipped span (those blocks run under no_grad, so the REPA gradient
+            would be exactly zero).
+          example: -1
         repa_weight:
           type: 'number'
           default: 0.5
+          description: |
+            Weight (lambda) of the alignment term added to the diffusion loss.
+            The reported `Loss` / reconstruction metrics stay diffusion-only;
+            the alignment term is charted separately as `repa_loss`.
+          example: 0.5
         repa_proj_lr_factor:
           type: 'number'
           minimum: 0
@@ -23322,6 +23367,12 @@ components:
         repa_encoder_resolution:
           type: 'integer'
           default: 0
+          description: |
+            Square input resolution fed to the frozen encoder. 0 follows the
+            encoder's native `image_size` (384 for SigLIP2 so400m patch14-384).
+            The encoder's patch grid is bilinearly resampled to the DiT token
+            grid, so this does not have to match the training resolution.
+          example: 0
         anima_attn_mlp_lr_factor:
           type: 'number'
           minimum: 0

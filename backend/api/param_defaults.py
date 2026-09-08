@@ -2799,11 +2799,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (sigma' = s*sigma / (1 + (s-1)*sigma)); musubi default 2.5 @1024^2. Set <=1 to disable.
     "krea2_discrete_flow_shift": 2.5,
 
-    # ---- REPA (Representation Alignment) — MiniT2I only ----
+    # ---- REPA (Representation Alignment) ----
     # Aligns a DiT intermediate hidden state with frozen clean-image patch features
     # from a vision encoder (our anime tagger, or off-the-shelf SigLIP2) via a
     # trainable MLP projector + cosine-similarity loss, to speed up convergence
     # (Yu et al., ICLR 2025, arXiv:2410.06940). Training-only; not in the saved model.
+    # Architecture-neutral by design; enabling it for an architecture whose tap is
+    # not wired is refused with the reason (core/training/repa.py).
     "repa_enable": False,
     # Encoder source: "tagger" (domain-matched anime SigLIP2) or "siglip2".
     "repa_encoder_source": "tagger",

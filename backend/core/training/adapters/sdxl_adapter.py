@@ -212,7 +212,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
 
         return count
 
-    def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
         """Collect trainable parameters with per-component learning rates."""
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: self.trainer.unet_lr,
@@ -284,7 +284,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         print(f"  Text Encoder 1 trainable: {trainer.train_text_encoder}")
         print(f"  Text Encoder 2 trainable: {trainer.train_text_encoder}")
 
-    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
         """
         Collect trainable parameters with per-component learning rates.
 
@@ -342,7 +342,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
 
         return params
 
-    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         """
         Save full parameter checkpoint in single safetensors format.
 

@@ -206,7 +206,7 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
         print("[MiniMaxH3LoRAAdapter] Qwen3-VL conditioner is frozen - no LoRA on the text encoder")
         return 0
 
-    def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]
                                     ) -> List[Dict[str, Any]]:
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: resolve_component_lr(

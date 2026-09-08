@@ -92,7 +92,7 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
         print("[Ideogram4LoRAAdapter] Qwen3-VL text encoder is frozen - no LoRA on TE")
         return 0
 
-    def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]
                                    ) -> List[Dict[str, Any]]:
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: (
@@ -130,8 +130,8 @@ class Ideogram4FullParameterAdapter(BaseFullParameterAdapter):
             "Use LoRA, or provide/dequantize a bf16 base (Phase 2b)."
         )
 
-    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
         raise NotImplementedError("Ideogram 4 full fine-tuning is not yet supported (Phase 2b).")
 
-    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         raise NotImplementedError("Ideogram 4 full fine-tuning is not yet supported (Phase 2b).")

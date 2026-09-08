@@ -23,6 +23,8 @@ from core.adapters.spec import (ALGORITHM_LORA, ALGORITHMS, FAMILY_NAMES,
                                 METADATA_OPTIONS, METADATA_SCHEMA_VERSION,
                                 METADATA_WEIGHT_DECOMPOSE,
                                 ADAPTER_SCHEMA_VERSION)
+from core.training.repa import (projector_param_groups, repa_enabled,
+                                save_projector_sidecar)
 
 
 LORA_COMPONENT_UNET = "unet"
@@ -87,7 +89,7 @@ def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str)
     checkpoint of the same architecture trains fine and must not be rejected.
 
     Call this from BOTH ``prepare_models_for_training`` and
-    ``setup_trainable_parameters`` — a caller that builds the optimizer
+    ``arch_param_groups`` — a caller that builds the optimizer
     without going through ``prepare_models_for_training`` first would
     otherwise still get the silently-truncated parameter list this guard
     exists to prevent.
@@ -490,10 +492,23 @@ class BaseLoRAAdapter(ABC):
             )
         return groups
 
-    @abstractmethod
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
+        """The optimizer's param groups: this architecture's, then REPA's.
+
+        Concrete on purpose. The REPA projector is training-only state that no
+        architecture owns, and an architecture that forgot to append it would
+        train against a random frozen head with no error raised — so the append
+        happens once, here, for every adapter. Last in the list, because
+        param-group order is part of a resume's contract.
         """
-        Collect trainable parameters with per-component learning rates.
+        groups = self.arch_param_groups(lora_layers)
+        groups.extend(projector_param_groups(self.trainer, label=type(self).__name__))
+        return groups
+
+    @abstractmethod
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
+        """
+        Collect this architecture's trainable parameters with per-component learning rates.
 
         Args:
             lora_layers: Dictionary of LoRA layers (key: name, value: LoRA module)
@@ -571,6 +586,9 @@ class BaseLoRAAdapter(ABC):
         fields = dict(metadata)
         fields.update(adapter=type(self).__name__, layers=len(lora_layers), path=output_path)
         print(self.CHECKPOINT_LOG_FORMAT.format(**fields))
+        # Training-only state, next to the checkpoint rather than inside it: the
+        # inference loader must not see the projector.
+        save_projector_sidecar(self.trainer, output_path, label=type(self).__name__)
 
 
 class BaseFullParameterAdapter(ABC):
@@ -603,18 +621,48 @@ class BaseFullParameterAdapter(ABC):
         """
         pass
 
-    @abstractmethod
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+        """The optimizer's param groups: this architecture's, then REPA's.
+
+        Concrete for the reason ``BaseLoRAAdapter.setup_trainable_parameters``
+        is: the REPA projector joins the optimizer once, for every adapter.
         """
-        Collect trainable parameters with per-component learning rates.
+        groups = self.arch_param_groups()
+        groups.extend(projector_param_groups(self.trainer, label=type(self).__name__))
+        return groups
+
+    @abstractmethod
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
+        """
+        Collect this architecture's trainable parameters with per-component learning rates.
 
         Returns:
             List of parameter groups for optimizer (format: [{"params": [...], "lr": ...}, ...])
         """
         pass
 
-    @abstractmethod
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+        """Write the checkpoint, then the REPA projector beside what was written.
+
+        The sidecar has to pair 1:1 with the file, and only the architecture
+        knows the file: ``output_path`` here can be a directory or an extensionless
+        stem that ``write_checkpoint`` resolves. So the resolved path is required
+        of it whenever REPA is on, rather than guessed from the argument.
+        """
+        written = self.write_checkpoint(step, epoch, output_path)
+        if not repa_enabled(self.trainer):
+            return written
+        if written is None:
+            raise ValueError(
+                f"{type(self).__name__}.write_checkpoint returned no path, so the REPA "
+                f"projector sidecar cannot be paired with the checkpoint it belongs to. "
+                f"Return the resolved checkpoint path from write_checkpoint."
+            )
+        save_projector_sidecar(self.trainer, written, label=type(self).__name__)
+        return written
+
+    @abstractmethod
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         """
         Save full parameter checkpoint in model-specific format.
 
@@ -622,6 +670,10 @@ class BaseFullParameterAdapter(ABC):
             step: Current training step
             epoch: Current training epoch
             output_path: Path to save checkpoint
+
+        Returns:
+            The path actually written, when this adapter resolves ``output_path``
+            (directory / missing suffix). Required for REPA-capable architectures.
         """
         pass
 

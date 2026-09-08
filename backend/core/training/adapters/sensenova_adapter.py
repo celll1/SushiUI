@@ -141,7 +141,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
             lora_layers, "und", LORA_COMPONENT_TEXT_ENCODER_1
         )
 
-    def setup_trainable_parameters(
+    def arch_param_groups(
         self, lora_layers: Dict[str, nn.Module]
     ) -> List[Dict[str, Any]]:
         return self.component_param_groups(lora_layers, {
@@ -373,7 +373,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             f"everything else in the transformer is frozen"
         )
 
-    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
         """Generation group then understanding group, the order
         ``BaseTrainer._build_component_lr_list`` reports for this architecture
         (a resume remaps learning rates by index).
@@ -491,7 +491,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
         return value
 
-    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         """Write the trained MoT half in the selected format (6.4).
 
         Every format is meaningful on every branch, with one degeneracy: with

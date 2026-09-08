@@ -87,7 +87,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
         print("[LensLoRAAdapter] GPT-OSS text encoder is frozen - no LoRA applied to TE")
         return 0
 
-    def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]
                                    ) -> List[Dict[str, Any]]:
         """Single optimizer parameter group for all LoRA weights."""
         return self.component_param_groups(lora_layers, {
@@ -160,7 +160,7 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
 
         print(f"[LensFullParameterAdapter] Models prepared (DiT trainable={train_dit})")
 
-    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
         trainer = self.trainer
         if trainer.transformer is None:
             return []
@@ -206,7 +206,7 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
               f"(img={len(img_params)} | txt={len(txt_params)} | other={len(other_params)})")
         return groups
 
-    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         from safetensors.torch import save_file as _save
 
         trainer = self.trainer

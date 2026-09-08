@@ -100,8 +100,16 @@ class BaseAdapter(ABC):
         pass
 
     @abstractmethod
-    def setup_trainable_parameters(self, lora_layers: Dict) -> List[Dict]:
-        """Collect trainable parameters with per-component learning rates."""
+    def arch_param_groups(self, lora_layers: Dict) -> List[Dict]:
+        """Collect this architecture's trainable parameters with per-component LRs.
+
+        Called by the concrete `setup_trainable_parameters`, which appends the
+        REPA projector's group after it. `BaseFullParameterAdapter` has the same
+        split, plus `write_checkpoint` (the architecture's save, returning the
+        path it resolved) under a concrete `save_checkpoint` that writes the REPA
+        sidecar beside it. Training-only state no architecture owns lives in the
+        base so no adapter can omit it.
+        """
         pass
 
     @abstractmethod

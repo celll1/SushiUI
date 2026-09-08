@@ -76,7 +76,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
         print("[Krea2LoRAAdapter] Qwen3-VL text encoder is frozen - no LoRA on TE")
         return 0
 
-    def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
+    def arch_param_groups(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
         return self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: (
                 resolve_component_lr(self.trainer, "unet_lr", label="Krea 2 LoRA")
@@ -124,7 +124,7 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
         if getattr(trainer, "vae", None) is not None:
             trainer.vae.requires_grad_(False)
 
-    def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
+    def arch_param_groups(self) -> List[Dict[str, Any]]:
         trainer = self.trainer
         # Second gate, not a duplicate: a caller that builds the optimizer without
         # going through prepare_models_for_training() would otherwise still get
@@ -140,7 +140,7 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
                                "name": "unet", "component": "unet"})
         return groups
 
-    def save_checkpoint(self, step: int, epoch: int, output_path: Path):
+    def write_checkpoint(self, step: int, epoch: int, output_path: Path):
         from core.models.krea2.vendor.single_file import save_single_file
         trainer = self.trainer
         if trainer.transformer is None:

@@ -2952,6 +2952,12 @@ class BaseTrainer(ABC):
         from core.training.arch import get_arch_handler
         self.arch = get_arch_handler(self)
 
+        # REPA: architecture-neutral, and here for the ordering it needs —
+        # every load path (base model and checkpoint-as-base, including the
+        # corruption fallback) has finished, the arch handler that owns the tap
+        # is bound, and no optimizer exists yet.
+        self._setup_repa()
+
     def _load_model_components(self):
         """Load model components (dispatcher for different model types)."""
         # Detect model type
@@ -3119,18 +3125,30 @@ class BaseTrainer(ABC):
         return cands[-1][1]
 
     def _setup_repa(self):
-        """Set up REPA for MiniT2I when enabled (frozen encoder + trainable projector).
+        """Set up REPA when enabled (frozen encoder + trainable projector).
 
-        The projector must exist before optimizer construction (the adapter adds its
-        params to a group). The DiT tap is armed at the aligned block depth so the
-        forward stashes the grad-connected image hidden state for the alignment loss.
+        Called once from ``__init__`` for EVERY architecture, after the arch
+        handler binds and before any optimizer exists — the projector has to be
+        constructed before optimizer construction (the base adapters add its
+        params to a group) and an architecture without a tap has to refuse here,
+        where the refusal reaches the run's log. The tap is armed at the aligned
+        block depth so the forward stashes the grad-connected image hidden state
+        for the alignment loss.
         """
         self.repa_enable = bool(self.config.get("repa_enable", False))
         self._repa_moved = False
+        self._repa_tap_module = None
         if not self.repa_enable:
             return
 
-        from core.training.repa import load_repa_encoder, RepaProjector
+        from core.training.repa import (
+            load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
+            repa_sidecar_path,
+        )
+
+        # Before the encoder is downloaded/read: an arch with no tap, and the two
+        # video archs held back, refuse here.
+        tap = self.arch.repa_tap(self)
 
         source = str(self.config.get("repa_encoder_source", "tagger") or "tagger").strip().lower()
         tagger_dir = str(self.config.get("repa_tagger_model_dir", "") or "").strip()
@@ -3153,20 +3171,25 @@ class BaseTrainer(ABC):
         res_override = int(self.config.get("repa_encoder_resolution", 0) or 0)
         self.repa_size = res_override if res_override > 0 else (native or 384)
 
-        cfg = self.transformer.mmjit_config
-        hidden = int(cfg.hidden_size)
-        depth = int(cfg.depth_double)
+        hidden = tap.hidden_size
+        depth = tap.depth
         align = int(self.config.get("repa_align_depth", -1))
         if align < 0:
             align = max(0, depth // 3)
         align = max(0, min(align, depth - 1))
+        if getattr(self.arch, "consumes_block_loop_features", False):
+            # Only worth checking where the architecture's forward reads these:
+            # elsewhere the config keys are built and then ignored, so refusing
+            # on them would reject a run that used to train.
+            assert_repa_depth_compatible(self.config, align, depth)
         self.repa_align_depth = align
         self.repa_weight = float(self.config.get("repa_weight", 0.5))
         self.repa_proj_lr_factor = float(self.config.get("repa_proj_lr_factor", 1.0))
 
         self.repa_projector = RepaProjector(hidden, enc_dim).to(device=self.device, dtype=repa_dtype)
         self.repa_projector.train()
-        self.transformer.model.net._repa_tap_depth = align
+        tap.module._repa_tap_depth = align
+        self._repa_tap_module = tap.module
         self._repa_moved = True
 
         # Resume: load a sibling projector saved next to the base checkpoint, if present
@@ -3174,8 +3197,7 @@ class BaseTrainer(ABC):
         try:
             mp = str(getattr(self, "model_path", "") or "")
             if mp.endswith(".safetensors"):
-                from core.training.adapters.minit2i_adapter import _repa_sidecar_path
-                sib = _repa_sidecar_path(mp)
+                sib = repa_sidecar_path(mp)
                 if os.path.isfile(sib):
                     from safetensors.torch import load_file as _load_file
                     self.repa_projector.load_state_dict(_load_file(sib))
@@ -7011,6 +7033,25 @@ class BaseTrainer(ABC):
 
         # Get trainable parameters from subclass
         param_groups = self.setup_trainable_parameters()
+
+        # The base adapters append the REPA projector's group; this is the
+        # backstop for any path that does not go through them (a ControlNet or
+        # future adapter hierarchy). Left out, the projector stays a random
+        # frozen head and the alignment loss is noise, with no error anywhere.
+        from core.training.repa import repa_enabled
+        if repa_enabled(self):
+            grouped = {id(p) for g in param_groups for p in g.get("params", [])}
+            missing = sum(1 for p in self.repa_projector.parameters()
+                          if p.requires_grad and id(p) not in grouped)
+            if missing:
+                raise ValueError(
+                    f"repa_enable is on but {missing} REPA projector parameter(s) are in "
+                    f"no optimizer group, so the projector would never update and the "
+                    f"alignment target would stay random. The adapter in use "
+                    f"({type(getattr(self, 'adapter', None)).__name__}) does not inherit "
+                    f"the base adapters' REPA group (core.training.repa."
+                    f"projector_param_groups)."
+                )
 
         # Add Vision Encoder parameters if training is enabled
         if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
@@ -15958,8 +15999,8 @@ class BaseTrainer(ABC):
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
                     loss_weight_maps_list = []  # Outpaint-mode per-item latent-space loss weight [1,1,H/8,W/8] or None (parallel to condition_images_list)
-                    repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (MiniT2I, parallel to latents_list)
-                    _repa_active = bool(getattr(self, "repa_enable", False)) and self.is_minit2i
+                    repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (parallel to latents_list)
+                    _repa_active = bool(getattr(self, "repa_enable", False))
                     # SDXL micro-conditioning: per-item (orig_h,orig_w,crop_top,crop_left,
                     # target_h,target_w) for time_ids, parallel to latents_list.
                     micro_cond_list = []

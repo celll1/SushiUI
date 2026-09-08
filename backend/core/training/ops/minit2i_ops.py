@@ -14,8 +14,9 @@ LATE by mode subclasses via hasattr) and ``setup_attention_backend`` keeps a
 delegator (called from the moved loader body); each body is defined exactly once
 here.
 
-REPA setup stays central (``BaseTrainer._setup_repa``, plan section B "optional
-cross-arch"); the moved loader body calls ``trainer._setup_repa()``.
+REPA setup is central and architecture-neutral (``BaseTrainer._setup_repa``,
+called once from ``__init__`` after every load path); this module only supplies
+MiniT2I's token geometry to the shared loss helper.
 """
 from __future__ import annotations
 
@@ -133,10 +134,6 @@ def load_components(trainer) -> None:
     # Setup attention backend if non-native (use_flash_attention is derived from it)
     if trainer.use_flash_attention:
         trainer._setup_attention_backend_minit2i(trainer.attention_backend)
-
-    # REPA (representation alignment): load frozen encoder + build the trainable
-    # projector BEFORE adapter/optimizer setup so its params join the optimizer.
-    trainer._setup_repa()
 
     print(f"{trainer.log_prefix} MiniT2I model loaded successfully (variant={trainer.minit2i_variant})")
 
@@ -375,28 +372,18 @@ def train_step(
     # REPA (representation alignment): align the DiT image hidden state captured
     # at the tap depth with frozen clean-image patch features, via the trainable
     # projector. Added to the backward loss; pred/recon above stay diffusion-only.
-    # The tap (transformer.model.net._repa_tap_out) is grad-connected (it is the
-    # double-block loop output, gradient-checkpoint safe).
+    # The tap is grad-connected (the double-block loop output, gradient-checkpoint
+    # safe) and carries image tokens only, so no slicing is needed here. MiniT2I is
+    # pixel-space: its grid divides the IMAGE dims by patch_size.
     if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        from core.training.repa import take_repa_tap, apply_repa_loss
         trainer._ensure_repa_on_device()
-        net = trainer.transformer.model.net
-        tap = getattr(net, "_repa_tap_out", None)
+        tap = take_repa_tap(trainer)
         if tap is not None:
-            from core.training.repa import encode_repa_targets, repa_loss as _repa_loss_fn
             patch = int(trainer.transformer.mmjit_config.patch_size)
             gh = images.shape[2] // patch
             gw = images.shape[3] // patch
-            targets = encode_repa_targets(
-                trainer.repa_encoder,
-                repa_pixels.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True),
-                gh, gw, trainer.repa_size,
-            )
-            rloss = _repa_loss_fn(tap, targets, trainer.repa_projector)
-            loss = loss + trainer.repa_weight * rloss
-            trainer.log_extra_metric("repa_loss", float(rloss.detach().item()))
-            del targets
-        # Release the captured graph reference (avoid retaining the activation graph).
-        net._repa_tap_out = None
+            loss = apply_repa_loss(trainer, loss, tap, repa_pixels, gh, gw)
 
     # Debug save: dump the first sample's tensors (.pt) so the noising / x0
     # prediction can be inspected offline. For the latent variant ("latent" is

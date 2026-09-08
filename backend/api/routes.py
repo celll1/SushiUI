@@ -13516,15 +13516,20 @@ async def delete_dataset_latent_cache(
                    "to target every cache of this dataset)")
 
     base, namespaces = _latent_cache_namespaces(dataset)
+    # A pre-`vae-*` layout has no directory of its own to remove (its parent
+    # also holds text_embeddings), so it is listed but never a target -- see
+    # latent_cache.list_vae_namespaces.
+    deletable = [n for n in namespaces if n.get("deletable", True)]
     if namespace is not None:
-        targets = [n for n in namespaces
+        targets = [n for n in deletable
                    if n["namespace"] == namespace and n["vae_namespace"] == vae_namespace]
         if not targets:
             raise HTTPException(
                 status_code=400,
-                detail=f"No cache '{namespace}/{vae_namespace}' for dataset {dataset_id}")
+                detail=f"No deletable cache '{namespace}/{vae_namespace}' for dataset "
+                       f"{dataset_id}")
     else:
-        targets = list(namespaces)
+        targets = list(deletable)
 
     active_runs = _runs_blocking_cache_delete(training_db, dataset_id)
 

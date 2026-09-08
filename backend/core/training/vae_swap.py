@@ -229,7 +229,7 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
 
     handler = getattr(trainer, "arch", None) or get_arch_handler(trainer)
     arch = handler.name
-    native_hash = _module_hash(getattr(trainer, "vae", None))
+    native_hash = module_latent_hash(getattr(trainer, "vae", None))
 
     resolved = resolve_vae_source(source, arch=arch)
     compatible, reason = handler.check_vae_compatibility(
@@ -250,7 +250,7 @@ def apply_configured_vae_swap(trainer, source: str) -> Optional[Any]:
     # dtype), which is why the no-op test happens here and not in the resolver.
     identity_native = False
     if native_hash is not None:
-        identity_native = _module_hash(trainer.vae) == native_hash
+        identity_native = module_latent_hash(trainer.vae) == native_hash
     if _base_is_already_swapped(trainer):
         # §8.3: the base's own declaration wins — a second swap on top of a
         # swapped base can never be back in the architecture's native space.
@@ -281,7 +281,11 @@ def _base_is_already_swapped(trainer) -> bool:
     return declared is not None and declared.identity_native is False
 
 
-def _module_hash(module) -> Optional[str]:
+def module_latent_hash(module) -> Optional[str]:
+    """Latent-space identity of a LIVE VAE module: ``ResolvedVAE.latent_hash``'s
+    formula over the module's own weights and normalisation, so the result is
+    comparable module-to-module only. Also the latent cache's VAE key.
+    """
     from core.models.common.vae_source import content_hash_for_state_dict, latent_space_hash
     if module is None:
         return None
@@ -291,8 +295,8 @@ def _module_hash(module) -> Optional[str]:
             config = vars(config)
         return latent_space_hash(content_hash_for_state_dict(module.state_dict()), config)
     except Exception as e:
-        print(f"[VAESwap] base VAE hash unavailable ({type(e).__name__}: {e}); "
-              "treating the swap as a real one")
+        print(f"[VAESwap] VAE latent hash unavailable ({type(e).__name__}: {e}); "
+              "a swap is treated as real, a latent cache as unverifiable")
         return None
 
 

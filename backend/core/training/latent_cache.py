@@ -797,7 +797,10 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cached embeddings for caption: {e}")
             return None
 
-    def save_cache_info(self, model_path: str, model_type: str, item_count: int, training_dtype: str = 'unknown'):
+    def save_cache_info(self, model_path: str, model_type: str, item_count: int,
+                        training_dtype: str = 'unknown',
+                        vae_latent_hash: Optional[str] = None,
+                        vae_family: Optional[str] = None):
         """
         Save cache metadata.
 
@@ -806,18 +809,29 @@ class LatentCache:
             model_type: Model type ('sdxl', 'sd15', 'zimage')
             item_count: Number of items in dataset
             training_dtype: Training dtype (e.g., 'bf16', 'fp16', 'fp32')
+            vae_latent_hash: ``module_latent_hash`` of the encoding VAE; the
+                only record of it for a native run, which gets no VAE namespace
+                token. ``None`` means it could not be computed.
+            vae_family: VAE family name, for the mismatch log only.
         """
         info = {
             'dataset_unique_id': self.dataset_unique_id,
+            'namespace': self.namespace,
             'model_path': model_path,
             'model_type': model_type,
             'training_dtype': training_dtype,
+            'vae_latent_hash': vae_latent_hash,
+            'vae_family': vae_family,
             'created_at': datetime.utcnow().isoformat(),
             'item_count': item_count,
         }
 
-        with open(self.cache_info_path, 'w') as f:
+        # Atomic: a torn cache_info.json reads as absent, which costs a full
+        # re-encode of the dataset.
+        tmp_path = self.cache_info_path.with_suffix('.json.tmp')
+        with open(tmp_path, 'w') as f:
             json.dump(info, f, indent=2)
+        os.replace(tmp_path, self.cache_info_path)
 
     def load_cache_info(self) -> Optional[Dict]:
         """
@@ -836,29 +850,60 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cache info: {e}")
             return None
 
-    def is_valid(self, model_path: str, model_type: str, training_dtype: str = 'unknown') -> bool:
+    def is_valid(self, model_path: str, model_type: str, training_dtype: str = 'unknown',
+                 vae_latent_hash: Optional[str] = None) -> bool:
+        """Whether this cache fits the given run; ``validate()`` with the reason
+        dropped."""
+        return self.validate(model_path, model_type, training_dtype,
+                             vae_latent_hash=vae_latent_hash) is None
+
+    def validate(self, model_path: str, model_type: str, training_dtype: str = 'unknown',
+                 vae_latent_hash: Optional[str] = None) -> Optional[str]:
         """
-        Check if cache is valid for current model.
+        Why this cache does not fit the given run, or None when it does.
+
+        Codes: ``'no_cache_info'`` | ``'vae_identity'`` | ``'model_type'`` |
+        ``'training_dtype'``. Only the first two mean the stored latents are in
+        the wrong latent space; the caller decides what each one costs (see
+        API_REFERENCE.md, ``validate``), because only some of them justify
+        deleting hours of encoding. A differing ``model_path`` is reported and
+        tolerated: latents depend on the VAE, not on which checkpoint carried it.
 
         Args:
             model_path: Current model path
             model_type: Current model type
             training_dtype: Current training dtype
+            vae_latent_hash: Latent-space identity of this run's VAE, or None
+                when it could not be computed
 
         Returns:
-            True if cache is valid
+            A mismatch code, or None when the cache is valid
         """
         info = self.load_cache_info()
         if info is None:
             print(f"[LatentCache] Validation failed: No cache_info.json found")
-            return False
+            return 'no_cache_info'
+
+        cached_vae_hash = info.get('vae_latent_hash')
+        if cached_vae_hash != vae_latent_hash:
+            if cached_vae_hash is None:
+                print(f"[LatentCache] Validation failed: cache_info.json records no VAE identity")
+            elif vae_latent_hash is None:
+                print(f"[LatentCache] Validation failed: current VAE identity unavailable")
+            else:
+                print(f"[LatentCache] Validation failed: VAE identity mismatch")
+            family = info.get('vae_family')
+            print(f"[LatentCache]   Cached: {cached_vae_hash}"
+                  f"{'' if family is None else f' (family={family})'}")
+            print(f"[LatentCache]   Current: {vae_latent_hash}")
+            return 'vae_identity'
 
         # Normalize paths for comparison (resolve to absolute, case-normalized)
         from pathlib import Path
         cached_model_path = info.get('model_path')
         if cached_model_path is None:
             print(f"[LatentCache] Validation failed: model_path not in cache_info.json")
-            return False
+            return 'no_cache_info'
 
         try:
             cached_path_normalized = Path(cached_model_path).resolve()
@@ -869,18 +914,17 @@ class LatentCache:
             cached_path_normalized = cached_model_path
             current_path_normalized = model_path
 
-        # Check model compatibility (compare normalized paths)
         if cached_path_normalized != current_path_normalized:
-            print(f"[LatentCache] Validation failed: Model path mismatch")
+            print(f"[LatentCache] Model path differs from the one that wrote this cache; "
+                  f"VAE identity matches, entries reused")
             print(f"[LatentCache]   Cached: {cached_path_normalized}")
             print(f"[LatentCache]   Current: {current_path_normalized}")
-            return False
 
         if info.get('model_type') != model_type:
             print(f"[LatentCache] Validation failed: Model type mismatch")
             print(f"[LatentCache]   Cached: {info.get('model_type')}")
             print(f"[LatentCache]   Current: {model_type}")
-            return False
+            return 'model_type'
 
         # Check training dtype (latents are stored in training dtype for memory efficiency)
         cached_dtype = info.get('training_dtype', 'unknown')
@@ -888,10 +932,10 @@ class LatentCache:
             print(f"[LatentCache] Validation failed: Training dtype mismatch")
             print(f"[LatentCache]   Cached: {cached_dtype}")
             print(f"[LatentCache]   Current: {training_dtype}")
-            return False
+            return 'training_dtype'
 
         print(f"[LatentCache] Validation passed: Cache is valid for current model")
-        return True
+        return None
 
     def validate_cache_format(self, expected_channels: int = 4, sample_count: int = 5) -> bool:
         """
@@ -962,6 +1006,24 @@ class LatentCache:
 
         print(f"[LatentCache] Cache format validation PASSED")
         return True
+
+    def discard_latents(self) -> int:
+        """Delete every cached latent plus the cache_info stamp (text embeddings
+        do not depend on the VAE and stay), and report how many files went. Why
+        deletion and not an ignore-flag: API_REFERENCE.md, ``discard_latents``.
+        """
+        removed = 0
+        for entry in self.latents_dir.glob("*.pt"):
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError as e:
+                print(f"[LatentCache] Warning: Failed to delete {entry.name}: {e}")
+        try:
+            self.cache_info_path.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"[LatentCache] Warning: Failed to delete cache_info.json: {e}")
+        return removed
 
     def clear(self):
         """Clear all cached data."""

@@ -2010,6 +2010,73 @@ def _save_pixel_debug(
         )
 
 
+def _crop_decode_aux_loss(
+    trainer: Any,
+    *,
+    transformer: Any,
+    x0_pred: torch.Tensor,
+    x0: torch.Tensor,
+    z_image: torch.Tensor,
+    t: torch.Tensor,
+    patch: int,
+    height: int,
+    width: int,
+    main_loss: torch.Tensor,
+) -> Optional[torch.Tensor]:
+    """Opt-in pixel-space auxiliary loss on a context-padded crop.
+
+    Three things the shared op cannot infer here:
+
+    * the network emits x0 directly, so it is handed over as ``predicted_latent``
+      and ``ops/x0_recovery.predict_x0`` -- which excludes this arch -- is never
+      reached;
+    * the prediction is in token space, restored by the model's own
+      ``unpatchify``, the exact inverse of the ``patchify`` layout train_step
+      builds ``x0_pred`` in;
+    * t=1 is clean here, so the shared flow SNR band is given ``1 - t``. That
+      band still ignores ``noise_scale`` (2.78-3.00 on run 127), so it reads the
+      SNR high by that factor squared.
+
+    The latents stay NORMALISED: the shared op denormalises into the decoder's
+    own domain itself, so doing it here too would apply the inverse twice.
+    """
+    vae = getattr(trainer, "vae", None)
+    if vae is None:
+        if not getattr(trainer, "_sensenova_crop_decode_pixel_warned", False):
+            trainer._sensenova_crop_decode_pixel_warned = True
+            print(f"{trainer.log_prefix} [crop_decode_loss] pixel-space run: there is no "
+                  f"VAE to decode through, so the auxiliary loss stays off")
+        return None
+
+    from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+
+    out_cells = int(getattr(trainer, "crop_decode_loss_out_cells", 32))
+    if out_cells % patch and not getattr(trainer, "_sensenova_crop_decode_token_warned", False):
+        trainer._sensenova_crop_decode_token_warned = True
+        print(f"{trainer.log_prefix} [crop_decode_loss] out_cells={out_cells} is not a "
+              f"multiple of this run's {patch}-cell token, so the edge tokens of every "
+              f"crop are supervised on part of their block only")
+
+    pred_2d = transformer.unpatchify(x0_pred, patch, height, width)
+
+    # model_pred is the TOKEN-space tensor on purpose: the op's grad-ratio probe
+    # differentiates both losses against it, and the 2-D form is downstream of
+    # the main loss, which would make the main-side probe read None.
+    aux_loss, _ = compute_crop_decode_loss(
+        trainer=trainer,
+        model_pred=x0_pred,
+        noisy_latents=z_image,
+        timesteps=1.0 - t,
+        clean_latents=x0,
+        noise_process="flow",
+        prediction_target="sample",
+        noise_scheduler=None,
+        predicted_latent=pred_2d,
+        main_loss=main_loss,
+    )
+    return aux_loss
+
+
 def train_step(
     trainer: Any,
     *,
@@ -2185,6 +2252,25 @@ def train_step(
 
     value = float(loss.detach())
     recon_value = float(recon_loss.detach())
+
+    # Added after `value`/`recon_value` are read: the aux term must not move the
+    # two series this run's pre-aux baseline is measured on.
+    if (getattr(trainer, "crop_decode_loss_enable", False)
+            and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0):
+        aux_loss = _crop_decode_aux_loss(
+            trainer,
+            transformer=transformer,
+            x0_pred=x0_pred,
+            x0=x0,
+            z_image=z_image,
+            t=t,
+            patch=patch,
+            height=height,
+            width=width,
+            main_loss=loss,
+        )
+        if aux_loss is not None:
+            loss = loss + aux_loss
 
     if debug_save_path is not None:
         try:

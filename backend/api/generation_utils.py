@@ -228,8 +228,13 @@ def preview_arch_kwargs(
         except Exception:
             pass
 
+    from core.utils.taesd import latent_scaling_of
+
     return {
         "vae_preview_kind": vae_preview_kind,
+        # The live VAE, not the architecture: a replaced 4-channel VAE keeps the
+        # architecture's tiny decoder but may carry a different scaling factor.
+        "latent_scaling_factor": latent_scaling_of(getattr(pipeline, "vae", None)),
         "is_sdxl": pipeline is not None and "XL" in pipeline.__class__.__name__,
         "is_zimage": is_zimage,
         "is_deus": model_type == "deus",
@@ -272,6 +277,7 @@ def create_progress_callback_factory(
     minit2i_vae_type: str = "none",
     is_krea2: bool = False,
     vae_preview_kind: Optional[str] = None,
+    latent_scaling_factor: Optional[float] = None,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
@@ -296,6 +302,8 @@ def create_progress_callback_factory(
         is_flux2: FLUX.2モデルかどうか（32chLatent、TAESDプレビュー不可）
         vae_preview_kind: VAEを差し替えたチェックポイントのプレビューデコーダ種別
             （`_preview_vae_kind`が決定）。Noneならarch既定の経路のまま
+        latent_scaling_factor: latentを生成したVAEの`scaling_factor`。
+            Noneならfamily既定の定数にフォールバック
         img2img_fix_steps: img2img/inpaintの"Do full steps"オプション
         steps: ステップ数（display_total計算用）
         image_width: 生成画像の幅（FLUX.2プレビューのアスペクト比計算用）
@@ -376,6 +384,7 @@ def create_progress_callback_factory(
                     image_height=image_height,
                     preview_decoder=preview_decoder,
                     vae_preview_kind=vae_preview_kind,
+                    latent_scaling_factor=latent_scaling_factor,
                 )
                 if preview_pil:
                     buffered = BytesIO()

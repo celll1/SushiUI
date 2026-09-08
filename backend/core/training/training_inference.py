@@ -305,6 +305,7 @@ class TrainingPreviewGenerator:
         t = self.trainer
         if getattr(t, "is_flux2", False):
             return None
+        from core.utils.taesd import latent_scaling_of
         from .training_preview_rpc import write_preview_frame
         flags = {
             "is_sdxl": bool(getattr(t, "is_sdxl", False)),
@@ -313,6 +314,9 @@ class TrainingPreviewGenerator:
             "is_lens": bool(getattr(t, "is_lens", False)),
             "is_ideogram4": bool(getattr(t, "is_ideogram4", False)),
             "is_minit2i": bool(getattr(t, "is_minit2i", False)),
+            # This run's VAE, which a swap may have replaced with one carrying a
+            # different scaling factor than the architecture's own.
+            "latent_scaling_factor": latent_scaling_of(getattr(t, "vae", None)),
         }
         seq = [0]
 

@@ -1906,6 +1906,7 @@ def _broadcast_training_preview_frame(frame: dict) -> None:
             image_width=int(frame.get("image_width", 1024)),
             image_height=int(frame.get("image_height", 1024)),
             preview_decoder=str(frame.get("preview_decoder", "matrix")),
+            latent_scaling_factor=frame.get("latent_scaling_factor"),
         )
         if not preview_pil:
             return

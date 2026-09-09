@@ -15,7 +15,7 @@ Phase 2 以降は各ゲートの通過を条件とする分岐であり、事前
 
 | 監査結果 | プランへの影響 |
 |---|---|
-| `aesthetic_loss.py` の forward は `torch.no_grad()` 内 | **微分可能な補助損失の前例は存在しない**。新規に autograd 経路を作る必要がある。既存コードのコピーは不可 |
+| 旧 `aesthetic_loss.py` の forward は `torch.no_grad()` 内だった（未接続のため 2026-09-10 削除） | **微分可能な補助損失の前例は存在しない**。新規に autograd 経路を作る必要がある |
 | VAE decode は非局所。padding 項の消滅点は **14–16 latent cells**（`VAE_DECODE_BEHAVIOR.md`） | 8×8 latent の単独 decode は無効。**context margin 付き crop が必須**。ただし GroupNorm 統計と mid-block attention の項は margin では消えない |
 | `context_tiled_decode.py` に margin=16 の geometry が既にある | crop decode の**幾何は再実装不要**（`iter_tiles` / `TileRect` / `resolve_geometry`）。不足は autograd 対応のみ |
 | latent セルと DiT トークンは一般に 1 対 1 でない | REPA 系タスクは**独立ライン** |
@@ -262,7 +262,7 @@ Phase 3 が成立するなら Phase 4 は不要（蒸留誤差を持ち込む理
 
 1. **データ生成** — 複数 checkpoint の実予測 + 合成劣化。**画像単位とチェックポイント単位で保留集合を分離**
 2. **教師値** — LPIPS 単独ではなく、解釈可能な量のベクトル（周波数パワー / 高周波比 / mean-std / 局所分散）を併記
-3. **critic** — `LatentCNN` を素材にするが、入力は `(x̂₀, x₀)` ペア。`aesthetic_loss` の `no_grad` 構造は踏襲しない
+3. **critic** — `LatentCNN` を素材にするが、入力は `(x̂₀, x₀)` ペア。入力勾配を保持する
 4. **ゲート G-1** — 順位相関（目安 ≥0.9）だけでなく、
    **critic を下げる更新が真の decode 指標と画像を改善するか**を確認する。
    分布外入力・同 L2 で画質が異なるペア・低周波/高周波の両方を含める

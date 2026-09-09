@@ -553,3 +553,66 @@ def test_a_cache_that_still_hits_keeps_its_entries(tmp_path, monkeypatch):
     assert t._repa_pix_verdict_done is True
     assert getattr(t, "_repa_pix_cache_off", False) is False
     assert len(t._repa_pix_cache) == 20
+
+
+# ---------------------------------------------------------------------------
+# (g) a run whose hit rate is knowable up front never holds the RAM at all
+# ---------------------------------------------------------------------------
+
+def _ds(n):
+    """A dataset of n distinct paths, materialized lazily (1.5M is a real size)."""
+    return SimpleNamespace(items=({"image_path": f"p{i}.png"} for i in range(n)))
+
+
+def _prior(trainer, n, strategy="crop"):
+    BaseTrainer._repa_pixel_cache_prior(trainer, [_ds(n)], strategy)
+    return getattr(trainer, "_repa_pix_cache_off", False)
+
+
+def test_the_local_dataset_sizes_land_on_the_side_they_were_measured_on():
+    """The sizes fae3a13d measured, against the real 1 GiB / 384-square budget:
+    404 and 654 keep the cache (~100% / ~90% of accesses hit), the rest cannot."""
+    cap = base_trainer._repa_pixel_cache_entries(384)
+    assert cap == 606
+
+    assert [n for n in (2, 3, 404, 654) if _prior(_trainer(repa_size=384), n)] == []
+    for n in (1416, 6779, 1548785):
+        assert _prior(_trainer(repa_size=384), n) is True, n
+
+
+def test_a_dataset_past_the_budget_holds_no_bytes_at_any_point(tmp_path, monkeypatch):
+    """Not "is freed once measured": never allocated. The verdict path needed ~2650
+    lookups (~660 steps at batch 4) of growing host RAM to reach the same answer."""
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", 20 * 3 * S * S * 4)
+    t = _trainer()
+    assert _prior(t, 41) is True  # 2x what the budget holds, plus one
+
+    item = {"image_path": _striped(tmp_path)}
+    _fill(t, item, 200)
+
+    assert getattr(t, "_repa_pix_cache_bytes", 0) == 0
+    assert len(getattr(t, "_repa_pix_cache", {})) == 0
+    box = (0, 0, 64, 128)
+    torch.testing.assert_close(_teacher(t, item, box), _teacher(_trainer(), item, box),
+                               rtol=0, atol=0)
+
+
+def test_a_box_redrawn_every_epoch_is_not_cached_at_all(tmp_path):
+    """The key holds the box, so a window drawn afresh each epoch is never asked
+    for twice -- 0 hits by construction, whatever the item count."""
+    assert _prior(_trainer(), 8, strategy="random_crop") is True
+    assert _prior(_trainer(crop_planner=object()), 8) is True
+
+
+def test_a_small_dataset_still_caches_and_still_hits(tmp_path):
+    """What the prior must not break: the resident case keeps serving from RAM."""
+    t = _trainer()
+    assert _prior(t, 404) is False
+
+    item = {"image_path": _striped(tmp_path)}
+    box = (0, 0, 64, 128)
+    first = _teacher(t, item, box)
+    second = _teacher(t, item, box)
+
+    assert t._repa_pix_hits == 1 and len(t._repa_pix_cache) == 1
+    assert second is first

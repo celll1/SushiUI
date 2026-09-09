@@ -11199,6 +11199,7 @@ class BaseTrainer(ABC):
         _loss_item_t0 = time.perf_counter()
         loss_value = loss.item()
         _loss_item_wait_s = time.perf_counter() - _loss_item_t0
+        self._flush_deferred_predicted_latent()
         self._flush_deferred_controlnet_metrics()
         self._flush_deferred_extra_metrics()
         # loss.item() has already waited for the forward stream after backward was
@@ -12132,13 +12133,19 @@ class BaseTrainer(ABC):
         step just finished, not a value re-derived at the sampling step. The
         step-0 sample runs before any forward, so its diagnostics have no x_0.
 
-        Holds nothing at all while diagnostics are off, and one detached CPU
-        copy of one sample while they are on: keeping the graph alive here would
-        pin a step's activations until the next step overwrote it.
+        Holds nothing at all while diagnostics are off, and one detached sample
+        while they are on. The CPU copy is deferred to the shared post-backward
+        synchronization point so it cannot delay backward submission.
         """
         if not getattr(self, "convergence_diagnostics_enable", False) or latent is None:
             return
-        self._last_predicted_latent = latent[:1].detach().to("cpu", torch.float32)
+        self._last_predicted_latent = latent[:1].detach()
+
+    def _flush_deferred_predicted_latent(self) -> None:
+        latent = getattr(self, "_last_predicted_latent", None)
+        if isinstance(latent, torch.Tensor) and (
+                latent.device.type != "cpu" or latent.dtype != torch.float32):
+            self._last_predicted_latent = latent.to("cpu", torch.float32)
 
     def _run_convergence_diagnostics(
         self,

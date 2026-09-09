@@ -304,6 +304,15 @@ class TestPredictedLatentCapture:
         BaseTrainer.capture_predicted_latent(trainer, torch.ones(2, 4, 8, 8))
         assert trainer._last_predicted_latent is None
 
+    def test_capture_defers_the_cpu_copy_until_after_backward(self):
+        import inspect
+
+        capture = inspect.getsource(BaseTrainer.capture_predicted_latent)
+        execute = inspect.getsource(BaseTrainer._execute_forward_backward)
+        assert '.to("cpu", torch.float32)' not in capture
+        assert execute.index("loss_value = loss.item()") < execute.index(
+            "self._flush_deferred_predicted_latent()")
+
     def test_5d_single_frame_latent_is_squeezed(self):
         trainer = _FakeTrainer()
         supplied = torch.randn(2, 4, 1, 16, 16)

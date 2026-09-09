@@ -171,7 +171,8 @@ def test_dump_failure_does_not_break_train_step(tmp_path, monkeypatch, capsys):
     loss, pred_loss_value, _recon = result
 
     assert torch.isfinite(loss)
-    assert isinstance(pred_loss_value, float)
+    assert isinstance(pred_loss_value, torch.Tensor)
+    assert pred_loss_value.grad_fn is None
     out = capsys.readouterr().out
     assert "[debug_latents] save failed" in out
     assert "No space left on device" in out

@@ -509,7 +509,7 @@ def train_step(
         # under no_grad it would only shift the reported number.
         pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
         recon_loss = F.mse_loss(pred_x0.float(), latents.float())
-        recon_loss_value = recon_loss.item()
+        recon_loss_value = recon_loss.detach()
         recon_weight = trainer.reconstruction_loss_weight
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
@@ -565,7 +565,7 @@ def train_step(
         loss = apply_repa_loss(trainer, loss, tap.flatten(1, 3), repa_pixels,
                                int(tap.shape[2]), int(tap.shape[3]))
 
-    pred_loss_value = mse_loss.item()
+    pred_loss_value = mse_loss.detach()
 
     # Debug save if requested
     if debug_save_path is not None:

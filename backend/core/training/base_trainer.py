@@ -2489,6 +2489,7 @@ class BaseTrainer(ABC):
         # {name: float} dict (TrainingMetrics.extra_metrics JSON). Cleared after
         # each capture so a metric emitted only every N steps never goes stale.
         self._extra_metrics = {}
+        self._pending_extra_metrics = {}
         # §20's conditional LR triggers and the in-memory ring they read. Here
         # rather than beside lr_timeline because the ring is fed from the
         # metrics site, which runs for trainers that never build a timeline.
@@ -11194,6 +11195,7 @@ class BaseTrainer(ABC):
         _loss_item_t0 = time.perf_counter()
         loss_value = loss.item()
         _loss_item_wait_s = time.perf_counter() - _loss_item_t0
+        self._flush_deferred_extra_metrics()
         # loss.item() has already waited for the forward stream after backward was
         # enqueued; reading REPA here adds no earlier synchronization point.
         _repa_item_wait_s = self._flush_repa_loss_metric_after_backward()
@@ -19537,6 +19539,19 @@ class BaseTrainer(ABC):
         if not math.isfinite(v):
             return
         self._extra_metrics[name] = v
+
+    def defer_extra_metric(self, name: str, value: torch.Tensor) -> None:
+        """Record a scalar tensor after backward's existing stream wait."""
+        if not isinstance(value, torch.Tensor) or value.numel() != 1:
+            self.log_extra_metric(name, value)
+            return
+        self._pending_extra_metrics[name] = value.detach()
+
+    def _flush_deferred_extra_metrics(self) -> None:
+        pending = self._pending_extra_metrics
+        self._pending_extra_metrics = {}
+        for name, value in pending.items():
+            self.log_extra_metric(name, value.item())
 
     def _begin_repa_profile_call(self, repa_pixels: Optional[torch.Tensor]) -> None:
         """Arm direct timers for one REPA-bearing call, without changing normal runs."""

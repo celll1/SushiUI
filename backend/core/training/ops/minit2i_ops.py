@@ -360,7 +360,7 @@ def train_step(
     # which is what the chart's "Loss" series carries.
     trainer.stash_cfg_null_per_sample_loss(v_pred, target)
 
-    pred_loss_value = loss.item()
+    pred_loss_value = loss.detach()
     # Unweighted MSE of the predicted clean image (x0) vs the target image: a
     # cleaner quality signal than the (1-t)-reweighted velocity objective.
     # Monitoring-only until reconstruction_loss_weight turns it into the second
@@ -371,13 +371,13 @@ def train_step(
         recon_loss = torch.nn.functional.mse_loss(
             x0_pred.float(), images.float(), reduction="mean"
         )
-        recon_loss_value = recon_loss.item()
+        recon_loss_value = recon_loss.detach()
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
     else:
         with torch.no_grad():
             recon_loss_value = torch.nn.functional.mse_loss(
                 x0_pred.float(), images.float(), reduction="mean"
-            ).item()
+            ).detach()
 
     # REPA (representation alignment): align the DiT image hidden state captured
     # at the tap depth with frozen clean-image patch features, via the trainable
@@ -418,7 +418,7 @@ def train_step(
                 "vae_type": getattr(trainer, "minit2i_vae_type", "none"),
                 "is_latent": is_latent,
                 "loss": loss.item(),
-                "recon_loss": recon_loss_value,
+                "recon_loss": float(recon_loss_value),
                 "batch_size": B,
             }
             if not will_decode:

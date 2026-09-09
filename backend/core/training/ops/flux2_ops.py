@@ -760,8 +760,8 @@ def train_step(
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     # Return loss tensor and loss values
-    pred_loss_value = mse_loss.item()
-    recon_loss_value = recon_loss.item()
+    pred_loss_value = mse_loss.detach()
+    recon_loss_value = recon_loss.detach()
 
     # Free intermediate tensors
     del noise, noisy_latents, model_pred, target

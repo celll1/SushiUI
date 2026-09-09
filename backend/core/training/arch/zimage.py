@@ -37,6 +37,7 @@ class ZImageArchHandler(ArchHandler):
     # ops/zimage_ops.py train_step: target = latents - noise, the inverted
     # convention the diffusers Z-Image pipeline mirrors with noise_pred = -out.
     velocity_sign = "x0_minus_eps"
+    consumes_reconstruction_loss_weight = True
 
     def lora_adapter_class(self):
         from core.training.adapters import ZImageLoRAAdapter

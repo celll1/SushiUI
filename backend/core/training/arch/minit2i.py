@@ -41,6 +41,7 @@ class MiniT2IArchHandler(ArchHandler):
     # target is (images - x_t)/clamp(1-t), a scaled difference against the NOISY
     # sample -- see ArchHandler.velocity_sign.
     velocity_sign = None
+    consumes_reconstruction_loss_weight = True
 
     def resolve_wiring(self, trainer):
         """MINIT2I_WIRING describes the PIXEL variant; a latent checkpoint has a

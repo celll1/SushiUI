@@ -34,6 +34,7 @@ class SDXLArchHandler(ArchHandler):
     # whose velocity branches are alpha*noise - sigma*latents (ddpm) and
     # noise - latents (flow) -- the same sign under both noise processes.
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the

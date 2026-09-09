@@ -43,7 +43,7 @@ from config.settings import settings
 from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
-    GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
+    GENERATION_DEFAULTS, IMG2TXT_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS, INPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
@@ -776,6 +776,7 @@ async def get_generation_defaults():
         "aud2aud_arch_overlays": AUD2AUD_GEN_ARCH_OVERLAYS,
         "outpaint_audio_arch_overlays": OUTPAINT_AUDIO_ARCH_OVERLAYS,
         "image_arch_overlays": IMAGE_GEN_ARCH_OVERLAYS,
+        "img2txt": IMG2TXT_DEFAULTS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -1130,7 +1131,7 @@ async def get_arch_capabilities():
     no such sub-mode concept at all).
     """
     from api.arch_capabilities import (
-        CFG_NULL_STAGE_BY_ARCH,
+        CFG_NULL_STAGE_BY_ARCH, TEXT_OUTPUT_MODES,
         ARCH_DISPLAY_NAMES, ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED,
         FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
@@ -1144,6 +1145,7 @@ async def get_arch_capabilities():
     )
     return {
         "unsupported": ARCH_UNSUPPORTED,
+        "text_output_modes": {k: list(v) for k, v in TEXT_OUTPUT_MODES.items()},
         "supported_values": ARCH_SUPPORTED_VALUES,
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
@@ -1189,6 +1191,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
     "acestep": 8.0,    # 2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B TE, sequential CPU/GPU staging
     "minimax_music3": 24.0,  # model card: <24GB bf16 w/ auto CPU offload; LM+depth decoder co-resident for the AR stage
+    "sensenova": 40.0,  # bf16 unified model plus VQA activations/KV cache
     "unknown": 14.0,   # safe default
 }
 
@@ -1232,6 +1235,155 @@ def _estimate_gen_peak_gb(width: int, height: int, batch_size: int, pipeline_kin
 
 
 # Routes
+@router.post("/generate/img2txt", tags=["generation"])
+async def generate_img2txt(
+    images: List[UploadFile] = File(...),
+    task: Literal["caption", "caption_tags", "tags", "custom"] = Form(
+        IMG2TXT_DEFAULTS["task"]),
+    instruction: str = Form(IMG2TXT_DEFAULTS["instruction"], max_length=16384),
+    hint_tags: str = Form(json.dumps(IMG2TXT_DEFAULTS["hint_tags"]), max_length=65536),
+    max_new_tokens: int = Form(IMG2TXT_DEFAULTS["max_new_tokens"], ge=1, le=8192),
+    do_sample: bool = Form(IMG2TXT_DEFAULTS["do_sample"]),
+    temperature: float = Form(IMG2TXT_DEFAULTS["temperature"], gt=0.0, le=5.0),
+    top_p: float = Form(IMG2TXT_DEFAULTS["top_p"], gt=0.0, le=1.0),
+    top_k: Optional[int] = Form(IMG2TXT_DEFAULTS["top_k"], ge=1),
+    repetition_penalty: Optional[float] = Form(
+        IMG2TXT_DEFAULTS["repetition_penalty"], gt=0.0, le=10.0),
+    seed: int = Form(IMG2TXT_DEFAULTS["seed"], ge=-1, le=2**31 - 1),
+    prompt_template_version: int = Form(IMG2TXT_DEFAULTS["prompt_template_version"], ge=1),
+):
+    """Generate caption/tag/custom text through SenseNova's understanding path."""
+    current_info = pipeline_manager.current_model_info or {}
+    if current_info.get("type") != "sensenova" or not pipeline_manager.is_sensenova_model:
+        raise HTTPException(
+            status_code=409,
+            detail="Load a SenseNova model before calling /generate/img2txt.",
+        )
+    if len(images) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"img2txt currently requires exactly one image; got {len(images)}.",
+        )
+
+    from core.models.sensenova.text_output import (
+        build_effective_instruction,
+        normalize_hint_tags,
+        parse_structured_output,
+    )
+    try:
+        decoded_hints = json.loads(hint_tags)
+        if not isinstance(decoded_hints, list):
+            raise ValueError("hint_tags must be a JSON array")
+        decoded_hints = normalize_hint_tags(decoded_hints)
+        effective_instruction = build_effective_instruction(
+            task, instruction, decoded_hints, prompt_template_version)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Bound compressed bytes and decoded pixels before model residency or a GPU
+    # slot. The upstream visual preprocessor later caps its own working image at
+    # 2048^2, but decoding an unbounded source first would still be unsafe.
+    max_upload_bytes = 32 * 1024 * 1024
+    raw = await images[0].read(max_upload_bytes + 1)
+    if len(raw) > max_upload_bytes:
+        raise HTTPException(status_code=413, detail="img2txt image exceeds the 32 MiB upload limit")
+    try:
+        input_image = Image.open(io.BytesIO(raw))
+        if input_image.width * input_image.height > 64 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="img2txt image exceeds the 64-megapixel decode limit")
+        input_image.load()
+        input_image = input_image.convert("RGB")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="images must contain a decodable image") from exc
+
+    from api.generation_status import (
+        attach_error_context,
+        complete_generation,
+        error_context,
+        fail_generation,
+        get_warnings,
+        start_generation,
+        update_progress,
+    )
+    _gen_id = start_generation("img2txt")
+    try:
+        pipeline_manager.reset_cancel_flag()
+        params = {
+            "task": task,
+            "instruction": effective_instruction,
+            "hint_tags": decoded_hints,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "seed": seed,
+            "prompt_template_version": prompt_template_version,
+        }
+
+        def progress_callback(step: int, total: int, phase: str) -> None:
+            update_progress(step, total, phase=phase)
+            manager.send_progress_sync(step, total, message=phase)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        async with gpu_coordinator.generation_slot(
+            estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["sensenova"], timeout=60.0
+        ):
+            # Loading another architecture while the upload is decoded must not
+            # turn a capability error into an internal pipeline failure.
+            current_info = pipeline_manager.current_model_info or {}
+            if current_info.get("type") != "sensenova" or not pipeline_manager.is_sensenova_model:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The loaded model changed before img2txt could start.",
+                )
+            raw_text, actual_seed, timing = await _run_generation_in_executor(
+                loop,
+                executor,
+                lambda: pipeline_manager.generate_img2txt(
+                    params, input_image, progress_callback=progress_callback),
+            )
+
+        structured, parse_warning = parse_structured_output(task, raw_text)
+        result = {
+            "kind": "text",
+            "task": task,
+            "raw_text": raw_text,
+            "structured": structured,
+            "parse_warning": parse_warning,
+            "effective_instruction": effective_instruction,
+            "prompt_template_version": prompt_template_version,
+            "actual_seed": actual_seed,
+            "model": {
+                "type": current_info.get("type"),
+                "source": current_info.get("source"),
+            },
+            "timing": timing,
+            "warnings": get_warnings(_gen_id),
+        }
+        progress_callback(max_new_tokens, max_new_tokens, "Complete")
+        complete_generation(result, generation_id=_gen_id)
+        return result
+    except HTTPException as exc:
+        fail_generation(str(exc.detail), generation_id=_gen_id)
+        raise
+    except GenerationError as exc:
+        fail_generation(str(exc), generation_id=_gen_id)
+        attach_error_context(exc, _gen_id)
+        raise
+    except Exception as exc:
+        fail_generation(str(exc), generation_id=_gen_id)
+        raise GenerationError(
+            "Image-to-text generation failed",
+            detail=str(exc),
+            **error_context(exc, _gen_id),
+        ) from exc
+
+
 @router.post("/generate/txt2img")
 async def generate_txt2img(
     prompt: str = Form(...),

@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import os
 import random
+import time
 import weakref
 
 import torch
@@ -517,6 +518,105 @@ class SenseNovaMixin:
             "width": width,
             "height": height,
         }
+
+    def _generate_img2txt_sensenova(self, params, image, progress_callback=None) -> tuple:
+        """Run the checkpoint's visual-understanding path, never its VAE."""
+        if not self.sensenova_components:
+            raise RuntimeError("SenseNova components not loaded.")
+
+        from transformers import StoppingCriteria, StoppingCriteriaList
+        from core.models.sensenova.vendor.utils import load_image_native
+
+        transformer = self.sensenova_components["transformer"]
+        tokenizer = self.sensenova_components["tokenizer"]
+        max_new_tokens = int(params["max_new_tokens"])
+        actual_seed = int(params.get("seed", -1))
+        if actual_seed < 0:
+            actual_seed = random.SystemRandom().randint(0, 2**31 - 1)
+
+        class _CancelAndProgress(StoppingCriteria):
+            def __init__(inner_self):
+                inner_self.generated = 0
+
+            def __call__(inner_self, _input_ids, _scores, **_kwargs):
+                inner_self.generated += 1
+                if progress_callback is not None:
+                    try:
+                        progress_callback(
+                            min(inner_self.generated, max_new_tokens),
+                            max_new_tokens,
+                            "Generating text",
+                        )
+                    except Exception as exc:
+                        print(f"[SenseNova] img2txt progress callback raised: {exc}")
+                return bool(self.cancel_requested)
+
+        do_sample = bool(params.get("do_sample", False))
+        generation_config = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            generation_config["temperature"] = float(params.get("temperature", 0.7))
+            generation_config["top_p"] = float(params.get("top_p", 0.9))
+        if do_sample and params.get("top_k") is not None:
+            generation_config["top_k"] = int(params["top_k"])
+        if params.get("repetition_penalty") is not None:
+            generation_config["repetition_penalty"] = float(params["repetition_penalty"])
+        generation_config["stopping_criteria"] = StoppingCriteriaList([_CancelAndProgress()])
+
+        pixel_values = grid_hw = None
+        preprocess_seconds = generation_seconds = 0.0
+        self._unload_lora_sensenova()
+        try:
+            # Img2txt is an understanding task. A swapped generation VAE is
+            # intentionally neither moved nor called here.
+            self._sensenova_move("transformer", self.device)
+            if progress_callback is not None:
+                progress_callback(0, max_new_tokens, "Encoding image")
+
+            started = time.perf_counter()
+            pixel_values, grid_hw = load_image_native(
+                image,
+                transformer.patch_size,
+                transformer.downsample_ratio,
+                min_pixels=512 * 512,
+                max_pixels=2048 * 2048,
+                upscale=False,
+            )
+            pixel_values = pixel_values.to(device=self.device, dtype=torch.bfloat16)
+            grid_hw = grid_hw.to(self.device)
+            preprocess_seconds = time.perf_counter() - started
+
+            torch.manual_seed(actual_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(actual_seed)
+
+            started = time.perf_counter()
+            with torch.inference_mode():
+                response = transformer.chat(
+                    tokenizer,
+                    pixel_values,
+                    params["instruction"],
+                    generation_config,
+                    history=None,
+                    return_history=False,
+                    grid_hw=grid_hw,
+                    verbose=False,
+                )
+            generation_seconds = time.perf_counter() - started
+            if self.cancel_requested:
+                raise RuntimeError("Generation cancelled by user")
+            return response, actual_seed, {
+                "preprocess_seconds": preprocess_seconds,
+                "generation_seconds": generation_seconds,
+            }
+        finally:
+            del pixel_values, grid_hw
+            self._unload_lora_sensenova()
+            self._sensenova_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _generate_txt2img_sensenova(self, params, progress_callback=None, step_callback=None) -> tuple:
         if not self.sensenova_components:

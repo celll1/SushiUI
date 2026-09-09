@@ -225,6 +225,23 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     "style_inject_all_cfg_branches": True,
 }
 
+# SenseNova visual-understanding generation. This is deliberately separate
+# from GENERATION_DEFAULTS: img2txt is autoregressive text decoding and shares
+# none of the image denoiser's step/CFG/geometry controls.
+IMG2TXT_DEFAULTS: Dict[str, Any] = {
+    "task": "caption",
+    "instruction": "",
+    "hint_tags": [],
+    "max_new_tokens": 1024,
+    "do_sample": False,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": None,
+    "repetition_penalty": None,
+    "seed": -1,
+    "prompt_template_version": 1,
+}
+
 # ---------------------------------------------------------------------------
 # Generation (txt2img / img2img / inpaint)
 # ---------------------------------------------------------------------------

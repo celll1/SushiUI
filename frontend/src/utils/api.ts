@@ -2443,7 +2443,9 @@ export const generateImg2Txt = async (params: Img2TxtParams): Promise<Img2TxtRes
   formData.append("seed", String(params.seed));
   formData.append("prompt_template_version", String(params.prompt_template_version));
   formData.append("loras", JSON.stringify(params.loras || []));
-  return (await api.post("/generate/img2txt", formData)).data;
+  return (await postGenerationRequest("/generate/img2txt", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
 };
 
 export interface StudioRenderUpload {

@@ -35,6 +35,10 @@ def test_img2txt_request_freezes_file_model_and_template_version():
     assert 'modelIdentity: identity ? { type: identity.type, source: identity.source }' in panel
     assert 'params: Img2TxtParams;' in context
     assert 'formData.append("images", params.image' in api
+    sender = api[api.index("export const generateImg2Txt"):api.index(
+        "export interface StudioRenderUpload")]
+    assert 'postGenerationRequest("/generate/img2txt", formData' in sender
+    assert '"Content-Type": "multipart/form-data"' in sender
     assert 'formData.append("prompt_template_version"' in api
     assert 'formData.append("loras", JSON.stringify(params.loras || []))' in api
     assert '<LoRASelector' in panel
@@ -44,3 +48,12 @@ def test_img2txt_request_freezes_file_model_and_template_version():
         context.index("export interface TextGenerationResultSnapshot"):
         context.index("export type GenerationResultSnapshot")
     ]
+
+
+def test_img2txt_image_input_accepts_drag_and_drop():
+    panel = _source("frontend/src/components/generation/Img2TxtPanel.tsx")
+    assert "onDragOver={handleDragOver}" in panel
+    assert "onDragLeave={handleDragLeave}" in panel
+    assert "onDrop={handleDrop}" in panel
+    assert "selectImage(event.dataTransfer.files?.[0]);" in panel
+    assert 'file.type.startsWith("image/")' in panel

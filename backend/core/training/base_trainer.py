@@ -3209,7 +3209,7 @@ class BaseTrainer(ABC):
         from core.training.repa import (
             load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
             assert_repa_teacher_fixed_resolution, repa_sidecar_path,
-            resolve_align_depth,
+            resolve_align_depth, PROJECTOR_PARAM_DTYPE,
         )
 
         # Before the encoder is downloaded/read: an arch with no tap, and the two
@@ -3260,7 +3260,8 @@ class BaseTrainer(ABC):
         self.repa_weight = float(self.config.get("repa_weight", 0.5))
         self.repa_proj_lr_factor = float(self.config.get("repa_proj_lr_factor", 1.0))
 
-        self.repa_projector = RepaProjector(hidden, enc_dim).to(device=self.device, dtype=repa_dtype)
+        self.repa_projector = RepaProjector(hidden, enc_dim).to(
+            device=self.device, dtype=PROJECTOR_PARAM_DTYPE)
         self.repa_projector.train()
         tap.module._repa_tap_depth = align
         self._repa_tap_module = tap.module
@@ -3294,11 +3295,12 @@ class BaseTrainer(ABC):
         """Idempotently ensure the REPA encoder + projector live on the training device."""
         if getattr(self, "_repa_moved", False):
             return
-        repa_dtype = getattr(self, "training_dtype", None) or torch.bfloat16
+        from core.training.repa import PROJECTOR_PARAM_DTYPE
         if getattr(self, "repa_encoder", None) is not None:
             self.repa_encoder = self.repa_encoder.to(self.device)
         if getattr(self, "repa_projector", None) is not None:
-            self.repa_projector = self.repa_projector.to(device=self.device, dtype=repa_dtype)
+            self.repa_projector = self.repa_projector.to(
+                device=self.device, dtype=PROJECTOR_PARAM_DTYPE)
         self._repa_moved = True
 
     def _repa_source_size(self, item) -> Tuple[int, int]:

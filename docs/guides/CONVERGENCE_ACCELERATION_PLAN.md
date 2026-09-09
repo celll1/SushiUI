@@ -595,7 +595,7 @@ cd backend
   --width 1536 --height 1536 --bucket-strategy resize `
   --width-channels 256 --batch-size 4 --max-items 8192 --val-fraction 0.10 --steps 5532 `
   --validation-every 500 --validation-probe-items 64 `
-  --expected-online-steps 10000 --online-batch-size 4
+  --expected-online-steps 10000 --online-batch-size 4 --monitor-port 8765
 ```
 
 上の15 IDは登録上 3,798,965 枚である。ID単位の均等化や重み付けはせず、全行を一つの
@@ -617,6 +617,10 @@ validation loss/cosineを測り、全ログをartifactと同じbasenameの `.pro
 ```powershell
 Get-Content ..\models\repa_stems\sdxl_tagger.progress.jsonl -Wait
 ```
+
+頻度の低いCLI専用処理なのでWeb UI本体には配線しない。`--monitor-port 8765`を付けた実行中だけ
+`http://127.0.0.1:8765` に使い捨てのloss chartと最新値を公開し、CLI終了時にlocal serverも
+終了する。任意ファイルは公開せず、そのrunのprogress JSONLだけを返す。
 
 見るべき主値は `train_loss_mean_100` と `validation_loss` である。前者だけ低下して後者が横ばい・
 悪化するなら追加stepは行わない。最終artifactの同名 `.json` には全819検証画像でのcosineと

@@ -10154,7 +10154,7 @@ class BaseTrainer(ABC):
                 return
             with torch.no_grad():
                 sq = (pred.detach().float() - target.detach().float()) ** 2
-                self._last_loss_per_sample = sq.flatten(1).mean(1).cpu()
+                self._last_loss_per_sample = sq.flatten(1).mean(1)
         except Exception:
             self._last_loss_per_sample = None
 
@@ -10184,7 +10184,11 @@ class BaseTrainer(ABC):
             per_sample = getattr(self, "_last_loss_per_sample", None)
             self._last_loss_per_sample = None
             if per_sample is not None and per_sample.numel() == n:
-                mask = cfg_drop_mask.to(torch.bool)
+                # Backward and the shared loss scalar read have completed before
+                # this logging seam, so the monitoring vector can cross to CPU
+                # without stalling backward submission.
+                per_sample = per_sample.cpu()
+                mask = cfg_drop_mask.to(device="cpu", dtype=torch.bool)
                 if n_null:
                     self.log_extra_metric("loss_null", float(per_sample[mask].mean()))
                 if n_null < n:

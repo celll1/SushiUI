@@ -133,6 +133,15 @@ def test_the_stash_records_one_mse_per_item():
     assert torch.allclose(t._last_loss_per_sample, torch.tensor([0.0, 5.0]))
 
 
+def test_the_stash_defers_its_device_to_host_copy_until_logging():
+    import inspect
+
+    stash = inspect.getsource(BaseTrainer.stash_cfg_null_per_sample_loss)
+    emit = inspect.getsource(BaseTrainer._log_cfg_null_loss_split)
+    assert ".mean(1).cpu()" not in stash
+    assert "per_sample = per_sample.cpu()" in emit
+
+
 def test_the_stash_is_skipped_at_batch_one():
     """Nothing to split, and the extra elementwise pass is not free."""
     t = _StubTrainer()
@@ -228,5 +237,5 @@ def test_a_stale_stash_cannot_survive_into_the_next_batch():
     pins that the clear is what the loop does."""
     source = (BACKEND / "core" / "training"
               / "base_trainer.py").read_text(encoding="utf-8")
-    draw = source.index("cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))")
+    draw = source.index("else self.sample_cfg_drop_mask(len(batch))")
     assert "self._last_loss_per_sample = None" in source[draw:draw + 600]

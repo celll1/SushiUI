@@ -22,7 +22,7 @@ from core.training.image_preprocessing import flatten_to_rgb
 from core.training.repa import encode_repa_targets, load_repa_encoder
 from core.training.repa_latent_stem import (
     LatentRepaStem, economic_gate, encode_latent_targets, save_latent_stem,
-    tagger_teacher_identity, teacher_content_identity, vae_encoder_identity,
+    teacher_content_identity, vae_encoder_identity,
 )
 
 _EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -121,9 +121,10 @@ def run(args) -> dict:
     vae = _load_vae(args, vae_dtype).to(
         device=device, dtype=vae_dtype).eval().requires_grad_(False)
     vae_identity, vae_norm = vae_encoder_identity(vae)
-    _checkpoint_identity, teacher_checkpoint, teacher_repo = tagger_teacher_identity(args.tagger_dir)
+    from core.training.repa import _resolve_tagger_checkpoint
+    teacher_checkpoint, teacher_repo = _resolve_tagger_checkpoint(args.tagger_model)
     teacher, enc_dim, native_size = load_repa_encoder(
-        "tagger", tagger_model_dir=args.tagger_dir, dtype=dtype,
+        "tagger", tagger_model_dir=args.tagger_model, dtype=dtype,
         device=device, attn_implementation=args.attention)
     teacher_identity = teacher_content_identity(teacher)
     teacher_size = int(native_size or 384)
@@ -257,7 +258,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-dir", type=Path, action="append", required=True)
     parser.add_argument("--base-model", default="")
     parser.add_argument("--vae-source", default="")
-    parser.add_argument("--tagger-dir", required=True)
+    parser.add_argument(
+        "--tagger-model", "--tagger-dir", dest="tagger_model", required=True,
+        help="Exact .onnx/.safetensors file, or a legacy tagger model directory")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--width", type=int, default=1536)
     parser.add_argument("--height", type=int, default=1536)

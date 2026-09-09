@@ -23440,11 +23440,12 @@ components:
           type: 'string'
           default: ''
           description: |
-            Tagger model directory used when `repa_encoder_source` is `tagger`.
+            Exact `.onnx` or `.safetensors` tagger model path used when
+            `repa_encoder_source` is `tagger`. A legacy tagger directory is
+            also accepted and retains the best_f1/latest selection order.
             Empty auto-selects the newest usable directory under the repo's
-            `tagger_models/` (one holding `base_model_metadata.json` and at
-            least one `.safetensors`).
-          example: ''
+            `tagger_models/`.
+          example: 'D:\celll1\webui_cl\tagger_models\<uuid>\v2_01a\model.onnx'
         repa_siglip2_repo:
           type: 'string'
           default: 'google/siglip2-so400m-patch14-384'

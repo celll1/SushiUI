@@ -6717,7 +6717,7 @@ export interface TrainingRunCreateRequest {
   // REPA (Representation Alignment) — architectures advertising a REPA tap
   repa_enable?: boolean;
   repa_encoder_source?: string;        // "tagger" | "siglip2"
-  repa_tagger_model_dir?: string;      // tagger model dir (empty = auto-pick)
+  repa_tagger_model_dir?: string;      // exact ONNX/safetensors path, or legacy dir
   repa_siglip2_repo?: string;          // off-the-shelf SigLIP2 repo
   repa_align_depth?: number;           // -1 = auto (depth//3)
   repa_weight?: number;                // alignment loss weight (lambda)

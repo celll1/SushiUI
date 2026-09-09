@@ -2970,12 +2970,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </div>
                   {(params.repa_encoder_source || "tagger") === "tagger" ? (
                     <div>
-                      <label className="block text-xs text-gray-400 mb-1">Tagger model dir (empty = auto-pick newest)</label>
+                      <label className="block text-xs text-gray-400 mb-1">Tagger model path (empty = auto-pick)</label>
                       <input
                         type="text"
                         value={params.repa_tagger_model_dir || ""}
                         onChange={(e) => updateParam("repa_tagger_model_dir", e.target.value)}
-                        placeholder="tagger_models/<uuid>"
+                        placeholder="tagger_models/<uuid>/v2_01a/model.onnx"
                         className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs font-mono"
                       />
                     </div>

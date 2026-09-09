@@ -74,6 +74,77 @@ def _tagger_dir(tmp_path, name, base_repo, *, ckpt_repo=None):
     return str(d)
 
 
+def test_exact_safetensors_path_bypasses_directory_preference(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "base_model_metadata.json").write_text(
+        json.dumps({"vision_encoder_repo": "base/repo"}), encoding="utf-8")
+    (d / "best_f1.safetensors").write_bytes(b"best")
+    latest = d / "latest.safetensors"
+    latest.write_bytes(b"latest")
+
+    checkpoint, repo = repa_module._resolve_tagger_checkpoint(str(latest))
+
+    assert checkpoint == str(latest.resolve())
+    assert repo == "base/repo"
+
+
+def test_exact_onnx_path_uses_its_sidecar_repo(tmp_path):
+    d = tmp_path / "v2"
+    d.mkdir()
+    model = d / "model.onnx"
+    model.write_bytes(b"graph")
+    (d / "model_metadata.json").write_text(
+        json.dumps({"vision_encoder_repo": "export/repo"}), encoding="utf-8")
+
+    checkpoint, repo = repa_module._resolve_tagger_checkpoint(str(model))
+
+    assert checkpoint == str(model.resolve())
+    assert repo == "export/repo"
+
+
+def test_deployment_directory_falls_back_to_model_onnx(tmp_path):
+    d = tmp_path / "v2"
+    d.mkdir()
+    model = d / "model.onnx"
+    model.write_bytes(b"graph")
+
+    checkpoint, _repo = repa_module._resolve_tagger_checkpoint(str(d))
+
+    assert checkpoint == str(model)
+
+
+def test_onnx_repa_subgraphs_expose_pixels_and_embedding_inputs(tmp_path):
+    onnx = pytest.importorskip("onnx")
+    pixel_name = "pixel_values"
+    embed_name = repa_module._ONNX_EMBED_INPUT_SUFFIX
+    output_name = repa_module._ONNX_PATCH_OUTPUT_SUFFIX
+    pixel = onnx.helper.make_tensor_value_info(
+        pixel_name, onnx.TensorProto.FLOAT, ["batch", 3, 384, 384])
+    embed = onnx.helper.make_tensor_value_info(
+        embed_name, onnx.TensorProto.FLOAT, ["batch", 729, 1152])
+    output = onnx.helper.make_tensor_value_info(
+        output_name, onnx.TensorProto.FLOAT, ["batch", 729, 1152])
+    graph = onnx.helper.make_graph(
+        [
+            onnx.helper.make_node("Flatten", [pixel_name], [embed_name]),
+            onnx.helper.make_node("Identity", [embed_name], [output_name]),
+        ],
+        "repa-test", [pixel], [output], value_info=[embed])
+    source = tmp_path / "model.onnx"
+    onnx.save(onnx.helper.make_model(graph), source)
+
+    pixels = repa_module._write_onnx_subgraph(str(source), "pixels")
+    trunk = repa_module._write_onnx_subgraph(str(source), "trunk")
+
+    assert pixels[1:] == (pixel_name, output_name, 384, 1152)
+    assert trunk[1:] == (embed_name, output_name, 384, 1152)
+    pixel_model = onnx.load(pixels[0], load_external_data=False)
+    trunk_model = onnx.load(trunk[0], load_external_data=False)
+    assert [node.op_type for node in pixel_model.graph.node] == ["Flatten", "Identity"]
+    assert [node.op_type for node in trunk_model.graph.node] == ["Identity"]
+
+
 def _require_real(model_dir):
     if not os.path.isdir(model_dir):
         pytest.skip(f"{model_dir} is not present in this clone")

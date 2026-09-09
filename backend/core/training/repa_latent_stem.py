@@ -94,11 +94,19 @@ def tagger_teacher_identity(model_dir: str) -> Tuple[str, str, str]:
     """Return checkpoint-file identity, path and structural base repo."""
     from core.training.repa import _resolve_tagger_checkpoint
     checkpoint, repo = _resolve_tagger_checkpoint(model_dir)
-    return file_content_identity(checkpoint), checkpoint, repo
+    if checkpoint.lower().endswith(".onnx"):
+        from core.training.repa import onnx_content_identity
+        identity = onnx_content_identity(checkpoint)
+    else:
+        identity = file_content_identity(checkpoint)
+    return identity, checkpoint, repo
 
 
 def teacher_content_identity(encoder: nn.Module) -> str:
     """Identity of the materialized teacher, including a LoRA checkpoint's base."""
+    identity = getattr(encoder, "content_identity", None)
+    if callable(identity):
+        return identity()
     from core.models.common.vae_source import content_hash_for_state_dict
     return content_hash_for_state_dict(encoder.state_dict())
 
@@ -184,6 +192,22 @@ def load_latent_stem(path: str | os.PathLike[str], *, vae, teacher_identity: str
 def encode_latent_targets(encoder: nn.Module, stem: LatentRepaStem,
                           latents: torch.Tensor, gh: int, gw: int) -> torch.Tensor:
     """Run stem -> frozen SigLIP position embedding/trunk -> target token grid."""
+    encode_embeddings = getattr(encoder, "encode_embeddings", None)
+    add_position = getattr(encoder, "add_position_embedding", None)
+    if callable(encode_embeddings) and callable(add_position):
+        stem_dtype = next(stem.parameters()).dtype
+        hidden = stem(latents.to(dtype=stem_dtype))
+        feat = encode_embeddings(add_position(hidden))
+        batch, count, dim = feat.shape
+        grid = int(round(count ** 0.5))
+        if grid * grid != count:
+            raise RuntimeError(f"REPA latent teacher produced non-square token count {count}")
+        if (grid, grid) != (gh, gw):
+            feat = feat.reshape(batch, grid, grid, dim).permute(0, 3, 1, 2)
+            feat = F.interpolate(feat, size=(gh, gw), mode="bilinear", align_corners=False)
+            feat = feat.permute(0, 2, 3, 1).reshape(batch, gh * gw, dim)
+        return feat
+
     embeddings = getattr(encoder, "embeddings", None)
     trunk = getattr(encoder, "encoder", None)
     post = getattr(encoder, "post_layernorm", None)

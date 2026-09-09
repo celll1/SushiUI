@@ -568,7 +568,7 @@ JSONを標準出力へ出す（`--output` で保存可）。forward費用だけ�
 
 ```powershell
 ..\venv\Scripts\python.exe -m core.training.probes.repa_cost_gate `
-  --tagger-dir ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f `
+  --tagger-model ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f\v2_01a\model.onnx `
   --dtype bf16 --batch 4 --tap-hidden 1280 `
   --latent-channels 4 --latent-height 192 --latent-width 192 `
   --stem-width 128 256 --warmup 5 --iterations 30 `
@@ -590,7 +590,7 @@ cd backend
   --image-dir M:\dataset_working\endfield_character `
   --image-dir M:\dataset_working\copyright\kouyoku_senki_exs-tia `
   --base-model M:\model\sdxl\Illustrious-XL-v2.0.safetensors `
-  --tagger-dir ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f `
+  --tagger-model ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f\v2_01a\model.onnx `
   --output ..\models\repa_stems\sdxl_tagger.safetensors `
   --width 1536 --height 1536 --bucket-strategy resize `
   --width-channels 256 --steps 1000 --max-items 4096 `
@@ -602,6 +602,14 @@ cd backend
 `encoder.* + quant_conv.* + 正規化 config`、materialize 後の tagger 重み hash
 （LoRA checkpoint の base を含む）、出力幅、27×27格子の
 いずれかが run と違えば開始前に拒否する。decoder-only VAE 差分では無効化しない。
+`repa_tagger_model_dir`（互換名）はディレクトリに加え、`.onnx` / `.safetensors` の
+モデルファイルを直接受け付ける。ONNXでは内部の729×1152 post-layernorm特徴を公開する
+小さなsidecar graphを同じフォルダへ自動生成し、元の外部weightデータを複製せず共有する。
+蒸留CLIの新しい表示名は `--tagger-model` で、従来の `--tagger-dir` もaliasとして残す。
+現行のexport済みONNXはFP32なので、教師を本番REPAに残す構成ではbf16 safetensorsより
+VRAMを多く使い得る。ONNX指定の主目的はオフライン蒸留時の選択容易性である。
+artifact同一性は形式をまたいで同一視しないため、蒸留と本番runでは同じONNXまたは
+同じsafetensorsを指定する。
 
 これは画素 decode/resize を除く案であり、凍結教師 trunk は残る。したがって **教師本体の
 VRAM は減らず**、stem 分だけ僅かに増える。速度とゲート3を通過しても、採否はユーザーが行う

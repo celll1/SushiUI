@@ -30,7 +30,11 @@ import os
 import json
 import math
 import glob
+import copy
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -51,15 +55,43 @@ PROJECTOR_PARAM_DTYPE = torch.float32
 # Encoder loading
 # ------------------------------------------------------------------
 
-def _resolve_tagger_checkpoint(model_dir: str) -> Tuple[str, str]:
-    """Resolve a tagger model directory to (checkpoint_path, base_repo_id).
+def _checkpoint_metadata(checkpoint: str) -> Dict[str, Any]:
+    stem, _ext = os.path.splitext(checkpoint)
+    path = stem + "_metadata.json"
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
-    Prefers best_f1 / latest, else the newest top-level *.safetensors. The base
-    repo id (for module structure) is read from base_model_metadata.json.
+
+def _resolve_tagger_checkpoint(model_path: str) -> Tuple[str, str]:
+    """Resolve a tagger file or directory to (checkpoint_path, base_repo_id).
+
+    A direct ``.safetensors`` or ``.onnx`` path is exact. Directories retain the
+    legacy best_f1/latest safetensors preference, with ``model.onnx`` as a
+    deployment-directory fallback. The structural repo comes from the selected
+    file's sidecar first, then the parent run's base metadata.
     """
-    model_dir = (model_dir or "").strip().strip('"').strip("'")
-    if not model_dir or not os.path.isdir(model_dir):
-        raise FileNotFoundError(f"REPA tagger model dir not found: {model_dir!r}")
+    model_path = (model_path or "").strip().strip('"').strip("'")
+    if not model_path:
+        raise FileNotFoundError("REPA tagger model path is empty")
+
+    if os.path.isfile(model_path):
+        ext = os.path.splitext(model_path)[1].lower()
+        if ext not in {".safetensors", ".onnx"}:
+            raise ValueError(
+                f"REPA tagger model must be a .safetensors or .onnx file: {model_path}")
+        checkpoint = os.path.abspath(model_path)
+        model_dir = os.path.dirname(checkpoint)
+    elif os.path.isdir(model_path):
+        model_dir = os.path.abspath(model_path)
+        checkpoint = ""
+    else:
+        raise FileNotFoundError(f"REPA tagger model path not found: {model_path!r}")
 
     repo = _DEFAULT_SIGLIP2_REPO
     base_meta = os.path.join(model_dir, "base_model_metadata.json")
@@ -69,6 +101,10 @@ def _resolve_tagger_checkpoint(model_dir: str) -> Tuple[str, str]:
                 repo = json.load(f).get("vision_encoder_repo", repo) or repo
         except Exception:
             pass
+
+    if checkpoint:
+        repo = _checkpoint_metadata(checkpoint).get("vision_encoder_repo", repo) or repo
+        return checkpoint, repo
 
     # Preferred named checkpoints (top-level only).
     for name in ("best_f1.safetensors", "latest.safetensors"):
@@ -90,7 +126,17 @@ def _resolve_tagger_checkpoint(model_dir: str) -> Tuple[str, str]:
         return max(step_cands, key=_step_num), repo
     if cands:
         return cands[0], repo
-    raise FileNotFoundError(f"No .safetensors checkpoint found in REPA tagger dir: {model_dir}")
+    exported = os.path.join(model_dir, "model.onnx")
+    if os.path.isfile(exported):
+        repo = _checkpoint_metadata(exported).get("vision_encoder_repo", repo) or repo
+        return exported, repo
+    onnx = glob.glob(os.path.join(model_dir, "*.onnx"))
+    if len(onnx) == 1:
+        checkpoint = onnx[0]
+        repo = _checkpoint_metadata(checkpoint).get("vision_encoder_repo", repo) or repo
+        return checkpoint, repo
+    raise FileNotFoundError(
+        f"No .safetensors or unambiguous .onnx checkpoint found in REPA tagger path: {model_dir}")
 
 
 def _read_teacher_config(repo: str, filename: str) -> Optional[dict]:
@@ -224,6 +270,272 @@ def assert_repa_teacher_fixed_resolution(
     return declared
 
 
+_ONNX_PATCH_OUTPUT_SUFFIX = "/vision_encoder/post_layernorm/LayerNormalization_output_0"
+_ONNX_EMBED_INPUT_SUFFIX = "/vision_encoder/embeddings/Add_output_0"
+
+
+def _onnx_value(model, suffix: str):
+    values = list(model.graph.value_info) + list(model.graph.input) + list(model.graph.output)
+    matches = [value for value in values if value.name.endswith(suffix)]
+    if len(matches) != 1:
+        raise ValueError(
+            f"REPA ONNX expected one tensor ending in {suffix!r}, found {len(matches)}")
+    return matches[0]
+
+
+def _onnx_dims(value) -> List[int | str | None]:
+    result: List[int | str | None] = []
+    for dim in value.type.tensor_type.shape.dim:
+        result.append(dim.dim_value or dim.dim_param or None)
+    return result
+
+
+def _write_onnx_subgraph(source: str, kind: str) -> Tuple[str, str, str, int, int]:
+    """Write a small graph file beside an external-data ONNX, sharing its weights."""
+    import onnx
+
+    with open(source, "rb") as handle:
+        graph_id = hashlib.sha256(handle.read()).hexdigest()[:12]
+    target = str(Path(source).with_name(f".{Path(source).stem}.repa-{kind}-{graph_id}.onnx"))
+    model = onnx.load(source, load_external_data=False)
+    output_info = _onnx_value(model, _ONNX_PATCH_OUTPUT_SUFFIX)
+    output_dims = _onnx_dims(output_info)
+    if len(output_dims) != 3 or output_dims[-2:] != [729, 1152]:
+        raise ValueError(
+            f"REPA ONNX patch output must be [batch, 729, 1152], got {output_dims}")
+
+    if kind == "pixels":
+        if len(model.graph.input) != 1:
+            raise ValueError(f"REPA ONNX expected one image input, found {len(model.graph.input)}")
+        input_info = model.graph.input[0]
+    elif kind == "trunk":
+        input_info = _onnx_value(model, _ONNX_EMBED_INPUT_SUFFIX)
+    else:
+        raise ValueError(f"Unknown REPA ONNX subgraph kind: {kind}")
+
+    if not os.path.isfile(target):
+        producer = {
+            output: index
+            for index, node in enumerate(model.graph.node)
+            for output in node.output
+        }
+        initializer_names = {item.name for item in model.graph.initializer}
+        needed_nodes: set[int] = set()
+        pending = [output_info.name]
+        seen = set()
+        while pending:
+            tensor = pending.pop()
+            if tensor == input_info.name or tensor in seen or tensor in initializer_names:
+                continue
+            seen.add(tensor)
+            index = producer.get(tensor)
+            if index is None:
+                raise ValueError(f"REPA ONNX cannot trace tensor {tensor!r} to its input")
+            if index in needed_nodes:
+                continue
+            needed_nodes.add(index)
+            pending.extend(model.graph.node[index].input)
+
+        nodes = [node for index, node in enumerate(model.graph.node) if index in needed_nodes]
+        used = {name for node in nodes for name in node.input}
+        initializers = [item for item in model.graph.initializer if item.name in used]
+        value_names = {name for node in nodes for name in (*node.input, *node.output)}
+        value_info = [
+            value for value in model.graph.value_info
+            if value.name in value_names and value.name not in {input_info.name, output_info.name}
+        ]
+
+        reduced = copy.deepcopy(model)
+        del reduced.graph.node[:]
+        del reduced.graph.input[:]
+        del reduced.graph.output[:]
+        del reduced.graph.initializer[:]
+        del reduced.graph.value_info[:]
+        reduced.graph.node.extend(nodes)
+        reduced.graph.input.extend([copy.deepcopy(input_info)])
+        reduced.graph.output.extend([copy.deepcopy(output_info)])
+        reduced.graph.initializer.extend(initializers)
+        reduced.graph.value_info.extend(value_info)
+        temporary = target + f".{os.getpid()}.tmp"
+        try:
+            onnx.save_model(reduced, temporary)
+            os.replace(temporary, target)
+        finally:
+            if os.path.isfile(temporary):
+                os.remove(temporary)
+
+    input_dims = _onnx_dims(input_info)
+    if kind == "pixels":
+        if len(input_dims) != 4 or input_dims[1] != 3 or input_dims[-1] != input_dims[-2]:
+            raise ValueError(f"REPA ONNX image input must be [batch, 3, S, S], got {input_dims}")
+        native_size = int(input_dims[-1])
+    else:
+        if len(input_dims) != 3 or input_dims[-2:] != [729, 1152]:
+            raise ValueError(
+                f"REPA ONNX trunk input must be [batch, 729, 1152], got {input_dims}")
+        native_size = 384
+    return target, input_info.name, output_info.name, native_size, 1152
+
+
+class OnnxRepaEncoder(nn.Module):
+    """ONNX Runtime adapter exposing tagger patch features without CPU copies."""
+
+    input_dtype = torch.float32
+
+    def __init__(self, checkpoint: str, device: torch.device | str) -> None:
+        super().__init__()
+        self.checkpoint = os.path.abspath(checkpoint)
+        self.device = torch.device(device)
+        self._sessions: Dict[str, Any] = {}
+        pixel_graph = _write_onnx_subgraph(self.checkpoint, "pixels")
+        self._graphs = {"pixels": pixel_graph}
+        self.config = SimpleNamespace(hidden_size=pixel_graph[4], image_size=pixel_graph[3])
+        self._content_identity: Optional[str] = None
+        self._position_embedding: Optional[torch.Tensor] = None
+
+    def to(self, *args, **kwargs):
+        requested = kwargs.get("device")
+        if requested is None and args and isinstance(args[0], (str, int, torch.device)):
+            requested = args[0]
+        if requested is not None and torch.device(requested) != self.device:
+            self.device = torch.device(requested)
+            self._sessions.clear()
+            self._position_embedding = None
+        return self
+
+    def _session(self, kind: str):
+        if kind in self._sessions:
+            return self._sessions[kind]
+        import onnxruntime as ort
+
+        if kind not in self._graphs:
+            self._graphs[kind] = _write_onnx_subgraph(self.checkpoint, kind)
+        graph_path = self._graphs[kind][0]
+        options = ort.SessionOptions()
+        options.log_severity_level = 2
+        if self.device.type == "cuda":
+            if "CUDAExecutionProvider" not in ort.get_available_providers():
+                raise RuntimeError("REPA ONNX requested CUDA but ONNX Runtime has no CUDA provider")
+            index = self.device.index if self.device.index is not None else torch.cuda.current_device()
+            stream = torch.cuda.current_stream(index).cuda_stream
+            providers = [
+                ("CUDAExecutionProvider", {
+                    "device_id": str(index), "user_compute_stream": str(stream),
+                }),
+                "CPUExecutionProvider",
+            ]
+        else:
+            providers = ["CPUExecutionProvider"]
+        session = ort.InferenceSession(graph_path, sess_options=options, providers=providers)
+        if self.device.type == "cuda" and session.get_providers()[0] != "CUDAExecutionProvider":
+            raise RuntimeError(
+                f"REPA ONNX CUDA provider initialization failed: {session.get_providers()}")
+        self._sessions[kind] = session
+        return session
+
+    def _run(self, kind: str, value: torch.Tensor) -> torch.Tensor:
+        import numpy as np
+
+        session = self._session(kind)
+        _path, input_name, output_name, _size, dim = self._graphs[kind]
+        value = value.to(device=self.device, dtype=torch.float32).contiguous()
+        if self.device.type == "cuda":
+            output = torch.empty(
+                (value.shape[0], 729, dim), device=self.device, dtype=torch.float32)
+            binding = session.io_binding()
+            index = self.device.index if self.device.index is not None else torch.cuda.current_device()
+            binding.bind_input(
+                input_name, "cuda", index, np.float32, tuple(value.shape), value.data_ptr())
+            binding.bind_output(
+                output_name, "cuda", index, np.float32, tuple(output.shape), output.data_ptr())
+            session.run_with_iobinding(binding)
+            return output
+        array = session.run([output_name], {input_name: value.numpy()})[0]
+        return torch.from_numpy(array)
+
+    def forward(self, *, pixel_values: torch.Tensor):
+        return SimpleNamespace(last_hidden_state=self._run("pixels", pixel_values))
+
+    def encode_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
+        return self._run("trunk", embeddings)
+
+    def add_position_embedding(self, embeddings: torch.Tensor) -> torch.Tensor:
+        if self._position_embedding is None:
+            import numpy as np
+            import onnx
+
+            model = onnx.load(self.checkpoint, load_external_data=False)
+            matches = [
+                tensor for tensor in model.graph.initializer
+                if tensor.name.endswith("vision_encoder.embeddings.position_embedding.weight")
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"REPA ONNX expected one position embedding, found {len(matches)}")
+            tensor = matches[0]
+            external = {entry.key: entry.value for entry in tensor.external_data}
+            if "location" in external:
+                path = os.path.join(os.path.dirname(self.checkpoint), external["location"])
+                offset = int(external.get("offset", 0))
+                count = math.prod(tensor.dims)
+                dtype = onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)
+                with open(path, "rb") as handle:
+                    handle.seek(offset)
+                    array = np.frombuffer(handle.read(count * np.dtype(dtype).itemsize), dtype=dtype)
+                array = array.copy().reshape(tuple(tensor.dims))
+            else:
+                array = onnx.numpy_helper.to_array(tensor).copy()
+            self._position_embedding = torch.from_numpy(array).to(
+                device=self.device, dtype=torch.float32).unsqueeze(0)
+        return embeddings.to(dtype=torch.float32) + self._position_embedding
+
+    def content_identity(self) -> str:
+        if self._content_identity is not None:
+            return self._content_identity
+        self._content_identity = onnx_content_identity(self.checkpoint)
+        return self._content_identity
+
+
+def onnx_content_identity(checkpoint: str) -> str:
+    """Hash the ONNX vision path and only the external weight ranges it uses."""
+    import onnx
+    from onnx.external_data_helper import uses_external_data
+
+    checkpoint = os.path.abspath(checkpoint)
+    graph_path = _write_onnx_subgraph(checkpoint, "pixels")[0]
+    model = onnx.load(graph_path, load_external_data=False)
+    digest = hashlib.sha256()
+    for node in model.graph.node:
+        digest.update(node.SerializeToString())
+    digest.update(model.graph.input[0].type.SerializeToString())
+    digest.update(model.graph.output[0].type.SerializeToString())
+    for tensor in sorted(model.graph.initializer, key=lambda item: item.name):
+        digest.update(tensor.name.encode("utf-8"))
+        digest.update(str(tuple(tensor.dims)).encode("ascii"))
+        digest.update(str(tensor.data_type).encode("ascii"))
+        if not uses_external_data(tensor):
+            digest.update(tensor.raw_data)
+            continue
+        external = {entry.key: entry.value for entry in tensor.external_data}
+        path = os.path.join(os.path.dirname(graph_path), external["location"])
+        offset = int(external.get("offset", 0))
+        length = int(external.get("length", 0))
+        if length <= 0:
+            import numpy as np
+            dtype = onnx.helper.tensor_dtype_to_np_dtype(tensor.data_type)
+            length = math.prod(tensor.dims) * np.dtype(dtype).itemsize
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            remaining = length
+            while remaining:
+                chunk = handle.read(min(8 * 1024 * 1024, remaining))
+                if not chunk:
+                    raise EOFError(f"REPA ONNX external tensor {tensor.name!r} is truncated")
+                digest.update(chunk)
+                remaining -= len(chunk)
+    return digest.hexdigest()[:16]
+
+
 def load_repa_encoder(
     source: str,
     *,
@@ -243,10 +555,16 @@ def load_repa_encoder(
 
     if source == "tagger":
         ckpt, repo = _resolve_tagger_checkpoint(tagger_model_dir)
-        # Reuse the tagger's encoder loader (handles merged + LoRA checkpoints).
-        from core.tagger.siglip2_tagger_model import _load_vision_encoder
-        encoder = _load_vision_encoder(ckpt, repo_id=repo, attn_implementation=attn_implementation)
-        print(f"[REPA] Loaded tagger vision encoder: {os.path.basename(ckpt)} (base={repo})")
+        if ckpt.lower().endswith(".onnx"):
+            encoder = OnnxRepaEncoder(ckpt, device)
+            print(f"[REPA] Loaded ONNX tagger vision encoder in FP32: {ckpt} "
+                  f"(base={repo}; convenient, but typically more VRAM than bf16 safetensors)")
+        else:
+            # Reuse the tagger's encoder loader (handles merged + LoRA checkpoints).
+            from core.tagger.siglip2_tagger_model import _load_vision_encoder
+            encoder = _load_vision_encoder(
+                ckpt, repo_id=repo, attn_implementation=attn_implementation)
+            print(f"[REPA] Loaded tagger vision encoder: {ckpt} (base={repo})")
     elif source == "siglip2":
         repo = (siglip2_repo or _DEFAULT_SIGLIP2_REPO).strip().strip('"').strip("'")
         from transformers import AutoModel
@@ -306,7 +624,9 @@ def encode_repa_targets(
     Returns [B, gh*gw, enc_dim] in row-major (h*gw + w) order, matching the DiT
     image-token ordering.
     """
-    enc_dtype = next(encoder.parameters()).dtype
+    enc_dtype = getattr(encoder, "input_dtype", None)
+    if enc_dtype is None:
+        enc_dtype = next(encoder.parameters()).dtype
     x = preprocess_for_repa(images_m1p1, size).to(dtype=enc_dtype)
     feat = encoder(pixel_values=x).last_hidden_state  # [B, N, D]
     B, N, D = feat.shape

@@ -1426,6 +1426,58 @@ def refuse_grad_scaler_under_fused_path(trainer, optimizer_type: str, mode: str)
     )
 
 
+def refuse_half_trainable_params_under_grad_scaler(trainer, param_groups) -> None:
+    """GradScaler needs FP32 master parameters, whichever module supplies them.
+
+    Measured on the installed torch (2.10.0+cu130, sm_89), first optimizer step:
+    an FP16 gradient makes ``unscale_()`` raise "Attempting to unscale FP16
+    gradients", a BF16 one raises
+    "_amp_foreach_non_finite_check_and_unscale_cuda not implemented for
+    'BFloat16'". So this is not a numerics preference -- a half trainable
+    parameter under an enabled scaler cannot complete step 1.
+
+    Checked over the ASSEMBLED param groups rather than per module because the
+    hole keeps reopening somewhere new: the FP16 full-FT refusal in __init__ is
+    gated on ``is_full_finetune``, which the REPA projector (fixed in 6d9c0895)
+    and ControlNet (created at ``unet.dtype``) both walk past.
+    """
+    if not getattr(trainer, "use_grad_scaler", False):
+        return
+    offenders: Dict[str, Dict[torch.dtype, int]] = {}
+    for index, group in enumerate(param_groups or []):
+        for param in group.get("params", []):
+            if not getattr(param, "requires_grad", False):
+                continue
+            if param.dtype in (torch.float16, torch.bfloat16):
+                label = group.get("name") or group.get("component") or f"group {index}"
+                counts = offenders.setdefault(label, {})
+                counts[param.dtype] = counts.get(param.dtype, 0) + 1
+    if not offenders:
+        return
+    detail = "; ".join(
+        f"{label} ("
+        + ", ".join(f"{str(dt).replace('torch.', '')}: {n} tensors"
+                    for dt, n in sorted(counts.items(), key=lambda kv: str(kv[0])))
+        + ")"
+        for label, counts in sorted(offenders.items())
+    )
+    raise ValueError(
+        f"FP16 mixed precision (training_dtype=fp16, mixed_precision=True) is "
+        f"unsupported with half-precision trainable parameters. torch's "
+        f"GradScaler requires FP32 master parameters: at the first optimizer "
+        f"step unscale_() raises 'Attempting to unscale FP16 gradients' on an "
+        f"FP16 gradient, and "
+        f"'\"_amp_foreach_non_finite_check_and_unscale_cuda\" not implemented "
+        f"for BFloat16' on a BF16 one. "
+        f"Half-precision optimizer group(s): {detail}. "
+        f"Options: (1) set training_dtype=bf16, which needs no gradient scaling "
+        f"and is the default, (2) set mixed_precision=false, (3) give those "
+        f"parameters an FP32 dtype at construction: LoRA/ReLoRA adapter groups "
+        f"follow lora_dtype, a ControlNet is created at the U-Net's dtype and so "
+        f"follows weight_dtype."
+    )
+
+
 def fused_backward_active(trainer) -> bool:
     """True when the per-parameter hooks, not optimizer.step(), apply the updates."""
     return bool(getattr(trainer, "use_fused_backward", False)) or \
@@ -2735,12 +2787,12 @@ class BaseTrainer(ABC):
         # torch's GradScaler.unscale_() requires FP32 master parameters: when the
         # trainable params are themselves FP16 it raises
         # "Attempting to unscale FP16 gradients" at the first optimizer step.
-        # For LoRA/ReLoRA/ControlNet the trainable adapter params are lora_dtype
-        # (FP32 by default) while the FP16 base stays frozen, so unscale_() only
-        # ever touches FP32 grads and is safe. Full-parameter FT trains the base
-        # weights directly, so FP16 weight_dtype + FP16 mixed precision is broken.
-        # Fail loudly at setup (before any GPU work) with an actionable remedy
-        # rather than silently changing numerics.
+        # Full-parameter FT trains the base weights directly, so FP16
+        # weight_dtype + FP16 mixed precision is broken. Refused here, before any
+        # GPU work, rather than at step 1. Every OTHER trainable module is caught
+        # by refuse_half_trainable_params_under_grad_scaler at setup_optimizer:
+        # LoRA adapters follow lora_dtype (FP32 by default, but selectable), and
+        # a ControlNet is created at the U-Net's dtype.
         from core.training.ops.training_method import is_full_finetune
         if (
             is_full_finetune(self)
@@ -7323,6 +7375,10 @@ class BaseTrainer(ABC):
                 # Set requires_grad on VE model
                 for p in ve_params:
                     p.requires_grad_(True)
+
+        # After every group is assembled, before the optimizer owns them: a half
+        # trainable parameter cannot survive GradScaler's first unscale_().
+        refuse_half_trainable_params_under_grad_scaler(self, param_groups)
 
         # D17, before the optimizer exists: the depth split IS the group
         # structure the optimizer is built from, and the resume writes the

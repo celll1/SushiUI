@@ -241,6 +241,16 @@ class _FakeTrainer:
     _calculate_grad_norms = BaseTrainer._calculate_grad_norms
 
 
+class _CountingLayers(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.items_calls = 0
+
+    def items(self):
+        self.items_calls += 1
+        return super().items()
+
+
 def test_grad_norms_follow_the_registered_components():
     adapter = SD15LoRAAdapter(SimpleNamespace(), 2, 4)
     layers = {}
@@ -286,3 +296,18 @@ def test_unregistered_layers_land_in_the_unet_bucket_with_a_warning(capsys):
     out = capsys.readouterr().out
     assert "without a registered component" in out
     assert "mystery.module.path" in out
+
+
+def test_parameter_census_is_cached_but_live_grad_filter_is_not(capsys):
+    adapter = SD15LoRAAdapter(SimpleNamespace(), 2, 4)
+    layer = _lora_layer(1.0)
+    layers = _CountingLayers()
+    adapter.register_lora_layer(layers, "dit", layer, LORA_COMPONENT_UNET)
+    trainer = _FakeTrainer(layers, adapter)
+
+    first = trainer._calculate_grad_norms()[0]
+    layer.lora_up.weight.grad = None
+    second = trainer._calculate_grad_norms()[0]
+
+    assert layers.items_calls == 1
+    assert second < first

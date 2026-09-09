@@ -318,6 +318,20 @@ def train_step(
     v_pred = out[:, max_text:].float()
     loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
 
+    # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
+    # convention the UI documents. Mixes the conditional diffusion loss only;
+    # the uncond branch below carries its own weight. Computed only when on --
+    # this arch never reported the value, so weight 0 pays nothing.
+    recon_loss_value = 0.0
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    if recon_weight > 0:
+        # v = x0 - noise => x0 = x_sigma + sigma*v (Ideogram4ArchHandler.velocity_sign).
+        # Grad-carrying on purpose: under no_grad it would only shift the log.
+        pred_x0 = noisy.float() + sigma_v.float() * v_pred
+        recon_loss = torch.nn.functional.mse_loss(pred_x0, latents.float(), reduction="mean")
+        recon_loss_value = recon_loss.item()
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
+
     # Optional auxiliary unconditional branch (image-only, zeroed text).
     if getattr(trainer, "ideogram4_train_uncond", False) and getattr(trainer, "transformer_uncond", None) is not None:
         uncond = trainer.transformer_uncond
@@ -419,4 +433,4 @@ def train_step(
 
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target, pos_z, llm_features
-    return loss, pred_loss_value, 0.0
+    return loss, pred_loss_value, recon_loss_value

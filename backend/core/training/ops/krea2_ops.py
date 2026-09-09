@@ -291,6 +291,19 @@ def train_step(
     v_pred = out.float()
     loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
 
+    # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
+    # convention the UI documents. Computed only when on -- this arch never
+    # reported the value, so weight 0 pays nothing.
+    recon_loss_value = 0.0
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    if recon_weight > 0:
+        # v = noise - x0 => x0 = x_t - sigma*v (Krea2ArchHandler.velocity_sign).
+        # Grad-carrying on purpose: under no_grad it would only shift the log.
+        pred_x0 = noisy.float() - sigma_v.float() * v_pred
+        recon_loss = torch.nn.functional.mse_loss(pred_x0, latents.float(), reduction="mean")
+        recon_loss_value = recon_loss.item()
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
+
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
         from core.models.krea2.krea2_pipeline_ops import unpack_latents
@@ -356,7 +369,7 @@ def train_step(
 
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target
-    return loss, pred_loss_value, 0.0
+    return loss, pred_loss_value, recon_loss_value
 
 
 # ============================================================

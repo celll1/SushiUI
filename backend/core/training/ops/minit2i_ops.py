@@ -361,13 +361,23 @@ def train_step(
     trainer.stash_cfg_null_per_sample_loss(v_pred, target)
 
     pred_loss_value = loss.item()
-    # Reconstruction loss (monitoring only, no gradients): unweighted MSE of the
-    # predicted clean image (x0) vs the target image. This is a cleaner quality
-    # signal than the (1-t)-reweighted velocity objective used for backward.
-    with torch.no_grad():
-        recon_loss_value = torch.nn.functional.mse_loss(
+    # Unweighted MSE of the predicted clean image (x0) vs the target image: a
+    # cleaner quality signal than the (1-t)-reweighted velocity objective.
+    # Monitoring-only until reconstruction_loss_weight turns it into the second
+    # half of the objective, mixed (1-w)/w as the UI documents.
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    if recon_weight > 0:
+        # Grad-carrying on purpose: under no_grad it would only shift the log.
+        recon_loss = torch.nn.functional.mse_loss(
             x0_pred.float(), images.float(), reduction="mean"
-        ).item()
+        )
+        recon_loss_value = recon_loss.item()
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
+    else:
+        with torch.no_grad():
+            recon_loss_value = torch.nn.functional.mse_loss(
+                x0_pred.float(), images.float(), reduction="mean"
+            ).item()
 
     # REPA (representation alignment): align the DiT image hidden state captured
     # at the tap depth with frozen clean-image patch features, via the trainable

@@ -336,18 +336,181 @@ G-B の仮説「正方形 squash が教師特徴を劣化させる」は、教�
    違いは NaFlex のような入力契約の違いとは別種であり、揃えると測定された利得のないまま
    既存 REPA ランの数値が動くため。意図的な相違である旨は resize 箇所に記録済み。
 
-### 5-2. latent stem 蒸留（着手条件は下記に変更。G-B 不合格により当初の前提は失効）
+### 5-2. latent stem 蒸留（設計・測定を記録。実装は未着手。G-B 不合格により当初の前提は失効）
 
-- `(latent, 対応画像)` から pixel tagger の patch 特徴を蒸留
-- **latent セルと DiT トークンの対応を明示的に定義する**（1 対 1 を仮定しない）。
-  patch size / packing / 圧縮率 / crop・flip の対応を設計に書く
-- 凍結 trunk のどの層に stem を接続するか、位置埋め込みとグリッドの扱いを決める
-- **根拠はコスト削減のみ**（G-B 不合格により品質側の動機は消えた。5-1 の判定結果を参照）。
-  「歪んだ教師をそのまま蒸留しても前処理問題は解決しない」という当初の前提は、
-  固定解像度系の教師については前処理問題が存在しないため適用されない
-- **ゲート G-A**: 保留 patch cosine（目安 ≥0.9）**に加えて**、
-  固定予算・複数 seed の学習 A/B で生成品質・収束・時間・VRAM を比較。
-  特徴類似度だけで品質維持を保証しない
+`(latent, 対応画像)` から pixel tagger の patch 特徴を蒸留する stem を置き、教師の
+`embeddings` を差し替える案。**根拠はコスト削減のみ**（G-B 不合格により品質側の動機は消えた。
+5-1 の判定結果を参照）。「歪んだ教師をそのまま蒸留しても前処理問題は解決しない」という
+当初の前提は、固定解像度系の教師については前処理問題が存在しないため適用されない。
+
+以下はすべて実測・実計算・実ファイル確認による（日付 2026-09-09）。
+
+#### 5-2-a. より単純な支配案の排除（先に評価する）
+
+**教師特徴をディスクにキャッシュする案**は 5-2 を機能面で支配する: I/O とデコードに加えて
+**教師 trunk の forward も消え**、蒸留誤差ゼロ、VAE 非依存、ゲート G-A 不要。差はディスク容量のみ。
+
+| 項目 | 値 | 出所 |
+|---|---:|---|
+| 1 件あたり（`last_hidden_state` bf16） | 729 × 1152 × 2 B = 1,679,616 B = **1.602 MiB** | 教師 config（下表） |
+| `datasets.db` 全 `dataset_items` | 3,871,085 件 → **5.91 TiB** | `select count(*) from dataset_items` |
+| 1M サンプル分 | **1.53 TiB** | 同上 |
+| 空き容量 | D: 1.07 / M: 0.24 / C: 0.59 = 計 **1.90 TiB** | `shutil.disk_usage`（2026-09-09 時点） |
+
+**全体では 3 倍以上足りず、1M 分でも単一ドライブに収まらない。** よって支配案は成立せず、
+**5-2 固有の価値は「ディスク使用量がデータセット規模に比例しない」の 1 点**に確定する。
+
+#### 5-2-b. 賞金の上限（教師 forward は消えない）
+
+教師 `google/siglip2-so400m-patch14-384` の `model.safetensors` ヘッダから実計数した
+vision 側パラメータ数（`vision_model.*`、bias・LayerNorm を含む）:
+
+| 部位 | パラメータ数 | trunk 比 |
+|---|---:|---:|
+| `embeddings`（patch conv + 学習済み位置埋め込み） | 1,518,336 | 0.369% |
+| `encoder.layers.*`（27 層 trunk） | 411,466,608 | — |
+| `post_layernorm` | 2,304 | — |
+| `head`（attention pooling） | 15,238,352 | — |
+
+stem が置き換えるのは `embeddings` だけなので、**教師 forward の 99.6% 以上が残る。**
+5-2 が削減できるのはディスク I/O とデコードのみ。
+（トークン数 729 = `(384 // 14)² = 27²`、幅 1152 = `hidden_size`。config から確認。）
+
+#### 5-2-c. 教師画素経路の実測
+
+条件: 実データセット画像、M: (NVMe SSD)、CPU のみ、S = 384、`Image.BICUBIC`、
+`flatten_to_rgb` は `core/training/image_preprocessing.py` のもの。
+
+| 段階 | WARM 平均 (n=400) | 占有率 |
+|---|---:|---:|
+| `Image.open`（ヘッダ） | 0.30 ms | 0.7% |
+| decode (`load`) | 28.43 ms | 62.5% |
+| `flatten_to_rgb` | 1.76 ms | 3.9% |
+| `resize(384, BICUBIC)` | 13.47 ms | 29.6% |
+| その他 | 1.48 ms | 3.3% |
+| 合計 | **45.46 ms** | |
+
+形式比で再重み付けした値: **COLD 53.41 ± 2.28 ms / WARM 44.66 ± 2.23 ms**（±1 SE）。
+cold ペナルティ 8.78 ms はほぼ全て初回 `open`（+7.00 ms）。
+
+独立再測定（n=120、同じ M: の実画像、無作為 seed 0、うち 30 件のみ事前ウォーム）:
+合計 47.39 ms（decode 26.45 / resize 12.71 / `open` 4.94 / `flatten_to_rgb` 3.30）。
+decode と resize が支配的である点は一致する。`open` が上表より大きいのは 120 件中 90 件が
+初回アクセスだったためで、上表の WARM 列とは条件が異なる。
+
+データセットの形式構成（先頭 200,000 件）: `.webp` 51.5% / `.jpg` 37.1% / `.png` 10.9% /
+`.jpeg` 0.5%。格納ドライブは M: と E: が大半。
+
+1 step (`batch_size` = 4) 換算: WARM 44.66 × 4 = **178.6 ms**、COLD 53.41 × 4 = **213.6 ms**。
+
+#### 5-2-d. 教師画素 LRU のヒット率は構造的にゼロ
+
+- 予算は 1 GiB（`_REPA_PIXEL_CACHE_BYTES`）。エントリは `384×384×3×4 B = 1.688 MiB` なので
+  **606 エントリ**
+- 再利用距離はエポック長。逐次経路の `random.shuffle` は `base_trainer.py:15546`（priority 有）
+  および `:15558`（priority 無）、bucket 経路は `bucketing.py::shuffle_buckets` /
+  `build_batch_indices`。**各アイテムは 1 エポックに 1 回**（`num_repeats` に相当するキーは
+  backend のどこからも読まれていない）
+- 例外は priority training のみ: `priority_batches * multiplier` は同じバッチ列を連続して
+  繰り返すため、priority 集合のアイテムだけは短い再利用距離を持つ
+- **606 を超えるデータセットではヒットが起こり得ない。** 該当しないのは 28 データセット中
+  3 件・計 409 件（全 3,871,085 件の 0.011%）
+- `fae3a13d` で「最初の退避後 2,048 lookup で 10% 未満なら run 中は捨てる」判定が入った
+  （`_REPA_PIXEL_CACHE_PROBE_LOOKUPS` / `_REPA_PIXEL_CACHE_MIN_HIT_RATE`）
+
+#### 5-2-e. 使い回しによる回収（`c6292216`）
+
+`onthefly_gpu` では `encode_image` 用にデコード済みの PIL 画像がスコープ内にあるのに、REPA が
+同じファイルを開き直していた。デコード済みを渡す形に変更し、**32.71 ms → 12.45 ms
+（20.3 ms / 61.9% 削減、n=90、長辺中央値 1540）**。`batch_size` = 4 で 81.2 ms/step。
+
+したがって `onthefly_gpu` における 5-2 の残る取り分は **約 97 ms/step**
+（178.6 − 81.2。ただし 2 つの数値は別サンプルの測定であり、削減量がそのまま転移する仮定を含む）。
+そこから stem の forward コストが引かれる。`pre_encoded_cache` / `swap_onthefly` はこの経路で
+デコードしないので使い回しが効かず、213.6 ms/step が残る。
+
+#### 5-2-f. ステップ時間比と、その重大な留保
+
+出所は `training.db` の `training_metrics`。**行ごとのタイムスタンプはバッチフラッシュ時刻で、
+隣接行の差分は無意味**（中央値 0.000 s）。したがって「gap ≤ 600 s の連続区間で、区間長 500 step 以上」
+のものだけを取り、区間ごとに平均した。サンプル生成・チェックポイント保存を含むので
+**純ステップ時間の上限**である。
+
+| run | 構成 | 区間ごとの s/step | 最長区間 |
+|---|---|---|---:|
+| 127 | SenseNova full FT, bs=4, `cache_latents_to_disk: false` | 5.207（区間 1 本のみ ≥500 step） | 9,243 step |
+| 121 | SenseNova full FT 1024, bs=1 | 2.557 – 7.356（8 区間） | 20,930 step |
+| 112 | SDXL ControlNet, bs=4 | 1.168 – 7.746（9 区間） | 46,400 step |
+
+**単一の代表値は取れない**: 121 と 112 は区間により 3 倍以上ばらつく（同一 run 内で構成や
+併走負荷が変わっている）。比を書くときは分母の区間を明示すること。run 127 の 5.207 s/step
+に対しては、178.6 ms = 3.43%、213.6 ms = 4.10%、97 ms = 1.86%。
+
+**最重要の留保: `training.db` の全 39 run のうち `repa_enable: true` の run は 0 件。**
+上記の比はすべて「**REPA 無しのステップ時間に対する比**」であり、REPA 有効時は教師 encoder の
+forward が分母に乗るため**上限側にずれている**。**この分母は未測定。**
+
+#### 5-2-g. stem の単位は「アーキごと」ではない
+
+stem の契約は入力（正規化済み latent の C・スケール規約・空間格子）と出力（SigLIP2 の
+`inputs_embeds`）だけで、アーキ依存の項を持たない。単位は
+**「(VAE encode 空間 × 教師チェックポイント) ごとに 1 つ」**。
+
+**decoder のみの VAE fine-tune では stem を作り直す必要がない**
+（`VAE_TRAINING_DEFAULTS["train_encoder"] = False` が既定で、encoder 学習は
+`acknowledge_latent_space_break` との二重ゲート。設計書 §6 の「decoder だけの変更なら
+入力 latent 空間は必ずしも変わらない」と同じ帰結）。
+
+**ただし現在の同一性キーはこれを表現できない。** `module_latent_hash`
+（`vae_swap.py:284-300`）は `module.state_dict()` **全体**を `content_hash_for_state_dict` に
+通すので、decoder を 1 step 学習しただけでハッシュが変わる。stem のキーは `encoder.*` と
+`quant_conv.*` のみ + 正規化 config + 教師の content hash にすべき、というのが設計の結論。
+
+同じハッシュが latent cache の名前空間キーでもある（`latent_cache.py::vae_cache_namespace`）。
+**decoder のみの差し替えで latent cache も無効化される**が、これは 5-2 のスコープ外であり、
+本稿では事実の記録に留める。
+
+#### 5-2-h. latent セルと token の対応（1 対 1 ではない）
+
+SenseNova + VAE swap、VAE 圧縮率 `s`、生成側パッチ `P`（`GenGeometry.token_pixel_width = P·s`、
+`core/models/sensenova/latent_space.py`）:
+
+```
+token 格子 = (H/(s·P), W/(s·P))
+latent セル : token = P² : 1        ← VAE 圧縮率に依らない
+```
+
+`s = 8, P = 4`、1152×2048 の場合: latent 144×256、token 36×64 = 2,304、**16 : 1**
+（4 チャネル latent の値の数では 64 : 1）。**`P` は run パラメータ**
+（`TRAINING_DEFAULTS["sensenova_gen_patch"]`、既定 `0` = INHERIT）**なので、
+同一アーキ・同一 VAE でも run ごとに変わり得る。**
+
+#### 5-2-i. 設計判断（採らなかった選択肢を含む）
+
+| 論点 | 採る | 採らない案とその理由 |
+|---|---|---|
+| 接続点 | `embeddings` 全体を置換し、stem が `inputs_embeds` を出す | 中間層接続は「どの層のどの統計に合わせるか」という未測定の自由度が増え、共有量は少なく計算は多い。trunk 非共有の全蒸留は要件を外れるが、**教師 forward を削れる唯一の案**なので測定対照としては残す |
+| 位置埋め込み | stem の出力格子を **27×27 に固定**し、学習済み位置埋め込みをそのまま使う | `interpolate_pos_encoding` で student 格子に合わせる案は、trunk を 27×27 以外・非正方で走らせることになり、G-B が確立した「教師の学習ドメインを出ない」保証を新たに壊す。空間対応が 1:1 になる利点は、5-1 が現行 2 段も厳密に対応すると示したため利点にならない |
+| 蒸留ターゲット | `post_layernorm` 後の `last_hidden_state`（G-A が測る量と同一）、損失は cosine | `inputs_embeds` レベルで合わせる案は `C_distill` が下がるが、27 層の非線形を挟むため embeds の一致は `last_hidden_state` の一致を保証しない（設計書 §5 が警告する代理最適化） |
+
+#### 5-2-j. 撤退基準（4 つ。評価順序自体が撤退機構）
+
+| 順 | 基準 | 状態 |
+|---|---|---|
+| 1 | `D_features > D_budget`（教師特徴の全件キャッシュが入らない） | **通過**（5-2-a） |
+| 2 | `C_stem < C_io` | `C_io` は測定済（5-2-c / 5-2-e）。`C_stem` は**ダミー重みで蒸留前に測れる**。未測定 |
+| 3 | `N_redistill × C_distill < N_step × B × (C_io − C_stem)` | 蒸留後。未測定 |
+| 4 | 保留 patch cosine と学習 A/B の非劣化（ゲート G-A） | 最後。未測定 |
+
+**ゲート G-A の設計上の要点:**
+
+- **cosine 閾値は、別画像の教師特徴同士の cosine（フロア）を測らないと基準にならない。**
+  空間シャッフル対照も置き、「位置情報を測っているか」を分離する
+- **学習 A/B には `repa_enable = false` の第 3 アームが必須。** A（現行 REPA）と C（REPA 無し）の
+  差が seed ばらつきに埋もれるなら、A vs B（stem REPA）の比較自体が意味を持たない
+  （「両方とも何もしていない」を排除できない）。これは A/B の一部ではなく前提条件
+- step 数を固定し wall-clock は固定しない。seed は最低 3
+- **REPA loss の値そのもので判定しない**（教師系が違うので比較不能）
 
 **スコープ注意**: 「REPA は MiniT2I 専用」は 2026-09-08 の横断化で解消済み。対応範囲は
 `ArchHandler.repa_tap()`（`arch/base_arch.py`）を実装したアーキで、現在 8 件:

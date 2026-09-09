@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, SenseNovaTrainScope, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -32,6 +32,7 @@ interface DatasetConfig {
   caption_types: string[];
   filters: Record<string, any>;
   ve_reconstruction_mode?: boolean;
+  task_views?: SenseNovaTaskView[];
 }
 
 interface ModelInfo {
@@ -129,6 +130,27 @@ const ADAPTER_ALGORITHM_LABELS: Record<string, string> = {
   loha: "LoHa (Hadamard product)",
   lokr: "LoKr (Kronecker product)",
 };
+
+const SENSENOVA_SCOPE_OPTIONS: { value: SenseNovaTrainScope; label: string }[] = [
+  { value: "understanding_vision", label: "Understanding vision + projector" },
+  { value: "understanding_decoder", label: "Understanding decoder" },
+  { value: "shared", label: "Shared embeddings + LM head" },
+  { value: "generation_decoder", label: "Generation decoder" },
+  { value: "generation_flow", label: "Generation vision + flow modules" },
+];
+
+const newSenseNovaTaskView = (): SenseNovaTaskView => ({
+  task: "i2t_caption",
+  target_caption_types: [],
+  hint_caption_types: [],
+  weight: 1,
+  loss_weight: 1,
+  hint_dropout: 0.25,
+  prompt_template_version: 1,
+});
+
+const captionTypeList = (value: string): string[] =>
+  value.split(",").map((part) => part.trim()).filter(Boolean);
 
 // What each schedule does, in the vocabulary the backend registry defines.
 // constant_with_warmup is accepted but not offered: it is the same curve as
@@ -360,6 +382,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_mot_pageable_staging: false,
   sensenova_mot_overlap_transfer: false,
   sensenova_train_fm_modules: false,
+  sensenova_train_scopes: [],
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -2630,6 +2653,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   const updated = [...datasetConfigs];
                   updated[index].dataset_id = newDatasetId;
                   updated[index].caption_types = []; // Reset caption types when dataset changes
+                  updated[index].task_views = [];
                   setDatasetConfigs(updated);
                 }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -2662,6 +2686,100 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <label htmlFor={`ve-recon-mode-${index}`} className="text-xs text-gray-400 cursor-pointer">
                     VE Reconstruction Mode
                   </label>
+                </div>
+              )}
+
+              {isSenseNovaModel(baseModelPath) && (
+                <div className="mt-3 border-t border-gray-700 pt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-medium text-gray-300">SenseNova task views</div>
+                      <div className="text-xxs text-gray-500">Empty keeps legacy image-generation training.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated = [...datasetConfigs];
+                        updated[index] = {
+                          ...updated[index],
+                          task_views: [...(updated[index].task_views || []), newSenseNovaTaskView()],
+                        };
+                        setDatasetConfigs(updated);
+                      }}
+                      className="px-2 py-1 bg-violet-700 hover:bg-violet-600 rounded text-xxs"
+                    >
+                      + Add task view
+                    </button>
+                  </div>
+                  {(config.task_views || []).map((view, viewIndex) => {
+                    const updateView = (patch: Partial<SenseNovaTaskView>) => {
+                      const updated = [...datasetConfigs];
+                      const taskViews = [...(updated[index].task_views || [])];
+                      taskViews[viewIndex] = { ...taskViews[viewIndex], ...patch };
+                      updated[index] = { ...updated[index], task_views: taskViews };
+                      setDatasetConfigs(updated);
+                    };
+                    return (
+                      <div key={viewIndex} className="rounded border border-violet-900/70 bg-gray-900/60 p-2 space-y-2">
+                        <div className="flex gap-2">
+                          <select
+                            value={view.task}
+                            onChange={(e) => updateView({ task: e.target.value as SenseNovaTaskView["task"] })}
+                            className="flex-1 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs"
+                          >
+                            <option value="t2i">Text → image</option>
+                            <option value="ti2i">Text + ref → image</option>
+                            <option value="i2t_caption">Image → caption</option>
+                            <option value="i2t_caption_tags">Image → caption + tags</option>
+                            <option value="i2t_tags">Image → tags</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = [...datasetConfigs];
+                              updated[index] = {
+                                ...updated[index],
+                                task_views: (updated[index].task_views || []).filter((_, i) => i !== viewIndex),
+                              };
+                              setDatasetConfigs(updated);
+                            }}
+                            className="text-red-400 hover:text-red-300 text-xxs"
+                          >Remove</button>
+                        </div>
+                        <input
+                          value={view.target_caption_types.join(", ")}
+                          onChange={(e) => updateView({ target_caption_types: captionTypeList(e.target.value) })}
+                          placeholder="Target caption types (comma-separated)"
+                          className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs"
+                        />
+                        {view.task.startsWith("i2t_") && (
+                          <input
+                            value={view.hint_caption_types.join(", ")}
+                            onChange={(e) => updateView({ hint_caption_types: captionTypeList(e.target.value) })}
+                            placeholder="Input hint caption types (comma-separated, optional)"
+                            className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs"
+                          />
+                        )}
+                        <div className="grid grid-cols-3 gap-2">
+                          <label className="text-xxs text-gray-500">Draw weight
+                            <input type="number" min="0.000001" step="0.1" value={view.weight}
+                              onChange={(e) => updateView({ weight: Number(e.target.value) })}
+                              className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs" />
+                          </label>
+                          <label className="text-xxs text-gray-500">Loss weight
+                            <input type="number" min="0.000001" step="0.1" value={view.loss_weight}
+                              onChange={(e) => updateView({ loss_weight: Number(e.target.value) })}
+                              className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs" />
+                          </label>
+                          <label className="text-xxs text-gray-500">Hint dropout
+                            <input type="number" min="0" max="1" step="0.05" value={view.hint_dropout}
+                              onChange={(e) => updateView({ hint_dropout: Number(e.target.value) })}
+                              className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs" />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -5596,6 +5714,34 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {motEvictionAdvisory && (
               <p className="text-xs text-amber-400">{motEvictionAdvisory.reason}</p>
             )}
+          </div>
+        )}
+
+        {isSenseNovaModel(baseModelPath) && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Objective Scopes</h3>
+            <p className="text-xs text-gray-500">
+              Required when task views are configured. An empty selection keeps legacy generation scope behavior.
+            </p>
+            {SENSENOVA_SCOPE_OPTIONS.map((scope) => {
+              const selected = params.sensenova_train_scopes || [];
+              return (
+                <label key={scope.value} className="flex items-center space-x-2 text-xs text-gray-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(scope.value)}
+                    onChange={(e) => updateParam(
+                      "sensenova_train_scopes",
+                      e.target.checked
+                        ? [...selected, scope.value]
+                        : selected.filter((value) => value !== scope.value),
+                    )}
+                    className="w-4 h-4"
+                  />
+                  <span>{scope.label}</span>
+                </label>
+              );
+            })}
           </div>
         )}
 

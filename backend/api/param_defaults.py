@@ -2515,6 +2515,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # byte-identical. Joins the generation parameter group at unet_lr;
     # ignored (warned) when the resolved branch is understanding-only.
     "sensenova_train_fm_modules": False,
+    # Empty is the backward-compatible legacy scope. Explicit SenseNova task
+    # views require explicit path scopes before the checkpoint is loaded.
+    "sensenova_train_scopes": [],
     "block_swap_h2d_only": False,   # H2D-only swap (FLUX.2 LoRA training: no D2H of frozen base)
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1)
     "num_optimizer_groups": 0,

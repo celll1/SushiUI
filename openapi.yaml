@@ -22389,6 +22389,67 @@ components:
           description: Null when read through the torch fallback.
           example: 61.3
 
+    SenseNovaTaskView:
+      type: object
+      required: [task]
+      properties:
+        task:
+          type: string
+          enum: [t2i, ti2i, i2t_caption, i2t_tags, i2t_caption_tags]
+        target_caption_types:
+          type: array
+          items: {type: string}
+          default: []
+          description: Caption sources used as the supervised target.
+        hint_caption_types:
+          type: array
+          items: {type: string}
+          default: []
+          description: Separate input-only caption sources; never treated as targets.
+        weight:
+          type: number
+          exclusiveMinimum: 0
+          default: 1
+          description: Relative probability of selecting this view for an eligible item.
+        loss_weight:
+          type: number
+          exclusiveMinimum: 0
+          default: 1
+          description: Explicit multiplier applied after the task's normalized reduction.
+        hint_dropout:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.25
+          description: Deterministic probability of dropping all input hints for this view.
+        prompt_template_version:
+          type: integer
+          enum: [1]
+          default: 1
+
+    DatasetConfigItem:
+      type: object
+      required: [dataset_id]
+      properties:
+        dataset_id: {type: integer}
+        caption_types:
+          type: array
+          items: {type: string}
+          default: []
+        filters:
+          type: object
+          additionalProperties: true
+          default: {}
+        ve_reconstruction_mode: {type: boolean, default: false}
+        task_views:
+          type: array
+          items:
+            $ref: '#/components/schemas/SenseNovaTaskView'
+          default: []
+          description: >-
+            Explicit SenseNova objectives eligible for each item. Empty keeps
+            the legacy image-generation behavior.
+
     TrainingRunCreateRequest:
       type: object
       required:
@@ -22467,9 +22528,8 @@ components:
           type: array
           nullable: true
           items:
-            type: object
-            additionalProperties: true
-          description: Per-dataset configuration objects (dataset_id, caption settings, etc.)
+            $ref: '#/components/schemas/DatasetConfigItem'
+          description: Per-dataset configuration, including optional SenseNova task views.
         learning_rate:
           type: number
           format: float
@@ -24249,6 +24309,16 @@ components:
             Ignored (accepted and warned) by every other architecture and by
             SenseNova LoRA, which wraps Linears and has no `fm_modules` target.
             See docs/guides/SENSENOVA_TRAINING_DESIGN.md, "Trained scope".
+        sensenova_train_scopes:
+          type: array
+          items:
+            type: string
+            enum: [understanding_vision, understanding_decoder, shared, generation_decoder, generation_flow]
+          default: []
+          uniqueItems: true
+          description: >-
+            Explicit SenseNova optimizer scopes. Required when any dataset has
+            task_views. Empty preserves legacy image-generation scope semantics.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

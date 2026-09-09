@@ -2024,6 +2024,49 @@ class NEOChatModel(PreTrainedModel):
 
         return outputs
 
+    def forward_understanding(
+            self,
+            pixel_values: torch.FloatTensor,
+            input_ids: torch.LongTensor,
+            grid_hw: torch.LongTensor,
+            attention_mask: torch.LongTensor,
+            labels: torch.LongTensor,
+    ):
+        """Causal-LM training through the active visual-understanding path."""
+        if input_ids.ndim != 2 or input_ids.shape[0] != 1:
+            raise ValueError("SenseNova understanding forward currently requires batch size 1")
+        if labels.shape != input_ids.shape or attention_mask.shape != input_ids.shape:
+            raise ValueError("input_ids, attention_mask, and labels must have identical shapes")
+        if self.img_context_token_id is None:
+            raise RuntimeError("img_context_token_id must be configured before understanding training")
+
+        indexes = self.get_thw_indexes(input_ids[0], grid_hw)
+        vit_embeds = self.extract_feature(pixel_values, grid_hw=grid_hw)
+        input_embeds = self.language_model.get_input_embeddings()(input_ids)
+        batch, sequence, hidden = input_embeds.shape
+        flat_embeds = input_embeds.reshape(batch * sequence, hidden)
+        selected = input_ids.reshape(-1) == self.img_context_token_id
+        visual = vit_embeds.reshape(-1, hidden).to(
+            device=flat_embeds.device, dtype=flat_embeds.dtype
+        )
+        selected_count = int(selected.sum().item())
+        if selected_count == 0 or selected_count != visual.shape[0]:
+            raise ValueError(
+                "SenseNova image-context token count does not match visual features: "
+                f"tokens={selected_count}, features={visual.shape[0]}"
+            )
+        flat_embeds[selected] = visual
+        input_embeds = flat_embeds.reshape(batch, sequence, hidden)
+
+        return self.language_model(
+            inputs_embeds=input_embeds,
+            indexes=indexes,
+            attention_mask=attention_mask,
+            labels=labels,
+            use_cache=False,
+            return_dict=True,
+        )
+
     @property
     def lm_head(self):
         return self.language_model.get_output_embeddings()

@@ -889,9 +889,6 @@ def train_step(
               f"inventing a weighting (design §10).")
         trainer._warned_h3_recon_loss = True
 
-    trainer._minimax_h3_last_components = (video_loss.detach(),
-                                           audio_loss.detach(),
-                                           sigma_v, sigma_a)
     pred_loss_value = loss.detach()
 
     if debug_save_path is not None:

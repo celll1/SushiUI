@@ -16607,14 +16607,13 @@ class BaseTrainer(ABC):
                                     latents_list.append(latent)
                                     if _danb_b is not None:
                                         item["_danbooru_image_bytes"] = None
-                                    elif _repa_active:
+                                    if _repa_active:
                                         # encode_image rebinds its own local (crop/
                                         # resize return new images), so this is still
-                                        # the file's pixels. Danbooru items are left
-                                        # out: their bytes are freed on the line above
-                                        # and their "danbooru://" path never opened, so
-                                        # handing the decode over would newly ENABLE
-                                        # REPA on injected batches.
+                                        # the decoded source. For an injected item it is
+                                        # the only copy left: the bytes are freed just
+                                        # above and "danbooru://<id>" cannot be opened,
+                                        # which is why REPA used to skip those batches.
                                         _repa_decoded_image = image
                             except Exception as img_error:
                                 self._report_item_failure(img_error, item["image_path"], "Batch skipped due to")

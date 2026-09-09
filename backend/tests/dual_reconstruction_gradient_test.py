@@ -7,6 +7,13 @@ anything. SD/SDXL and Z-Image gate the same way without ``no_grad`` and are the
 shape these three now follow. At weight == 0 these three compute no
 reconstruction term at all, and that path is asserted to stay bit-identical.
 
+Krea 2 / Lens / Ideogram 4 / MiniT2I / SenseNova were worse still: they never
+read ``reconstruction_loss_weight`` at all, and the key is not covered by
+``_warn_unused_loss_regularization_keys``, so a configured weight was ignored
+without a line of log. They now mix NORMALIZED -- ``(1-w)*pred + w*recon``,
+the convention the UI's own formula states -- which is what the second half of
+this file pins.
+
 The pre-fix modules are loaded out of git and asserted to show the defect, so
 the red-before/green-after pair stays executable after the fix is committed.
 """
@@ -19,17 +26,25 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # sibling test modules
 
-from core.training.ops import acestep_ops, anima_ops, ltx2_ops
+from core.training.ops import (acestep_ops, anima_ops, ideogram4_ops, krea2_ops,
+                               lens_ops, ltx2_ops, minit2i_ops, sensenova_ops)
+# SenseNova's train_step needs a whole vendor-shaped tree; that double already exists.
+from sensenova_training_core_test import _Cache, _Transformer
 
 REPO = Path(__file__).resolve().parents[2]
 PRE_FIX_COMMIT = "095206c0"  # the ops sources as they were before this fix
+# The five architectures that ignored the key entirely were fixed one commit
+# later; pinned by hash, since HEAD moves under concurrent sessions.
+PRE_SILENT_FIX_COMMIT = "e80785e1"
 
 RECON_WEIGHT = 0.3
 
@@ -234,3 +249,230 @@ def test_the_monitoring_path_is_untouched(prefix_ops, arch):
     _, _, _, g_now = _step(LIVE[arch], arch, 0.0)
     _, _, _, g_before = _step(prefix_ops[arch], arch, 0.0)
     assert torch.equal(g_now, g_before)
+
+
+# ===========================================================================
+# The five architectures that read the key nowhere at all
+# ===========================================================================
+
+@pytest.fixture(scope="module")
+def silent_prefix_ops(tmp_path_factory):
+    tmp_dir = tmp_path_factory.mktemp("prefix_silent_ops")
+    names = ("krea2", "lens", "ideogram4", "minit2i", "sensenova")
+    mods = {}
+    for n in names:
+        source = subprocess.run(
+            ["git", "show",
+             f"{PRE_SILENT_FIX_COMMIT}:backend/core/training/ops/{n}_ops.py"],
+            cwd=REPO, capture_output=True, text=True, encoding="utf-8",
+            check=True).stdout
+        path = tmp_dir / f"_silent_{n}_ops.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(f"_silent_{n}_ops", path)
+        module = importlib.util.module_from_spec(spec)
+        module.__package__ = "core.training.ops"
+        sys.modules[f"_silent_{n}_ops"] = module
+        spec.loader.exec_module(module)
+        mods[n] = module
+    yield mods
+    for n in names:
+        sys.modules.pop(f"_silent_{n}_ops", None)
+
+
+class _DtypeMixin:
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+
+class _Krea2DiT(_DtypeMixin, nn.Module):
+    def __init__(self, channels: int = 8):
+        super().__init__()
+        self.proj = nn.Linear(channels, channels)
+
+    def forward(self, hidden_states, encoder_hidden_states, timestep, position_ids,
+                encoder_attention_mask, return_dict=False):
+        return (self.proj(hidden_states),)
+
+
+class _LensDiT(nn.Module):
+    def __init__(self, channels: int = 8):
+        super().__init__()
+        self.proj = nn.Linear(channels, channels)
+
+    def forward(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
+                timestep, img_shapes):
+        return self.proj(hidden_states)
+
+
+class _Ideogram4DiT(_DtypeMixin, nn.Module):
+    def __init__(self, channels: int = 8):
+        super().__init__()
+        self.proj = nn.Linear(channels, channels)
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, position_ids,
+                segment_ids, indicator, return_dict=False):
+        return (self.proj(hidden_states),)
+
+
+class _MiniT2IDiT(_DtypeMixin, nn.Module):
+    def __init__(self, channels: int = 3):
+        super().__init__()
+        self.conv = nn.Conv2d(channels, channels, kernel_size=1)
+
+    def forward(self, x_t, t, text_embeds, mask):
+        return self.conv(x_t)
+
+
+def _run_krea2(module, recon_weight):
+    net = _Krea2DiT(8)
+    trainer = _trainer(net, recon_weight, krea2_discrete_flow_shift=2.5)
+    torch.manual_seed(SEED)
+    out = module.train_step(
+        trainer,
+        latents=torch.randn(1, 6, 8),
+        encoder_features=torch.zeros(1, 4, 2, 6),
+        encoder_mask=torch.ones(1, 4, dtype=torch.bool),
+        timesteps=torch.tensor([0.4]),
+        latent_h=2, latent_w=3,
+    )
+    return out, net
+
+
+def _run_lens(module, recon_weight):
+    net = _LensDiT(8)
+    trainer = _trainer(net, recon_weight,
+                       stash_cfg_null_per_sample_loss=lambda *a, **k: None)
+    torch.manual_seed(SEED)
+    out = module.train_step(
+        trainer,
+        latents=torch.randn(1, 6, 8),
+        encoder_features=torch.zeros(1, 2, 4, 6),
+        encoder_mask=torch.ones(1, 4, dtype=torch.bool),
+        timesteps=torch.tensor([0.4]),
+        latent_h=2, latent_w=3,
+    )
+    return out, net
+
+
+def _run_ideogram4(module, recon_weight):
+    net = _Ideogram4DiT(8)
+    trainer = _trainer(net, recon_weight)
+    torch.manual_seed(SEED)
+    out = module.train_step(
+        trainer,
+        latents=torch.randn(1, 6, 8),
+        encoder_features=torch.zeros(1, 13, 4, 4),
+        encoder_mask=torch.ones(1, 4, dtype=torch.bool),
+        timesteps=torch.tensor([0.4]),
+        latent_h=2, latent_w=3,
+    )
+    return out, net
+
+
+def _run_minit2i(module, recon_weight):
+    net = _MiniT2IDiT(3)
+    trainer = _trainer(net, recon_weight,
+                       stash_cfg_null_per_sample_loss=lambda *a, **k: None)
+    torch.manual_seed(SEED)
+    out = module.train_step(
+        trainer,
+        images=torch.randn(1, 3, 8, 8),
+        text_embeds=torch.zeros(1, 4, 6),
+        attention_mask=torch.ones(1, 4, dtype=torch.bool),
+        timesteps=torch.tensor([0.4]),
+    )
+    return out, net
+
+
+def _run_sensenova(module, recon_weight):
+    net = _Transformer()
+    trainer = _trainer(net, recon_weight, gradient_checkpointing=False)
+    images = torch.ones(1, 3, 32, 32)
+
+    def build_context(model, shape, image, timestep, noise_scale, *, enable_grad=False):
+        return (model.patchify(image, 32), torch.full((1, 1, 1), 2.0), torch.ones(1, 1, 1))
+
+    torch.manual_seed(SEED)
+    with patch("core.models.sensenova.sensenova_pipeline_ops.compute_noise_scale",
+               return_value=2.0), \
+         patch("core.models.sensenova.sensenova_pipeline_ops._build_step_context",
+               side_effect=build_context), \
+         patch("torch.randn_like", return_value=torch.full_like(images, 0.2)):
+        out = module.train_step(
+            trainer,
+            images=images,
+            # The module's OWN dataclass: train_step isinstance-checks it, and the
+            # pre-fix module loaded out of git defines a separate class object.
+            prefix=module.SenseNovaTrainingPrefix(_Cache(), text_length=3),
+            timesteps=torch.tensor([0.25]),
+        )
+    return out, net
+
+
+SILENT_RUNNERS = {
+    "krea2": _run_krea2,
+    "lens": _run_lens,
+    "ideogram4": _run_ideogram4,
+    "minit2i": _run_minit2i,
+    "sensenova": _run_sensenova,
+}
+SILENT_LIVE = {
+    "krea2": krea2_ops,
+    "lens": lens_ops,
+    "ideogram4": ideogram4_ops,
+    "minit2i": minit2i_ops,
+    "sensenova": sensenova_ops,
+}
+
+
+def _silent_step(module, arch: str, recon_weight: float):
+    torch.manual_seed(11)
+    (loss, pred_value, recon_value), net = SILENT_RUNNERS[arch](module, recon_weight)
+    loss.backward()
+    grad = torch.cat([p.grad.flatten() for p in net.parameters()])
+    return loss.item(), pred_value, recon_value, grad
+
+
+@pytest.mark.parametrize("arch", list(SILENT_RUNNERS))
+def test_the_silently_ignored_weight_now_changes_the_gradient(arch):
+    loss_dual, _, recon_value, g_dual = _silent_step(SILENT_LIVE[arch], arch, RECON_WEIGHT)
+    loss_plain, _, _, g_plain = _silent_step(SILENT_LIVE[arch], arch, 0.0)
+
+    assert recon_value > 0.0, "the reconstruction value must be reported when on"
+    assert loss_dual != loss_plain
+    assert not torch.allclose(g_dual, g_plain), (
+        "the weight left the network gradient identical to a run with the dual "
+        "loss disabled")
+    assert torch.isfinite(g_dual).all()
+
+
+@pytest.mark.parametrize("arch", list(SILENT_RUNNERS))
+def test_the_mixing_is_normalized_not_additive(arch):
+    """(1-w)*pred + w*recon, the formula the UI states -- not pred + w*recon."""
+    loss_dual, _, recon_value, _ = _silent_step(SILENT_LIVE[arch], arch, RECON_WEIGHT)
+    loss_plain, _, _, _ = _silent_step(SILENT_LIVE[arch], arch, 0.0)
+
+    expected = (1.0 - RECON_WEIGHT) * loss_plain + RECON_WEIGHT * recon_value
+    additive = loss_plain + RECON_WEIGHT * recon_value
+    assert loss_dual == pytest.approx(expected, rel=1e-5)
+    assert loss_dual != pytest.approx(additive, rel=1e-5)
+
+
+@pytest.mark.parametrize("arch", list(SILENT_RUNNERS))
+def test_the_pre_fix_module_ignored_the_weight_in_silence(silent_prefix_ops, arch):
+    """Red-before, kept executable: the weight reached neither loss nor log."""
+    loss_dual, _, _, g_dual = _silent_step(silent_prefix_ops[arch], arch, RECON_WEIGHT)
+    loss_plain, _, _, g_plain = _silent_step(silent_prefix_ops[arch], arch, 0.0)
+
+    assert loss_dual == loss_plain, "expected the weight to be read nowhere"
+    assert torch.equal(g_dual, g_plain)
+
+
+@pytest.mark.parametrize("arch", list(SILENT_RUNNERS))
+def test_weight_zero_is_unchanged_from_the_pre_fix_module(silent_prefix_ops, arch):
+    """weight == 0 keeps its pre-fix loss, reported values and gradient."""
+    now = _silent_step(SILENT_LIVE[arch], arch, 0.0)
+    before = _silent_step(silent_prefix_ops[arch], arch, 0.0)
+    assert now[:3] == before[:3]
+    assert torch.equal(now[3], before[3])

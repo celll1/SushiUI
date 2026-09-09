@@ -297,7 +297,10 @@ Training step (`sensenova_ops.train_step`): B1 pixel-space flow matching. Prefix
 `forward_und_prefix_layers` (which returns K/V as explicit checkpoint OUTPUTS via the vendored
 `return_kv` seam) when `requires_grad`. The generation pass is `forward_gen_decoder_layers`, which
 calls `nn.Module.__call__` directly to bypass Transformers' cache-dropping checkpoint wrapper.
-Loss is MSE on velocity, with an x0 reconstruction MSE reported for monitoring.
+Loss is MSE on velocity, with an x0 reconstruction MSE always reported for monitoring and mixed
+into the objective as `(1 - reconstruction_loss_weight) * pred + reconstruction_loss_weight * recon`
+when that weight is nonzero. Because the velocity target divides by `clamp(1-t, t_eps)`, that x0
+term is the same objective reweighted by `clamp(1-t, t_eps)^2`, not an independent signal.
 `vae_encode` returns the normalized RGB unchanged.
 
 Refused combinations (all checked before the 17.6 GiB load — `train_runner`'s

@@ -257,7 +257,10 @@ FLAN-T5 and (latent variants only) the VAE.
 
 Training step (`minit2i_ops.train_step`): flow noising in the model's own convention, MSE on
 **velocity** (`v_pred = (x0_pred - x_t)/clamp(1-t, 0.05)` against `(images - x_t)/…`), with an
-unweighted x0 reconstruction MSE reported for monitoring only. CFG label drop
+unweighted x0 reconstruction MSE always reported for monitoring, and mixed into the objective as
+`(1 - reconstruction_loss_weight) * pred + reconstruction_loss_weight * recon` when that weight is
+nonzero. Because the velocity target divides by `clamp(1-t)`, that x0 term is the same objective
+reweighted by `clamp(1-t)^2`, not an independent signal. CFG label drop
 (`cfg_uncond_drop_rate`; omitted resolves to 0.1, and `minit2i_label_drop_rate` is the deprecated
 spelling) zeroes the attention mask for the dropped rows, which is the same `mask_token` uncond
 inference uses. The Bernoulli is drawn ONCE per assembled optimization batch by

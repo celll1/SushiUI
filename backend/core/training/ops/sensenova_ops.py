@@ -2258,6 +2258,14 @@ def train_step(
     value = float(loss.detach())
     recon_value = float(recon_loss.detach())
 
+    # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
+    # convention the UI documents. `recon_loss` above is already grad-carrying,
+    # so this costs nothing beyond the mix. On this arch the x0 term is the
+    # velocity objective rescaled by (1-t)^2, not an independent signal.
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    if recon_weight > 0:
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
+
     # Added after `value`/`recon_value` are read: the aux term must not move the
     # two series this run's pre-aux baseline is measured on.
     if (getattr(trainer, "crop_decode_loss_enable", False)

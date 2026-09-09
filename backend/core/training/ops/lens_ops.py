@@ -391,6 +391,18 @@ def train_step(
     pred_loss_value = mse_loss.item()
     recon_loss_value = 0.0
 
+    # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
+    # convention the UI documents. Computed only when on -- this arch never
+    # reported the value, so weight 0 pays nothing.
+    recon_weight = float(getattr(trainer, "reconstruction_loss_weight", 0.0) or 0.0)
+    if recon_weight > 0:
+        # v = noise - x0 => x0 = x_t - sigma*v (LensArchHandler.velocity_sign).
+        # Grad-carrying on purpose: under no_grad it would only shift the log.
+        pred_x0 = noisy_latents.float() - sigma_view.float() * v_pred.float()
+        recon_loss = torch.nn.functional.mse_loss(pred_x0, latents.float(), reduction="mean")
+        recon_loss_value = recon_loss.item()
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
+
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
         from core.models.lens.lens_pipeline_ops import _unpatchify

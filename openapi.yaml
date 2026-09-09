@@ -22317,6 +22317,27 @@ components:
           default: 1
           description: Training batch size
           example: 1
+        seed:
+          type: integer
+          minimum: -1
+          maximum: 2147483647
+          default: -1
+          description: |
+            Run RNG seed. Seeds the `random` module (the stream every dataset
+            shuffle draws from, and the one saved/restored for mid-epoch
+            resume), NumPy, and torch — so two runs with the same seed and the
+            same configuration see the same sample order.
+
+            `-1` (default) draws a seed at run start instead, which keeps the
+            previous behaviour of an unchosen order. The drawn value is
+            reported as an `info` notice with code `training_seed` (console log
+            and the run's `warnings` list), so an A/B comparison can be
+            repeated by pinning it here.
+
+            Resuming restores the sample order from the checkpoint's saved RNG
+            state, independently of this value. Bounded to fit all three
+            generators' accepted range.
+          example: -1
         optimizer:
           type: string
           default: "adamw8bit"

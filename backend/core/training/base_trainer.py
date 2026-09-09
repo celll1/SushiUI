@@ -2328,6 +2328,43 @@ def predicted_latent_is_supplied(trainer, arch_name: str) -> bool:
     return bool(getattr(arch_handler, "supplies_predicted_latent", False))
 
 
+def resolve_run_seed(configured: Any) -> Tuple[int, bool]:
+    """(effective seed, whether it was drawn) for a run's ``seed`` config value.
+
+    Anything below 0 -- the -1 default, a missing key, a malformed value -- is
+    drawn, which keeps an unconfigured run's order as unchosen as it was before
+    the key existed. The caller is expected to record a drawn seed.
+    """
+    import random
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        value = -1
+    if value < 0:
+        return random.randrange(2 ** 31), True
+    # Folded rather than passed on: numpy rejects a seed the other two accept,
+    # and a run must not die at init over a hand-edited YAML. The API's own
+    # bound is this range, so nothing sent through it is folded.
+    return value % (2 ** 31), False
+
+
+def apply_run_seed(configured: Any) -> Tuple[int, bool]:
+    """Seed this process's RNGs from a run's ``seed`` config value.
+
+    The ``random`` MODULE is the target, not a private ``random.Random``:
+    every dataset shuffle (here and in ``bucketing.py``) draws from it, and
+    ``save_training_state``/``restore`` serialize exactly that one stream to
+    reproduce an interrupted epoch's order. A private instance would leave both
+    of those unseeded.
+    """
+    import random
+    seed, drawn = resolve_run_seed(configured)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    return seed, drawn
+
+
 # ============================================================
 # Base Trainer Class
 # ============================================================
@@ -2912,6 +2949,16 @@ class BaseTrainer(ABC):
 
         # Log prefix for subclass override
         self.log_prefix = "[Trainer]"
+
+        # Seed before anything draws: the model load, the latent/caption caches
+        # and every epoch's shuffle all run downstream of here.
+        self.run_seed, self.run_seed_drawn = apply_run_seed(self.config.get("seed", -1))
+        emit_training_event(
+            "info",
+            f"Run seed: {self.run_seed} "
+            + ("(drawn; pass it as `seed` to repeat this data order)"
+               if self.run_seed_drawn else "(from config)"),
+            code="training_seed", prefix=self.log_prefix)
 
         # Log component learning rates
         print(f"{self.log_prefix} ===== Component Learning Rates =====")
@@ -14313,7 +14360,12 @@ class BaseTrainer(ABC):
                 from core.training.crop_planner import CropPlanner
                 _cfg = dict(self.config)
                 if int(_cfg.get("crop_plan_seed", 0) or 0) == 0:
-                    _cfg["crop_plan_seed"] = int(self.config.get("seed", 0) or 0)
+                    # Only a CONFIGURED run seed derives the crop plan. A drawn
+                    # one would change the plan's fingerprint every launch, and
+                    # a resume reads a changed fingerprint as "crop params
+                    # changed" and restarts the epoch.
+                    _cfg["crop_plan_seed"] = (
+                        0 if self.run_seed_drawn else self.run_seed)
                 self.crop_planner = CropPlanner(
                     config=_cfg,
                     base_resolutions=bucket_manager.base_resolutions,

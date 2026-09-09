@@ -73,7 +73,6 @@ CONFIG_CHANNEL_ONLY_KEYS = {
     "clip_stride",
     "ltx2_clip_lengths",
     "ltx2_clip_stride",
-    "seed",
     "debug_vram",
     # train_runner.py reads these off the train section, but the generator
     # emits them one level up, as siblings of "train" inside process[0] --
@@ -372,10 +371,6 @@ class ConfigChannelCensusTest(unittest.TestCase):
         # train_section_key_vocabulary() is the AST-derived ground truth for
         # what the panel can reach, independent of naming.
         reachable = fields | train_section_key_vocabulary()
-        # The generator emits `seed` into the sample section only (as
-        # sample_seed); nothing puts a "seed" key in the train section, so
-        # base_trainer.py's self.config.get("seed", 0) can never be set by a
-        # request and "seed" belongs in CONFIG_CHANNEL_ONLY_KEYS, not here.
         unreachable = self._trainer_config_keys() - reachable
         self.assertEqual(unreachable, CONFIG_CHANNEL_ONLY_KEYS)
 

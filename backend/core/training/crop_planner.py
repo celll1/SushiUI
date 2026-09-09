@@ -120,7 +120,11 @@ class CropPlanner:
 
         seed = int(_cfg("crop_plan_seed"))
         if seed == 0:
-            seed = int(config.get("seed", 0) or 0)
+            # A negative run seed means "draw one per launch", which a crop plan
+            # cannot use: its fingerprint would change every start and a resume
+            # would read that as changed crop params.
+            _run_seed = int(config.get("seed", 0) or 0)
+            seed = _run_seed if _run_seed > 0 else 0
         self.seed: int = seed
 
         self.base_resolutions = sorted(base_resolutions)

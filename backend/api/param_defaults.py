@@ -2182,6 +2182,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "epochs": 10,
     "batch_size": 1,
     "gradient_accumulation_steps": 1,
+    # Run RNG seed: data order (the `random` stream every shuffle and the
+    # resume state use), augmentation draws, noise and init. -1 draws one at
+    # run start and records it, so the previous unseeded behaviour is kept and
+    # two runs can still be given the same order by pinning the drawn value.
+    "seed": -1,
     "max_grad_norm": 1.0,
     # Per-parameter outlier clip for the fused backward pass, where
     # max_grad_norm's global norm is not knowable in time (see

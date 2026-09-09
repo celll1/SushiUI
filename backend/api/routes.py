@@ -15540,6 +15540,10 @@ class TrainingRunCreateRequest(BaseModel):
     gradient_accumulation_steps: int = Field(
         default=TRAINING_DEFAULTS["gradient_accumulation_steps"], ge=1
     )
+    # -1 = draw one at run start and record it (see BaseTrainer.apply_run_seed).
+    # Upper bound is what all three seeded generators accept, so the run cannot
+    # record a seed it did not actually give numpy.
+    seed: int = Field(default=TRAINING_DEFAULTS["seed"], ge=-1, le=2**31 - 1)
     max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
     fused_grad_clip_factor: float = Field(
         default=TRAINING_DEFAULTS["fused_grad_clip_factor"], ge=0

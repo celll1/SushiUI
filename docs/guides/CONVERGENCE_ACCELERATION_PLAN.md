@@ -18,7 +18,7 @@ Phase 2 以降は各ゲートの通過を条件とする分岐であり、事前
 | `aesthetic_loss.py` の forward は `torch.no_grad()` 内 | **微分可能な補助損失の前例は存在しない**。新規に autograd 経路を作る必要がある。既存コードのコピーは不可 |
 | VAE decode は非局所。padding 項の消滅点は **14–16 latent cells**（`VAE_DECODE_BEHAVIOR.md`） | 8×8 latent の単独 decode は無効。**context margin 付き crop が必須**。ただし GroupNorm 統計と mid-block attention の項は margin では消えない |
 | `context_tiled_decode.py` に margin=16 の geometry が既にある | crop decode の**幾何は再実装不要**（`iter_tiles` / `TileRect` / `resolve_geometry`）。不足は autograd 対応のみ |
-| REPA は MiniT2I 専用。latent セルと DiT トークンは一般に 1 対 1 でない | REPA 系タスクは**独立ライン**。他アーキへの展開は別スコープ |
+| latent セルと DiT トークンは一般に 1 対 1 でない | REPA 系タスクは**独立ライン** |
 | x̂₀ の復元式は予測形式依存（eps / v / flow）。t の向き規約も未確定 | **全 Phase の前提**として復元ヘルパと規約の明文化を Phase 0 に置く |
 
 再利用できる既存資産（実装確認済み）:
@@ -111,6 +111,18 @@ Phase 0 前提の是正           （必須・単独で価値あり）
 
 - 統計一致は配置・意味・多様性・将来の収束を保証しない
 - **この指標だけで収束可否を断定しない**。画像と併せて判断する旨をメトリクス説明文に書く
+
+### 1-4. 実装後に判明した限界（2026-09-09 時点）
+
+- `_last_predicted_latent` は本番経路では誰も代入しておらず、単発 x̂₀ 由来の指標は
+  全アーキで到達不能だった。`860d196c` で `compute_crop_decode_loss` に捕捉点を置いて解消。
+  供給範囲は `ArchHandler.supplies_predicted_latent` が宣言し、crop decode loss の消費範囲と同じ
+  9 / 4 の内訳（ControlNet 学習は全アーキで非供給）。
+- latent 側の指標には `_diag_gt_latent` も要る。これは最初のサンプルプロンプトの
+  condition/reference 画像から埋まるため、それを持たない run では出ない。
+- **`diag_trajectory_gap` は名前どおりのものを測っていない**: 単発 x̂₀ は学習バッチの
+  最終マイクロバッチ、通し生成はサンプルプロンプトのもので、被写体が別。差は内容差に支配される。
+  1-2 の表の「A が軌跡固有かの切り分け」はこの指標では成立しない。
 
 **変更ファイル**: `base_trainer.py`（フック）, `metric_registry.py`（定義）, 新規 1 ファイル（統計計算）
 **パラメータ**: 有効化フラグと間隔のみ。`param_defaults.py::TRAINING_DEFAULTS` → Pydantic → フロントの順で追加
@@ -217,7 +229,11 @@ GT latent ───────────────────────�
 - `backend/core/training/ops/crop_decode_loss.py` に `CropDecodeLossModule` および `compute_crop_decode_loss` を実装。
 - crop 位置はステップごとに一様ランダム。
 - `VaeLossBank` の LPIPS/MSE/L1 指標を frozen/eval かつ autograd graph 保持で評価。
-- `sd_sdxl_ops.py::train_step` に統合。
+- 消費するアーキは `ArchHandler.consumes_crop_decode_loss` が宣言し、`base_trainer.py::crop_decode_loss_is_consumed()`
+  が唯一の判定経路（`032cf977`）。現在 True が 9 件（SD1.5 / SDXL / Z-Image / FLUX.2 / Anima / Lens /
+  Krea 2 / Ideogram 4 / SenseNova U1.5）、False が 4 件（ACE-Step / LTX-2.3 / MiniT2I / MiniMax-H3）。
+  **ControlNet 学習は全アーキで非消費**（forward が `train_step_controlnet`）。
+  非消費の run で weight を設定した場合は drop として警告される。
 
 ### 3-3. 係数決定を測定可能にする [完了: `216a96e4`]
 
@@ -263,8 +279,19 @@ Phase 3 が成立するなら Phase 4 は不要（蒸留誤差を持ち込む理
 
 - 固定: モデル・データ・seed・その他すべて
 - 変数: 教師画像の前処理（正方形 squash vs アスペクト保持）
-- 測定: **非正方形バケツ**での空間対応と生成品質。
+- 測定: **非正方形バケツ**での生成品質。
   **教師が異なる系の REPA loss の大小だけでは判定しない**（設計書の指示）
+
+**空間対応は測定対象から外した（解決済み・2026-09-09）。** 教師画像は
+`base_trainer.py::_get_repa_pixels_for_item` が S×S へ squash し（アスペクト破壊）、
+教師特徴グリッドは `repa.py::encode_repa_targets` が student のトークングリッド (gh, gw) へ
+bilinear（`align_corners=False`）で引き伸ばす。この 2 段は逆変換の関係にある:
+student トークン列 j の参照元座標は `(j+0.5)*g/gw - 0.5`、元画像の横位置 `(j+0.5)/gw` を
+squash した先の座標も同じ式になり、圧縮と拡大が厳密に相殺する。行方向も同様で、
+アスペクト比に依存しない。**対応はずれていない。**
+
+したがって G-B に残る仮説は 1 つ:
+**歪んだ画像の上で教師の特徴そのものが劣化しているか**（設計書 §2 の「品質低下の大きさは未測定」）。
 
 **G-B 不合格 = 品質側の動機は消える**。その場合 latent 化はコスト削減のみが根拠となり、優先度は下がる。
 
@@ -279,7 +306,11 @@ Phase 3 が成立するなら Phase 4 は不要（蒸留誤差を持ち込む理
   固定予算・複数 seed の学習 A/B で生成品質・収束・時間・VRAM を比較。
   特徴類似度だけで品質維持を保証しない
 
-**スコープ注意**: REPA は現状 MiniT2I 専用。他アーキへの展開は本プランの範囲外。
+**スコープ注意**: 「REPA は MiniT2I 専用」は 2026-09-08 の横断化で解消済み。対応範囲は
+`ArchHandler.repa_tap()`（`arch/base_arch.py`）を実装したアーキで、現在 8 件:
+MiniT2I / Anima / Lens / Krea 2 / Ideogram 4 / SenseNova U1.5 / SD1.5 / SDXL。
+未実装アーキでは `repa_enable` は**無視されず拒否**される（`repa.py::refuse_repa`）。
+未配線のまま保留している Z-Image / FLUX.2 の理由は設計書 §2 の表が持つ。
 
 ---
 
@@ -296,6 +327,7 @@ Phase 3 が成立するなら Phase 4 は不要（蒸留誤差を持ち込む理
 | GPU probe は**ホスト RAM ピークを事前申告**し、1 度に 1 本 | 過去に pagefile 枯渇 |
 | コミットは Phase 内の単位ごと。**必ず明示 pathspec で** | `git add <file> && commit` は他セッションのステージ済み作業も巻き込む |
 | ツリーは他セッションと共有。`stash` / `checkout` / `reset` / `add -A` を使わない | 共有ワークツリー |
+| 補助 loss / 診断のアーキ別の可否は、列挙ではなく `ArchHandler` の**宣言**（`consumes_crop_decode_loss`, `supplies_predicted_latent`, `repa_tap`）で固定し、真値を各 ops モジュールから **AST で導出するテスト**で縛る | 表示と実際の消費が食い違った前例（`032cf977`, `860d196c`） |
 
 ---
 

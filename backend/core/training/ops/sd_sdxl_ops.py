@@ -1025,11 +1025,15 @@ def train_step(
         # Total loss (prediction loss + regularization)
         loss = mse_loss + regularization_loss
 
-    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if crop_decode_on:
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded
+    # crop). Widened past crop_decode_on so the shared op can capture the diagnostics'
+    # single-step x0; predicted_latent_for_reg stays gated on crop_decode_on, so a
+    # diagnostics-only run leaves the backward graph untouched and the op re-derives x0.
+    from core.training.ops.crop_decode_loss import (
+        compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
+    if crop_decode_or_x0_capture_needed(trainer):
         from core.training.arch.sd15 import SD15ArchHandler
         from core.training.arch.sdxl import SDXLArchHandler
-        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         aux_loss, _ = compute_crop_decode_loss(
             trainer=trainer,
             model_pred=model_pred,

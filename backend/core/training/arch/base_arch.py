@@ -569,6 +569,18 @@ class ArchHandler(ABC):
     #: ``unused_loss_regularization_warning_test.py``.
     consumes_crop_decode_loss: bool = False
 
+    #: Whether this architecture's ``train_step`` hands the convergence
+    #: diagnostics a decodable single-step x_0. The one producer is
+    #: ``ops/crop_decode_loss.compute_crop_decode_loss``, so this is true exactly
+    #: of the architectures that reach that op -- under the widened
+    #: ``crop_decode_or_x0_capture_needed`` gate, not the crop-decode weight.
+    #: ``False`` -- the unset default -- makes ``train()`` say so on the
+    #: "Convergence diagnostics: ENABLED" line rather than promise latent
+    #: metrics that cannot appear. Same forward caveat as above: a ControlNet
+    #: run supplies nothing on any architecture. Pinned against ``ops/`` by
+    #: ``convergence_diagnostics_test.py``.
+    supplies_predicted_latent: bool = False
+
     #: At which stage this architecture can build the SAME null condition its
     #: inference CFG uncond branch uses, or ``None`` when it cannot build one at
     #: all. Three admitted values:

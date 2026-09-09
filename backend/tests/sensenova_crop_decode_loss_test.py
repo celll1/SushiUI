@@ -124,12 +124,18 @@ def test_train_step_call_site_is_guarded_by_both_keys():
         if isinstance(node, ast.If) and calls[0] in list(ast.walk(node))
     ]
     assert guards, "the aux call is unguarded"
-    keys = {
-        const.value for guard in guards
-        for const in ast.walk(guard.test) if isinstance(const, ast.Constant)
-    }
-    assert "crop_decode_loss_enable" in keys
-    assert "crop_decode_loss_weight" in keys
+    # The two keys moved into the shared predicate when the convergence
+    # diagnostics' x0 capture joined the same gate; what must hold is that a run
+    # asking for neither still never reaches the aux path.
+    assert any("crop_decode_or_x0_capture_needed" in ast.unparse(guard.test)
+               for guard in guards)
+    from core.training.ops.crop_decode_loss import crop_decode_or_x0_capture_needed
+    for weight in (0.0, 0.5):
+        for enable in (False, True):
+            off = SimpleNamespace(crop_decode_loss_enable=enable,
+                                  crop_decode_loss_weight=weight,
+                                  convergence_diagnostics_enable=False)
+            assert crop_decode_or_x0_capture_needed(off) is (enable and weight > 0)
 
 
 def test_pixel_space_run_is_a_noop(capsys):

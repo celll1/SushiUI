@@ -2042,7 +2042,9 @@ def _crop_decode_aux_loss(
     """
     vae = getattr(trainer, "vae", None)
     if vae is None:
-        if not getattr(trainer, "_sensenova_crop_decode_pixel_warned", False):
+        if (getattr(trainer, "crop_decode_loss_enable", False)
+                and float(getattr(trainer, "crop_decode_loss_weight", 0.0) or 0.0) > 0
+                and not getattr(trainer, "_sensenova_crop_decode_pixel_warned", False)):
             trainer._sensenova_crop_decode_pixel_warned = True
             print(f"{trainer.log_prefix} [crop_decode_loss] pixel-space run: there is no "
                   f"VAE to decode through, so the auxiliary loss stays off")
@@ -2051,7 +2053,10 @@ def _crop_decode_aux_loss(
     from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
     out_cells = int(getattr(trainer, "crop_decode_loss_out_cells", 32))
-    if out_cells % patch and not getattr(trainer, "_sensenova_crop_decode_token_warned", False):
+    if (out_cells % patch
+            and getattr(trainer, "crop_decode_loss_enable", False)
+            and float(getattr(trainer, "crop_decode_loss_weight", 0.0) or 0.0) > 0
+            and not getattr(trainer, "_sensenova_crop_decode_token_warned", False)):
         trainer._sensenova_crop_decode_token_warned = True
         print(f"{trainer.log_prefix} [crop_decode_loss] out_cells={out_cells} is not a "
               f"multiple of this run's {patch}-cell token, so the edge tokens of every "
@@ -2268,8 +2273,8 @@ def train_step(
 
     # Added after `value`/`recon_value` are read: the aux term must not move the
     # two series this run's pre-aux baseline is measured on.
-    if (getattr(trainer, "crop_decode_loss_enable", False)
-            and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0):
+    from core.training.ops.crop_decode_loss import crop_decode_or_x0_capture_needed
+    if crop_decode_or_x0_capture_needed(trainer):
         aux_loss = _crop_decode_aux_loss(
             trainer,
             transformer=transformer,

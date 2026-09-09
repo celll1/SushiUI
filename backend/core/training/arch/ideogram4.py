@@ -36,6 +36,7 @@ class Ideogram4ArchHandler(ArchHandler):
     velocity_sign = "x0_minus_eps"
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
+    supplies_predicted_latent = True
 
     def lora_adapter_class(self):
         from core.training.adapters import Ideogram4LoRAAdapter

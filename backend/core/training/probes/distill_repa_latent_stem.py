@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import http.server
 import json
 import random
 import sqlite3
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -29,6 +31,69 @@ from core.training.repa_latent_stem import (
 )
 
 _EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+_MONITOR_HTML = r"""<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>REPA stem distillation</title><style>
+body{margin:0;background:#101318;color:#e8edf2;font:14px system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:24px}
+h1{font-size:20px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}
+.card,section{background:#181d24;border:1px solid #29313c;border-radius:9px;padding:14px}.value{font-size:22px;margin-top:5px}
+canvas{width:100%;height:420px}small{color:#9ca8b6}.train{color:#65b9ff}.val{color:#ffbd66}
+</style></head><body><main><h1>REPA stem distillation</h1><small id="status">接続中…</small>
+<div class="cards"><div class="card">進捗<div class="value" id="step">—</div></div>
+<div class="card">train mean100<div class="value train" id="train">—</div></div>
+<div class="card">validation loss<div class="value val" id="val">—</div></div>
+<div class="card">速度<div class="value" id="speed">—</div></div>
+<div class="card">最大VRAM<div class="value" id="vram">—</div></div>
+<div class="card">経過時間<div class="value" id="elapsed">—</div></div></div>
+<section><canvas id="chart"></canvas><small><span class="train">● train mean100</span>　<span class="val">● validation loss</span></small></section>
+<script>
+const $=id=>document.getElementById(id), cv=$('chart'), ctx=cv.getContext('2d');
+const num=(v,n=6)=>Number.isFinite(v)?v.toFixed(n):'—';
+function duration(s){s=Math.max(0,Math.round(s||0));return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}
+function draw(rows){const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;cv.width=w*dpr;cv.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+ const vals=rows.flatMap(r=>[r.train_loss_mean_100,r.validation_loss]).filter(Number.isFinite);if(!vals.length)return;
+ let lo=Math.min(...vals),hi=Math.max(...vals);if(hi===lo){lo-=.01;hi+=.01}const pad=35,x=i=>pad+(w-2*pad)*(rows.length===1?0:i/(rows.length-1)),y=v=>h-pad-(h-2*pad)*(v-lo)/(hi-lo);
+ ctx.strokeStyle='#3a4553';ctx.fillStyle='#9ca8b6';ctx.font='11px system-ui';for(let i=0;i<=4;i++){const yy=pad+(h-2*pad)*i/4;ctx.beginPath();ctx.moveTo(pad,yy);ctx.lineTo(w-pad,yy);ctx.stroke();ctx.fillText((hi-(hi-lo)*i/4).toFixed(3),2,yy+4)}
+ function line(key,color){ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();let started=false;rows.forEach((r,i)=>{const v=r[key];if(!Number.isFinite(v))return;started?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v));started=true});ctx.stroke()}line('train_loss_mean_100','#65b9ff');line('validation_loss','#ffbd66')}
+async function update(){try{const res=await fetch('/progress',{cache:'no-store'}),rows=await res.json();if(!rows.length){$('status').textContent='ログ待機中';return}const r=rows.at(-1),v=[...rows].reverse().find(x=>Number.isFinite(x.validation_loss));$('status').textContent='2秒ごとに自動更新';$('step').textContent=`${r.step.toLocaleString()} / ${r.steps.toLocaleString()}`;$('train').textContent=num(r.train_loss_mean_100);$('val').textContent=v?num(v.validation_loss):'—';$('speed').textContent=`${num(r.mean_ms_per_item,1)} ms/item`;$('vram').textContent=`${num(r.max_vram_gib,2)} GiB`;$('elapsed').textContent=duration(r.elapsed_seconds);draw(rows)}catch(e){$('status').textContent='CLIへの接続が終了しました（最後の表示を保持）'}}
+update();setInterval(update,2000);addEventListener('resize',update);
+</script></main></body></html>"""
+
+
+def _start_monitor(progress_path: Path, port: int):
+    """Serve an ephemeral localhost-only view of one progress JSONL file."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/":
+                payload, content_type = _MONITOR_HTML.encode(), "text/html; charset=utf-8"
+            elif self.path == "/progress":
+                rows = []
+                if progress_path.is_file():
+                    for line in progress_path.read_text(encoding="utf-8").splitlines():
+                        try:
+                            rows.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+                payload = json.dumps(rows).encode()
+                content_type = "application/json"
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"[REPA stem] monitor=http://127.0.0.1:{server.server_port}", flush=True)
+    return server
 
 
 def _load_vae(args, dtype):
@@ -218,6 +283,8 @@ def run(args) -> dict:
         raise ValueError("steps and batch sizes must be positive")
     if args.validation_every <= 0 or args.validation_probe_items <= 0:
         raise ValueError("validation intervals and probe items must be positive")
+    if not 0 <= args.monitor_port <= 65535:
+        raise ValueError("monitor-port must be between 0 and 65535")
     if not 0.0 < args.val_fraction < 1.0:
         raise ValueError("val-fraction must be between zero and one")
     device = torch.device(args.device)
@@ -274,6 +341,7 @@ def run(args) -> dict:
     progress_path = args.progress_jsonl or args.output.with_suffix(".progress.jsonl")
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     progress_path.write_text("", encoding="utf-8")
+    monitor = _start_monitor(progress_path, args.monitor_port) if args.monitor_port else None
     order = list(train_paths)
     step = 0
     processed_items = 0
@@ -449,6 +517,9 @@ def run(args) -> dict:
     }
     report_path = args.output.with_suffix(".json")
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if monitor is not None:
+        monitor.shutdown()
+        monitor.server_close()
     return report
 
 
@@ -476,6 +547,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-every", type=int, default=500)
     parser.add_argument("--validation-probe-items", type=int, default=64)
     parser.add_argument("--progress-jsonl", type=Path)
+    parser.add_argument(
+        "--monitor-port", type=int, default=0,
+        help="Serve an ephemeral localhost loss monitor on this port (0 disables it)")
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")

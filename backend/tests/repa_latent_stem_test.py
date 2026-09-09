@@ -1,4 +1,7 @@
+import json
 import sqlite3
+import urllib.error
+import urllib.request
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +13,9 @@ from core.training.repa_latent_stem import (
     LatentRepaStem, economic_gate, encode_latent_targets, load_latent_stem,
     save_latent_stem, vae_encoder_identity,
 )
-from core.training.probes.distill_repa_latent_stem import _images, _onnx_companion
+from core.training.probes.distill_repa_latent_stem import (
+    _images, _onnx_companion, _start_monitor,
+)
 
 
 class _VAE(nn.Module):
@@ -147,6 +152,24 @@ def test_onnx_distillation_finds_parent_safetensors(tmp_path):
     companion = tmp_path / "latest.safetensors"
     companion.write_bytes(b"weights")
     assert _onnx_companion(str(onnx)) == str(companion.resolve())
+
+
+def test_ephemeral_monitor_serves_only_html_and_progress(tmp_path):
+    progress = tmp_path / "run.progress.jsonl"
+    progress.write_text('{"step": 3, "train_loss": 0.25}\n', encoding="utf-8")
+    server = _start_monitor(progress, 0)
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urllib.request.urlopen(base + "/", timeout=2) as response:
+            assert b"REPA stem distillation" in response.read()
+        with urllib.request.urlopen(base + "/progress", timeout=2) as response:
+            assert json.loads(response.read()) == [{"step": 3, "train_loss": 0.25}]
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(base + "/other", timeout=2)
+        assert refused.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_production_loss_switch_consumes_clean_latents():

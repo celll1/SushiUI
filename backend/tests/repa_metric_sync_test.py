@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -63,9 +64,10 @@ def test_generic_path_reads_repa_after_its_existing_loss_sync():
     source = inspect.getsource(BaseTrainer._execute_forward_backward)
 
     loss_sync = source.index("loss_value = loss.item()")
+    controlnet_read = source.index("self._flush_deferred_controlnet_metrics()")
     generic_read = source.index("self._flush_deferred_extra_metrics()")
     repa_read = source.index("self._flush_repa_loss_metric_after_backward(")
-    assert loss_sync < generic_read < repa_read
+    assert loss_sync < controlnet_read < generic_read < repa_read
 
 
 def test_generic_deferred_scalar_is_detached_then_logged():
@@ -85,3 +87,39 @@ def test_generic_deferred_scalar_is_detached_then_logged():
     BaseTrainer._flush_deferred_extra_metrics(trainer)
     assert trainer._pending_extra_metrics == {}
     assert trainer._extra_metrics == {"component_loss": 0.625}
+
+
+def test_controlnet_diagnostics_materialize_after_backward():
+    trainer = SimpleNamespace(
+        _last_gen_region_loss=torch.tensor(0.75),
+        _last_seam_ring_loss=(torch.tensor(0.5), torch.tensor(2.0)),
+        _last_loss_vs_t={
+            "t": torch.tensor([0.1, 0.2]),
+            "eps_known": torch.tensor([1.0, float("nan")]),
+        },
+    )
+
+    BaseTrainer._flush_deferred_controlnet_metrics(trainer)
+
+    assert trainer._last_gen_region_loss == 0.75
+    assert trainer._last_seam_ring_loss == 0.5
+    assert trainer._last_loss_vs_t["t"] == pytest.approx([0.1, 0.2])
+    assert trainer._last_loss_vs_t["eps_known"] == [1.0, None]
+
+
+def test_controlnet_step_has_no_pre_backward_scalar_read():
+    source = inspect.getsource(BaseTrainer.train_step_controlnet)
+
+    assert ".item()" not in source
+
+
+def test_controlnet_empty_seam_ring_stays_unreported():
+    trainer = SimpleNamespace(
+        _last_gen_region_loss=None,
+        _last_seam_ring_loss=(torch.tensor(0.0), torch.tensor(0.0)),
+        _last_loss_vs_t=None,
+    )
+
+    BaseTrainer._flush_deferred_controlnet_metrics(trainer)
+
+    assert trainer._last_seam_ring_loss is None

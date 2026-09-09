@@ -11195,6 +11195,7 @@ class BaseTrainer(ABC):
         _loss_item_t0 = time.perf_counter()
         loss_value = loss.item()
         _loss_item_wait_s = time.perf_counter() - _loss_item_t0
+        self._flush_deferred_controlnet_metrics()
         self._flush_deferred_extra_metrics()
         # loss.item() has already waited for the forward stream after backward was
         # enqueued; reading REPA here adds no earlier synchronization point.
@@ -11669,7 +11670,9 @@ class BaseTrainer(ABC):
             with torch.no_grad():
                 _gen_mask = (_wm > 0.5).float()  # [B,1,H,W]
                 _denom = _gen_mask.sum() * float(loss_per_element.shape[1]) + 1e-8
-                self._last_gen_region_loss = float((loss_per_element * _gen_mask).sum() / _denom)
+                self._last_gen_region_loss = (
+                    (loss_per_element * _gen_mask).sum() / _denom
+                ).detach()
             # seam_loss (monitoring, no grad, ALWAYS computed in outpaint mode --
             # behavior-neutral instrument): raw (unweighted) MSE over ONLY the
             # 1-cell generate-side ring immediately adjacent to the known region
@@ -11683,12 +11686,14 @@ class BaseTrainer(ABC):
                 _dil = F.max_pool2d(_known_mask.float(), kernel_size=3, stride=1, padding=1)
                 _ring_mask = (_dil > 0.5) & (~_known_mask)  # [B,1,H,W] bool
                 _ring_count = _ring_mask.float().sum()
-                if _ring_count.item() > 0:
-                    _ring_denom = _ring_count * float(loss_per_element.shape[1]) + 1e-8
-                    self._last_seam_ring_loss = float((loss_per_element * _ring_mask.float()).sum() / _ring_denom)
-                else:
-                    # Degenerate rect (e.g. full-bleed / no known region) -> no ring exists.
-                    self._last_seam_ring_loss = None
+                _ring_denom = _ring_count * float(loss_per_element.shape[1]) + 1e-8
+                _ring_loss = (
+                    (loss_per_element * _ring_mask.float()).sum() / _ring_denom
+                )
+                # Resolve the degenerate no-ring case after backward's existing
+                # stream wait instead of reading _ring_count here.
+                self._last_seam_ring_loss = (
+                    _ring_loss.detach(), _ring_count.detach())
             # Loss-vs-timestep instrumentation (monitoring, no grad, ALWAYS on in
             # outpaint mode -- see scratchpad "Outpaint ControlNet: loss-vs-timestep
             # instrumentation" design doc). Per-SAMPLE raw eps-space region MSE
@@ -11707,15 +11712,12 @@ class BaseTrainer(ABC):
                 _eps_seam_ps = _per_sample_masked_mean(loss_per_element, _ring_mask.float(), _lvt_c)
                 _snr_ps = _per_sample_snr(noise_process, timesteps, self.noise_scheduler, alphas_cumprod_cached)
 
-                def _nan_to_none(_vals):
-                    return [None if v != v else v for v in _vals]
-
                 self._last_loss_vs_t = {
-                    "t": timesteps.detach().float().cpu().tolist(),
-                    "snr": _snr_ps.detach().float().cpu().tolist(),
-                    "eps_known": _nan_to_none(_eps_known_ps.detach().cpu().tolist()),
-                    "eps_gen": _nan_to_none(_eps_gen_ps.detach().cpu().tolist()),
-                    "eps_seam": _nan_to_none(_eps_seam_ps.detach().cpu().tolist()),
+                    "t": timesteps.detach().float(),
+                    "snr": _snr_ps.detach().float(),
+                    "eps_known": _eps_known_ps.detach(),
+                    "eps_gen": _eps_gen_ps.detach(),
+                    "eps_seam": _eps_seam_ps.detach(),
                 }
             # Cross-seam error-continuity aux term (grad-carrying), opt-in via
             # outpaint_seam_grad_lambda (default 0.0 = off, term not computed,
@@ -11798,14 +11800,14 @@ class BaseTrainer(ABC):
                 _lvt_c2 = float(recon_loss_per_element.shape[1])
                 _x0_known_ps = _per_sample_masked_mean(recon_loss_per_element, _known_mask, _lvt_c2)
                 _x0_gen_ps = _per_sample_masked_mean(recon_loss_per_element, _gen_mask, _lvt_c2)
-                self._last_loss_vs_t["x0_known"] = _nan_to_none(_x0_known_ps.detach().cpu().tolist())
-                self._last_loss_vs_t["x0_gen"] = _nan_to_none(_x0_gen_ps.detach().cpu().tolist())
+                self._last_loss_vs_t["x0_known"] = _x0_known_ps.detach()
+                self._last_loss_vs_t["x0_gen"] = _x0_gen_ps.detach()
 
         if profile_vram:
             print_vram_usage("[train_step_controlnet] After loss calculation")
 
-        pred_loss_value = mse_loss.item()
-        recon_loss_value = recon_loss.item()
+        pred_loss_value = mse_loss.detach()
+        recon_loss_value = recon_loss.detach()
 
         # Cleanup
         del noise, noisy_latents, model_pred, target, recon_loss, predicted_latent
@@ -19562,6 +19564,33 @@ class BaseTrainer(ABC):
         self._pending_extra_metrics = {}
         for name, value in pending.items():
             self.log_extra_metric(name, value.item())
+
+    def _flush_deferred_controlnet_metrics(self) -> None:
+        """Materialize ControlNet diagnostics after backward has synchronized."""
+        gen_loss = getattr(self, "_last_gen_region_loss", None)
+        if isinstance(gen_loss, torch.Tensor):
+            self._last_gen_region_loss = float(gen_loss.item())
+
+        seam_loss = getattr(self, "_last_seam_ring_loss", None)
+        if isinstance(seam_loss, tuple):
+            value, count = seam_loss
+            self._last_seam_ring_loss = (
+                float(value.item()) if count.item() > 0 else None)
+
+        loss_vs_t = getattr(self, "_last_loss_vs_t", None)
+        if not isinstance(loss_vs_t, dict):
+            return
+
+        def _to_json_values(value):
+            if not isinstance(value, torch.Tensor):
+                return value
+            values = value.float().cpu().tolist()
+            return [None if item != item else item for item in values]
+
+        self._last_loss_vs_t = {
+            name: _to_json_values(value)
+            for name, value in loss_vs_t.items()
+        }
 
     def _begin_repa_profile_call(self, repa_pixels: Optional[torch.Tensor]) -> None:
         """Arm direct timers for one REPA-bearing call, without changing normal runs."""

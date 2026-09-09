@@ -28,6 +28,7 @@ bookkeeping: slice the batch list, ``enumerate`` it, save through
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -215,6 +216,38 @@ def test_run112_state_sequence_is_no_longer_reproducible():
         batch_idx = 7348                        # batches consumed by that session
         assert _legacy_position(trainer, batch_idx) == 7349    # observed @113348
         assert trainer._epoch_batch_position(batch_idx) == 25139
+
+
+def test_sensenova_task_resume_requires_identical_view_signature(tmp_path):
+    trainer = StateHarness(tmp_path)
+    trainer.config = {
+        "_sensenova_explicit_tasks": ["i2t_caption"],
+        "_sensenova_prompt_template_versions": [1],
+        "_sensenova_task_views_signature": "original",
+    }
+    trainer.save_training_state(step=7, epoch=0, batch_idx=7)
+    assert trainer.load_training_state(7)["sensenova_task_state"]["version"] == 2
+
+    trainer.config["_sensenova_task_views_signature"] = "changed"
+    with pytest.raises(ValueError, match="task views"):
+        trainer.load_training_state(7)
+
+
+def test_sensenova_task_resume_refuses_missing_scheduler_state(tmp_path):
+    trainer = StateHarness(tmp_path)
+    trainer.config = {
+        "_sensenova_explicit_tasks": ["i2t_caption"],
+        "_sensenova_prompt_template_versions": [1],
+        "_sensenova_task_views_signature": "original",
+    }
+    trainer.save_training_state(step=8, epoch=0, batch_idx=8)
+    state_path = tmp_path / f"{trainer.run_name}_step_000008_state.json"
+    state = json.loads(state_path.read_text())
+    state["sensenova_task_state"] = None
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="requires task scheduler state"):
+        trainer.load_training_state(8)
 
 
 if __name__ == "__main__":

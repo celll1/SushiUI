@@ -17,8 +17,10 @@ from core.training.sensenova_tasks import (  # noqa: E402
     build_task_homogeneous_batches,
     canonicalize_tags,
     keep_hints_for_example,
+    eligible_task_views,
     required_caption_types,
     resolve_text_target,
+    task_views_signature,
 )
 from core.training.train_runner import _process_cached_items  # noqa: E402
 
@@ -84,6 +86,27 @@ def test_multiple_datasets_remain_item_proportional():
         for _item, dataset in batch:
             counts[dataset] += 1
     assert counts == {"large": 100, "small": 10}
+
+
+def test_task_view_signature_covers_order_weights_and_sources():
+    base = [{"dataset_id": 1, "task_views": VIEWS}]
+    assert task_views_signature(base) == task_views_signature(base)
+    changed = [{"dataset_id": 1, "task_views": [dict(VIEWS[0], weight=4), VIEWS[1]]}]
+    assert task_views_signature(base) != task_views_signature(changed)
+    assert task_views_signature(base) != task_views_signature([
+        {"dataset_id": 1, "task_views": list(reversed(VIEWS))}
+    ])
+
+
+def test_item_eligibility_tracks_targets_and_ti2i_reference():
+    item = _batches(1, 0)[0][0][0]
+    assert [view["task"] for view in eligible_task_views(item)] == [
+        "i2t_caption", "i2t_tags"
+    ]
+    item["_captions_by_type"]["tags"]["content"] = ""
+    assert [view["task"] for view in eligible_task_views(item)] == ["i2t_caption"]
+    item["_captions_by_type"]["natural_language"]["content"] = ""
+    assert eligible_task_views(item) == []
 
 
 def test_selected_view_does_not_mutate_persistent_bucket_item():

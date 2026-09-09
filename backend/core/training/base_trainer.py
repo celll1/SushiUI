@@ -10216,6 +10216,8 @@ class BaseTrainer(ABC):
             cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
+        # A failed attempt must not leak its detached REPA scalar into an OOM retry.
+        self._pending_repa_loss_metric = None
         # Original full-batch size, preserved across recursive splits so every
         # leaf chunk scales its loss by chunk/B_eff. Without this, accumulating
         # per-half MEAN losses overcounts the gradient (sum of means != full mean
@@ -11005,6 +11007,9 @@ class BaseTrainer(ABC):
 
         # Extract values before deleting tensors
         loss_value = loss.item()
+        # loss.item() has already waited for the forward stream after backward was
+        # enqueued; reading REPA here adds no earlier synchronization point.
+        self._flush_repa_loss_metric_after_backward()
         pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
 
@@ -19130,6 +19135,16 @@ class BaseTrainer(ABC):
         if not math.isfinite(v):
             return
         self._extra_metrics[name] = v
+
+    def _defer_repa_loss_metric(self, loss: torch.Tensor) -> None:
+        """Keep REPA's scalar on-device until the post-backward loss sync."""
+        self._pending_repa_loss_metric = loss.detach()
+
+    def _flush_repa_loss_metric_after_backward(self) -> None:
+        pending = getattr(self, "_pending_repa_loss_metric", None)
+        self._pending_repa_loss_metric = None
+        if pending is not None:
+            self.log_extra_metric("repa_loss", float(pending.item()))
 
     def _feed_lr_trigger_signals(self, step, loss, grad_norm):
         """Push this step's signals onto the LR triggers' in-memory ring (D45).

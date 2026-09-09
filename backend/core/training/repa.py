@@ -853,6 +853,10 @@ def apply_repa_loss(trainer, loss, image_tokens, repa_pixels, gh: int, gw: int):
     )
     rloss = repa_loss(image_tokens, targets, trainer.repa_projector)
     loss = loss + trainer.repa_weight * rloss
-    trainer.log_extra_metric("repa_loss", float(rloss.detach().item()))
+    defer_metric = getattr(trainer, "_defer_repa_loss_metric", None)
+    if defer_metric is not None:
+        defer_metric(rloss)
+    else:
+        trainer.log_extra_metric("repa_loss", float(rloss.detach().item()))
     del targets
     return loss

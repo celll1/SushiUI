@@ -306,7 +306,7 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # ArchHandler.repa_tap (core/training/repa.py refuses everywhere else).
     "repa": ["repa_enable", "repa_encoder_source", "repa_tagger_model_dir",
              "repa_siglip2_repo", "repa_align_depth", "repa_weight",
-             "repa_proj_lr_factor", "repa_encoder_resolution"],
+             "repa_proj_lr_factor", "repa_encoder_resolution", "repa_profile_steps"],
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {

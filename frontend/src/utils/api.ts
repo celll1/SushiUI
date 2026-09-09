@@ -6714,7 +6714,7 @@ export interface TrainingRunCreateRequest {
   sdxl_te_hidden_layer?: number;   // which TE hidden layer to tap (-2 = penultimate)
   sdxl_te_max_len?: number;        // fixed token length
   sdxl_te_train_encoder?: boolean; // false = adapters only; true = TE body + adapters
-  // REPA (Representation Alignment) — MiniT2I only
+  // REPA (Representation Alignment) — architectures advertising a REPA tap
   repa_enable?: boolean;
   repa_encoder_source?: string;        // "tagger" | "siglip2"
   repa_tagger_model_dir?: string;      // tagger model dir (empty = auto-pick)
@@ -6723,6 +6723,7 @@ export interface TrainingRunCreateRequest {
   repa_weight?: number;                // alignment loss weight (lambda)
   repa_proj_lr_factor?: number;        // projector LR multiplier (x unet_lr)
   repa_encoder_resolution?: number;    // 0 = follow encoder native image_size
+  repa_profile_steps?: number;         // first N REPA calls to profile; 0 = off
   // Ideogram4-specific
   ideogram4_lora_scope?: string;
   ideogram4_train_uncond?: boolean;

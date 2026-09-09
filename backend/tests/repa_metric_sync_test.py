@@ -53,14 +53,15 @@ def test_deferred_scalar_is_logged_and_released():
 
     assert logged == []
     assert trainer._pending_repa_loss_metric.grad_fn is None
-    BaseTrainer._flush_repa_loss_metric_after_backward(trainer)
+    wait_s = BaseTrainer._flush_repa_loss_metric_after_backward(trainer)
     assert logged == [("repa_loss", 0.375)]
     assert trainer._pending_repa_loss_metric is None
+    assert wait_s >= 0.0
 
 
 def test_generic_path_reads_repa_after_its_existing_loss_sync():
     source = inspect.getsource(BaseTrainer._execute_forward_backward)
 
     loss_sync = source.index("loss_value = loss.item()")
-    repa_read = source.index("self._flush_repa_loss_metric_after_backward()")
+    repa_read = source.index("self._flush_repa_loss_metric_after_backward(")
     assert loss_sync < repa_read

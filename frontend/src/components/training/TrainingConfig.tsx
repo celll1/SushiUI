@@ -2929,6 +2929,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 />
                 <span className="text-sm text-gray-300">REPA (Representation Alignment)</span>
               </label>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Profile calls (0 = off)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={params.repa_profile_steps ?? 0}
+                  onChange={(e) => updateParam("repa_profile_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("repa_profile_steps", 0); }}
+                  className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Direct timing for an on/off diagnostic; no database timestamps.
+                </p>
+              </div>
               {params.repa_enable && (
                 <>
                   <div className="flex gap-2">

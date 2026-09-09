@@ -69,6 +69,7 @@ def _trainer(**over):
         log_prefix="[test]",
         _last_source_region=None,
     )
+    t._repa_pix_verdict = lambda: BaseTrainer._repa_pix_verdict(t)
     for k, v in over.items():
         setattr(t, k, v)
     return t
@@ -518,3 +519,37 @@ def test_encode_image_leaves_the_callers_image_untouched(tmp_path):
                                  target_height=32, bucket_strategy="crop")
         assert (image.mode, image.size, image.tobytes()) == before, path
 
+
+# ---------------------------------------------------------------------------
+# (f) the LRU stops holding host RAM it cannot serve from
+# ---------------------------------------------------------------------------
+
+def test_a_cache_that_never_hits_is_turned_off_and_freed(tmp_path, monkeypatch):
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", 20 * 3 * S * S * 4)
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_PROBE_LOOKUPS", 64)
+    t = _trainer()
+    item = {"image_path": _striped(tmp_path)}
+
+    _fill(t, item, 200)  # each region seen once, as an epoch shows each item once
+
+    assert t._repa_pix_cache_off is True
+    assert len(t._repa_pix_cache) == 0 and t._repa_pix_cache_bytes == 0
+    box = (0, 0, 64, 128)
+    torch.testing.assert_close(_teacher(t, item, box), _teacher(_trainer(), item, box),
+                               rtol=0, atol=0)
+
+
+def test_a_cache_that_still_hits_keeps_its_entries(tmp_path, monkeypatch):
+    """Eviction alone is not the verdict: a hot set inside the budget keeps hitting."""
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_BYTES", 20 * 3 * S * S * 4)
+    monkeypatch.setattr(base_trainer, "_REPA_PIXEL_CACHE_PROBE_LOOKUPS", 64)
+    t = _trainer()
+    item = {"image_path": _striped(tmp_path)}
+
+    for r in range(100):
+        _fill(t, item, 15)                     # hot set: 15 of every 16 lookups
+        _teacher(t, item, (0, 0, 1, 128 + r))  # a region never seen again
+
+    assert t._repa_pix_verdict_done is True
+    assert getattr(t, "_repa_pix_cache_off", False) is False
+    assert len(t._repa_pix_cache) == 20

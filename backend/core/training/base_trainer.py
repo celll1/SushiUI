@@ -2214,6 +2214,13 @@ from core.training.periodic_intervals import due as interval_due, normalize_inte
 #: its window every iteration with no config key to condition on.
 _REPA_PIXEL_CACHE_BYTES = 1024 * 1024 * 1024
 
+#: Verdict window for that LRU (``_repa_pix_verdict``), opened at its first eviction.
+#: Under the floor the cache is cleared and stays off for the run. Measured against
+#: the local dataset sizes: 404 and 654 items keep it (~100% / ~90% of accesses hit),
+#: a 1M-item run does not (0 hits reachable -- one appearance per item per epoch).
+_REPA_PIXEL_CACHE_PROBE_LOOKUPS = 2048
+_REPA_PIXEL_CACHE_MIN_HIT_RATE = 0.10
+
 #: Entry cap for the REPA source-size memo. Its entries are fixed-size (a path key
 #: and a (w,h) tuple, measured 142 B), so a count states the same ~9 MiB budget.
 _REPA_SRC_SIZE_ENTRIES = 65536
@@ -3394,9 +3401,14 @@ class BaseTrainer(ABC):
             if cache is None:
                 from collections import OrderedDict
                 cache = self._repa_pix_cache = OrderedDict()
-            if cache_key is not None and cache_key in cache:
-                cache.move_to_end(cache_key)
-                return cache[cache_key]
+            if getattr(self, "_repa_pix_cache_off", False):
+                cache_key = None
+            if cache_key is not None:
+                self._repa_pix_lookups = getattr(self, "_repa_pix_lookups", 0) + 1
+                if cache_key in cache:
+                    cache.move_to_end(cache_key)
+                    self._repa_pix_hits = getattr(self, "_repa_pix_hits", 0) + 1
+                    return cache[cache_key]
 
             _b = item.get("_danbooru_image_bytes")
             if decoded_image is not None:
@@ -3428,11 +3440,16 @@ class BaseTrainer(ABC):
                 while used > _REPA_PIXEL_CACHE_BYTES and cache:
                     used -= cache.popitem(last=False)[1].nbytes
                 self._repa_pix_cache_bytes = used
-                if len(cache) < n_before and not getattr(self, "_repa_pix_cap_logged", False):
-                    self._repa_pix_cap_logged = True
-                    print(f"{self.log_prefix} [REPA] teacher-pixel cache at its "
-                          f"{_REPA_PIXEL_CACHE_BYTES / 2**30:g} GiB budget "
-                          f"(holds {len(cache)} x {S}x{S}); evicted regions are re-decoded")
+                if len(cache) < n_before:
+                    if not getattr(self, "_repa_pix_cap_logged", False):
+                        self._repa_pix_cap_logged = True
+                        print(f"{self.log_prefix} [REPA] teacher-pixel cache at its "
+                              f"{_REPA_PIXEL_CACHE_BYTES / 2**30:g} GiB budget "
+                              f"(holds {len(cache)} x {S}x{S}); evicted regions are re-decoded")
+                    if getattr(self, "_repa_pix_probe_at", None) is None:
+                        self._repa_pix_probe_at = (self._repa_pix_lookups,
+                                                   getattr(self, "_repa_pix_hits", 0))
+                self._repa_pix_verdict()
             return t
         except Exception as _e:
             if not getattr(self, "_repa_pix_warned", False):
@@ -3440,6 +3457,31 @@ class BaseTrainer(ABC):
                       f"(REPA skipped for affected batches): {_e}")
                 self._repa_pix_warned = True
             return None
+
+    def _repa_pix_verdict(self) -> None:
+        """Turn the teacher-pixel LRU off for the run once it is measurably dead.
+
+        Reuse distance is a whole epoch, so a dataset past what the budget holds
+        (606 entries at repa_size=384) hits only by luck of the shuffle -- at 1M
+        items, 0 hits for 1 GiB of host RAM. The window opens at the first
+        eviction: every miss before it is a cold one and says nothing.
+        """
+        probe = getattr(self, "_repa_pix_probe_at", None)
+        if probe is None or getattr(self, "_repa_pix_verdict_done", False):
+            return
+        n = self._repa_pix_lookups - probe[0]
+        if n < _REPA_PIXEL_CACHE_PROBE_LOOKUPS:
+            return
+        hits = getattr(self, "_repa_pix_hits", 0) - probe[1]
+        self._repa_pix_verdict_done = True
+        if hits >= n * _REPA_PIXEL_CACHE_MIN_HIT_RATE:
+            return
+        freed = getattr(self, "_repa_pix_cache_bytes", 0)
+        self._repa_pix_cache.clear()
+        self._repa_pix_cache_bytes = 0
+        self._repa_pix_cache_off = True
+        print(f"{self.log_prefix} [REPA] teacher-pixel cache off for this run: "
+              f"{hits}/{n} hits once the budget bound; freed {freed / 2**30:.2f} GiB")
 
     def _get_original_size_for_item(self, item) -> Tuple[int, int]:
         """Return the real source image (width, height) for SDXL micro-conditioning.

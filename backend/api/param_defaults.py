@@ -2826,6 +2826,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "repa_proj_lr_factor": 1.0,
     # Encoder input square resolution; 0 = follow the encoder's native image_size.
     "repa_encoder_resolution": 0,
+    # Teacher input: pixel path, or an identity-checked SDXL latent stem artifact.
+    "repa_target_source": "pixel",
+    "repa_latent_stem_path": "",
     # Profile this many forward/backward calls for an REPA on/off comparison.
     # 0 disables all instrumentation. Values are emitted in extra_metrics.
     "repa_profile_steps": 0,

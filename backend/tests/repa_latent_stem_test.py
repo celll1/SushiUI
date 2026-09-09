@@ -1,0 +1,128 @@
+from types import SimpleNamespace
+
+import pytest
+import torch
+from torch import nn
+
+from core.training.repa import RepaProjector, apply_repa_loss
+from core.training.repa_latent_stem import (
+    LatentRepaStem, economic_gate, encode_latent_targets, load_latent_stem,
+    save_latent_stem, vae_encoder_identity,
+)
+
+
+class _VAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = nn.Conv2d(3, 4, 1)
+        self.quant_conv = nn.Conv2d(4, 8, 1)
+        self.decoder = nn.Conv2d(4, 3, 1)
+        self.config = {
+            "scaling_factor": 0.13025,
+            "shift_factor": None,
+            "latents_mean": None,
+            "latents_std": None,
+            "batch_norm_eps": None,
+        }
+
+
+class _Trunk(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.layer = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, inputs_embeds, return_dict=True):
+        return SimpleNamespace(last_hidden_state=self.layer(inputs_embeds))
+
+
+class _Teacher(nn.Module):
+    def __init__(self, dim=8):
+        super().__init__()
+        self.embeddings = nn.Module()
+        self.embeddings.position_embedding = nn.Embedding(27 * 27, dim)
+        self.embeddings.register_buffer(
+            "position_ids", torch.arange(27 * 27).unsqueeze(0), persistent=False)
+        self.encoder = _Trunk(dim)
+        self.post_layernorm = nn.LayerNorm(dim)
+
+
+def test_vae_encoder_identity_ignores_decoder_but_not_encoder_or_normalization():
+    vae = _VAE()
+    initial, norm = vae_encoder_identity(vae)
+    assert norm["scaling_factor"] == 0.13025
+
+    with torch.no_grad():
+        vae.decoder.weight.add_(1)
+    assert vae_encoder_identity(vae)[0] == initial
+
+    with torch.no_grad():
+        vae.encoder.weight.add_(1)
+    assert vae_encoder_identity(vae)[0] != initial
+
+    changed = _VAE()
+    changed.load_state_dict(_VAE().state_dict())
+    before = vae_encoder_identity(changed)[0]
+    changed.config["scaling_factor"] = 0.5
+    assert vae_encoder_identity(changed)[0] != before
+
+
+def test_artifact_roundtrip_and_identity_refusal(tmp_path):
+    vae = _VAE()
+    vae_id, norm = vae_encoder_identity(vae)
+    stem = LatentRepaStem(4, 8, 32)
+    path = tmp_path / "stem.safetensors"
+    save_latent_stem(path, stem, {
+        "vae_encoder_identity": vae_id,
+        "vae_normalization": norm,
+        "teacher_identity": "teacher-a",
+    })
+    loaded, metadata = load_latent_stem(
+        path, vae=vae, teacher_identity="teacher-a", encoder_dim=8,
+        device="cpu", dtype=torch.float32)
+    assert metadata["grid"] == 27
+    assert not any(parameter.requires_grad for parameter in loaded.parameters())
+
+    with pytest.raises(ValueError, match="teacher_identity"):
+        load_latent_stem(
+            path, vae=vae, teacher_identity="teacher-b", encoder_dim=8,
+            device="cpu", dtype=torch.float32)
+
+
+def test_latent_targets_keep_teacher_position_and_trunk():
+    teacher = _Teacher().requires_grad_(False)
+    stem = LatentRepaStem(4, 8, 32)
+    latents = torch.randn(2, 4, 16, 20)
+    targets = encode_latent_targets(teacher, stem, latents, 9, 11)
+    assert targets.shape == (2, 99, 8)
+
+    targets.sum().backward()
+    assert stem.in_proj.weight.grad is not None
+    assert teacher.encoder.layer.weight.grad is None
+
+
+def test_economic_gate_reports_break_even():
+    result = economic_gate(
+        redistill_items=100, distill_ms_per_item=20,
+        online_steps=100, batch_size=4,
+        replaced_ms_per_item=6.02, stem_ms_per_item=0.08)
+    assert result["passes"] is True
+    assert result["break_even_steps"] == pytest.approx(84.175084, rel=1e-6)
+
+
+def test_production_loss_switch_consumes_clean_latents():
+    teacher = _Teacher().requires_grad_(False)
+    stem = LatentRepaStem(4, 8, 32).requires_grad_(False)
+    logged = []
+    trainer = SimpleNamespace(
+        device=torch.device("cpu"), training_dtype=torch.float32,
+        repa_target_source="latent_stem", repa_encoder=teacher,
+        repa_latent_stem=stem, repa_projector=RepaProjector(6, 8, hidden=16),
+        repa_weight=0.5, log_extra_metric=lambda name, value: logged.append((name, value)),
+    )
+    image_tokens = torch.randn(2, 9 * 11, 6, requires_grad=True)
+    clean_latents = torch.randn(2, 4, 16, 20)
+    result = apply_repa_loss(
+        trainer, image_tokens.square().mean(), image_tokens, clean_latents, 9, 11)
+    result.backward()
+    assert image_tokens.grad is not None
+    assert logged and logged[0][0] == "repa_loss"

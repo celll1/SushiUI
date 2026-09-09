@@ -3313,6 +3313,12 @@ class BaseTrainer(ABC):
         for the alignment loss.
         """
         self.repa_enable = bool(self.config.get("repa_enable", False))
+        self.repa_target_source = str(
+            self.config.get("repa_target_source", "pixel") or "pixel").strip().lower()
+        if self.repa_target_source not in ("pixel", "latent_stem"):
+            raise ValueError(
+                f"Unknown repa_target_source={self.repa_target_source!r}; expected "
+                "'pixel' or 'latent_stem'")
         self.repa_profile_steps = max(0, int(self.config.get("repa_profile_steps", 0) or 0))
         self._repa_profile_calls = 0
         self._repa_profile_samples = []
@@ -3343,6 +3349,17 @@ class BaseTrainer(ABC):
             tagger_dir = self._discover_default_tagger_dir()
             print(f"{self.log_prefix} [REPA] auto-selected tagger dir: {tagger_dir}")
 
+        if self.repa_target_source == "latent_stem":
+            if getattr(self.arch, "name", "") != "sdxl":
+                raise ValueError(
+                    "repa_target_source='latent_stem' is currently supported only "
+                    "for SDXL; use 'pixel' for other architectures")
+            if source != "tagger":
+                raise ValueError(
+                    "repa_target_source='latent_stem' currently requires "
+                    "repa_encoder_source='tagger' so the exact teacher checkpoint "
+                    "can be verified")
+
         # A teacher with no fixed square input is refused here, beside the tap
         # refusal and before the encoder is read.
         declared_size = assert_repa_teacher_fixed_resolution(
@@ -3358,6 +3375,18 @@ class BaseTrainer(ABC):
         )
         self.repa_encoder = encoder
         self.repa_enc_dim = enc_dim
+
+        if self.repa_target_source == "latent_stem":
+            from core.training.repa_latent_stem import (
+                load_latent_stem, teacher_content_identity,
+            )
+            teacher_identity = teacher_content_identity(encoder)
+            self.repa_latent_stem, self.repa_latent_stem_metadata = load_latent_stem(
+                self.config.get("repa_latent_stem_path", ""), vae=self.vae,
+                teacher_identity=teacher_identity, encoder_dim=enc_dim,
+                device=self.device, dtype=repa_dtype)
+        else:
+            self.repa_latent_stem = None
 
         res_override = int(self.config.get("repa_encoder_resolution", 0) or 0)
         sized = [s for s in (res_override, native, declared_size) if s and s > 0]
@@ -3407,7 +3436,8 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [REPA] projector resume skipped (using fresh head): {_e}")
 
         site = f" ({tap.site_labels[align]})" if align < len(tap.site_labels) else ""
-        print(f"{self.log_prefix} [REPA] enabled: source={source}, enc_dim={enc_dim}, "
+        print(f"{self.log_prefix} [REPA] enabled: source={source}, "
+              f"target_source={self.repa_target_source}, enc_dim={enc_dim}, "
               f"size={self.repa_size}, align_depth={align}/{depth}{site}, "
               f"weight={self.repa_weight}, proj_lr_factor={self.repa_proj_lr_factor}")
         if self.repa_profile_steps:
@@ -3421,6 +3451,8 @@ class BaseTrainer(ABC):
         from core.training.repa import PROJECTOR_PARAM_DTYPE
         if getattr(self, "repa_encoder", None) is not None:
             self.repa_encoder = self.repa_encoder.to(self.device)
+        if getattr(self, "repa_latent_stem", None) is not None:
+            self.repa_latent_stem = self.repa_latent_stem.to(self.device)
         if getattr(self, "repa_projector", None) is not None:
             self.repa_projector = self.repa_projector.to(
                 device=self.device, dtype=PROJECTOR_PARAM_DTYPE)
@@ -9358,7 +9390,9 @@ class BaseTrainer(ABC):
         # _src_region's pixels, at the bucket the VAE is about to see them at: REPA's
         # teacher square comes from here rather than from another downscale of the
         # original. Same consume-once contract; only kept when REPA will read it.
-        self._last_bucketed_image = image if getattr(self, "repa_enable", False) else None
+        self._last_bucketed_image = (
+            image if (getattr(self, "repa_enable", False)
+                      and getattr(self, "repa_target_source", "pixel") == "pixel") else None)
 
         # Convert to tensor and normalize
         image_array = np.array(image).astype(np.float32) / 255.0
@@ -14817,7 +14851,8 @@ class BaseTrainer(ABC):
         from core.training.repa import (assert_repa_region_reconstructible,
                                         latent_source_strategy as _repa_latent_source_strategy)
         _repa_latent_strategy = None
-        if getattr(self, "repa_enable", False):
+        if (getattr(self, "repa_enable", False)
+                and getattr(self, "repa_target_source", "pixel") == "pixel"):
             # On the arguments train() was handed, not the config: train_runner
             # passes bucket_strategy="resize" regardless of what the config says,
             # so refusing on the config would reject runs that align perfectly.
@@ -15406,7 +15441,8 @@ class BaseTrainer(ABC):
                                         injected_batch_skip_notice)
         _repa_skip_notice = injected_batch_skip_notice(
             latent_encoding_mode,
-            bool(getattr(self, "repa_enable", False)),
+            (bool(getattr(self, "repa_enable", False))
+             and getattr(self, "repa_target_source", "pixel") == "pixel"),
             self._danbooru_collector is not None,
             self._danbooru_inj_batch_size,
             self._danbooru_inj_interval,
@@ -16569,8 +16605,10 @@ class BaseTrainer(ABC):
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
                     loss_weight_maps_list = []  # Outpaint-mode per-item latent-space loss weight [1,1,H/8,W/8] or None (parallel to condition_images_list)
-                    repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (parallel to latents_list)
+                    repa_pixels_list = []  # Pixel-mode REPA inputs (parallel to latents_list).
                     _repa_active = bool(getattr(self, "repa_enable", False))
+                    _repa_pixel_mode = (
+                        _repa_active and getattr(self, "repa_target_source", "pixel") == "pixel")
                     if (_repa_active and getattr(self, "_repa_profile_calls", 0)
                             < getattr(self, "repa_profile_steps", 0)):
                         self._repa_profile_pixel_prep_ms = 0.0
@@ -16627,7 +16665,7 @@ class BaseTrainer(ABC):
                         # be absorbed as a corrupt image (run 121).
                         self._assert_item_pixel_align(item, width, height)
 
-                        if _repa_active:
+                        if _repa_pixel_mode:
                             # Cleared before the encode that may set it, so a capture
                             # left by any earlier encode (a previous item's reference
                             # image, a calibration pass) can never be read as this
@@ -16837,7 +16875,7 @@ class BaseTrainer(ABC):
                                     latents_list.append(latent)
                                     if _danb_b is not None:
                                         item["_danbooru_image_bytes"] = None
-                                    if _repa_active:
+                                    if _repa_pixel_mode:
                                         # encode_image rebinds its own local (crop/
                                         # resize return new images), so this is still
                                         # the decoded source. For an injected item it is
@@ -16860,11 +16898,11 @@ class BaseTrainer(ABC):
                         # earlier), so this keeps 1:1 alignment. None -> REPA skipped for batch.
                         _repa_pix_t0 = (
                             time.perf_counter()
-                            if (_repa_active and getattr(self, "_repa_profile_calls", 0)
+                            if (_repa_pixel_mode and getattr(self, "_repa_profile_calls", 0)
                                 < getattr(self, "repa_profile_steps", 0))
                             else 0.0
                         )
-                        if _repa_active:
+                        if _repa_pixel_mode:
                             repa_pixels_list.append(self._get_repa_pixels_for_item(
                                 item,
                                 self._repa_source_region(item, width, height,
@@ -17246,7 +17284,9 @@ class BaseTrainer(ABC):
                     # REPA clean-image batch [B,3,S,S] (CPU). Requires a pixel for every
                     # surviving item; if any failed to load, skip REPA for this batch.
                     repa_pixels_batch = None
-                    if _repa_active and repa_pixels_list and len(repa_pixels_list) == len(latents_list) \
+                    if _repa_active and not _repa_pixel_mode and latents_list:
+                        repa_pixels_batch = torch.cat(latents_list, dim=0)
+                    elif _repa_pixel_mode and repa_pixels_list and len(repa_pixels_list) == len(latents_list) \
                             and all(rp is not None for rp in repa_pixels_list):
                         repa_pixels_batch = torch.cat(repa_pixels_list, dim=0)
 

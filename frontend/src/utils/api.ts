@@ -6723,6 +6723,8 @@ export interface TrainingRunCreateRequest {
   repa_weight?: number;                // alignment loss weight (lambda)
   repa_proj_lr_factor?: number;        // projector LR multiplier (x unet_lr)
   repa_encoder_resolution?: number;    // 0 = follow encoder native image_size
+  repa_target_source?: string;          // "pixel" | "latent_stem"
+  repa_latent_stem_path?: string;       // identity-checked distilled artifact
   repa_profile_steps?: number;         // first N REPA calls to profile; 0 = off
   // Ideogram4-specific
   ideogram4_lora_scope?: string;

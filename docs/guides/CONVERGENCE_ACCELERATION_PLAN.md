@@ -336,7 +336,7 @@ G-B の仮説「正方形 squash が教師特徴を劣化させる」は、教�
    違いは NaFlex のような入力契約の違いとは別種であり、揃えると測定された利得のないまま
    既存 REPA ランの数値が動くため。意図的な相違である旨は resize 箇所に記録済み。
 
-### 5-2. latent stem 蒸留（設計・測定を記録。実装は未着手。G-B 不合格により当初の前提は失効）
+### 5-2. latent stem 蒸留（artifact生成・同一性検証・本番切替まで実装。品質判定は未実施）
 
 `(latent, 対応画像)` から pixel tagger の patch 特徴を蒸留する stem を置き、教師の
 `embeddings` を差し替える案。**根拠はコスト削減のみ**（G-B 不合格により品質側の動機は消えた。
@@ -544,7 +544,7 @@ latent セル : token = P² : 1        ← VAE 圧縮率に依らない
 |---|---|---|
 | 1 | `D_features > D_budget`（教師特徴の全件キャッシュが入らない） | **通過**（5-2-a） |
 | 2 | `C_stem < C_io` | **通過**。`onthefly_gpu` の厳しい既知基準 `C_io` = 6.02 ms/item に対し、ダミーstemは width 128 = **0.0800 ms/item**、width 256 = **0.08036 ms/item**（各 n=30 中央値） |
-| 3 | `N_redistill × C_distill < N_step × B × (C_io − C_stem)` | 蒸留後。未測定 |
+| 3 | `N_redistill × C_distill < N_step × B × (C_io − C_stem)` | artifact ごとに生成レポートへ実測値・break-even step・判定を出す。未蒸留のため数値は未測定 |
 | 4 | 保留 patch cosine と学習 A/B の非劣化（ゲート G-A） | 最後。未測定 |
 
 **ゲート G-A の設計上の要点:**
@@ -574,6 +574,38 @@ JSONを標準出力へ出す（`--output` で保存可）。forward費用だけ�
   --stem-width 128 256 --warmup 5 --iterations 30 `
   --replacement-budget-ms-per-item 6.02
 ```
+
+#### 5-2-k. 実装契約と一発評価の準備
+
+`core.training.probes.distill_repa_latent_stem` が実画像を本番と同じ `[-1,1]`、VAE posterior
+sample、VAE 正規化へ通し、stem → 教師の既存 position embedding → 凍結 27 層 trunk →
+post-layernorm を pixel 教師の `last_hidden_state` へ cosine 蒸留する。artifact は safetensors、
+同名 `.json` は保留 cosine、別画像 cosine、空間反転 cosine、蒸留 ms/item、stem ms/item、
+ゲート 3 と break-even step を記録する。
+
+```powershell
+cd backend
+..\venv\Scripts\python.exe -m core.training.probes.distill_repa_latent_stem `
+  --image-dir M:\dataset_character\character\M\mew_ichigo `
+  --image-dir M:\dataset_working\endfield_character `
+  --image-dir M:\dataset_working\copyright\kouyoku_senki_exs-tia `
+  --base-model M:\model\sdxl\Illustrious-XL-v2.0.safetensors `
+  --tagger-dir ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f `
+  --output ..\models\repa_stems\sdxl_tagger.safetensors `
+  --width 1536 --height 1536 --bucket-strategy resize `
+  --width-channels 256 --steps 1000 --max-items 4096 `
+  --expected-online-steps <planned-training-steps> --online-batch-size 4
+```
+
+本番は `repa_target_source: latent_stem` と `repa_latent_stem_path` を指定する。既定は従来どおり
+`pixel`。latent 経路は現在 SDXL + tagger に限定し、artifact の
+`encoder.* + quant_conv.* + 正規化 config`、materialize 後の tagger 重み hash
+（LoRA checkpoint の base を含む）、出力幅、27×27格子の
+いずれかが run と違えば開始前に拒否する。decoder-only VAE 差分では無効化しない。
+
+これは画素 decode/resize を除く案であり、凍結教師 trunk は残る。したがって **教師本体の
+VRAM は減らず**、stem 分だけ僅かに増える。速度とゲート3を通過しても、採否はユーザーが行う
+最後の一発 G-A（保留品質・学習 A/B）まで確定しない。
 
 ---
 

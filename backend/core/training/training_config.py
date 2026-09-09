@@ -532,6 +532,8 @@ def _build_train_section(
     train["repa_weight"] = p.get("repa_weight", TRAINING_DEFAULTS["repa_weight"])
     train["repa_proj_lr_factor"] = p.get("repa_proj_lr_factor", TRAINING_DEFAULTS["repa_proj_lr_factor"])
     train["repa_encoder_resolution"] = p.get("repa_encoder_resolution", TRAINING_DEFAULTS["repa_encoder_resolution"])
+    train["repa_target_source"] = p.get("repa_target_source", TRAINING_DEFAULTS["repa_target_source"])
+    train["repa_latent_stem_path"] = p.get("repa_latent_stem_path", TRAINING_DEFAULTS["repa_latent_stem_path"])
     train["repa_profile_steps"] = p.get("repa_profile_steps", TRAINING_DEFAULTS["repa_profile_steps"])
 
     # ---- Online Danbooru augmentation (image-generation) ----

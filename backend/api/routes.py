@@ -15796,6 +15796,8 @@ class TrainingRunCreateRequest(BaseModel):
     repa_weight: float = TRAINING_DEFAULTS["repa_weight"]
     repa_proj_lr_factor: float = Field(default=TRAINING_DEFAULTS["repa_proj_lr_factor"], ge=0)
     repa_encoder_resolution: int = TRAINING_DEFAULTS["repa_encoder_resolution"]
+    repa_target_source: Literal["pixel", "latent_stem"] = TRAINING_DEFAULTS["repa_target_source"]
+    repa_latent_stem_path: str = TRAINING_DEFAULTS["repa_latent_stem_path"]
     repa_profile_steps: int = Field(default=TRAINING_DEFAULTS["repa_profile_steps"], ge=0)
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
     anima_attn_mlp_lr_factor: float = Field(default=TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"], ge=0)

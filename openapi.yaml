@@ -12968,6 +12968,10 @@ components:
           type: integer
           minimum: 1
           default: 1
+        loras:
+          type: string
+          default: "[]"
+          description: JSON array of LoRA configs. Only understanding-branch SenseNova targets are applied; generation-only files are refused.
 
     Img2TxtResponse:
       type: object

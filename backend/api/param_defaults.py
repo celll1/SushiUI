@@ -240,6 +240,7 @@ IMG2TXT_DEFAULTS: Dict[str, Any] = {
     "repetition_penalty": None,
     "seed": -1,
     "prompt_template_version": 1,
+    "loras": [],
 }
 
 # ---------------------------------------------------------------------------

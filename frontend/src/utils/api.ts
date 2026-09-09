@@ -2409,6 +2409,7 @@ export interface Img2TxtParams {
   repetition_penalty: number | null;
   seed: number;
   prompt_template_version: number;
+  loras: LoRAConfig[];
 }
 
 export interface Img2TxtResponse {
@@ -2441,6 +2442,7 @@ export const generateImg2Txt = async (params: Img2TxtParams): Promise<Img2TxtRes
   }
   formData.append("seed", String(params.seed));
   formData.append("prompt_template_version", String(params.prompt_template_version));
+  formData.append("loras", JSON.stringify(params.loras || []));
   return (await api.post("/generate/img2txt", formData)).data;
 };
 

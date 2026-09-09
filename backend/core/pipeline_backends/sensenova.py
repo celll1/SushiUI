@@ -73,9 +73,18 @@ class SenseNovaMixin:
         )
 
     @staticmethod
-    def _sensenova_declared_branches(tensors, _components) -> int:
-        from core.models.sensenova.sensenova_lora import declared_branch_count
-        return declared_branch_count(tensors)
+    def _sensenova_declared_branches(tensors, components) -> int:
+        from core.models.sensenova.sensenova_lora import normalise_lora_state_dict
+
+        grouped = normalise_lora_state_dict(tensors)
+        enabled = set(components)
+        if enabled == {"generation", "understanding"}:
+            return len(grouped)
+        return sum(
+            1 for module_path in grouped
+            if ("mot_gen" in module_path and "generation" in enabled)
+            or ("mot_gen" not in module_path and "understanding" in enabled)
+        )
 
     @staticmethod
     def _sensenova_prepare_lora_file(file):
@@ -217,11 +226,21 @@ class SenseNovaMixin:
             self._sensenova_lora_session.state("generation").originals.clear()
             self._sensenova_lora_session.state("understanding").originals.clear()
 
-    def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
+    def _load_lora_sensenova(
+        self,
+        lora_configs: List[Dict],
+        component_names: Optional[List[str]] = None,
+    ) -> int:
         components = self._sensenova_lora_components()
         self._sensenova_lora_session.unload(components)
         if not lora_configs or components[0].module is None:
             return 0
+        if component_names is not None:
+            requested = set(component_names)
+            unknown = requested - {component.name for component in components}
+            if unknown:
+                raise ValueError(f"Unknown SenseNova LoRA component(s): {sorted(unknown)}")
+            components = [component for component in components if component.name in requested]
         result = self._sensenova_lora_session.load(lora_configs, components)
         self._sensenova_report_lora_files(result)
         return result.applied
@@ -569,6 +588,9 @@ class SenseNovaMixin:
         preprocess_seconds = generation_seconds = 0.0
         self._unload_lora_sensenova()
         try:
+            self._load_lora_sensenova(
+                params.get("loras") or [], component_names=["understanding"]
+            )
             # Img2txt is an understanding task. A swapped generation VAE is
             # intentionally neither moved nor called here.
             self._sensenova_move("transformer", self.device)

@@ -7,6 +7,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import Select from "../common/Select";
+import LoRASelector from "../common/LoRASelector";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { useStartup } from "@/contexts/StartupContext";
 import { Img2TxtParams, Img2TxtTask } from "@/utils/api";
@@ -25,6 +26,7 @@ const FALLBACK_SETTINGS: Img2TxtSettings = {
   repetition_penalty: null,
   seed: -1,
   prompt_template_version: 1,
+  loras: [],
 };
 
 const TASK_OPTIONS = [
@@ -195,6 +197,15 @@ export default function Img2TxtPanel() {
             </div>
           )}
         </Card>
+
+        <LoRASelector
+          value={settings.loras}
+          onChange={(loras) => setSettings({ ...settings, loras })}
+          disabled={ownsCurrent}
+          storageKey="img2txt_lora_collapsed"
+          simpleMode
+          loadedArch="sensenova"
+        />
 
         <Card title="Result">
           {result ? (

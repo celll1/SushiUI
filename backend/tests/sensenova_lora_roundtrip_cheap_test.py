@@ -222,6 +222,32 @@ def test_sensenova_generation_covers_both_mot_halves_the_trainer_wrapped(tmp_pat
     assert any(p.endswith(".mlp_mot_gen.gate_proj") for p in gen_paths)
 
 
+def test_understanding_only_load_accepts_mixed_file_without_touching_generation(tmp_path):
+    path, gen_paths, und_paths = train_and_save(tmp_path)
+    model = build_model()
+    backend = _Backend(model)
+
+    applied = backend._load_lora_sensenova(
+        [{"path": path, "strength": STRENGTH}],
+        component_names=["understanding"],
+    )
+
+    assert applied == PER_BRANCH
+    assert composite_paths(model) == und_paths
+    assert not (composite_paths(model) & gen_paths)
+
+
+def test_understanding_only_load_refuses_generation_only_file(tmp_path):
+    path, _gen_paths, _und_paths = train_and_save(tmp_path)
+    gen_only = half_only(tmp_path, path, "generation-only.safetensors", "gen")
+
+    with pytest.raises(AdapterIncompatible, match="0 of 0 module"):
+        _Backend(build_model())._load_lora_sensenova(
+            [{"path": gen_only, "strength": STRENGTH}],
+            component_names=["understanding"],
+        )
+
+
 def test_sensenova_wrapped_forward_is_base_plus_scaled_branch(tmp_path):
     path, gen_paths, und_paths = train_and_save(tmp_path)
 

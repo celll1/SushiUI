@@ -32,6 +32,8 @@ class AceStepArchHandler(ArchHandler):
     # xt = (1-sigma)*latents + sigma*noise (ops/acestep_ops.py train_step; the
     # vendored model's own x1=noise naming). sampler t=0 is clean.
     timestep_convention = "t0"
+    # ops/acestep_ops.py train_step: target = noise - latents.
+    velocity_sign = "eps_minus_x0"
 
     def lora_adapter_class(self):
         from core.training.adapters import AceStepLoRAAdapter

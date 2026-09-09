@@ -37,6 +37,10 @@ class MiniT2IArchHandler(ArchHandler):
     # documented there as "t=1 data, t=0 noise"). sampler t=1 is clean -- the
     # inverse of the SD3/FLUX-style default.
     timestep_convention = "t1"
+    # No velocity: the network emits x_0 (ops/minit2i_ops.py train_step) and the
+    # target is (images - x_t)/clamp(1-t), a scaled difference against the NOISY
+    # sample -- see ArchHandler.velocity_sign.
+    velocity_sign = None
 
     def resolve_wiring(self, trainer):
         """MINIT2I_WIRING describes the PIXEL variant; a latent checkpoint has a

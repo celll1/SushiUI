@@ -528,6 +528,28 @@ class ArchHandler(ABC):
         """
         return self.timestep_convention
 
+    #: Which velocity this architecture's ``train_step`` regresses onto, i.e.
+    #: the ``velocity_sign`` its predictions must be handed to
+    #: ``ops/x0_recovery.predict_x0`` with. The two admitted strings are
+    #: ``ops.x0_recovery.VELOCITY_SIGNS``:
+    #:
+    #:   ``"eps_minus_x0"`` -- ``v = noise - x0`` (=> ``x0 = z - t*v``), the
+    #:   usual flow-matching sign. ``"x0_minus_eps"`` -- ``v = x0 - noise``
+    #:   (=> ``x0 = z + t*v``), the inverted one.
+    #:
+    #:   ``None`` -- this architecture's network does not emit a velocity, so no
+    #:   sign applies. MiniT2I and SenseNova emit x_0 directly and build their
+    #:   target as a SCALED difference against the noisy sample, not against the
+    #:   noise, so any sign declared for them would be a value ``predict_x0``
+    #:   would silently misuse. ``None`` is also the unset default: a new handler
+    #:   that forgets to declare fails ``velocity_sign_declaration_test.py``
+    #:   rather than inheriting a plausible sign.
+    #:
+    #: The declaration exists because a wrong sign is silent -- no exception, no
+    #: NaN, a tensor off by ``2*t*v``. Callers read it here instead of
+    #: hardcoding a literal per call site.
+    velocity_sign: Optional[str] = None
+
     #: At which stage this architecture can build the SAME null condition its
     #: inference CFG uncond branch uses, or ``None`` when it cannot build one at
     #: all. Three admitted values:

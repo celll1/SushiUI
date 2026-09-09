@@ -4,16 +4,15 @@ The math itself is NOT duplicated here: ``predict_x0`` delegates to
 ``base_trainer.predict_original_latent_unified``, and ``snr_band_mask`` to
 ``base_trainer._per_sample_snr``.
 
-Velocity sign is the trap. Most archs train ``v = eps - x0`` (=> ``x0 = z - t*v``),
-but Z-Image, Ideogram 4 and MiniMax-H3 train ``v = x0 - eps`` (=> ``x0 = z + t*v``);
-passing the wrong ``velocity_sign`` returns a plausible-looking tensor that is
-wrong by ``2*t*v``. See ``ops/zimage_ops.py``, ``ops/ideogram4_ops.py``,
-``ops/minimax_h3_ops.py``.
+Velocity sign is the trap: passing the wrong ``velocity_sign`` returns a
+plausible-looking tensor that is wrong by ``2*t*v``. Which sign an architecture
+trains is declared once, on ``arch/base_arch.ArchHandler.velocity_sign``, and
+callers read it from there rather than spelling a literal.
 
-MiniT2I and SenseNova are OUT OF SCOPE: their models emit x_0 directly under the
-t=1-is-clean convention and their targets carry an extra scale (``noise_scale``, a
-clamped denominator), so no argument here returns their x_0. See
-``ops/minit2i_ops.py`` and ``ops/sensenova_ops.py``.
+MiniT2I and SenseNova declare ``None`` and are OUT OF SCOPE: their models emit
+x_0 directly under the t=1-is-clean convention and their targets carry an extra
+scale (``noise_scale``, a clamped denominator), so no argument here returns
+their x_0. See ``ops/minit2i_ops.py`` and ``ops/sensenova_ops.py``.
 """
 
 from __future__ import annotations
@@ -64,8 +63,8 @@ def predict_x0(
     inside, because the aux-loss callers this exists for need the gradient.
 
     ``velocity_sign`` has no default on purpose. A wrong sign is silent — no
-    exception, no NaN, just a tensor off by ``2*t*v`` — so the caller states which
-    convention its arch trains rather than inheriting one.
+    exception, no NaN, just a tensor off by ``2*t*v`` — so the caller passes its
+    arch's ``ArchHandler.velocity_sign`` rather than inheriting one.
     """
     noise_process = str(noise_process).strip().lower()
     prediction_target = str(prediction_target).strip().lower()

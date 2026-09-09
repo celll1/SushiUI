@@ -511,6 +511,7 @@ def train_step(
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.arch.anima import AnimaArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         pred_x0_val = noisy_latents - sigma_view * model_pred
         aux_loss, _ = compute_crop_decode_loss(
@@ -522,7 +523,7 @@ def train_step(
             noise_process="flow",
             prediction_target="velocity",
             noise_scheduler=trainer.noise_scheduler,
-            velocity_sign="eps_minus_x0",
+            velocity_sign=AnimaArchHandler.velocity_sign,
             predicted_latent=pred_x0_val,
             main_loss=loss,
         )

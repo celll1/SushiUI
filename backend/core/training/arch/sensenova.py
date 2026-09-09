@@ -50,6 +50,10 @@ class SenseNovaArchHandler(ArchHandler):
     # sensenova_pipeline_ops.py at inference). sampler t=1 is clean -- the
     # inverse of the SD3/FLUX-style default.
     timestep_convention = "t1"
+    # No velocity: the network emits x_0 (ops/sensenova_ops.py train_step) and the
+    # target is (x0_tokens - z)/clamp(1-t), a scaled difference against the NOISY
+    # sample -- see ArchHandler.velocity_sign.
+    velocity_sign = None
 
     @property
     def pixel_align(self) -> int:

@@ -61,6 +61,9 @@ class MiniMaxH3ArchHandler(ArchHandler):
     # shift), monotonic increasing in the sampler draw u. sampler u=0 -> sigma=0
     # -> x_t=x0 (clean); u=1 -> sigma=1 -> x_t=noise. sampler t=0 is clean.
     timestep_convention = "t0"
+    # ops/minimax_h3_ops.py train_step: target_v = latents - eps_v,
+    # target_a = x0_a - eps_a -- the opposite sign to the usual flow matching.
+    velocity_sign = "x0_minus_eps"
 
     def lora_adapter_class(self):
         from core.training.adapters import MiniMaxH3LoRAAdapter

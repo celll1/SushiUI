@@ -34,6 +34,9 @@ class Flux2ArchHandler(ArchHandler):
     # (ops/flux2_ops.py train_step; default and only supported noise_process).
     # sampler t=0 is clean.
     timestep_convention = "t0"
+    # ops/flux2_ops.py train_step builds the target through get_target_unified,
+    # whose flow/velocity branch returns noise - latents.
+    velocity_sign = "eps_minus_x0"
 
     def lora_adapter_class(self):
         from core.training.adapters import FLUX2LoRAAdapter

@@ -31,6 +31,9 @@ class Ideogram4ArchHandler(ArchHandler):
     # noisy = (1-sigma)*latents + sigma*noise (ops/ideogram4_ops.py, "sigma=1 ->
     # noise" comment). sampler t=0 is clean.
     timestep_convention = "t0"
+    # ops/ideogram4_ops.py train_step: v_target = latents - noise, matching the
+    # inference path's scheduler.step(-v).
+    velocity_sign = "x0_minus_eps"
 
     def lora_adapter_class(self):
         from core.training.adapters import Ideogram4LoRAAdapter

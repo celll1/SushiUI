@@ -64,10 +64,11 @@ def test_generic_path_reads_repa_after_its_existing_loss_sync():
     source = inspect.getsource(BaseTrainer._execute_forward_backward)
 
     loss_sync = source.index("loss_value = loss.item()")
+    latent_copy = source.index("self._flush_deferred_predicted_latent()")
     controlnet_read = source.index("self._flush_deferred_controlnet_metrics()")
     generic_read = source.index("self._flush_deferred_extra_metrics()")
     repa_read = source.index("self._flush_repa_loss_metric_after_backward(")
-    assert loss_sync < controlnet_read < generic_read < repa_read
+    assert loss_sync < latent_copy < controlnet_read < generic_read < repa_read
 
 
 def test_generic_deferred_scalar_is_detached_then_logged():

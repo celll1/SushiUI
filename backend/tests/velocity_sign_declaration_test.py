@@ -13,7 +13,8 @@ or an inline x_0 recovery fails until the declaration is revisited:
   (3) the declaration matches the INLINE x_0 recoveries that were deliberately
       left in place (``noisy -/+ sigma * v``) -- these carry the sign in the
       shape of the expression, and moving them would change bf16 arithmetic;
-  (4) no call site spells a sign literal any more;
+  (4) every ops call site passes its OWN arch's handler attribute -- not a
+      literal, and not another arch's handler;
   (5) the declared string means, in ``predict_x0``, what the target says.
 
 Run with:
@@ -50,6 +51,15 @@ X0_NAME = re.compile(r"(^|_)pred_x0|predicted_latent")
 
 def _names(node: ast.AST) -> Set[str]:
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _handler_names(node: ast.AST) -> Set[str]:
+    """Class names an attribute is read off; empty for a shape not recognised here."""
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, ast.IfExp):  # sd_sdxl_ops picks SD15 or SDXL at runtime
+        return _handler_names(node.body) | _handler_names(node.orelse)
+    return set()
 
 
 def _sign_of_difference(node: ast.BinOp) -> Optional[str]:
@@ -132,6 +142,14 @@ def ops_module_path(handler_cls) -> Path:
     return OPS_DIR / f"{found[0]}.py"
 
 
+def handlers_by_ops_module() -> dict:
+    """ops module file name -> the handler class names whose train_step uses it."""
+    owners: dict = {}
+    for cls in ARCH_REGISTRY.values():
+        owners.setdefault(ops_module_path(cls).name, set()).add(cls.__name__)
+    return owners
+
+
 class DeclarationTest(unittest.TestCase):
     def test_every_registered_arch_declares_a_sign(self):
         for name, cls in ARCH_REGISTRY.items():
@@ -168,9 +186,12 @@ class DeclarationTest(unittest.TestCase):
         )
 
     def test_no_ops_call_site_spells_a_sign_literal(self):
+        """And each call site reads the handler of the arch THAT module trains."""
+        owners = handlers_by_ops_module()
         for path in sorted(OPS_DIR.glob("*.py")):
             if path.name == "x0_recovery.py":
                 continue
+            allowed = owners.get(path.name)
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -182,6 +203,20 @@ class DeclarationTest(unittest.TestCase):
                         self.assertNotIsInstance(
                             kw.value, ast.Constant,
                             "pass the arch handler's velocity_sign, not a literal",
+                        )
+                        if allowed is None:
+                            continue  # shared helper: forwards its own parameter
+                        self.assertTrue(
+                            isinstance(kw.value, ast.Attribute)
+                            and kw.value.attr == "velocity_sign",
+                            f"{path.name}:{node.lineno}: pass <ArchHandler>.velocity_sign",
+                        )
+                        read = _handler_names(kw.value.value)
+                        self.assertTrue(
+                            read and read <= allowed,
+                            f"{path.name}:{node.lineno} reads {sorted(read)}.velocity_sign, "
+                            f"but this module trains {sorted(allowed)}; another arch's sign "
+                            f"is as silent as a literal one -- x_0 off by 2*t*v",
                         )
 
     def test_declared_sign_round_trips_through_predict_x0(self):

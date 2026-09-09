@@ -20,6 +20,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.inference.context_tiled_decode import TileRect
+from core.training.arch.ideogram4 import Ideogram4ArchHandler
+from core.training.arch.lens import LensArchHandler
 from core.training.ops.crop_decode_loss import (
     CropDecodeLossModule,
     compute_crop_decode_loss,
@@ -162,8 +164,15 @@ def test_anima_crop_decode_loss(base_trainer):
     assert "crop_decode_loss" in base_trainer.metrics
 
 
-def test_lens_and_ideogram4_unpatchify_routing(base_trainer):
-    """Lens and Ideogram 4: Packed latents [B, N, 128] unpacked via _unpatchify."""
+@pytest.mark.parametrize(
+    "handler_cls", [LensArchHandler, Ideogram4ArchHandler], ids=["lens", "ideogram4"]
+)
+def test_lens_and_ideogram4_unpatchify_routing(base_trainer, handler_cls):
+    """Lens and Ideogram 4: Packed latents [B, N, 128] unpacked via _unpatchify.
+
+    The two archs declare opposite velocity signs, so the prediction is built from
+    the handler's declaration rather than a literal.
+    """
     from core.models.lens.lens_pipeline_ops import _unpatchify
 
     B = 1
@@ -184,7 +193,8 @@ def test_lens_and_ideogram4_unpatchify_routing(base_trainer):
 
     latents_2d = _to_2d(clean_seq)
     noisy_2d = _to_2d(packed_seq)
-    v_pred_2d = noisy_2d - latents_2d
+    sign = handler_cls.velocity_sign
+    v_pred_2d = (latents_2d - noisy_2d) if sign == "x0_minus_eps" else (noisy_2d - latents_2d)
 
     assert latents_2d.shape == (B, 32, latent_h * 2, latent_w * 2)
 
@@ -197,7 +207,7 @@ def test_lens_and_ideogram4_unpatchify_routing(base_trainer):
         noise_process="flow",
         prediction_target="velocity",
         noise_scheduler=None,
-        velocity_sign="eps_minus_x0",
+        velocity_sign=sign,
     )
 
     assert aux_loss is not None

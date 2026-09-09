@@ -97,6 +97,12 @@ export default function Img2TxtPanel() {
     setPreview(URL.createObjectURL(file));
   };
 
+  const clearImage = () => {
+    if (preview) URL.revokeObjectURL(preview);
+    setImage(null);
+    setPreview(null);
+  };
+
   const handleDragOver = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -169,10 +175,18 @@ export default function Img2TxtPanel() {
               className="hidden"
               type="file"
               accept="image/*"
-              onChange={(event) => selectImage(event.target.files?.[0])}
+              onChange={(event) => {
+                selectImage(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
             />
           </label>
-          {image && <p className="truncate text-xs text-gray-500">{image.name}</p>}
+          {image && (
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 flex-1 truncate text-xs text-gray-500">{image.name}</p>
+              <Button size="sm" variant="secondary" onClick={clearImage}>Clear</Button>
+            </div>
+          )}
         </Card>
 
         <Card title="Task and instruction">
@@ -248,6 +262,12 @@ export default function Img2TxtPanel() {
                 value={editedText}
                 onChange={(event) => setEditedText(event.target.value)}
               />
+              {result.structured?.caption && (
+                <div className="rounded border border-gray-800 bg-gray-900 p-2.5">
+                  <p className="mb-1 text-xs font-medium text-gray-400">Parsed caption</p>
+                  <p className="whitespace-pre-wrap text-sm text-gray-200">{result.structured.caption}</p>
+                </div>
+              )}
               {result.structured?.tags && <p className="text-xs text-gray-400">Tags: {result.structured.tags.join(", ")}</p>}
               <p className="text-xs text-gray-500">Seed {result.seed} · {(result.timing.generation_seconds).toFixed(2)}s · template v{result.promptTemplateVersion}</p>
               {result.warnings?.map((warning, index) => <p key={index} className="text-xs text-amber-300">{warning}</p>)}

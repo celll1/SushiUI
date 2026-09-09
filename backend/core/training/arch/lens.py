@@ -37,6 +37,7 @@ class LensArchHandler(ArchHandler):
     timestep_convention = "t0"
     # ops/lens_ops.py train_step: v_target = noise - latents.
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
     # The inference uncond branch for a blank negative is zero features plus an
     # all-false mask at the positive's own length
     # (lens_pipeline_ops.encode_prompt), so the aligned null is reachable by

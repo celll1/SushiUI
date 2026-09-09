@@ -38,6 +38,7 @@ class AnimaArchHandler(ArchHandler):
     timestep_convention = "t0"
     # ops/anima_ops.py train_step: target = noise - latents.
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
 
     def lora_adapter_class(self):
         from core.training.adapters import AnimaLoRAAdapter

@@ -54,6 +54,7 @@ class SenseNovaArchHandler(ArchHandler):
     # target is (x0_tokens - z)/clamp(1-t), a scaled difference against the NOISY
     # sample -- see ArchHandler.velocity_sign.
     velocity_sign = None
+    consumes_reconstruction_loss_weight = True
 
     @property
     def pixel_align(self) -> int:

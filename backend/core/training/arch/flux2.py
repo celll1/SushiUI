@@ -37,6 +37,7 @@ class Flux2ArchHandler(ArchHandler):
     # ops/flux2_ops.py train_step builds the target through get_target_unified,
     # whose flow/velocity branch returns noise - latents.
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
 
     def lora_adapter_class(self):
         from core.training.adapters import FLUX2LoRAAdapter

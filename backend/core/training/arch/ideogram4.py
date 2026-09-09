@@ -34,6 +34,7 @@ class Ideogram4ArchHandler(ArchHandler):
     # ops/ideogram4_ops.py train_step: v_target = latents - noise, matching the
     # inference path's scheduler.step(-v).
     velocity_sign = "x0_minus_eps"
+    consumes_reconstruction_loss_weight = True
 
     def lora_adapter_class(self):
         from core.training.adapters import Ideogram4LoRAAdapter

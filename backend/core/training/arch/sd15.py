@@ -34,6 +34,7 @@ class SD15ArchHandler(ArchHandler):
     # whose velocity branches are alpha*noise - sigma*latents (ddpm) and
     # noise - latents (flow) -- the same sign under both noise processes.
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # ops/sd_sdxl_ops.py train_step maps the sampler's [0,1] draw

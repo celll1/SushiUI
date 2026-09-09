@@ -4808,9 +4808,15 @@ class BaseTrainer(ABC):
             ops/sd_sdxl_ops.py, ops/flux2_ops.py, ops/zimage_ops.py (sd15, sdxl,
             flux2, zimage). train_step_controlnet never reads either attribute,
             so ControlNet training does not consume them on any architecture.
+          - reconstruction_loss_weight: per-arch consumption is declared by
+            ArchHandler.consumes_reconstruction_loss_weight, not listed here
+            (unused_loss_regularization_warning_test.py pins each declaration
+            against the arch's ops module). train_step_controlnet never reads
+            it, so a ControlNet run drops it on every architecture.
         This function only prints; it does not alter self.min_snr_gamma,
-        self.snr_regularization_loss, or self.energy_regularization_loss, so
-        loss computation is unaffected either way.
+        self.snr_regularization_loss, self.energy_regularization_loss, or
+        self.reconstruction_loss_weight, so loss computation is unaffected
+        either way.
         """
         use_condition_images = bool(getattr(self, "use_condition_images", False))
         prediction_target = getattr(self, "prediction_target", "epsilon")
@@ -4845,6 +4851,22 @@ class BaseTrainer(ABC):
                 else f"not read by architecture '{arch_name or 'unknown'}'"
             )
             unused.append(f"energy_regularization_* (regularization_type=energy): {reason}")
+        recon_weight = float(getattr(self, "reconstruction_loss_weight", 0.0) or 0.0)
+        if recon_weight > 0:
+            arch_handler = getattr(self, "arch", None)
+            if arch_handler is None:
+                from core.training.arch import ARCH_REGISTRY
+                arch_handler = ARCH_REGISTRY.get(arch_name)
+            if use_condition_images:
+                unused.append(
+                    f"reconstruction_loss_weight={recon_weight}: not read by ControlNet "
+                    f"training (train_step_controlnet) on any architecture"
+                )
+            elif not getattr(arch_handler, "consumes_reconstruction_loss_weight", False):
+                unused.append(
+                    f"reconstruction_loss_weight={recon_weight}: not read by architecture "
+                    f"'{arch_name or 'unknown'}'"
+                )
 
         if unused:
             print(f"{self.log_prefix} WARNING: the following configured loss-weighting "

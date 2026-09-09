@@ -45,6 +45,7 @@ class Ltx2ArchHandler(ArchHandler):
     timestep_convention = "t0"
     # ops/ltx2_ops.py train_step: target = _pack_latents(noise - latents).
     velocity_sign = "eps_minus_x0"
+    consumes_reconstruction_loss_weight = True
 
     def lora_adapter_class(self):
         from core.training.adapters import Ltx2LoRAAdapter

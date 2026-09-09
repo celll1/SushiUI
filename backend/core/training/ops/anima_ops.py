@@ -503,10 +503,11 @@ def train_step(
     # Reconstruction loss (predicted x0 vs ground-truth x0) — optional.
     recon_loss_value = 0.0
     if trainer.reconstruction_loss_weight > 0:
-        with torch.no_grad():
-            pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
-            recon_loss = F.mse_loss(pred_x0.float(), latents.float())
-            recon_loss_value = recon_loss.item()
+        # Grad-carrying on purpose: this term is added to the backward loss, and
+        # under no_grad it would only shift the reported number.
+        pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
+        recon_loss = F.mse_loss(pred_x0.float(), latents.float())
+        recon_loss_value = recon_loss.item()
         loss = loss + trainer.reconstruction_loss_weight * recon_loss
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)

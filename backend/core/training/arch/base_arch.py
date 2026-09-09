@@ -552,13 +552,22 @@ class ArchHandler(ABC):
 
     #: Whether this architecture's ``train_step`` folds
     #: ``trainer.reconstruction_loss_weight`` into the loss. ``False`` -- the
-    #: unset default -- makes ``BaseTrainer._warn_unused_loss_regularization_keys``
+    #: unset default -- makes ``BaseTrainer._warn_unused_loss_weighting_keys``
     #: report a configured weight as dropped instead of dropping it silently.
     #: Orthogonal to the run's forward: a ControlNet run never consumes the
     #: weight whatever this says, because its forward is
     #: ``train_step_controlnet``. Pinned against ``ops/`` by
     #: ``unused_loss_regularization_warning_test.py``.
     consumes_reconstruction_loss_weight: bool = False
+
+    #: Whether this architecture's ``train_step`` folds the crop-decode
+    #: auxiliary loss (``ops/crop_decode_loss.compute_crop_decode_loss``) into
+    #: the loss. ``False`` -- the unset default -- suppresses the "Crop decode
+    #: auxiliary loss: ENABLED" line and reports the configured weight as
+    #: dropped instead. Same forward caveat as above: a ControlNet run never
+    #: consumes it. Pinned against ``ops/`` by
+    #: ``unused_loss_regularization_warning_test.py``.
+    consumes_crop_decode_loss: bool = False
 
     #: At which stage this architecture can build the SAME null condition its
     #: inference CFG uncond branch uses, or ``None`` when it cannot build one at

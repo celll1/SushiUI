@@ -35,6 +35,7 @@ class AceStepArchHandler(ArchHandler):
     # ops/acestep_ops.py train_step: target = noise - latents.
     velocity_sign = "eps_minus_x0"
     consumes_reconstruction_loss_weight = True
+    consumes_crop_decode_loss = False
 
     def lora_adapter_class(self):
         from core.training.adapters import AceStepLoRAAdapter

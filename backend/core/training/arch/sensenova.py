@@ -55,6 +55,7 @@ class SenseNovaArchHandler(ArchHandler):
     # sample -- see ArchHandler.velocity_sign.
     velocity_sign = None
     consumes_reconstruction_loss_weight = True
+    consumes_crop_decode_loss = True
 
     @property
     def pixel_align(self) -> int:

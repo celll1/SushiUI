@@ -67,6 +67,7 @@ class MiniMaxH3ArchHandler(ArchHandler):
     # ops/minimax_h3_ops.py train_step ships the plain flow-matching velocity
     # loss and only notes the weight (design §10).
     consumes_reconstruction_loss_weight = False
+    consumes_crop_decode_loss = False
 
     def lora_adapter_class(self):
         from core.training.adapters import MiniMaxH3LoRAAdapter

@@ -38,6 +38,7 @@ class ZImageArchHandler(ArchHandler):
     # convention the diffusers Z-Image pipeline mirrors with noise_pred = -out.
     velocity_sign = "x0_minus_eps"
     consumes_reconstruction_loss_weight = True
+    consumes_crop_decode_loss = True
 
     def lora_adapter_class(self):
         from core.training.adapters import ZImageLoRAAdapter

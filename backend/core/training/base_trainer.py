@@ -2219,6 +2219,24 @@ _REPA_PIXEL_CACHE_BYTES = 1024 * 1024 * 1024
 _REPA_SRC_SIZE_ENTRIES = 65536
 
 
+def crop_decode_loss_is_consumed(trainer, arch_name: str) -> bool:
+    """Whether this run's forward folds the crop-decode auxiliary loss in.
+
+    ControlNet training answers False on every architecture: its forward is
+    ``BaseTrainer.train_step_controlnet``, which never calls
+    ``compute_crop_decode_loss``. Otherwise the run's own ArchHandler decides,
+    via ``consumes_crop_decode_loss``; the registry is only the fallback for a
+    trainer that has not bound one yet.
+    """
+    if bool(getattr(trainer, "use_condition_images", False)):
+        return False
+    arch_handler = getattr(trainer, "arch", None)
+    if arch_handler is None:
+        from core.training.arch import ARCH_REGISTRY
+        arch_handler = ARCH_REGISTRY.get(arch_name)
+    return bool(getattr(arch_handler, "consumes_crop_decode_loss", False))
+
+
 # ============================================================
 # Base Trainer Class
 # ============================================================
@@ -4796,7 +4814,7 @@ class BaseTrainer(ABC):
             "image_paths_hash": paths_hash,
         }
 
-    def _warn_unused_loss_regularization_keys(self, arch_name: str) -> None:
+    def _warn_unused_loss_weighting_keys(self, arch_name: str) -> None:
         """Warn once, in a single block, about configured loss-weighting keys
         that this run will not read.
 
@@ -4817,10 +4835,14 @@ class BaseTrainer(ABC):
             (unused_loss_regularization_warning_test.py pins each declaration
             against the arch's ops module). train_step_controlnet never reads
             it, so a ControlNet run drops it on every architecture.
+          - crop_decode_loss_weight: same shape, declared by
+            ArchHandler.consumes_crop_decode_loss and decided by
+            crop_decode_loss_is_consumed(), which the "Crop decode auxiliary
+            loss: ENABLED" line in train() reads too so the two cannot disagree.
         This function only prints; it does not alter self.min_snr_gamma,
-        self.snr_regularization_loss, self.energy_regularization_loss, or
-        self.reconstruction_loss_weight, so loss computation is unaffected
-        either way.
+        self.snr_regularization_loss, self.energy_regularization_loss,
+        self.reconstruction_loss_weight, or self.crop_decode_loss_*, so loss
+        computation is unaffected either way.
         """
         use_condition_images = bool(getattr(self, "use_condition_images", False))
         prediction_target = getattr(self, "prediction_target", "epsilon")
@@ -4871,6 +4893,17 @@ class BaseTrainer(ABC):
                     f"reconstruction_loss_weight={recon_weight}: not read by architecture "
                     f"'{arch_name or 'unknown'}'"
                 )
+        crop_weight = float(getattr(self, "crop_decode_loss_weight", 0.0) or 0.0)
+        if (bool(getattr(self, "crop_decode_loss_enable", False)) and crop_weight > 0
+                and not crop_decode_loss_is_consumed(self, arch_name)):
+            reason = (
+                "not read by ControlNet training (train_step_controlnet) on any architecture"
+                if use_condition_images
+                else f"not read by architecture '{arch_name or 'unknown'}'"
+            )
+            unused.append(
+                f"crop_decode_loss_weight={crop_weight} (crop_decode_loss_enable=True): {reason}"
+            )
 
         if unused:
             print(f"{self.log_prefix} WARNING: the following configured loss-weighting "
@@ -13798,7 +13831,11 @@ class BaseTrainer(ABC):
         self._last_predicted_latent: Optional[torch.Tensor] = None
         if self.convergence_diagnostics_enable:
             print(f"{self.log_prefix} Convergence diagnostics: ENABLED (every {self.convergence_diagnostics_interval} steps)")
-        if self.crop_decode_loss_enable and self.crop_decode_loss_weight > 0:
+        _arch_name = getattr(getattr(self, "arch", None), "name", "")
+        # ENABLED only where the forward actually folds it in; where it does not,
+        # _warn_unused_loss_weighting_keys below reports it as dropped.
+        if (self.crop_decode_loss_enable and self.crop_decode_loss_weight > 0
+                and crop_decode_loss_is_consumed(self, _arch_name)):
             print(f"{self.log_prefix} Crop decode auxiliary loss: ENABLED (weight={self.crop_decode_loss_weight}, metric={self.crop_decode_loss_metric}, margin={self.crop_decode_loss_margin_cells}, out={self.crop_decode_loss_out_cells})")
         if save_every_n_steps == 0:
             print(f"{self.log_prefix} Periodic checkpointing: DISABLED (save_every=0); "
@@ -13810,8 +13847,7 @@ class BaseTrainer(ABC):
         self._dataset_fingerprint = self._compute_dataset_fingerprint(datasets)
         print(f"{self.log_prefix} Dataset fingerprint: {self._dataset_fingerprint['total_item_count']} items, hash={self._dataset_fingerprint['image_paths_hash'][:8]}...")
 
-        _arch_name = getattr(getattr(self, "arch", None), "name", "")
-        self._warn_unused_loss_regularization_keys(_arch_name)
+        self._warn_unused_loss_weighting_keys(_arch_name)
         _sd_ve_arch = _arch_name in ("sd15", "sdxl")
         if vision_encoder_path and not _sd_ve_arch:
             raise ValueError(

@@ -1508,6 +1508,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     // --- timestep_sampling (nested object expands to several UI states) ---
     if (incoming.timestep_sampling) {
+      // Mark this synchronously: the model-default effect can run after the
+      // restore timer clears restoringFromYAMLRef.
+      if (incoming.base_model_path) {
+        lastTimestepModelRef.current = incoming.base_model_path;
+      }
       const ts = incoming.timestep_sampling;
       if (ts.distribution !== undefined) setTimestepDistribution(ts.distribution);
       if (ts.min_timestep !== undefined) setTimestepMin(ts.min_timestep);

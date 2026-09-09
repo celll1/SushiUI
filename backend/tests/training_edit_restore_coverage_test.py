@@ -237,6 +237,16 @@ class RestoreBranchesExistTest(unittest.TestCase):
         self.assertIn("await getTrainingRunParams(runId)", body)
         self.assertIn("applyParamsToState(params);", body)
 
+    def test_timestep_restore_cannot_be_replaced_by_the_model_default(self):
+        """The async model-default effect must see the restore as explicit."""
+        body = _apply_params(_source())
+        branch = _slice(body, "if (incoming.timestep_sampling) {",
+                        "// --- priority_training")
+        marker = "lastTimestepModelRef.current = incoming.base_model_path;"
+        self.assertIn(marker, branch)
+        self.assertLess(branch.index(marker),
+                        branch.index("setTimestepDistribution"))
+
 
 class BackendReturnsTheValueTest(unittest.TestCase):
     """The restore can only work if /params still carries the field.

@@ -2266,16 +2266,29 @@ from core.training.periodic_intervals import due as interval_due, normalize_inte
 #: its window every iteration with no config key to condition on.
 _REPA_PIXEL_CACHE_BYTES = 1024 * 1024 * 1024
 
-#: Verdict window for that LRU (``_repa_pix_verdict``), opened at its first eviction.
+#: Verdict window for that LRU (``_repa_pix_verdict``), opened at its first eviction --
+#: a last resort, reached ~2650 lookups in: ``_repa_pixel_cache_prior`` answers the
+#: configurations whose hit rate is knowable up front, before any RAM is held.
 #: Under the floor the cache is cleared and stays off for the run. Measured against
 #: the local dataset sizes: 404 and 654 items keep it (~100% / ~90% of accesses hit),
 #: a 1M-item run does not (0 hits reachable -- one appearance per item per epoch).
 _REPA_PIXEL_CACHE_PROBE_LOOKUPS = 2048
 _REPA_PIXEL_CACHE_MIN_HIT_RATE = 0.10
 
+#: Entries past which an epoch is declared unable to come back inside the budget
+#: (``_repa_pixel_cache_prior``). At 2x, an item's reuse distance -- a whole epoch --
+#: covers fewer than a budget's worth of distinct others for ~15% of items, and less
+#: beyond that, which does not pay for holding a GiB.
+_REPA_PIXEL_CACHE_DATASET_FACTOR = 2
+
 #: Entry cap for the REPA source-size memo. Its entries are fixed-size (a path key
 #: and a (w,h) tuple, measured 142 B), so a count states the same ~9 MiB budget.
 _REPA_SRC_SIZE_ENTRIES = 65536
+
+
+def _repa_pixel_cache_entries(size: int) -> int:
+    """How many ``size``-square float32 teacher tensors fit in the byte budget."""
+    return max(1, int(_REPA_PIXEL_CACHE_BYTES // (3 * max(1, int(size)) ** 2 * 4)))
 
 
 def crop_decode_loss_is_consumed(trainer, arch_name: str) -> bool:
@@ -3519,6 +3532,10 @@ class BaseTrainer(ABC):
         (606 entries at repa_size=384) hits only by luck of the shuffle -- at 1M
         items, 0 hits for 1 GiB of host RAM. The window opens at the first
         eviction: every miss before it is a cold one and says nothing.
+
+        Reached only by a configuration ``_repa_pixel_cache_prior`` could not call:
+        this verdict lands ~2650 lookups (~660 steps at batch 4) into the run, with
+        the budget held until then.
         """
         probe = getattr(self, "_repa_pix_probe_at", None)
         if probe is None or getattr(self, "_repa_pix_verdict_done", False):
@@ -3536,6 +3553,42 @@ class BaseTrainer(ABC):
         self._repa_pix_cache_off = True
         print(f"{self.log_prefix} [REPA] teacher-pixel cache off for this run: "
               f"{hits}/{n} hits once the budget bound; freed {freed / 2**30:.2f} GiB")
+
+    def _repa_pixel_cache_prior(self, datasets, latent_strategy: str) -> None:
+        """Leave the teacher-pixel LRU unpopulated when this run cannot hit it.
+
+        ``_repa_pix_verdict`` is the fallback, and it is an expensive one: it can
+        only speak once the budget has bound, ~2650 lookups (~660 steps at batch 4)
+        of growing host RAM later, and on the 6779-item run it measures 0 hits.
+        Both conditions here are decided before the first lookup:
+
+        * a box redrawn every epoch (``random_crop``, crop augmentation) never
+          recurs, and the key holds the box -- structurally 0 hits;
+        * more distinct images than ~2x what the budget holds: reuse distance is a
+          whole epoch (see ``_REPA_PIXEL_CACHE_DATASET_FACTOR``).
+        """
+        if latent_strategy == "random_crop" or getattr(self, "crop_planner", None) is not None:
+            self._repa_pix_cache_off = True
+            print(f"{self.log_prefix} [REPA] teacher-pixel cache off for this run: "
+                  f"the encoded box is redrawn every epoch, so no cached region is "
+                  f"ever asked for twice")
+            return
+        limit = (_repa_pixel_cache_entries(getattr(self, "repa_size", 384) or 384)
+                 * _REPA_PIXEL_CACHE_DATASET_FACTOR)
+        paths = set()
+        for dataset in datasets:
+            for item in getattr(dataset, "items", ()):
+                p = item.get("image_path")
+                if not p:
+                    continue
+                paths.add(p)
+                if len(paths) > limit:
+                    self._repa_pix_cache_off = True
+                    print(f"{self.log_prefix} [REPA] teacher-pixel cache off for this "
+                          f"run: more than {limit} distinct images, seen once per epoch "
+                          f"each, so the {_REPA_PIXEL_CACHE_BYTES / 2**30:g} GiB budget "
+                          f"would hold what it cannot serve from")
+                    return
 
     def _get_original_size_for_item(self, item) -> Tuple[int, int]:
         """Return the real source image (width, height) for SDXL micro-conditioning.
@@ -14674,6 +14727,7 @@ class BaseTrainer(ABC):
             assert_repa_region_reconstructible(latent_encoding_mode, bucket_strategy)
             _repa_latent_strategy = _repa_latent_source_strategy(
                 latent_encoding_mode, bucket_strategy)
+            self._repa_pixel_cache_prior(datasets, _repa_latent_strategy)
 
         # Setup latent caches (mode-dependent)
         latent_caches = None

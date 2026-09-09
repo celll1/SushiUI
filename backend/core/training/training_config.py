@@ -11,7 +11,8 @@ import ast
 import yaml
 
 from core.training.dataset_params import extract_dataset_params
-from api.param_defaults import TRAINING_DEFAULTS, resolve_training_sample_defaults
+from api.param_defaults import (TRAINING_DEFAULTS, resolve_training_sample_defaults,
+                                validate_reconstruction_loss_weight)
 
 
 # Legacy kwarg names that are renamed in the new dict-based API.
@@ -340,7 +341,8 @@ def _build_train_section(
     # resume -> "diffusers"). Orthogonal to attention_backend.
     train["attention_impl"] = p.get("attention_impl", "conduit")
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
-    train["reconstruction_loss_weight"] = p.get("reconstruction_loss_weight", 0.0)
+    train["reconstruction_loss_weight"] = validate_reconstruction_loss_weight(
+        p.get("reconstruction_loss_weight"))
 
     # Block Swap (training VRAM optimization) - LoRA/Full FT only
     if include_block_swap:

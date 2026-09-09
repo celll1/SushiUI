@@ -88,6 +88,7 @@ from core.training.checkpoint_space import (
 # SSoT: api/param_defaults.
 from api.param_defaults import LR_RETARGET_DEFAULTS
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
+from api.param_defaults import validate_reconstruction_loss_weight
 
 DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP = _TRAINING_DEFAULTS["max_optimizer_saves_to_keep"]
 
@@ -2666,7 +2667,10 @@ class BaseTrainer(ABC):
             self.attention_impl = attention_impl
         self._persist_attention_impl()
         self.min_snr_gamma = min_snr_gamma
-        self.reconstruction_loss_weight = reconstruction_loss_weight
+        # Hand-written YAML reaches the trainer without passing the Pydantic
+        # request model, so the range is enforced here too.
+        self.reconstruction_loss_weight = validate_reconstruction_loss_weight(
+            reconstruction_loss_weight)
 
         # Initialize GradScaler for mixed precision training
         # GradScaler is needed when:

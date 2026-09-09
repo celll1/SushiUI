@@ -23190,7 +23190,15 @@ components:
           default: 0
         reconstruction_loss_weight:
           type: 'number'
+          format: 'float'
+          minimum: 0.0
+          maximum: 1.0
           default: 0.0
+          description: |
+            Dual-loss mix, applied as `(1 - w) * prediction_loss + w * reconstruction_loss`.
+            0.0 disables the reconstruction term entirely. Outside [0, 1] one of the two
+            coefficients is negative, so the request is rejected.
+          example: 0.0
         train_unet:
           type: 'boolean'
           default: true

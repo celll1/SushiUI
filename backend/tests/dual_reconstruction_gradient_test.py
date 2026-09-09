@@ -10,8 +10,7 @@ else; they now mix normalized like the rest. At weight == 0 these three compute
 no reconstruction term at all, and that path is asserted to stay bit-identical.
 
 Krea 2 / Lens / Ideogram 4 / MiniT2I / SenseNova were worse still: they never
-read ``reconstruction_loss_weight`` at all, and the key is not covered by
-``_warn_unused_loss_regularization_keys``, so a configured weight was ignored
+read ``reconstruction_loss_weight`` at all, so a configured weight was ignored
 without a line of log. Every architecture in this file now mixes NORMALIZED --
 ``(1-w)*pred + w*recon``, the convention the UI's own formula states -- which
 ``test_the_mixing_is_normalized_not_additive`` pins for all eight.

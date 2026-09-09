@@ -2944,6 +2944,34 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_aug_keep_tokens": 0,               # first N tokens immune to token dropout
 }
 
+# Every consuming architecture mixes the dual loss normalized since e742e4c6 --
+# (1-w)*prediction + w*reconstruction -- so a weight outside [0, 1] gives one of
+# the two terms a negative coefficient. Refused rather than clamped: a rounded
+# weight would start an hours-long run nobody configured.
+RECONSTRUCTION_LOSS_WEIGHT_MIN: float = 0.0
+RECONSTRUCTION_LOSS_WEIGHT_MAX: float = 1.0
+
+
+def validate_reconstruction_loss_weight(value: Any) -> float:
+    """Return the weight as a float; raise ``ValueError`` if out of range.
+
+    ``None`` means unset and resolves to the default, matching the ``or 0.0``
+    the per-architecture train_step readers already apply.
+    """
+    if value is None:
+        value = TRAINING_DEFAULTS["reconstruction_loss_weight"]
+    weight = float(value)
+    if not (RECONSTRUCTION_LOSS_WEIGHT_MIN <= weight <= RECONSTRUCTION_LOSS_WEIGHT_MAX):
+        raise ValueError(
+            f"reconstruction_loss_weight must be in "
+            f"[{RECONSTRUCTION_LOSS_WEIGHT_MIN}, {RECONSTRUCTION_LOSS_WEIGHT_MAX}], "
+            f"got {weight}. The dual loss mixes as (1-w)*prediction + "
+            f"w*reconstruction, so this weight makes one term's coefficient "
+            f"negative and that loss would be maximized."
+        )
+    return weight
+
+
 # ---------------------------------------------------------------------------
 # Per-architecture default timestep_sampling
 # ---------------------------------------------------------------------------

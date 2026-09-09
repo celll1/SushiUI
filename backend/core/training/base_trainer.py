@@ -3786,6 +3786,7 @@ class BaseTrainer(ABC):
                 dataset_unique_id=getattr(dataset, "unique_id", None),
                 has_reference=has_reference,
                 reference_images=reference_images if reference_images else None,
+                item_metadata=self._sensenova_bucket_metadata(item),
             )
             if item.get("_ve_reconstruction_mode"):
                 image_info["_ve_reconstruction_mode"] = True
@@ -3972,7 +3973,10 @@ class BaseTrainer(ABC):
                 path = item.get("image_path")
                 if not path:
                     continue
-                caption_map[(ds_id, path)] = item.get("caption", "")
+                caption_map[(ds_id, path)] = {
+                    "caption": item.get("caption", ""),
+                    **self._sensenova_bucket_metadata(item),
+                }
 
         updated = 0
         for infos in bucket_manager.buckets.values():
@@ -3983,11 +3987,19 @@ class BaseTrainer(ABC):
                 key = (info.get("dataset_unique_id"), path)
                 if key not in caption_map:
                     continue
-                new_caption = caption_map[key]
-                if info.get("caption") != new_caption:
-                    info["caption"] = new_caption
+                fresh = caption_map[key]
+                if any(info.get(name) != value for name, value in fresh.items()):
+                    info.update(fresh)
                     updated += 1
         return updated
+
+    @staticmethod
+    def _sensenova_bucket_metadata(item):
+        return {
+            key: item[key]
+            for key in ("_sensenova_task_views", "_captions_by_type")
+            if key in item
+        }
 
     def _prepare_epoch_items(self, datasets, epoch, run_id, bucket_manager, base_resolutions):
         """Materialize one epoch's ``[(item, dataset)]`` and re-establish the invariants
@@ -14752,6 +14764,7 @@ class BaseTrainer(ABC):
                         dataset_unique_id=dataset.unique_id,
                         has_reference=has_reference,
                         reference_images=reference_images if reference_images else None,
+                        item_metadata=self._sensenova_bucket_metadata(item),
                     )
                     # Propagate _ve_reconstruction_mode into image_info so training step
                     # can zero text embeddings for these items.
@@ -15631,6 +15644,7 @@ class BaseTrainer(ABC):
                                 has_reference=has_reference,
                                 reference_images=reference_images if reference_images else None,
                                 forced_bucket=BucketResolution(spec.bucket_w, spec.bucket_h),
+                                item_metadata=self._sensenova_bucket_metadata(item),
                             )
                             if item.get("_ve_reconstruction_mode"):
                                 image_info["_ve_reconstruction_mode"] = True
@@ -15756,6 +15770,7 @@ class BaseTrainer(ABC):
                                 height=item.get("height", 1024),
                                 caption=item.get("caption", ""),
                                 dataset_unique_id=getattr(dataset, 'unique_id', None),
+                                item_metadata=self._sensenova_bucket_metadata(item),
                             )
                         normal_item_batches = normal_bucket_manager.build_batch_indices(batch_size)
                         normal_batches = []
@@ -15821,6 +15836,13 @@ class BaseTrainer(ABC):
                         batches = batches + ltx2_video_batches + acestep_audio_batches
 
                 batches = self._drop_unfittable_batches(batches)
+
+                if self.is_sensenova:
+                    import random as _sensenova_task_rng
+                    from core.training.sensenova_tasks import build_task_homogeneous_batches
+                    batches = build_task_homogeneous_batches(
+                        batches, batch_size, _sensenova_task_rng
+                    )
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)

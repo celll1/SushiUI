@@ -323,6 +323,7 @@ class BucketManager:
         has_reference: bool = False,
         reference_images: Optional[list] = None,
         forced_bucket: Optional[BucketResolution] = None,
+        item_metadata: Optional[Dict] = None,
     ) -> Tuple[BucketKey, Dict]:
         """
         Assign an image to the best bucket.
@@ -366,6 +367,8 @@ class BucketManager:
         # Add dataset_unique_id if provided (for cache management)
         if dataset_unique_id is not None:
             image_info["dataset_unique_id"] = dataset_unique_id
+        if item_metadata:
+            image_info.update(item_metadata)
 
         # Determine bucket key based on separate_by_reference setting
         if self.separate_by_reference:

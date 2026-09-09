@@ -1534,6 +1534,7 @@ def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str
 
 
 def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None,
+                           auxiliary_caption_types: list = None,
                            run_id: int = None, output_dir=None,
                            skip_captions: bool = False) -> list:
     """
@@ -1546,6 +1547,7 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
         db: Database session
         dataset_id: Dataset ID
         caption_types: List of caption types to use
+        auxiliary_caption_types: Caption sources retained by explicit task views
         run_id: Optional training run id — when given, reports phase progress to
             the DB (phase_detail/phase_progress) so the frontend bar updates
             during the (slow, first-epoch) bulk read of large datasets.
@@ -1649,6 +1651,17 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             "height": item.height,
             "related_images": item.related_images,
         }
+        if auxiliary_caption_types:
+            wanted = set(auxiliary_caption_types)
+            item_dict["_captions_by_type"] = {
+                caption.caption_type: {
+                    "content": caption.content,
+                    "tag_data": caption.tag_data,
+                    "is_tags_format": getattr(caption, "is_tags_format", True),
+                }
+                for caption in item.captions
+                if caption.caption_type in wanted
+            }
         # ACE-Step audio items: source LYRICS from a SEPARATE, dedicated
         # caption_type=="lyrics" DatasetCaption row -- independent of whichever
         # caption_type was selected above as the primary "caption" (tags /
@@ -1684,6 +1697,7 @@ def get_dataset_items_cached(
     epoch_num: int = 0,
     run_id: int = None,
     caption_types: list = None,
+    auxiliary_caption_types: list = None,
     use_cache: bool = True,
     force_reload: bool = False,
     skip_captions: bool = False,
@@ -1741,7 +1755,11 @@ def get_dataset_items_cached(
             print(f"[TrainRunner] caption_types not supplied; using dataset.caption_processing: {caption_types}")
 
     # Compute cache key (includes caption_types, so a corrected type invalidates stale cache)
-    cache_key = _compute_dataset_cache_key(db, [dataset_id], caption_types)
+    cache_caption_types = list(caption_types or [])
+    cache_caption_types.extend(
+        f"task:{caption_type}" for caption_type in (auxiliary_caption_types or [])
+    )
+    cache_key = _compute_dataset_cache_key(db, [dataset_id], cache_caption_types)
     if skip_captions:
         # A pixels-only cache holds no captions; keep it in a separate slot so it
         # can never be picked up by (or overwrite) a text-conditioned run's cache.
@@ -1764,8 +1782,10 @@ def get_dataset_items_cached(
     # If no cache, fetch from DB with optimized query
     if raw_items is None:
         print(f"[TrainRunner] Fetching dataset {dataset_id} from DB (optimized JOIN query)...")
-        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id,
-                                           output_dir=output_dir, skip_captions=skip_captions)
+        raw_items = get_dataset_items_fast(
+            db, dataset_id, caption_types,
+            auxiliary_caption_types=auxiliary_caption_types, run_id=run_id,
+            output_dir=output_dir, skip_captions=skip_captions)
         print(f"[TrainRunner] Fetched {len(raw_items)} items in {time.time() - start_time:.2f}s")
 
         # Save to cache. Checked immediately before, so a stop request doesn't
@@ -1920,6 +1940,8 @@ def _process_cached_items(
             "width": item.get("width"),
             "height": item.get("height"),
         }
+        if "_captions_by_type" in item:
+            processed_item["_captions_by_type"] = item["_captions_by_type"]
 
         # Carry LTX-2.3 video / ACE-Step audio fields through this re-copy (item
         # is a dict from the fast/DB load above, so item_type + media metadata
@@ -2494,6 +2516,9 @@ def main():
             ds_params = read_dataset_params(ds_config)
             caption_types = ds_params["caption_types"]
             ve_reconstruction_mode = ds_params["ve_reconstruction_mode"]
+            task_views = ds_params["task_views"]
+            from core.training.sensenova_tasks import required_caption_types
+            task_caption_types = required_caption_types(task_views)
             output_dir = Path(run.output_dir)
             is_resume = start_epoch > 0
             dataset_items = get_dataset_items_cached(
@@ -2503,6 +2528,7 @@ def main():
                 epoch_num=start_epoch,
                 run_id=run_id,
                 caption_types=caption_types,
+                auxiliary_caption_types=task_caption_types,
                 use_cache=True,
                 force_reload=not is_resume,  # Force reload on new training to ensure fresh data
                 skip_captions=skip_captions,
@@ -2514,6 +2540,8 @@ def main():
                 item["dataset_unique_id"] = dataset.unique_id
                 if ve_reconstruction_mode:
                     item["_ve_reconstruction_mode"] = True
+                if task_views:
+                    item["_sensenova_task_views"] = task_views
 
             all_dataset_items.extend(dataset_items)
 
@@ -2585,6 +2613,8 @@ def main():
                 dataset_id = self.dataset_config["dataset_id"]
                 ds_params = read_dataset_params(self.dataset_config)
                 caption_types = ds_params["caption_types"]
+                task_views = ds_params["task_views"]
+                from core.training.sensenova_tasks import required_caption_types
 
                 # Use cached loading - caption processing is applied per-epoch
                 items = get_dataset_items_cached(
@@ -2594,6 +2624,7 @@ def main():
                     epoch_num=epoch_num,
                     run_id=run_id,
                     caption_types=caption_types,
+                    auxiliary_caption_types=required_caption_types(task_views),
                     use_cache=True,
                     force_reload=False,  # Use cache for epoch reloads
                     skip_captions=skip_captions,
@@ -2602,6 +2633,8 @@ def main():
                 # Add dataset_unique_id for cache management
                 for item in items:
                     item["dataset_unique_id"] = self.unique_id
+                    if task_views:
+                        item["_sensenova_task_views"] = task_views
 
                 return items
 

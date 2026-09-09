@@ -4,6 +4,11 @@ This document records the shipped behavior and refusal boundary. It intentionall
 omits the chronological implementation log, abandoned alternatives, and future
 roadmap.
 
+The accepted but not-yet-implemented image-to-text and mixed-objective design is
+`docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`. Nothing in that decision
+changes the shipped image-generation loss or the meaning of
+`train_text_encoder` described here until its training phases are implemented.
+
 ## Supported methods
 
 - LoRA training of the generation branch is supported.

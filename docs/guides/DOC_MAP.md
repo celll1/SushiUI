@@ -37,6 +37,7 @@ machine-local working material.
 | `docs/guides/SPECTRUM.md` | Spectrum forecasting behavior, parameters, and constraints. |
 | `docs/guides/MINIMAX_H3_HYBRID_LOADER_DESIGN.md` | Current MiniMax-H3 hybrid-loader contract. |
 | `docs/guides/MINIMAX_MUSIC3_DESIGN.md` | Current MiniMax Music 3 integration contract and implemented boundary. |
+| `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md` | Accepted design for SenseNova img2txt inference, caption/tag training, and mixed image/text objectives; implementation is pending. |
 
 ## Training and data
 

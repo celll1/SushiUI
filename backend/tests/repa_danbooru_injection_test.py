@@ -127,7 +127,7 @@ def _fingerprint(t, cells=8):
 _HANDOVER = {
     "current": ('                                    if _danb_b is not None:\n'
                 '                                        item["_danbooru_image_bytes"] = None\n'
-                '                                    if _repa_active:\n'),
+                '                                    if _repa_pixel_mode:\n'),
     "prefix": ('                                    if _danb_b is not None:\n'
                '                                        item["_danbooru_image_bytes"] = None\n'
                '                                    elif _repa_active:\n'),

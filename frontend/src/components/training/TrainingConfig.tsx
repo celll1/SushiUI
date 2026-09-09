@@ -2993,6 +2993,36 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   )}
                   <div className="flex gap-2">
                     <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Teacher input</label>
+                      <select
+                        value={params.repa_target_source || "pixel"}
+                        onChange={(e) => updateParam("repa_target_source", e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      >
+                        <option value="pixel">Clean pixels</option>
+                        <option
+                          value="latent_stem"
+                          disabled={!isSDXLModel(baseModelPath) || (params.repa_encoder_source || "tagger") !== "tagger"}
+                        >
+                          Distilled latent stem (SDXL + tagger)
+                        </option>
+                      </select>
+                    </div>
+                    {(params.repa_target_source || "pixel") === "latent_stem" && (
+                      <div className="flex-[2]">
+                        <label className="block text-xs text-gray-400 mb-1">Latent stem artifact</label>
+                        <input
+                          type="text"
+                          value={params.repa_latent_stem_path || ""}
+                          onChange={(e) => updateParam("repa_latent_stem_path", e.target.value)}
+                          placeholder="models/repa_stems/sdxl_tagger.safetensors"
+                          className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs font-mono"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
                       <label className="block text-xs text-gray-400 mb-1">Weight (λ)</label>
                       <input
                         type="number"

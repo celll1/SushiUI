@@ -23405,6 +23405,28 @@ components:
             for residual accounting; database timestamps are not used. Intended for
             short diagnostic runs because CUDA events add small overhead.
           example: 0
+        repa_target_source:
+          type: 'string'
+          enum: ['pixel', 'latent_stem']
+          default: 'pixel'
+          description: |
+            Source presented to the frozen REPA teacher. `pixel` is the normal
+            clean-image path. `latent_stem` replaces only the teacher's patch
+            embedding with a distilled stem and is currently restricted to
+            SDXL plus `repa_encoder_source: tagger`. The frozen teacher trunk,
+            learned position embeddings and post-layernorm remain active.
+          example: 'pixel'
+        repa_latent_stem_path:
+          type: 'string'
+          default: ''
+          description: |
+            Safetensors artifact used by `repa_target_source: latent_stem`.
+            Its VAE encoder weights, latent normalisation, materialized tagger
+            weights (including a LoRA checkpoint's base), output dimension and
+            27x27 grid must match the run or trainer construction refuses it.
+            Decoder-only VAE changes do not
+            invalidate the artifact.
+          example: ''
         repa_encoder_source:
           type: 'string'
           default: 'tagger'

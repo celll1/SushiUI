@@ -864,8 +864,14 @@ def apply_repa_loss(trainer, loss, image_tokens, repa_pixels, gh: int, gw: int):
         h2d_end.record(torch.cuda.current_stream(trainer.device))
 
     teacher_end = _event_pair("teacher_forward")
-    targets = encode_repa_targets(
-        trainer.repa_encoder, teacher_pixels, gh, gw, trainer.repa_size)
+    if getattr(trainer, "repa_target_source", "pixel") == "latent_stem":
+        from core.training.repa_latent_stem import encode_latent_targets
+        targets = encode_latent_targets(
+            trainer.repa_encoder, trainer.repa_latent_stem,
+            teacher_pixels, gh, gw)
+    else:
+        targets = encode_repa_targets(
+            trainer.repa_encoder, teacher_pixels, gh, gw, trainer.repa_size)
     if teacher_end is not None:
         teacher_end.record(torch.cuda.current_stream(trainer.device))
 

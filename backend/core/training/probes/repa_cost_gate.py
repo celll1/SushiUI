@@ -14,9 +14,6 @@ from pathlib import Path
 from typing import Callable
 
 import torch
-from torch import nn
-from torch.nn import functional as F
-
 from core.training.repa import (
     PROJECTOR_PARAM_DTYPE,
     RepaProjector,
@@ -24,30 +21,7 @@ from core.training.repa import (
     load_repa_encoder,
     repa_loss,
 )
-
-
-class LatentRepaStem(nn.Module):
-    """Fixed-grid local stem candidate used by the Phase 5-2 cost gate."""
-
-    def __init__(self, in_channels: int, out_dim: int, width: int) -> None:
-        super().__init__()
-        self.in_proj = nn.Conv2d(in_channels, width, 3, padding=1)
-        self.blocks = nn.Sequential(
-            nn.GroupNorm(32, width),
-            nn.SiLU(),
-            nn.Conv2d(width, width, 3, padding=1),
-            nn.GroupNorm(32, width),
-            nn.SiLU(),
-            nn.Conv2d(width, width, 3, padding=1),
-        )
-        self.out_proj = nn.Conv2d(width, out_dim, 1)
-
-    def forward(self, latents: torch.Tensor) -> torch.Tensor:
-        x = F.interpolate(latents, size=(27, 27), mode="bilinear", align_corners=False)
-        x = self.in_proj(x)
-        x = x + self.blocks(x)
-        x = self.out_proj(x)
-        return x.flatten(2).transpose(1, 2)
+from core.training.repa_latent_stem import LatentRepaStem
 
 
 def _summary(samples: list[float]) -> dict[str, float]:

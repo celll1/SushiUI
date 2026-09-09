@@ -402,14 +402,14 @@ def test_encode_image_output_does_not_depend_on_repa(tmp_path):
 
 
 def test_batch_loop_touches_the_region_only_under_repa_active():
-    """Both new statements in the per-item loop sit under `if _repa_active:`."""
+    """Pixel-region work is guarded from both REPA-off and latent-stem runs."""
     loop = BASE_TRAINER_SRC.rindex("for item_index, (item, dataset) in enumerate(batch):")
     for stmt in ("self._last_source_region = None",
                  "repa_pixels_list.append(self._get_repa_pixels_for_item("):
         idx = BASE_TRAINER_SRC.index(stmt, loop)
         code = [ln.strip() for ln in BASE_TRAINER_SRC[loop:idx].split("\n")
                 if ln.strip() and not ln.strip().startswith("#")]
-        assert code[-1] == "if _repa_active:", stmt
+        assert code[-1] == "if _repa_pixel_mode:", stmt
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,10 @@ from core.training.repa_latent_stem import (
     LatentRepaStem, economic_gate, encode_latent_targets, load_latent_stem,
     save_latent_stem, vae_encoder_identity,
 )
+from core.training.probes import distill_repa_latent_stem as distill_probe
 from core.training.probes.distill_repa_latent_stem import (
-    _images, _onnx_companion, _start_monitor,
+    _images, _load_resume_checkpoint, _onnx_companion,
+    _save_resume_checkpoint, _start_monitor,
 )
 
 
@@ -170,6 +172,56 @@ def test_ephemeral_monitor_serves_only_html_and_progress(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_ephemeral_monitor_falls_back_from_a_blocked_port(tmp_path, monkeypatch):
+    real_server = distill_probe.http.server.ThreadingHTTPServer
+
+    def bind(address, handler):
+        if address[1] == 8765:
+            raise PermissionError(10013, "blocked")
+        return real_server(address, handler)
+
+    monkeypatch.setattr(distill_probe.http.server, "ThreadingHTTPServer", bind)
+    server = _start_monitor(tmp_path / "progress.jsonl", 8765)
+    try:
+        assert server is not None
+        assert server.server_port != 8765
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_resume_checkpoint_restores_model_optimizer_and_progress(tmp_path):
+    stem = LatentRepaStem(4, 8, 32)
+    optimizer = torch.optim.AdamW(stem.parameters(), lr=1e-4)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    stem(torch.randn(1, 4, 8, 8)).sum().backward()
+    optimizer.step()
+    expected = {key: value.detach().clone() for key, value in stem.state_dict().items()}
+    path = tmp_path / "stem.resume.pt"
+    _save_resume_checkpoint(
+        path, stem=stem, optimizer=optimizer, scaler=scaler, step=17,
+        processed_items=68, recent_losses=[0.4, 0.3], item_time_sum=12.5,
+        item_time_count=2, contract={"teacher": "a"})
+
+    restored = LatentRepaStem(4, 8, 32)
+    restored_optimizer = torch.optim.AdamW(restored.parameters(), lr=1e-4)
+    state = _load_resume_checkpoint(
+        path, stem=restored, optimizer=restored_optimizer, scaler=scaler,
+        contract={"teacher": "a"}, device=torch.device("cpu"), planned_steps=20)
+    assert state == {
+        "step": 17, "processed_items": 68, "recent_losses": [0.4, 0.3],
+        "item_time_sum": 12.5, "item_time_count": 2,
+    }
+    assert all(torch.equal(restored.state_dict()[key], value)
+               for key, value in expected.items())
+    assert restored_optimizer.state_dict()["state"]
+
+    with pytest.raises(ValueError, match="resume contract mismatch"):
+        _load_resume_checkpoint(
+            path, stem=restored, optimizer=restored_optimizer, scaler=scaler,
+            contract={"teacher": "b"}, device=torch.device("cpu"), planned_steps=20)
 
 
 def test_production_loss_switch_consumes_clean_latents():

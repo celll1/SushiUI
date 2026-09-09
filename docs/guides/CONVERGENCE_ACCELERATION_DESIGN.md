@@ -28,7 +28,7 @@ SDXL の空間圧縮率 8 は、欠陥が必ず 8px 周期になる証拠では�
 
 | 資産 | 実装から確認できること |
 |---|---|
-| `backend/core/training/base_trainer.py::_setup_repa` と `repa.py` | 教師は tagger / SigLIP2 選択式。**当初 MiniT2I 専用だったのは実装のゲートであり手法の制約ではない**（2026-09-08 に横断化）。`ArchHandler.repa_tap()` を実装したアーキで有効。配線済み: MiniT2I, Anima, Lens, Krea 2, Ideogram 4, SenseNova U1.5, SD1.5, SDXL（U-Net は空間マップの tap。REPA 論文が検証したのは DiT であり、conv U-Net の mid block への適用は外挿）。Z-Image / FLUX.2 は保留（Z-Image は vendor ループの改変とテキスト prefix スライス、FLUX.2 は dual-stream と single-stream で tap の形が 2 つ。どちらも行優先の順序を実測で確かめるベースが手元に無い）。需要が出るまで未配線 |
+| `backend/core/training/base_trainer.py::_setup_repa` と `repa.py` | 教師は tagger / SigLIP2 選択式。**当初 MiniT2I 専用だったのは実装のゲートであり手法の制約ではない**（2026-09-08 に横断化）。`ArchHandler.repa_tap()` を実装したアーキで有効。配線済み: MiniT2I, Anima, Lens, Krea 2, Ideogram 4, SenseNova U1.5, SD1.5, SDXL（U-Net は空間マップの tap。REPA 論文が検証したのは DiT であり、conv U-Net の mid block への適用は外挿）。Z-Image / FLUX.2 は保留（Z-Image は vendor ループの改変とテキスト prefix スライス、FLUX.2 は dual-stream と single-stream で tap の形が 2 つ。どちらも行優先の順序を実測で確かめるベースが手元に無い）。需要が出るまで未配線。**教師は固定解像度系に限られる**: `repa.py` の呼び出しは `encoder(pixel_values=...)` のみで、NaFlex 系 SigLIP2 の forward は `pixel_attention_mask` / `spatial_shapes` も必須引数のため呼び出しが成立せず、`_setup_repa` が設定不一致ではなく拒否として扱う（`2e3ffb64`） |
 | `base_trainer.py::_get_repa_pixels_for_item` | 正方形リサイズは存在する。サイズ S は設定 override または encoder native size 等から決まり、384 固定ではない。PIL decode/resize は LRU ミス時のみ、上限 4096 |
 | `backend/core/training/aesthetic_loss.py::AestheticLoss.__call__` | frozen scorer のロード例。ただし forward が `torch.no_grad()` 内なので入力への勾配も切れ、微分可能な補助損失の成功例にはならない |
 | `subapps/aesthetic_scorer/backend/core/aesthetic_model.py::LatentCNN` | 小型 CNN の素材。16ch 構成は 97,121 params。総 VRAM と速度は活性・入力サイズ・dtype・backward に依存 |

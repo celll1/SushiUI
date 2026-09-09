@@ -86,6 +86,137 @@ def _resolve_tagger_checkpoint(model_dir: str) -> Tuple[str, str]:
     raise FileNotFoundError(f"No .safetensors checkpoint found in REPA tagger dir: {model_dir}")
 
 
+def _read_teacher_config(repo: str, filename: str) -> Optional[dict]:
+    """One of a teacher repo's config JSONs, read from disk only -- never the network."""
+    repo = (repo or "").strip().strip('"').strip("'")
+    if not repo:
+        return None
+    if os.path.isdir(repo):
+        path = os.path.join(repo, filename)
+    else:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            hit = try_to_load_from_cache(repo_id=repo, filename=filename)
+        except Exception:
+            hit = None
+        path = hit if isinstance(hit, str) else ""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def teacher_fixed_input_size(repo: str) -> Tuple[Optional[int], Optional[str]]:
+    """(declared square input size, evidence there is none) for a teacher repo.
+
+    Read off what the checkpoint's own configs DECLARE -- the image processor's
+    fixed ``size``, the vision config's ``image_size`` -- rather than off the
+    repo id, which the next checkpoint renames. A NaFlex-style SigLIP2 declares
+    neither: its processor states ``max_num_patches``/``patch_size`` for an
+    aspect-preserving grid, and Siglip2VisionConfig carries no ``image_size``
+    field at all. ``(None, None)`` means neither config was readable offline,
+    which is not evidence of anything.
+    """
+    cfg = _read_teacher_config(repo, "config.json")
+    proc = _read_teacher_config(repo, "preprocessor_config.json")
+    if cfg is None and proc is None:
+        return None, None
+
+    vision = cfg or {}
+    if isinstance(vision.get("vision_config"), dict):
+        vision = vision["vision_config"]
+
+    size = (proc or {}).get("size")
+    if isinstance(size, dict):
+        size = size.get("height") or size.get("shortest_edge") or size.get("width")
+    for declared in (size, vision.get("image_size")):
+        if isinstance(declared, int) and declared > 0:
+            return int(declared), None
+
+    parts = []
+    if proc is not None:
+        patches = proc.get("max_num_patches")
+        parts.append(
+            f"{proc.get('image_processor_type') or 'its image processor'} declares "
+            f"no fixed size"
+            + (f", max_num_patches={patches}, patch_size={proc.get('patch_size')}"
+               if patches else ""))
+    if cfg is not None:
+        parts.append(f"vision config ({vision.get('model_type') or 'unknown model_type'}) "
+                     f"declares no image_size")
+    return None, "; ".join(parts)
+
+
+def _teacher_candidate_repos(source: str, tagger_model_dir: str, siglip2_repo: str) -> List[str]:
+    """The repos whose configs describe the teacher this run would load.
+
+    Two for the tagger source: the base repo the encoder's structure comes from
+    (base_model_metadata.json), and the one the chosen checkpoint's own sidecar
+    metadata names -- they differ when a dir has no base_model_metadata.json, and
+    the second is then the only record of what the checkpoint was trained as.
+    """
+    if (source or "tagger").strip().lower() != "tagger":
+        return [(siglip2_repo or _DEFAULT_SIGLIP2_REPO).strip().strip('"').strip("'")]
+    ckpt, repo = _resolve_tagger_checkpoint(tagger_model_dir)
+    repos = [repo]
+    meta = ckpt[: -len(".safetensors")] + "_metadata.json" if ckpt.endswith(".safetensors") else ""
+    if meta and os.path.isfile(meta):
+        try:
+            with open(meta, "r", encoding="utf-8") as f:
+                named = json.load(f).get("vision_encoder_repo")
+            if isinstance(named, str) and named.strip() and named.strip() not in repos:
+                repos.append(named.strip())
+        except Exception:
+            pass
+    return repos
+
+
+def assert_repa_teacher_fixed_resolution(
+    source: str, *, tagger_model_dir: str = "", siglip2_repo: str = "",
+) -> Optional[int]:
+    """Refuse a teacher whose own configs declare no fixed square input.
+
+    REPA crops the region an item's latent encoded, squishes it to one square and
+    calls ``encoder(pixel_values=...)``. A NaFlex-style SigLIP2 was trained on
+    aspect-preserving patch grids and its forward takes flattened patches plus
+    ``spatial_shapes`` and ``pixel_attention_mask``, so that call raises TypeError
+    at the first REPA step -- after the model, the dataset and the latent cache
+    are up. Refused here, where the reason reaches the run's log.
+
+    Returns the size the configs declare, when they declare one.
+    """
+    try:
+        repos = _teacher_candidate_repos(source, tagger_model_dir, siglip2_repo)
+    except Exception:
+        return None  # an unresolvable tagger dir is load_repa_encoder's error to raise
+    declared = None
+    for repo in repos:
+        size, evidence = teacher_fixed_input_size(repo)
+        if declared is None:
+            declared = size
+        if not evidence:
+            continue
+        raise ValueError(
+            f"repa_enable is not supported with the teacher {repo}: its configs "
+            f"declare no fixed square input ({evidence}). REPA crops the region the "
+            f"latent encoded, squishes it to one square and calls the encoder with "
+            f"pixel_values alone; a variable-resolution SigLIP2 takes flattened "
+            f"patches plus spatial_shapes and pixel_attention_mask, and was trained "
+            f"on aspect-preserving grids of at most max_num_patches patches. "
+            f"repa_encoder_resolution changes neither fact. Options: (1) point "
+            f"repa_tagger_model_dir at a tagger checkpoint whose base is a "
+            f"fixed-resolution SigLIP2 (google/siglip2-so400m-patch14-384 declares "
+            f"image_size 384 and a 384x384 processor size), (2) "
+            f"repa_encoder_source='siglip2' with repa_siglip2_repo set to such a "
+            f"repo, (3) repa_enable=false."
+        )
+    return declared
+
+
 def load_repa_encoder(
     source: str,
     *,

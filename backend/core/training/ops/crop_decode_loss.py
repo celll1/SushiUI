@@ -180,7 +180,7 @@ def compute_crop_decode_loss(
     """Compute crop decode auxiliary loss and log gradient norm diagnostics (Phase 3-2 & 3-3).
 
     Returns:
-        (scaled_aux_loss_tensor, raw_aux_loss_float)
+        (scaled_aux_loss_tensor, detached_raw_aux_loss)
     """
     enable = getattr(trainer, "crop_decode_loss_enable", False)
     weight = getattr(trainer, "crop_decode_loss_weight", 0.0)
@@ -317,9 +317,11 @@ def compute_crop_decode_loss(
     if raw_aux_loss is None:
         raw_aux_loss = F.l1_loss(pred_crop_rgb, gt_crop_rgb)
 
-    raw_val = float(raw_aux_loss.detach().item())
+    raw_val = raw_aux_loss.detach()
     if trainer is not None and hasattr(trainer, "log_extra_metric"):
-        trainer.log_extra_metric("crop_decode_loss", raw_val)
+        defer_metric = getattr(
+            trainer, "defer_extra_metric", trainer.log_extra_metric)
+        defer_metric("crop_decode_loss", raw_val)
 
     # Phase 3-3: Gradient Norm Ratio Diagnostic (||grad_aux|| / ||grad_main||)
     if main_loss is not None and hasattr(trainer, "log_extra_metric"):
@@ -337,10 +339,10 @@ def compute_crop_decode_loss(
             )[0]
 
             if g_aux is not None and g_main is not None:
-                norm_aux = float(torch.linalg.norm(g_aux.flatten()).item())
-                norm_main = float(torch.linalg.norm(g_main.flatten()).item())
-                grad_ratio = norm_aux / (norm_main + 1e-12)
-                trainer.log_extra_metric("crop_decode_grad_norm_ratio", grad_ratio)
+                norm_aux = torch.linalg.norm(g_aux.flatten())
+                norm_main = torch.linalg.norm(g_main.flatten())
+                grad_ratio = (norm_aux / (norm_main + 1e-12)).detach()
+                defer_metric("crop_decode_grad_norm_ratio", grad_ratio)
         except Exception:
             # Gradient probe is diagnostic only; non-fatal if autograd graph cannot bifurcate
             pass

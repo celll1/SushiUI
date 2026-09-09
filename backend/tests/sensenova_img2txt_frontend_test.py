@@ -57,3 +57,19 @@ def test_img2txt_image_input_accepts_drag_and_drop():
     assert "onDrop={handleDrop}" in panel
     assert "selectImage(event.dataTransfer.files?.[0]);" in panel
     assert 'file.type.startsWith("image/")' in panel
+
+
+def test_img2txt_input_can_be_cleared_and_same_file_reselected():
+    panel = _source("frontend/src/components/generation/Img2TxtPanel.tsx")
+    assert "const clearImage = () =>" in panel
+    assert "setImage(null);" in panel
+    assert "setPreview(null);" in panel
+    assert 'event.currentTarget.value = "";' in panel
+    assert "onClick={clearImage}>Clear</Button>" in panel
+
+
+def test_img2txt_renders_both_structured_caption_and_tags():
+    panel = _source("frontend/src/components/generation/Img2TxtPanel.tsx")
+    assert "result.structured?.caption" in panel
+    assert "result.structured.caption" in panel
+    assert "result.structured?.tags" in panel

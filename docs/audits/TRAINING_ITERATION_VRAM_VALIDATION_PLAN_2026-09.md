@@ -87,14 +87,12 @@ shutdown with an in-flight prefetch.
 
 ### Current behavior
 
-The non-fused optimizer path computes component gradient norms, then
-`clip_grad_norm_` traverses the gradients again to compute the total norm and
-apply scaling.
+The run-invariant parameter/component census is cached. The non-fused optimizer
+path still reduces those gradients for component norms, then `clip_grad_norm_`
+traverses the gradients again to compute the total norm and apply scaling.
 
 ### Candidate
 
-- Cache `(parameter, component)` membership after optimizer construction and
-  invalidate it after ReLoRA merge/reinitialization or parameter replacement.
 - Accumulate component and total squared norms in one device reduction.
 - Apply the clip coefficient using the same epsilon, non-finite handling, and
   sparse-gradient policy as the installed PyTorch version.
@@ -147,10 +145,10 @@ Include compilation time in an epoch-level result, not only steady-state
 iteration time. Require identical checkpoint keys and optimizer parameter
 identity, plus no backward-only compilation failure.
 
-## Explicitly static follow-up
+## Completed static follow-up
 
-ControlNet/outpaint diagnostic scalar and array transfers occur before the
-shared backward call. They can be detached on-device and materialized after the
-existing post-backward loss synchronization without changing arithmetic. That
-change does not depend on this VRAM protocol and should be implemented with CPU
-contract tests.
+The separate static pass deferred ControlNet/outpaint diagnostics, crop-decode
+metrics, CFG-split monitoring, and convergence-latent transfer until the shared
+post-backward synchronization point. It also cached the run-invariant gradient
+parameter/component census. The remaining candidates in this document still
+require the measurement protocol above.

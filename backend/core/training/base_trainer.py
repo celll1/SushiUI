@@ -16572,9 +16572,21 @@ class BaseTrainer(ABC):
                             swap_buffer.update(payload)
                             next_swap_at_step = pulled_idx + 1
 
+                    # Coordinate coincident text/latent refills so the main model
+                    # stays on CPU between them instead of making two round trips.
+                    _text_refill_due = (
+                        swap_buffer is not None
+                        and text_encoding_mode == "swap_onthefly"
+                        and batch_idx >= next_swap_at_step
+                    )
+                    _latent_refill_due = (
+                        latent_swap_buffer is not None
+                        and batch_idx >= next_latent_swap_at_step
+                    )
+                    _coalesced_refill = _text_refill_due and _latent_refill_due
+
                     # Check if we need to refill swap buffer (swap_onthefly path)
-                    if swap_buffer is not None and text_encoding_mode == "swap_onthefly" \
-                            and batch_idx >= next_swap_at_step:
+                    if _text_refill_due:
                         # Calculate next batch range
                         start_idx = next_swap_at_step
                         end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
@@ -16621,17 +16633,15 @@ class BaseTrainer(ABC):
 
                         # Move Text Encoder back to CPU
                         self.move_text_encoder_to_cpu()
-                        # Move main model to GPU
-                        self.move_main_model_to_gpu()
-
-                        # Clear CUDA cache after model movement to free fragmented memory
-                        torch.cuda.empty_cache()
+                        if not _coalesced_refill:
+                            self.move_main_model_to_gpu()
+                            torch.cuda.empty_cache()
 
                         next_swap_at_step += text_encoding_swap_interval
                         print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
 
                     # Check if we need to refill latent swap buffer
-                    if latent_swap_buffer is not None and batch_idx >= next_latent_swap_at_step:
+                    if _latent_refill_due:
                         # Calculate next batch range
                         start_idx = next_latent_swap_at_step
                         end_idx = min(start_idx + latent_encoding_swap_interval, len(batches))
@@ -16650,8 +16660,8 @@ class BaseTrainer(ABC):
 
                         # Move VAE to GPU
                         self.move_vae_to_gpu()
-                        # Move main model to CPU
-                        self.move_main_model_to_cpu()
+                        if not _coalesced_refill:
+                            self.move_main_model_to_cpu()
 
                         # Clear old buffer and encode new latents (dict keyed by image_path)
                         latent_swap_buffer.clear()

@@ -260,6 +260,31 @@ def eligible_task_views(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
+def task_step_metrics(
+    task: str,
+    item_count: int,
+    elapsed_seconds: float,
+    draw_counts: Dict[str, int],
+    *,
+    target_tokens: int | None = None,
+) -> Dict[str, float]:
+    """Per-step and cumulative throughput metrics for one homogeneous task."""
+    count = max(0, int(item_count))
+    elapsed = max(float(elapsed_seconds), 1e-12)
+    draw_counts[task] = int(draw_counts.get(task, 0)) + count
+    metrics = {
+        f"task_items_{task}": float(count),
+        f"task_draws_{task}": float(draw_counts[task]),
+        f"task_items_per_second_{task}": count / elapsed,
+    }
+    if target_tokens is not None:
+        metrics["i2t_target_tokens"] = float(target_tokens)
+        metrics[f"task_target_tokens_per_second_{task}"] = (
+            int(target_tokens) / elapsed
+        )
+    return metrics
+
+
 def select_task_view(task_views: Sequence[Dict[str, Any]], rng) -> Dict[str, Any]:
     if not task_views:
         raise ValueError("SenseNova task scheduling requires at least one task view")

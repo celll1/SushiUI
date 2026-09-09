@@ -68,6 +68,8 @@ _DATA_VOLUME = {"family": "data_volume", "scale_group": "gibibytes", "range": _A
 # `gibibytes` would flatten the per-step curves onto the axis floor.
 _DATA_VOLUME_PEAK = {**_DATA_VOLUME, "scale_group": "gibibytes_peak"}
 _COUNT = {"family": "count", "scale_group": "counts", "range": _AUTO_0, "sampling": "dense"}
+_ITEM_RATE = {"family": "other", "scale_group": "items_per_second", "range": _AUTO_0, "sampling": "dense"}
+_TOKEN_RATE = {"family": "other", "scale_group": "tokens_per_second", "range": _AUTO_0, "sampling": "dense"}
 
 EXTRA_METRIC_DEFS = {
     "loss_flow": {"label": "SenseNova flow loss", "color": "#38bdf8", "dashed": False, **_LOSS},
@@ -75,12 +77,46 @@ EXTRA_METRIC_DEFS = {
     "loss_ce_i2t_caption": {"label": "CE (caption)", "color": "#fb7185", "dashed": True, **_LOSS},
     "loss_ce_i2t_tags": {"label": "CE (tags)", "color": "#c084fc", "dashed": True, **_LOSS},
     "loss_ce_i2t_caption_tags": {"label": "CE (caption + tags)", "color": "#e879f9", "dashed": True, **_LOSS},
+    "loss_flow_t2i": {"label": "Flow (T2I)", "color": "#0ea5e9", "dashed": True, **_LOSS},
+    "loss_flow_ti2i": {"label": "Flow (TI2I)", "color": "#22d3ee", "dashed": True, **_LOSS},
     "i2t_target_tokens": {"label": "I2T target tokens", "color": "#facc15", "dashed": True, "axis": "right", **_COUNT},
     "task_items_i2t_caption": {"label": "Caption items", "dashed": True, "axis": "right", **_COUNT},
     "task_items_i2t_tags": {"label": "Tag items", "dashed": True, "axis": "right", **_COUNT},
     "task_items_i2t_caption_tags": {"label": "Caption + tag items", "dashed": True, "axis": "right", **_COUNT},
     "task_items_t2i": {"label": "T2I items", "dashed": True, "axis": "right", **_COUNT},
     "task_items_ti2i": {"label": "TI2I items", "dashed": True, "axis": "right", **_COUNT},
+    **{
+        f"task_draws_{task}": {
+            "label": f"{label} cumulative draws", "dashed": True,
+            "axis": "right", **_COUNT,
+        }
+        for task, label in (
+            ("i2t_caption", "Caption"), ("i2t_tags", "Tags"),
+            ("i2t_caption_tags", "Caption + tags"), ("t2i", "T2I"),
+            ("ti2i", "TI2I"),
+        )
+    },
+    **{
+        f"task_items_per_second_{task}": {
+            "label": f"{label} items/s", "dashed": True,
+            "axis": "right", **_ITEM_RATE,
+        }
+        for task, label in (
+            ("i2t_caption", "Caption"), ("i2t_tags", "Tags"),
+            ("i2t_caption_tags", "Caption + tags"), ("t2i", "T2I"),
+            ("ti2i", "TI2I"),
+        )
+    },
+    **{
+        f"task_target_tokens_per_second_{task}": {
+            "label": f"{label} target tokens/s", "dashed": True,
+            "axis": "right", **_TOKEN_RATE,
+        }
+        for task, label in (
+            ("i2t_caption", "Caption"), ("i2t_tags", "Tags"),
+            ("i2t_caption_tags", "Caption + tags"),
+        )
+    },
     # REPA representation-alignment loss. Formerly the dedicated repa_loss
     # column (backfilled into extra_metrics by auto_migrate).
     "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},

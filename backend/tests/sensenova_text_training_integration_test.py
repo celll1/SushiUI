@@ -15,6 +15,7 @@ from core.training.adapters.sensenova_adapter import (  # noqa: E402
     SenseNovaFullParameterAdapter,
 )
 from core.training.ops.sensenova_ops import (  # noqa: E402
+    prepare_i2t_example,
     resolve_full_finetune_branch,
     train_i2t_step,
 )
@@ -81,6 +82,45 @@ def test_i2t_step_refuses_a_mixed_task_batch():
             trainer,
             examples=[_example(1, 1), _example(1, 1, task="i2t_tags")],
         )
+
+
+def test_i2t_preparation_uses_native_pixels_without_touching_swapped_vae(monkeypatch):
+    from core.models.sensenova.vendor import utils as vendor_utils
+    from core.training import sensenova_tasks
+
+    pixels = torch.ones(2, 3)
+    grid = torch.tensor([[1, 2]])
+    monkeypatch.setattr(
+        vendor_utils, "load_image_native",
+        lambda *args, **kwargs: (pixels, grid),
+    )
+    monkeypatch.setattr(
+        sensenova_tasks, "build_text_supervision",
+        lambda *args, **kwargs: {"target_tokens": 4},
+    )
+
+    class Trainer:
+        transformer = SimpleNamespace(patch_size=16, downsample_ratio=0.5)
+        tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda _token: 1)
+        run_seed = 7
+
+        @property
+        def vae(self):
+            raise AssertionError("text-output preparation must not access the VAE")
+
+    result = prepare_i2t_example(
+        Trainer(),
+        {
+            "image_path": "synthetic.png",
+            "_sensenova_task": "i2t_caption",
+            "_sensenova_task_view": {"loss_weight": 1.5},
+            "_captions_by_type": {},
+        },
+        epoch=2,
+    )
+    assert result["pixel_values"] is pixels
+    assert result["grid_hw"] is grid
+    assert result["loss_weight"] == 1.5
 
 
 def test_explicit_non_decoder_scope_resolves_without_materializing_a_half():

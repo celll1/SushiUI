@@ -48,6 +48,10 @@ def _batches(count_a=100, count_b=10):
                 "width": 384,
                 "height": 384,
                 "_sensenova_task_views": VIEWS,
+                "_captions_by_type": {
+                    "natural_language": {"content": "A person.", "is_tags_format": False},
+                    "tags": {"content": "1girl", "is_tags_format": True},
+                },
             }, dataset))
     return [pairs[index:index + 8] for index in range(0, len(pairs), 8)]
 

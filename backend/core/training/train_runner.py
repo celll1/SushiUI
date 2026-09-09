@@ -205,7 +205,8 @@ def _apply_sensenova_training_contract(
     if is_full_finetune:
         _apply_sensenova_full_finetune_contract(
             train_config, base_model_path=base_model_path)
-    elif not _normalize_sensenova_bool(train_config, "train_unet", True):
+    elif (not _normalize_sensenova_bool(train_config, "train_unet", True)
+          and not train_config.get("_sensenova_explicit_tasks")):
         # LoRA only. Under full fine-tuning the understanding half alone is a
         # branch resolve_full_finetune_branch names ("und"); under LoRA it is
         # not an artefact -- SenseNovaLoRAAdapter.save_checkpoint refuses a
@@ -374,6 +375,109 @@ def _apply_sensenova_training_contract(
     _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"
+    return True
+
+
+def _apply_sensenova_task_contract(
+    base_model_path: str,
+    network_type: str,
+    train_config: Dict[str, Any],
+    process_config: Dict[str, Any],
+) -> bool:
+    """Validate and normalize explicit task views before checkpoint loading."""
+    datasets = process_config.get("datasets") or []
+    configured = [list(dataset.get("task_views") or []) for dataset in datasets]
+    if not any(configured):
+        return False
+    try:
+        from core.model_loader import ModelLoader
+        is_sensenova = ModelLoader.detect_model_type(base_model_path) == "sensenova"
+    except Exception:
+        lowered = (base_model_path or "").lower()
+        is_sensenova = "sensenova" in lowered or "sense-nova" in lowered
+    if not is_sensenova:
+        raise ValueError("dataset task_views are supported only for SenseNova training")
+    if any(not views for views in configured):
+        raise ValueError(
+            "Every selected dataset must define task_views in an explicit SenseNova task run"
+        )
+
+    from core.training.sensenova_tasks import IMAGE_TASKS, TASKS, TEXT_TASKS
+
+    tasks = set()
+    versions = set()
+    for views in configured:
+        for view in views:
+            task = str(view.get("task", ""))
+            if task not in TASKS:
+                raise ValueError(f"Unknown SenseNova task view: {task!r}")
+            targets = [str(value).strip() for value in view.get("target_caption_types", ()) if str(value).strip()]
+            hints = [str(value).strip() for value in view.get("hint_caption_types", ()) if str(value).strip()]
+            if not targets:
+                raise ValueError(f"SenseNova task {task} requires target_caption_types")
+            if set(targets) & set(hints):
+                raise ValueError(
+                    f"SenseNova task {task} uses the same caption source as target and hint"
+                )
+            weight = float(view.get("weight", 1.0))
+            loss_weight = float(view.get("loss_weight", 1.0))
+            dropout = float(view.get("hint_dropout", 0.25))
+            if weight <= 0 or loss_weight <= 0 or not 0 <= dropout <= 1:
+                raise ValueError(f"SenseNova task {task} has invalid weight/dropout values")
+            tasks.add(task)
+            versions.add(int(view.get("prompt_template_version", 1)))
+    if versions != {1}:
+        raise ValueError(f"Unsupported SenseNova prompt template version(s): {sorted(versions)}")
+
+    allowed_scopes = {
+        "understanding_vision", "understanding_decoder", "shared",
+        "generation_decoder", "generation_flow",
+    }
+    scopes = list(train_config.get("sensenova_train_scopes") or [])
+    if not scopes:
+        raise ValueError("Explicit SenseNova task views require sensenova_train_scopes")
+    if len(scopes) != len(set(scopes)) or set(scopes) - allowed_scopes:
+        raise ValueError(f"Invalid or duplicate SenseNova training scopes: {scopes}")
+    if tasks & TEXT_TASKS and not set(scopes) & {
+        "understanding_vision", "understanding_decoder", "shared",
+    }:
+        raise ValueError("Text-output tasks freeze every parameter on their path")
+    if tasks & IMAGE_TASKS and not set(scopes) & {
+        "understanding_decoder", "shared", "generation_decoder", "generation_flow",
+    }:
+        raise ValueError("Image-output tasks freeze every parameter on their path")
+    if network_type == "lora" and set(scopes) - {
+        "understanding_decoder", "generation_decoder",
+    }:
+        raise ValueError(
+            "SenseNova LoRA scopes are understanding_decoder and generation_decoder; "
+            "vision/projector, shared embeddings, LM head, and flow modules require full_finetune"
+        )
+    if network_type == "full_finetune" and not set(scopes) & {
+        "understanding_decoder", "generation_decoder",
+    }:
+        from api.param_defaults import TRAINING_DEFAULTS
+
+        save_format = str(train_config.get(
+            "sensenova_full_finetune_save_format",
+            TRAINING_DEFAULTS["sensenova_full_finetune_save_format"],
+        )).strip().lower()
+        if save_format != "mixed":
+            raise ValueError(
+                "SenseNova full fine-tuning without a decoder scope requires "
+                "sensenova_full_finetune_save_format='mixed' so both untouched "
+                "int8 decoder halves remain resumable"
+            )
+    if tasks & TEXT_TASKS and int(train_config.get("multi_noise_timesteps", 1) or 1) != 1:
+        raise ValueError("SenseNova text-output tasks require multi_noise_timesteps=1")
+
+    # Bridge the explicit scopes into the legacy branch selectors used by the
+    # existing loader and adapters. Extra full-FT scopes are collected separately.
+    train_config["train_unet"] = "generation_decoder" in scopes
+    train_config["train_text_encoder"] = "understanding_decoder" in scopes
+    train_config["sensenova_train_fm_modules"] = "generation_flow" in scopes
+    train_config["_sensenova_explicit_tasks"] = sorted(tasks)
+    train_config["_sensenova_prompt_template_versions"] = sorted(versions)
     return True
 
 
@@ -893,6 +997,9 @@ def _assert_training_scope_is_nonempty(
     """
     if network_type not in ("lora", "relora", "full_finetune"):
         return
+    if train_config.get("_sensenova_explicit_tasks") \
+            and train_config.get("sensenova_train_scopes"):
+        return
     on = [name for name in _TRAINING_SCOPE_FLAGS
           if _normalize_scope_flag(train_config, name, name == "train_unet")]
     # A trained vision encoder is a fourth component, and the only one that is
@@ -1003,6 +1110,9 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    _apply_sensenova_task_contract(
+        base_model_path, network_type, train_config, process_config
+    )
     _assert_training_scope_is_nonempty(network_type, train_config)
     _assert_adapter_algebra_contract(network_type, network_config,
                                      base_model_path, train_config)

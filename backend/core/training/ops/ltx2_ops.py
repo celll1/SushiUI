@@ -724,13 +724,14 @@ def train_step(
     # Optional reconstruction loss (predicted x0 vs GT x0): x0 = x_t - sigma * v.
     recon_loss_value = 0.0
     if trainer.reconstruction_loss_weight > 0:
-        with torch.no_grad():
-            seq_x0 = _pack_latents(latents)
-            seq_x_t = _pack_latents(x_t)
-            sigma_seq = sigma.view(-1, 1, 1).to(v_pred_video.dtype)
-            pred_x0 = seq_x_t - sigma_seq * v_pred_video
-            recon_loss = F.mse_loss(pred_x0.float(), seq_x0.float())
-            recon_loss_value = recon_loss.item()
+        # Grad-carrying on purpose: this term is added to the backward loss, and
+        # under no_grad it would only shift the reported number.
+        seq_x0 = _pack_latents(latents)
+        seq_x_t = _pack_latents(x_t)
+        sigma_seq = sigma.view(-1, 1, 1).to(v_pred_video.dtype)
+        pred_x0 = seq_x_t - sigma_seq * v_pred_video
+        recon_loss = F.mse_loss(pred_x0.float(), seq_x0.float())
+        recon_loss_value = recon_loss.item()
         loss = loss + trainer.reconstruction_loss_weight * recon_loss
 
     pred_loss_value = mse_loss.item()

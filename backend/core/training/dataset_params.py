@@ -7,6 +7,7 @@ Adding a new dataset-level param requires ONLY:
   3. Handle consumption in train_runner.py
 """
 
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 
@@ -16,6 +17,9 @@ from typing import Any, Dict, List, Optional
 DATASET_LEVEL_PARAMS: Dict[str, Any] = {
     "caption_types": [],
     "ve_reconstruction_mode": False,
+    # SenseNova explicit objectives. Empty preserves the legacy generation
+    # task inferred from the existing training configuration.
+    "task_views": [],
 }
 
 
@@ -40,7 +44,10 @@ def read_dataset_params(source: dict) -> dict:
     Used when reading YAML back (get_training_run_params, train_runner.py).
     Always returns all keys so downstream code can rely on their presence.
     """
-    return {key: source.get(key, default) for key, default in DATASET_LEVEL_PARAMS.items()}
+    return {
+        key: deepcopy(source[key]) if key in source else deepcopy(default)
+        for key, default in DATASET_LEVEL_PARAMS.items()
+    }
 
 
 def resolve_dataset_configs_from_yaml(config_yaml: str, datasets_db) -> Optional[List[Dict[str, Any]]]:
@@ -60,7 +67,8 @@ def resolve_dataset_configs_from_yaml(config_yaml: str, datasets_db) -> Optional
     the codebase (CREATE at routes.py, the pre-existing migration
     add_dataset_configs.py, and get_training_run_params)::
 
-        {"dataset_id": int, "caption_types": [...], "ve_reconstruction_mode": bool, "filters": {}}
+        {"dataset_id": int, "caption_types": [...], "ve_reconstruction_mode": bool,
+         "task_views": [...], "filters": {}}
 
     ``filters`` is intentionally always ``{}`` -- the frontend never sends a
     non-empty value and there are no backend consumers of it (see

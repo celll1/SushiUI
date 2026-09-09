@@ -6534,11 +6534,25 @@ export interface TrainingRun {
   preserved_config_keys?: string[];
 }
 
+export type SenseNovaTrainingTask = "t2i" | "ti2i" | "i2t_caption" | "i2t_tags" | "i2t_caption_tags";
+export type SenseNovaTrainScope = "understanding_vision" | "understanding_decoder" | "shared" | "generation_decoder" | "generation_flow";
+
+export interface SenseNovaTaskView {
+  task: SenseNovaTrainingTask;
+  target_caption_types: string[];
+  hint_caption_types: string[];
+  weight: number;
+  loss_weight: number;
+  hint_dropout: number;
+  prompt_template_version: 1;
+}
+
 export interface DatasetConfigItem {
   dataset_id: number;
   caption_types: string[];  // Empty = use all caption types
   filters: Record<string, any>;  // Filter configuration
   ve_reconstruction_mode?: boolean;  // Use training image as its own VE reference (no text conditioning)
+  task_views?: SenseNovaTaskView[];
 }
 
 export interface SamplePrompt {
@@ -6588,6 +6602,7 @@ export interface TrainingRunCreateRequest {
   // Needs train_unet; warned and ignored on an understanding-only branch.
   // Changing it on a resume resets the optimizer state (group count moves).
   sensenova_train_fm_modules?: boolean;
+  sensenova_train_scopes?: SenseNovaTrainScope[];
   base_model_path: string;
   gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).

@@ -15656,11 +15656,28 @@ async def get_tag_stats():
 
 from database.models import TrainingRun, TrainingCheckpoint, TrainingSample
 
+class SenseNovaTaskView(BaseModel):
+    task: Literal["t2i", "ti2i", "i2t_caption", "i2t_tags", "i2t_caption_tags"]
+    target_caption_types: List[str] = Field(default_factory=list)
+    hint_caption_types: List[str] = Field(default_factory=list)
+    weight: float = Field(default=1.0, gt=0)
+    loss_weight: float = Field(default=1.0, gt=0)
+    hint_dropout: float = Field(default=0.25, ge=0, le=1)
+    prompt_template_version: Literal[1] = 1
+
+    @field_validator("target_caption_types", "hint_caption_types")
+    @classmethod
+    def _normalize_caption_types(cls, value: List[str]) -> List[str]:
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return list(dict.fromkeys(normalized))
+
+
 class DatasetConfigItem(BaseModel):
     dataset_id: int
-    caption_types: List[str] = []  # Empty = use all caption types
-    filters: Dict[str, Any] = {}  # {"tag_include": ["1girl"], "tag_exclude": ["photo"], "caption_contains": "smile"}
+    caption_types: List[str] = Field(default_factory=list)  # Empty = use all caption types
+    filters: Dict[str, Any] = Field(default_factory=dict)  # {"tag_include": ["1girl"], "tag_exclude": ["photo"], "caption_contains": "smile"}
     ve_reconstruction_mode: Optional[bool] = False
+    task_views: List[SenseNovaTaskView] = Field(default_factory=list)
 
 class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
@@ -16121,6 +16138,17 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_train_fm_modules: bool = TRAINING_DEFAULTS[
         "sensenova_train_fm_modules"
     ]
+    sensenova_train_scopes: List[Literal[
+        "understanding_vision", "understanding_decoder", "shared",
+        "generation_decoder", "generation_flow",
+    ]] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["sensenova_train_scopes"]))
+
+    @field_validator("sensenova_train_scopes")
+    @classmethod
+    def _unique_sensenova_train_scopes(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("sensenova_train_scopes must not contain duplicates")
+        return value
     block_swap_h2d_only: bool = TRAINING_DEFAULTS["block_swap_h2d_only"]  # FLUX.2 LoRA: H2D-only swap (no device->host of frozen base)
     block_swap_ring_size: int = TRAINING_DEFAULTS["block_swap_ring_size"]  # GPU weight-buffer ring slots (>=1)
     num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)

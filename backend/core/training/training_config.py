@@ -181,6 +181,8 @@ def _build_train_section(
                                             _TD["sensenova_noise_scale_gain"]),
         "sensenova_noise_scale_auto": p.get("sensenova_noise_scale_auto",
                                             _TD["sensenova_noise_scale_auto"]),
+        "sensenova_train_scopes": p.get("sensenova_train_scopes",
+                                         _TD["sensenova_train_scopes"]),
         "sdxl_vae_type": p.get("sdxl_vae_type", "none"),
         "sdxl_te_type": p.get("sdxl_te_type", "none"),
         "sdxl_te_hidden_layer": p.get("sdxl_te_hidden_layer", -2),

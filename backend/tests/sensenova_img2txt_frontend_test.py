@@ -36,6 +36,9 @@ def test_img2txt_request_freezes_file_model_and_template_version():
     assert 'params: Img2TxtParams;' in context
     assert 'formData.append("images", params.image' in api
     assert 'formData.append("prompt_template_version"' in api
+    assert 'formData.append("loras", JSON.stringify(params.loras || []))' in api
+    assert '<LoRASelector' in panel
+    assert 'loadedArch="sensenova"' in panel
     assert 'kind: "text";' in context
     assert 'url: string;' not in context[
         context.index("export interface TextGenerationResultSnapshot"):

@@ -1251,6 +1251,7 @@ async def generate_img2txt(
         IMG2TXT_DEFAULTS["repetition_penalty"], gt=0.0, le=10.0),
     seed: int = Form(IMG2TXT_DEFAULTS["seed"], ge=-1, le=2**31 - 1),
     prompt_template_version: int = Form(IMG2TXT_DEFAULTS["prompt_template_version"], ge=1),
+    loras: str = Form(json.dumps(IMG2TXT_DEFAULTS["loras"]), max_length=1048576),
 ):
     """Generate caption/tag/custom text through SenseNova's understanding path."""
     current_info = pipeline_manager.current_model_info or {}
@@ -1279,6 +1280,7 @@ async def generate_img2txt(
             task, instruction, decoded_hints, prompt_template_version)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    parsed_loras = await parse_lora_items(loras)
 
     # Bound compressed bytes and decoded pixels before model residency or a GPU
     # slot. The upstream visual preprocessor later caps its own working image at
@@ -1322,6 +1324,7 @@ async def generate_img2txt(
             "repetition_penalty": repetition_penalty,
             "seed": seed,
             "prompt_template_version": prompt_template_version,
+            "loras": parsed_loras,
         }
 
         def progress_callback(step: int, total: int, phase: str) -> None:

@@ -40,6 +40,7 @@ def _route_kwargs(upload):
         "repetition_penalty": None,
         "seed": 123,
         "prompt_template_version": 1,
+        "loras": "[]",
     }
 
 
@@ -97,6 +98,7 @@ def test_route_returns_session_text_without_gallery_persistence(monkeypatch):
     def fake_generate(params, image, progress_callback=None):
         assert image.mode == "RGB"
         assert params["hint_tags"] == ["1girl", "outdoors"]
+        assert params["loras"] == []
         assert "context only" in params["instruction"]
         return '{"caption":"Synthetic","tags":["b","a"]}', 123, {
             "preprocess_seconds": 0.01,
@@ -166,6 +168,11 @@ def test_pipeline_uses_understanding_pixels_and_never_moves_vae(monkeypatch):
             }
 
         def _unload_lora_sensenova(self):
+            return 0
+
+        def _load_lora_sensenova(self, configs, component_names=None):
+            assert configs == []
+            assert component_names == ["understanding"]
             return 0
 
         def _sensenova_move(self, component_name, target_device):

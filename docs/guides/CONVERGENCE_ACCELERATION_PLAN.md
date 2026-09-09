@@ -586,16 +586,42 @@ post-layernorm を pixel 教師の `last_hidden_state` へ cosine 蒸留する�
 ```powershell
 cd backend
 ..\venv\Scripts\python.exe -m core.training.probes.distill_repa_latent_stem `
-  --image-dir M:\dataset_character\character\M\mew_ichigo `
-  --image-dir M:\dataset_working\endfield_character `
-  --image-dir M:\dataset_working\copyright\kouyoku_senki_exs-tia `
+  --dataset-id 25 --dataset-id 26 --dataset-id 6 --dataset-id 29 --dataset-id 12 `
+  --dataset-id 19 --dataset-id 17 --dataset-id 27 --dataset-id 39 --dataset-id 28 `
+  --dataset-id 16 --dataset-id 31 --dataset-id 2 --dataset-id 18 --dataset-id 5 `
   --base-model M:\model\sdxl\Illustrious-XL-v2.0.safetensors `
   --tagger-model ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f\v2_01a\model.onnx `
   --output ..\models\repa_stems\sdxl_tagger.safetensors `
   --width 1536 --height 1536 --bucket-strategy resize `
-  --width-channels 256 --steps 1000 --max-items 4096 `
-  --expected-online-steps <planned-training-steps> --online-batch-size 4
+  --width-channels 256 --batch-size 4 --max-items 8192 --val-fraction 0.10 --steps 5532 `
+  --validation-every 500 --validation-probe-items 64 `
+  --expected-online-steps 10000 --online-batch-size 4
 ```
+
+上の15 IDは登録上 3,798,965 枚である。ID単位の均等化や重み付けはせず、全行を一つの
+母集団として画像ごとの reservoir sampling を行うため、大規模 dataset はその画像数に比例して
+選ばれる。8,192枚のうち7,373枚が学習用、819枚が固定検証用で、batch 4の5,532 stepは
+学習画像を3周する。画像ごとに729 patchの教師信号があるため約1,612万patch提示となり、VAE
+posteriorも周回ごとに再sampleされる。これは十分性を事前に断定する値ではなく、validationを
+見ながら行う初回本番蒸留の上限である。
+
+RTX 6000 Adaで同じONNX/FP32 companion、1536px、batch 4を実測すると15.38 GiB peak、
+939.77 ms/itemだった。単純外挿では上記3周は約5.8時間で、65,536枚1周は約16.8時間となるため、
+後者を初回値にはしない。artifactは同じVAE/教師のrun間で再利用できるが、5.8時間でも10k-step
+REPA run単体では償却できず、最終 `.json` のeconomic gateは失敗する見込みである。
+
+標準出力は瞬間 loss と直近100 step平均を表示する。さらに500 stepごとに固定64枚の
+validation loss/cosineを測り、全ログをartifactと同じbasenameの `.progress.jsonl` に逐次保存する。
+別のPowerShellから次で追跡できる。
+
+```powershell
+Get-Content ..\models\repa_stems\sdxl_tagger.progress.jsonl -Wait
+```
+
+見るべき主値は `train_loss_mean_100` と `validation_loss` である。前者だけ低下して後者が横ばい・
+悪化するなら追加stepは行わない。最終artifactの同名 `.json` には全819検証画像でのcosineと
+別画像・空間反転対照も残る。絶対的な採否はこのlossだけで決めず、予定どおり本番REPAの一発A/Bで
+決める。
 
 本番は `repa_target_source: latent_stem` と `repa_latent_stem_path` を指定する。既定は従来どおり
 `pixel`。latent 経路は現在 SDXL + tagger に限定し、artifact の
@@ -606,6 +632,11 @@ cd backend
 モデルファイルを直接受け付ける。ONNXでは内部の729×1152 post-layernorm特徴を公開する
 小さなsidecar graphを同じフォルダへ自動生成し、元の外部weightデータを複製せず共有する。
 蒸留CLIの新しい表示名は `--tagger-model` で、従来の `--tagger-dir` もaliasとして残す。
+ONNX Runtimeのtrunkは逆伝播できないため、ONNX指定時の蒸留だけは同ディレクトリまたは親の
+`latest.safetensors`（次点 `best_f1.safetensors`）を微分可能なtrunkとして使う。最初のbatchで
+ONNXとのpost-layernorm cosineが0.999未満なら不一致として拒否し、artifact identityは指定した
+ONNXに束縛する。この照合と蒸留trunkはONNXのFP32出力を再現するためFP32で行う（実画像で
+ONNX↔safetensors FP32 cosine 0.999851、bf16では0.994400）。本番推論は指定どおりONNXを使える。
 現行のexport済みONNXはFP32なので、教師を本番REPAに残す構成ではbf16 safetensorsより
 VRAMを多く使い得る。ONNX指定の主目的はオフライン蒸留時の選択容易性である。
 artifact同一性は形式をまたいで同一視しないため、蒸留と本番runでは同じONNXまたは

@@ -1,3 +1,4 @@
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from core.training.repa_latent_stem import (
     LatentRepaStem, economic_gate, encode_latent_targets, load_latent_stem,
     save_latent_stem, vae_encoder_identity,
 )
+from core.training.probes.distill_repa_latent_stem import _images, _onnx_companion
 
 
 class _VAE(nn.Module):
@@ -107,6 +109,44 @@ def test_economic_gate_reports_break_even():
         replaced_ms_per_item=6.02, stem_ms_per_item=0.08)
     assert result["passes"] is True
     assert result["break_even_steps"] == pytest.approx(84.175084, rel=1e-6)
+
+
+def test_dataset_ids_form_one_deterministic_image_pool(tmp_path):
+    db_path = tmp_path / "datasets.db"
+    paths = []
+    for index in range(12):
+        path = tmp_path / f"image-{index}.png"
+        path.write_bytes(b"image")
+        paths.append(path)
+    with sqlite3.connect(db_path) as database:
+        database.execute(
+            "CREATE TABLE datasets (id INTEGER PRIMARY KEY, name TEXT, total_items INTEGER)")
+        database.execute(
+            "CREATE TABLE dataset_items "
+            "(id INTEGER PRIMARY KEY, dataset_id INTEGER, image_path TEXT)")
+        database.executemany(
+            "INSERT INTO datasets VALUES (?, ?, ?)",
+            [(1, "large", 10), (2, "small", 2)])
+        database.executemany(
+            "INSERT INTO dataset_items VALUES (?, ?, ?)",
+            [(index + 1, 1 if index < 10 else 2, str(path))
+             for index, path in enumerate(paths)])
+
+    first = _images([], [1, 2], db_path, seed=7, max_items=8)
+    second = _images([], [2, 1, 2], db_path, seed=7, max_items=8)
+    assert first == second
+    assert len(first) == len(set(first)) == 8
+    assert set(first) <= set(paths)
+
+
+def test_onnx_distillation_finds_parent_safetensors(tmp_path):
+    export = tmp_path / "v2_01a"
+    export.mkdir()
+    onnx = export / "model.onnx"
+    onnx.write_bytes(b"onnx")
+    companion = tmp_path / "latest.safetensors"
+    companion.write_bytes(b"weights")
+    assert _onnx_companion(str(onnx)) == str(companion.resolve())
 
 
 def test_production_loss_switch_consumes_clean_latents():

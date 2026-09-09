@@ -895,7 +895,13 @@ def train_step(
     # Compute predicted latent once (used by both regularization losses and debug save)
     predicted_latent_for_reg = None
     predicted_latent_for_recon = None  # Will be set in reconstruction loss path
-    if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None:
+    # The crop decode loss backpropagates through this x_0, so it must be the
+    # grad-carrying copy; the monitoring branch below only keeps a detached one.
+    crop_decode_on = (getattr(trainer, "crop_decode_loss_enable", False)
+                      and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0)
+    if (trainer.snr_regularization_loss is not None
+            or trainer.energy_regularization_loss is not None
+            or crop_decode_on):
         # Compute predicted latent from model_pred (keep gradients for backprop)
         predicted_latent_for_reg = predict_original_latent_unified(
             noise_process=noise_process,
@@ -1020,7 +1026,7 @@ def train_step(
         loss = mse_loss + regularization_loss
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    if crop_decode_on:
         from core.training.arch.sd15 import SD15ArchHandler
         from core.training.arch.sdxl import SDXLArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
@@ -1036,7 +1042,7 @@ def train_step(
             velocity_sign=(SDXLArchHandler if getattr(trainer, "is_sdxl", False)
                            else SD15ArchHandler).velocity_sign,
             alphas_cumprod_cached=alphas_cumprod_cached,
-            predicted_latent=predicted_latent_for_reg if predicted_latent_for_reg is not None else predicted_latent_for_recon,
+            predicted_latent=predicted_latent_for_reg,
             main_loss=loss,
         )
         if aux_loss is not None:

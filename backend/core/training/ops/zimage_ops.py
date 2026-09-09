@@ -400,7 +400,14 @@ def train_step(
 
     # Compute predicted latent once (used by regularization losses and dual loss)
     predicted_latent_for_reg = None
-    if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None or trainer.reconstruction_loss_weight > 0:
+    # The crop decode loss backpropagates through this x_0, so it must be the
+    # grad-carrying copy; the monitoring branch below only keeps a detached one.
+    crop_decode_on = (getattr(trainer, "crop_decode_loss_enable", False)
+                      and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0)
+    if (trainer.snr_regularization_loss is not None
+            or trainer.energy_regularization_loss is not None
+            or trainer.reconstruction_loss_weight > 0
+            or crop_decode_on):
         predicted_latent_for_reg = _predict_x0_zimage(noisy_latents, model_pred, timesteps)
 
     # SNR regularization (周波数領域の過剰デノイズ抑制)
@@ -462,7 +469,7 @@ def train_step(
         loss = mse_loss + regularization_loss
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    if crop_decode_on:
         from core.training.arch.zimage import ZImageArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         aux_loss, _ = compute_crop_decode_loss(
@@ -475,7 +482,7 @@ def train_step(
             prediction_target=prediction_target,
             noise_scheduler=trainer.noise_scheduler,
             velocity_sign=ZImageArchHandler.velocity_sign,
-            predicted_latent=predicted_latent_for_reg if predicted_latent_for_reg is not None else predicted_latent_for_recon,
+            predicted_latent=predicted_latent_for_reg,
             main_loss=loss,
         )
         if aux_loss is not None:

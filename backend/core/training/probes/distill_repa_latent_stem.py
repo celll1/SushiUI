@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import http.server
 import json
+import os
 import random
+import signal
 import sqlite3
 import threading
 import time
@@ -31,6 +34,7 @@ from core.training.repa_latent_stem import (
 )
 
 _EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+_RESUME_FORMAT = "sushi.repa_latent_stem.resume.v1"
 
 _MONITOR_HTML = r"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -90,10 +94,108 @@ def _start_monitor(progress_path: Path, port: int):
         def log_message(self, _format, *args):
             pass
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as error:
+        try:
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        except OSError as fallback_error:
+            print(
+                f"[REPA stem] monitor disabled: {fallback_error} "
+                f"(requested port {port} also failed: {error})",
+                flush=True)
+            return None
+        print(
+            f"[REPA stem] monitor port {port} unavailable; using dynamic port "
+            f"{server.server_port}", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"[REPA stem] monitor=http://127.0.0.1:{server.server_port}", flush=True)
     return server
+
+
+def _selection_identity(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(str(path.resolve()).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _resume_contract(args, *, paths, vae_identity, teacher_identity):
+    return {
+        "selection_identity": _selection_identity(paths),
+        "vae_encoder_identity": vae_identity,
+        "teacher_identity": teacher_identity,
+        "width": args.width,
+        "height": args.height,
+        "bucket_strategy": args.bucket_strategy,
+        "width_channels": args.width_channels,
+        "batch_size": args.batch_size,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "dtype": args.dtype,
+        "vae_dtype": args.vae_dtype,
+    }
+
+
+def _save_resume_checkpoint(path: Path, *, stem, optimizer, scaler, step,
+                            processed_items, recent_losses, item_time_sum,
+                            item_time_count, contract) -> None:
+    stem_device = stem.in_proj.weight.device
+    cuda_rng_state = (
+        torch.cuda.get_rng_state(stem_device)
+        if stem_device.type == "cuda" else torch.empty(0, dtype=torch.uint8))
+    payload = {
+        "format": _RESUME_FORMAT,
+        "contract": contract,
+        "stem": stem.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "step": step,
+        "processed_items": processed_items,
+        "recent_losses": list(recent_losses),
+        "item_time_sum": item_time_sum,
+        "item_time_count": item_time_count,
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state": cuda_rng_state,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    torch.save(payload, temporary)
+    os.replace(temporary, path)
+
+
+def _load_resume_checkpoint(path: Path, *, stem, optimizer, scaler, contract,
+                            device, planned_steps: int):
+    if not path.is_file():
+        raise FileNotFoundError(f"REPA stem resume checkpoint not found: {path}")
+    payload = torch.load(path, map_location=device, weights_only=True)
+    if payload.get("format") != _RESUME_FORMAT:
+        raise ValueError(f"{path}: unsupported resume format {payload.get('format')!r}")
+    saved_contract = payload.get("contract", {})
+    mismatches = [
+        f"{key}: checkpoint={saved_contract.get(key)!r}, run={value!r}"
+        for key, value in contract.items() if saved_contract.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError(f"{path}: resume contract mismatch (" + "; ".join(mismatches) + ")")
+    step = int(payload["step"])
+    if planned_steps < step:
+        raise ValueError(
+            f"planned steps {planned_steps} is below resumed step {step}")
+    stem.load_state_dict(payload["stem"])
+    optimizer.load_state_dict(payload["optimizer"])
+    scaler.load_state_dict(payload["scaler"])
+    torch.set_rng_state(payload["torch_rng_state"].cpu())
+    if device.type == "cuda":
+        torch.cuda.set_rng_state(payload["cuda_rng_state"].cpu(), device)
+    return {
+        "step": step,
+        "processed_items": int(payload["processed_items"]),
+        "recent_losses": list(payload.get("recent_losses", [])),
+        "item_time_sum": float(payload.get("item_time_sum", 0.0)),
+        "item_time_count": int(payload.get("item_time_count", 0)),
+    }
 
 
 def _load_vae(args, dtype):
@@ -281,8 +383,9 @@ def run(args) -> dict:
         raise ValueError("provide --base-model or --vae-source")
     if args.steps <= 0 or args.batch_size <= 0 or args.online_batch_size <= 0:
         raise ValueError("steps and batch sizes must be positive")
-    if args.validation_every <= 0 or args.validation_probe_items <= 0:
-        raise ValueError("validation intervals and probe items must be positive")
+    if (args.validation_every <= 0 or args.validation_probe_items <= 0
+            or args.checkpoint_every <= 0):
+        raise ValueError("validation/checkpoint intervals and probe items must be positive")
     if not 0 <= args.monitor_port <= 65535:
         raise ValueError("monitor-port must be between 0 and 65535")
     if not 0.0 < args.val_fraction < 1.0:
@@ -339,100 +442,179 @@ def run(args) -> dict:
                                   weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=args.dtype == "fp16")
     progress_path = args.progress_jsonl or args.output.with_suffix(".progress.jsonl")
+    resume_path = args.resume_checkpoint or args.output.with_suffix(".resume.pt")
+    resume_contract = _resume_contract(
+        args, paths=paths, vae_identity=vae_identity, teacher_identity=teacher_identity)
     progress_path.parent.mkdir(parents=True, exist_ok=True)
-    progress_path.write_text("", encoding="utf-8")
+    if args.resume:
+        resumed = _load_resume_checkpoint(
+            resume_path, stem=stem, optimizer=optimizer, scaler=scaler,
+            contract=resume_contract, device=device, planned_steps=args.steps)
+    else:
+        progress_path.write_text("", encoding="utf-8")
+        resumed = {
+            "step": 0, "processed_items": 0, "recent_losses": [],
+            "item_time_sum": 0.0, "item_time_count": 0,
+        }
     monitor = _start_monitor(progress_path, args.monitor_port) if args.monitor_port else None
-    order = list(train_paths)
-    step = 0
-    processed_items = 0
-    item_times = []
-    recent_losses = deque(maxlen=100)
+    step = resumed["step"]
+    processed_items = resumed["processed_items"]
+    item_time_sum = resumed["item_time_sum"]
+    item_time_count = resumed["item_time_count"]
+    recent_losses = deque(resumed["recent_losses"], maxlen=100)
+    if args.resume:
+        print(f"[REPA stem] resumed={resume_path} step={step}/{args.steps}", flush=True)
     run_started = time.perf_counter()
-    stem.train()
-    while step < args.steps:
-        random.Random(args.seed + step // max(1, len(order))).shuffle(order)
-        for offset in range(0, len(order), args.batch_size):
-            selected = order[offset:offset + args.batch_size]
-            if not selected:
-                continue
-            cpu, teacher_cpu = _paired_batch(selected, args, teacher_size)
-            torch.cuda.synchronize(device)
-            started = time.perf_counter()
-            pixels = cpu.to(device=device, dtype=dtype)
-            teacher_pixels = teacher_cpu.to(device=device, dtype=distill_dtype)
-            with torch.no_grad():
-                latents = _latent(vae, pixels)
-                targets = encode_repa_targets(
-                    distill_teacher, teacher_pixels, 27, 27, teacher_size)
-                if verification_teacher is not None:
-                    exported = encode_repa_targets(
-                        verification_teacher, teacher_pixels, 27, 27, teacher_size)
-                    agreement = float(_cosine(exported, targets).item())
-                    if agreement < 0.999:
-                        raise ValueError(
-                            f"ONNX/source safetensors feature cosine is {agreement:.6f}; "
-                            "refusing a mismatched distillation companion")
-                    print(f"[REPA stem] ONNX/source feature cosine={agreement:.8f}")
-                    verification_teacher._sessions.clear()
-                    verification_teacher = None
-                    teacher = None
-                    gc.collect()
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(
-                    "cuda", dtype=dtype, enabled=distill_dtype != torch.float32):
-                predicted = encode_latent_targets(
-                    distill_teacher, stem, latents, 27, 27)
-                loss = 1.0 - _cosine(predicted, targets)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            torch.cuda.synchronize(device)
-            item_times.append((time.perf_counter() - started) * 1000.0 / len(selected))
-            processed_items += len(selected)
-            step += 1
-            loss_value = float(loss.item())
-            recent_losses.append(loss_value)
-            should_validate = (
-                step == 1 or step % args.validation_every == 0 or step >= args.steps)
-            validation_cosine = None
-            if should_validate:
-                validation_cosine = _validation_probe(
-                    vae, distill_teacher, stem, validation_probe_paths, args,
-                    teacher_size, dtype, distill_dtype, device)
-            if (step == 1 or step % args.log_every == 0 or step >= args.steps
-                    or should_validate):
-                entry = {
-                    "step": step,
-                    "steps": args.steps,
-                    "items": processed_items,
-                    "train_loss": loss_value,
-                    "train_loss_mean_100": sum(recent_losses) / len(recent_losses),
-                    "elapsed_seconds": time.perf_counter() - run_started,
-                    "mean_ms_per_item": sum(item_times) / len(item_times),
-                    "max_vram_gib": torch.cuda.max_memory_allocated(device) / (1024 ** 3),
-                }
-                if validation_cosine is not None:
-                    entry["validation_items"] = len(validation_probe_paths)
-                    entry["validation_patch_cosine"] = validation_cosine
-                    entry["validation_loss"] = 1.0 - validation_cosine
-                with progress_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(entry) + "\n")
-                validation_text = (
-                    "" if validation_cosine is None
-                    else f" val_loss={1.0 - validation_cosine:.6f}")
-                print(
-                    f"[REPA stem] step={step}/{args.steps} loss={loss_value:.6f} "
-                    f"mean100={entry['train_loss_mean_100']:.6f}{validation_text}",
-                    flush=True)
-            if step >= args.steps:
-                break
+    batches_per_epoch = (len(train_paths) + args.batch_size - 1) // args.batch_size
+    stop_requested = False
+    previous_sigint = signal.getsignal(signal.SIGINT)
 
+    def request_stop(_signum, _frame):
+        nonlocal stop_requested
+        if stop_requested:
+            signal.signal(signal.SIGINT, previous_sigint)
+            raise KeyboardInterrupt
+        stop_requested = True
+        print(
+            "\n[REPA stem] Ctrl+C received; finishing this optimizer step, then saving...",
+            flush=True)
+
+    signal.signal(signal.SIGINT, request_stop)
+    stem.train()
+    order = []
+    current_epoch = -1
+    while step < args.steps:
+        if stop_requested:
+            break
+        epoch = step // batches_per_epoch
+        batch_index = step % batches_per_epoch
+        if epoch != current_epoch:
+            order = list(train_paths)
+            random.Random(args.seed + epoch).shuffle(order)
+            current_epoch = epoch
+        offset = batch_index * args.batch_size
+        selected = order[offset:offset + args.batch_size]
+        cpu, teacher_cpu = _paired_batch(selected, args, teacher_size)
+        torch.cuda.synchronize(device)
+        started = time.perf_counter()
+        pixels = cpu.to(device=device, dtype=dtype)
+        teacher_pixels = teacher_cpu.to(device=device, dtype=distill_dtype)
+        with torch.no_grad():
+            latents = _latent(vae, pixels)
+            targets = encode_repa_targets(
+                distill_teacher, teacher_pixels, 27, 27, teacher_size)
+            if verification_teacher is not None:
+                exported = encode_repa_targets(
+                    verification_teacher, teacher_pixels, 27, 27, teacher_size)
+                agreement = float(_cosine(exported, targets).item())
+                if agreement < 0.999:
+                    raise ValueError(
+                        f"ONNX/source safetensors feature cosine is {agreement:.6f}; "
+                        "refusing a mismatched distillation companion")
+                print(f"[REPA stem] ONNX/source feature cosine={agreement:.8f}")
+                verification_teacher._sessions.clear()
+                verification_teacher = None
+                teacher = None
+                gc.collect()
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(
+                "cuda", dtype=dtype, enabled=distill_dtype != torch.float32):
+            predicted = encode_latent_targets(
+                distill_teacher, stem, latents, 27, 27)
+            loss = 1.0 - _cosine(predicted, targets)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        torch.cuda.synchronize(device)
+        item_time_sum += (time.perf_counter() - started) * 1000.0 / len(selected)
+        item_time_count += 1
+        processed_items += len(selected)
+        step += 1
+        loss_value = float(loss.item())
+        recent_losses.append(loss_value)
+        should_validate = (
+            step == 1 or step % args.validation_every == 0 or step >= args.steps)
+        validation_cosine = None
+        if should_validate and not stop_requested:
+            validation_cosine = _validation_probe(
+                vae, distill_teacher, stem, validation_probe_paths, args,
+                teacher_size, dtype, distill_dtype, device)
+        if (step == 1 or step % args.log_every == 0 or step >= args.steps
+                or should_validate or stop_requested):
+            entry = {
+                "step": step,
+                "steps": args.steps,
+                "items": processed_items,
+                "train_loss": loss_value,
+                "train_loss_mean_100": sum(recent_losses) / len(recent_losses),
+                "elapsed_seconds": time.perf_counter() - run_started,
+                "mean_ms_per_item": item_time_sum / item_time_count,
+                "max_vram_gib": torch.cuda.max_memory_allocated(device) / (1024 ** 3),
+                "interrupted": stop_requested,
+            }
+            if validation_cosine is not None:
+                entry["validation_items"] = len(validation_probe_paths)
+                entry["validation_patch_cosine"] = validation_cosine
+                entry["validation_loss"] = 1.0 - validation_cosine
+            with progress_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+            validation_text = (
+                "" if validation_cosine is None
+                else f" val_loss={1.0 - validation_cosine:.6f}")
+            print(
+                f"[REPA stem] step={step}/{args.steps} loss={loss_value:.6f} "
+                f"mean100={entry['train_loss_mean_100']:.6f}{validation_text}",
+                flush=True)
+        if (step % args.checkpoint_every == 0 or step >= args.steps
+                or stop_requested):
+            _save_resume_checkpoint(
+                resume_path, stem=stem, optimizer=optimizer, scaler=scaler, step=step,
+                processed_items=processed_items, recent_losses=recent_losses,
+                item_time_sum=item_time_sum, item_time_count=item_time_count,
+                contract=resume_contract)
+        if stop_requested:
+            break
+    signal.signal(signal.SIGINT, previous_sigint)
+    interrupted = stop_requested
+
+    distill_ms = item_time_sum / item_time_count
+    metadata = {
+        "vae_encoder_identity": vae_identity,
+        "vae_normalization": vae_norm,
+        "teacher_identity": teacher_identity,
+        "teacher_checkpoint": str(Path(teacher_checkpoint).resolve()),
+        "teacher_repo": teacher_repo,
+        "teacher_size": teacher_size,
+        "teacher_dtype": args.dtype,
+        "distillation_target": "post_layernorm",
+        "distillation_backend_checkpoint": distill_checkpoint,
+        "distillation_backend_dtype": str(distill_dtype).removeprefix("torch."),
+        "vae_dtype": args.vae_dtype,
+        "training_resolution": [args.height, args.width],
+        "bucket_strategy": args.bucket_strategy,
+        "dataset_ids": list(dict.fromkeys(args.dataset_id)),
+        "image_dirs": [str(path.resolve()) for path in args.image_dir],
+        "selected_unique_items": len(paths),
+        "training_items": len(train_paths),
+        "validation_items": len(val_paths),
+        "progress_jsonl": str(progress_path.resolve()),
+        "resume_checkpoint": str(resume_path.resolve()),
+        "interrupted": interrupted,
+        "distill_items": processed_items,
+        "distill_steps": step,
+        "planned_distill_steps": args.steps,
+    }
+    save_latent_stem(args.output, stem, metadata)
+    if interrupted:
+        print(f"[REPA stem] interrupted artifact saved: {args.output}", flush=True)
+
+    evaluation_paths = validation_probe_paths if interrupted else val_paths
     stem.eval()
     cosines, shuffled = [], []
     with torch.no_grad():
-        for offset in range(0, len(val_paths), args.batch_size):
+        for offset in range(0, len(evaluation_paths), args.batch_size):
             cpu, teacher_cpu = _paired_batch(
-                val_paths[offset:offset + args.batch_size], args, teacher_size)
+                evaluation_paths[offset:offset + args.batch_size], args, teacher_size)
             pixels = cpu.to(device=device, dtype=dtype)
             teacher_pixels = teacher_cpu.to(device=device, dtype=distill_dtype)
             latents = _latent(vae, pixels)
@@ -445,7 +627,8 @@ def run(args) -> dict:
             cosines.append(float(_cosine(predicted, targets).item()))
             shuffled.append(float(_cosine(predicted, targets.flip(1)).item()))
 
-        pair_cpu, pair_teacher_cpu = _paired_batch(val_paths[:2], args, teacher_size)
+        pair_cpu, pair_teacher_cpu = _paired_batch(
+            evaluation_paths[:2], args, teacher_size)
         pair_pixels = pair_cpu.to(device=device, dtype=dtype)
         pair_teacher_pixels = pair_teacher_cpu.to(device=device, dtype=distill_dtype)
         pair_latents = _latent(vae, pair_pixels)
@@ -475,39 +658,14 @@ def run(args) -> dict:
         end.synchronize()
         samples.append(float(start.elapsed_time(end)))
     stem_ms = sorted(samples)[len(samples) // 2]
-    distill_ms = sum(item_times) / len(item_times)
     gate = economic_gate(
         redistill_items=processed_items, distill_ms_per_item=distill_ms,
         online_steps=args.expected_online_steps, batch_size=args.online_batch_size,
         replaced_ms_per_item=args.replaced_ms_per_item, stem_ms_per_item=stem_ms)
-    metadata = {
-        "vae_encoder_identity": vae_identity,
-        "vae_normalization": vae_norm,
-        "teacher_identity": teacher_identity,
-        "teacher_checkpoint": str(Path(teacher_checkpoint).resolve()),
-        "teacher_repo": teacher_repo,
-        "teacher_size": teacher_size,
-        "teacher_dtype": args.dtype,
-        "distillation_target": "post_layernorm",
-        "distillation_backend_checkpoint": distill_checkpoint,
-        "distillation_backend_dtype": str(distill_dtype).removeprefix("torch."),
-        "vae_dtype": args.vae_dtype,
-        "training_resolution": [args.height, args.width],
-        "bucket_strategy": args.bucket_strategy,
-        "dataset_ids": list(dict.fromkeys(args.dataset_id)),
-        "image_dirs": [str(path.resolve()) for path in args.image_dir],
-        "selected_unique_items": len(paths),
-        "training_items": len(train_paths),
-        "validation_items": len(val_paths),
-        "progress_jsonl": str(progress_path.resolve()),
-        "distill_items": processed_items,
-        "distill_steps": args.steps,
-    }
-    save_latent_stem(args.output, stem, metadata)
     report = {
         **metadata,
         "artifact": str(args.output.resolve()),
-        "validation_items": len(val_paths),
+        "evaluated_validation_items": len(evaluation_paths),
         "validation_patch_cosine": sum(cosines) / len(cosines),
         "validation_different_image_cosine": different_image_cosine,
         "validation_spatially_reversed_cosine": sum(shuffled) / len(shuffled),
@@ -547,6 +705,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-every", type=int, default=500)
     parser.add_argument("--validation-probe-items", type=int, default=64)
     parser.add_argument("--progress-jsonl", type=Path)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--checkpoint-every", type=int, default=500)
     parser.add_argument(
         "--monitor-port", type=int, default=0,
         help="Serve an ephemeral localhost loss monitor on this port (0 disables it)")

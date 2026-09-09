@@ -593,21 +593,20 @@ cd backend
   --tagger-model ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f\v2_01a\model.onnx `
   --output ..\models\repa_stems\sdxl_tagger.safetensors `
   --width 1536 --height 1536 --bucket-strategy resize `
-  --width-channels 256 --batch-size 4 --max-items 8192 --val-fraction 0.10 --steps 5532 `
-  --validation-every 500 --validation-probe-items 64 `
+  --width-channels 256 --batch-size 4 --max-items 100000 --val-fraction 0.01 --steps 49500 `
+  --validation-every 500 --validation-probe-items 64 --checkpoint-every 500 `
   --expected-online-steps 10000 --online-batch-size 4 --monitor-port 8765
 ```
 
 上の15 IDは登録上 3,798,965 枚である。ID単位の均等化や重み付けはせず、全行を一つの
 母集団として画像ごとの reservoir sampling を行うため、大規模 dataset はその画像数に比例して
-選ばれる。8,192枚のうち7,373枚が学習用、819枚が固定検証用で、batch 4の5,532 stepは
-学習画像を3周する。画像ごとに729 patchの教師信号があるため約1,612万patch提示となり、VAE
-posteriorも周回ごとに再sampleされる。これは十分性を事前に断定する値ではなく、validationを
-見ながら行う初回本番蒸留の上限である。
+選ばれる。100,000枚のうち99,000枚が学習用、1,000枚が固定検証用で、batch 4の49,500 stepは
+学習画像を2周する。画像ごとに729 patchの教師信号があり、VAE posteriorも周回ごとに再sample
+される。これはユーザーが品質一発評価に先立って選んだ本番蒸留規模である。
 
 RTX 6000 Adaで同じONNX/FP32 companion、1536px、batch 4を実測すると15.38 GiB peak、
-939.77 ms/itemだった。単純外挿では上記3周は約5.8時間で、65,536枚1周は約16.8時間となるため、
-後者を初回値にはしない。artifactは同じVAE/教師のrun間で再利用できるが、5.8時間でも10k-step
+939.77 ms/itemだった。この短いprobeからの単純外挿では上記2周は約52.2時間だが、実runの
+`mean_ms_per_item`を優先する。artifactは同じVAE/教師のrun間で再利用できるものの、10k-step
 REPA run単体では償却できず、最終 `.json` のeconomic gateは失敗する見込みである。
 
 標準出力は瞬間 loss と直近100 step平均を表示する。さらに500 stepごとに固定64枚の
@@ -620,10 +619,20 @@ Get-Content ..\models\repa_stems\sdxl_tagger.progress.jsonl -Wait
 
 頻度の低いCLI専用処理なのでWeb UI本体には配線しない。`--monitor-port 8765`を付けた実行中だけ
 `http://127.0.0.1:8765` に使い捨てのloss chartと最新値を公開し、CLI終了時にlocal serverも
-終了する。任意ファイルは公開せず、そのrunのprogress JSONLだけを返す。
+終了する。指定portがWindowsに拒否された場合は動的な空きportへfallbackして実URLを標準出力へ
+表示し、それも失敗した場合はmonitorだけを無効化して蒸留を続ける。任意ファイルは公開せず、
+そのrunのprogress JSONLだけを返す。
+
+resume checkpointはartifactと同じbasenameの `.resume.pt` へ500 stepごとにatomic保存する。
+最初のCtrl+Cは実行中optimizer stepの完了を待ち、resume checkpointとその時点の利用可能な
+safetensors artifactを保存してから、固定64枚だけを評価して終了する。2回目は即時中断する。
+再開は元と同じコマンドへ `--resume` を加えるだけで、AdamW、GradScaler、CPU/CUDA RNG、step、
+loss履歴を復元する。`--steps`は完了済みstep以上へ増やせるが、抽出画像集合、VAE/教師identity、
+解像度、batch、学習率などが変われば開始前に拒否する。checkpointを別置きする場合だけ
+`--resume-checkpoint <path>`を両runへ指定する。
 
 見るべき主値は `train_loss_mean_100` と `validation_loss` である。前者だけ低下して後者が横ばい・
-悪化するなら追加stepは行わない。最終artifactの同名 `.json` には全819検証画像でのcosineと
+悪化するなら追加stepは行わない。最終artifactの同名 `.json` には全1,000検証画像でのcosineと
 別画像・空間反転対照も残る。絶対的な採否はこのlossだけで決めず、予定どおり本番REPAの一発A/Bで
 決める。
 

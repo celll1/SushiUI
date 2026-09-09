@@ -20,6 +20,11 @@ def _fm_modules_trained(trainer) -> bool:
 
     if not bool(getattr(trainer, "sensenova_train_fm_modules", False)):
         return False
+    settings = getattr(trainer, "config", None) or {}
+    if settings.get("_sensenova_explicit_tasks"):
+        return "generation_flow" in set(
+            settings.get("sensenova_train_scopes") or ()
+        )
     return resolve_full_finetune_branch(trainer) in ("gen", "both")
 
 
@@ -539,6 +544,10 @@ class SenseNovaArchHandler(ArchHandler):
     def train_step(self, trainer, ctx: TrainStepContext):
         from core.training.ops import sensenova_ops
 
+        if ctx.sensenova_text_batch is not None:
+            return sensenova_ops.train_i2t_step(
+                trainer, examples=ctx.sensenova_text_batch
+            )
         return sensenova_ops.train_step(
             trainer,
             images=ctx.latents,

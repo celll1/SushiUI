@@ -72,6 +72,13 @@ def resolve_full_finetune_branch(trainer: Any) -> str:
         return "gen"
     if train_und:
         return "und"
+    settings = getattr(trainer, "config", None) or {}
+    if settings.get("_sensenova_explicit_tasks") \
+            and settings.get("sensenova_train_scopes"):
+        # Explicit task runs may train only vision/shared/flow parameters.  No
+        # decoder half is materialized in that case; the writer preserves both
+        # original int8 halves while saving the selected native modules.
+        return "none"
     raise ValueError(
         "SenseNova full fine-tuning has nothing to train: train_unet=False and "
         "train_text_encoder=False. For this architecture train_unet selects the "
@@ -621,7 +628,9 @@ def _own_save_format_remedy(source_metadata: Any) -> str:
 # plus ``materialize_int8_decoder_linears(branch)`` produces, per branch.
 # ``mixed`` keeps the untrained half's int8 codes untouched; with both halves
 # trained there is no int8 half left and the writer degenerates it to ``bf16``.
-_SENSENOVA_RESUME_FORMAT_FOR_BRANCH = {"gen": "mixed", "und": "mixed", "both": "bf16"}
+_SENSENOVA_RESUME_FORMAT_FOR_BRANCH = {
+    "none": "mixed", "gen": "mixed", "und": "mixed", "both": "bf16",
+}
 
 _RESUME_ENTRY_SUFFIXES = (".safetensors.index.json", ".safetensors")
 _RESUME_STEP_RE = re.compile(r"_step_(\d+)\Z")
@@ -1136,7 +1145,7 @@ def load_components(trainer: Any) -> None:
             source_metadata=components.get("metadata"),
         )
     _assert_pixel_head_fm_decoder(trainer.transformer)
-    if branch is not None and resumed_format is None:
+    if branch not in (None, "none") and resumed_format is None:
         from core.models.sensenova.loader import materialize_int8_decoder_linears
 
         materialize_int8_decoder_linears(
@@ -2351,6 +2360,87 @@ def train_step(
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
 
     return loss, value, recon_value
+
+
+def prepare_i2t_example(trainer: Any, item: Dict[str, Any], epoch: int) -> Dict[str, Any]:
+    """Prepare one source image and assistant-only target on CPU."""
+    from core.models.sensenova.vendor.utils import load_image_native
+    from core.training.sensenova_tasks import build_text_supervision
+
+    transformer = trainer.transformer
+    tokenizer = trainer.tokenizer
+    transformer.img_context_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
+    transformer.img_start_token_id = tokenizer.convert_tokens_to_ids("<img>")
+    pixel_values, grid_hw = load_image_native(
+        item["image_path"],
+        transformer.patch_size,
+        transformer.downsample_ratio,
+        min_pixels=512 * 512,
+        max_pixels=2048 * 2048,
+        upscale=False,
+    )
+    supervision = build_text_supervision(
+        transformer,
+        tokenizer,
+        grid_hw,
+        item["_sensenova_task_view"],
+        item.get("_captions_by_type") or {},
+        image_path=item["image_path"],
+        epoch=epoch,
+        run_seed=int(trainer.run_seed),
+    )
+    supervision.update({
+        "pixel_values": pixel_values,
+        "grid_hw": grid_hw,
+        "task": item["_sensenova_task"],
+        "loss_weight": float(item["_sensenova_task_view"].get("loss_weight", 1.0)),
+    })
+    return supervision
+
+
+def train_i2t_step(
+    trainer: Any, *, examples: List[Dict[str, Any]],
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """Run a task-homogeneous visual-understanding CE optimization step."""
+    if not examples:
+        raise ValueError("SenseNova i2t step requires at least one example")
+    tasks = {example["task"] for example in examples}
+    if len(tasks) != 1:
+        raise ValueError(f"SenseNova i2t batch is not task-homogeneous: {sorted(tasks)}")
+    phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    if phase_evictor is not None:
+        phase_evictor.enter_prefix()
+        phase_evictor.assert_understanding_resident()
+
+    device = trainer.device
+    dtype = trainer.training_dtype
+    weighted_loss = None
+    raw_numerator = None
+    target_tokens = 0
+    device_type = torch.device(device).type
+    autocast_enabled = device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)
+    with torch.autocast(device_type=device_type, dtype=dtype, enabled=autocast_enabled):
+        for example in examples:
+            count = int(example["target_tokens"])
+            output = trainer.transformer.forward_understanding(
+                pixel_values=example["pixel_values"].to(device=device, dtype=dtype),
+                input_ids=example["input_ids"].to(device),
+                grid_hw=example["grid_hw"].to(device),
+                attention_mask=example["attention_mask"].to(device),
+                labels=example["labels"].to(device),
+            )
+            if output.loss is None:
+                raise RuntimeError("SenseNova understanding decoder returned no CE loss")
+            contribution = output.loss * count
+            raw_numerator = contribution if raw_numerator is None else raw_numerator + contribution
+            weighted = contribution * float(example["loss_weight"])
+            weighted_loss = weighted if weighted_loss is None else weighted_loss + weighted
+            target_tokens += count
+    if target_tokens <= 0:
+        raise ValueError("SenseNova i2t batch has no supervised target tokens")
+    raw_ce = raw_numerator / target_tokens
+    loss = weighted_loss / target_tokens
+    return loss, raw_ce.detach(), 0.0
 
 
 def _maybe_install_sample_kv_streaming(trainer: Any, transformer: Any):

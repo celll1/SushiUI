@@ -12970,6 +12970,7 @@ components:
           default: 1
         loras:
           type: string
+          maxLength: 1048576
           default: "[]"
           description: JSON array of LoRA configs. Only understanding-branch SenseNova targets are applied; generation-only files are refused.
 

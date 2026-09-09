@@ -364,6 +364,12 @@ The implementation landed as independently reviewable commits:
 - `c72b5e1e` and `35dfbdc5`: explicit component scopes and checkpoint metadata,
   target-token-normalized CE, mixed-task training-loop dispatch, per-task
   metrics, task-aware update census, and deterministic resume state.
+- `957cd994`: img2txt LoRA selection with understanding-only application and
+  generation-only adapter refusal;
+- `534eb751` and `59b6b365`: task-view/eligibility fingerprints for exact
+  resume plus per-task normalized loss, cumulative draws, and throughput.
+- `77d01051` and `0d44b609`: dataset-independent preflight ordering and
+  explicit flow-loss weighting across full and microbatched backward paths.
 
 CPU-only regression coverage exercises the API/config round trip, task and hint
 determinism, LoRA/full-fine-tune scope collection, checkpoint layouts, resume,

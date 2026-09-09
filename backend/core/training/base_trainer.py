@@ -16744,6 +16744,10 @@ class BaseTrainer(ABC):
                         raise RuntimeError(
                             f"SenseNova batch is not task-homogeneous: {sorted(_sensenova_tasks)}"
                         )
+                    _sensenova_task_batch_started = (
+                        time.perf_counter()
+                        if self.is_sensenova and _sensenova_tasks else None
+                    )
                     from core.training.sensenova_tasks import TEXT_TASKS as _SN_TEXT_TASKS
                     _sensenova_text_batch_active = bool(
                         _sensenova_tasks and next(iter(_sensenova_tasks)) in _SN_TEXT_TASKS
@@ -17688,6 +17692,11 @@ class BaseTrainer(ABC):
                     mnt_sensenova_prefix = None
 
                     for mnt_idx in range(multi_noise_timesteps):
+                        _sensenova_task_step_started = (
+                            (_sensenova_task_batch_started
+                             if mnt_idx == 0 else time.perf_counter())
+                            if self.is_sensenova and _sensenova_tasks else None
+                        )
                         # Every downstream consumer in this iteration reads
                         # this variable, never the batch-level cfg_drop_mask.
                         mnt_cfg_drop_mask = self.cfg_drop_mask_for_mnt(
@@ -18242,17 +18251,17 @@ class BaseTrainer(ABC):
                                 self.log_extra_metric(
                                     f"loss_ce_{_text_task}", mnt_pred_loss_value
                                 )
-                                self.log_extra_metric("i2t_target_tokens", _target_tokens)
-                                self.log_extra_metric(
-                                    f"task_items_{_text_task}", len(sensenova_text_examples)
-                                )
-                                _draw_counts[_text_task] = (
-                                    int(_draw_counts.get(_text_task, 0))
-                                    + len(sensenova_text_examples)
-                                )
                                 self.writer.add_scalar(
                                     "train/loss_ce", mnt_pred_loss_value, global_step
                                 )
+                                self.writer.add_scalar(
+                                    f"train/loss_ce_{_text_task}",
+                                    mnt_pred_loss_value,
+                                    global_step,
+                                )
+                                _task_name = _text_task
+                                _task_item_count = len(sensenova_text_examples)
+                                _task_target_tokens = _target_tokens
                             else:
                                 self.log_extra_metric("loss_flow", mnt_pred_loss_value)
                                 self.writer.add_scalar(
@@ -18261,11 +18270,28 @@ class BaseTrainer(ABC):
                                 if _sensenova_tasks:
                                     _image_task = next(iter(_sensenova_tasks))
                                     self.log_extra_metric(
-                                        f"task_items_{_image_task}", len(batch)
+                                        f"loss_flow_{_image_task}", mnt_pred_loss_value
                                     )
-                                    _draw_counts[_image_task] = (
-                                        int(_draw_counts.get(_image_task, 0)) + len(batch)
+                                    self.writer.add_scalar(
+                                        f"train/loss_flow_{_image_task}",
+                                        mnt_pred_loss_value,
+                                        global_step,
                                     )
+                                    _task_name = _image_task
+                                    _task_item_count = len(batch)
+                                    _task_target_tokens = None
+                            if _sensenova_tasks:
+                                from core.training.sensenova_tasks import task_step_metrics
+
+                                _elapsed = time.perf_counter() - _sensenova_task_step_started
+                                for _name, _value in task_step_metrics(
+                                    _task_name,
+                                    _task_item_count,
+                                    _elapsed,
+                                    _draw_counts,
+                                    target_tokens=_task_target_tokens,
+                                ).items():
+                                    self.log_extra_metric(_name, _value)
 
                         # Aligned-CFG-null split. Emitted per MNT iteration, the
                         # same granularity as the loss it splits: this reads

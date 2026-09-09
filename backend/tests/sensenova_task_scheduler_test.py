@@ -21,6 +21,7 @@ from core.training.sensenova_tasks import (  # noqa: E402
     required_caption_types,
     resolve_text_target,
     task_views_signature,
+    task_step_metrics,
 )
 from core.training.train_runner import _process_cached_items  # noqa: E402
 
@@ -107,6 +108,34 @@ def test_item_eligibility_tracks_targets_and_ti2i_reference():
     assert [view["task"] for view in eligible_task_views(item)] == ["i2t_caption"]
     item["_captions_by_type"]["natural_language"]["content"] = ""
     assert eligible_task_views(item) == []
+
+
+def test_task_metrics_report_cumulative_draws_and_throughput():
+    draws = {"i2t_caption": 3}
+    metrics = task_step_metrics(
+        "i2t_caption", 2, 0.5, draws, target_tokens=40
+    )
+    assert draws == {"i2t_caption": 5}
+    assert metrics == {
+        "task_items_i2t_caption": 2.0,
+        "task_draws_i2t_caption": 5.0,
+        "task_items_per_second_i2t_caption": 4.0,
+        "i2t_target_tokens": 40.0,
+        "task_target_tokens_per_second_i2t_caption": 80.0,
+    }
+
+
+def test_all_task_loss_and_throughput_metrics_are_registered():
+    from core.training.metric_registry import EXTRA_METRIC_DEFS
+
+    for task in ("i2t_caption", "i2t_tags", "i2t_caption_tags", "t2i", "ti2i"):
+        assert f"task_draws_{task}" in EXTRA_METRIC_DEFS
+        assert f"task_items_per_second_{task}" in EXTRA_METRIC_DEFS
+    for task in ("i2t_caption", "i2t_tags", "i2t_caption_tags"):
+        assert f"loss_ce_{task}" in EXTRA_METRIC_DEFS
+        assert f"task_target_tokens_per_second_{task}" in EXTRA_METRIC_DEFS
+    for task in ("t2i", "ti2i"):
+        assert f"loss_flow_{task}" in EXTRA_METRIC_DEFS
 
 
 def test_selected_view_does_not_mutate_persistent_bucket_item():

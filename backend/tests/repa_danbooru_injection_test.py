@@ -12,7 +12,8 @@ LOSS CHANGE on runs that inject: those batches now carry a REPA term.
 
   (a) the injected item gets teacher pixels now and did not at c6292216;
   (b) they are its own region, through the same transforms in the same order;
-  (c) REPA off, and runs without injection, are bit-identical to c6292216;
+  (c) REPA off is bit-identical to c6292216, and a run without injection keeps
+      that latent bit for bit (its teacher square now comes from the bucket);
   (d) the bytes are still freed at the same point, and the region never opens
       the un-openable path.
 
@@ -133,18 +134,32 @@ _HANDOVER = {
 }
 
 
+#: The teacher call the mirror ends on. `current` also hands over the encode's
+#: bucketed output, which the teacher square is resized from.
+_TEACHER_CALL = {
+    "current": ("                            repa_pixels_list.append(self._get_repa_pixels_for_item(\n"
+                "                                item,\n"
+                "                                self._repa_source_region(item, width, height,\n"
+                "                                                         _repa_latent_strategy),\n"
+                "                                decoded_image=_repa_decoded_image,\n"
+                "                                bucketed_image=_repa_bucketed_image,\n"
+                "                            ))\n"),
+    "prefix": ("                            repa_pixels_list.append(self._get_repa_pixels_for_item(\n"
+               "                                item,\n"
+               "                                self._repa_source_region(item, width, height,\n"
+               "                                                         _repa_latent_strategy),\n"
+               "                                decoded_image=_repa_decoded_image,\n"
+               "                            ))\n"),
+}
+
+
 def test_the_mirror_matches_both_sources():
     """`_drive_item` is only evidence while it matches the real loop."""
     for src, key in ((BASE_TRAINER_SRC, "current"), (PRE_FIX_SRC, "prefix")):
         assert src.count(_HANDOVER[key]) == 1
         assert src.count("                                        _repa_decoded_image = image\n") == 1
         assert "image = Image.open(BytesIO(_danb_b))" in src
-        assert ("                            repa_pixels_list.append(self._get_repa_pixels_for_item(\n"
-                "                                item,\n"
-                "                                self._repa_source_region(item, width, height,\n"
-                "                                                         _repa_latent_strategy),\n"
-                "                                decoded_image=_repa_decoded_image,\n"
-                "                            ))\n") in src
+        assert _TEACHER_CALL[key] in src
     # ... and while the two differ only in that guard.
     assert _HANDOVER["current"] not in PRE_FIX_SRC
     assert _HANDOVER["prefix"] not in BASE_TRAINER_SRC
@@ -156,8 +171,10 @@ def _drive_item(trainer, item, strategy="resize", *, repa_active=True,
     (latent, teacher_pixels)."""
     width, height = item["width"], item["height"]
     _repa_decoded_image = None
+    _repa_bucketed_image = None
     if repa_active:
         trainer._last_source_region = None
+        trainer._last_bucketed_image = None
 
     if trainer._temporal_spec() is not None and item.get("item_type") == "video":
         latent = trainer._encode_video_clip(item)
@@ -180,6 +197,8 @@ def _drive_item(trainer, item, strategy="resize", *, repa_active=True,
         if handover == "current":
             if repa_active:
                 _repa_decoded_image = image
+                _repa_bucketed_image = trainer._last_bucketed_image
+                trainer._last_bucketed_image = None
         elif _danb_b is None and repa_active:
             _repa_decoded_image = image
 
@@ -189,6 +208,7 @@ def _drive_item(trainer, item, strategy="resize", *, repa_active=True,
             trainer, item,
             BaseTrainer._repa_source_region(trainer, item, width, height, strategy),
             decoded_image=_repa_decoded_image,
+            bucketed_image=_repa_bucketed_image,
         )
     return latent, teacher
 
@@ -225,9 +245,9 @@ def test_teacher_pixels_are_the_items_own_region(strategy):
 
 @pytest.mark.parametrize("strategy", ["resize", "crop"])
 def test_handover_equals_decoding_the_bytes_again(strategy, tmp_path):
-    """flatten_to_rgb -> crop -> resize -> normalize, over the same pixels: the
-    handover is bit-identical to the path that still has the bytes, in every
-    mode and container an injected download can arrive in."""
+    """The teacher square is the encode's own bucketed output, so the handover has
+    to give what a second encode of the same bytes gives -- in every mode and
+    container an injected download can arrive in."""
     for mode, fmt in (("RGB", "PNG"), ("RGB", "JPEG"), ("RGB", "WEBP"),
                       ("P", "PNG"), ("L", "PNG"), ("RGBA", "PNG"), ("RGBA", "WEBP")):
         buf = BytesIO()
@@ -238,14 +258,15 @@ def test_handover_equals_decoding_the_bytes_again(strategy, tmp_path):
         item = _injected_item(_danbooru_image_bytes=raw)
         _, reused = _drive_item(t, item, strategy)
 
-        # Same item, bytes still in hand and no handover: the old file-backed path.
+        # The same bytes encoded again, keeping their own bucketed output.
         t2 = _trainer()
         item2 = _injected_item(post_id=999, _danbooru_image_bytes=raw)
         BaseTrainer.encode_image(t2, image=Image.open(BytesIO(raw)), target_width=64,
                                  target_height=64, bucket_strategy=strategy)
         fresh = BaseTrainer._get_repa_pixels_for_item(
             t2, item2,
-            BaseTrainer._repa_source_region(t2, item2, 64, 64, strategy))
+            BaseTrainer._repa_source_region(t2, item2, 64, 64, strategy),
+            bucketed_image=t2._last_bucketed_image)
 
         assert torch.equal(reused, fresh), f"{mode}/{fmt}"
 
@@ -268,8 +289,11 @@ def test_repa_off_is_bit_identical_to_the_baseline(strategy):
 
 
 @pytest.mark.parametrize("strategy", ["resize", "crop"])
-def test_a_run_without_injection_is_bit_identical_to_the_baseline(strategy, tmp_path):
-    """File-backed items already handed the decode over at c6292216."""
+def test_a_run_without_injection_keeps_the_baselines_latent_and_region(strategy,
+                                                                      tmp_path):
+    """File-backed items already handed the decode over at c6292216. The latent is
+    still that one bit for bit; the teacher square is now resized from the bucket
+    instead of from the original, which is the same region and not the same pixels."""
     path = tmp_path / "src.png"
     _striped().save(path)
     item = {"image_path": str(path), "width": 64, "height": 64}
@@ -277,7 +301,8 @@ def test_a_run_without_injection_is_bit_identical_to_the_baseline(strategy, tmp_
     a, teacher_a = _drive_item(_trainer(), dict(item), strategy, handover="current")
     b, teacher_b = _drive_item(_trainer(), dict(item), strategy, handover="prefix")
     assert torch.equal(a, b)
-    assert torch.equal(teacher_a, teacher_b)
+    np.testing.assert_allclose(_fingerprint(teacher_a), _fingerprint(teacher_b),
+                               atol=0.05)
 
 
 def test_a_video_item_still_takes_the_no_decode_path(tmp_path):
@@ -316,8 +341,8 @@ def test_the_teacher_cache_is_keyed_per_post(tmp_path):
     _, b = _drive_item(t, _injected_item(2, square.rotate(90)), "resize")
 
     keys = list(t._repa_pix_cache)
-    assert keys == [("danbooru://1", (0, 0, 256, 256)),
-                    ("danbooru://2", (0, 0, 256, 256))]
+    assert keys == [("danbooru://1", (0, 0, 256, 256), (64, 64)),
+                    ("danbooru://2", (0, 0, 256, 256), (64, 64))]
     assert not torch.equal(a, b)
     assert torch.equal(t._repa_pix_cache[keys[0]], a)
 

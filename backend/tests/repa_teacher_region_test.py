@@ -616,3 +616,82 @@ def test_a_small_dataset_still_caches_and_still_hits(tmp_path):
 
     assert t._repa_pix_hits == 1 and len(t._repa_pix_cache) == 1
     assert second is first
+
+
+# ---------------------------------------------------------------------------
+# (h) the teacher square is resized from the bucket, not from the original again
+# ---------------------------------------------------------------------------
+
+def _encoded(trainer, path, strategy, w=64, h=64):
+    image = Image.open(path)
+    image.load()
+    latent = BaseTrainer.encode_image(trainer, image=image, target_width=w,
+                                      target_height=h, bucket_strategy=strategy)
+    return latent, trainer._last_source_region, image, trainer._last_bucketed_image
+
+
+@pytest.mark.parametrize("strategy", ["resize", "crop", "random_crop"])
+def test_encode_image_is_bit_identical_whether_or_not_repa_reads_its_bucket(
+        tmp_path, strategy):
+    """The capture is a reference, taken after the last transform: the VAE's input
+    cannot move. random_crop is drawn from `random`, so both arms draw the same."""
+    for path in _sources(tmp_path):
+        import random as _random
+        state = _random.getstate()
+        on, _, _, bucket = _encoded(_trainer(), path, strategy)
+        _random.setstate(state)
+        off = _encoded(_trainer(repa_enable=False), path, strategy)
+
+        assert torch.equal(on, off[0]), path
+        assert off[3] is None and bucket is not None
+
+
+def test_the_teacher_square_comes_from_exactly_the_pixels_the_vae_encoded(tmp_path):
+    """The captured image IS the array encode_image normalized -- not a re-read of
+    the file, not a second downscale of it."""
+    for path in _sources(tmp_path):
+        for strategy in ("resize", "crop"):
+            latent, _, _, bucket = _encoded(_trainer(), path, strategy)
+            arr = np.array(bucket).astype(np.float32) / 255.0
+            expect = torch.from_numpy((arr - 0.5) * 2.0).permute(2, 0, 1).unsqueeze(0)
+            assert torch.equal(latent, expect), (path, strategy)
+
+
+def test_the_bucketed_teacher_shows_the_latents_region(tmp_path):
+    """256x128 into a 64x64 bucket: the middle square, as the from-file teacher
+    reports it, and not the whole picture the pre-region code would have shown."""
+    path = _striped(tmp_path)
+    item = {"image_path": path}
+    t = _trainer()
+    latent, region, image, bucket = _encoded(t, path, "crop")
+    assert region == (64, 0, 192, 128)
+
+    from_bucket = BaseTrainer._get_repa_pixels_for_item(_trainer(), item, region,
+                                                        bucketed_image=bucket)
+    from_file = BaseTrainer._get_repa_pixels_for_item(_trainer(), item, region)
+
+    np.testing.assert_allclose(_fingerprint(from_bucket), _fingerprint(latent),
+                               atol=0.05)
+    np.testing.assert_allclose(_fingerprint(from_bucket), _fingerprint(from_file),
+                               atol=0.05)
+    assert np.abs(_fingerprint(_legacy_teacher(path))
+                  - _fingerprint(from_bucket)).max() > 0.2
+
+
+def test_two_buckets_of_one_region_do_not_share_a_cache_entry(tmp_path):
+    """A resolution curriculum encodes the same (path, box) at two bucket sizes, and
+    the teacher square then holds different pixels -- so the bucket is in the key."""
+    path = _striped(tmp_path)
+    item = {"image_path": path}
+    t = _trainer()
+    small = _encoded(_trainer(), path, "resize", w=32, h=16)[3]
+    big = _encoded(_trainer(), path, "resize", w=256, h=128)[3]
+    region = (0, 0, 256, 128)
+
+    a = BaseTrainer._get_repa_pixels_for_item(t, item, region, bucketed_image=small)
+    b = BaseTrainer._get_repa_pixels_for_item(t, item, region, bucketed_image=big)
+
+    assert len(t._repa_pix_cache) == 2 and getattr(t, "_repa_pix_hits", 0) == 0
+    assert not torch.equal(a, b)
+    assert BaseTrainer._get_repa_pixels_for_item(
+        t, item, region, bucketed_image=small) is a

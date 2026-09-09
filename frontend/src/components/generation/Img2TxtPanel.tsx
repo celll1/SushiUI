@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type DragEvent } from "react";
 import Button from "../common/Button";
 import Card from "../common/Card";
 import GenerationQueue from "../common/GenerationQueue";
@@ -51,6 +51,7 @@ export default function Img2TxtPanel() {
   const [settings, setSettings] = useState<Img2TxtSettings>(FALLBACK_SETTINGS);
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [hintDraft, setHintDraft] = useState("");
   const [editedText, setEditedText] = useState("");
 
@@ -87,9 +88,32 @@ export default function Img2TxtPanel() {
 
   const selectImage = (file: File | undefined) => {
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file.");
+      return;
+    }
     if (preview) URL.revokeObjectURL(preview);
     setImage(file);
     setPreview(URL.createObjectURL(file));
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+    selectImage(event.dataTransfer.files?.[0]);
   };
 
   const enqueue = (
@@ -128,11 +152,18 @@ export default function Img2TxtPanel() {
     <div className="grid min-h-full grid-cols-1 gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.75fr)_280px]">
       <div className="space-y-3">
         <Card title="Reference image">
-          <label className="block cursor-pointer rounded-md border-2 border-dashed border-gray-700 p-4 text-center text-sm text-gray-400 hover:border-violet-500">
+          <label
+            className={`block cursor-pointer rounded-md border-2 border-dashed p-4 text-center text-sm text-gray-400 transition-colors hover:border-violet-500 ${
+              isDragging ? "border-violet-500 bg-violet-500/10" : "border-gray-700"
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             {preview ? (
               <img src={preview} alt="img2txt reference" className="mx-auto max-h-72 rounded object-contain" />
             ) : (
-              <span className="block py-12">Choose one image</span>
+              <span className="block py-12">{isDragging ? "Drop image here" : "Drop image here or click to upload"}</span>
             )}
             <input
               className="hidden"

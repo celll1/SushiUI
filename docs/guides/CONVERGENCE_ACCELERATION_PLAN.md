@@ -326,7 +326,10 @@ G-B の仮説「正方形 squash が教師特徴を劣化させる」は、教�
    `load_repa_encoder` の `native_size` は `None`（`repa.py:100-102, 136-137`）となり、
    `repa_size` は `base_trainer.py:3229-3230` の `(native or 384)` で **384 に落ちる**。
    結果、アスペクト保持で学習されたモデルに固定正方形を、256 patch で学習された
-   モデルに 24×24 = 576 token を渡す。**この経路は別作業で対応中のため、ここには状態のみ記録する。**
+   モデルに 24×24 = 576 token を渡していた。**`2e3ffb64` でこの経路は `_setup_repa` の時点で
+   拒否されるようになった**（`Siglip2VisionModel.forward` は `pixel_attention_mask` /
+   `spatial_shapes` も必須引数で、そもそも呼び出しが成立しないため）。
+   したがって G-B の判定範囲外の教師は現在そもそも走らせられない。
 2. **リサイズフィルタが一致していない。** REPA 側は `base_trainer.py:3394` で
    `Image.BICUBIC`、教師の processor は `"resample": 2`（PIL BILINEAR）。
    **差の大きさは未測定。**（これも別作業で判断中。）

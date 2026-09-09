@@ -464,3 +464,57 @@ def test_setup_does_not_refuse_on_a_config_key_train_overrides(monkeypatch):
 
     with pytest.raises(ValueError, match="random_crop"):
         repa_module.assert_repa_region_reconstructible("swap_onthefly", "random_crop")
+
+
+# ---------------------------------------------------------------------------
+# (e) the onthefly_gpu decode is reused rather than repeated
+# ---------------------------------------------------------------------------
+
+def _sources(tmp_path):
+    """One picture written in the formats and modes the batch loop meets."""
+    w, h = 96, 64
+    xs = np.linspace(0, 255, w, dtype=np.float32)[None, :]
+    ys = np.linspace(0, 255, h, dtype=np.float32)[:, None]
+    rgb = Image.fromarray(np.stack(
+        [np.broadcast_to(xs, (h, w)), np.broadcast_to(ys, (h, w)), xs * ys / 255.0],
+        axis=-1).round().astype(np.uint8))
+    rgba = rgb.convert("RGBA")
+    rgba.putalpha(Image.fromarray(np.broadcast_to(xs, (h, w)).round().astype(np.uint8)))
+
+    paths = []
+    for name, im in (("src.png", rgb), ("src.jpg", rgb), ("src.webp", rgb),
+                     ("palette.png", rgb.convert("P")), ("gray.png", rgb.convert("L")),
+                     ("alpha.png", rgba), ("alpha.webp", rgba)):
+        im.save(tmp_path / name)
+        paths.append(str(tmp_path / name))
+    return paths
+
+
+@pytest.mark.parametrize("strategy", ["resize", "crop"])
+def test_reusing_the_encode_decode_gives_the_same_teacher_pixels(tmp_path, strategy):
+    """The decode handed over is pre-flatten_to_rgb, so the transform order holds."""
+    for path in _sources(tmp_path):
+        item = {"image_path": path}
+        image = Image.open(path)
+        image.load()
+        enc = _trainer()
+        BaseTrainer.encode_image(enc, image=image, target_width=32, target_height=32,
+                                 bucket_strategy=strategy)
+        region = enc._last_source_region
+
+        reused = BaseTrainer._get_repa_pixels_for_item(_trainer(), item, region,
+                                                       decoded_image=image)
+        fresh = BaseTrainer._get_repa_pixels_for_item(_trainer(), item, region)
+        assert torch.equal(reused, fresh), path
+
+
+def test_encode_image_leaves_the_callers_image_untouched(tmp_path):
+    """What makes the reuse legal: crop/resize rebind, they do not mutate."""
+    for path in _sources(tmp_path):
+        image = Image.open(path)
+        image.load()
+        before = (image.mode, image.size, image.tobytes())
+        BaseTrainer.encode_image(_trainer(), image=image, target_width=32,
+                                 target_height=32, bucket_strategy="crop")
+        assert (image.mode, image.size, image.tobytes()) == before, path
+

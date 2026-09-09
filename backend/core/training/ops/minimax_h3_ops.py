@@ -875,9 +875,10 @@ def train_step(
     # Per-modality breakdown, so a run can be diagnosed (e.g. a silent-video
     # dataset where the audio term never contributes) rather than only seeing
     # the combined loss.
-    trainer.log_extra_metric("h3_video_loss", float(video_loss.detach()))
-    trainer.log_extra_metric("h3_audio_loss", float(audio_loss.detach()))
-    trainer.log_extra_metric("h3_audio_present", float(audio_mask.mean().detach()))
+    defer_metric = getattr(trainer, "defer_extra_metric", trainer.log_extra_metric)
+    defer_metric("h3_video_loss", video_loss.detach())
+    defer_metric("h3_audio_loss", audio_loss.detach())
+    defer_metric("h3_audio_present", audio_mask.mean().detach())
 
     recon_loss_value = 0.0
     if getattr(trainer, "reconstruction_loss_weight", 0.0) > 0 and not getattr(
@@ -888,10 +889,10 @@ def train_step(
               f"inventing a weighting (design §10).")
         trainer._warned_h3_recon_loss = True
 
-    trainer._minimax_h3_last_components = (float(video_loss.detach()),
-                                           float(audio_loss.detach()),
+    trainer._minimax_h3_last_components = (video_loss.detach(),
+                                           audio_loss.detach(),
                                            sigma_v, sigma_a)
-    pred_loss_value = float(loss.detach())
+    pred_loss_value = loss.detach()
 
     if debug_save_path is not None:
         try:
@@ -945,8 +946,8 @@ def train_step(
                     video=video_streams,
                     audio=audio_streams,
                     scalars={
-                        "loss": pred_loss_value,
-                        "loss_batch_mean": pred_loss_value,
+                        "loss": float(pred_loss_value),
+                        "loss_batch_mean": float(pred_loss_value),
                         "recon_loss": float(
                             F.mse_loss(pred_x0_win.float(), x0_win.float())),
                         "batch_size": batch_size,

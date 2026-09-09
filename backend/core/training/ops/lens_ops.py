@@ -388,7 +388,7 @@ def train_step(
     # the run draws null labels over a batch larger than one.
     trainer.stash_cfg_null_per_sample_loss(v_pred, v_target)
 
-    pred_loss_value = mse_loss.item()
+    pred_loss_value = mse_loss.detach()
     recon_loss_value = 0.0
 
     # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
@@ -400,7 +400,7 @@ def train_step(
         # Grad-carrying on purpose: under no_grad it would only shift the log.
         pred_x0 = noisy_latents.float() - sigma_view.float() * v_pred.float()
         recon_loss = torch.nn.functional.mse_loss(pred_x0, latents.float(), reduction="mean")
-        recon_loss_value = recon_loss.item()
+        recon_loss_value = recon_loss.detach()
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded

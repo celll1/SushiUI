@@ -1128,8 +1128,8 @@ def train_step(
     # Return loss tensor (with gradient), pred_loss value, and recon_loss value
     # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
     # The training loop will call .backward() on the loss tensor.
-    pred_loss_value = mse_loss.item()
-    recon_loss_value = recon_loss.item()
+    pred_loss_value = mse_loss.detach()
+    recon_loss_value = recon_loss.detach()
 
     # REPA: align the feature map the hook stashed at the tapped block with
     # frozen clean-image patch features, through the trainable projector. Added

@@ -63,5 +63,25 @@ def test_generic_path_reads_repa_after_its_existing_loss_sync():
     source = inspect.getsource(BaseTrainer._execute_forward_backward)
 
     loss_sync = source.index("loss_value = loss.item()")
+    generic_read = source.index("self._flush_deferred_extra_metrics()")
     repa_read = source.index("self._flush_repa_loss_metric_after_backward(")
-    assert loss_sync < repa_read
+    assert loss_sync < generic_read < repa_read
+
+
+def test_generic_deferred_scalar_is_detached_then_logged():
+    trainer = SimpleNamespace(
+        _pending_extra_metrics={},
+        _extra_metrics={},
+        log_extra_metric=None,
+    )
+    trainer.log_extra_metric = lambda name, value: BaseTrainer.log_extra_metric(
+        trainer, name, value)
+    scalar = torch.tensor(0.625, requires_grad=True)
+
+    BaseTrainer.defer_extra_metric(trainer, "component_loss", scalar)
+
+    assert trainer._extra_metrics == {}
+    assert trainer._pending_extra_metrics["component_loss"].grad_fn is None
+    BaseTrainer._flush_deferred_extra_metrics(trainer)
+    assert trainer._pending_extra_metrics == {}
+    assert trainer._extra_metrics == {"component_loss": 0.625}

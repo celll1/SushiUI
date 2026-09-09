@@ -733,11 +733,11 @@ def train_step(
         sigma_seq = sigma.view(-1, 1, 1).to(v_pred_video.dtype)
         pred_x0 = seq_x_t - sigma_seq * v_pred_video
         recon_loss = F.mse_loss(pred_x0.float(), seq_x0.float())
-        recon_loss_value = recon_loss.item()
+        recon_loss_value = recon_loss.detach()
         recon_weight = trainer.reconstruction_loss_weight
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
-    pred_loss_value = mse_loss.item()
+    pred_loss_value = mse_loss.detach()
 
     if debug_save_path is not None:
         try:
@@ -772,7 +772,7 @@ def train_step(
                         "predicted_latent": dbg.video_filmstrip(pred_x0_win),
                     },
                     scalars={
-                        "loss": pred_loss_value,
+                        "loss": float(pred_loss_value),
                         "loss_batch_mean": float(loss.detach()),
                         "recon_loss": recon,
                         "batch_size": batch_size,

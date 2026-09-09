@@ -329,7 +329,7 @@ def train_step(
         # Grad-carrying on purpose: under no_grad it would only shift the log.
         pred_x0 = noisy.float() + sigma_v.float() * v_pred
         recon_loss = torch.nn.functional.mse_loss(pred_x0, latents.float(), reduction="mean")
-        recon_loss_value = recon_loss.item()
+        recon_loss_value = recon_loss.detach()
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
     # Optional auxiliary unconditional branch (image-only, zeroed text).
@@ -399,7 +399,7 @@ def train_step(
         if aux_loss is not None:
             loss = loss + aux_loss
 
-    pred_loss_value = loss.item()
+    pred_loss_value = loss.detach()
 
     # REPA: align the image tokens the CONDITIONAL block loop stashed at the tap
     # depth with frozen clean-image patch features, through the trainable

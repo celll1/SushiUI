@@ -88,7 +88,9 @@ def test_zimage_dump_failure_does_not_break_train_step(tmp_path, monkeypatch, ca
     loss, pred_loss, recon_loss = _run_zimage(out)
 
     assert torch.isfinite(loss)
-    assert isinstance(pred_loss, float) and isinstance(recon_loss, float)
+    assert isinstance(pred_loss, torch.Tensor)
+    assert isinstance(recon_loss, torch.Tensor)
+    assert pred_loss.grad_fn is None and recon_loss.grad_fn is None
     assert not list(out.glob("latents_t*.pt"))
 
     # Never silent: an empty debug dir with no explanation is the failure mode

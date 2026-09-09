@@ -2269,8 +2269,8 @@ def train_step(
         loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float())
         recon_loss = torch.nn.functional.mse_loss(x0_pred.float(), x0_tokens.float())
 
-    value = float(loss.detach())
-    recon_value = float(recon_loss.detach())
+    value = loss.detach()
+    recon_value = recon_loss.detach()
 
     # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
     # convention the UI documents. `recon_loss` above is already grad-carrying,
@@ -2348,8 +2348,8 @@ def train_step(
                 patch=patch,
                 height=height,
                 width=width,
-                loss_value=value,
-                recon_loss_value=recon_value,
+                loss_value=float(value),
+                recon_loss_value=float(recon_value),
                 captions=debug_captions,
                 reference_image_paths=debug_reference_image_paths,
                 batch_size=batch,

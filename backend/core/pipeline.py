@@ -4030,6 +4030,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             "allocated_after": allocated_after,
         }
 
+    def generate_img2txt(self, params: Dict[str, Any], image: Image.Image,
+                         progress_callback=None) -> tuple[str, int, Dict[str, float]]:
+        """Generate text from an image with a loaded SenseNova model."""
+        if not self.is_sensenova_model:
+            raise RuntimeError("img2txt requires a loaded SenseNova model")
+        return self._generate_img2txt_sensenova(
+            params, image, progress_callback=progress_callback)
+
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """Generate image from text
 

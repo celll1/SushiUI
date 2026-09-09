@@ -407,6 +407,10 @@ paths:
                   txt2img:
                     type: object
                     additionalProperties: true
+                  img2txt:
+                    type: object
+                    description: SenseNova autoregressive image-to-text defaults.
+                    additionalProperties: true
                   img2img:
                     type: object
                     additionalProperties: true
@@ -699,6 +703,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VaeTrainingDefaults'
+  /generate/img2txt:
+    post:
+      tags: [generation]
+      summary: Generate text from an image with SenseNova
+      description: |
+        Runs the loaded SenseNova model's visual-understanding path. Preset
+        tasks use backend-owned prompt templates; an explicit instruction
+        overrides the preset. V1 accepts exactly one image and does not persist
+        results to the media gallery.
+      operationId: generateImg2Txt
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Img2TxtRequest'
+      responses:
+        '200':
+          description: Text generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Img2TxtResponse'
+        '409':
+          description: No SenseNova model is currently loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Uploaded image exceeds the encoded-byte or decoded-pixel limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid image, task, hints, instruction, or decoding parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Image-to-text inference failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/txt2img:
     post:
       tags: [generation]
@@ -10938,12 +10990,21 @@ components:
 
     ArchCapabilities:
       type: object
-      required: [unsupported, supported_values, feature_params, feature_labels, runtime_int8_archs, quantized_linear_archs]
+      required: [unsupported, supported_values, feature_params, feature_labels, text_output_modes, runtime_int8_archs, quantized_linear_archs]
       description: |
         Mirror of `backend/api/arch_capabilities.py`. Declares which generation
-        features a given model architecture does NOT honor, and why. Served by
-        `GET /schema/arch-capabilities`.
+        modes an architecture positively exposes and which features it does NOT
+        honor, with reasons. Served by `GET /schema/arch-capabilities`.
       properties:
+        text_output_modes:
+          type: object
+          description: Architecture name -> text-result generation modes advertised by that architecture.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            sensenova: [img2txt]
         unsupported:
           type: object
           description: Architecture name -> feature name -> factual reason the feature has no effect there.
@@ -12839,6 +12900,124 @@ components:
             next step via the file path) but the gallery database record
             (thumbnail + DB row) is skipped. Meaningless combined with
             loop_decode="none" (nothing is decoded/saved there either way).
+
+    Img2TxtRequest:
+      type: object
+      required: [images]
+      properties:
+        images:
+          type: array
+          minItems: 1
+          maxItems: 1
+          description: Exactly one source image in v1; repeated field reserved for compatible multi-image expansion.
+          items:
+            type: string
+            format: binary
+        task:
+          type: string
+          enum: [caption, caption_tags, tags, custom]
+          default: caption
+        instruction:
+          type: string
+          maxLength: 16384
+          default: ""
+          description: Optional preset override; required when task is custom.
+        hint_tags:
+          type: string
+          default: "[]"
+          description: JSON array of input-only tag strings; not copied into output structure.
+        max_new_tokens:
+          type: integer
+          minimum: 1
+          maximum: 8192
+          default: 1024
+        do_sample:
+          type: boolean
+          default: false
+        temperature:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 5
+          default: 0.7
+        top_p:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 1
+          default: 0.9
+        top_k:
+          type: integer
+          minimum: 1
+          nullable: true
+          default: null
+        repetition_penalty:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 10
+          nullable: true
+          default: null
+        seed:
+          type: integer
+          minimum: -1
+          maximum: 2147483647
+          default: -1
+          description: -1 draws and returns a random seed.
+        prompt_template_version:
+          type: integer
+          minimum: 1
+          default: 1
+
+    Img2TxtResponse:
+      type: object
+      required: [kind, task, raw_text, structured, parse_warning, effective_instruction, prompt_template_version, actual_seed, model, timing, warnings]
+      properties:
+        kind:
+          type: string
+          enum: [text]
+        task:
+          type: string
+          enum: [caption, caption_tags, tags, custom]
+        raw_text:
+          type: string
+        structured:
+          type: object
+          nullable: true
+          additionalProperties: true
+        parse_warning:
+          type: string
+          nullable: true
+        effective_instruction:
+          type: string
+        prompt_template_version:
+          type: integer
+        actual_seed:
+          type: integer
+        model:
+          type: object
+          required: [type, source]
+          properties:
+            type:
+              type: string
+              enum: [sensenova]
+            source:
+              type: string
+              nullable: true
+        timing:
+          type: object
+          required: [preprocess_seconds, generation_seconds]
+          properties:
+            preprocess_seconds:
+              type: number
+              minimum: 0
+            generation_seconds:
+              type: number
+              minimum: 0
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerationWarning'
 
     Txt2ImgRequest:
       allOf:
@@ -16311,7 +16490,7 @@ components:
     GenerationResponse:
       type: object
       description: |
-        Envelope returned by every `/generate/*` endpoint. `success`,
+        Envelope returned by media-output `/generate/*` endpoints. `success`,
         `actual_seed`, and `warnings` are always present; exactly one of
         `image`, `latent_id`, or the `filename` + `image_path` pair carries the
         result, depending on the request:
@@ -16369,7 +16548,7 @@ components:
         generation_type:
           type: string
           nullable: true
-          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, inpaint_vid, outpaint_vid, ref2vid, studio_render, txt2aud, aud2aud, outpaint_aud]
+          enum: [img2txt, txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, inpaint_vid, outpaint_vid, ref2vid, studio_render, txt2aud, aud2aud, outpaint_aud]
           description: Which endpoint the most recently started generation used; null before any generation has run.
           example: "txt2img"
         current_step:

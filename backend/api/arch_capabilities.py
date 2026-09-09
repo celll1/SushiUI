@@ -19,6 +19,12 @@ to a non-default value (compared against ``GENERATION_DEFAULTS``).
 from typing import Any, Dict, List, Optional, Tuple
 
 from api.param_defaults import GENERATION_DEFAULTS, TRAINING_DEFAULTS
+
+# Text-result generation is a positive capability axis. It cannot live in
+# ARCH_UNSUPPORTED, whose missing entries mean a parameter is honored.
+TEXT_OUTPUT_MODES: Dict[str, Tuple[str, ...]] = {
+    "sensenova": ("img2txt",),
+}
 # Re-exported (and served by GET /schema/arch-capabilities) so the generation
 # panels can offer unet_quantization="int8" exactly where the in-place converter
 # is wired, without a second hardcoded arch list in the frontend. The tuple is

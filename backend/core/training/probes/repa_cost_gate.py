@@ -101,7 +101,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     torch.manual_seed(args.seed)
     encoder, enc_dim, native_size = load_repa_encoder(
         args.encoder_source,
-        tagger_model_dir=args.tagger_dir,
+        tagger_model_dir=args.tagger_model,
         siglip2_repo=args.siglip2_repo,
         dtype=dtype,
         device=device,
@@ -215,7 +215,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder-source", choices=("tagger", "siglip2"), default="tagger")
-    parser.add_argument("--tagger-dir", default="")
+    parser.add_argument(
+        "--tagger-model", "--tagger-dir", dest="tagger_model", default="",
+        help="Exact .onnx/.safetensors file, or a legacy tagger model directory")
     parser.add_argument("--siglip2-repo", default="google/siglip2-so400m-patch14-384")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")

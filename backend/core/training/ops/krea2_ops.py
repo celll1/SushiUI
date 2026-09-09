@@ -304,11 +304,13 @@ def train_step(
         recon_loss_value = recon_loss.item()
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
-    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded
+    # crop). One gate with the diagnostics' single-step x0, which the shared op captures.
+    from core.training.ops.crop_decode_loss import (
+        compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
+    if crop_decode_or_x0_capture_needed(trainer):
         from core.models.krea2.krea2_pipeline_ops import unpack_latents
         from core.training.arch.krea2 import Krea2ArchHandler
-        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
         # Unpack packed sequence [B, N, C_packed] -> 2D [B, C, H, W]
         def _to_2d_krea2(seq_t: torch.Tensor) -> torch.Tensor:

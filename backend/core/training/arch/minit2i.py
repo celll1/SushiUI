@@ -43,6 +43,7 @@ class MiniT2IArchHandler(ArchHandler):
     velocity_sign = None
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = False
+    supplies_predicted_latent = False
 
     def resolve_wiring(self, trainer):
         """MINIT2I_WIRING describes the PIXEL variant; a latent checkpoint has a

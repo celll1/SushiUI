@@ -36,6 +36,7 @@ class SDXLArchHandler(ArchHandler):
     velocity_sign = "eps_minus_x0"
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
+    supplies_predicted_latent = True
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the

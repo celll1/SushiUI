@@ -513,10 +513,12 @@ def train_step(
         recon_weight = trainer.reconstruction_loss_weight
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
-    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded
+    # crop). One gate with the diagnostics' single-step x0, which the shared op captures.
+    from core.training.ops.crop_decode_loss import (
+        compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
+    if crop_decode_or_x0_capture_needed(trainer):
         from core.training.arch.anima import AnimaArchHandler
-        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         pred_x0_val = noisy_latents - sigma_view * model_pred
         aux_loss, _ = compute_crop_decode_loss(
             trainer=trainer,

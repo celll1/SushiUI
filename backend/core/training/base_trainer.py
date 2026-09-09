@@ -2237,6 +2237,25 @@ def crop_decode_loss_is_consumed(trainer, arch_name: str) -> bool:
     return bool(getattr(arch_handler, "consumes_crop_decode_loss", False))
 
 
+def predicted_latent_is_supplied(trainer, arch_name: str) -> bool:
+    """Whether this run's forward reaches the producer of the diagnostics' x_0.
+
+    Same shape and same ControlNet caveat as ``crop_decode_loss_is_consumed``:
+    ``train_step_controlnet`` never calls ``compute_crop_decode_loss``, which is
+    the sole producer, so a ControlNet run answers False on every architecture.
+    Otherwise the run's own ArchHandler decides via
+    ``supplies_predicted_latent``; the registry is only the fallback for a
+    trainer that has not bound one yet.
+    """
+    if bool(getattr(trainer, "use_condition_images", False)):
+        return False
+    arch_handler = getattr(trainer, "arch", None)
+    if arch_handler is None:
+        from core.training.arch import ARCH_REGISTRY
+        arch_handler = ARCH_REGISTRY.get(arch_name)
+    return bool(getattr(arch_handler, "supplies_predicted_latent", False))
+
+
 # ============================================================
 # Base Trainer Class
 # ============================================================
@@ -11666,6 +11685,23 @@ class BaseTrainer(ABC):
         )
         return self.arch.sample(self, sample_ctx)
 
+    def capture_predicted_latent(self, latent: Optional[torch.Tensor]) -> None:
+        """Take this forward's single-step x_0 for the convergence diagnostics.
+
+        Called from ``ops/crop_decode_loss.compute_crop_decode_loss`` -- the one
+        producer -- on every step of a diagnostics run, so what
+        ``_run_convergence_diagnostics`` reads is the LAST micro-batch of the
+        step just finished, not a value re-derived at the sampling step. The
+        step-0 sample runs before any forward, so its diagnostics have no x_0.
+
+        Holds nothing at all while diagnostics are off, and one detached CPU
+        copy of one sample while they are on: keeping the graph alive here would
+        pin a step's activations until the next step overwrote it.
+        """
+        if not getattr(self, "convergence_diagnostics_enable", False) or latent is None:
+            return
+        self._last_predicted_latent = latent[:1].detach().to("cpu", torch.float32)
+
     def _run_convergence_diagnostics(
         self,
         current_step: int,
@@ -11673,6 +11709,11 @@ class BaseTrainer(ABC):
         reference_image_path: Optional[str] = None,
     ) -> None:
         """Phase 1: Convergence diagnostics measurement and companion snapshot saving.
+
+        ``_last_predicted_latent`` (``capture_predicted_latent``) and
+        ``_diag_gt_latent`` are both in the DECODER's domain -- a raw
+        ``vae.encode`` sample, not a normalised training latent -- which is what
+        makes the ``vae.decode`` below and the channel gap comparable.
 
         Saves up to 3 companion images:
           1. Single-step x0 prediction (samples/step_{step:06d}_diag_single_x0.png)
@@ -13829,9 +13870,28 @@ class BaseTrainer(ABC):
         self._diag_gt_img: Optional[Image.Image] = None
         self._diag_gt_latent: Optional[torch.Tensor] = None
         self._last_predicted_latent: Optional[torch.Tensor] = None
-        if self.convergence_diagnostics_enable:
-            print(f"{self.log_prefix} Convergence diagnostics: ENABLED (every {self.convergence_diagnostics_interval} steps)")
         _arch_name = getattr(getattr(self, "arch", None), "name", "")
+        if self.convergence_diagnostics_enable:
+            # The rollout-side metrics run on any run that samples; the two that
+            # need more say so here rather than promise a number that cannot appear.
+            _diag_missing = []
+            if not predicted_latent_is_supplied(self, _arch_name):
+                _diag_missing.append(
+                    "single-step x0 companion + diag_latent_mean_err/diag_latent_std_err ("
+                    + ("ControlNet training reaches no x0 producer on any architecture"
+                       if bool(getattr(self, "use_condition_images", False))
+                       else f"architecture '{_arch_name or 'unknown'}' reaches no x0 producer")
+                    + ")")
+            _diag_p0 = self._sample_prompts[0] if self._sample_prompts else {}
+            if not (_diag_p0.get("condition_image_path") or _diag_p0.get("reference_image_path")):
+                _diag_missing.append(
+                    "GT roundtrip companion + diag_pixel_luminance_err + diag_latent_* "
+                    "(the first sample prompt carries no condition/reference image to "
+                    "measure against)")
+            print(f"{self.log_prefix} Convergence diagnostics: ENABLED "
+                  f"(every {self.convergence_diagnostics_interval} steps)"
+                  + ("" if not _diag_missing
+                     else " -- unavailable on this run: " + "; ".join(_diag_missing)))
         # ENABLED only where the forward actually folds it in; where it does not,
         # _warn_unused_loss_weighting_keys below reports it as dropped.
         if (self.crop_decode_loss_enable and self.crop_decode_loss_weight > 0

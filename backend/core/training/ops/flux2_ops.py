@@ -663,10 +663,12 @@ def train_step(
 
         loss = mse_loss + regularization_loss
 
-    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded
+    # crop). One gate with the diagnostics' single-step x0, which the shared op captures.
+    from core.training.ops.crop_decode_loss import (
+        compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
+    if crop_decode_or_x0_capture_needed(trainer):
         from core.training.arch.flux2 import Flux2ArchHandler
-        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
         # Unpack sequence -> 2x2 packed 4D -> unpatchify to 2D [B, 32, H, W]
         def _to_2d_flux2(seq_t: torch.Tensor) -> torch.Tensor:

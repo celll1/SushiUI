@@ -68,6 +68,7 @@ class MiniMaxH3ArchHandler(ArchHandler):
     # loss and only notes the weight (design §10).
     consumes_reconstruction_loss_weight = False
     consumes_crop_decode_loss = False
+    supplies_predicted_latent = False
 
     def lora_adapter_class(self):
         from core.training.adapters import MiniMaxH3LoRAAdapter

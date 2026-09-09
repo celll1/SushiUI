@@ -97,6 +97,72 @@ class CropDecodeLossModule(nn.Module):
             p.requires_grad = False
 
 
+def crop_decode_or_x0_capture_needed(trainer: Any) -> bool:
+    """Whether an ops module must build this step's x_0 and reach the shared op.
+
+    Two consumers now: the crop-decode auxiliary loss, and the convergence
+    diagnostics' single-step x_0 (``BaseTrainer._run_convergence_diagnostics``),
+    which had no producer at all before. With diagnostics off this is exactly
+    the ``enable and weight > 0`` gate it replaced in every ops module, so a run
+    that asks for neither is bit-identical -- pinned by
+    ``convergence_diagnostics_test.py`` against the gate source at 032cf977.
+    """
+    crop_on = (bool(getattr(trainer, "crop_decode_loss_enable", False))
+               and float(getattr(trainer, "crop_decode_loss_weight", 0.0) or 0.0) > 0.0)
+    return crop_on or bool(getattr(trainer, "convergence_diagnostics_enable", False))
+
+
+def _capture_predicted_latent(
+    trainer: Any,
+    predicted_latent: Optional[torch.Tensor],
+    *,
+    model_pred: torch.Tensor,
+    noisy_latents: torch.Tensor,
+    timesteps: torch.Tensor,
+    noise_process: str,
+    prediction_target: str,
+    noise_scheduler: Any,
+    velocity_sign: Optional[str],
+) -> None:
+    """Hand this step's x_0 to the convergence diagnostics.
+
+    Delivered in the DECODER's domain, not the trainer's: the consumer feeds it
+    straight to ``vae.decode`` and compares it against ``_diag_gt_latent``,
+    which is a raw ``vae.encode`` sample. One sample only -- the diagnostics
+    decode a single image.
+
+    Best-effort by construction: a diagnostic must never abort a training step.
+    """
+    vae = getattr(trainer, "vae", None)
+    capture = getattr(trainer, "capture_predicted_latent", None)
+    if vae is None or capture is None:
+        return
+    try:
+        with torch.no_grad():
+            x0 = predicted_latent
+            if x0 is None:
+                x0 = predict_x0(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                    noise_scheduler=noise_scheduler,
+                    velocity_sign=velocity_sign,
+                )
+            x0 = x0[:1].detach()
+            if x0.ndim == 5 and x0.shape[2] == 1:
+                x0 = x0.squeeze(2)
+            if x0.ndim != 4:
+                return
+            capture(denormalize(x0, vae, getattr(trainer, "wiring", None)))
+    except Exception as e:  # noqa: BLE001
+        if not getattr(trainer, "_diag_x0_capture_warned", False):
+            trainer._diag_x0_capture_warned = True
+            print(f"{getattr(trainer, 'log_prefix', '')} [ConvergenceDiag] single-step x0 "
+                  f"capture failed, so the latent diagnostics stay empty: {e}")
+
+
 def compute_crop_decode_loss(
     trainer: Any,
     model_pred: torch.Tensor,
@@ -118,7 +184,18 @@ def compute_crop_decode_loss(
     """
     enable = getattr(trainer, "crop_decode_loss_enable", False)
     weight = getattr(trainer, "crop_decode_loss_weight", 0.0)
-    if not enable or weight <= 0.0:
+    crop_on = bool(enable) and float(weight or 0.0) > 0.0
+
+    # The one producer of the diagnostics' single-step x_0: every arch that
+    # reaches this op supplies one, and none of them did before.
+    if getattr(trainer, "convergence_diagnostics_enable", False):
+        _capture_predicted_latent(
+            trainer, predicted_latent,
+            model_pred=model_pred, noisy_latents=noisy_latents, timesteps=timesteps,
+            noise_process=noise_process, prediction_target=prediction_target,
+            noise_scheduler=noise_scheduler, velocity_sign=velocity_sign,
+        )
+    if not crop_on:
         return None, 0.0
 
     vae = getattr(trainer, "vae", None)

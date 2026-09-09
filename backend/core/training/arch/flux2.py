@@ -39,6 +39,7 @@ class Flux2ArchHandler(ArchHandler):
     velocity_sign = "eps_minus_x0"
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
+    supplies_predicted_latent = True
 
     def lora_adapter_class(self):
         from core.training.adapters import FLUX2LoRAAdapter

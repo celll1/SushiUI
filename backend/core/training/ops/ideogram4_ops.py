@@ -363,11 +363,13 @@ def train_step(
         uncond_loss = torch.nn.functional.mse_loss(neg_out.float(), v_target.float(), reduction="mean")
         loss = loss + float(getattr(trainer, "ideogram4_uncond_loss_weight", 1.0)) * uncond_loss
 
-    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
-    if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+    # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded
+    # crop). One gate with the diagnostics' single-step x0, which the shared op captures.
+    from core.training.ops.crop_decode_loss import (
+        compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
+    if crop_decode_or_x0_capture_needed(trainer):
         from core.models.lens.lens_pipeline_ops import _unpatchify
         from core.training.arch.ideogram4 import Ideogram4ArchHandler
-        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
         # Unpatchify packed sequence [B, N, C_packed] -> 2D [B, C, H*2, W*2]
         def _to_2d(seq_t: torch.Tensor) -> torch.Tensor:

@@ -273,9 +273,9 @@ Phase 3 が成立するなら Phase 4 は不要（蒸留誤差を持ち込む理
 
 ## Phase 5 — REPA 系（Phase 2-4 と独立・並行可）
 
-### 5-1. G-B を先に回す（モデル新規作成不要・安い）
+### ✅ 5-1. G-B（測定完了・不合格。GPU・学習 A/B とも不要だった）
 
-**教師の前処理だけを変える対照実験**。latent 化とは独立に、正方形スカッシュの実害を測る。
+当初は**教師の前処理だけを変える対照実験**を計画していた（**実行していない**。下の判定で不要になった）:
 
 - 固定: モデル・データ・seed・その他すべて
 - 変数: 教師画像の前処理（正方形 squash vs アスペクト保持）
@@ -290,10 +290,46 @@ student トークン列 j の参照元座標は `(j+0.5)*g/gw - 0.5`、元画像
 squash した先の座標も同じ式になり、圧縮と拡大が厳密に相殺する。行方向も同様で、
 アスペクト比に依存しない。**対応はずれていない。**
 
-したがって G-B に残る仮説は 1 つ:
-**歪んだ画像の上で教師の特徴そのものが劣化しているか**（設計書 §2 の「品質低下の大きさは未測定」）。
+これにより G-B に残る仮説は 1 つになった:
+**歪んだ画像の上で教師の特徴そのものが劣化しているか**。これが次項で決着した。
 
-**G-B 不合格 = 品質側の動機は消える**。その場合 latent 化はコスト削減のみが根拠となり、優先度は下がる。
+#### ゲート G-B 判定結果: 不合格 (REJECTED)（2026-09-09）
+
+**判定は教師 encoder の processor 設定の読み取りだけで確定し、学習 A/B も GPU も使っていない。**
+G-B の仮説「正方形 squash が教師特徴を劣化させる」は、教師自身が正方形 384² で学習されている
+という事実に反証された。**REPA の squash は教師の学習ドメイン外ではなく、学習ドメインそのもの。**
+
+再現に必要な設定値（すべて実ファイルから確認）:
+
+| 項目 | 値 | 出所 |
+|---|---|---|
+| 既定教師の選択規則 | `tagger_models/*/` のうち `base_model_metadata.json` を持ち safetensors mtime が最大のディレクトリ | `base_trainer.py:3168-3183` `_discover_default_tagger_dir` |
+| 上記が選ぶディレクトリ（現時点） | `tagger_models/cca72ce1-7420-4164-9f24-c30ae77cdf2f/` (mtime 2026-06-21) | 同上 |
+| その `vision_encoder_repo` | `google/siglip2-so400m-patch14-384` | `cca72ce1-.../base_model_metadata.json` |
+| naflex か | `"is_naflex": false` | `cca72ce1-.../best_f1_metadata.json` |
+| processor 種別 | `"image_processor_type": "SiglipImageProcessor"` | HF キャッシュ `models--google--siglip2-so400m-patch14-384/.../preprocessor_config.json` |
+| 教師の入力形状 | `"size": {"height": 384, "width": 384}`。`do_center_crop` / `crop_size` キーなし = 正方形へのリサイズのみ | 同上 |
+| 教師の正規化 | `image_mean = image_std = [0.5,0.5,0.5]` = REPA が渡す `[-1,1]` と一致 | 同上（`repa.py:146-155` の docstring と同じ） |
+| 空間対応 | 上記の半ピクセル導出のとおり厳密 | `repa.py:181-185`, `base_trainer.py:3394` |
+
+**帰結（5-1 冒頭の規定に従う）**: 品質側の動機は消える。**5-2 の根拠は現在コスト削減のみ。**
+これは 5-2 の棄却ではなく、根拠の変更である。
+
+#### G-B の結論が及ばない範囲（残存条件 2 件）
+
+1. **固定解像度系の教師についての結論である。** NaFlex 系の教師を
+   `repa_tagger_model_dir` で明示指定した場合は別で、本物の不一致になる。
+   `tagger_models/048122a9-e381-4c16-b221-1ddb8c96f92a/` は
+   `google/siglip2-so400m-patch16-naflex`。その `preprocessor_config.json` は
+   **`size` を持たず** `max_num_patches: 256` / `patch_size: 16` でアスペクト保持の
+   可変グリッドを取る。さらに naflex の vision config に `image_size` が無いため
+   `load_repa_encoder` の `native_size` は `None`（`repa.py:100-102, 136-137`）となり、
+   `repa_size` は `base_trainer.py:3229-3230` の `(native or 384)` で **384 に落ちる**。
+   結果、アスペクト保持で学習されたモデルに固定正方形を、256 patch で学習された
+   モデルに 24×24 = 576 token を渡す。**この経路は別作業で対応中のため、ここには状態のみ記録する。**
+2. **リサイズフィルタが一致していない。** REPA 側は `base_trainer.py:3394` で
+   `Image.BICUBIC`、教師の processor は `"resample": 2`（PIL BILINEAR）。
+   **差の大きさは未測定。**（これも別作業で判断中。）
 
 ### 5-2. latent stem 蒸留（G-B 合格時）
 
@@ -301,7 +337,9 @@ squash した先の座標も同じ式になり、圧縮と拡大が厳密に相�
 - **latent セルと DiT トークンの対応を明示的に定義する**（1 対 1 を仮定しない）。
   patch size / packing / 圧縮率 / crop・flip の対応を設計に書く
 - 凍結 trunk のどの層に stem を接続するか、位置埋め込みとグリッドの扱いを決める
-- **歪んだ教師をそのまま蒸留しても前処理問題は解決しない** — 5-1 の結果を反映した教師を使う
+- **根拠はコスト削減のみ**（G-B 不合格により品質側の動機は消えた。5-1 の判定結果を参照）。
+  「歪んだ教師をそのまま蒸留しても前処理問題は解決しない」という当初の前提は、
+  固定解像度系の教師については前処理問題が存在しないため適用されない
 - **ゲート G-A**: 保留 patch cosine（目安 ≥0.9）**に加えて**、
   固定予算・複数 seed の学習 A/B で生成品質・収束・時間・VRAM を比較。
   特徴類似度だけで品質維持を保証しない
@@ -338,7 +376,7 @@ MiniT2I / Anima / Lens / Krea 2 / Ideogram 4 / SenseNova U1.5 / SD1.5 / SDXL。
 | 1 | Phase 0-1 設定・キャッシュ監査 | なし | — |
 | 2 | Phase 0-2 x̂₀ ヘルパ + t 規約 | なし | — |
 | 3 | Phase 1 診断計測 | 0-2 | — |
-| 4 | Phase 5-1 G-B（並行可） | なし | G-B 不合格 → Phase 5 凍結 |
+| 4 | ✅ Phase 5-1 G-B（測定完了・**不合格**） | なし | 判定済み。帰結は 5-1 の規定（5-2 の根拠はコスト削減のみ）による |
 | 5 | Phase 2 G-C 測定 | 2-1 | G-C 不合格 → Phase 4 へ分岐 |
 | 6 | Phase 3 案 1' opt-in loss | G-C 合格 | 費用許容外 → Phase 4 へ分岐 |
 | 7 | Phase 4 / 5-2 | 各ゲート | — |

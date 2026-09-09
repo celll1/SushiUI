@@ -39,6 +39,13 @@ import torch.nn.functional as F
 
 _DEFAULT_SIGLIP2_REPO = "google/siglip2-so400m-patch14-384"
 
+#: Dtype of the projector's PARAMETERS, whatever the run trains in: the
+#: projector is trainable, and torch's GradScaler.unscale_() raises
+#: "Attempting to unscale FP16 gradients" on a half-precision trainable
+#: param, while a half master rounds away updates below half a ULP. The
+#: COMPUTE stays at the tap's dtype -- see ``repa_loss``.
+PROJECTOR_PARAM_DTYPE = torch.float32
+
 
 # ------------------------------------------------------------------
 # Encoder loading
@@ -351,11 +358,16 @@ def repa_loss(
     h_dit:   [B, N, hidden]  (DiT image tokens at the aligned block; grad-bearing)
     targets: [B, N, enc_dim] (frozen clean-image features; no grad)
     """
-    # Match the projector's dtype: the tap follows the transformer/autocast dtype,
-    # which can differ from the projector when mixed_precision is off and
-    # weight_dtype != training_dtype. Cast keeps the bf16 Linear from erroring.
+    # FP32 params (PROJECTOR_PARAM_DTYPE), half compute: autocast casts the
+    # weights for the matmul, so the projector costs what the tap's dtype costs
+    # and its grads still arrive in FP32. The call sites are not all inside an
+    # autocast block (SD/SDXL's REPA term is computed after the U-Net's).
     proj_dtype = next(projector.parameters()).dtype
-    proj = projector(h_dit.to(proj_dtype))
+    if h_dit.dtype != proj_dtype and h_dit.dtype in (torch.float16, torch.bfloat16):
+        with torch.autocast(device_type=h_dit.device.type, dtype=h_dit.dtype):
+            proj = projector(h_dit)
+    else:
+        proj = projector(h_dit.to(proj_dtype))
     proj = F.normalize(proj.float(), dim=-1)
     tgt = F.normalize(targets.float(), dim=-1)
     cos = (proj * tgt).sum(dim=-1)  # [B, N]

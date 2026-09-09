@@ -70,6 +70,17 @@ _DATA_VOLUME_PEAK = {**_DATA_VOLUME, "scale_group": "gibibytes_peak"}
 _COUNT = {"family": "count", "scale_group": "counts", "range": _AUTO_0, "sampling": "dense"}
 
 EXTRA_METRIC_DEFS = {
+    "loss_flow": {"label": "SenseNova flow loss", "color": "#38bdf8", "dashed": False, **_LOSS},
+    "loss_ce": {"label": "SenseNova CE", "color": "#f472b6", "dashed": False, **_LOSS},
+    "loss_ce_i2t_caption": {"label": "CE (caption)", "color": "#fb7185", "dashed": True, **_LOSS},
+    "loss_ce_i2t_tags": {"label": "CE (tags)", "color": "#c084fc", "dashed": True, **_LOSS},
+    "loss_ce_i2t_caption_tags": {"label": "CE (caption + tags)", "color": "#e879f9", "dashed": True, **_LOSS},
+    "i2t_target_tokens": {"label": "I2T target tokens", "color": "#facc15", "dashed": True, "axis": "right", **_COUNT},
+    "task_items_i2t_caption": {"label": "Caption items", "dashed": True, "axis": "right", **_COUNT},
+    "task_items_i2t_tags": {"label": "Tag items", "dashed": True, "axis": "right", **_COUNT},
+    "task_items_i2t_caption_tags": {"label": "Caption + tag items", "dashed": True, "axis": "right", **_COUNT},
+    "task_items_t2i": {"label": "T2I items", "dashed": True, "axis": "right", **_COUNT},
+    "task_items_ti2i": {"label": "TI2I items", "dashed": True, "axis": "right", **_COUNT},
     # REPA representation-alignment loss. Formerly the dedicated repa_loss
     # column (backfilled into extra_metrics by auto_migrate).
     "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},

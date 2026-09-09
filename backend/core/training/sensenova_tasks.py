@@ -76,6 +76,23 @@ def resolve_hint_tags(
     )
 
 
+def resolve_generation_caption(
+    captions_by_type: Dict[str, Dict[str, Any]],
+    target_caption_types: Sequence[str],
+) -> str:
+    """Join a generation task view's explicitly selected caption sources."""
+    parts = []
+    for caption_type in target_caption_types:
+        payload = captions_by_type.get(caption_type)
+        content = str((payload or {}).get("content", "")).strip()
+        if not content:
+            raise ValueError(f"missing target caption source: {caption_type}")
+        parts.append(content)
+    if not parts:
+        raise ValueError("SenseNova image-output task requires a caption source")
+    return "\n".join(parts)
+
+
 def keep_hints_for_example(
     *, run_seed: int, epoch: int, image_path: str, task: str,
     template_version: int, dropout: float,
@@ -234,7 +251,20 @@ def build_task_homogeneous_batches(
                     "Every dataset item must define task_views in an explicit "
                     "SenseNova task run"
                 )
-            view = select_task_view(views, rng)
+            captions = item.get("_captions_by_type") or {}
+            eligible = [
+                view for view in views
+                if view.get("target_caption_types")
+                and (view.get("task") != "ti2i" or item.get("reference_images"))
+                and all(
+                    caption_type in captions
+                    and str(captions[caption_type].get("content", "")).strip()
+                    for caption_type in view["target_caption_types"]
+                )
+            ]
+            if not eligible:
+                continue
+            view = select_task_view(eligible, rng)
             task = view.get("task")
             if task not in TASKS:
                 raise ValueError(f"Unknown SenseNova task: {task!r}")

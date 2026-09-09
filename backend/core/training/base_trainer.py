@@ -5337,6 +5337,22 @@ class BaseTrainer(ABC):
             # being replayable (invariant 2).
             "lr_schedule_triggers": dump_lr_triggers(self),
             "lr_schedule_trigger_signals": trigger_set(self).dump_signals(),
+            "sensenova_task_state": {
+                "version": 1,
+                "tasks": list((getattr(self, "config", None) or {}).get(
+                    "_sensenova_explicit_tasks", ()
+                )),
+                "prompt_template_versions": list(
+                    (getattr(self, "config", None) or {}).get(
+                        "_sensenova_prompt_template_versions", ()
+                    )
+                ),
+                "draw_counts": dict(getattr(
+                    self, "_sensenova_task_draw_counts", {}
+                )),
+            } if (getattr(self, "config", None) or {}).get(
+                "_sensenova_explicit_tasks"
+            ) else None,
         }
 
         with open(state_file, 'w') as f:
@@ -5399,6 +5415,26 @@ class BaseTrainer(ABC):
         self._resume_lr_schedule_events = state.get("lr_schedule_events")
         self._resume_lr_triggers = state.get("lr_schedule_triggers")
         self._resume_lr_trigger_signals = state.get("lr_schedule_trigger_signals")
+        task_state = state.get("sensenova_task_state")
+        current_tasks = list((getattr(self, "config", None) or {}).get(
+            "_sensenova_explicit_tasks", ()
+        ))
+        if task_state is not None:
+            if int(task_state.get("version", 0)) != 1:
+                raise ValueError("Unsupported SenseNova task scheduler state version")
+            current_versions = list((getattr(self, "config", None) or {}).get(
+                "_sensenova_prompt_template_versions", ()
+            ))
+            if task_state.get("tasks") != current_tasks or task_state.get(
+                "prompt_template_versions"
+            ) != current_versions:
+                raise ValueError(
+                    "SenseNova task list or prompt-template version changed since "
+                    "the checkpoint; deterministic resume is refused"
+                )
+            self._sensenova_task_draw_counts = dict(
+                task_state.get("draw_counts") or {}
+            )
 
         # Restore random_state from serialized format
         random_state_dict = state["random_state"]
@@ -10170,6 +10206,11 @@ class BaseTrainer(ABC):
                         if isinstance(b.get(n), torch.Tensor) and b[n].grad_fn is not None}
         grad_acc = {n: torch.zeros_like(t) for n, t in graph_inputs.items()}
         loss_acc = pred_acc = recon_acc = 0.0
+        text_batch = b.get("sensenova_text_batch")
+        text_denominator = (
+            sum(int(example["target_tokens"]) for example in text_batch)
+            if text_batch is not None else None
+        )
         for lo in range(0, batch_size, micro_bs):
             hi = min(lo + micro_bs, batch_size)
             w = hi - lo
@@ -10183,6 +10224,12 @@ class BaseTrainer(ABC):
                 return full[lo:hi]
 
             leaves = {n: _sl(n) for n in graph_names}
+            chunk_weight = (
+                sum(int(example["target_tokens"])
+                    for example in text_batch[lo:hi])
+                if text_batch is not None else w
+            )
+            denominator = text_denominator if text_denominator is not None else eff_bs
             l, p, r = self._execute_forward_backward(
                 mnt_latents=leaves["mnt_latents"],
                 mnt_text_embeddings=leaves["mnt_text_embeddings"],
@@ -10201,18 +10248,22 @@ class BaseTrainer(ABC):
                 mnt_time_ids=b["mnt_time_ids"][lo:hi] if b["mnt_time_ids"] is not None else None,
                 loss_weight_maps_batch=b["loss_weight_maps_batch"][lo:hi] if b.get("loss_weight_maps_batch") is not None else None,
                 sensenova_prefix=b.get("sensenova_prefix"),
+                sensenova_text_batch=(
+                    b["sensenova_text_batch"][lo:hi]
+                    if b.get("sensenova_text_batch") is not None else None
+                ),
                 # Sliced, never redrawn: a retry that resampled here would give
                 # the chunked batch a different drop pattern than the attempt it
                 # is retrying.
                 cfg_drop_mask=b["cfg_drop_mask"][lo:hi] if b.get("cfg_drop_mask") is not None else None,
-                loss_scale=w / eff_bs,
+                loss_scale=chunk_weight / denominator,
             )
             for n, leaf in leaves.items():
                 if n in graph_inputs and leaf is not None and leaf.grad is not None:
                     grad_acc[n][lo:hi] = leaf.grad
-            loss_acc += l * w
-            pred_acc += p * w
-            recon_acc += r * w
+            loss_acc += l * chunk_weight
+            pred_acc += p * chunk_weight
+            recon_acc += r * chunk_weight
         if graph_inputs:
             # Its own backward, so its own counter window (the chunk backwards
             # above each took one); this one reaches the encoder parameters.
@@ -10220,7 +10271,12 @@ class BaseTrainer(ABC):
             torch.autograd.backward(tensors=list(graph_inputs.values()),
                                     grad_tensors=[grad_acc[n] for n in graph_inputs])
             self._flush_fused_group_partials()
-        return loss_acc / batch_size, pred_acc / batch_size, recon_acc / batch_size
+        report_denominator = text_denominator or batch_size
+        return (
+            loss_acc / report_denominator,
+            pred_acc / report_denominator,
+            recon_acc / report_denominator,
+        )
 
     def _forward_backward_with_oom_recovery(
         self,
@@ -10243,6 +10299,7 @@ class BaseTrainer(ABC):
         effective_batch_size: Optional[int] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
         sensenova_prefix: Optional[Any] = None,
+        sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
         cfg_drop_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
@@ -10293,7 +10350,9 @@ class BaseTrainer(ABC):
             condition_images_batch=condition_images_batch, reference_latents_nested=reference_latents_nested,
             lens_latent_shape=lens_latent_shape, mnt_repa_pixels=mnt_repa_pixels,
             mnt_time_ids=mnt_time_ids, loss_weight_maps_batch=loss_weight_maps_batch,
-            sensenova_prefix=sensenova_prefix, cfg_drop_mask=cfg_drop_mask,
+            sensenova_prefix=sensenova_prefix,
+            sensenova_text_batch=sensenova_text_batch,
+            cfg_drop_mask=cfg_drop_mask,
         )
 
         # The applied-update window is this WHOLE call, not each backward inside
@@ -10305,7 +10364,10 @@ class BaseTrainer(ABC):
         from .optimizers.update_census import reset_applied_updates
         reset_applied_updates()
 
-        _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+        if sensenova_text_batch is None:
+            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+        else:
+            _disp_cm, _disp_info = None, None
         _micro_bs = _disp_info[4] if _disp_info else None
         try:
             try:
@@ -10771,6 +10833,7 @@ class BaseTrainer(ABC):
         mnt_time_ids: Optional[torch.Tensor] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
         sensenova_prefix: Optional[Any] = None,
+        sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
         cfg_drop_mask: Optional[torch.Tensor] = None,
         loss_scale: float = 1.0,
     ) -> Tuple[float, float, float]:
@@ -10793,6 +10856,7 @@ class BaseTrainer(ABC):
             ctx = TrainStepContext(
                 latents=mnt_latents,
                 sensenova_prefix=sensenova_prefix,
+                sensenova_text_batch=sensenova_text_batch,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -11050,7 +11114,10 @@ class BaseTrainer(ABC):
                 self.grad_scaler.scale(loss_for_backward).backward()
             else:
                 loss_for_backward.backward()
-            four_phase = getattr(self, "sensenova_four_phase", None)
+            four_phase = (
+                getattr(self, "sensenova_four_phase", None)
+                if sensenova_text_batch is None else None
+            )
             if four_phase is not None:
                 # The backward above stopped at the boundary K/V leaves. Phase 3
                 # runs HERE, not at the optimizer-step seam, on both routes: the
@@ -15840,9 +15907,17 @@ class BaseTrainer(ABC):
                 if self.is_sensenova:
                     import random as _sensenova_task_rng
                     from core.training.sensenova_tasks import build_task_homogeneous_batches
+                    _task_items_before = sum(len(batch) for batch in batches)
                     batches = build_task_homogeneous_batches(
                         batches, batch_size, _sensenova_task_rng
                     )
+                    _task_items_after = sum(len(batch) for batch in batches)
+                    if _task_items_after < _task_items_before:
+                        print(
+                            f"{self.log_prefix} [SenseNova tasks] skipped "
+                            f"{_task_items_before - _task_items_after} item(s) with "
+                            "no complete target-caption source"
+                        )
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)
@@ -16210,11 +16285,15 @@ class BaseTrainer(ABC):
                 # total_steps (the loop stop condition at global_step >= actual_total_steps).
                 if epoch == start_epoch and self._crop_step_offsets is None and total_steps is None:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
-                    if bucket_manager:
+                    if bucket_manager or bool(getattr(
+                        self, "config", {}
+                    ).get("_sensenova_explicit_tasks")):
                         # For bucketing: use the full batch count before resume slicing.
                         # Priority training path may not define `item_batches`, so use
                         # the pre-sliced `batches` list which is always available here.
-                        full_batch_count = len(batches)
+                        full_batch_count = len(batches) + int(
+                            getattr(self, "_epoch_batch_offset", 0) or 0
+                        )
                     else:
                         # For simple batching: calculate from total items
                         full_batch_count = (len(all_items) + batch_size - 1) // batch_size
@@ -16617,6 +16696,19 @@ class BaseTrainer(ABC):
                     latents_list = []
                     text_embeddings_list = []
                     sensenova_prompt_items = []
+                    sensenova_text_examples = []
+                    _sensenova_tasks = {
+                        item.get("_sensenova_task") for item, _dataset in batch
+                        if item.get("_sensenova_task") is not None
+                    }
+                    if len(_sensenova_tasks) > 1:
+                        raise RuntimeError(
+                            f"SenseNova batch is not task-homogeneous: {sorted(_sensenova_tasks)}"
+                        )
+                    from core.training.sensenova_tasks import TEXT_TASKS as _SN_TEXT_TASKS
+                    _sensenova_text_batch_active = bool(
+                        _sensenova_tasks and next(iter(_sensenova_tasks)) in _SN_TEXT_TASKS
+                    )
                     # Frozen-branch per-MNT null: memoizes at most one alternate-
                     # label prefix per batch (see _sensenova_mnt_conditioning).
                     # Reset every batch so a stale value cannot be read as this
@@ -16670,7 +16762,10 @@ class BaseTrainer(ABC):
                     # latent-size filter so it stays attached to its item.
                     # Collated architectures are unaffected: still one draw per
                     # batch, still reused by every MNT transform.
-                    cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))
+                    cfg_drop_mask = (
+                        None if _sensenova_text_batch_active
+                        else self.sample_cfg_drop_mask(len(batch))
+                    )
                     # Drop any per-item loss the previous batch parked but never
                     # spent (a skip between its forward and its logging). Batch
                     # size is constant, so a stale tensor would pass the length
@@ -16679,6 +16774,23 @@ class BaseTrainer(ABC):
                     self._last_loss_per_sample = None
 
                     for item_index, (item, dataset) in enumerate(batch):
+                        if _sensenova_text_batch_active:
+                            from core.training.ops.sensenova_ops import prepare_i2t_example
+                            try:
+                                sensenova_text_examples.append(
+                                    prepare_i2t_example(self, item, epoch)
+                                )
+                                # A tiny carrier retains the generic batch/OOM
+                                # recovery spine without routing pixels through VAE.
+                                latents_list.append(torch.empty(1, 1, 1, 1))
+                            except OSError as img_error:
+                                self._report_item_failure(
+                                    img_error, item["image_path"], "Batch skipped due to"
+                                )
+                                batch_has_corrupted_image = True
+                                corrupted_image_path = item["image_path"]
+                                break
+                            continue
                         # BucketManager stores bucket_width/bucket_height, not width/height
                         width = item.get("width") or item.get("bucket_width")
                         height = item.get("height") or item.get("bucket_height")
@@ -16950,6 +17062,17 @@ class BaseTrainer(ABC):
 
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
+                        if self.is_sensenova and _sensenova_tasks:
+                            from core.training.sensenova_tasks import (
+                                IMAGE_TASKS as _SN_IMAGE_TASKS,
+                                resolve_generation_caption,
+                            )
+                            if next(iter(_sensenova_tasks)) in _SN_IMAGE_TASKS:
+                                caption = resolve_generation_caption(
+                                    item.get("_captions_by_type") or {},
+                                    item["_sensenova_task_view"]["target_caption_types"],
+                                )
+                                item["caption"] = caption
 
                         if self.is_sensenova:
                             # References enter through the PROMPT PREFIX, not
@@ -16966,7 +17089,9 @@ class BaseTrainer(ABC):
                             sensenova_prompt_items.append((
                                 caption,
                                 (item.get("reference_images") or [])
-                                if use_reference_images else None,
+                                if (use_reference_images
+                                    or next(iter(_sensenova_tasks), None) == "ti2i")
+                                else None,
                                 (cfg_drop_mask is not None
                                  and bool(cfg_drop_mask[item_index])),
                             ))
@@ -17231,7 +17356,7 @@ class BaseTrainer(ABC):
 
                     # Stack batch with size validation
                     # Filter out latents with mismatched spatial dimensions (rare edge case)
-                    if len(latents_list) > 1:
+                    if len(latents_list) > 1 and not _sensenova_text_batch_active:
                         # Get expected shape from first latent
                         expected_shape = latents_list[0].shape[2:]  # (H, W)
                         valid_indices = []
@@ -17284,7 +17409,7 @@ class BaseTrainer(ABC):
                     latents = torch.cat(latents_list, dim=0)
 
                     sensenova_prefix = None
-                    if self.is_sensenova:
+                    if self.is_sensenova and not _sensenova_text_batch_active:
                         if len(sensenova_prompt_items) != latents.shape[0]:
                             raise RuntimeError(
                                 f"SenseNova batch assembly: {len(sensenova_prompt_items)} "
@@ -17300,7 +17425,8 @@ class BaseTrainer(ABC):
                     # encode moves it back. No empty_cache(): the freed block stays in the
                     # allocator cache and is reused by the train step (calling empty_cache
                     # every batch would hurt throughput).
-                    if latent_encoding_mode == "onthefly_gpu" and self.vae is not None:
+                    if (not _sensenova_text_batch_active
+                            and latent_encoding_mode == "onthefly_gpu" and self.vae is not None):
                         self.vae.to(device="cpu", dtype=self.vae_dtype)
 
                     # REPA clean-image batch [B,3,S,S] (CPU). Requires a pixel for every
@@ -17539,7 +17665,9 @@ class BaseTrainer(ABC):
                             break
 
                         # Sample timesteps for this MNT iteration
-                        if mnt_timestep_block is not None:
+                        if _sensenova_text_batch_active:
+                            timesteps = torch.zeros(batch_size, device=self.device)
+                        elif mnt_timestep_block is not None:
                             timesteps = mnt_timestep_block[mnt_idx]
                         else:
                             timesteps = timestep_sampler.sample(batch_size, self.device)
@@ -17585,7 +17713,11 @@ class BaseTrainer(ABC):
 
                         # Handle text embeddings based on training mode
                         mnt_sensenova_prefix = None
-                        if self.is_sensenova:
+                        if self.is_sensenova and _sensenova_text_batch_active:
+                            mnt_text_embeddings = None
+                            mnt_attention_mask = None
+                            mnt_pooled_embeddings = None
+                        elif self.is_sensenova:
                             (
                                 mnt_text_embeddings,
                                 mnt_attention_mask,
@@ -17793,12 +17925,39 @@ class BaseTrainer(ABC):
                         # here, so the census is unchanged for them.
                         if self._update_census is not None:
                             _fp_census = getattr(self, "sensenova_four_phase", None)
+                            _active_census_ids = None
+                            if self.is_sensenova and getattr(
+                                self, "_sensenova_scope_parameter_ids", None
+                            ):
+                                _scope_ids = self._sensenova_scope_parameter_ids
+                                if _sensenova_text_batch_active:
+                                    _active_scopes = (
+                                        "understanding_vision",
+                                        "understanding_decoder",
+                                        "shared",
+                                    )
+                                    _active_census_ids = set().union(*(
+                                        _scope_ids.get(scope, set())
+                                        for scope in _active_scopes
+                                    ))
+                                else:
+                                    _active_census_ids = set().union(*(
+                                        _scope_ids.get(scope, set()) for scope in (
+                                            "understanding_decoder",
+                                            "generation_decoder",
+                                            "generation_flow",
+                                        )
+                                    ))
+                                    _active_census_ids.update(getattr(
+                                        self, "_sensenova_shared_input_parameter_ids", set()
+                                    ))
                             self._update_census.begin_step(
                                 True,
                                 expect_deferred=(
                                     _fp_census is None
                                     or _fp_census.is_final_iteration()
                                 ),
+                                active_ids=_active_census_ids,
                             )
 
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
@@ -17827,6 +17986,10 @@ class BaseTrainer(ABC):
                                 mnt_time_ids=mnt_time_ids,
                                 loss_weight_maps_batch=loss_weight_maps_batch,
                                 sensenova_prefix=mnt_sensenova_prefix,
+                                sensenova_text_batch=(
+                                    sensenova_text_examples
+                                    if _sensenova_text_batch_active else None
+                                ),
                                 cfg_drop_mask=mnt_cfg_drop_mask,
                             )
                         except PartialOptimizerStepError:
@@ -18024,6 +18187,47 @@ class BaseTrainer(ABC):
                                 float(self._mnt_iterations_oom_skipped),
                             )
 
+                        if self.is_sensenova and not cuda_error_skip:
+                            _draw_counts = getattr(
+                                self, "_sensenova_task_draw_counts", None
+                            )
+                            if _draw_counts is None:
+                                _draw_counts = self._sensenova_task_draw_counts = {}
+                            if _sensenova_text_batch_active:
+                                _text_task = next(iter(_sensenova_tasks))
+                                _target_tokens = sum(
+                                    int(example["target_tokens"])
+                                    for example in sensenova_text_examples
+                                )
+                                self.log_extra_metric("loss_ce", mnt_pred_loss_value)
+                                self.log_extra_metric(
+                                    f"loss_ce_{_text_task}", mnt_pred_loss_value
+                                )
+                                self.log_extra_metric("i2t_target_tokens", _target_tokens)
+                                self.log_extra_metric(
+                                    f"task_items_{_text_task}", len(sensenova_text_examples)
+                                )
+                                _draw_counts[_text_task] = (
+                                    int(_draw_counts.get(_text_task, 0))
+                                    + len(sensenova_text_examples)
+                                )
+                                self.writer.add_scalar(
+                                    "train/loss_ce", mnt_pred_loss_value, global_step
+                                )
+                            else:
+                                self.log_extra_metric("loss_flow", mnt_pred_loss_value)
+                                self.writer.add_scalar(
+                                    "train/loss_flow", mnt_pred_loss_value, global_step
+                                )
+                                if _sensenova_tasks:
+                                    _image_task = next(iter(_sensenova_tasks))
+                                    self.log_extra_metric(
+                                        f"task_items_{_image_task}", len(batch)
+                                    )
+                                    _draw_counts[_image_task] = (
+                                        int(_draw_counts.get(_image_task, 0)) + len(batch)
+                                    )
+
                         # Aligned-CFG-null split. Emitted per MNT iteration, the
                         # same granularity as the loss it splits: this reads
                         # mnt_cfg_drop_mask, this ITERATION's label, so the
@@ -18196,8 +18400,17 @@ class BaseTrainer(ABC):
                                 except Exception as lr_err:
                                     print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
                         elif should_step_optimizer:
-                            four_phase = getattr(self, "sensenova_four_phase", None)
-                            if four_phase is not None:
+                            four_phase = (
+                                None if _sensenova_text_batch_active else
+                                getattr(self, "sensenova_four_phase", None)
+                            )
+                            if _sensenova_text_batch_active:
+                                _phase_evictor = getattr(
+                                    self, "sensenova_phase_evictor", None
+                                )
+                                if _phase_evictor is not None:
+                                    _phase_evictor.assert_understanding_resident()
+                            elif four_phase is not None:
                                 # Normally a no-op: phase 3 already ran with the
                                 # backward. This is the accumulation path's seam,
                                 # kept so a future route that defers it lands

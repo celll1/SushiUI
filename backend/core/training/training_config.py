@@ -860,8 +860,9 @@ class TrainingConfigGenerator:
             YAML configuration string
         """
         p = _prepare_params(p, legacy_kwargs)
+        arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+            p, p.get("_explicit_fields"), arch
         )
 
         total_steps, epochs = _training_duration(p)
@@ -911,13 +912,12 @@ class TrainingConfigGenerator:
                             train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=True,
                             bucketing_always_emit=True,
-                            arch=_detect_arch(base_model_path),
+                            arch=arch,
                         ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": _build_sample_section(
-                            p, sample_prompts, _detect_arch(base_model_path)),
+                        "sample": _build_sample_section(p, sample_prompts, arch),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
@@ -999,8 +999,9 @@ class TrainingConfigGenerator:
         - Bucketing only emitted if enable_bucketing
         """
         p = _prepare_params(p, legacy_kwargs)
+        arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+            p, p.get("_explicit_fields"), arch
         )
 
         total_steps, epochs = _training_duration(p)
@@ -1012,7 +1013,7 @@ class TrainingConfigGenerator:
         full_ft_defaults = {
             "learning_rate": 1e-6,
             "train_text_encoder": resolve_full_finetune_train_text_encoder(
-                None, _detect_arch(base_model_path)
+                None, arch
             ),
             "noise_process": "add_noise",
             "strict_validation": True,
@@ -1054,13 +1055,12 @@ class TrainingConfigGenerator:
                             train_image_encoder=p.get("train_image_encoder", False),
                             component_lr_always_emit=False,
                             bucketing_always_emit=False,
-                            arch=_detect_arch(base_model_path),
+                            arch=arch,
                         ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": _build_sample_section(
-                            p, sample_prompts, _detect_arch(base_model_path)),
+                        "sample": _build_sample_section(p, sample_prompts, arch),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }
@@ -1097,8 +1097,9 @@ class TrainingConfigGenerator:
         - condition_preprocessors, condition_cache_mode
         """
         p = _prepare_params(p, legacy_kwargs)
+        arch = _detect_arch(base_model_path)
         p = resolve_training_sample_defaults(
-            p, p.get("_explicit_fields"), _detect_arch(base_model_path)
+            p, p.get("_explicit_fields"), arch
         )
 
         total_steps, epochs = _training_duration(p)
@@ -1175,13 +1176,12 @@ class TrainingConfigGenerator:
                             include_priority_training=False,
                             include_image_encoder_lr=False,
                             include_te_split_lrs=False,
-                            arch=_detect_arch(base_model_path),
+                            arch=arch,
                         ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
-                        "sample": _build_sample_section(
-                            p, sample_prompts, _detect_arch(base_model_path)),
+                        "sample": _build_sample_section(p, sample_prompts, arch),
                         "prompt_chunking_mode": p.get("prompt_chunking_mode", "a1111"),
                         "max_prompt_chunks": p.get("max_prompt_chunks", 0),
                     }

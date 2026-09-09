@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -83,3 +84,25 @@ def test_generators_keep_dataset_shape_and_legacy_override(generator):
         "learning_rate": 1e-4,
         "timestep_sampling": "uniform",
     }
+
+
+@pytest.mark.parametrize(
+    "generator",
+    [
+        TrainingConfigGenerator.generate_lora_config,
+        TrainingConfigGenerator.generate_relora_config,
+        TrainingConfigGenerator.generate_full_finetune_config,
+        TrainingConfigGenerator.generate_controlnet_config,
+    ],
+)
+def test_diffusion_generators_detect_architecture_once(generator):
+    with patch(
+        "core.training.training_config._detect_arch", return_value="sensenova"
+    ) as detect:
+        text = generator({"total_steps": 1}, **COMMON)
+
+    detect.assert_called_once_with("model.safetensors")
+    process = _process(text)
+    assert process["sample"]["sample_steps"] == 50
+    if generator is TrainingConfigGenerator.generate_full_finetune_config:
+        assert process["train"]["train_text_encoder"] is False

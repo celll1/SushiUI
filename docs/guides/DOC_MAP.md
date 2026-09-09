@@ -72,6 +72,7 @@ machine-local working material.
 | `backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md` | Ring-buffer optimizer contracts. |
 | `docs/audits/BLOCK_SWAP.md` | Completed block-swap implementation audit. |
 | `docs/audits/SENSENOVA_UND_BRANCH_DISCRIMINATION.md` | Measured audit: the SenseNova understanding branch keeps detail-differing prompts apart. |
+| `docs/audits/TRAINING_EQUIVALENCE_REFACTOR_2026-09.md` | Scoped audit and execution plan for behavior-preserving training-code cleanup. |
 
 ## API, tools, and subapps
 

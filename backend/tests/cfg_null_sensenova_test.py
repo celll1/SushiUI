@@ -364,11 +364,12 @@ def test_frozen_branch_mnt_index_zero_never_rebuilds_even_on_a_mismatched_label(
 def test_the_label_is_drawn_before_the_prefix_encode():
     """The structural fix phase 2 left open: the shared draw happened AFTER
     batch assembly, but SenseNova's prefix is built DURING it."""
-    draw = _BASE_TRAINER.index("cfg_drop_mask = self.sample_cfg_drop_mask(len(batch))")
+    draw = _BASE_TRAINER.index("cfg_drop_mask = (")
     loop = _BASE_TRAINER.index("for item_index, (item, dataset) in enumerate(batch):")
     collect = _BASE_TRAINER.index("sensenova_prompt_items.append((", loop)
     encode = _BASE_TRAINER.index("self._encode_sensenova_batch_prefix(\n", loop)
     assert draw < loop < collect < encode
+    assert "None if _sensenova_text_batch_active" in _BASE_TRAINER[draw:loop]
 
 
 def test_the_label_is_reindexed_by_the_latent_size_filter_not_redrawn():

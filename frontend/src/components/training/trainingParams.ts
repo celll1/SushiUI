@@ -65,6 +65,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "krea2_lora_scope", "krea2_lr_factor", "krea2_discrete_flow_shift",
   "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
   "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
+  "repa_profile_steps",
   "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
   "danbooru_aug_deficiency_enable", "danbooru_aug_deficiency_min_count",
   "danbooru_aug_deficiency_top_k", "danbooru_aug_deficiency_manual",

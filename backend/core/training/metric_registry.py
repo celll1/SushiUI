@@ -73,6 +73,16 @@ EXTRA_METRIC_DEFS = {
     # REPA representation-alignment loss. Formerly the dedicated repa_loss
     # column (backfilled into extra_metrics by auto_migrate).
     "repa_loss": {"label": "REPA", "color": "#f59e0b", "dashed": True, **_LOSS},
+    # Opt-in direct timings from repa_profile_steps. GPU components use CUDA
+    # events; teacher pixels and item waits use host monotonic time.
+    "repa_profile_teacher_pixels_s": {"label": "REPA teacher pixels (s)", **_DURATION},
+    "repa_profile_h2d_s": {"label": "REPA H2D (s)", **_DURATION},
+    "repa_profile_teacher_forward_s": {"label": "REPA teacher forward (s)", **_DURATION},
+    "repa_profile_projector_s": {"label": "REPA projector (s)", **_DURATION},
+    "repa_profile_forward_backward_s": {"label": "Forward + backward (s)", **_DURATION},
+    "repa_profile_backward_s": {"label": "Backward (s)", **_DURATION},
+    "repa_profile_loss_item_wait_s": {"label": "Loss item wait (s)", **_DURATION},
+    "repa_profile_metric_item_wait_s": {"label": "REPA metric item wait (s)", **_DURATION},
     # Outpaint ControlNet: MSE over the generate region only (the learning
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).
@@ -304,4 +314,3 @@ EXTRA_METRIC_DEFS = {
                                     "family": "bounded_diagnostic", "scale_group": "grad_ratio",
                                     "range": _AUTO_0, "sampling": "dense"},
 }
-

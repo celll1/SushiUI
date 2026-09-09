@@ -524,14 +524,15 @@ def _build_train_section(
     train["acestep_lora_scope"] = p.get("acestep_lora_scope", "attention")
 
     # ---- REPA (Representation Alignment). SSoT: param_defaults. ----
-    train["repa_enable"] = p.get("repa_enable", False)
-    train["repa_encoder_source"] = p.get("repa_encoder_source", "tagger")
-    train["repa_tagger_model_dir"] = p.get("repa_tagger_model_dir", "")
-    train["repa_siglip2_repo"] = p.get("repa_siglip2_repo", "google/siglip2-so400m-patch14-384")
-    train["repa_align_depth"] = p.get("repa_align_depth", -1)
-    train["repa_weight"] = p.get("repa_weight", 0.5)
-    train["repa_proj_lr_factor"] = p.get("repa_proj_lr_factor", 1.0)
-    train["repa_encoder_resolution"] = p.get("repa_encoder_resolution", 0)
+    train["repa_enable"] = p.get("repa_enable", TRAINING_DEFAULTS["repa_enable"])
+    train["repa_encoder_source"] = p.get("repa_encoder_source", TRAINING_DEFAULTS["repa_encoder_source"])
+    train["repa_tagger_model_dir"] = p.get("repa_tagger_model_dir", TRAINING_DEFAULTS["repa_tagger_model_dir"])
+    train["repa_siglip2_repo"] = p.get("repa_siglip2_repo", TRAINING_DEFAULTS["repa_siglip2_repo"])
+    train["repa_align_depth"] = p.get("repa_align_depth", TRAINING_DEFAULTS["repa_align_depth"])
+    train["repa_weight"] = p.get("repa_weight", TRAINING_DEFAULTS["repa_weight"])
+    train["repa_proj_lr_factor"] = p.get("repa_proj_lr_factor", TRAINING_DEFAULTS["repa_proj_lr_factor"])
+    train["repa_encoder_resolution"] = p.get("repa_encoder_resolution", TRAINING_DEFAULTS["repa_encoder_resolution"])
+    train["repa_profile_steps"] = p.get("repa_profile_steps", TRAINING_DEFAULTS["repa_profile_steps"])
 
     # ---- Online Danbooru augmentation (image-generation) ----
     # Read unconditionally; ignored when danbooru_aug_enable is False.

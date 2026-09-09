@@ -2826,6 +2826,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "repa_proj_lr_factor": 1.0,
     # Encoder input square resolution; 0 = follow the encoder's native image_size.
     "repa_encoder_resolution": 0,
+    # Profile this many forward/backward calls for an REPA on/off comparison.
+    # 0 disables all instrumentation. Values are emitted in extra_metrics.
+    "repa_profile_steps": 0,
 
     # ---- Anima full-parameter training: per-group LR multipliers ----
     # Applied on top of unet_lr in AnimaFullParameterAdapter. Defaults of

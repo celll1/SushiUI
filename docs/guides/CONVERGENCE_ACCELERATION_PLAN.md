@@ -442,7 +442,37 @@ timestamp から s/step を算出していたため、速度差を判定でき�
 別に、REPA loss の chart scalar は教師 forward 直後の `.item()` で backward の投入前に
 CUDA を同期していた。scalar を detach して保持し、共通経路が backward 投入後に必ず行う
 `loss.item()` の直後に読むよう変更した。損失・勾配・記録値は変わらず、保持するのは scalar
-1 個だけである。実ステップ時間への効果は GPU ランで未測定なので、速度改善値は主張しない。
+1 個だけである。下記の実runでは REPA 指標の読み出し自体は 0.022 ms、off/on の主 loss
+`.item()` 待ちの差は 0.060 ms だった。孤立probeでも early / deferred の総時間中央値は
+44.769 / 44.852 ms で、移動による速度改善は観測されなかった。同期位置を安全にした変更であり、
+速度改善としては数えない。
+
+#### 5-2-e2. REPA 残差の直接分解（DB timestamp 不使用）
+
+`repa_profile_steps = N` は先頭 N call を直接計測する（既定 0、通常runは無負荷）。
+教師画素処理と `.item()` は `perf_counter`、GPU区間は CUDA event で測り、各値を
+`extra_metrics` とログへ出す。REPA offでも総 forward+backward・backward・主 loss `.item()` を
+同じ計器で採れるため、off/on差をDBのflush時刻から推定しない。
+
+条件: RTX 6000 Ada、SDXL LoRA、1536、batch 4、bf16、`onthefly_gpu`、`bucket_strategy=resize`、
+固定 seed 1234。run 138 (off) / 139 (on)、各10 step、先頭8 callの中央値。品質判定ではない。
+
+| 区間 | 直接値 / off→on差 |
+|---|---:|
+| 総 forward + backward (CUDA) | 4,951.42 → 5,204.48 ms、対応step差 **+202.38 ms** |
+| backward (CUDA) | 3,771.84 → 3,849.03 ms、対応step差 **+93.27 ms** |
+| 教師 forward (CUDA、onのみ) | **44.57 ms** |
+| projector forward + loss (CUDA、onのみ) | **2.12 ms** |
+| 教師画素処理 (CPU、onのみ) | **49.19 ms/batch = 12.30 ms/item** |
+| H2D (CUDA、onのみ) | **0.66 ms** |
+| 主 loss `.item()` の off→on差 | **+0.060 ms** |
+| deferred REPA metric `.item()` (onのみ) | **0.022 ms** |
+
+GPU差のうち明示区間は 44.57 + 2.12 + 0.66 + 93.27 = **140.62 ms**、総GPU差との差
+**61.76 ms** が未帰属残差である。これは event 間の隙間、REPA枝を加えたautograd traversal、
+短い8-step比較の基底forward揺れを含むため、個別原因へは配賦しない。CPU教師画素を加えた
+online差の直接推定は **約251.6 ms/step**（`.item()`は非加算でも結論に影響しない）。
+過去の別runで得た約227.8 ms/stepと同じ桁・方向だが、同一測定ではないので一致とは扱わない。
 
 #### 5-2-f. ステップ時間比と、その重大な留保
 
@@ -513,7 +543,7 @@ latent セル : token = P² : 1        ← VAE 圧縮率に依らない
 | 順 | 基準 | 状態 |
 |---|---|---|
 | 1 | `D_features > D_budget`（教師特徴の全件キャッシュが入らない） | **通過**（5-2-a） |
-| 2 | `C_stem < C_io` | `onthefly_gpu` の現在の `C_io` は約 6.02 ms/item（5-2-e）。`C_stem` は**ダミー重みで蒸留前に測れる**。未測定 |
+| 2 | `C_stem < C_io` | **通過**。`onthefly_gpu` の厳しい既知基準 `C_io` = 6.02 ms/item に対し、ダミーstemは width 128 = **0.0800 ms/item**、width 256 = **0.08036 ms/item**（各 n=30 中央値） |
 | 3 | `N_redistill × C_distill < N_step × B × (C_io − C_stem)` | 蒸留後。未測定 |
 | 4 | 保留 patch cosine と学習 A/B の非劣化（ゲート G-A） | 最後。未測定 |
 
@@ -532,6 +562,18 @@ latent セル : token = P² : 1        ← VAE 圧縮率に依らない
 MiniT2I / Anima / Lens / Krea 2 / Ideogram 4 / SenseNova U1.5 / SD1.5 / SDXL。
 未実装アーキでは `repa_enable` は**無視されず拒否**される（`repa.py::refuse_repa`）。
 未配線のまま保留している Z-Image / FLUX.2 の理由は設計書 §2 の表が持つ。
+
+ダミーstemの再現コマンドは `backend/` から次のとおり。実教師・本番projector/lossを読み、
+JSONを標準出力へ出す（`--output` で保存可）。forward費用だけのゲートで品質を主張しない。
+
+```powershell
+..\venv\Scripts\python.exe -m core.training.probes.repa_cost_gate `
+  --tagger-dir ..\tagger_models\cca72ce1-7420-4164-9f24-c30ae77cdf2f `
+  --dtype bf16 --batch 4 --tap-hidden 1280 `
+  --latent-channels 4 --latent-height 192 --latent-width 192 `
+  --stem-width 128 256 --warmup 5 --iterations 30 `
+  --replacement-budget-ms-per-item 6.02
+```
 
 ---
 

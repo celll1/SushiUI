@@ -846,12 +846,33 @@ def apply_repa_loss(trainer, loss, image_tokens, repa_pixels, gh: int, gw: int):
     latent-space and packed-sequence architectures each derive it differently —
     as is any slicing that reduces the tap to image tokens.
     """
+    profile_events = getattr(trainer, "_repa_profile_events", None)
+
+    def _event_pair(name: str):
+        if profile_events is None:
+            return None
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record(torch.cuda.current_stream(trainer.device))
+        profile_events[name] = (start, end)
+        return end
+
+    h2d_end = _event_pair("h2d")
+    teacher_pixels = repa_pixels.to(
+        device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    if h2d_end is not None:
+        h2d_end.record(torch.cuda.current_stream(trainer.device))
+
+    teacher_end = _event_pair("teacher_forward")
     targets = encode_repa_targets(
-        trainer.repa_encoder,
-        repa_pixels.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True),
-        gh, gw, trainer.repa_size,
-    )
+        trainer.repa_encoder, teacher_pixels, gh, gw, trainer.repa_size)
+    if teacher_end is not None:
+        teacher_end.record(torch.cuda.current_stream(trainer.device))
+
+    projector_end = _event_pair("projector")
     rloss = repa_loss(image_tokens, targets, trainer.repa_projector)
+    if projector_end is not None:
+        projector_end.record(torch.cuda.current_stream(trainer.device))
     loss = loss + trainer.repa_weight * rloss
     defer_metric = getattr(trainer, "_defer_repa_loss_metric", None)
     if defer_metric is not None:

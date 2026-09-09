@@ -23390,6 +23390,21 @@ components:
             result that paper reports. A ControlNet run refuses: its forward
             never reads the tap and its U-Net is frozen.
           example: false
+        repa_profile_steps:
+          type: 'integer'
+          minimum: 0
+          default: 0
+          description: |
+            Instrument the first N training forward/backward calls. Zero
+            disables profiling. This also works with `repa_enable: false`, so
+            an off arm records directly comparable backward and item timings.
+            A REPA-on run additionally records direct CPU wall time for
+            teacher-pixel preparation and `.item()` waits, and CUDA-event time
+            for H2D, teacher forward, projector forward/loss, and backward in
+            `extra_metrics`. Both arms record total forward+backward CUDA time
+            for residual accounting; database timestamps are not used. Intended for
+            short diagnostic runs because CUDA events add small overhead.
+          example: 0
         repa_encoder_source:
           type: 'string'
           default: 'tagger'

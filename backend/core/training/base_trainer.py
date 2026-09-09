@@ -3313,9 +3313,17 @@ class BaseTrainer(ABC):
         for the alignment loss.
         """
         self.repa_enable = bool(self.config.get("repa_enable", False))
+        self.repa_profile_steps = max(0, int(self.config.get("repa_profile_steps", 0) or 0))
+        self._repa_profile_calls = 0
+        self._repa_profile_samples = []
+        self._repa_profile_events = None
+        self._repa_profile_pixel_prep_ms = 0.0
         self._repa_moved = False
         self._repa_tap_module = None
         if not self.repa_enable:
+            if self.repa_profile_steps:
+                print(f"{self.log_prefix} [REPA profile] baseline backward/item timing "
+                      f"armed for {self.repa_profile_steps} call(s); DB timestamps are not used")
             return
 
         from core.training.repa import (
@@ -3402,6 +3410,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} [REPA] enabled: source={source}, enc_dim={enc_dim}, "
               f"size={self.repa_size}, align_depth={align}/{depth}{site}, "
               f"weight={self.repa_weight}, proj_lr_factor={self.repa_proj_lr_factor}")
+        if self.repa_profile_steps:
+            print(f"{self.log_prefix} [REPA profile] direct component timing armed for "
+                  f"{self.repa_profile_steps} REPA-bearing call(s); DB timestamps are not used")
 
     def _ensure_repa_on_device(self):
         """Idempotently ensure the REPA encoder + projector live on the training device."""
@@ -10729,6 +10740,7 @@ class BaseTrainer(ABC):
         the full-batch mean gradient (sum_i (m_i/B) * grad(mean_loss_i)).
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
+        self._begin_repa_profile_call(mnt_repa_pixels)
         # Forward pass (architecture-specific)
         if self.is_sensenova:
             from core.training.arch.base_arch import TrainStepContext
@@ -10981,6 +10993,12 @@ class BaseTrainer(ABC):
             loss_for_backward = loss_for_backward / accum
         self._reset_fused_group_counters()
         _applied_before = self._applied_updates_now()
+        _repa_prof_events = getattr(self, "_repa_profile_events", None)
+        if _repa_prof_events is not None:
+            _repa_bw_start = torch.cuda.Event(enable_timing=True)
+            _repa_bw_end = torch.cuda.Event(enable_timing=True)
+            _repa_bw_start.record(torch.cuda.current_stream(self.device))
+            _repa_prof_events["backward"] = (_repa_bw_start, _repa_bw_end)
         try:
             if self.use_grad_scaler:
                 self.grad_scaler.scale(loss_for_backward).backward()
@@ -10998,6 +11016,10 @@ class BaseTrainer(ABC):
                 # window's final backward, which does the one capture+flush.
                 four_phase.after_generation_backward()
             self._flush_fused_group_partials()
+            if _repa_prof_events is not None:
+                _repa_bw_end.record(torch.cuda.current_stream(self.device))
+                _repa_prof_events["forward_backward"][1].record(
+                    torch.cuda.current_stream(self.device))
         except BaseException as _exc:
             # Scoped to the backward: an exception raised before or after it
             # cannot have interrupted the hooks, and keeps its ordinary
@@ -11006,10 +11028,13 @@ class BaseTrainer(ABC):
             raise
 
         # Extract values before deleting tensors
+        _loss_item_t0 = time.perf_counter()
         loss_value = loss.item()
+        _loss_item_wait_s = time.perf_counter() - _loss_item_t0
         # loss.item() has already waited for the forward stream after backward was
         # enqueued; reading REPA here adds no earlier synchronization point.
-        self._flush_repa_loss_metric_after_backward()
+        _repa_item_wait_s = self._flush_repa_loss_metric_after_backward()
+        self._finish_repa_profile_call(_loss_item_wait_s, _repa_item_wait_s)
         pred_loss_value = pred_loss.item() if isinstance(pred_loss, torch.Tensor) else pred_loss
         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
 
@@ -16546,6 +16571,9 @@ class BaseTrainer(ABC):
                     loss_weight_maps_list = []  # Outpaint-mode per-item latent-space loss weight [1,1,H/8,W/8] or None (parallel to condition_images_list)
                     repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (parallel to latents_list)
                     _repa_active = bool(getattr(self, "repa_enable", False))
+                    if (_repa_active and getattr(self, "_repa_profile_calls", 0)
+                            < getattr(self, "repa_profile_steps", 0)):
+                        self._repa_profile_pixel_prep_ms = 0.0
                     # SDXL micro-conditioning: per-item (orig_h,orig_w,crop_top,crop_left,
                     # target_h,target_w) for time_ids, parallel to latents_list.
                     micro_cond_list = []
@@ -16830,6 +16858,12 @@ class BaseTrainer(ABC):
                         # REPA: clean-image pixels for this item (parallel to latents_list).
                         # A latent was appended above for this item (corrupted items break
                         # earlier), so this keeps 1:1 alignment. None -> REPA skipped for batch.
+                        _repa_pix_t0 = (
+                            time.perf_counter()
+                            if (_repa_active and getattr(self, "_repa_profile_calls", 0)
+                                < getattr(self, "repa_profile_steps", 0))
+                            else 0.0
+                        )
                         if _repa_active:
                             repa_pixels_list.append(self._get_repa_pixels_for_item(
                                 item,
@@ -16838,6 +16872,9 @@ class BaseTrainer(ABC):
                                 decoded_image=_repa_decoded_image,
                                 bucketed_image=_repa_bucketed_image,
                             ))
+                            if _repa_pix_t0:
+                                self._repa_profile_pixel_prep_ms += (
+                                    time.perf_counter() - _repa_pix_t0) * 1000.0
 
                         # SDXL micro-conditioning per item: prefer the exact values
                         # captured by encode_image (onthefly path; exact even for
@@ -19136,15 +19173,79 @@ class BaseTrainer(ABC):
             return
         self._extra_metrics[name] = v
 
+    def _begin_repa_profile_call(self, repa_pixels: Optional[torch.Tensor]) -> None:
+        """Arm direct timers for one REPA-bearing call, without changing normal runs."""
+        self._repa_profile_events = None
+        limit = int(getattr(self, "repa_profile_steps", 0) or 0)
+        if limit <= 0 or getattr(self, "_repa_profile_calls", 0) >= limit:
+            return
+        if torch.device(self.device).type != "cuda" or not torch.cuda.is_available():
+            if not getattr(self, "_repa_profile_cuda_warned", False):
+                print(f"{self.log_prefix} [REPA profile] CUDA timing unavailable; profiling disabled")
+                self._repa_profile_cuda_warned = True
+            return
+        self._repa_profile_calls += 1
+        _full_start = torch.cuda.Event(enable_timing=True)
+        _full_end = torch.cuda.Event(enable_timing=True)
+        _full_start.record(torch.cuda.current_stream(self.device))
+        self._repa_profile_events = {"forward_backward": (_full_start, _full_end)}
+        self._repa_profile_has_targets = repa_pixels is not None
+
+    def _finish_repa_profile_call(
+        self, loss_item_wait_s: float, repa_item_wait_s: float,
+    ) -> None:
+        """Resolve CUDA events only after the existing loss.item() stream sync."""
+        events = getattr(self, "_repa_profile_events", None)
+        self._repa_profile_events = None
+        if events is None:
+            return
+        values = {
+            "loss_item_wait": float(loss_item_wait_s),
+        }
+        if getattr(self, "_repa_profile_has_targets", False):
+            values["teacher_pixels"] = (
+                float(getattr(self, "_repa_profile_pixel_prep_ms", 0.0)) / 1000.0)
+            values["metric_item_wait"] = float(repa_item_wait_s)
+        self._repa_profile_pixel_prep_ms = 0.0
+        for name, pair in events.items():
+            start, end = pair
+            end.synchronize()
+            values[name] = float(start.elapsed_time(end)) / 1000.0
+        for name, value in values.items():
+            self.log_extra_metric(f"repa_profile_{name}_s", value)
+        samples = getattr(self, "_repa_profile_samples", None)
+        if samples is None:
+            samples = self._repa_profile_samples = []
+        samples.append(values)
+        ordered = ("teacher_pixels", "h2d", "teacher_forward", "projector",
+                   "forward_backward", "backward", "loss_item_wait",
+                   "metric_item_wait")
+        rendered = ", ".join(
+            f"{name}={values[name] * 1000.0:.3f}ms"
+            for name in ordered if name in values)
+        print(f"{self.log_prefix} [REPA profile {len(samples)}/"
+              f"{self.repa_profile_steps}] {rendered}")
+        if len(samples) == self.repa_profile_steps:
+            import statistics
+            medians = {
+                name: statistics.median(s[name] for s in samples if name in s)
+                for name in ordered if any(name in s for s in samples)
+            }
+            summary = ", ".join(
+                f"{name}={value * 1000.0:.3f}ms" for name, value in medians.items())
+            print(f"{self.log_prefix} [REPA profile median, n={len(samples)}] {summary}")
+
     def _defer_repa_loss_metric(self, loss: torch.Tensor) -> None:
         """Keep REPA's scalar on-device until the post-backward loss sync."""
         self._pending_repa_loss_metric = loss.detach()
 
-    def _flush_repa_loss_metric_after_backward(self) -> None:
+    def _flush_repa_loss_metric_after_backward(self) -> float:
         pending = getattr(self, "_pending_repa_loss_metric", None)
         self._pending_repa_loss_metric = None
+        started = time.perf_counter()
         if pending is not None:
             self.log_extra_metric("repa_loss", float(pending.item()))
+        return time.perf_counter() - started
 
     def _feed_lr_trigger_signals(self, step, loss, grad_norm):
         """Push this step's signals onto the LR triggers' in-memory ring (D45).

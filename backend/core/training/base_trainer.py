@@ -19360,6 +19360,68 @@ class BaseTrainer(ABC):
         self._full_param_grad_components = components
         return components
 
+    def _grad_norm_parameter_entries(self):
+        """Return the run-invariant ordered `(parameter, component)` census."""
+        cached = getattr(self, "_grad_norm_entry_cache", None)
+        if cached is not None:
+            return cached
+
+        entries: List[Tuple[Any, str]] = []
+        if hasattr(self, "lora_layers"):
+            from core.training.adapters.base_adapter import LORA_COMPONENT_UNET
+
+            components = (
+                getattr(getattr(self, "adapter", None), "lora_components", None)
+                or {}
+            )
+            unclassified = []
+            for lora_name, lora_layer in self.lora_layers.items():
+                component = components.get(lora_name)
+                if component is None:
+                    unclassified.append(lora_name)
+                    component = LORA_COMPONENT_UNET
+                bucket = grad_norm_bucket(component)
+                entries.extend((param, bucket) for param in lora_layer.parameters())
+
+            if unclassified and not hasattr(self, "_grad_norm_unclassified_warned"):
+                print(
+                    f"{self.log_prefix} [GradNorm] WARNING: {len(unclassified)} "
+                    "LoRA layer(s) were injected without a registered component "
+                    "and are being reported under grad_norm_unet; the adapter "
+                    "should call register_lora_layer(). "
+                    f"Examples: {unclassified[:3]}"
+                )
+                self._grad_norm_unclassified_warned = True
+        else:
+            for attr, bucket in (
+                ("text_encoder", "te1"),
+                ("text_encoder_2", "te2"),
+                ("unet", "unet"),
+                ("transformer_original", "unet"),
+            ):
+                module = getattr(self, attr, None)
+                if module is not None:
+                    entries.extend((param, bucket) for param in module.parameters())
+
+            vision_encoder = getattr(self, "vision_encoder", None)
+            if getattr(self, "_train_vision_encoder", False) and vision_encoder is not None:
+                entries.extend((param, "ve") for param in vision_encoder.parameters())
+
+            controlnet = getattr(self, "controlnet", None)
+            if controlnet is not None:
+                entries.extend((param, "unet") for param in controlnet.parameters())
+
+            overrides = self._full_parameter_grad_components()
+            if overrides:
+                entries = [
+                    (param, grad_norm_bucket(overrides[id(param)]))
+                    if id(param) in overrides else (param, bucket)
+                    for param, bucket in entries
+                ]
+
+        self._grad_norm_entry_cache = tuple(entries)
+        return self._grad_norm_entry_cache
+
     def _calculate_grad_norms(self):
         """
         Calculate gradient norms for different parameter groups.
@@ -19390,104 +19452,20 @@ class BaseTrainer(ABC):
                 return id(param) in recorded
             return param.grad is not None
 
-        entries: List[Tuple[Any, str]] = []  # (param, 'unet'|'te'|'te1'|'te2'|'ve')
+        entries = [
+            (param, bucket)
+            for param, bucket in BaseTrainer._grad_norm_parameter_entries(self)
+            if _has_grad(param)
+        ]
 
-        # For LoRA training, iterate through lora_layers dict
-        if hasattr(self, 'lora_layers'):
-            grad_count = 0
-            # Components come from the adapter that injected each layer. Inferring
-            # them from substrings of the LoRA key ('unet'/'transformer'/'te1_')
-            # mis-binned every architecture whose keys are plain module paths
-            # (SenseNova) or use another prefix (FLUX.2/MiniT2I text encoders):
-            # they landed in the total only, leaving grad_norm_unet at 0.0.
-            # Local import: core.training.adapters pulls every arch's model
-            # modules, which base_trainer must not require at module load.
-            from core.training.adapters.base_adapter import LORA_COMPONENT_UNET
-            components = getattr(getattr(self, 'adapter', None), 'lora_components', None) or {}
-            unclassified = []
-            for lora_name, lora_layer in self.lora_layers.items():
-                component = components.get(lora_name)
-                if component is None:
-                    unclassified.append(lora_name)
-                    component = LORA_COMPONENT_UNET  # main trainable model
-                for param in lora_layer.parameters():
-                    if _has_grad(param):
-                        grad_count += 1
-
-                        entries.append((param, grad_norm_bucket(component)))
-
-            if unclassified and not hasattr(self, '_grad_norm_unclassified_warned'):
-                print(f"{self.log_prefix} [GradNorm] WARNING: {len(unclassified)} LoRA layer(s) "
-                      f"were injected without a registered component and are being reported "
-                      f"under grad_norm_unet; the adapter should call register_lora_layer(). "
-                      f"Examples: {unclassified[:3]}")
-                self._grad_norm_unclassified_warned = True
-
-            # Debug: Print first calculation only
-            if grad_count > 0 and not hasattr(self, '_grad_norm_debug_printed'):
-                print(f"{self.log_prefix} [GradNorm] Calculated from {grad_count} parameters with gradients")
-                print(f"{self.log_prefix} [GradNorm] Sample LoRA layer names (first 3):")
-                for i, name in enumerate(list(self.lora_layers.keys())[:3]):
-                    print(f"{self.log_prefix}   {name}")
-                self._grad_norm_debug_printed = True
-
-        # For Full Fine-Tuning, iterate through base model parameters
-        else:
-            # SD1.5/SDXL: Direct text_encoder access — treat as TE1
-            if hasattr(self, 'text_encoder') and self.text_encoder is not None:
-                for name, param in self.text_encoder.named_parameters():
-                    if _has_grad(param):
-                        entries.append((param, 'te1'))
-
-            # Iterate through text encoder 2 parameters (if trainable, SDXL) — TE2
-            if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
-                for name, param in self.text_encoder_2.named_parameters():
-                    if _has_grad(param):
-                        entries.append((param, 'te2'))
-
-            # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
-            if hasattr(self, 'unet') and self.unet is not None:
-                for name, param in self.unet.named_parameters():
-                    if _has_grad(param):
-                        entries.append((param, 'unet'))
-
-            # Iterate through Transformer parameters (if trainable, Z-Image)
-            if hasattr(self, 'transformer_original') and self.transformer_original is not None:
-                for name, param in self.transformer_original.named_parameters():
-                    if _has_grad(param):
-                        entries.append((param, 'unet'))
-
-            # Iterate through Vision Encoder parameters (if training VE, SD1.5/SDXL only)
-            if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
-                for param in self.vision_encoder.parameters():
-                    if _has_grad(param):
-                        entries.append((param, 've'))
-
-            # Iterate through ControlNet parameters (ControlNet training freezes
-            # UNet/TE/VAE and trains self.controlnet, so none of the branches above
-            # catch its grads -> total_grad_norm was 0.0 for every CN step. Report
-            # the CN grad norm under both the total and the "unet" (main trainable
-            # model) slot so the convergence signal is usable.
-            if getattr(self, 'controlnet', None) is not None:
-                for param in self.controlnet.parameters():
-                    if _has_grad(param):
-                        entries.append((param, 'unet'))
-
-            # The loops above bucket by the MODULE a parameter was found on,
-            # which is right only where one module is one component. SenseNova
-            # keeps both MoT halves inside transformer_original, so the
-            # understanding half was reported as U-Net and no separate
-            # MoT-Understanding norm existed for a `und` or `both` run. The
-            # adapter that built the optimizer groups classifies its own
-            # parameters; every adapter that does not override it returns {} and
-            # nothing below changes.
-            overrides = self._full_parameter_grad_components()
-            if overrides:
-                entries = [
-                    (param, grad_norm_bucket(overrides[id(param)]))
-                    if id(param) in overrides else (param, bucket)
-                    for param, bucket in entries
-                ]
+        if hasattr(self, "lora_layers") and entries and not hasattr(
+                self, "_grad_norm_debug_printed"):
+            print(f"{self.log_prefix} [GradNorm] Calculated from {len(entries)} "
+                  "parameters with gradients")
+            print(f"{self.log_prefix} [GradNorm] Sample LoRA layer names (first 3):")
+            for name in list(self.lora_layers.keys())[:3]:
+                print(f"{self.log_prefix}   {name}")
+            self._grad_norm_debug_printed = True
 
         if recorded is None:
             from .optimizers.fused_grad_norm import squared_norms_from_grads

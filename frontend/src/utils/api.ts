@@ -240,7 +240,7 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "sensenova" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -1542,6 +1542,7 @@ export interface OutpaintAudioParams {
 // ---------------------------------------------------------------------------
 
 export interface GenerationDefaultsResponse {
+  img2txt: Partial<Omit<Img2TxtParams, "image">> & Record<string, unknown>;
   txt2img: Partial<GenerationParams> & Record<string, unknown>;
   img2img: Partial<GenerationParams> & Record<string, unknown>;
   inpaint:  Partial<InpaintParams> & Record<string, unknown>;
@@ -1776,6 +1777,8 @@ export interface ArchAdapterFamilies {
 // in exactly one place (the backend table) instead of being duplicated here.
 export interface ArchCapabilities {
   unsupported: Record<string, Record<string, string>>;
+  // Positive output modes. Only SenseNova advertises img2txt initially.
+  text_output_modes?: Record<string, string[]>;
   // Values of a feature's arming parameter that the arch DOES honor even though
   // the feature is listed in `unsupported` (e.g. unet_quantization="int8" on
   // krea2). Optional so an older backend without the key still type-checks.
@@ -2390,6 +2393,56 @@ export const getResultSeed = (result: any): number =>
 
 export const getResultAncestralSeed = (result: any): number | null =>
   result?.image?.ancestral_seed ?? result?.actual_ancestral_seed ?? null;
+
+export type Img2TxtTask = "caption" | "caption_tags" | "tags" | "custom";
+
+export interface Img2TxtParams {
+  image: File;
+  task: Img2TxtTask;
+  instruction: string;
+  hint_tags: string[];
+  max_new_tokens: number;
+  do_sample: boolean;
+  temperature: number;
+  top_p: number;
+  top_k: number | null;
+  repetition_penalty: number | null;
+  seed: number;
+  prompt_template_version: number;
+}
+
+export interface Img2TxtResponse {
+  kind: "text";
+  task: Img2TxtTask;
+  raw_text: string;
+  structured: { caption?: string; tags?: string[] } | null;
+  parse_warning: string | null;
+  effective_instruction: string;
+  prompt_template_version: number;
+  actual_seed: number;
+  model: { type: "sensenova"; source: string | null };
+  timing: { preprocess_seconds: number; generation_seconds: number };
+  warnings: Array<string | { message?: string }>;
+}
+
+export const generateImg2Txt = async (params: Img2TxtParams): Promise<Img2TxtResponse> => {
+  const formData = new FormData();
+  formData.append("images", params.image, params.image.name || "image");
+  formData.append("task", params.task);
+  formData.append("instruction", params.instruction);
+  formData.append("hint_tags", JSON.stringify(params.hint_tags));
+  formData.append("max_new_tokens", String(params.max_new_tokens));
+  formData.append("do_sample", String(params.do_sample));
+  formData.append("temperature", String(params.temperature));
+  formData.append("top_p", String(params.top_p));
+  if (params.top_k != null) formData.append("top_k", String(params.top_k));
+  if (params.repetition_penalty != null) {
+    formData.append("repetition_penalty", String(params.repetition_penalty));
+  }
+  formData.append("seed", String(params.seed));
+  formData.append("prompt_template_version", String(params.prompt_template_version));
+  return (await api.post("/generate/img2txt", formData)).data;
+};
 
 export interface StudioRenderUpload {
   assetId: string;

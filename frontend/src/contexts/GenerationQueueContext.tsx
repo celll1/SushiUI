@@ -1,13 +1,13 @@
 "use client";
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
-import { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, Img2TxtParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 // Type-only (videoChain.ts imports QueueItem from here the same way), so this
 // mutual reference is erased at compile time and creates no runtime cycle.
 import type { ChainDriftPause } from "@/utils/videoChain";
 import { CFGMetrics, wsClient } from "@/utils/websocket";
 
-export type GenerationPanelId = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
+export type GenerationPanelId = "txt2img" | "img2img" | "img2txt" | "inpaint" | "outpaint" | "upscale";
 
 /** Fallback owner for an item that did not record its origin panel. Several
  *  types (ref2vid, chain_vid) can be enqueued from more than one panel, so
@@ -24,6 +24,8 @@ export function typeToPanel(type: QueueItem["type"]): GenerationPanelId {
     case "aud2aud":
     case "chain_vid":
       return "img2img";
+    case "img2txt":
+      return "img2txt";
     case "inpaint":
     case "inpaint_vid":
       return "inpaint";
@@ -46,7 +48,7 @@ export interface GenerationFailureSnapshot {
   revision: number;
 }
 
-/** One finished result, for the shared top-right strip (FloatingGallery). */
+/** One finished media result, for the shared top-right strip (FloatingGallery). */
 export interface GenerationResultFeedEntry {
   id: number;
   url: string;
@@ -67,8 +69,12 @@ export interface GenerationProgressSnapshot {
   subProgress?: number;
 }
 
-export interface GenerationResultSnapshot {
+interface GenerationResultBase {
   panel: GenerationPanelId;
+  revision: number;
+}
+
+export interface MediaGenerationResultSnapshot extends GenerationResultBase {
   kind: "image" | "video" | "audio";
   url: string;
   playbackUrl?: string;
@@ -83,8 +89,27 @@ export interface GenerationResultSnapshot {
   // latent-only intermediate loop step), so a session gallery must not list it
   // -- it would show now and vanish on refresh.
   ephemeral?: boolean;
-  revision: number;
 }
+
+export interface TextGenerationResultSnapshot extends GenerationResultBase {
+  kind: "text";
+  rawText: string;
+  structured: { caption?: string; tags?: string[] } | null;
+  parseWarning: string | null;
+  effectiveInstruction: string;
+  promptTemplateVersion: number;
+  task: Img2TxtParams["task"];
+  seed: number;
+  model: { type: "sensenova"; source: string | null };
+  timing: { preprocess_seconds: number; generation_seconds: number };
+  params: Img2TxtParams;
+  warnings?: string[];
+}
+
+export type GenerationResultSnapshot = MediaGenerationResultSnapshot | TextGenerationResultSnapshot;
+type GenerationResultDraft =
+  | Omit<MediaGenerationResultSnapshot, "revision">
+  | Omit<TextGenerationResultSnapshot, "revision">;
 
 /** The subset of a `LoopGenerationStep` that is read when the PREVIOUS step
  *  finishes, frozen onto the step's own queue item at enqueue time. Reading it
@@ -104,8 +129,11 @@ export interface QueueItem {
   // progress and its result. Set at enqueue because the dispatcher is global
   // and several types (ref2vid, chain_vid) have more than one possible origin.
   panel?: GenerationPanelId;
-  type: "txt2img" | "img2img" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud" | "chain_vid";
-  params: GenerationParams | Img2ImgParams | InpaintParams | InpaintVideoParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
+  type: "txt2img" | "img2img" | "img2txt" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud" | "chain_vid";
+  params: GenerationParams | Img2ImgParams | Img2TxtParams | InpaintParams | InpaintVideoParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
+  // Identity captured with the request. Img2txt refuses to silently run a
+  // queued instruction against a different checkpoint after a model swap.
+  modelIdentity?: { type: string; source: string };
   inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
   // decodeMode "final-only" latent passthrough; img2img only — set by the
@@ -229,8 +257,8 @@ interface GenerationQueueContextType {
   setGenerateForever: (enabled: boolean) => void;
   progressSnapshot: GenerationProgressSnapshot | null;
   completedResults: Partial<Record<GenerationPanelId, GenerationResultSnapshot>>;
-  publishCompletedResult: (result: Omit<GenerationResultSnapshot, "revision">) => void;
-  // Every finished result in order, for the page-level FloatingGallery strip.
+  publishCompletedResult: (result: GenerationResultDraft) => void;
+  // Every finished media result in order, for the page-level FloatingGallery strip.
   // Bounded; the strip trims further to its own configured maximum.
   resultFeed: GenerationResultFeedEntry[];
   appendResult: (entry: Omit<GenerationResultFeedEntry, "id" | "timestamp">) => void;
@@ -327,7 +355,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     setLastFailure((previous) => ({ ...failure, revision: (previous?.revision ?? 0) + 1 }));
   }, []);
 
-  const publishCompletedResult = useCallback((result: Omit<GenerationResultSnapshot, "revision">) => {
+  const publishCompletedResult = useCallback((result: GenerationResultDraft) => {
     setCompletedResults((previous) => ({
       ...previous,
       [result.panel]: { ...result, revision: (previous[result.panel]?.revision ?? 0) + 1 },

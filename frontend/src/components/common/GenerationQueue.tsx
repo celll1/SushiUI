@@ -41,11 +41,17 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
   useEffect(() => {
     if (currentItem && currentItem.status === "generating") {
       // Store current generation info while it's running
+      const mediaParams = currentItem.params as Partial<{
+        width: number;
+        height: number;
+        steps: number;
+        sampler: string;
+      }>;
       const info = {
-        width: currentItem.params.width || 0,
-        height: currentItem.params.height || 0,
-        steps: currentItem.params.steps || 0,
-        sampler: currentItem.params.sampler || "",
+        width: mediaParams.width || 0,
+        height: mediaParams.height || 0,
+        steps: mediaParams.steps || 0,
+        sampler: mediaParams.sampler || "",
         elapsedTime: elapsedTime,
         currentStep: currentStep,
       };

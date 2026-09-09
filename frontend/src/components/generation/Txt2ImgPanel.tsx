@@ -1815,7 +1815,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       setGeneratedImage(null);
       setGeneratedAudio(null);
       setGeneratedAudioWarnings([]);
-    } else {
+    } else if (result.kind === "audio") {
       setGeneratedAudio(result.url);
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioParams(result.params as GenerationParams);

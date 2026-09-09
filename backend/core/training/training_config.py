@@ -31,6 +31,54 @@ def _normalize_params(p: Dict[str, Any]) -> Dict[str, Any]:
     return p
 
 
+def _prepare_params(
+    p: Optional[Dict[str, Any]], legacy_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge legacy keyword arguments without mutating the caller's mapping."""
+    if p is None:
+        p = legacy_kwargs
+    elif legacy_kwargs:
+        p = {**p, **legacy_kwargs}
+    return _normalize_params(p)
+
+
+def _training_duration(p: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Return the one configured duration axis."""
+    total_steps = p.get("total_steps")
+    epochs = p.get("epochs")
+    if total_steps is None and epochs is None:
+        raise ValueError("Either total_steps or epochs must be provided")
+    if total_steps is not None and epochs is not None:
+        raise ValueError("Cannot specify both total_steps and epochs")
+    return total_steps, epochs
+
+
+_NO_DATASET_RESOLUTION = object()
+
+
+def _build_datasets(
+    dataset_path: str,
+    dataset_configs: Optional[List[Dict[str, Any]]],
+    *,
+    resolution: Any = _NO_DATASET_RESOLUTION,
+) -> List[Dict[str, Any]]:
+    """Build the common process dataset list, optionally including resolution."""
+    sources = dataset_configs or [{"path": dataset_path}]
+    datasets = []
+    for source in sources:
+        dataset = {
+            "folder_path": source.get("path", ""),
+            "caption_ext": "txt",
+            **({"dataset_id": source["dataset_id"]}
+               if source.get("dataset_id") else {}),
+            **({"resolution": resolution}
+               if resolution is not _NO_DATASET_RESOLUTION else {}),
+        }
+        dataset.update(extract_dataset_params(source))
+        datasets.append(dataset)
+    return datasets
+
+
 def _detect_arch(base_model_path: str) -> str:
     """The architecture a config is being generated for, or ``"unknown"``.
 
@@ -811,48 +859,17 @@ class TrainingConfigGenerator:
         Returns:
             YAML configuration string
         """
-        # Backward compat: if no p dict provided, build from legacy_kwargs
-        if p is None:
-            p = legacy_kwargs
-        elif legacy_kwargs:
-            # Both provided: legacy_kwargs override p (caller-supplied wins)
-            p = {**p, **legacy_kwargs}
-        p = _normalize_params(p)
+        p = _prepare_params(p, legacy_kwargs)
         p = resolve_training_sample_defaults(
             p, p.get("_explicit_fields"), _detect_arch(base_model_path)
         )
 
-        # Validate that either steps or epochs is provided
-        total_steps = p.get("total_steps")
-        epochs = p.get("epochs")
-        if total_steps is None and epochs is None:
-            raise ValueError("Either total_steps or epochs must be provided")
-        if total_steps is not None and epochs is not None:
-            raise ValueError("Cannot specify both total_steps and epochs")
-
-        # Build datasets array
-        # NOTE: caption_processing settings are NOT saved to YAML
-        # They are read from the database (Dataset.caption_processing) at training time
-        base_resolutions = p.get("base_resolutions")
-        datasets_array = []
-        if dataset_configs:
-            for ds_config in dataset_configs:
-                ds_path = ds_config.get("path", "")
-                ds_dataset_id = ds_config.get("dataset_id")
-                dataset_entry = {
-                    "folder_path": ds_path,
-                    "caption_ext": "txt",
-                    **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
-                    "resolution": base_resolutions or [512, 768, 1024],
-                }
-                dataset_entry.update(extract_dataset_params(ds_config))
-                datasets_array.append(dataset_entry)
-        else:
-            datasets_array.append({
-                "folder_path": dataset_path,
-                "caption_ext": "txt",
-                "resolution": base_resolutions or [512, 768, 1024],
-            })
+        total_steps, epochs = _training_duration(p)
+        datasets_array = _build_datasets(
+            dataset_path,
+            dataset_configs,
+            resolution=p.get("base_resolutions") or [512, 768, 1024],
+        )
 
         config = {
             "job": run_name,
@@ -928,11 +945,7 @@ class TrainingConfigGenerator:
         Generates LoRA config, then replaces network type with 'relora' and adds
         ReLoRA-specific settings (merge_every, restart_warmup_steps, etc.).
         """
-        if p is None:
-            p = legacy_kwargs
-        elif legacy_kwargs:
-            p = {**p, **legacy_kwargs}
-        p = _normalize_params(p)
+        p = _prepare_params(p, legacy_kwargs)
 
         # Generate base LoRA config YAML using the same params dict
         lora_yaml = TrainingConfigGenerator.generate_lora_config(
@@ -985,39 +998,13 @@ class TrainingConfigGenerator:
         - Component LRs only emitted if not None (vs always-emit for LoRA)
         - Bucketing only emitted if enable_bucketing
         """
-        if p is None:
-            p = legacy_kwargs
-        elif legacy_kwargs:
-            p = {**p, **legacy_kwargs}
-        p = _normalize_params(p)
+        p = _prepare_params(p, legacy_kwargs)
         p = resolve_training_sample_defaults(
             p, p.get("_explicit_fields"), _detect_arch(base_model_path)
         )
 
-        total_steps = p.get("total_steps")
-        epochs = p.get("epochs")
-        if total_steps is None and epochs is None:
-            raise ValueError("Either total_steps or epochs must be provided")
-        if total_steps is not None and epochs is not None:
-            raise ValueError("Cannot specify both total_steps and epochs")
-
-        datasets_array = []
-        if dataset_configs:
-            for ds_config in dataset_configs:
-                ds_path = ds_config.get("path", "")
-                ds_dataset_id = ds_config.get("dataset_id")
-                dataset_entry = {
-                    "folder_path": ds_path,
-                    "caption_ext": "txt",
-                    **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
-                }
-                dataset_entry.update(extract_dataset_params(ds_config))
-                datasets_array.append(dataset_entry)
-        else:
-            datasets_array.append({
-                "folder_path": dataset_path,
-                "caption_ext": "txt",
-            })
+        total_steps, epochs = _training_duration(p)
+        datasets_array = _build_datasets(dataset_path, dataset_configs)
 
         # Full FT defaults differ from LoRA defaults
         from api.param_defaults import resolve_full_finetune_train_text_encoder
@@ -1109,39 +1096,13 @@ class TrainingConfigGenerator:
         - lllite_conditioning_channels, lllite_rank
         - condition_preprocessors, condition_cache_mode
         """
-        if p is None:
-            p = legacy_kwargs
-        elif legacy_kwargs:
-            p = {**p, **legacy_kwargs}
-        p = _normalize_params(p)
+        p = _prepare_params(p, legacy_kwargs)
         p = resolve_training_sample_defaults(
             p, p.get("_explicit_fields"), _detect_arch(base_model_path)
         )
 
-        total_steps = p.get("total_steps")
-        epochs = p.get("epochs")
-        if total_steps is None and epochs is None:
-            raise ValueError("Either total_steps or epochs must be provided")
-        if total_steps is not None and epochs is not None:
-            raise ValueError("Cannot specify both total_steps and epochs")
-
-        datasets_array = []
-        if dataset_configs:
-            for ds_config in dataset_configs:
-                ds_path = ds_config.get("path", "")
-                ds_dataset_id = ds_config.get("dataset_id")
-                dataset_entry = {
-                    "folder_path": ds_path,
-                    "caption_ext": "txt",
-                    **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
-                }
-                dataset_entry.update(extract_dataset_params(ds_config))
-                datasets_array.append(dataset_entry)
-        else:
-            datasets_array.append({
-                "folder_path": dataset_path,
-                "caption_ext": "txt",
-            })
+        total_steps, epochs = _training_duration(p)
+        datasets_array = _build_datasets(dataset_path, dataset_configs)
 
         # ControlNet-specific network config
         controlnet_network_config = {
@@ -1168,9 +1129,7 @@ class TrainingConfigGenerator:
         controlnet_network_config["outpaint_seam_ring_width"] = p.get("outpaint_seam_ring_width", 1)
         controlnet_network_config["outpaint_seam_grad_lambda"] = p.get("outpaint_seam_grad_lambda", 0.0)
         controlnet_network_config["outpaint_loss_normalize"] = p.get("outpaint_loss_normalize", False)
-        # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): per-sample
-        # randomized crop_mask conditioning edge-softness range (canvas px). 0/0
-        # (default) -> byte-identical (razor-sharp) behavior.
+        # A 0/0 feather range preserves razor-sharp conditioning masks.
         controlnet_network_config["outpaint_edge_feather_min_px"] = p.get("outpaint_edge_feather_min_px", 0.0)
         controlnet_network_config["outpaint_edge_feather_max_px"] = p.get("outpaint_edge_feather_max_px", 0.0)
 
@@ -1286,11 +1245,7 @@ class TrainingConfigGenerator:
         from api.param_defaults import VAE_TRAINING_DEFAULTS
         from api.error_handlers import ValidationError
 
-        if p is None:
-            p = legacy_kwargs
-        elif legacy_kwargs:
-            p = {**p, **legacy_kwargs}
-        p = _normalize_params(p)
+        p = _prepare_params(p, legacy_kwargs)
 
         # The caller may pass the VAE options either flat (p["resolution"]) or
         # nested under p["vae_config"]; nested wins.
@@ -1337,22 +1292,7 @@ class TrainingConfigGenerator:
         vae_section = {k: value_of(k) for k in VAE_TRAINING_DEFAULTS
                        if k not in run_shape_keys}
 
-        datasets_array = []
-        if dataset_configs:
-            for ds_config in dataset_configs:
-                dataset_entry = {
-                    "folder_path": ds_config.get("path", ""),
-                    "caption_ext": "txt",
-                    **({"dataset_id": ds_config["dataset_id"]}
-                       if ds_config.get("dataset_id") else {}),
-                }
-                dataset_entry.update(extract_dataset_params(ds_config))
-                datasets_array.append(dataset_entry)
-        else:
-            datasets_array.append({
-                "folder_path": dataset_path,
-                "caption_ext": "txt",
-            })
+        datasets_array = _build_datasets(dataset_path, dataset_configs)
 
         config = {
             "job": run_name,

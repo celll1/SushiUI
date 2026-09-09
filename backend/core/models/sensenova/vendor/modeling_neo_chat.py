@@ -2045,17 +2045,19 @@ class NEOChatModel(PreTrainedModel):
         input_embeds = self.language_model.get_input_embeddings()(input_ids)
         batch, sequence, hidden = input_embeds.shape
         flat_embeds = input_embeds.reshape(batch * sequence, hidden)
-        selected = input_ids.reshape(-1) == self.img_context_token_id
+        selected_indices = (input_ids.reshape(-1) == self.img_context_token_id).nonzero(
+            as_tuple=True
+        )[0]
         visual = vit_embeds.reshape(-1, hidden).to(
             device=flat_embeds.device, dtype=flat_embeds.dtype
         )
-        selected_count = int(selected.sum().item())
+        selected_count = selected_indices.shape[0]
         if selected_count == 0 or selected_count != visual.shape[0]:
             raise ValueError(
                 "SenseNova image-context token count does not match visual features: "
                 f"tokens={selected_count}, features={visual.shape[0]}"
             )
-        flat_embeds[selected] = visual
+        flat_embeds[selected_indices] = visual
         input_embeds = flat_embeds.reshape(batch, sequence, hidden)
 
         return self.language_model(

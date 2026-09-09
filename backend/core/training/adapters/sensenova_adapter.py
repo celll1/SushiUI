@@ -1,7 +1,7 @@
 """SenseNova MoT training adapters (LoRA, and full parameter over one MoT half)."""
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from torch import nn
 
@@ -18,11 +18,29 @@ from .base_adapter import (
     BaseLoRAAdapter,
     LORA_COMPONENT_TEXT_ENCODER_1,
     LORA_COMPONENT_UNET,
+    LORA_COMPONENT_VISION_ENCODER,
     resolve_component_lr,
 )
 
 _TARGETS_PER_BRANCH = 294
 _LAYERS = 42
+
+
+def _explicit_scopes(trainer: Any) -> tuple[str, ...]:
+    settings = getattr(trainer, "config", None) or {}
+    if not settings.get("_sensenova_explicit_tasks"):
+        return ()
+    return tuple(settings.get("sensenova_train_scopes") or ())
+
+
+def _unique_parameters(parameters: Iterable[nn.Parameter]) -> List[nn.Parameter]:
+    seen = set()
+    result = []
+    for parameter in parameters:
+        if id(parameter) not in seen:
+            seen.add(id(parameter))
+            result.append(parameter)
+    return result
 
 
 class SenseNovaLoRAAdapter(BaseLoRAAdapter):
@@ -144,7 +162,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
     def arch_param_groups(
         self, lora_layers: Dict[str, nn.Module]
     ) -> List[Dict[str, Any]]:
-        return self.component_param_groups(lora_layers, {
+        groups = self.component_param_groups(lora_layers, {
             LORA_COMPONENT_UNET: lambda: resolve_component_lr(
                 self.trainer, "unet_lr", label="SenseNova generation branch"),
             # Same fallback chain SDXL's LoRA adapter uses for TE1.
@@ -156,6 +174,19 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
                 label="SenseNova understanding branch",
             ),
         })
+        self.trainer._sensenova_scope_parameter_ids = {
+            "generation_decoder": {
+                id(parameter) for group in groups
+                if group.get("component") == LORA_COMPONENT_UNET
+                for parameter in group["params"]
+            },
+            "understanding_decoder": {
+                id(parameter) for group in groups
+                if group.get("component") == LORA_COMPONENT_TEXT_ENCODER_1
+                for parameter in group["params"]
+            },
+        }
+        return groups
 
     CHECKPOINT_LOG_FORMAT = (
         "[{adapter}] Saved LoRA checkpoint ({layers} layers, {lora_targets}) -> {path}"
@@ -164,13 +195,16 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
     def checkpoint_metadata(
         self, lora_layers: Dict[str, nn.Module], step: int, epoch: int
     ) -> Dict[str, str]:
+        import json
+
         components = self.lora_components
         gen_count = sum(
             1
             for name in lora_layers
             if components.get(name, LORA_COMPONENT_UNET) == LORA_COMPONENT_UNET
         )
-        if gen_count == 0:
+        explicit = bool(_explicit_scopes(self.trainer))
+        if gen_count == 0 and not explicit:
             # An understanding-only LoRA has no consumer: inference applies both
             # branches from one file, and a generation-free one would be a
             # format nothing in this repo can produce a sample from.
@@ -178,9 +212,12 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
                 "SenseNova LoRA checkpoints must carry the generation branch; "
                 "an understanding-only LoRA is not a supported artefact"
             )
-        branch = "both" if gen_count != len(lora_layers) else "gen"
+        branch = (
+            "und" if gen_count == 0 else
+            "both" if gen_count != len(lora_layers) else "gen"
+        )
 
-        return {
+        metadata = {
             "model_type": "sensenova",
             "modelspec.architecture": "sensenova",
             "tensor_kind": "neo_hf_lora",
@@ -190,6 +227,15 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
             "step": str(step),
             "epoch": str(epoch),
         }
+        scopes = _explicit_scopes(self.trainer)
+        if scopes:
+            metadata["sensenova_train_scopes"] = json.dumps(list(scopes))
+            metadata["sensenova_prompt_template_versions"] = json.dumps(
+                list((getattr(self.trainer, "config", None) or {}).get(
+                    "_sensenova_prompt_template_versions", ()
+                ))
+            )
+        return metadata
 
 
 class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
@@ -229,7 +275,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         if not bool(getattr(trainer, "sensenova_train_fm_modules", False)):
             return []
-        if branch not in ("gen", "both"):
+        if not _explicit_scopes(trainer) and branch not in ("gen", "both"):
             if not getattr(self, "_fm_branch_warned", False):
                 from core.training.training_events import emit_training_warning
 
@@ -274,6 +320,68 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
         return parameters
 
+    def _scope_parameters(
+        self, branch: str, targets: List[Tuple[str, Any, str, nn.Module]],
+    ) -> Dict[str, List[nn.Parameter]]:
+        """Resolve the five explicit task scopes from the live model tree."""
+        trainer = self.trainer
+        transformer = trainer.transformer
+        by_scope: Dict[str, List[nn.Parameter]] = {}
+        scopes = _explicit_scopes(trainer)
+        if not scopes:
+            for half, scope in (("gen", "generation_decoder"),
+                                ("und", "understanding_decoder")):
+                if branch in (half, "both"):
+                    by_scope[scope] = _unique_parameters(
+                        parameter
+                        for _, _, _, module in iter_sensenova_lora_targets(
+                            transformer, branch=half
+                        )
+                        for parameter in module.parameters()
+                    )
+            fm = self._fm_parameters(branch)
+            if fm:
+                by_scope["generation_decoder"] = _unique_parameters([
+                    *by_scope.get("generation_decoder", ()), *fm,
+                ])
+            return by_scope
+
+        if "understanding_vision" in scopes:
+            by_scope["understanding_vision"] = _unique_parameters(
+                transformer.vision_model.parameters()
+            )
+        if "understanding_decoder" in scopes:
+            by_scope["understanding_decoder"] = _unique_parameters(
+                parameter
+                for _, _, _, module in iter_sensenova_lora_targets(
+                    transformer, branch="und"
+                )
+                for parameter in module.parameters()
+            )
+        if "shared" in scopes:
+            by_scope["shared"] = _unique_parameters([
+                *transformer.language_model.get_input_embeddings().parameters(),
+                *transformer.language_model.get_output_embeddings().parameters(),
+            ])
+        if "generation_decoder" in scopes:
+            by_scope["generation_decoder"] = _unique_parameters(
+                parameter
+                for _, _, _, module in iter_sensenova_lora_targets(
+                    transformer, branch="gen"
+                )
+                for parameter in module.parameters()
+            )
+        if "generation_flow" in scopes:
+            by_scope["generation_flow"] = _unique_parameters(
+                transformer.fm_modules.parameters()
+            )
+        empty = [scope for scope in scopes if not by_scope.get(scope)]
+        if empty:
+            raise RuntimeError(
+                f"SenseNova explicit scope(s) collected no parameters: {empty}"
+            )
+        return by_scope
+
     def _resolve_scope(self) -> Tuple[str, List[Tuple[str, Any, str, nn.Module]]]:
         """(branch, targets) -- the same enumeration the loader materialized."""
         from core.models.sensenova.loader import SENSENOVA_BRANCH_LINEAR_COUNTS
@@ -286,8 +394,11 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 "SenseNova full fine-tuning requires a loaded transformer"
             )
         branch = resolve_full_finetune_branch(trainer)
-        targets = list(iter_sensenova_lora_targets(transformer, branch=branch))
-        expected = SENSENOVA_BRANCH_LINEAR_COUNTS[branch]
+        targets = (
+            [] if branch == "none" else
+            list(iter_sensenova_lora_targets(transformer, branch=branch))
+        )
+        expected = 0 if branch == "none" else SENSENOVA_BRANCH_LINEAR_COUNTS[branch]
         if len(targets) != expected:
             raise RuntimeError(
                 f"SenseNova full fine-tuning expects {expected} decoder Linear(s) "
@@ -352,24 +463,37 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             assert_understanding_training_supported(trainer.transformer)
 
         trainer.transformer.requires_grad_(False)
-        for _, _, _, module in targets:
-            module.requires_grad_(True)
-        fm_parameters = self._fm_parameters(branch)
-        for parameter in fm_parameters:
-            parameter.requires_grad_(True)
+        scope_parameters = self._scope_parameters(branch, targets)
+        for parameters in scope_parameters.values():
+            for parameter in parameters:
+                parameter.requires_grad_(True)
         trainer.transformer.train()
+        trainer._sensenova_scope_parameter_ids = {
+            scope: {id(parameter) for parameter in parameters}
+            for scope, parameters in scope_parameters.items()
+        }
+        get_input_embeddings = getattr(
+            trainer.transformer.language_model, "get_input_embeddings", None
+        )
+        input_ids = {
+            id(parameter)
+            for parameter in (
+                get_input_embeddings().parameters()
+                if callable(get_input_embeddings) else ()
+            )
+        }
+        trainer._sensenova_shared_input_parameter_ids = input_ids
 
         trainable = sum(
             p.numel() for p in trainer.transformer.parameters() if p.requires_grad
         )
-        fm_note = (
-            f" plus {len(fm_parameters)} fm_modules tensor(s), "
-            f"{sum(p.numel() for p in fm_parameters):,} element(s),"
-            if fm_parameters else ""
+        scope_note = ", ".join(
+            f"{scope}={sum(p.numel() for p in parameters):,}"
+            for scope, parameters in scope_parameters.items()
         )
         print(
-            f"[SenseNovaFullParameterAdapter] {branch} branch: {len(targets)} decoder "
-            f"Linear(s),{fm_note} {trainable:,} trainable parameter element(s); "
+            f"[SenseNovaFullParameterAdapter] {branch} materialized branch; "
+            f"scopes [{scope_note}], {trainable:,} trainable parameter element(s); "
             f"everything else in the transformer is frozen"
         )
 
@@ -396,37 +520,33 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             "unet_lr",
             label="SenseNova understanding branch",
         )
+        image_lr = resolve_component_lr(
+            trainer, "image_encoder_lr", "text_encoder_lr", "unet_lr",
+            label="SenseNova understanding vision",
+        )
+        scope_parameters = self._scope_parameters(branch, targets)
+        group_specs = (
+            (
+                ("understanding_vision", image_lr, "vision_encoder"),
+                ("understanding_decoder", und_lr, "text_encoder_1"),
+                ("shared", float(trainer.learning_rate), "shared"),
+                ("generation_decoder", unet_lr, "unet"),
+                ("generation_flow", unet_lr, "generation_flow"),
+            ) if _explicit_scopes(trainer) else (
+                ("generation_decoder", unet_lr, "unet"),
+                ("understanding_decoder", und_lr, "text_encoder_1"),
+            )
+        )
         groups: List[Dict[str, Any]] = []
-        for half, lr in (("gen", unet_lr), ("und", und_lr)):
-            if branch not in (half, "both"):
-                continue
-            # Asking the enumerator which half a module belongs to, rather than
-            # re-deriving it from the module path here.
-            params = [
-                parameter
-                for _, _, _, module in iter_sensenova_lora_targets(
-                    trainer.transformer, branch=half
-                )
-                for parameter in module.parameters()
-                if parameter.requires_grad
-            ]
-            if half == "gen":
-                params.extend(
-                    parameter
-                    for parameter in self._fm_parameters(branch)
-                    if parameter.requires_grad
-                )
+        for scope, lr, component in group_specs:
+            params = [p for p in scope_parameters.get(scope, ()) if p.requires_grad]
             if params:
-                groups.append({
-                    "params": params, "lr": lr,
-                    # The same components the LoRA adapter's two groups carry.
-                    "name": "unet" if half == "gen" else "text_encoder_1",
-                    "component": "unet" if half == "gen" else "text_encoder_1",
-                })
+                groups.append({"params": params, "lr": lr,
+                               "name": scope, "component": component})
         if not groups:
             raise RuntimeError(
                 f"SenseNova full fine-tuning collected no trainable parameter from "
-                f"the {branch} branch's {len(targets)} decoder Linear(s). "
+                f"the selected scopes ({list(scope_parameters)}). "
                 f"prepare_models_for_training must run first."
             )
         return groups
@@ -447,7 +567,21 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
         Driven by the enumerator that built the optimizer groups, not by a name
         test on the parameter path (dd0b10c7).
         """
-        branch, _ = self._resolve_scope()
+        branch, targets = self._resolve_scope()
+        explicit = _explicit_scopes(self.trainer)
+        if explicit:
+            components = {}
+            component_by_scope = {
+                "understanding_vision": LORA_COMPONENT_VISION_ENCODER,
+                "understanding_decoder": LORA_COMPONENT_TEXT_ENCODER_1,
+                "shared": LORA_COMPONENT_TEXT_ENCODER_1,
+                "generation_decoder": LORA_COMPONENT_UNET,
+                "generation_flow": LORA_COMPONENT_UNET,
+            }
+            for scope, parameters in self._scope_parameters(branch, targets).items():
+                for parameter in parameters:
+                    components[id(parameter)] = component_by_scope[scope]
+            return components
         components: Dict[int, str] = {}
         for half, component in (
             ("gen", LORA_COMPONENT_UNET),
@@ -528,6 +662,16 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             )
 
         extra_metadata = {"step": str(step), "epoch": str(epoch)}
+        scopes = _explicit_scopes(trainer)
+        if scopes:
+            import json
+
+            extra_metadata["sensenova_train_scopes"] = json.dumps(list(scopes))
+            extra_metadata["sensenova_prompt_template_versions"] = json.dumps(
+                list((getattr(trainer, "config", None) or {}).get(
+                    "_sensenova_prompt_template_versions", ()
+                ))
+            )
         # A run in another VAE's latent space declares it, and bundles the VAE
         # unless it named a resolvable locator (design §8.7). The pixel run's
         # metadata and file are unchanged: swap_metadata returns nothing.

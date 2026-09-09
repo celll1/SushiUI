@@ -680,13 +680,15 @@ SENSENOVA_SIBLING_FILES = (
 
 
 def _sensenova_branch_halves(branch: str) -> "tuple[str, ...]":
+    if branch == "none":
+        return ()
     if branch == "both":
         return ("gen", "und")
     if branch in ("gen", "und"):
         return (branch,)
     raise ValueError(
         f"Unknown SenseNova branch {branch!r} "
-        f"(expected one of {sorted(SENSENOVA_BRANCH_LINEAR_COUNTS)})"
+        f"(expected 'none' or one of {sorted(SENSENOVA_BRANCH_LINEAR_COUNTS)})"
     )
 
 
@@ -939,7 +941,13 @@ def save_sensenova_full_finetune_checkpoint(
     )
     # What the frozen half is dequantized into, taken from the trained half so
     # both ends of a bf16 file carry one dtype rather than a hardcoded guess.
-    float_dtype = next(iter(trained.values())).weight.dtype
+    float_dtype = (
+        next(iter(trained.values())).weight.dtype
+        if trained else next(
+            parameter.dtype for parameter in transformer.parameters()
+            if parameter.dtype.is_floating_point
+        )
+    )
     if not float_dtype.is_floating_point:
         raise RuntimeError(
             f"SenseNova save expects the materialized half to hold floating-point "

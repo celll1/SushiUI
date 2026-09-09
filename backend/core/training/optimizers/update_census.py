@@ -25,6 +25,7 @@ class UpdateCensus:
         self._expected: Dict[int, str] = {}
         self._deferred: Set[int] = set()
         self._expect_deferred = True
+        self._active_expected: Optional[Set[int]] = None
         self.exempt: Set[str] = set()
         self.enabled = False
         self.steps_checked = 0
@@ -87,20 +88,33 @@ class UpdateCensus:
 
     # -- per-step ----------------------------------------------------------
 
-    def begin_step(self, enabled: bool = True, expect_deferred: bool = True) -> None:
+    def begin_step(
+        self,
+        enabled: bool = True,
+        expect_deferred: bool = True,
+        active_ids: Optional[Iterable[int]] = None,
+    ) -> None:
         self._updated.clear()
         self.enabled = bool(enabled)
         self._expect_deferred = bool(expect_deferred)
+        self._active_expected = (
+            None if active_ids is None else set(active_ids) & set(self._expected)
+        )
 
     def record(self, param: nn.Parameter) -> None:
         self._updated.add(id(param))
 
     def missing(self) -> List[str]:
         """Return expected parameters whose update is due but missing."""
+        expected = (
+            self._expected if self._active_expected is None else {
+                key: self._expected[key] for key in self._active_expected
+            }
+        )
         skip = frozenset() if self._expect_deferred else self._deferred
         return sorted(
             name
-            for key, name in self._expected.items()
+            for key, name in expected.items()
             if key not in self._updated and key not in skip
         )
 
@@ -124,7 +138,8 @@ class UpdateCensus:
             )
         raise RuntimeError(
             f"Updated-parameter census failed{where}: {len(missing)} of "
-            f"{self.expected_count} trainable parameter(s) received no optimizer "
+            f"{len(self._active_expected) if self._active_expected is not None else self.expected_count} "
+            f"active trainable parameter(s) received no optimizer "
             f"update this step, e.g. {missing[:5]}. Under the fused backward pass "
             f"optimizer.step() is never called, so a parameter no hook updated is "
             f"updated by nothing for the whole run -- and the loss falls normally "

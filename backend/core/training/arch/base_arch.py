@@ -81,6 +81,7 @@ class TrainStepContext:
     encoder_features: Optional[torch.Tensor] = None         # lens/ideogram4/krea2 (5023/6035/6048)
     text_embeds: Optional[torch.Tensor] = None              # minit2i (6060)
     sensenova_prefix: Optional[Any] = None                  # immutable prompt DynamicCache (B1)
+    sensenova_text_batch: Optional[List[Dict[str, Any]]] = None
 
     # --- masks / pooled / micro-conditioning ---
     attention_mask: Optional[Any] = None                    # mnt_attention_mask (5961) - tensor OR anima dict

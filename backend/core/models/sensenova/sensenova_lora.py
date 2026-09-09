@@ -220,10 +220,16 @@ _BRANCH_LAYOUT = {
 LORA_BRANCHES = ("gen", "und", "both")
 
 # `lora_targets` checkpoint metadata -> the module count that scope implies.
-# An understanding-only file is never produced (the training adapter refuses to
-# save one) and is therefore not a scope this map recognises.
-LORA_TARGET_LABELS = {"gen": "generation", "both": "generation+understanding"}
-EXPECTED_MODULE_COUNTS = {"generation": 294, "generation+understanding": 588}
+LORA_TARGET_LABELS = {
+    "gen": "generation",
+    "und": "understanding",
+    "both": "generation+understanding",
+}
+EXPECTED_MODULE_COUNTS = {
+    "generation": 294,
+    "understanding": 294,
+    "generation+understanding": 588,
+}
 
 
 def und_gradient_unreachable_paths(num_layers: int = 42) -> Set[str]:

@@ -1,11 +1,10 @@
 # SenseNova image-to-text design
 
-Status: accepted design; implementation pending.
+Status: implemented; real-checkpoint quality evaluation pending.
 
-This decision defines the inference and training contracts for SenseNova text
-output in SushiUI. It does not describe shipped behavior. Until its phases are
-implemented, SenseNova remains image-output-only through SushiUI even though
-the vendored model retains its upstream visual-understanding path.
+This decision defines the implemented inference and training contracts for
+SenseNova text output in SushiUI. The real-checkpoint quality comparison is a
+separate owner-run acceptance step; it is not inferred from CPU-only tests.
 
 In this document, `img2txt` is the product and API name. It covers both:
 
@@ -16,31 +15,34 @@ In this document, `img2txt` is the product and API name. It covers both:
 The neutral `img2txt` name avoids making the input-order spelling part of the
 API. Pure text-to-text chat is outside this design.
 
-## Evidence and current boundary
+## Evidence and implementation boundary
 
 The upstream SenseNova repository includes a Visual Understanding (VQA)
 example which loads an image and calls `NEOChatModel.chat()`. Its FAQ also
 describes multi-image visual understanding. The upstream training guide lists
 visual-language tasks and a mixed-task training framework. These facts establish
-capability and architectural feasibility; they do not establish SushiUI support
-or a quality result for a locally fine-tuned checkpoint.
+capability and architectural feasibility; local support is implemented below,
+but they do not establish a quality result for a locally fine-tuned checkpoint.
 
-The current SushiUI tree preserves the required inference machinery:
+The SushiUI implementation now connects that machinery:
 
 - `backend/core/models/sensenova/vendor/modeling_neo_chat.py` contains
   `chat()`, autoregressive `generate()`, the understanding vision path, and the
   language-model output head;
-- `backend/core/pipeline_backends/sensenova.py` exposes image-generation
-  dispatch only;
-- `backend/api/routes.py` has no text-output generation route;
-- `frontend/src/app/generate/page.tsx` and the shared generation queue contain
-  only media-output panels and result types.
+- `backend/core/pipeline_backends/sensenova.py` dispatches text output through
+  the same loaded transformer;
+- `backend/api/routes.py` exposes the versioned `img2txt` route and validates
+  model capability before image decode or device allocation;
+- `frontend/src/app/generate/page.tsx` gates a dedicated SenseNova text-output
+  workspace from advertised loaded-model capabilities;
+- the shared queue carries text results without routing them to the media
+  gallery.
 
-The existing SenseNova training path is also not an img2txt trainer. Its
-`train_text_encoder` option lets image-generation flow loss update the
-understanding half used to construct the generation prefix. It does not create
-assistant labels or causal language-model cross-entropy. Enabling that flag is
-therefore not a substitute for the training work below.
+The training path supports task-homogeneous `t2i`, `ti2i`, `i2t_caption`,
+`i2t_tags`, and `i2t_caption_tags` steps. Text steps bypass the VAE, construct
+assistant-only causal-LM labels, and normalize CE by supervised target tokens.
+Explicit scopes replace the legacy branch flags only when task views are
+configured; older image-generation configurations retain their prior meaning.
 
 The vendored upstream provenance is recorded in
 `docs/legal/THIRD_PARTY_PROVENANCE.md`. The relevant upstream references are:
@@ -350,6 +352,25 @@ generation regression gate.
 This order makes the existing checkpoint's understanding quality directly
 measurable before any training implementation can change it.
 
+## Implementation record
+
+The implementation landed as independently reviewable commits:
+
+- `7062a3a5` and `d18f67ad`: API, inference dispatch, gated Generate workspace,
+  queue, text results, download, and stale-tab fallback;
+- `19f2bbbf`, `0d6f3052`, `f3d64779`, and `a850a9ae`: task schema,
+  item-proportional deterministic scheduling, understanding forward, and
+  assistant-only supervision;
+- `c72b5e1e` and `35dfbdc5`: explicit component scopes and checkpoint metadata,
+  target-token-normalized CE, mixed-task training-loop dispatch, per-task
+  metrics, task-aware update census, and deterministic resume state.
+
+CPU-only regression coverage exercises the API/config round trip, task and hint
+determinism, LoRA/full-fine-tune scope collection, checkpoint layouts, resume,
+assistant masking, CE weighting, and legacy SenseNova training behavior. No GPU
+or VRAM claim follows from those tests. The final mixed-task quality gate remains
+an explicit real-checkpoint run by the repository owner.
+
 ## Acceptance gates
 
 Inference is complete only when:
@@ -378,4 +399,5 @@ Training is complete only when:
 - old image-generation configs retain their prior task, loss, and sampling
   behavior;
 - mixed VAE-swap training keeps the two visual input geometries separate;
-- mixed-task quality is measured against both text and generation baselines.
+- mixed-task quality is measured against both text and generation baselines
+  before a default mixed ratio is selected (owner-run pending).

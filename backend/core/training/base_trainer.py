@@ -3355,7 +3355,8 @@ class BaseTrainer(ABC):
             return None
         return source_region_for_strategy(ow, oh, int(target_w), int(target_h), strategy)
 
-    def _get_repa_pixels_for_item(self, item, region) -> Optional[torch.Tensor]:
+    def _get_repa_pixels_for_item(self, item, region,
+                                  decoded_image=None) -> Optional[torch.Tensor]:
         """Load + cache an S x S clean-image tensor [1,3,S,S] in [-1,1] for REPA.
 
         ``region`` is the original-pixel box the item's latent encoded (see
@@ -3363,6 +3364,10 @@ class BaseTrainer(ABC):
         other, or the per-position alignment is against the wrong pixels. The crop
         comes first and the square squish second, so the teacher sees the latent's
         content under the shape distortion the encoder imposes on everything.
+
+        ``decoded_image`` is the PIL image the item's latent was just encoded from
+        (onthefly_gpu), pre-``flatten_to_rgb`` and unmodified by ``encode_image``, so
+        reusing it applies the same transforms in the same order to the same pixels.
 
         SigLIP2 normalization is mean=std=0.5 (i.e. [-1,1]); the encoder squishes to
         a fixed square (aspect handled by interpolating its features to the DiT grid).
@@ -3394,7 +3399,9 @@ class BaseTrainer(ABC):
                 return cache[cache_key]
 
             _b = item.get("_danbooru_image_bytes")
-            if _b is not None:
+            if decoded_image is not None:
+                img = decoded_image
+            elif _b is not None:
                 img = Image.open(BytesIO(_b))
             elif key:
                 img = Image.open(key)
@@ -16356,6 +16363,11 @@ class BaseTrainer(ABC):
                             # image, a calibration pass) can never be read as this
                             # item's region.
                             self._last_source_region = None
+                            # Set by the onthefly_gpu encode below so the teacher
+                            # reuses that decode instead of re-opening the file
+                            # (measured 28.7 ms of a 44.7 ms item, n=400). Per item:
+                            # a video clip or a buffered latent leaves it None.
+                            _repa_decoded_image = None
 
                         # Load latent (mode-specific)
                         if latent_encoding_mode == "swap_onthefly":
@@ -16553,6 +16565,15 @@ class BaseTrainer(ABC):
                                     latents_list.append(latent)
                                     if _danb_b is not None:
                                         item["_danbooru_image_bytes"] = None
+                                    elif _repa_active:
+                                        # encode_image rebinds its own local (crop/
+                                        # resize return new images), so this is still
+                                        # the file's pixels. Danbooru items are left
+                                        # out: their bytes are freed on the line above
+                                        # and their "danbooru://" path never opened, so
+                                        # handing the decode over would newly ENABLE
+                                        # REPA on injected batches.
+                                        _repa_decoded_image = image
                             except Exception as img_error:
                                 self._report_item_failure(img_error, item["image_path"], "Batch skipped due to")
                                 batch_has_corrupted_image = True
@@ -16567,6 +16588,7 @@ class BaseTrainer(ABC):
                                 item,
                                 self._repa_source_region(item, width, height,
                                                          _repa_latent_strategy),
+                                decoded_image=_repa_decoded_image,
                             ))
 
                         # SDXL micro-conditioning per item: prefer the exact values

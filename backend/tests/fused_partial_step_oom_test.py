@@ -758,7 +758,7 @@ def test_the_taint_brackets_exactly_the_backward():
     assert "self._flush_fused_group_partials()" in body
     # The arming and the count snapshot are OUTSIDE, before it.
     assert "_reset_fused_group_counters" not in body
-    preceding = ast.unparse(fn.body[fn.body.index(guard) - 2:fn.body.index(guard)])
+    preceding = ast.unparse(fn.body[:fn.body.index(guard)])
     assert "self._reset_fused_group_counters()" in preceding
     assert "_applied_before = self._applied_updates_now()" in preceding
 

@@ -335,6 +335,7 @@ def build_task_homogeneous_batches(
             scheduled["_sensenova_task_view"] = view
             key = (
                 task,
+                float(view.get("loss_weight", 1.0)),
                 scheduled.get("bucket_width", scheduled.get("width")),
                 scheduled.get("bucket_height", scheduled.get("height")),
                 bool(scheduled.get("reference_images")),

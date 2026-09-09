@@ -10295,7 +10295,9 @@ class BaseTrainer(ABC):
                 # the chunked batch a different drop pattern than the attempt it
                 # is retrying.
                 cfg_drop_mask=b["cfg_drop_mask"][lo:hi] if b.get("cfg_drop_mask") is not None else None,
-                loss_scale=chunk_weight / denominator,
+                loss_scale=(chunk_weight / denominator) * float(
+                    b.get("_sensenova_task_loss_weight", 1.0)
+                ),
             )
             for n, leaf in leaves.items():
                 if n in graph_inputs and leaf is not None and leaf.grad is not None:
@@ -10340,6 +10342,7 @@ class BaseTrainer(ABC):
         sensenova_prefix: Optional[Any] = None,
         sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
         cfg_drop_mask: Optional[torch.Tensor] = None,
+        sensenova_task_loss_weight: float = 1.0,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -10412,10 +10415,14 @@ class BaseTrainer(ABC):
             try:
                 # Proactive path: escalate -> micro-batch (two-stage); else full batch.
                 if _micro_bs is not None and _micro_bs < batch_size:
-                    loss, pred_loss, recon_loss = self._microbatch_two_stage(_micro_bs, eff_bs, _batch)
+                    loss, pred_loss, recon_loss = self._microbatch_two_stage(
+                        _micro_bs, eff_bs,
+                        {**_batch, "_sensenova_task_loss_weight": sensenova_task_loss_weight},
+                    )
                 else:
                     loss, pred_loss, recon_loss = self._execute_forward_backward(
-                        loss_scale=batch_size / eff_bs, **_batch)
+                        loss_scale=(batch_size / eff_bs) * sensenova_task_loss_weight,
+                        **_batch)
                 return loss, pred_loss, recon_loss, False  # success
 
             except RuntimeError as e:
@@ -10459,7 +10466,8 @@ class BaseTrainer(ABC):
                               f"offload (no split) after: {str(e)[:80]}")
                         try:
                             loss, pred_loss, recon_loss = self._execute_forward_backward(
-                                loss_scale=batch_size / eff_bs, **_batch)
+                                loss_scale=(batch_size / eff_bs) * sensenova_task_loss_weight,
+                                **_batch)
                             # Success: dispatch_end will record the measured offloaded
                             # volume so the proactive path picks 'offload' next time.
                             # (info[6]/info[7] already track the swapped-in context.)
@@ -10494,7 +10502,10 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OOM] retrying batch {batch_size} micro-batched "
                           f"(micro={_retry_micro}) after: {str(e)[:80]}")
                     try:
-                        loss, pred_loss, recon_loss = self._microbatch_two_stage(_retry_micro, eff_bs, _batch)
+                        loss, pred_loss, recon_loss = self._microbatch_two_stage(
+                            _retry_micro, eff_bs,
+                            {**_batch, "_sensenova_task_loss_weight": sensenova_task_loss_weight},
+                        )
                         return loss, pred_loss, recon_loss, False
                     except RuntimeError as e2:
                         _cls2 = self._classify_cuda_error(e2)
@@ -17953,6 +17964,19 @@ class BaseTrainer(ABC):
                         # If OOM occurs, the batch is automatically split and processed sequentially
                         # Wrap in try-except as final safety net - if all recovery fails, skip batch
                         cuda_error_skip = False  # Flag to skip optimizer step when CUDA is in bad state
+                        _sensenova_task_loss_weight = 1.0
+                        if (self.is_sensenova and _sensenova_tasks
+                                and not _sensenova_text_batch_active):
+                            _flow_weights = {
+                                float(item["_sensenova_task_view"].get("loss_weight", 1.0))
+                                for item, _dataset in batch
+                            }
+                            if len(_flow_weights) != 1:
+                                raise RuntimeError(
+                                    "SenseNova flow batch mixed task loss weights: "
+                                    f"{sorted(_flow_weights)}"
+                                )
+                            _sensenova_task_loss_weight = next(iter(_flow_weights))
 
                         # The fused hooks clear param.grad; arm them to record its
                         # squared norm first, but only on the steps whose norms are
@@ -18039,6 +18063,7 @@ class BaseTrainer(ABC):
                                     if _sensenova_text_batch_active else None
                                 ),
                                 cfg_drop_mask=mnt_cfg_drop_mask,
+                                sensenova_task_loss_weight=_sensenova_task_loss_weight,
                             )
                         except PartialOptimizerStepError:
                             # Half-applied step: the safety net below would swallow

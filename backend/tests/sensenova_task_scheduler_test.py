@@ -12,6 +12,7 @@ if str(BACKEND) not in sys.path:
 
 
 from core.training.bucketing import BucketManager  # noqa: E402
+from core.training.base_trainer import BaseTrainer  # noqa: E402
 from core.training.sensenova_tasks import (  # noqa: E402
     build_text_supervision,
     build_task_homogeneous_batches,
@@ -143,6 +144,70 @@ def test_selected_view_does_not_mutate_persistent_bucket_item():
     result = build_task_homogeneous_batches([[(source, "large")]], 1, random.Random(1))
     assert "_sensenova_task" not in source
     assert result[0][0][0]["_sensenova_task"] in {"i2t_caption", "i2t_tags"}
+
+
+def test_same_flow_task_with_different_loss_weights_forms_separate_batches():
+    items = []
+    for index, loss_weight in enumerate((0.5, 2.0)):
+        items.append(({
+            "image_path": f"flow-{index}.png",
+            "width": 384,
+            "height": 384,
+            "_sensenova_task_views": [{
+                "task": "t2i",
+                "target_caption_types": ["natural_language"],
+                "loss_weight": loss_weight,
+            }],
+            "_captions_by_type": {
+                "natural_language": {"content": "A person."},
+            },
+        }, "dataset"))
+    batches = build_task_homogeneous_batches([items], 8, random.Random(1))
+    assert len(batches) == 2
+    assert {
+        batch[0][0]["_sensenova_task_view"]["loss_weight"] for batch in batches
+    } == {0.5, 2.0}
+
+
+def test_flow_task_loss_weight_scales_backward_but_not_reported_loss():
+    class Harness:
+        _microbatch_two_stage = BaseTrainer._microbatch_two_stage
+        _slice_aux = staticmethod(lambda _value, _lo, _hi: None)
+
+        def __init__(self):
+            self.scales = []
+
+        def _execute_forward_backward(self, **kwargs):
+            self.scales.append(kwargs["loss_scale"])
+            return 2.0, 3.0, 0.0
+
+    batch = {
+        "mnt_latents": torch.zeros(2, 1, 1, 1),
+        "mnt_text_embeddings": None,
+        "mnt_pooled_embeddings": None,
+        "mnt_repa_pixels": None,
+        "mnt_attention_mask": None,
+        "timesteps": torch.zeros(2),
+        "debug_save_path": None,
+        "batch_captions": None,
+        "batch_reference_paths": None,
+        "alphas_cumprod_cached": None,
+        "use_condition_images": False,
+        "condition_images_batch": None,
+        "reference_latents_nested": None,
+        "lens_latent_shape": None,
+        "mnt_time_ids": None,
+        "loss_weight_maps_batch": None,
+        "sensenova_prefix": None,
+        "sensenova_text_batch": None,
+        "cfg_drop_mask": None,
+        "_sensenova_task_loss_weight": 2.5,
+    }
+    harness = Harness()
+    loss, pred, _recon = harness._microbatch_two_stage(1, 2, batch)
+    assert harness.scales == [1.25, 1.25]
+    assert loss == 2.0
+    assert pred == 3.0
 
 
 def test_bucket_metadata_survives_bucket_record_copy():

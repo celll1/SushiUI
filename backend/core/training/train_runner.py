@@ -402,7 +402,9 @@ def _apply_sensenova_task_contract(
             "Every selected dataset must define task_views in an explicit SenseNova task run"
         )
 
-    from core.training.sensenova_tasks import IMAGE_TASKS, TASKS, TEXT_TASKS
+    from core.training.sensenova_tasks import (
+        IMAGE_TASKS, TASKS, TEXT_TASKS, task_views_signature,
+    )
 
     tasks = set()
     versions = set()
@@ -478,6 +480,7 @@ def _apply_sensenova_task_contract(
     train_config["sensenova_train_fm_modules"] = "generation_flow" in scopes
     train_config["_sensenova_explicit_tasks"] = sorted(tasks)
     train_config["_sensenova_prompt_template_versions"] = sorted(versions)
+    train_config["_sensenova_task_views_signature"] = task_views_signature(datasets)
     return True
 
 

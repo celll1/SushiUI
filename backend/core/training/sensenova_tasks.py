@@ -213,6 +213,53 @@ def required_caption_types(task_views: Sequence[Dict[str, Any]]) -> List[str]:
     return result
 
 
+def task_views_signature(datasets: Sequence[Dict[str, Any]]) -> str:
+    """Stable signature of every scheduler- and supervision-relevant field."""
+    payload = []
+    for dataset in datasets:
+        views = []
+        for view in dataset.get("task_views") or ():
+            views.append({
+                "task": str(view.get("task", "")),
+                "target_caption_types": [
+                    str(value).strip()
+                    for value in view.get("target_caption_types", ())
+                    if str(value).strip()
+                ],
+                "hint_caption_types": [
+                    str(value).strip()
+                    for value in view.get("hint_caption_types", ())
+                    if str(value).strip()
+                ],
+                "weight": float(view.get("weight", 1.0)),
+                "loss_weight": float(view.get("loss_weight", 1.0)),
+                "hint_dropout": float(view.get("hint_dropout", 0.25)),
+                "prompt_template_version": int(
+                    view.get("prompt_template_version", PROMPT_TEMPLATE_VERSION)
+                ),
+            })
+        payload.append({"dataset_id": dataset.get("dataset_id"), "task_views": views})
+    encoded = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def eligible_task_views(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Views whose required target sources exist for this concrete item."""
+    captions = item.get("_captions_by_type") or {}
+    return [
+        view for view in item.get("_sensenova_task_views") or ()
+        if view.get("target_caption_types")
+        and (view.get("task") != "ti2i" or item.get("reference_images"))
+        and all(
+            caption_type in captions
+            and str(captions[caption_type].get("content", "")).strip()
+            for caption_type in view["target_caption_types"]
+        )
+    ]
+
+
 def select_task_view(task_views: Sequence[Dict[str, Any]], rng) -> Dict[str, Any]:
     if not task_views:
         raise ValueError("SenseNova task scheduling requires at least one task view")
@@ -251,17 +298,7 @@ def build_task_homogeneous_batches(
                     "Every dataset item must define task_views in an explicit "
                     "SenseNova task run"
                 )
-            captions = item.get("_captions_by_type") or {}
-            eligible = [
-                view for view in views
-                if view.get("target_caption_types")
-                and (view.get("task") != "ti2i" or item.get("reference_images"))
-                and all(
-                    caption_type in captions
-                    and str(captions[caption_type].get("content", "")).strip()
-                    for caption_type in view["target_caption_types"]
-                )
-            ]
+            eligible = eligible_task_views(item)
             if not eligible:
                 continue
             view = select_task_view(eligible, rng)

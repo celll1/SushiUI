@@ -5098,12 +5098,29 @@ class BaseTrainer(ABC):
 
         dataset_ids = []
         all_image_paths = []
+        task_eligibility = []
+        explicit_tasks = bool((getattr(self, "config", None) or {}).get(
+            "_sensenova_explicit_tasks"
+        ))
+        if explicit_tasks:
+            from core.training.sensenova_tasks import eligible_task_views
 
         for dataset in datasets:
             dataset_ids.append(dataset.unique_id)
             for item in dataset.items:
                 # Only include image_path - captions are intentionally excluded
                 all_image_paths.append(item.get("image_path", ""))
+                if explicit_tasks:
+                    eligible = eligible_task_views(item)
+                    indexes = [
+                        index
+                        for index, view in enumerate(item.get("_sensenova_task_views") or ())
+                        if view in eligible
+                    ]
+                    task_eligibility.append(
+                        f"{dataset.unique_id}\0{item.get('image_path', '')}\0"
+                        + ",".join(str(index) for index in indexes)
+                    )
 
         # Sort paths for consistent hashing (order within dataset matters, but we hash sorted for detection)
         # Actually, we want to detect if the SET of images changed, not their order
@@ -5111,11 +5128,16 @@ class BaseTrainer(ABC):
         paths_str = "\n".join(sorted_paths)
         paths_hash = hashlib.md5(paths_str.encode('utf-8')).hexdigest()
 
-        return {
+        result = {
             "dataset_ids": dataset_ids,
             "total_item_count": len(all_image_paths),
             "image_paths_hash": paths_hash,
         }
+        if explicit_tasks:
+            result["sensenova_task_eligibility_hash"] = hashlib.sha256(
+                "\n".join(task_eligibility).encode("utf-8")
+            ).hexdigest()
+        return result
 
     def _warn_unused_loss_weighting_keys(self, arch_name: str) -> None:
         """Warn once, in a single block, about configured loss-weighting keys
@@ -5244,6 +5266,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Dataset IDs changed: {saved_fingerprint.get('dataset_ids')} -> {current_fingerprint.get('dataset_ids')}")
             return True
 
+        current_task_hash = current_fingerprint.get("sensenova_task_eligibility_hash")
+        if current_task_hash is not None and saved_fingerprint.get(
+            "sensenova_task_eligibility_hash"
+        ) != current_task_hash:
+            print(f"{self.log_prefix} SenseNova task eligibility changed (hash mismatch)")
+            return True
+
         return False
 
     def _resolve_start_epoch(
@@ -5338,7 +5367,7 @@ class BaseTrainer(ABC):
             "lr_schedule_triggers": dump_lr_triggers(self),
             "lr_schedule_trigger_signals": trigger_set(self).dump_signals(),
             "sensenova_task_state": {
-                "version": 1,
+                "version": 2,
                 "tasks": list((getattr(self, "config", None) or {}).get(
                     "_sensenova_explicit_tasks", ()
                 )),
@@ -5350,6 +5379,9 @@ class BaseTrainer(ABC):
                 "draw_counts": dict(getattr(
                     self, "_sensenova_task_draw_counts", {}
                 )),
+                "task_views_signature": (getattr(self, "config", None) or {}).get(
+                    "_sensenova_task_views_signature"
+                ),
             } if (getattr(self, "config", None) or {}).get(
                 "_sensenova_explicit_tasks"
             ) else None,
@@ -5419,17 +5451,24 @@ class BaseTrainer(ABC):
         current_tasks = list((getattr(self, "config", None) or {}).get(
             "_sensenova_explicit_tasks", ()
         ))
+        if current_tasks and task_state is None:
+            raise ValueError(
+                "SenseNova deterministic resume requires task scheduler state"
+            )
         if task_state is not None:
-            if int(task_state.get("version", 0)) != 1:
+            if int(task_state.get("version", 0)) != 2:
                 raise ValueError("Unsupported SenseNova task scheduler state version")
             current_versions = list((getattr(self, "config", None) or {}).get(
                 "_sensenova_prompt_template_versions", ()
             ))
-            if task_state.get("tasks") != current_tasks or task_state.get(
-                "prompt_template_versions"
-            ) != current_versions:
+            current_signature = (getattr(self, "config", None) or {}).get(
+                "_sensenova_task_views_signature"
+            )
+            if (task_state.get("tasks") != current_tasks
+                    or task_state.get("prompt_template_versions") != current_versions
+                    or task_state.get("task_views_signature") != current_signature):
                 raise ValueError(
-                    "SenseNova task list or prompt-template version changed since "
+                    "SenseNova task views or prompt-template version changed since "
                     "the checkpoint; deterministic resume is refused"
                 )
             self._sensenova_task_draw_counts = dict(

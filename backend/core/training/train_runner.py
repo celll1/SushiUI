@@ -12,6 +12,7 @@ import signal
 import time
 import re
 import json
+import threading
 
 # Reduce CUDA caching-allocator fragmentation across the many aspect-ratio bucket
 # shapes (the allocator otherwise reserves a non-reusable block per distinct shape,
@@ -72,7 +73,7 @@ from datetime import datetime
 backend_dir = Path(__file__).parent.parent.parent  # backend/
 sys.path.insert(0, str(backend_dir))
 
-from database import get_training_db, get_datasets_db
+from database import TrainingSessionLocal, get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 from core.training.caption_processor import (
@@ -2322,43 +2323,122 @@ def update_training_progress(
         detail: Pre-built phase_detail override (used by "sampling" to name the
             prompt being rendered); ignored for phases with a fixed template.
     """
-    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    run = db.get(TrainingRun, run_id)
     if run:
-        # Update phase
-        run.phase = phase
-
-        # Calculate phase progress (cap at 100% to prevent exceeding due to mid-epoch resume)
-        phase_progress = (step / total * 100.0) if total > 0 else 0.0
-        phase_progress = min(phase_progress, 100.0)  # Cap at 100%
-        run.phase_progress = phase_progress
-
-        # Update phase detail
-        if phase == "initializing":
-            run.phase_detail = f"Loading dataset: {step}/{total} items"
-        elif phase == "bucketing":
-            run.phase_detail = f"Assigning buckets: {step}/{total} images"
-        elif phase == "crop_precompute":
-            run.phase_detail = f"Planning crop schedule: {step}/{total} images"
-        elif phase == "latent_cache":
-            # The phase KEY is stable, the wording is not a cache claim: only
-            # pre_encoded_cache writes one. swap_onthefly emits this phase for an
-            # in-memory buffer it discards every interval.
-            run.phase_detail = f"Encoding latents: {step}/{total} items"
-        elif phase == "text_encoder_cache":
-            run.phase_detail = f"Encoding captions: {step}/{total} captions"
-        elif phase == "sampling":
-            run.phase_detail = detail or f"Generating sample: {step}/{total}"
-        elif phase == "training":
-            run.phase_detail = f"Epoch {epoch}, Step {step}/{total}"
-            run.current_step = step
-            if loss is not None:
-                run.loss = loss
-            if lr is not None:
-                run.learning_rate = lr
-            # Overall progress = phase_progress during training (capped at 100%)
-            run.progress = phase_progress
-
+        _apply_training_progress(run, phase, step, total, epoch, loss, lr, detail)
         db.commit()
+
+
+def _apply_training_progress(run, phase, step, total, epoch=0, loss=None,
+                             lr=None, detail=None):
+    """Apply one progress snapshot to an already-loaded TrainingRun row."""
+    run.phase = phase
+    phase_progress = min((step / total * 100.0) if total > 0 else 0.0, 100.0)
+    run.phase_progress = phase_progress
+    if phase == "initializing":
+        run.phase_detail = f"Loading dataset: {step}/{total} items"
+    elif phase == "bucketing":
+        run.phase_detail = f"Assigning buckets: {step}/{total} images"
+    elif phase == "crop_precompute":
+        run.phase_detail = f"Planning crop schedule: {step}/{total} images"
+    elif phase == "latent_cache":
+        run.phase_detail = f"Encoding latents: {step}/{total} items"
+    elif phase == "text_encoder_cache":
+        run.phase_detail = f"Encoding captions: {step}/{total} captions"
+    elif phase == "sampling":
+        run.phase_detail = detail or f"Generating sample: {step}/{total}"
+    elif phase == "training":
+        run.phase_detail = f"Epoch {epoch}, Step {step}/{total}"
+        run.current_step = step
+        if loss is not None:
+            run.loss = loss
+        if lr is not None:
+            run.learning_rate = lr
+        run.progress = phase_progress
+
+
+class TrainingProgressReporter:
+    """Persist only the latest progress snapshot off the training thread."""
+
+    def __init__(self, run_id, session_factory=TrainingSessionLocal):
+        self.run_id = run_id
+        self._session_factory = session_factory
+        self._condition = threading.Condition()
+        self._pending = None
+        self._writing = False
+        self._closing = False
+        self._stopped = False
+        self._thread = threading.Thread(
+            target=self._run, name="training_progress", daemon=True)
+        self._thread.start()
+
+    def publish(self, phase, step, total, epoch=0, loss=None, lr=None,
+                detail=None):
+        snapshot = (phase, step, total, epoch, loss, lr, detail)
+        with self._condition:
+            if self._closing or self._stopped:
+                return
+            self._pending = snapshot
+            self._condition.notify()
+
+    def flush(self):
+        with self._condition:
+            self._condition.wait_for(
+                lambda: (self._pending is None and not self._writing)
+                or self._stopped)
+
+    def close(self):
+        self.flush()
+        with self._condition:
+            self._closing = True
+            self._condition.notify()
+        self._thread.join()
+
+    def _run(self):
+        db = None
+        try:
+            db = self._session_factory()
+            run = db.get(TrainingRun, self.run_id)
+            if run is None:
+                return
+            while True:
+                with self._condition:
+                    self._condition.wait_for(
+                        lambda: self._pending is not None or self._closing)
+                    if self._pending is None and self._closing:
+                        return
+                    snapshot, self._pending = self._pending, None
+                    self._writing = True
+                try:
+                    _apply_training_progress(run, *snapshot)
+                    db.commit()
+                except Exception as error:  # noqa: BLE001
+                    db.rollback()
+                    print(f"[TrainRunner] WARNING: progress update failed: {error}")
+                finally:
+                    with self._condition:
+                        self._writing = False
+                        self._condition.notify_all()
+        finally:
+            if db is not None:
+                db.close()
+            with self._condition:
+                self._pending = None
+                self._writing = False
+                self._stopped = True
+                self._condition.notify_all()
+
+
+def make_training_progress_callback(reporter, trainer):
+    def progress_callback(phase, step, total, epoch=0, loss=None, detail=None):
+        lr = None
+        if getattr(trainer, "optimizer", None) is not None:
+            lr = trainer.optimizer.param_groups[0]["lr"]
+            if phase == "training" and step % 100 == 0:
+                loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
+        reporter.publish(phase, step, total, epoch, loss, lr, detail)
+    return progress_callback
 
 
 def _warn_removed_cache_keys(process_config: Dict[str, Any]) -> None:
@@ -2530,6 +2610,7 @@ def main():
 
     datasets_db_gen = get_datasets_db()
     datasets_db = next(datasets_db_gen)
+    progress_reporter = None
 
     try:
         # Get training run info (from training.db)
@@ -2537,6 +2618,7 @@ def main():
         if not run:
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
             sys.exit(1)
+        progress_reporter = TrainingProgressReporter(run_id)
 
         # Extract the process/train block before dataset discovery, scanning,
         # cache access, wrapper construction, or model loading. SenseNova's
@@ -3072,17 +3154,8 @@ def main():
             else:
                 num_epochs = 1
 
-            # Progress callback (update DB only, no print to avoid cluttering tqdm output)
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
-                # Get current learning rate from optimizer (if available)
-                lr = None
-                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
-                    lr = trainer.optimizer.param_groups[0]['lr']
-                    # Debug: Log LR retrieval
-                    if phase == "training" and step % 100 == 0:
-                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
+            progress_callback = make_training_progress_callback(
+                progress_reporter, trainer)
 
             # Total steps callback (called once when actual total_steps is determined)
             def update_total_steps_callback(total_steps: int):
@@ -3524,15 +3597,8 @@ def main():
             else:
                 num_epochs = 1
 
-            # Progress callback
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
-                lr = None
-                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
-                    lr = trainer.optimizer.param_groups[0]['lr']
-                    if phase == "training" and step % 100 == 0:
-                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
+            progress_callback = make_training_progress_callback(
+                progress_reporter, trainer)
 
             def update_total_steps_callback(total_steps: int):
                 print(f"[TrainRunner] Updating total_steps in DB: {total_steps}")
@@ -3988,17 +4054,8 @@ def main():
             else:
                 num_epochs = 1
 
-            # Progress callback
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
-                # Get current learning rate from optimizer (if available)
-                lr = None
-                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
-                    lr = trainer.optimizer.param_groups[0]['lr']
-                    # Debug: Log LR retrieval
-                    if phase == "training" and step % 100 == 0:
-                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
+            progress_callback = make_training_progress_callback(
+                progress_reporter, trainer)
 
             # Total steps callback
             def update_total_steps_callback(total_steps: int):
@@ -4365,15 +4422,8 @@ def main():
             else:
                 num_epochs = 1
 
-            # Progress callback (update DB only)
-            def progress_callback(phase: str, step: int, total: int, epoch: int = 0, loss: float = None, detail: str = None):
-                lr = None
-                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
-                    lr = trainer.optimizer.param_groups[0]['lr']
-                    if phase == "training" and step % 100 == 0:
-                        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-                        print(f"[ProgressCallback] Step {step}: LR={lr:.2e}, Loss={loss_str}")
-                update_training_progress(training_db, run_id, phase, step, total, epoch, loss, lr, detail)
+            progress_callback = make_training_progress_callback(
+                progress_reporter, trainer)
 
             # Total steps callback
             def update_total_steps_callback(total_steps: int):
@@ -4582,8 +4632,8 @@ def main():
             def vae_progress_callback(phase: str, step: int, total: int,
                                       epoch: int = 0, loss: float = None,
                                       lr: float = None):
-                update_training_progress(training_db, run_id, phase, step, total,
-                                         epoch, loss, lr)
+                progress_reporter.publish(
+                    phase, step, total, epoch, loss, lr)
 
             trainer = VaeTrainer(
                 vae_cfg,
@@ -4656,6 +4706,8 @@ def main():
         sys.exit(1)
 
     finally:
+        if progress_reporter is not None:
+            progress_reporter.close()
         training_db.close()
         datasets_db.close()
 

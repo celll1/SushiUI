@@ -69,6 +69,7 @@ from api.param_defaults import (
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
     PARAM_BOUNDS,
+    RECONSTRUCTION_LOSS_WEIGHT_MIN, RECONSTRUCTION_LOSS_WEIGHT_MAX,
     video_defaults_for_arch,
 )
 from api.generation_utils import (
@@ -15732,7 +15733,11 @@ class TrainingRunCreateRequest(BaseModel):
     full_crop_position_mode: str = TRAINING_DEFAULTS["full_crop_position_mode"]
     crop_microcond_mode: str = TRAINING_DEFAULTS["crop_microcond_mode"]
     crop_plan_seed: int = TRAINING_DEFAULTS["crop_plan_seed"]
-    reconstruction_loss_weight: float = 0.0  # Additional reconstruction loss weight (0.0 = disabled)
+    # 0.0 = disabled. Bounded because the mix is (1-w)*prediction + w*reconstruction:
+    # outside [0, 1] one of the two coefficients is negative.
+    reconstruction_loss_weight: float = Field(
+        default=TRAINING_DEFAULTS["reconstruction_loss_weight"],
+        ge=RECONSTRUCTION_LOSS_WEIGHT_MIN, le=RECONSTRUCTION_LOSS_WEIGHT_MAX)
 
     # Component-specific training
     train_unet: bool = True

@@ -3201,7 +3201,8 @@ class BaseTrainer(ABC):
 
         from core.training.repa import (
             load_repa_encoder, RepaProjector, assert_repa_depth_compatible,
-            repa_sidecar_path, resolve_align_depth,
+            assert_repa_teacher_fixed_resolution, repa_sidecar_path,
+            resolve_align_depth,
         )
 
         # Before the encoder is downloaded/read: an arch with no tap, and the two
@@ -3215,6 +3216,11 @@ class BaseTrainer(ABC):
             tagger_dir = self._discover_default_tagger_dir()
             print(f"{self.log_prefix} [REPA] auto-selected tagger dir: {tagger_dir}")
 
+        # A teacher with no fixed square input is refused here, beside the tap
+        # refusal and before the encoder is read.
+        declared_size = assert_repa_teacher_fixed_resolution(
+            source, tagger_model_dir=tagger_dir, siglip2_repo=siglip2_repo)
+
         repa_dtype = getattr(self, "training_dtype", None) or torch.bfloat16
         encoder, enc_dim, native = load_repa_encoder(
             source,
@@ -3227,7 +3233,13 @@ class BaseTrainer(ABC):
         self.repa_enc_dim = enc_dim
 
         res_override = int(self.config.get("repa_encoder_resolution", 0) or 0)
-        self.repa_size = res_override if res_override > 0 else (native or 384)
+        sized = [s for s in (res_override, native, declared_size) if s and s > 0]
+        self.repa_size = sized[0] if sized else 384
+        if not sized:
+            print(f"{self.log_prefix} [REPA] neither the encoder config nor its "
+                  f"processor config declares an input size; feeding it 384x384. "
+                  f"Set repa_encoder_resolution to the size this teacher was "
+                  f"trained at.")
 
         hidden = tap.hidden_size
         depth = tap.depth
@@ -3391,6 +3403,9 @@ class BaseTrainer(ABC):
             img = flatten_to_rgb(img)
             if box != (0, 0, img.width, img.height):
                 img = img.crop(box)
+            # SigLIP2's own processor resamples bilinear (resample=2); bicubic is
+            # kept because both stay inside the teacher's image domain and moving
+            # it would move every existing REPA run's numbers.
             img = img.resize((S, S), Image.BICUBIC)
 
             import numpy as _np

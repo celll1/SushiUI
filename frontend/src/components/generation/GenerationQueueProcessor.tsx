@@ -17,6 +17,7 @@ import { EMPTY_MINIMAX_H3_REFERENCES } from "../common/MiniMaxH3ReferenceSelecto
 import {
   generateAud2Aud,
   generateImg2Img,
+  generateImg2Txt,
   generateImg2ImgTrainingPreview,
   generateImg2Vid,
   generateRef2Vid,
@@ -27,6 +28,7 @@ import {
   Aud2AudParams,
   GenerationParams,
   Img2ImgParams,
+  Img2TxtParams,
   Img2VidParams,
   Ref2VidParams,
   Txt2AudParams,
@@ -65,6 +67,7 @@ const CLAIMED_TYPES: readonly QueueItem["type"][] = [
   "inpaint_vid",
   "txt2img",
   "img2img",
+  "img2txt",
   "txt2vid",
   "img2vid",
   "ref2vid",
@@ -806,6 +809,48 @@ export default function GenerationQueueProcessor() {
     }
   }, [appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, scheduleNext]);
 
+  const runImg2Txt = useCallback(async (item: QueueItem) => {
+    try {
+      const frozen = item.modelIdentity;
+      if (modelInfo?.type !== "sensenova"
+          || !archCapabilities?.text_output_modes?.sensenova?.includes("img2txt")) {
+        throw new Error("The loaded model no longer advertises SenseNova img2txt support.");
+      }
+      if (frozen && (frozen.type !== modelInfo.type || frozen.source !== modelInfo.source)) {
+        throw new Error("The loaded model changed after this img2txt request was queued. Requeue it for the current model.");
+      }
+
+      const result = await generateImg2Txt(item.params as Img2TxtParams);
+      publishCompletedResult({
+        panel: "img2txt",
+        kind: "text",
+        rawText: result.raw_text,
+        structured: result.structured,
+        parseWarning: result.parse_warning,
+        effectiveInstruction: result.effective_instruction,
+        promptTemplateVersion: result.prompt_template_version,
+        task: result.task,
+        seed: result.actual_seed,
+        model: result.model,
+        timing: result.timing,
+        params: { ...(item.params as Img2TxtParams), seed: result.actual_seed },
+        warnings: resultWarnings(result),
+      });
+      // Text deliberately has no URL and never enters the media result feed.
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error("[Queue] img2txt generation failed:", error);
+      busyRef.current = false;
+      failCurrentItem();
+      scheduleNext();
+      if (!isCancelledError(error)) {
+        alert(`img2txt generation failed: ${errorDetail(error)}`);
+      }
+    }
+  }, [archCapabilities, completeCurrentItem, failCurrentItem, modelInfo, publishCompletedResult, scheduleNext]);
+
   const runImage = useCallback(async (item: QueueItem) => {
     const panel = item.panel ?? typeToPanel(item.type);
     const params = item.params as Img2ImgParams;
@@ -927,6 +972,9 @@ export default function GenerationQueueProcessor() {
       case "img2img":
         await runImage(nextItem);
         return;
+      case "img2txt":
+        await runImg2Txt(nextItem);
+        return;
       case "txt2vid":
       case "ref2vid":
         await runTxt2Vid(nextItem);
@@ -948,7 +996,7 @@ export default function GenerationQueueProcessor() {
         return;
     }
   }, [failCurrentItem, runUpscale, runOutpaintImage, runOutpaintVideo, runOutpaintAudio,
-      runInpaint, runInpaintVideo, runImage, runTxt2Vid, runImg2Vid, runChainVid, runAudio]);
+      runInpaint, runInpaintVideo, runImage, runImg2Txt, runTxt2Vid, runImg2Vid, runChainVid, runAudio]);
 
   const process = useCallback(async () => {
     if (busyRef.current) return;

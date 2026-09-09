@@ -1968,7 +1968,7 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
       setGeneratedVideoWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedAudio(null);
-    } else {
+    } else if (result.kind === "audio") {
       setGeneratedAudio(result.url);
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioSeed(result.seed ?? null);

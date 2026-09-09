@@ -2389,7 +2389,7 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
       setGeneratedVideoWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedAudio(null);
-    } else {
+    } else if (result.kind === "audio") {
       setGeneratedAudio(result.url);
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioParams(result.params as Img2ImgParams);

@@ -1,0 +1,43 @@
+"""Cheap source contracts for the capability-gated img2txt frontend."""
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _source(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_img2txt_is_capability_gated_and_never_mounted_without_support():
+    page = _source("frontend/src/app/generate/page.tsx")
+    assert 'text_output_modes?.[modelInfo.type]?.includes("img2txt")' in page
+    assert 'activeTab === "img2txt" && !canImg2Txt' in page
+    assert 'activeTab === "img2txt" && canImg2Txt && <Img2TxtPanel />' in page
+
+
+def test_queue_dispatches_text_without_publishing_a_media_result():
+    processor = _source(
+        "frontend/src/components/generation/GenerationQueueProcessor.tsx")
+    start = processor.index("const runImg2Txt")
+    end = processor.index("const runImage", start)
+    branch = processor[start:end]
+    assert "generateImg2Txt" in branch
+    assert 'kind: "text"' in branch
+    assert "appendResult(" not in branch
+
+
+def test_img2txt_request_freezes_file_model_and_template_version():
+    panel = _source("frontend/src/components/generation/Img2TxtPanel.tsx")
+    context = _source("frontend/src/contexts/GenerationQueueContext.tsx")
+    api = _source("frontend/src/utils/api.ts")
+    assert 'modelIdentity: identity ? { type: identity.type, source: identity.source }' in panel
+    assert 'params: Img2TxtParams;' in context
+    assert 'formData.append("images", params.image' in api
+    assert 'formData.append("prompt_template_version"' in api
+    assert 'kind: "text";' in context
+    assert 'url: string;' not in context[
+        context.index("export interface TextGenerationResultSnapshot"):
+        context.index("export type GenerationResultSnapshot")
+    ]

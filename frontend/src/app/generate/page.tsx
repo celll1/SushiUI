@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Sidebar from "@/components/common/Sidebar";
 import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
+import Img2TxtPanel from "@/components/generation/Img2TxtPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import OutpaintPanel from "@/components/generation/OutpaintPanel";
 import UpscalePanel from "@/components/generation/UpscalePanel";
@@ -13,6 +14,7 @@ import GenerationQueue from "@/components/common/GenerationQueue";
 import GPUMonitor from "@/components/common/GPUMonitor";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { useStartup } from "@/contexts/StartupContext";
 
 export default function GeneratePage() {
   return (
@@ -22,10 +24,10 @@ export default function GeneratePage() {
   );
 }
 
-type GenerateTab = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
+type GenerateTab = "txt2img" | "img2img" | "img2txt" | "inpaint" | "outpaint" | "upscale";
 
 function tabFromParam(value: string | null): GenerateTab {
-  return value === "img2img" || value === "inpaint" || value === "outpaint" || value === "upscale"
+  return value === "img2img" || value === "img2txt" || value === "inpaint" || value === "outpaint" || value === "upscale"
     ? value
     : "txt2img";
 }
@@ -40,11 +42,22 @@ function GeneratePageContent() {
   const [galleryImages, setGalleryImages] = useState<GalleryEntry[]>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const { setGenerateForever, resultFeed } = useGenerationQueue();
+  const { modelInfo, archCapabilities } = useStartup();
   const lastFeedIdRef = useRef(0);
+  const canImg2Txt = Boolean(
+    modelInfo?.type
+    && archCapabilities?.text_output_modes?.[modelInfo.type]?.includes("img2txt"),
+  );
 
   useEffect(() => {
     if (tabParam !== null) setActiveTab(tabFromParam(tabParam));
   }, [tabParam]);
+
+  useEffect(() => {
+    if (archCapabilities !== null && activeTab === "img2txt" && !canImg2Txt) {
+      setActiveTab("txt2img");
+    }
+  }, [activeTab, archCapabilities, canImg2Txt]);
 
   useEffect(() => {
     // Load max gallery images setting
@@ -108,6 +121,14 @@ function GeneratePageContent() {
           >
             img2img
           </button>
+          {canImg2Txt && (
+            <button
+              onClick={() => setActiveTab("img2txt")}
+              className={`app-tab ${activeTab === "img2txt" ? "app-tab-active" : ""}`}
+            >
+              img2txt
+            </button>
+          )}
           <button
             onClick={() => setActiveTab("inpaint")}
             className={`app-tab ${
@@ -143,11 +164,12 @@ function GeneratePageContent() {
 
         {/* Tab Content */}
         <div className="app-content flex-1 overflow-auto">
-          {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} />}
-          {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} />}
-          {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} />}
-          {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} />}
-          {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} />}
+          {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={(tab) => setActiveTab(tab)} />}
+          {activeTab === "img2img" && <Img2ImgPanel onTabChange={(tab) => setActiveTab(tab)} />}
+          {activeTab === "img2txt" && canImg2Txt && <Img2TxtPanel />}
+          {activeTab === "inpaint" && <InpaintPanel onTabChange={(tab) => setActiveTab(tab)} />}
+          {activeTab === "outpaint" && <OutpaintPanel onTabChange={(tab) => setActiveTab(tab)} />}
+          {activeTab === "upscale" && <UpscalePanel onTabChange={(tab) => setActiveTab(tab)} />}
         </div>
       </main>
 

@@ -213,14 +213,11 @@ def _apply_sensenova_training_contract(
         # generation-free file, so the run would train to its first save (100
         # steps by default) and die there.
         raise ValueError(
-            "SenseNova LoRA requires train_unet=True: inference applies both MoT "
-            "branches from one file, so an understanding-only LoRA has no "
-            "consumer and is refused when it is saved. Set train_text_encoder to "
-            "add the understanding half alongside the generation one."
+            "Legacy SenseNova LoRA requires train_unet=True. To train an "
+            "understanding-only LoRA for img2txt, configure explicit i2t task_views "
+            "and sensenova_train_scopes=['understanding_decoder']."
         )
-    blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
-    if blocks_to_swap != 0:
-        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+    _assert_sensenova_block_swap_disabled(train_config)
     # Normalized, not gated: reference conditioning is armed run-globally here and
     # applied per item (Phase 3), and composes with a trainable understanding
     # branch (Phase U-3) rather than being refused against it. Strict typing
@@ -376,6 +373,29 @@ def _apply_sensenova_training_contract(
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"
     return True
+
+
+def _assert_sensenova_block_swap_disabled(train_config: Dict[str, Any]) -> None:
+    blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
+    if blocks_to_swap != 0:
+        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+
+
+def _preflight_sensenova_before_dataset_config(
+    base_model_path: str, network_type: str, train_config: Dict[str, Any]
+) -> None:
+    """Reject model/config-only failures before task views are inspected."""
+    if network_type == "vae_decoder":
+        return
+    from core.model_loader import ModelLoader
+
+    try:
+        is_sensenova = ModelLoader.detect_model_type(base_model_path) == "sensenova"
+    except Exception:
+        lowered = (base_model_path or "").lower()
+        is_sensenova = "sensenova" in lowered or "sense-nova" in lowered
+    if is_sensenova:
+        _assert_sensenova_block_swap_disabled(train_config)
 
 
 def _apply_sensenova_task_contract(
@@ -1113,6 +1133,9 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    _preflight_sensenova_before_dataset_config(
+        base_model_path, network_type, train_config
+    )
     _apply_sensenova_task_contract(
         base_model_path, network_type, train_config, process_config
     )

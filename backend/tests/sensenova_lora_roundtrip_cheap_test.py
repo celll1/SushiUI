@@ -158,8 +158,8 @@ def train_and_save(tmp_path, name="sensenova.safetensors", seed=1234, both_halve
 def half_only(tmp_path, path, name, half):
     """Rewrite ``path`` keeping only one MoT half's keys.
 
-    The trainer refuses to save an understanding-only LoRA, so the und-only
-    arm of the per-half gates has to be built by filtering.
+    This legacy helper trains both halves, so the per-half gates build their
+    isolated inputs by filtering the combined file.
     """
     keep = (lambda k: "mot_gen" in k) if half == "gen" else (lambda k: "mot_gen" not in k)
     out = tmp_path / name

@@ -665,6 +665,7 @@ def train_step(
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.arch.flux2 import Flux2ArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
         # Unpack sequence -> 2x2 packed 4D -> unpatchify to 2D [B, 32, H, W]
@@ -692,7 +693,7 @@ def train_step(
             noise_process="flow",
             prediction_target="velocity",
             noise_scheduler=trainer.noise_scheduler,
-            velocity_sign="eps_minus_x0",
+            velocity_sign=Flux2ArchHandler.velocity_sign,
             predicted_latent=pred_x0_2d,
             main_loss=loss,
         )

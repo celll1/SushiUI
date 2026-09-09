@@ -32,6 +32,8 @@ class Krea2ArchHandler(ArchHandler):
     # noisy = (1-sigma)*latents + sigma*noise (ops/krea2_ops.py, "sigma=1 ->
     # noise" comment). sampler t=0 is clean.
     timestep_convention = "t0"
+    # ops/krea2_ops.py train_step: v_target = noise - latents.
+    velocity_sign = "eps_minus_x0"
 
     def lora_adapter_class(self):
         from core.training.adapters import Krea2LoRAAdapter

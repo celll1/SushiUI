@@ -272,6 +272,7 @@ def _predict_x0_zimage(noisy_latents, model_pred, timesteps):
     flow/velocity are pinned rather than read from ``trainer``: the inline formula
     this replaced was flow-shaped whatever ``trainer.noise_process`` said.
     """
+    from core.training.arch.zimage import ZImageArchHandler
     from core.training.ops.x0_recovery import predict_x0
     return predict_x0(
         noise_process="flow",
@@ -279,7 +280,7 @@ def _predict_x0_zimage(noisy_latents, model_pred, timesteps):
         noisy_latents=noisy_latents,
         model_pred=model_pred,
         timesteps=timesteps,
-        velocity_sign="x0_minus_eps",
+        velocity_sign=ZImageArchHandler.velocity_sign,
     )
 
 
@@ -462,6 +463,7 @@ def train_step(
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.arch.zimage import ZImageArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         aux_loss, _ = compute_crop_decode_loss(
             trainer=trainer,
@@ -472,7 +474,7 @@ def train_step(
             noise_process=noise_process,
             prediction_target=prediction_target,
             noise_scheduler=trainer.noise_scheduler,
-            velocity_sign="x0_minus_eps",
+            velocity_sign=ZImageArchHandler.velocity_sign,
             predicted_latent=predicted_latent_for_reg if predicted_latent_for_reg is not None else predicted_latent_for_recon,
             main_loss=loss,
         )

@@ -30,6 +30,11 @@ class SD15ArchHandler(ArchHandler):
     )
     wires_sample_step_progress = True
 
+    # ops/sd_sdxl_ops.py train_step builds the target through get_target_unified,
+    # whose velocity branches are alpha*noise - sigma*latents (ddpm) and
+    # noise - latents (flow) -- the same sign under both noise processes.
+    velocity_sign = "eps_minus_x0"
+
     def resolve_timestep_convention(self, trainer=None) -> str:
         # ops/sd_sdxl_ops.py train_step maps the sampler's [0,1] draw
         # DIFFERENTLY depending on noise_process: ddpm scales it to a discrete

@@ -294,6 +294,7 @@ def train_step(
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
         from core.models.krea2.krea2_pipeline_ops import unpack_latents
+        from core.training.arch.krea2 import Krea2ArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
 
         # Unpack packed sequence [B, N, C_packed] -> 2D [B, C, H, W]
@@ -317,7 +318,7 @@ def train_step(
             noise_process="flow",
             prediction_target="velocity",
             noise_scheduler=trainer.noise_scheduler,
-            velocity_sign="eps_minus_x0",
+            velocity_sign=Krea2ArchHandler.velocity_sign,
             predicted_latent=pred_x0_2d,
             main_loss=loss,
         )

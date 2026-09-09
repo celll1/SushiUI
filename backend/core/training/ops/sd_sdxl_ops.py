@@ -1021,6 +1021,8 @@ def train_step(
 
     # Crop decode auxiliary loss (Phase 3: pixel-space reconstruction on context-padded crop)
     if getattr(trainer, "crop_decode_loss_enable", False) and getattr(trainer, "crop_decode_loss_weight", 0.0) > 0:
+        from core.training.arch.sd15 import SD15ArchHandler
+        from core.training.arch.sdxl import SDXLArchHandler
         from core.training.ops.crop_decode_loss import compute_crop_decode_loss
         aux_loss, _ = compute_crop_decode_loss(
             trainer=trainer,
@@ -1031,7 +1033,8 @@ def train_step(
             noise_process=noise_process,
             prediction_target=prediction_target,
             noise_scheduler=trainer.noise_scheduler,
-            velocity_sign=getattr(trainer, "velocity_sign", None),
+            velocity_sign=(SDXLArchHandler if getattr(trainer, "is_sdxl", False)
+                           else SD15ArchHandler).velocity_sign,
             alphas_cumprod_cached=alphas_cumprod_cached,
             predicted_latent=predicted_latent_for_reg if predicted_latent_for_reg is not None else predicted_latent_for_recon,
             main_loss=loss,

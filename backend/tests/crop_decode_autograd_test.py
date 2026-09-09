@@ -6,6 +6,7 @@ using CPU-only lightweight mock autoencoders.
 
 from __future__ import annotations
 
+import inspect
 import pytest
 import torch
 import torch.nn as nn
@@ -160,4 +161,11 @@ class TestCropDecodeAutograd:
         assert EXTRA_METRIC_DEFS["crop_decode_loss"]["family"] == "loss"
         assert EXTRA_METRIC_DEFS["crop_decode_grad_norm_ratio"]["family"] == "bounded_diagnostic"
 
+    def test_device_metrics_are_deferred_until_shared_backward_sync(self):
+        from core.training.ops.crop_decode_loss import compute_crop_decode_loss
+
+        source = inspect.getsource(compute_crop_decode_loss)
+        assert "raw_aux_loss.detach().item()" not in source
+        assert "torch.linalg.norm(g_aux.flatten()).item()" not in source
+        assert "defer_extra_metric" in source
 

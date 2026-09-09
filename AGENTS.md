@@ -91,6 +91,7 @@ changes.
 | Find which file owns which responsibility | `docs/guides/ARCHITECTURE_MAP.md` |
 | Add a new model architecture (incl. the extra surface a video arch needs) | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` |
 | Per-architecture facts (CFG convention, VAE, attention, weight formats, measured performance) | `docs/guides/MODEL_FACTS.md` |
+| SenseNova img2txt inference or caption/tag/mixed-objective training | `docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`, then `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for the shipped boundary |
 | MiniMax Music 3 integration (vendoring rationale, capability refusals, frame-code state contract, weight formats) | `docs/guides/MINIMAX_MUSIC3_DESIGN.md` |
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |

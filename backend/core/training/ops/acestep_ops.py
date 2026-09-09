@@ -623,15 +623,18 @@ def train_step(
     loss = mse_loss
 
     # Optional reconstruction loss (predicted x0 vs GT x0): x0 = x_t - sigma * v.
+    # Normalized mixing, (1-w)*pred + w*recon, the formula the UI states; no
+    # min-SNR weighting on this arch, so there is nothing to compensate for.
     recon_loss_value = 0.0
     if trainer.reconstruction_loss_weight > 0:
-        # Grad-carrying on purpose: this term is added to the backward loss, and
+        # Grad-carrying on purpose: this term enters the backward loss, and
         # under no_grad it would only shift the reported number.
         sigma_seq = sigma.view(-1, 1, 1).to(v_pred.dtype)
         pred_x0 = xt - sigma_seq * v_pred
         recon_loss = F.mse_loss(pred_x0.float(), latents.float())
         recon_loss_value = recon_loss.item()
-        loss = loss + trainer.reconstruction_loss_weight * recon_loss
+        recon_weight = trainer.reconstruction_loss_weight
+        loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
     pred_loss_value = mse_loss.item()
 

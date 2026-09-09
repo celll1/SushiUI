@@ -282,8 +282,9 @@ checkpoints are saved with a `net.` prefix on every DiT key.
 Train step (`ltx2_ops.train_step`): video-only. It packs `x_t`, feeds a **no-grad dummy
 noise** audio tensor (`randn`, length = clip duration × audio-latents/s), sets
 `isolate_modalities=True` (a2v/v2a off), `audio_timestep = audio_sigma = 1000` and
-discards the audio prediction. Loss is `MSE(v_pred_video, pack(noise - latents))` plus an
-optional `reconstruction_loss_weight * MSE(x_t - sigma*v, x0)`.
+discards the audio prediction. Loss is `MSE(v_pred_video, pack(noise - latents))`, mixed
+with an optional x0 reconstruction MSE as `(1 - reconstruction_loss_weight) * pred +
+reconstruction_loss_weight * MSE(x_t - sigma*v, x0)` when that weight is nonzero.
 
 Refusals / structural constraints in the training adapter and ops:
 

@@ -4,15 +4,17 @@ Anima / ACE-Step / LTX-2.3 computed ``recon_loss`` under ``no_grad`` right after
 gating on ``reconstruction_loss_weight > 0``, then added it to the backward
 loss -- a constant, so the dual-loss half of the objective never trained
 anything. SD/SDXL and Z-Image gate the same way without ``no_grad`` and are the
-shape these three now follow. At weight == 0 these three compute no
-reconstruction term at all, and that path is asserted to stay bit-identical.
+shape these three now follow. They also mixed ADDITIVELY, ``pred + w*recon``,
+so the same 0.3 grew the total loss here while it rebalanced it everywhere
+else; they now mix normalized like the rest. At weight == 0 these three compute
+no reconstruction term at all, and that path is asserted to stay bit-identical.
 
 Krea 2 / Lens / Ideogram 4 / MiniT2I / SenseNova were worse still: they never
 read ``reconstruction_loss_weight`` at all, and the key is not covered by
 ``_warn_unused_loss_regularization_keys``, so a configured weight was ignored
-without a line of log. They now mix NORMALIZED -- ``(1-w)*pred + w*recon``,
-the convention the UI's own formula states -- which is what the second half of
-this file pins.
+without a line of log. Every architecture in this file now mixes NORMALIZED --
+``(1-w)*pred + w*recon``, the convention the UI's own formula states -- which
+``test_the_mixing_is_normalized_not_additive`` pins for all eight.
 
 The pre-fix modules are loaded out of git and asserted to show the defect, so
 the red-before/green-after pair stays executable after the fix is committed.
@@ -240,7 +242,12 @@ def test_reported_values_are_unchanged_from_the_pre_fix_module(
         prefix_ops, arch, recon_weight):
     now = _step(LIVE[arch], arch, recon_weight)
     before = _step(prefix_ops[arch], arch, recon_weight)
-    assert now[:3] == before[:3]
+    # The two reported series keep their pre-fix meaning at either weight; the
+    # total loss is pinned only at weight == 0, since weight > 0 deliberately
+    # moved from the additive mix to the normalized one.
+    assert now[1:3] == before[1:3]
+    if recon_weight == 0.0:
+        assert now[0] == before[0]
 
 
 @pytest.mark.parametrize("arch", list(RUNNERS))
@@ -447,11 +454,17 @@ def test_the_silently_ignored_weight_now_changes_the_gradient(arch):
     assert torch.isfinite(g_dual).all()
 
 
-@pytest.mark.parametrize("arch", list(SILENT_RUNNERS))
+def _any_step(arch: str, recon_weight: float):
+    if arch in RUNNERS:
+        return _step(LIVE[arch], arch, recon_weight)
+    return _silent_step(SILENT_LIVE[arch], arch, recon_weight)
+
+
+@pytest.mark.parametrize("arch", list(RUNNERS) + list(SILENT_RUNNERS))
 def test_the_mixing_is_normalized_not_additive(arch):
     """(1-w)*pred + w*recon, the formula the UI states -- not pred + w*recon."""
-    loss_dual, _, recon_value, _ = _silent_step(SILENT_LIVE[arch], arch, RECON_WEIGHT)
-    loss_plain, _, _, _ = _silent_step(SILENT_LIVE[arch], arch, 0.0)
+    loss_dual, _, recon_value, _ = _any_step(arch, RECON_WEIGHT)
+    loss_plain, _, _, _ = _any_step(arch, 0.0)
 
     expected = (1.0 - RECON_WEIGHT) * loss_plain + RECON_WEIGHT * recon_value
     additive = loss_plain + RECON_WEIGHT * recon_value

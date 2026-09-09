@@ -439,6 +439,11 @@ timestamp から s/step を算出していたため、速度差を判定でき�
 再検討する場合は対象区間を直接計時し、既知の画像読込失敗だけを現行どおり警告付きで扱い、
 予期しない worker 例外は REPA を無音で落とさず run に伝播させること。
 
+別に、REPA loss の chart scalar は教師 forward 直後の `.item()` で backward の投入前に
+CUDA を同期していた。scalar を detach して保持し、共通経路が backward 投入後に必ず行う
+`loss.item()` の直後に読むよう変更した。損失・勾配・記録値は変わらず、保持するのは scalar
+1 個だけである。実ステップ時間への効果は GPU ランで未測定なので、速度改善値は主張しない。
+
 #### 5-2-f. ステップ時間比と、その重大な留保
 
 出所は `training.db` の `training_metrics`。**行ごとのタイムスタンプはバッチフラッシュ時刻で、

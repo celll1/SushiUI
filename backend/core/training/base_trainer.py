@@ -15191,6 +15191,22 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [DanbooruAug] Setup failed (continuing without): {_dae}")
             self._danbooru_collector = None
 
+        # Here rather than beside _warn_unused_loss_weighting_keys: whether
+        # injection is actually on is decided by the block above, not by config.
+        from core.training.repa import (INJECTED_BATCH_SKIP_CODE,
+                                        injected_batch_skip_notice)
+        _repa_skip_notice = injected_batch_skip_notice(
+            latent_encoding_mode,
+            bool(getattr(self, "repa_enable", False)),
+            self._danbooru_collector is not None,
+            self._danbooru_inj_batch_size,
+            self._danbooru_inj_interval,
+        )
+        if _repa_skip_notice:
+            emit_training_warning(_repa_skip_notice,
+                                  code=INJECTED_BATCH_SKIP_CODE,
+                                  prefix=self.log_prefix)
+
         # "Did this invocation train anything?" -- asserted before reporting
         # success, so a run whose every batch was dropped or skipped cannot
         # finish green. This is the only product-default detector for that: the

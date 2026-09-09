@@ -517,6 +517,50 @@ def assert_repa_region_reconstructible(latent_encoding_mode, bucket_strategy) ->
     )
 
 
+#: Code of the start-of-run notice built by ``injected_batch_skip_notice``.
+INJECTED_BATCH_SKIP_CODE = "repa_skips_injected_batches"
+
+
+def injected_batch_skip_notice(
+    latent_encoding_mode: str,
+    repa_enable: bool,
+    injection_active: bool,
+    inject_batch_size: int,
+    inject_interval: int,
+) -> Optional[str]:
+    """The start-of-run notice for a combination whose injected batches get no REPA.
+
+    ``None`` when it does not arise. Said once, before the first step: the
+    per-item paths can only report the same fact as a load failure, which reads
+    as breakage. Kept a decision rather than a refusal because ``swap_onthefly``
+    is the mode large datasets run in, and kept a skip rather than holding the
+    pixels because holding them costs host RAM proportional to the refill window.
+    """
+    if str(latent_encoding_mode or "") != "swap_onthefly":
+        return None
+    if not repa_enable or not injection_active:
+        return None
+    n = int(inject_batch_size or 0)
+    interval = int(inject_interval or 0)
+    if n <= 0 or interval <= 0:
+        return None
+    return (
+        f"REPA is not applied to Danbooru-injected batches on this run. Under "
+        f"latent_encoding_mode='swap_onthefly' an injected item's pixels are held "
+        f"in memory only and are freed once its latent enters the swap buffer, and "
+        f"its 'danbooru://<post_id>' path cannot be reopened, so the REPA teacher "
+        f"has no image for those items and such a batch trains on the diffusion "
+        f"loss alone. This is intended behaviour: carrying the pixels to the batch "
+        f"that reads them would hold a whole refill window of images in host RAM. "
+        f"Injection splices one batch of {n} image(s) after every {interval} base "
+        f"batch(es), so at most one batch in every {interval + 1} carries no REPA "
+        f"term. An injected batch holds injected items only, so the skip reaches "
+        f"no dataset item. latent_encoding_mode='onthefly_gpu' "
+        f"encodes each item in the iteration that reads it and does apply REPA to "
+        f"injected batches."
+    )
+
+
 def resolve_align_depth(configured: int, depth: int) -> int:
     """The tap index a run arms: ``-1`` = auto (a third of the way in), clamped.
 

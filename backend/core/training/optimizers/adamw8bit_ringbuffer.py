@@ -290,6 +290,7 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if schedule_free:
                     # Schedule-Free: only exp_avg_sq and z (no exp_avg)
                     state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['exp_avg_sq'].zero_()
 
                     # Initialize z by quantizing p, then transfer to CPU
                     device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
@@ -311,6 +312,8 @@ class AdamW8bit_RingBuffer(Optimizer):
                     # Standard AdamW: exp_avg and exp_avg_sq
                     state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
                     state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['exp_avg'].zero_()
+                    state['exp_avg_sq'].zero_()
 
                     # Pin only CPU buffers (a get_state_buffer may return a GPU
                     # tensor for resident params -> partial residency; pinning a
@@ -834,15 +837,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                         # Schedule-Free: Update exp_avg_sq and z, then update y (p)
                         # ============================================================
 
-                        # Ring Buffer optimization: Ensure states are on GPU
-                        z_gpu = state['z']
-                        exp_avg_sq_gpu = state['exp_avg_sq']
-
-                        if not state['z'].is_cuda:
-                            # Async transfer for Ring Buffer states (pinned memory)
-                            z_gpu = state['z'].cuda(non_blocking=True)
-                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
-
                         stochastic_z = bool(group['stochastic_rounding'])
 
                         # Call Schedule-Free CUDA kernel.
@@ -854,8 +848,8 @@ class AdamW8bit_RingBuffer(Optimizer):
                         self.ext.adamw_8bit_schedulefree_update(
                             p_for_kernel,           # param (y, GPU) - FP32 buffer if stochastic_rounding
                             grad,                   # grad (GPU)
-                            z_gpu,                  # z (UINT8, GPU/async transferred)
-                            exp_avg_sq_gpu,         # exp_avg_sq (UINT8, GPU/async transferred)
+                            state['z'],             # CPU pinned or CUDA; extension stages it
+                            state['exp_avg_sq'],    # CPU pinned or CUDA; extension stages it
                             state['absmax_z'],      # absmax_z (FP32, GPU)
                             state['absmax2'],       # absmax2 (FP32, GPU)
                             beta1,
@@ -870,12 +864,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                             self._next_rounding_seed() if stochastic_z else 0,
                         )
 
-                        # Ring Buffer: Copy updated states back to CPU
-                        if not state['z'].is_cuda:
-                            # Async copy back (non_blocking requires pinned memory)
-                            state['z'].copy_(z_gpu, non_blocking=True)
-                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
-
                         # Stochastic rounding: FP32 buffer → BF16 param
                         if use_stochastic_rounding:
                             self._copy_stochastic_bf16(p, p_fp32)
@@ -885,21 +873,11 @@ class AdamW8bit_RingBuffer(Optimizer):
                         # Standard AdamW 8-bit Update
                         # ============================================================
 
-                        # Ring Buffer optimization: Ensure states are on GPU
-                        # If states are on CPU (Ring Buffer), move to GPU with non_blocking=True
-                        exp_avg_gpu = state['exp_avg']
-                        exp_avg_sq_gpu = state['exp_avg_sq']
-
-                        if not state['exp_avg'].is_cuda:
-                            # Async transfer for Ring Buffer states (pinned memory)
-                            exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
-                            exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
-
                         self.ext.adamw_8bit_update(
                             p_for_kernel,           # param (GPU) - FP32 buffer if stochastic_rounding
                             grad,                   # grad (GPU)
-                            exp_avg_gpu,            # state1 (GPU, async transferred if needed)
-                            exp_avg_sq_gpu,         # state2 (GPU, async transferred if needed)
+                            state['exp_avg'],       # CPU pinned or CUDA; extension stages it
+                            state['exp_avg_sq'],    # CPU pinned or CUDA; extension stages it
                             state['absmax1'],       # absmax1 (GPU)
                             state['absmax2'],       # absmax2 (GPU)
                             beta1,
@@ -911,12 +889,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                             self.step_count,
                             self.cautious           # Cautious masking
                         )
-
-                        # Ring Buffer: Copy updated states back to CPU
-                        if not state['exp_avg'].is_cuda:
-                            # Async copy back (non_blocking requires pinned memory)
-                            state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
-                            state['exp_avg_sq'].copy_(exp_avg_sq_gpu, non_blocking=True)
 
                         # Stochastic rounding: FP32 buffer → BF16 param
                         if use_stochastic_rounding:

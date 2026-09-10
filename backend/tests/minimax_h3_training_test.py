@@ -991,3 +991,48 @@ def test_h3_processed_caption_validation_accepts_nonempty_items(monkeypatch):
         "h3.safetensors", [{"image_path": "ok.mp4", "caption": "a scene"}],
         dataset_label="h3-clips",
     )
+
+
+# ---------------------------------------------------------------------------
+# H2 -- unsupported paired-reference dataset contract
+# ---------------------------------------------------------------------------
+
+
+def test_h3_reference_dataset_preflight_refuses_paired_suffixes(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    dataset = type("Dataset", (), {
+        "name": "instruction-stills", "path": "/instruction-stills",
+        "reference_suffixes": ["_source"], "target_suffixes": ["_target"],
+    })()
+
+    with pytest.raises(ValueError, match="source/target/instruction"):
+        train_runner._preflight_minimax_h3_reference_dataset_contract(
+            "h3.safetensors", [{"dataset_id": 1}], _H3DatasetDb(dataset))
+
+
+def test_h3_reference_dataset_preflight_accepts_ordinary_stills(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    dataset = type("Dataset", (), {
+        "name": "ordinary-stills", "path": "/ordinary-stills",
+        "reference_suffixes": [], "target_suffixes": [],
+    })()
+    train_runner._preflight_minimax_h3_reference_dataset_contract(
+        "h3.safetensors", [{"dataset_id": 1}], _H3DatasetDb(dataset))
+
+
+def test_h3_reference_item_validation_catches_cached_paired_items(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    with pytest.raises(ValueError, match=r"1 paired item\(s\)"):
+        train_runner._validate_minimax_h3_reference_items(
+            "h3.safetensors",
+            [{"image_path": "scene_target.png",
+              "caption": "change the light",
+              "reference_images": ["scene_source.png"]}],
+            dataset_label="instruction-stills",
+        )

@@ -1,5 +1,12 @@
 # Block Swap implementation audit
 
+> **Superseded for current status.** This July 2026 snapshot predates later
+> event-ordering, H2D-only, quantization-sidecar, and optimizer-residency fixes,
+> and it did not detect that `LayerOffloadConductor` models use its hook path
+> rather than the separate method containing prefetch. See
+> `BLOCK_SWAP_RING_BUFFER_REVALIDATION_2026-09.md`; retain this file as history
+> and rationale only.
+
 本ドキュメントは SushiUI の block swap（ブロック単位の重み CPU オフロード）機構について、
 推論・学習の両面から実装の正しさ・効率・堅牢性・他機能との衝突を監査し、改善ロードマップ
 （Tier 1〜3 + H2D-only）をまとめたものである。

@@ -4222,28 +4222,17 @@ export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) 
                             Use Pinned Memory (faster transfer, more RAM)
                           </label>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            id="outpaint_block_swap_h2d_only"
-                            checked={params.block_swap_h2d_only || false}
-                            onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
-                            className="rounded"
-                          />
-                          <label htmlFor="outpaint_block_swap_h2d_only" className="text-xs text-gray-300">
-                            H2D-only (no device-to-host eviction of read-only weights)
-                          </label>
-                        </div>
-                        {params.block_swap_h2d_only && (
-                          <Slider
-                            label="Ring Size (GPU weight buffer slots)"
-                            min={1}
-                            max={4}
-                            step={1}
-                            value={params.block_swap_ring_size || 2}
-                            onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
-                          />
-                        )}
+                        <Slider
+                          label="Ring Size (GPU weight buffer slots)"
+                          min={1}
+                          max={4}
+                          step={1}
+                          value={params.block_swap_ring_size || 2}
+                          onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
+                        />
+                        <p className="text-xs text-blue-200">
+                          Inference uses immutable CPU masters and H2D-only transfers automatically.
+                        </p>
                       </div>
                     )}
                   </>

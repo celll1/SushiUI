@@ -17209,7 +17209,8 @@ async def delete_training_run(run_id: int, db: Session = Depends(get_training_db
         if run.status in ["running", "starting"]:
             raise HTTPException(status_code=400, detail=f"Cannot delete {run.status} training run. Please stop it first.")
 
-        db.delete(run)
+        from database.training_cleanup import delete_training_run_record
+        delete_training_run_record(db, run)
         db.commit()
         return {"message": "Training run deleted successfully"}
 
@@ -21113,7 +21114,8 @@ def delete_tagger_training_run(run_id: str, training_db: Session = Depends(get_t
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    training_db.delete(run)
+    from database.training_cleanup import delete_tagger_training_run_record
+    delete_tagger_training_run_record(training_db, run)
     training_db.commit()
     return {"deleted": run_id}
 

@@ -23,6 +23,7 @@ datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", **_sqlite_kwarg
 training_engine = create_engine(f"sqlite:///{training_db_path}", **_sqlite_kwargs)
 
 def _set_wal_mode(dbapi_conn, _):
+    dbapi_conn.execute("PRAGMA foreign_keys=ON")
     dbapi_conn.execute("PRAGMA journal_mode=WAL")
     dbapi_conn.execute("PRAGMA synchronous=NORMAL")
 

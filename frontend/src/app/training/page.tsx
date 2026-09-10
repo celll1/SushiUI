@@ -1,16 +1,20 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { X } from "lucide-react";
 import Sidebar from "@/components/common/Sidebar";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import TrainingList from "@/components/training/TrainingList";
-import TrainingConfig from "@/components/training/TrainingConfig";
-import TrainingMonitor from "@/components/training/TrainingMonitor";
-import TaggerTrainingConfig from "@/components/training/tagger/TaggerTrainingConfig";
-import TaggerTrainingMonitor from "@/components/training/tagger/TaggerTrainingMonitor";
-import VaeTrainingConfig from "@/components/training/vae/VaeTrainingConfig";
 import { listTrainingRuns, listTaggerTrainingRuns, TrainingRun, TaggerTrainingRun } from "@/utils/api";
+
+// The list is the page's first useful paint. These five panels total hundreds
+// of KB of source and none is needed until a run or editor is selected.
+const TrainingConfig = dynamic(() => import("@/components/training/TrainingConfig"));
+const TrainingMonitor = dynamic(() => import("@/components/training/TrainingMonitor"));
+const TaggerTrainingConfig = dynamic(() => import("@/components/training/tagger/TaggerTrainingConfig"));
+const TaggerTrainingMonitor = dynamic(() => import("@/components/training/tagger/TaggerTrainingMonitor"));
+const VaeTrainingConfig = dynamic(() => import("@/components/training/vae/VaeTrainingConfig"));
 
 export default function TrainingPage() {
   return (

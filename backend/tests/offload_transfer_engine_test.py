@@ -13,6 +13,7 @@ from core.memory_management.offload_transfer_engine import (  # noqa: E402
     FrozenSequentialTransferEngine,
 )
 from core.memory_management.block_offloading import TransformerBlockOffloader  # noqa: E402
+from core.memory_management.flux_block_offloading import FluxBlockOffloader  # noqa: E402
 
 
 def _engine(keys=(10, 11, 12, 13, 14), ring_size=2):
@@ -134,4 +135,26 @@ def test_transformer_h2d_path_packs_weight_and_sidecar_planes():
 
     offloader.submit_move_blocks_forward(0)
     assert blocks[0].weight.data_ptr() == offloader.h2d_masters[0][0][torch.float32].data_ptr()
+    offloader.cleanup()
+
+
+def test_flux_inference_path_uses_the_same_multi_plane_engine():
+    dual = nn.ModuleList([SidecarLinear(1)])
+    single = nn.ModuleList([SidecarLinear(2), SidecarLinear(3)])
+    offloader = FluxBlockOffloader(
+        transformer_blocks=dual,
+        single_transformer_blocks=single,
+        blocks_to_swap=3,
+        device=torch.device("cpu"),
+        h2d_only=True,
+        ring_size=2,
+    )
+    offloader.prepare_block_devices_before_forward()
+    offloader.wait_for_block(0)
+
+    assert offloader.h2d_engine is not None
+    assert torch.equal(dual[0].weight, torch.ones_like(dual[0].weight))
+    assert torch.equal(dual[0].weight_scale, torch.full_like(dual[0].weight_scale, 11))
+    offloader.submit_move_blocks_forward(0)
+    assert offloader.h2d_engine.loaded_key[0] == 2
     offloader.cleanup()

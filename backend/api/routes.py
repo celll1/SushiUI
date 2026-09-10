@@ -20556,6 +20556,18 @@ class TaggerTrainingRunCreateRequest(BaseModel):
 
 # Active tagger training threads
 _tagger_training_threads: Dict[str, Any] = {}
+_tagger_detail_executor = None
+
+
+def _get_tagger_detail_executor():
+    """One ordered mirror worker for all tagger runs, created on first use."""
+    global _tagger_detail_executor
+    if _tagger_detail_executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _tagger_detail_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tagger_detail_db"
+        )
+    return _tagger_detail_executor
 
 
 def _make_tagger_progress_callback(run_id: str, training_db_factory):
@@ -20583,11 +20595,6 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
         print(f"[TaggerCallback] run_id={run_id}: resume_seq={resume_seq} (subsequent resume)")
     else:
         print(f"[TaggerCallback] run_id={run_id}: resume_seq=0 (initial run)")
-
-    from concurrent.futures import ThreadPoolExecutor
-    detail_executor = ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="tagger_detail_db"
-    )
 
     def _mirror_detail(rid: str, keys) -> None:
         mirror_db = training_db_factory()
@@ -20747,7 +20754,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.latest_checkpoint_path = os.path.join(run.output_dir or "", "latest.safetensors")
             db.commit()
             if touched_metric_keys:
-                detail_executor.submit(
+                _get_tagger_detail_executor().submit(
                     _mirror_detail, rid, tuple(touched_metric_keys)
                 )
         except Exception as e:

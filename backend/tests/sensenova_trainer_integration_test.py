@@ -497,6 +497,7 @@ def test_execute_forward_backward_uses_dedicated_prefix_field():
     trainer.debug_vram = False
     trainer.use_grad_scaler = False
     trainer._grad_accum_steps = 1
+    trainer._pending_extra_metrics = {}
     result = trainer._execute_forward_backward(
         mnt_latents=torch.zeros(1, 3, 32, 32),
         mnt_text_embeddings=None,

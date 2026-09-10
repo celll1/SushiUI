@@ -20,8 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
 from .block_offloading import (
-    DtypeSplitGuardMixin, pairable_block_indices, weighs_to_device, _synchronize_device,
+    DtypeSplitGuardMixin, pairable_block_indices, weight_sidecar_names, weighs_to_device,
+    _synchronize_device,
 )
+from .offload_transfer_engine import FrozenSequentialTransferEngine
 
 
 class FluxBlockOffloader(DtypeSplitGuardMixin):
@@ -94,6 +96,7 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         self.h2d_loaded_block = None
         self.h2d_swappable = None
         self.h2d_num_on_gpu = None
+        self.h2d_engine = None
 
         # Training H2D (order-agnostic pull-based residency): block<->slot maps + LRU order.
         # Populated by _h2d_setup when not forward_only.
@@ -435,6 +438,10 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
                         if getattr(m, "bias", None) is not None and m.bias.data.device != self.device:
                             m.bias.data = m.bias.data.to(self.device)
 
+        if not self.h2d_training:
+            self._h2d_setup_frozen_engine()
+            return
+
         frozen_only = self.h2d_training
         dtypes = set()
         for uidx in self.h2d_swappable:
@@ -505,7 +512,63 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
                   f"ring_size={self.ring_size}, master dtype={flat_dtype}, coalesced flat "
                   f"pinned CPU masters (no D2H eviction)")
 
+    def _h2d_setup_frozen_engine(self):
+        """Pack heterogeneous FLUX blocks into the shared immutable engine."""
+        self.h2d_masters = {}
+        pin_warned = False
+        for uidx in self.h2d_swappable:
+            tensors = []
+            plane_sizes = {}
+            for module in self._h2d_linear_modules(self._get_block(uidx)):
+                for attr_name in ("weight", *weight_sidecar_names(module)):
+                    tensor = getattr(module, attr_name).data
+                    plane = tensor.dtype
+                    offset = plane_sizes.get(plane, 0)
+                    tensors.append(
+                        (module, attr_name, plane, offset, tensor.numel(), tuple(tensor.shape))
+                    )
+                    plane_sizes[plane] = offset + tensor.numel()
+
+            planes = {}
+            for plane, total in plane_sizes.items():
+                flat_cpu = torch.empty(total, dtype=plane, device="cpu")
+                if self.cuda_available:
+                    try:
+                        flat_cpu = flat_cpu.pin_memory(device=self.device)
+                    except (RuntimeError, NotImplementedError) as exc:
+                        if not pin_warned:
+                            print(f"[FluxBlockOffloader] pin_memory unavailable ({exc}); "
+                                  "using pageable H2D masters.")
+                            pin_warned = True
+                planes[plane] = flat_cpu
+
+            layout = []
+            for module, attr_name, plane, offset, numel, shape in tensors:
+                source = getattr(module, attr_name).data
+                planes[plane][offset:offset + numel].copy_(source.reshape(-1))
+                getattr(module, attr_name).data = planes[plane][offset:offset + numel].view(shape)
+                layout.append((module, attr_name, plane, offset, numel, shape))
+            self.h2d_masters[uidx] = (planes, layout)
+
+        self.h2d_engine = FrozenSequentialTransferEngine(
+            keys=self.h2d_swappable,
+            masters={key: value[0] for key, value in self.h2d_masters.items()},
+            ring_size=self.ring_size,
+            device=self.device,
+            point_bundle=self._h2d_point_weights,
+            stream=self.stream,
+        )
+        self.h2d_engine.prime()
+        self.h2d_ring = self.h2d_engine.slots
+        self.h2d_loaded_block = self.h2d_engine.loaded_key
+        print(f"[FluxBlockOffloader] H2D-only ready: {len(self.h2d_swappable)} swappable "
+              f"blocks, ring_size={self.ring_size}, shared multi-plane engine "
+              f"(no D2H eviction)")
+
     def _h2d_submit_load(self, unified_idx: int, slot: int):
+        if self.h2d_engine is not None:
+            self.h2d_engine.submit_load(unified_idx, slot)
+            return
         flat_cpu = self.h2d_masters[unified_idx][0]
         n = flat_cpu.numel()
         flat_gpu = self.h2d_ring[slot]
@@ -526,6 +589,10 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
 
     def _h2d_point_weights(self, unified_idx: int, flat_buf):
+        if self.h2d_engine is not None:
+            for module, attr_name, plane, off, n, shape in self.h2d_masters[unified_idx][1]:
+                getattr(module, attr_name).data = flat_buf[plane][off:off + n].view(shape)
+            return
         for (m, off, n, shape) in self.h2d_masters[unified_idx][1]:
             m.weight.data = flat_buf[off:off + n].view(shape)
 
@@ -584,6 +651,9 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
             return
         if unified_idx < self.h2d_num_on_gpu:
             return
+        if self.h2d_engine is not None:
+            self.h2d_engine.acquire(unified_idx)
+            return
         slot = (unified_idx - self.h2d_num_on_gpu) % self.ring_size
         fut = self.h2d_slot_futures[slot]
         if fut is not None and self.h2d_loaded_block[slot] == unified_idx:
@@ -610,6 +680,9 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
             # (it stays resident until evicted as an LRU victim, still pointing at its slot).
             return
         if unified_idx < self.h2d_num_on_gpu:
+            return
+        if self.h2d_engine is not None:
+            self.h2d_engine.release(unified_idx)
             return
         i = unified_idx - self.h2d_num_on_gpu
         slot = i % self.ring_size
@@ -1005,6 +1078,9 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         print(f"[FluxBlockOffloader] Cleaning up...")
 
         self.remove_backward_hooks()
+        if self.h2d_engine is not None:
+            self.h2d_engine.close()
+            self.h2d_engine = None
         self.thread_pool.shutdown(wait=True)
 
         # Clear dual block buffers

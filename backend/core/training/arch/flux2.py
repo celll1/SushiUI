@@ -53,10 +53,8 @@ class Flux2ArchHandler(ArchHandler):
         flux2_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        # P3c: FLUX.2 has NO dedicated late setup_*_block_swap method — block swap
-        # is wired INSIDE the loader (block_swap_h2d_args + wire_block_swap_driver),
-        # not via a post-adapter conductor call from the mode subclasses. No-op.
-        return None
+        from core.training.ops import flux2_ops
+        flux2_ops.setup_mutable_block_swap(trainer)
 
     def depth_blocks(self, trainer):
         # Forward order: the double-stream blocks, then the single-stream ones.

@@ -115,28 +115,9 @@ class LoRATrainer(BaseTrainer):
         # LayerOffloadConductor snapshots layer state_dicts at registration
         # time and post-wrap key changes would break the swap.
         # No-op when blocks_to_swap == 0.
-        if hasattr(self, "setup_anima_block_swap"):
-            self.setup_anima_block_swap()
-        if hasattr(self, "setup_lens_block_swap"):
-            self.setup_lens_block_swap()
-        if hasattr(self, "setup_ideogram4_block_swap"):
-            self.setup_ideogram4_block_swap()
-        if hasattr(self, "setup_minit2i_block_swap"):
-            self.setup_minit2i_block_swap()
-        if hasattr(self, "setup_krea2_block_swap"):
-            self.setup_krea2_block_swap()
         if hasattr(self, "setup_ltx2_wrapper"):
             self.setup_ltx2_wrapper()
-        if hasattr(self, "setup_ltx2_block_swap"):
-            self.setup_ltx2_block_swap()
-        if hasattr(self, "setup_acestep_block_swap"):
-            self.setup_acestep_block_swap()
-        if getattr(self, "is_minimax_h3", False):
-            # Block swap is NOT required for this arch (measured: 22.45 GB peak
-            # at 384x640x22 and 25.63 GB at the largest registered cell, both
-            # unswapped) but the knob exists, and the ordering contract is the
-            # same as every other arch's: after the LoRA wrap, never before.
-            self.arch.setup_block_swap(self)
+        self.arch.setup_block_swap(self)
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)

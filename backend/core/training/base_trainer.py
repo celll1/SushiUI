@@ -4439,50 +4439,25 @@ class BaseTrainer(ABC):
             self.flux2_transformer_wrapper = None  # Drives the offloader during forward
 
             if self.blocks_to_swap > 0:
-                print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
-                print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
-                print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
-
-                # Policy gate: FLUX.2 training block swap requires H2D-only + frozen base
-                # (LoRA) + gradient checkpointing. Raises on any unsupported combination.
-                _h2d_args = self._flux2_block_swap_h2d_args()
-
-                # Import FLUX.2 specific block offloader
-                from core.memory_management import create_flux_block_offloader
-
-                # Check if transformer has required attributes
-                if not hasattr(self.transformer, 'transformer_blocks') or not hasattr(self.transformer, 'single_transformer_blocks'):
-                    raise ValueError(
-                        f"FLUX.2 Transformer must have 'transformer_blocks' and 'single_transformer_blocks' attributes for Block Swap. "
-                        f"Found: {type(self.transformer)}"
+                from core.training.ops.training_method import trains_denoiser_weights
+                if trains_denoiser_weights(self):
+                    print(f"{self.log_prefix} Deferring FLUX.2 mutable block swap until "
+                          "full-FT parameter selection is complete")
+                else:
+                    _h2d_args = self._flux2_block_swap_h2d_args()
+                    from core.memory_management import create_flux_block_offloader
+                    self.flux2_block_offloader = create_flux_block_offloader(
+                        transformer=self.transformer,
+                        blocks_to_swap=self.blocks_to_swap,
+                        device=self.device,
+                        target_dtype=self.training_dtype,
+                        use_pinned_memory=self.use_pinned_memory,
+                        supports_backward=True,
+                        **_h2d_args,
                     )
+                    self.flux2_block_offloader.prepare_block_devices_before_forward()
+                    self._wire_flux2_block_swap_driver()
 
-                # Initialize FLUX.2 Block Offloader
-                self.flux2_block_offloader = create_flux_block_offloader(
-                    transformer=self.transformer,
-                    blocks_to_swap=self.blocks_to_swap,
-                    device=self.device,
-                    target_dtype=self.training_dtype,
-                    use_pinned_memory=self.use_pinned_memory,
-                    supports_backward=True,  # Training mode
-                    **_h2d_args,
-                )
-
-                # Prepare block devices (keep some on GPU, offload rest to CPU)
-                self.flux2_block_offloader.prepare_block_devices_before_forward()
-
-                # Wire the offloader into the forward (wrapper) and backward (hooks).
-                self._wire_flux2_block_swap_driver()
-
-                num_dual = len(self.transformer.transformer_blocks)
-                num_single = len(self.transformer.single_transformer_blocks)
-                print(f"{self.log_prefix}   FLUX.2 Block Swap initialized:")
-                print(f"{self.log_prefix}   Dual stream blocks: {num_dual}")
-                print(f"{self.log_prefix}   Single stream blocks: {num_single}")
-                print(f"{self.log_prefix}   Total blocks: {num_dual + num_single}")
-                print(f"{self.log_prefix}   Blocks to swap: {self.blocks_to_swap}")
-
-                # Move VAE and Text Encoder to device (Transformer managed by block offloader)
                 print(f"{self.log_prefix} Moving VAE to {self.device}...")
                 self.vae.to(self.device)
                 print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
@@ -6667,6 +6642,7 @@ class BaseTrainer(ABC):
         """
         if self.run_id is not None:
             self._log_metrics_to_db(step=step, force_flush=True)
+        self._flush_layer_offload_conductors()
         self._begin_checkpoint_bundle(step)
         _pre_save_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
         self.save_checkpoint(step=step, epoch=epoch)
@@ -7970,6 +7946,12 @@ class BaseTrainer(ABC):
         self._record_configured_group_lrs(requested_group_lrs)
         self._report_effective_component_lrs(requested_group_lrs)
 
+        # Conductor observers must be registered after every fused optimizer
+        # hook: a cleared gradient then proves the corresponding update ran.
+        conductors = getattr(self, "_layer_offload_conductors", lambda: ())()
+        for conductor in conductors:
+            conductor.register_optimizer_hooks()
+
         if getattr(self, "is_sensenova", False) and is_full_finetune(self):
             from core.training.ops.sensenova_ops import (
                 assert_four_phase_fused_backward,
@@ -7978,6 +7960,25 @@ class BaseTrainer(ABC):
             assert_full_finetune_stochastic_rounding_attached(self, optimizer_type)
             assert_four_phase_fused_backward(self)
             self._assert_ringbuffer_state_host_resident(optimizer_type)
+
+    def _layer_offload_conductors(self):
+        """Return every mutable conductor, including Ideogram's second branch."""
+        result = []
+        seen = set()
+        for name in ("layer_offload_conductor", "layer_offload_conductor_uncond"):
+            conductor = getattr(self, name, None)
+            if conductor is not None and id(conductor) not in seen:
+                result.append(conductor)
+                seen.add(id(conductor))
+        return result
+
+    def _flush_layer_offload_conductors(self) -> None:
+        for conductor in self._layer_offload_conductors():
+            conductor.flush()
+
+    def _finish_layer_offload_backward(self) -> None:
+        for conductor in self._layer_offload_conductors():
+            conductor.clear_activations()
 
     def _assert_ringbuffer_state_host_resident(self, optimizer_type: str) -> None:
         """Prove the 8-bit state is where the budget says, not that a flag is set.
@@ -9711,10 +9712,9 @@ class BaseTrainer(ABC):
             self.optimizer.zero_grad(set_to_none=True)
         except Exception:
             pass
-        cond = getattr(self, "layer_offload_conductor", None)
-        if cond is not None:
+        for cond in self._layer_offload_conductors():
             try:
-                cond.clear_activations()
+                cond.abort_step()
             except Exception:
                 pass
         flx = getattr(self, "flux2_block_offloader", None)
@@ -18337,8 +18337,7 @@ class BaseTrainer(ABC):
                             del mnt_pooled_embeddings
 
                         # Clear saved activations immediately after backward to prevent VRAM leaks
-                        if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
-                            self.layer_offload_conductor.clear_activations()
+                        self._finish_layer_offload_backward()
 
                         # FLUX.2: Clear block swap activations
                         if hasattr(self, 'flux2_block_offloader') and self.flux2_block_offloader is not None:
@@ -19156,6 +19155,7 @@ class BaseTrainer(ABC):
             # Try to save checkpoint (even if it fails, continue to save state)
             checkpoint_saved = False
             try:
+                self._flush_layer_offload_conductors()
                 self.save_checkpoint(step=global_step, epoch=epoch)
                 checkpoint_saved = True
                 print(f"{self.log_prefix} Checkpoint saved successfully")
@@ -20218,10 +20218,12 @@ class BaseTrainer(ABC):
         self._shutdown_db_executor()
 
         # Cleanup Layer Offload Conductor
-        if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
+        for conductor in self._layer_offload_conductors():
             print(f"{self.log_prefix} Cleaning up LayerOffloadConductor...")
-            self.layer_offload_conductor.cleanup()
-            self.layer_offload_conductor = None
+            conductor.cleanup()
+        self.layer_offload_conductor = None
+        if hasattr(self, "layer_offload_conductor_uncond"):
+            self.layer_offload_conductor_uncond = None
 
         # Cleanup FLUX.2 block offloader + its forward/backward driver.
         # Drop the wrapper and remove backward hooks to avoid leaking hooks across runs.

@@ -1,35 +1,22 @@
-"""
-Layer Offload Conductor
+"""Checkpoint-aware mutable layer offload backed by the shared transfer engine."""
 
-Orchestrates layer loading/offloading with async transfers and custom allocators.
-"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Mapping
 
 import torch
 import torch.nn as nn
-from typing import List, Optional, Dict, Any
-import copy
 
-from .ring_buffer_allocator import RingBufferAllocator, DynamicActivationAllocator
 from .layer_offload_strategy import LayerOffloadStrategy
-from .tensor_utils import (
-    extract_tensors,
-    replace_tensor_data,
-    create_pinned_copy,
-    async_copy_to_device,
-    wait_for_event,
-    get_tensor_memory_size
-)
+from .offload_transfer_engine import MutableLruTransferEngine
 
 
 class LayerOffloadConductor:
-    """
-    Orchestrates layer offloading for VRAM-efficient training.
+    """Keep mutable block weights in persistent CPU masters and fixed GPU slots.
 
-    Features:
-    - Async CPU ↔ GPU transfer with dedicated streams
-    - Custom memory allocators to avoid fragmentation
-    - Activation offloading for gradient checkpointing
-    - Hook-based integration with transformer layers
+    The initial checkpointed forward releases a clean slot immediately. During
+    checkpoint recomputation the slot remains active until the layer's optimizer
+    hooks have applied its update, then the updated bundle is written back.
     """
 
     def __init__(
@@ -41,404 +28,308 @@ class LayerOffloadConductor:
         cpu_buffer_size_mb: int = 8192,
         activation_buffer_size_mb: int = 4096,
         enable_prefetch: bool = True,
-        enable_activation_offload: bool = True
-    ):
-        """
-        Initialize conductor.
-
-        Args:
-            layers: Transformer layers (ModuleList)
-            blocks_to_swap: Number of layers to swap to CPU
-            device: GPU device
-            use_pinned_memory: Use pinned CPU memory for faster transfer
-            cpu_buffer_size_mb: CPU buffer size in MB (for layer params)
-            activation_buffer_size_mb: CPU buffer size in MB (for activations)
-            enable_prefetch: Enable prefetching next layer
-            enable_activation_offload: Enable activation offloading
-        """
+        enable_activation_offload: bool = False,
+        ring_size: int = 2,
+    ) -> None:
+        del cpu_buffer_size_mb, activation_buffer_size_mb
         self.layers = layers
         self.num_layers = len(layers)
-        self.blocks_to_swap = blocks_to_swap
-        self.device = device
-        self.use_pinned_memory = use_pinned_memory
-        self.enable_prefetch = enable_prefetch
-        self.enable_activation_offload = enable_activation_offload
+        self.blocks_to_swap = int(blocks_to_swap)
+        self.device = torch.device(device)
+        self.use_pinned_memory = bool(use_pinned_memory)
+        self.enable_prefetch = bool(enable_prefetch)
+        self.enable_activation_offload = False
+        if enable_activation_offload:
+            raise ValueError(
+                "LayerOffloadConductor activation offload was unreachable; use "
+                "activation_dispatch_enable for saved-tensor offload"
+            )
+        if self.device.type != "cuda":
+            raise ValueError("mutable block swap requires a CUDA device")
 
-        # Strategy
         self.strategy = LayerOffloadStrategy(
             num_layers=self.num_layers,
-            blocks_to_swap=blocks_to_swap,
-            device=device
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
         )
-
-        # Memory allocators
-        cpu_device = torch.device('cpu')
-
-        self.param_allocator = RingBufferAllocator(device=cpu_device)
-        self.param_allocator.initialize(
-            layers=list(layers),
-            target_bytes=cpu_buffer_size_mb * 1024 * 1024
+        self.swappable = tuple(
+            idx for idx in range(self.num_layers) if self.strategy.is_offloadable(idx)
         )
+        if not self.swappable:
+            raise ValueError("blocks_to_swap must select at least one layer")
+        self.ring_size = max(1, min(int(ring_size), len(self.swappable)))
+        self.transfer_stream = torch.cuda.Stream(device=self.device)
 
-        if enable_activation_offload:
-            self.activation_allocator = DynamicActivationAllocator(device=cpu_device)
-        else:
-            self.activation_allocator = None
-
-        # CUDA streams for async transfer
-        self.transfer_stream = torch.cuda.Stream(device=device)
-        self.compute_stream = torch.cuda.current_stream(device=device)
-
-        # State tracking
-        self.layer_states: Dict[int, str] = {}  # layer_idx -> 'cpu' | 'gpu' | 'loading' | 'offloading'
-        self.layer_gpu_copies: Dict[int, Dict[str, torch.Tensor]] = {}  # layer_idx -> {param_name: tensor}
-        self.layer_cpu_copies: Dict[int, Dict[str, torch.Tensor]] = {}  # layer_idx -> {param_name: tensor}
-        self.pending_events: Dict[int, torch.cuda.Event] = {}  # layer_idx -> event
-        self.saved_activations: Dict[int, Any] = {}  # layer_idx -> activations
-
-        # Hook handles
+        self._masters: Dict[int, Dict[torch.dtype, torch.Tensor]] = {}
+        self._layouts: Dict[int, list[tuple[Any, str, torch.dtype, int, int, tuple[int, ...]]]] = {}
+        self._trainable: Dict[int, tuple[nn.Parameter, ...]] = {}
+        self._backward_seen: set[int] = set()
+        self._recompute_seen: set[int] = set()
+        self._optimizer_hooks_ready = False
+        self._closed = False
         self.hook_handles: List[Any] = []
+        self.optimizer_hook_handles: List[Any] = []
+        self.saved_activations: Dict[int, Any] = {}
+        self.layer_cpu_copies: Dict[int, Dict[str, torch.Tensor]] = {}
 
-        # Initialize layers
         self._initialize_layers()
+        self.engine = MutableLruTransferEngine(
+            keys=self.swappable,
+            masters=self._masters,
+            ring_size=self.ring_size,
+            device=self.device,
+            point_bundle=self._point_bundle,
+            stream=self.transfer_stream,
+        )
+        self.layer_states: Dict[int, str] = {
+            idx: ("cpu" if idx in self.swappable else "gpu")
+            for idx in range(self.num_layers)
+        }
 
-    def _initialize_layers(self):
-        """Initialize layer states and create CPU copies."""
-        print("[LayerOffloadConductor] Initializing layers...")
+    @staticmethod
+    def _owned_tensors(layer: nn.Module):
+        seen = set()
+        for module in layer.modules():
+            for name, tensor in module.named_parameters(recurse=False):
+                if id(tensor) not in seen:
+                    seen.add(id(tensor))
+                    yield module, name, tensor
+            for name, tensor in module.named_buffers(recurse=False):
+                if tensor is not None and id(tensor) not in seen:
+                    seen.add(id(tensor))
+                    yield module, name, tensor
 
-        for layer_idx, layer in enumerate(self.layers):
-            if self.strategy.is_resident(layer_idx):
-                # Resident layers stay on GPU
+    def _pinned_empty(self, numel: int, dtype: torch.dtype) -> torch.Tensor:
+        tensor = torch.empty(numel, dtype=dtype, device="cpu")
+        if self.use_pinned_memory:
+            try:
+                tensor = tensor.pin_memory()
+            except (RuntimeError, NotImplementedError):
+                pass
+        return tensor
+
+    def _initialize_layers(self) -> None:
+        print("[LayerOffloadConductor] Initializing shared mutable transfer engine...")
+        for idx, layer in enumerate(self.layers):
+            if idx not in self.swappable:
                 layer.to(self.device)
-                self.layer_states[layer_idx] = 'gpu'
-                print(f"  Layer {layer_idx}: Resident (GPU)")
+                continue
 
-            else:
-                # Offloadable layers: create CPU copy and move to CPU
-                print(f"  Layer {layer_idx}: Offloadable (CPU)")
+            tensors = list(self._owned_tensors(layer))
+            plane_sizes: Dict[torch.dtype, int] = {}
+            records = []
+            for owner, name, tensor in tensors:
+                plane = tensor.dtype
+                offset = plane_sizes.get(plane, 0)
+                records.append((owner, name, tensor, plane, offset))
+                plane_sizes[plane] = offset + tensor.numel()
+            if not plane_sizes:
+                raise ValueError(f"offloaded layer {idx} contains no parameters or buffers")
 
-                # Create CPU copy with custom allocator
-                cpu_params = {}
-                allocator = self.param_allocator.get_layer_allocator(layer_idx, forward=True)
+            planes = {
+                plane: self._pinned_empty(total, plane)
+                for plane, total in plane_sizes.items()
+            }
+            layout = []
+            cpu_named = {}
+            parameter_names = {id(p): name for name, p in layer.named_parameters()}
+            for owner, name, tensor, plane, offset in records:
+                numel = tensor.numel()
+                shape = tuple(tensor.shape)
+                master = planes[plane][offset:offset + numel].view(shape)
+                master.copy_(tensor.detach(), non_blocking=False)
+                tensor.data = master
+                layout.append((owner, name, plane, offset, numel, shape))
+                if id(tensor) in parameter_names:
+                    cpu_named[parameter_names[id(tensor)]] = master
 
-                for name, param in layer.named_parameters():
-                    # Allocate CPU buffer
-                    cpu_param = allocator.allocate(param)
-
-                    # Copy data to CPU
-                    if self.use_pinned_memory:
-                        pinned = create_pinned_copy(param)
-                        cpu_param.copy_(pinned, non_blocking=False)
-                    else:
-                        cpu_param.copy_(param.cpu(), non_blocking=False)
-
-                    cpu_params[name] = cpu_param
-
-                self.layer_cpu_copies[layer_idx] = cpu_params
-
-                # Move layer to CPU (PyTorch default allocator)
-                layer.to('cpu')
-
-                # CRITICAL: Replace layer parameters with ring buffer allocations
-                # This ensures layer uses custom allocator memory, not PyTorch default
-                for name, param in layer.named_parameters():
-                    if name in cpu_params:
-                        param.data = cpu_params[name]
-
-                self.layer_states[layer_idx] = 'cpu'
+            self._masters[idx] = planes
+            self._layouts[idx] = layout
+            self._trainable[idx] = tuple(p for p in layer.parameters() if p.requires_grad)
+            self.layer_cpu_copies[idx] = cpu_named
 
         self.strategy.print_strategy()
-        print(f"[LayerOffloadConductor] Initialization complete")
+        print(
+            f"[LayerOffloadConductor] Shared mutable engine ready: "
+            f"{len(self.swappable)} layers, {self.ring_size} GPU slots"
+        )
 
-    def load_layer_to_gpu(self, layer_idx: int, async_transfer: bool = True):
-        """
-        Load layer from CPU to GPU.
+    def _point_bundle(
+        self, layer_idx: int, bundle: Mapping[torch.dtype, torch.Tensor]
+    ) -> None:
+        for owner, name, plane, offset, numel, shape in self._layouts[layer_idx]:
+            getattr(owner, name).data = bundle[plane][offset:offset + numel].view(shape)
 
-        Args:
-            layer_idx: Layer index
-            async_transfer: Use async transfer
-        """
-        if self.layer_states[layer_idx] == 'gpu':
-            return  # Already on GPU
+    @staticmethod
+    def _inside_backward() -> bool:
+        getter = getattr(torch._C, "_current_graph_task_id", None)
+        return bool(getter is not None and getter() >= 0)
 
-        if self.layer_states[layer_idx] == 'loading':
-            # Wait for pending load
-            if layer_idx in self.pending_events:
-                wait_for_event(self.pending_events[layer_idx], self.compute_stream)
-                del self.pending_events[layer_idx]
-            self.layer_states[layer_idx] = 'gpu'
+    def _prefetch_neighbor(self, layer_idx: int, *, backward: bool) -> None:
+        if not self.enable_prefetch or self.ring_size < 2:
             return
+        position = self.swappable.index(layer_idx)
+        position += -1 if backward else 1
+        if 0 <= position < len(self.swappable):
+            self.engine.prefetch(self.swappable[position])
 
-        # Mark as loading
-        self.layer_states[layer_idx] = 'loading'
+    def _acquire(self, layer_idx: int) -> None:
+        backward = self._inside_backward()
+        self.engine.acquire(layer_idx)
+        self.layer_states[layer_idx] = "gpu"
+        if backward:
+            self._recompute_seen.add(layer_idx)
+        self._prefetch_neighbor(layer_idx, backward=backward)
 
-        layer = self.layers[layer_idx]
-        cpu_params = self.layer_cpu_copies[layer_idx]
-
-        # Move layer to GPU
-        layer.to(self.device)
-
-        # Copy parameters from CPU buffer to GPU
-        if async_transfer:
-            with torch.cuda.stream(self.transfer_stream):
-                for name, param in layer.named_parameters():
-                    cpu_param = cpu_params[name]
-                    param.data.copy_(cpu_param, non_blocking=True)
-
-                # Record event
-                event = torch.cuda.Event()
-                event.record(self.transfer_stream)
-                self.pending_events[layer_idx] = event
-        else:
-            for name, param in layer.named_parameters():
-                cpu_param = cpu_params[name]
-                param.data.copy_(cpu_param, non_blocking=False)
-
-            self.layer_states[layer_idx] = 'gpu'
-
-    def offload_layer_to_cpu(self, layer_idx: int, async_transfer: bool = True):
-        """
-        Offload layer from GPU to CPU.
-
-        Args:
-            layer_idx: Layer index
-            async_transfer: Use async transfer
-        """
-        if self.layer_states[layer_idx] == 'cpu':
-            return  # Already on CPU
-
-        if self.layer_states[layer_idx] == 'offloading':
-            # Wait for pending offload
-            if layer_idx in self.pending_events:
-                wait_for_event(self.pending_events[layer_idx], self.compute_stream)
-                del self.pending_events[layer_idx]
-            self.layer_states[layer_idx] = 'cpu'
+    def _after_forward(self, layer_idx: int) -> None:
+        if self._inside_backward():
             return
+        self.engine.release(layer_idx, dirty=False)
+        self.layer_states[layer_idx] = "cpu"
 
-        # Mark as offloading
-        self.layer_states[layer_idx] = 'offloading'
+    def _all_updates_applied(self, layer_idx: int) -> bool:
+        params = self._trainable[layer_idx]
+        return not params or all(param.grad is None for param in params)
 
-        layer = self.layers[layer_idx]
-        cpu_params = self.layer_cpu_copies[layer_idx]
+    def _release_if_ready(self, layer_idx: int) -> bool:
+        if layer_idx not in self._backward_seen or not self._all_updates_applied(layer_idx):
+            return False
+        self.engine.release(layer_idx, dirty=bool(self._trainable[layer_idx]))
+        self.layer_states[layer_idx] = "cpu"
+        self._backward_seen.discard(layer_idx)
+        self._recompute_seen.discard(layer_idx)
+        return True
 
-        # Copy parameters from GPU to CPU buffer
-        if async_transfer:
-            with torch.cuda.stream(self.transfer_stream):
-                for name, param in layer.named_parameters():
-                    cpu_param = cpu_params[name]
-                    cpu_param.copy_(param.data, non_blocking=True)
+    def _try_release_ready_layers(self) -> None:
+        for layer_idx in tuple(self._backward_seen):
+            self._release_if_ready(layer_idx)
 
-                # Record event
-                event = torch.cuda.Event()
-                event.record(self.transfer_stream)
-                self.pending_events[layer_idx] = event
-        else:
-            for name, param in layer.named_parameters():
-                cpu_param = cpu_params[name]
-                cpu_param.copy_(param.data, non_blocking=False)
+    def register_hooks(self) -> None:
+        if self.hook_handles:
+            return
+        for layer_idx in self.swappable:
+            layer = self.layers[layer_idx]
 
-        # Move layer to CPU after transfer
-        if async_transfer:
-            # Wait for transfer to complete before moving
-            wait_for_event(self.pending_events[layer_idx], self.transfer_stream)
-            del self.pending_events[layer_idx]
+            def pre_hook(module, inputs, idx=layer_idx):
+                self._acquire(idx)
 
-        layer.to('cpu')
-        self.layer_states[layer_idx] = 'cpu'
+            def post_hook(module, inputs, output, idx=layer_idx):
+                self._after_forward(idx)
 
-    def sync_layer(self, layer_idx: int):
-        """
-        Wait for layer transfer to complete.
+            def backward_hook(module, grad_input, grad_output, idx=layer_idx):
+                if idx not in self._recompute_seen:
+                    raise RuntimeError(
+                        "mutable block swap requires non-reentrant gradient "
+                        f"checkpoint recomputation; layer {idx} reached backward without it"
+                    )
+                self._backward_seen.add(idx)
+                self._release_if_ready(idx)
 
-        Args:
-            layer_idx: Layer index
-        """
-        if layer_idx in self.pending_events:
-            wait_for_event(self.pending_events[layer_idx], self.compute_stream)
-            del self.pending_events[layer_idx]
+            self.hook_handles.append(layer.register_forward_pre_hook(pre_hook))
+            self.hook_handles.append(layer.register_forward_hook(post_hook, always_call=True))
+            self.hook_handles.append(layer.register_full_backward_hook(backward_hook))
+        print(f"[LayerOffloadConductor] Registered {len(self.hook_handles)} lifecycle hooks")
 
-            # Update state
-            if self.layer_states[layer_idx] == 'loading':
-                self.layer_states[layer_idx] = 'gpu'
-            elif self.layer_states[layer_idx] == 'offloading':
-                self.layer_states[layer_idx] = 'cpu'
+    def register_optimizer_hooks(self) -> None:
+        """Register after fused optimizer hooks so cleared grads mean updated weights."""
+        if self._optimizer_hooks_ready:
+            return
+        for layer_idx in self.swappable:
+            for parameter in self._trainable[layer_idx]:
+                def update_observer(tensor, idx=layer_idx):
+                    if tensor.grad is None:
+                        self._try_release_ready_layers()
 
-    def forward_layer(self, layer_idx: int, hidden_states: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        """
-        Execute forward pass for layer with offloading.
+                self.optimizer_hook_handles.append(
+                    parameter.register_post_accumulate_grad_hook(update_observer)
+                )
+        self._optimizer_hooks_ready = True
 
-        Args:
-            layer_idx: Layer index
-            hidden_states: Input tensor
-            *args, **kwargs: Additional layer arguments
+    def finish_backward(self) -> None:
+        """Release groups stepped after autograd and reject stale GPU layers."""
+        self._try_release_ready_layers()
+        if self._backward_seen:
+            pending = sorted(self._backward_seen)
+            raise RuntimeError(
+                f"mutable block swap has layers awaiting optimizer update: {pending}"
+            )
 
-        Returns:
-            Output tensor
-        """
-        # Load layer to GPU
-        self.load_layer_to_gpu(layer_idx, async_transfer=True)
+    def flush(self) -> None:
+        """Make all CPU masters current before save or teardown."""
+        self._try_release_ready_layers()
+        if self.engine.active:
+            raise RuntimeError(
+                f"cannot flush mutable offload during active layers: {sorted(self.engine.active)}"
+            )
+        self.engine.synchronize()
 
-        # Wait for load to complete
-        self.sync_layer(layer_idx)
+    def abort_step(self) -> None:
+        """Recover slot ownership after an abandoned backward on a live context."""
+        for layer_idx in tuple(self.engine.active):
+            self.engine.release(layer_idx, dirty=bool(self._trainable[layer_idx]))
+            self.layer_states[layer_idx] = "cpu"
+        self.engine.synchronize()
+        self._backward_seen.clear()
+        self._recompute_seen.clear()
 
-        # Prefetch next layer
-        if self.enable_prefetch:
-            next_layer_idx = self.strategy.should_prefetch(layer_idx, 'forward')
-            if next_layer_idx is not None:
-                self.load_layer_to_gpu(next_layer_idx, async_transfer=True)
+    def load_layer_to_gpu(self, layer_idx: int, async_transfer: bool = True) -> None:
+        del async_transfer
+        if layer_idx in self.swappable:
+            self.engine.acquire(layer_idx)
+            self.layer_states[layer_idx] = "gpu"
 
-        # Execute layer
-        layer = self.layers[layer_idx]
-        output = layer(hidden_states, *args, **kwargs)
+    def offload_layer_to_cpu(self, layer_idx: int, async_transfer: bool = True) -> None:
+        del async_transfer
+        if layer_idx in self.swappable and layer_idx in self.engine.active:
+            self.engine.release(layer_idx, dirty=bool(self._trainable[layer_idx]))
+            self.layer_states[layer_idx] = "cpu"
 
-        # Save activations for backward (if enabled)
-        if self.enable_activation_offload and self.activation_allocator is not None:
-            self.saved_activations[layer_idx] = self._offload_activation(hidden_states)
+    def sync_layer(self, layer_idx: int) -> None:
+        del layer_idx
 
-        # Offload layer after forward (if not needed for backward immediately)
-        if self.strategy.is_offloadable(layer_idx):
-            # Don't offload immediately - wait for backward
-            pass
-
-        return output
-
-    def _offload_activation(self, activation: torch.Tensor) -> torch.Tensor:
-        """
-        Offload activation to CPU.
-
-        Args:
-            activation: Activation tensor
-
-        Returns:
-            CPU copy
-        """
-        if self.use_pinned_memory:
-            cpu_activation = create_pinned_copy(activation)
-        else:
-            cpu_activation = activation.cpu()
-
-        return cpu_activation
-
-    def _restore_activation(self, cpu_activation: torch.Tensor) -> torch.Tensor:
-        """
-        Restore activation from CPU.
-
-        Args:
-            cpu_activation: CPU activation
-
-        Returns:
-            GPU tensor
-        """
-        return cpu_activation.to(self.device, non_blocking=True)
-
-    def register_hooks(self):
-        """
-        Register forward/backward hooks for automatic offloading.
-
-        This enables integration with PyTorch autograd.
-        """
-        print("[LayerOffloadConductor] Registering hooks...")
-
-        for layer_idx, layer in enumerate(self.layers):
-            if self.strategy.is_offloadable(layer_idx):
-                # Forward pre-hook: Load layer
-                def forward_pre_hook(module, inputs, idx=layer_idx):
-                    self.load_layer_to_gpu(idx, async_transfer=True)
-                    self.sync_layer(idx)
-
-                handle = layer.register_forward_pre_hook(forward_pre_hook)
-                self.hook_handles.append(handle)
-
-                # Backward hook: Offload after gradient calculation
-                def backward_hook(module, grad_input, grad_output, idx=layer_idx):
-                    # Offload layer after backward
-                    self.offload_layer_to_cpu(idx, async_transfer=True)
-
-                handle = layer.register_full_backward_hook(backward_hook)
-                self.hook_handles.append(handle)
-
-        print(f"[LayerOffloadConductor] Registered {len(self.hook_handles)} hooks")
-
-    def remove_hooks(self):
-        """Remove all hooks."""
-        for handle in self.hook_handles:
-            handle.remove()
-
-        self.hook_handles = []
-        print("[LayerOffloadConductor] Removed hooks")
-
-    def clear_activations(self):
-        """
-        Clear saved activations after backward pass.
-
-        IMPORTANT: Call this after each backward() to prevent VRAM leaks.
-        """
+    def clear_activations(self) -> None:
         self.saved_activations.clear()
+        self.finish_backward()
 
-    def cleanup(self):
-        """Cleanup allocators and restore layers to GPU."""
-        print("[LayerOffloadConductor] Cleaning up...")
+    def remove_hooks(self) -> None:
+        for handle in (*self.hook_handles, *self.optimizer_hook_handles):
+            handle.remove()
+        self.hook_handles.clear()
+        self.optimizer_hook_handles.clear()
 
-        # Remove hooks
+    def cleanup(self) -> None:
+        if self._closed:
+            return
+        self.flush()
         self.remove_hooks()
-
-        # Clear saved activations
-        self.clear_activations()
-
-        # Move all layers to GPU
-        for layer_idx, layer in enumerate(self.layers):
-            if self.layer_states[layer_idx] != 'gpu':
-                self.load_layer_to_gpu(layer_idx, async_transfer=False)
-
-        # Cleanup allocators
-        self.param_allocator.cleanup()
-
-        if self.activation_allocator is not None:
-            self.activation_allocator.cleanup()
-
-        print("[LayerOffloadConductor] Cleanup complete")
+        self.engine.close()
+        self._closed = True
 
     def get_memory_stats(self) -> Dict[str, Any]:
-        """
-        Get memory usage statistics.
-
-        Returns:
-            Dictionary with memory stats
-        """
+        state_counts = {"cpu": 0, "gpu": 0, "loading": 0, "offloading": 0}
+        for state in self.layer_states.values():
+            state_counts[state] += 1
         stats = {
             "num_layers": self.num_layers,
             "blocks_to_swap": self.blocks_to_swap,
+            "ring_size": self.ring_size,
             "layer_states": dict(self.layer_states),
+            "state_counts": state_counts,
+            "transfers": self.engine.stats(),
+            "gpu_allocated_mb": torch.cuda.memory_allocated(self.device) / 1024**2,
+            "gpu_reserved_mb": torch.cuda.memory_reserved(self.device) / 1024**2,
         }
-
-        # Count layers by state
-        state_counts = {'cpu': 0, 'gpu': 0, 'loading': 0, 'offloading': 0}
-        for state in self.layer_states.values():
-            state_counts[state] += 1
-
-        stats["state_counts"] = state_counts
-
-        # GPU memory
-        if torch.cuda.is_available():
-            stats["gpu_allocated_mb"] = torch.cuda.memory_allocated(self.device) / (1024 ** 2)
-            stats["gpu_reserved_mb"] = torch.cuda.memory_reserved(self.device) / (1024 ** 2)
-
         return stats
 
-    def print_memory_stats(self):
-        """Print memory usage statistics."""
+    def print_memory_stats(self) -> None:
         stats = self.get_memory_stats()
-
         print("=" * 60)
         print("[LayerOffloadConductor] Memory Statistics")
-        print("=" * 60)
-        print(f"  Layer States: CPU={stats['state_counts']['cpu']}, "
-              f"GPU={stats['state_counts']['gpu']}, "
-              f"Loading={stats['state_counts']['loading']}, "
-              f"Offloading={stats['state_counts']['offloading']}")
-
-        if "gpu_allocated_mb" in stats:
-            print(f"  GPU Allocated: {stats['gpu_allocated_mb']:.2f} MB")
-            print(f"  GPU Reserved:  {stats['gpu_reserved_mb']:.2f} MB")
-
+        print(
+            f"  Layer States: CPU={stats['state_counts']['cpu']}, "
+            f"GPU={stats['state_counts']['gpu']}"
+        )
+        print(f"  GPU Allocated: {stats['gpu_allocated_mb']:.2f} MB")
+        print(f"  GPU Reserved:  {stats['gpu_reserved_mb']:.2f} MB")
+        print(f"  Transfers: {stats['transfers']}")
         print("=" * 60)

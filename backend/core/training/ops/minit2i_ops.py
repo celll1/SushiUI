@@ -146,6 +146,8 @@ def setup_block_swap(trainer) -> None:
         return
     if getattr(trainer, "layer_offload_conductor", None) is not None:
         return
+    if not trainer.gradient_checkpointing:
+        raise ValueError("MiniT2I mutable block swap requires gradient_checkpointing=True")
     double_blocks = trainer.transformer.model.net.double_blocks
 
     from core.memory_management import LayerOffloadConductor
@@ -160,6 +162,7 @@ def setup_block_swap(trainer) -> None:
         activation_buffer_size_mb=4096,
         enable_prefetch=True,
         enable_activation_offload=False,
+        ring_size=trainer.block_swap_ring_size,
     )
     trainer.transformer._layer_offload_conductor = trainer.layer_offload_conductor
     trainer.layer_offload_conductor.register_hooks()

@@ -290,6 +290,8 @@ def setup_block_swap(trainer) -> None:
         return
     if getattr(trainer, "layer_offload_conductor", None) is not None:
         return
+    if not trainer.gradient_checkpointing:
+        raise ValueError("MiniMax-H3 mutable block swap requires gradient_checkpointing=True")
     if not hasattr(trainer.transformer, "transformer_blocks"):
         raise ValueError("MiniMax-H3 DiT must expose `.transformer_blocks` for block swap")
 
@@ -305,6 +307,7 @@ def setup_block_swap(trainer) -> None:
         activation_buffer_size_mb=4096,
         enable_prefetch=True,
         enable_activation_offload=False,
+        ring_size=trainer.block_swap_ring_size,
     )
     trainer.transformer._layer_offload_conductor = trainer.layer_offload_conductor
     trainer.layer_offload_conductor.register_hooks()

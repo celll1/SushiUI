@@ -87,7 +87,9 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         # so their D2H eviction is a byte-identical redundant copy that H2D-only elides.
         # The inference forward-only path (fixed-slot prefetch ring) is unchanged; training uses
         # the order-agnostic pull-based residency below.
-        self.h2d_only = bool(h2d_only)
+        # Inference weights are immutable and always use the shared H2D engine. Training
+        # still requires an explicit frozen-base policy gate from flux2_ops.
+        self.h2d_only = self.forward_only or bool(h2d_only)
         self.ring_size = max(1, int(ring_size))
         # H2D-only state (built lazily on first forward)
         self.h2d_masters = None       # unified_idx -> (flat_cpu, [(module, offset, numel, shape)])

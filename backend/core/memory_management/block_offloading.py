@@ -315,9 +315,9 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         self.supports_backward = supports_backward
         self.forward_only = not supports_backward
 
-        # H2D-only mode is forward-only (read-only weights). Fall back to the normal swap
-        # path for training (backward) until backward-direction H2D-only is implemented.
-        self.h2d_only = bool(h2d_only) and self.forward_only
+        # Forward-only weights are immutable, so every inference route uses the shared
+        # H2D engine. The option remains meaningful for training policies only.
+        self.h2d_only = self.forward_only
         self.ring_size = max(1, int(ring_size))
         if h2d_only and not self.forward_only:
             print("[BlockOffloader] h2d_only requested but backward is enabled; "

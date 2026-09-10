@@ -190,6 +190,26 @@ def get_training_db():
         db.close()
 
 
+def ensure_training_schema(db_engine=None):
+    """Reconcile the run catalog before a worker opens its ORM session."""
+    target = db_engine or training_engine
+    from .models import TrainingRun
+    TrainingRun.__table__.create(bind=target, checkfirst=True)
+
+    from .auto_migrate import auto_migrate, get_db_columns, get_model_columns
+    auto_migrate(
+        target, TrainingBase, "training.db", model_classes=(TrainingRun,)
+    )
+
+    expected = set(get_model_columns(TrainingRun))
+    absent = expected - get_db_columns(target, TrainingRun.__tablename__)
+    if absent:
+        raise RuntimeError(
+            f"training.db schema reconciliation incomplete "
+            f"({TrainingRun.__tablename__}: {sorted(absent)})"
+        )
+
+
 def get_gallery_db_sync():
     """Get gallery database session (synchronous, non-generator version).
 

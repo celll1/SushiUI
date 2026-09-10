@@ -67,7 +67,7 @@ def get_db_columns(engine, table_name):
     return {col['name'] for col in columns}
 
 
-def auto_migrate(engine, base, db_name="database"):
+def auto_migrate(engine, base, db_name="database", model_classes=None):
     """
     Automatically migrate database schema to match model definitions.
 
@@ -77,7 +77,11 @@ def auto_migrate(engine, base, db_name="database"):
 
     try:
         with engine.connect() as conn:
-            models = [mapper.class_ for mapper in base.registry.mappers]
+            models = (
+                list(model_classes)
+                if model_classes is not None
+                else [mapper.class_ for mapper in base.registry.mappers]
+            )
 
             for model_class in models:
                 table_name = model_class.__tablename__

@@ -93,6 +93,32 @@ from api.param_defaults import validate_reconstruction_loss_weight
 DEFAULT_MAX_OPTIMIZER_SAVES_TO_KEEP = _TRAINING_DEFAULTS["max_optimizer_saves_to_keep"]
 
 
+def _resolve_activation_dispatch_settings(
+    train_config: Optional[Mapping[str, Any]],
+    *,
+    enable: bool,
+    margin_gb: float,
+    seed_coef: float,
+    residual_frac: float,
+    threshold_mb: int,
+) -> Dict[str, Any]:
+    """Resolve dispatcher settings for every ``BaseTrainer`` subclass.
+
+    Runner-created trainers all receive the complete ``train_config`` mapping;
+    explicit arguments remain the fallback for direct programmatic callers.
+    """
+    config = train_config or {}
+    return {
+        "enable": bool(config.get("activation_dispatch_enable", enable)),
+        "margin_gb": float(config.get("activation_dispatch_margin_gb", margin_gb)),
+        "seed_coef": float(config.get("activation_dispatch_seed_coef", seed_coef)),
+        "residual_frac": float(config.get(
+            "activation_dispatch_residual_frac", residual_frac)),
+        "threshold_mb": int(config.get(
+            "activation_dispatch_threshold_mb", threshold_mb)),
+    }
+
+
 # Marks an optimizer file holding one state per fused optimizer group. Absent in
 # files written before fused groups were saved at all (and in every
 # single-optimizer run, whose format is unchanged).
@@ -2412,11 +2438,11 @@ class BaseTrainer(ABC):
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
         # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)
-        activation_dispatch_enable: bool = False,
-        activation_dispatch_margin_gb: float = 1.0,
-        activation_dispatch_seed_coef: float = 24.0e-6,
-        activation_dispatch_residual_frac: float = 0.85,
-        activation_dispatch_threshold_mb: int = 4,
+        activation_dispatch_enable: bool = _TRAINING_DEFAULTS["activation_dispatch_enable"],
+        activation_dispatch_margin_gb: float = _TRAINING_DEFAULTS["activation_dispatch_margin_gb"],
+        activation_dispatch_seed_coef: float = _TRAINING_DEFAULTS["activation_dispatch_seed_coef"],
+        activation_dispatch_residual_frac: float = _TRAINING_DEFAULTS["activation_dispatch_residual_frac"],
+        activation_dispatch_threshold_mb: int = _TRAINING_DEFAULTS["activation_dispatch_threshold_mb"],
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
         # Optimizer options and hyperparameters.
@@ -2696,11 +2722,19 @@ class BaseTrainer(ABC):
 
         # Per-bucket activation offload dispatcher settings. The dispatcher is
         # created lazily on the first executed step (once static VRAM is known).
-        self.activation_dispatch_enable = activation_dispatch_enable
-        self.activation_dispatch_margin_gb = activation_dispatch_margin_gb
-        self.activation_dispatch_seed_coef = activation_dispatch_seed_coef
-        self.activation_dispatch_residual_frac = activation_dispatch_residual_frac
-        self.activation_dispatch_threshold_mb = activation_dispatch_threshold_mb
+        _activation_dispatch = _resolve_activation_dispatch_settings(
+            _tc,
+            enable=activation_dispatch_enable,
+            margin_gb=activation_dispatch_margin_gb,
+            seed_coef=activation_dispatch_seed_coef,
+            residual_frac=activation_dispatch_residual_frac,
+            threshold_mb=activation_dispatch_threshold_mb,
+        )
+        self.activation_dispatch_enable = _activation_dispatch["enable"]
+        self.activation_dispatch_margin_gb = _activation_dispatch["margin_gb"]
+        self.activation_dispatch_seed_coef = _activation_dispatch["seed_coef"]
+        self.activation_dispatch_residual_frac = _activation_dispatch["residual_frac"]
+        self.activation_dispatch_threshold_mb = _activation_dispatch["threshold_mb"]
         self.activation_dispatcher = None
         # Resolution buckets (image w, h) that OOM even at micro-batch=1 -> they
         # don't fit even one sample. Populated by the OOM recovery, consumed at the

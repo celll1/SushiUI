@@ -128,6 +128,27 @@ def test_v2_checkpoint_endpoints_read_run_database(tmp_path):
     central.close()
 
 
+def test_empty_v2_checkpoint_store_falls_back_to_retained_central_rows(tmp_path):
+    central, run = _central(tmp_path, v2=True)
+    central.add(TrainingCheckpoint(
+        run_id=run.id,
+        checkpoint_name="rollout-step-2",
+        step=2,
+        file_path=str(tmp_path / "rollout-step-2.safetensors"),
+    ))
+    central.commit()
+    initialize_run_detail_database(run)
+
+    checkpoints = asyncio.run(get_training_checkpoints(run.id, central))
+    detail = asyncio.run(get_training_run(run.id, central))
+
+    assert checkpoints["checkpoints"][0]["step"] == 2
+    assert detail["checkpoint_paths"] == [
+        str(tmp_path / "rollout-step-2.safetensors")
+    ]
+    central.close()
+
+
 def test_tagger_metrics_come_from_run_database(tmp_path):
     engine = create_engine("sqlite:///:memory:")
     TrainingBase.metadata.create_all(engine)

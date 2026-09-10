@@ -1,14 +1,21 @@
 """Resolve the detailed-history store declared by a training run."""
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import URL
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 
 CENTRAL_V1 = "central_v1"
 RUN_DB_V2 = "run_db_v2"
 RUN_DB_FILENAME = "training_run.db"
 SUPPORTED_DETAIL_STORES = frozenset((CENTRAL_V1, RUN_DB_V2))
+RUN_DB_SCHEMA_VERSION = 2
 
 
 class DetailStoreError(ValueError):
@@ -53,3 +60,100 @@ def resolve_detail_store(run) -> DetailStoreLocation:
         schema_version=getattr(run, "detail_schema_version", None),
         state=getattr(run, "detail_state", None),
     )
+
+
+def _configure_run_db(dbapi_conn, _) -> None:
+    dbapi_conn.execute("PRAGMA foreign_keys=ON")
+    dbapi_conn.execute("PRAGMA journal_mode=WAL")
+    dbapi_conn.execute("PRAGMA synchronous=NORMAL")
+    dbapi_conn.execute("PRAGMA busy_timeout=30000")
+
+
+@lru_cache(maxsize=64)
+def _run_db_session_factory(path_text: str):
+    engine = create_engine(
+        URL.create("sqlite", database=path_text),
+        connect_args={"check_same_thread": False, "timeout": 30},
+        poolclass=NullPool,
+    )
+    event.listen(engine, "connect", _configure_run_db)
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def run_db_session_factory(path: Path):
+    """Return a cached factory; constructing it does not open the database."""
+    return _run_db_session_factory(str(Path(path).resolve()))
+
+
+def _copy_run_columns(run) -> dict:
+    from .models import TrainingRun
+
+    return {
+        column.name: getattr(run, column.name)
+        for column in TrainingRun.__table__.columns
+    }
+
+
+def initialize_run_detail_database(run):
+    """Create and identify one v2 run database, returning its session factory.
+
+    The file uses the existing ORM tables so partial updates, resume cleanup,
+    and API serialization keep exactly the legacy row contract.
+    """
+    from .models import (
+        TrainingCheckpoint,
+        TrainingMetrics,
+        TrainingRun,
+        TrainingSample,
+    )
+
+    path = detail_db_path(run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    factory = run_db_session_factory(path)
+    engine = factory.kw["bind"]
+    for table in (
+        TrainingRun.__table__,
+        TrainingMetrics.__table__,
+        TrainingCheckpoint.__table__,
+        TrainingSample.__table__,
+    ):
+        table.create(bind=engine, checkfirst=True)
+
+    db = factory()
+    try:
+        local = db.query(TrainingRun).filter(TrainingRun.id == run.id).first()
+        if local is None:
+            db.add(TrainingRun(**_copy_run_columns(run)))
+            db.commit()
+        elif local.run_id != run.run_id:
+            raise DetailStoreError(
+                f"Training detail database identity mismatch at {path}"
+            )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return factory
+
+
+def open_run_detail_session(run):
+    """Open an existing v2 run DB and verify its catalogue UUID."""
+    from .models import TrainingRun
+
+    location = resolve_detail_store(run)
+    if location.kind != RUN_DB_V2 or location.path is None:
+        raise DetailStoreError("Training run does not use a v2 detail database")
+    if not location.path.is_file():
+        raise DetailStoreError(f"Training detail database is unavailable: {location.path}")
+    db = run_db_session_factory(location.path)()
+    try:
+        local = db.query(TrainingRun).filter(TrainingRun.id == run.id).first()
+        if local is None or local.run_id != run.run_id:
+            raise DetailStoreError(
+                f"Training detail database identity mismatch at {location.path}"
+            )
+        return db
+    except Exception:
+        db.close()
+        raise

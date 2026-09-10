@@ -37,7 +37,12 @@ if str(BACKEND) not in sys.path:
 import core.training.base_trainer as bt  # noqa: E402
 import core.training.controlnet_trainer as ct  # noqa: E402
 import database as db_module  # noqa: E402
-from database.models import TrainingBase, TrainingCheckpoint  # noqa: E402
+from database.models import TrainingBase, TrainingCheckpoint, TrainingRun  # noqa: E402
+from database.training_detail_store import (  # noqa: E402
+    RUN_DB_V2,
+    initialize_run_detail_database,
+    open_run_detail_session,
+)
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
@@ -105,6 +110,18 @@ class TrainingDbCase(unittest.TestCase):
         self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
         TrainingBase.metadata.create_all(bind=self.engine)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        session = self.SessionLocal()
+        session.add(TrainingRun(
+            id=1,
+            run_id="checkpoint-test",
+            run_name="run121",
+            training_method="lora",
+            base_model_path="model",
+            output_dir=str(self.dir),
+            total_steps=1000,
+        ))
+        session.commit()
+        session.close()
 
         original = db_module.get_training_db
 
@@ -181,6 +198,30 @@ class RegistrationLayoutTest(TrainingDbCase):
 # ---------------------------------------------------------------------------
 
 class RegistrationBehaviorTest(TrainingDbCase):
+    def test_v2_checkpoint_is_registered_only_in_run_database(self):
+        session = self.SessionLocal()
+        run = session.query(TrainingRun).filter_by(id=1).one()
+        run.detail_store = RUN_DB_V2
+        run.detail_schema_version = 2
+        run.detail_state = "ready"
+        run.detail_db_name = "training_run.db"
+        session.commit()
+        initialize_run_detail_database(run)
+        session.close()
+
+        trainer = FakeTrainer(self.dir, layout="single_file")
+        before = set(self.dir.iterdir())
+        trainer.save_checkpoint(step=25, epoch=0)
+        trainer._record_checkpoint_db_row(step=25, epoch=0, before_entries=before)
+
+        self.assertEqual(self.all_checkpoints(), [])
+        session = self.SessionLocal()
+        run = session.query(TrainingRun).filter_by(id=1).one()
+        detail = open_run_detail_session(run)
+        self.assertEqual(detail.query(TrainingCheckpoint).one().step, 25)
+        detail.close()
+        session.close()
+
     def test_resaving_the_same_step_upserts_not_duplicates(self):
         trainer = FakeTrainer(self.dir, layout="single_file")
         before = set(self.dir.iterdir())

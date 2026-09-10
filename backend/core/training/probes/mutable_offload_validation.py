@@ -49,7 +49,9 @@ def digest(module: torch.nn.Module) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("resident", "ring1", "ring2"), required=True)
+    parser.add_argument(
+        "--mode", choices=("resident", "ring1", "ring2", "ring3"), required=True
+    )
     parser.add_argument("--blocks", type=int, default=12)
     parser.add_argument("--swap", type=int, default=10)
     parser.add_argument("--dim", type=int, default=2048)

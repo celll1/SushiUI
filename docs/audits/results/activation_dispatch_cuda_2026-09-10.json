@@ -1,0 +1,167 @@
+{
+  "probe": "activation_dispatch_cuda",
+  "scope": "mechanism_only_not_architecture_validation",
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "torch_version": "2.10.0+cu130",
+  "entry_free_gib": 46.1162109375,
+  "total_gib": 47.98779296875,
+  "allocator_fraction": 0.25,
+  "threshold_bytes": 65536,
+  "warmup": 2,
+  "steps": 7,
+  "scenarios": [
+    {
+      "name": "audio_3d",
+      "shape": [
+        2,
+        1024,
+        64
+      ],
+      "off": {
+        "loss": 0.18173848092556,
+        "finite": true,
+        "offloaded_bytes": 0,
+        "peak_allocated_gib": 0.07174491882324219,
+        "peak_reserved_gib": 0.08984375,
+        "host_rss_before_gib": 1.7158203125,
+        "host_rss_after_gib": 2.0951004028320312,
+        "elapsed_ms": 190.33330003730953
+      },
+      "on": {
+        "loss": 0.18173848092556,
+        "finite": true,
+        "offloaded_bytes": 6160384,
+        "peak_allocated_gib": 0.067474365234375,
+        "peak_reserved_gib": 0.0859375,
+        "host_rss_before_gib": 2.0958595275878906,
+        "host_rss_after_gib": 2.1013870239257812,
+        "elapsed_ms": 7.161400048062205
+      },
+      "comparison": {
+        "loss_exact": true,
+        "gradients_exact": true,
+        "gradient_exact_mismatches": [],
+        "gradients_within_bf16_tolerance": true,
+        "gradient_tolerance_mismatches": [],
+        "gradient_max_abs_error": 0.0,
+        "bf16_atol": 0.001,
+        "bf16_rtol": 0.01
+      },
+      "timing_off": {
+        "median_ms": 1.332600018940866,
+        "p95_ms": 2.1244999952614307
+      },
+      "timing_on": {
+        "median_ms": 5.3810999961569905,
+        "p95_ms": 6.198600050993264
+      },
+      "timing_median_overhead_percent": 303.80458649804183,
+      "calibrated_tight_decision": "offload",
+      "passed": true
+    },
+    {
+      "name": "image_4d",
+      "shape": [
+        2,
+        4,
+        128,
+        128
+      ],
+      "off": {
+        "loss": 0.24133402109146118,
+        "finite": true,
+        "offloaded_bytes": 0,
+        "peak_allocated_gib": 0.1891622543334961,
+        "peak_reserved_gib": 0.21484375,
+        "host_rss_before_gib": 2.136016845703125,
+        "host_rss_after_gib": 2.1414451599121094,
+        "elapsed_ms": 8.546199998818338
+      },
+      "on": {
+        "loss": 0.24133402109146118,
+        "finite": true,
+        "offloaded_bytes": 94633984,
+        "peak_allocated_gib": 0.1187295913696289,
+        "peak_reserved_gib": 0.13671875,
+        "host_rss_before_gib": 2.141590118408203,
+        "host_rss_after_gib": 2.198322296142578,
+        "elapsed_ms": 21.721299970522523
+      },
+      "comparison": {
+        "loss_exact": true,
+        "gradients_exact": true,
+        "gradient_exact_mismatches": [],
+        "gradients_within_bf16_tolerance": true,
+        "gradient_tolerance_mismatches": [],
+        "gradient_max_abs_error": 0.0,
+        "bf16_atol": 0.001,
+        "bf16_rtol": 0.01
+      },
+      "timing_off": {
+        "median_ms": 1.7265999922528863,
+        "p95_ms": 2.501899958588183
+      },
+      "timing_on": {
+        "median_ms": 18.909000093117356,
+        "p95_ms": 20.914799999445677
+      },
+      "timing_median_overhead_percent": 995.1581245198946,
+      "calibrated_tight_decision": "offload",
+      "passed": true
+    },
+    {
+      "name": "video_5d",
+      "shape": [
+        1,
+        8,
+        8,
+        64,
+        64
+      ],
+      "off": {
+        "loss": 0.22827273607254028,
+        "finite": true,
+        "offloaded_bytes": 0,
+        "peak_allocated_gib": 0.1891632080078125,
+        "peak_reserved_gib": 0.21484375,
+        "host_rss_before_gib": 2.6312217712402344,
+        "host_rss_after_gib": 2.63134765625,
+        "elapsed_ms": 4.929799935780466
+      },
+      "on": {
+        "loss": 0.22827273607254028,
+        "finite": true,
+        "offloaded_bytes": 94896128,
+        "peak_allocated_gib": 0.11897468566894531,
+        "peak_reserved_gib": 0.13671875,
+        "host_rss_before_gib": 2.6313552856445312,
+        "host_rss_after_gib": 2.6339988708496094,
+        "elapsed_ms": 20.37339995149523
+      },
+      "comparison": {
+        "loss_exact": true,
+        "gradients_exact": false,
+        "gradient_exact_mismatches": [
+          "input.weight"
+        ],
+        "gradients_within_bf16_tolerance": true,
+        "gradient_tolerance_mismatches": [],
+        "gradient_max_abs_error": 6.103515625e-05,
+        "bf16_atol": 0.001,
+        "bf16_rtol": 0.01
+      },
+      "timing_off": {
+        "median_ms": 1.9491000566631556,
+        "p95_ms": 2.4845999432727695
+      },
+      "timing_on": {
+        "median_ms": 18.51269998587668,
+        "p95_ms": 26.002799975685775
+      },
+      "timing_median_overhead_percent": 849.8075751724249,
+      "calibrated_tight_decision": "offload",
+      "passed": true
+    }
+  ],
+  "passed": true
+}

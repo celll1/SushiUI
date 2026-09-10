@@ -1,0 +1,225 @@
+{
+  "probe": "minimax_h3_activation_dispatch",
+  "scope": "real_transformer_production_lora_and_train_step_cached_inputs",
+  "checkpoint": "M:\\model\\minimax_h3\\diffusion_models\\minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+  "variant": "fl2va",
+  "clip": "short",
+  "geometry": {
+    "pixel_frames": 22,
+    "latent_frames": 7
+  },
+  "canvas_pixels": [
+    384,
+    640
+  ],
+  "prompt_tokens": 32,
+  "audio_present": true,
+  "gradient_checkpointing": true,
+  "blocks_to_swap": 0,
+  "lora_rank": 1,
+  "lora_targets": 300,
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "torch_version": "2.10.0+cu130",
+  "entry_free_gib": 46.1162109375,
+  "total_gib": 47.98779296875,
+  "entry_host_available_gib": 53.12446212768555,
+  "allocator_fraction": 0.8,
+  "threshold_bytes": 4194304,
+  "transformer_config": {
+    "num_layers": 50,
+    "hidden_size": 5376,
+    "ffn_dim": 14336
+  },
+  "off": {
+    "loss": 3.1203932762145996,
+    "finite": true,
+    "gradient_tensor_count": 600,
+    "offloaded_bytes": 0,
+    "resident_before_gib": 19.71047353744507,
+    "peak_allocated_gib": 21.9723162651062,
+    "peak_reserved_gib": 22.4453125,
+    "host_rss_before_gib": 8.476318359375,
+    "host_rss_after_gib": 9.243892669677734,
+    "elapsed_seconds": 4.711767000029795
+  },
+  "on": {
+    "loss": 3.1203932762145996,
+    "finite": true,
+    "gradient_tensor_count": 600,
+    "offloaded_bytes": 960153600,
+    "resident_before_gib": 19.72834348678589,
+    "peak_allocated_gib": 21.128596782684326,
+    "peak_reserved_gib": 22.4453125,
+    "host_rss_before_gib": 9.26668930053711,
+    "host_rss_after_gib": 10.181331634521484,
+    "elapsed_seconds": 4.266453700023703
+  },
+  "comparison": {
+    "missing": [],
+    "exact": false,
+    "exact_mismatch_count": 590,
+    "exact_mismatch_examples": [
+      "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+      "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+      "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+    ],
+    "within_bf16_tolerance": true,
+    "tolerance_mismatch_count": 0,
+    "tolerance_mismatch_examples": [],
+    "max_abs_error": 3.921985626220703e-05,
+    "atol": 0.001,
+    "rtol": 0.01
+  },
+  "optimizer_smoke": {
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "comparison": {
+      "missing": [],
+      "exact": false,
+      "exact_mismatch_count": 590,
+      "exact_mismatch_examples": [
+        "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+        "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+        "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+      ],
+      "within_bf16_tolerance": true,
+      "tolerance_mismatch_count": 0,
+      "tolerance_mismatch_examples": [],
+      "max_abs_error": 0.00019989721477031708,
+      "atol": 0.001,
+      "rtol": 0.01
+    }
+  },
+  "same_mode_repeatability": {
+    "off": {
+      "gradient_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 3.4332275390625e-05,
+        "atol": 0.001,
+        "rtol": 0.01
+      },
+      "optimizer_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 0.00019940780475735664,
+        "atol": 0.001,
+        "rtol": 0.01
+      }
+    },
+    "on": {
+      "gradient_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 1.7955899238586426e-05,
+        "atol": 0.001,
+        "rtol": 0.01
+      },
+      "optimizer_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 0.00019932352006435394,
+        "atol": 0.001,
+        "rtol": 0.01
+      }
+    }
+  },
+  "timing_off": {
+    "median_seconds": 4.2444926999742165,
+    "p95_seconds": 4.711767000029795,
+    "samples_seconds": [
+      4.711767000029795,
+      4.210710300016217,
+      4.2444926999742165
+    ]
+  },
+  "timing_on": {
+    "median_seconds": 4.292072899988852,
+    "p95_seconds": 4.3148487999569625,
+    "samples_seconds": [
+      4.266453700023703,
+      4.292072899988852,
+      4.3148487999569625
+    ]
+  },
+  "loss_exact": true,
+  "passed": true
+}

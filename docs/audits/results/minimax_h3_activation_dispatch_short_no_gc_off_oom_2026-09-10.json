@@ -1,0 +1,22 @@
+{
+  "probe": "minimax_h3_activation_dispatch",
+  "status": "blocked_oom",
+  "checkpoint": "M:\\model\\minimax_h3\\diffusion_models\\minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+  "variant": "fl2va",
+  "clip": "short",
+  "geometry": {
+    "pixel_frames": 22,
+    "latent_frames": 7
+  },
+  "arm": "off",
+  "failed_activation_dispatch": false,
+  "gradient_checkpointing": false,
+  "blocks_to_swap": 0,
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "entry_free_gib": 46.1162109375,
+  "total_gib": 47.98779296875,
+  "allocator_fraction": 0.8,
+  "peak_allocated_gib": 37.532514572143555,
+  "peak_reserved_gib": 38.31640625,
+  "error": "CUDA out of memory. Tried to allocate 148.00 MiB. GPU 0 has a total capacity of 47.99 GiB of which 7.72 GiB is free. 38.39 GiB allowed; Of the allocated memory 37.53 GiB is allocated by PyTorch, and 802.71 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+}

@@ -1,7 +1,9 @@
 # Activation dispatch GPU validation backlog (2026-09)
 
-Status: implementation and CPU/static validation complete; every item below
-requires a real checkpoint and VRAM and was deliberately not run.
+Status: implementation and CPU/static validation complete. MiniMax-H3's
+real-transformer cached-input matrix is recorded in
+`MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md`; the other rows and the
+remaining H3 end-to-end dataset/encoder coverage are still open.
 
 ## Validation contract
 
@@ -28,7 +30,7 @@ overhead target.
 
 | Priority | Architecture | Required paths and workload variation |
 |---|---|---|
-| P0 | MiniMax-H3 | LoRA; short and long clips at the same spatial size; block swap off/on. Confirm that batch-size 1 recovers through offload without relying on micro-splitting. |
+| P0 | MiniMax-H3 | **Partial:** real LoRA transformer/train-step short/long and block swap off/on passed with gradient checkpointing; checkpointing-off capacity was recorded as blocked OOM. Real dataset/encoder and full trainer recovery remain. |
 | P0 | LTX-2.3 | LoRA and full parameter; at least two clip lengths; block swap off/on; joint audio/video loss finite. |
 | P0 | ACE-Step 1.5 | LoRA and full parameter; at least two audio durations. Confirm sequence-row keys and audio loss/conditioning equivalence. |
 | P0 | SenseNova U1.5 | LoRA and full parameter; flow objective, instruction/text objective, and a mixed-objective run. Confirm independent image/text predictor histories. The current batch-size-1 contract makes micro-splitting inapplicable. |

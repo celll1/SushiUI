@@ -1,0 +1,225 @@
+{
+  "probe": "minimax_h3_activation_dispatch",
+  "scope": "real_transformer_production_lora_and_train_step_cached_inputs",
+  "checkpoint": "M:\\model\\minimax_h3\\diffusion_models\\minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+  "variant": "fl2va",
+  "clip": "long",
+  "geometry": {
+    "pixel_frames": 124,
+    "latent_frames": 37
+  },
+  "canvas_pixels": [
+    384,
+    640
+  ],
+  "prompt_tokens": 32,
+  "audio_present": true,
+  "gradient_checkpointing": true,
+  "blocks_to_swap": 0,
+  "lora_rank": 1,
+  "lora_targets": 300,
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "torch_version": "2.10.0+cu130",
+  "entry_free_gib": 46.1162109375,
+  "total_gib": 47.98779296875,
+  "entry_host_available_gib": 53.146324157714844,
+  "allocator_fraction": 0.8,
+  "threshold_bytes": 4194304,
+  "transformer_config": {
+    "num_layers": 50,
+    "hidden_size": 5376,
+    "ffn_dim": 14336
+  },
+  "off": {
+    "loss": 3.066749334335327,
+    "finite": true,
+    "gradient_tensor_count": 600,
+    "offloaded_bytes": 0,
+    "resident_before_gib": 19.71047353744507,
+    "peak_allocated_gib": 27.985002517700195,
+    "peak_reserved_gib": 29.681640625,
+    "host_rss_before_gib": 8.478076934814453,
+    "host_rss_after_gib": 9.247150421142578,
+    "elapsed_seconds": 33.53482000005897
+  },
+  "on": {
+    "loss": 3.066749334335327,
+    "finite": true,
+    "gradient_tensor_count": 600,
+    "offloaded_bytes": 5013657600,
+    "resident_before_gib": 19.72853994369507,
+    "peak_allocated_gib": 23.521645545959473,
+    "peak_reserved_gib": 29.681640625,
+    "host_rss_before_gib": 9.270248413085938,
+    "host_rss_after_gib": 9.924640655517578,
+    "elapsed_seconds": 34.69579190004151
+  },
+  "comparison": {
+    "missing": [],
+    "exact": false,
+    "exact_mismatch_count": 590,
+    "exact_mismatch_examples": [
+      "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+      "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+      "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+      "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+      "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+    ],
+    "within_bf16_tolerance": true,
+    "tolerance_mismatch_count": 0,
+    "tolerance_mismatch_examples": [],
+    "max_abs_error": 2.288818359375e-05,
+    "atol": 0.001,
+    "rtol": 0.01
+  },
+  "optimizer_smoke": {
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "comparison": {
+      "missing": [],
+      "exact": false,
+      "exact_mismatch_count": 590,
+      "exact_mismatch_examples": [
+        "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+        "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+        "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+        "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+        "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+      ],
+      "within_bf16_tolerance": true,
+      "tolerance_mismatch_count": 0,
+      "tolerance_mismatch_examples": [],
+      "max_abs_error": 0.0001994810882024467,
+      "atol": 0.001,
+      "rtol": 0.01
+    }
+  },
+  "same_mode_repeatability": {
+    "off": {
+      "gradient_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 3.4332275390625e-05,
+        "atol": 0.001,
+        "rtol": 0.01
+      },
+      "optimizer_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 0.00019968324340879917,
+        "atol": 0.001,
+        "rtol": 0.01
+      }
+    },
+    "on": {
+      "gradient_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 2.288818359375e-05,
+        "atol": 0.001,
+        "rtol": 0.01
+      },
+      "optimizer_comparison": {
+        "missing": [],
+        "exact": false,
+        "exact_mismatch_count": 590,
+        "exact_mismatch_examples": [
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_k.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_out_0.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_q.lora_up.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_down.weight",
+          "lora_unet_transformer_blocks_0_attn_to_v.lora_up.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_down.weight",
+          "lora_unet_transformer_blocks_0_ff_net_0_proj.lora_up.weight"
+        ],
+        "within_bf16_tolerance": true,
+        "tolerance_mismatch_count": 0,
+        "tolerance_mismatch_examples": [],
+        "max_abs_error": 0.000199397312826477,
+        "atol": 0.001,
+        "rtol": 0.01
+      }
+    }
+  },
+  "timing_off": {
+    "median_seconds": 33.98270809999667,
+    "p95_seconds": 34.57637199992314,
+    "samples_seconds": [
+      33.53482000005897,
+      33.98270809999667,
+      34.57637199992314
+    ]
+  },
+  "timing_on": {
+    "median_seconds": 34.883056799997576,
+    "p95_seconds": 34.99245230003726,
+    "samples_seconds": [
+      34.69579190004151,
+      34.883056799997576,
+      34.99245230003726
+    ]
+  },
+  "loss_exact": true,
+  "passed": true
+}

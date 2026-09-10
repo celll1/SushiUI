@@ -232,6 +232,7 @@ class Lion8bit_RingBuffer(Optimizer):
                 if self.get_state_buffer is not None:
                     # Ring Buffer enabled: CPU allocation
                     state['state_z'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['state_z'].zero_()
 
                     # Use pinned memory for faster CPU-GPU transfer
                     if state['state_z'].is_cpu:
@@ -253,6 +254,7 @@ class Lion8bit_RingBuffer(Optimizer):
                 if self.get_state_buffer is not None:
                     # Ring Buffer enabled: CPU allocation (for Block Swap integration)
                     state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
+                    state['exp_avg'].zero_()
 
                     # Use pinned memory for faster CPU-GPU transfer
                     if state['exp_avg'].is_cpu:
@@ -589,13 +591,6 @@ class Lion8bit_RingBuffer(Optimizer):
                         # Schedule-Free 8-bit Update (CUDA Kernel)
                         # ============================================================
 
-                        # Ring Buffer optimization: Ensure state is on GPU
-                        state_z_gpu = state['state_z']
-
-                        if not state['state_z'].is_cuda:
-                            # Async transfer for Ring Buffer state (pinned memory)
-                            state_z_gpu = state['state_z'].cuda(non_blocking=True)
-
                         stochastic_z = bool(group['stochastic_rounding'])
 
                         # ``stochastic_z`` is gated on the flag alone, not on the
@@ -605,7 +600,7 @@ class Lion8bit_RingBuffer(Optimizer):
                         self.ext.lion_8bit_schedulefree_update(
                             p_for_update,
                             grad,
-                            state_z_gpu,             # z-sequence (GPU, async transferred if needed)
+                            state['state_z'],        # CPU pinned or CUDA; extension stages it
                             state['absmax_z'],
                             beta1, beta2, 0.0,          # eps unused in Lion
                             scheduled_lr,               # Scheduled LR (with RAdam rect if enabled)
@@ -617,26 +612,15 @@ class Lion8bit_RingBuffer(Optimizer):
                             self._next_rounding_seed() if stochastic_z else 0,
                         )
 
-                        # Ring Buffer: Copy updated state back to CPU
-                        if not state['state_z'].is_cuda:
-                            # Async copy back (non_blocking requires pinned memory)
-                            state['state_z'].copy_(state_z_gpu, non_blocking=True)
                     else:
                         # ============================================================
                         # Standard 8-bit Update (CUDA Kernel)
                         # ============================================================
 
-                        # Ring Buffer optimization: Ensure state is on GPU
-                        exp_avg_gpu = state['exp_avg']
-
-                        if not state['exp_avg'].is_cuda:
-                            # Async transfer for Ring Buffer state (pinned memory)
-                            exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
-
                         self.ext.lion_8bit_update(
                             p_for_update,
                             grad,
-                            exp_avg_gpu,                # state (GPU, async transferred if needed)
+                            state['exp_avg'],           # CPU pinned or CUDA; extension stages it
                             state['absmax'],
                             beta1, beta2, 0.0,          # eps unused in Lion
                             lr, weight_decay, 1.0,      # gnorm_scale
@@ -644,10 +628,6 @@ class Lion8bit_RingBuffer(Optimizer):
                             self.cautious               # Cautious masking
                         )
 
-                        # Ring Buffer: Copy updated state back to CPU
-                        if not state['exp_avg'].is_cuda:
-                            # Async copy back (non_blocking requires pinned memory)
-                            state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
                 else:
                     # FP32 fallback (standard Lion)
                     exp_avg = state['exp_avg']

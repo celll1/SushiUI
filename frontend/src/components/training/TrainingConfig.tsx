@@ -5918,7 +5918,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   max={4}
                   value={params.block_swap_ring_size ?? 2}
                   onChange={(e) => updateParam("block_swap_ring_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
-                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("block_swap_ring_size", 2); }}
+                  onBlur={(e) => {
+                    const value = parseInt(e.target.value);
+                    const minimum = senseNovaBlockSwap ? 2 : 1;
+                    if (e.target.value === '' || isNaN(value) || value < minimum) {
+                      updateParam("block_swap_ring_size", 2);
+                    }
+                  }}
                   className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                 />
                 {senseNovaBlockSwap && (

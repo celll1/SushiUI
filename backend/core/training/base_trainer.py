@@ -10449,8 +10449,11 @@ class BaseTrainer(ABC):
         from .optimizers.update_census import reset_applied_updates
         reset_applied_updates()
 
-        _disp_cm, _disp_info = self._activation_dispatch_begin(
-            mnt_latents, sensenova_text_batch=sensenova_text_batch)
+        if sensenova_text_batch is None:
+            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+        else:
+            _disp_cm, _disp_info = self._activation_dispatch_begin(
+                mnt_latents, sensenova_text_batch=sensenova_text_batch)
         _micro_bs = _disp_info[4] if _disp_info else None
         try:
             try:

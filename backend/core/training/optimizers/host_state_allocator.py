@@ -6,15 +6,8 @@ none is supplied. Nothing ever supplied one (since 190c876e), so their host-stat
 mode -- the whole point of the name -- was unreachable in production. This module
 is the supplier, and ``BaseTrainer._ringbuffer_optimizer_kwargs`` passes it.
 
-Why NOT ``core.memory_management.RingBufferAllocator``, which
-SENSENOVA_TRAINING_DESIGN.md 6.5 names as the intended base: that allocator hands
-out *views into a recycled* byte buffer and exposes ``free_layer`` /
-``start_offset`` / ``end_offset`` wrap-around, because it was written for layer
-parameters that live for one forward/backward. Optimizer state lives for the
-whole run and must never be recycled: two parameters whose state aliased the same
-bytes would silently corrupt each other's moments. Optimizer state needs
-persistent, non-overlapping, per-parameter buffers, which is what this allocator
-gives.
+The retired layer arena handed out views into recycled bytes. Optimizer state
+lives for the whole run and therefore uses persistent, non-overlapping buffers.
 
 Pinning happens HERE rather than in the optimizer. The optimizers do
 ``state[k] = self.get_state_buffer(...)`` and then ``state[k].pin_memory()`` for

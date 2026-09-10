@@ -1,5 +1,8 @@
 # Block swap / ring-buffer revalidation (2026-09)
 
+> Superseded by `UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`. This file
+> preserves the defects that motivated the shared mutable engine migration.
+
 ## Scope and verdict
 
 This is a static revalidation of the training paths for all 13 entries in

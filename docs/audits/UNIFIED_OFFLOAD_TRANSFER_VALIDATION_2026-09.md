@@ -118,7 +118,7 @@ sequence item 6, not an unimplemented migration step.
 Command, once per mode:
 
 ```text
-venv/Scripts/python.exe backend/core/training/probes/mutable_offload_validation.py --mode {resident,ring1,ring2} --blocks 12 --swap 10 --dim 2048 --batch 32 --steps 3
+venv/Scripts/python.exe backend/core/training/probes/mutable_offload_validation.py --mode {resident,ring1,ring2,ring3} --blocks 12 --swap 10 --dim 2048 --batch 32 --steps 3
 ```
 
 All three modes produced parameter SHA-256
@@ -130,10 +130,14 @@ after three fused BF16 SGD updates.
 | Resident | 8.364 ms | 0.2137 GiB | 0.2040 GiB |
 | Ring 1 | 23.548 ms | 0.0731 GiB | 0.0634 GiB |
 | Ring 2 | 18.690 ms | 0.0887 GiB | 0.0790 GiB |
+| Ring 3 | 16.971 ms | 0.1044 GiB | 0.0946 GiB |
 
 Ring 2 reduced peak allocated memory by 58.48% versus residency and improved
 median iteration time by 20.63% versus the minimum-memory ring 1. It issued 50
 H2D bundles instead of ring 1's 55; both wrote 30 dirty bundles after updates.
+Ring 3 reduced another five H2D submissions and was 9.20% faster than ring 2,
+at the expected extra 16 MiB of steady VRAM. Ring 2 remains the balanced
+default; ring 3 is a valid throughput-biased setting.
 
 The real MiniMax-H3 FP8-scaled checkpoint also passed a short joint video/audio
 LoRA train step with 40 of 50 blocks swapped. Loss was exactly

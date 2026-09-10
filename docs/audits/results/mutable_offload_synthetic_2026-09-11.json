@@ -24,5 +24,12 @@
     "steady_allocated_gib": 0.0789794921875,
     "h2d_submissions": 50,
     "d2h_submissions": 30
+  },
+  "ring3": {
+    "median_ms": 16.970752716064453,
+    "peak_allocated_gib": 0.1043705940246582,
+    "steady_allocated_gib": 0.0946044921875,
+    "h2d_submissions": 45,
+    "d2h_submissions": 30
   }
 }

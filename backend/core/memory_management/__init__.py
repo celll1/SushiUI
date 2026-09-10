@@ -10,6 +10,7 @@ from .offload_transfer_engine import (
 )
 from .layer_offload_strategy import LayerOffloadStrategy
 from .layer_offload_conductor import LayerOffloadConductor
+from .branched_layer_offload_conductor import BranchedLayerOffloadConductor
 from .activation_dispatcher import ActivationDispatcher, offload_activations
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     # Mutable training layer offload
     "LayerOffloadStrategy",
     "LayerOffloadConductor",
+    "BranchedLayerOffloadConductor",
     # Proactive per-bucket activation offload dispatcher
     "ActivationDispatcher",
     "offload_activations",

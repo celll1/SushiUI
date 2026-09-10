@@ -1030,7 +1030,8 @@ _add_training_unsupported(
 # collects and saves it, and `sensenova_full_finetune_save_format` selects the
 # on-disk format. The envelope it runs in is not a capability entry but a
 # contract enforced per run: adafactor, bf16, batch 1, no accumulation, no EMA,
-# blocks_to_swap=0 (ops/sensenova_ops.assert_full_finetune_contract).
+# and per-parameter rather than grouped optimizer hooks
+# (ops/sensenova_ops.assert_full_finetune_contract).
 _add_training_unsupported(
     "sensenova", "relora",
     "SenseNova ReLoRA cannot merge dense updates back into its weight-only INT8 base; use LoRA training")

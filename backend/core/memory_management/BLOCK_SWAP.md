@@ -9,12 +9,15 @@ All weight streaming uses `offload_transfer_engine.py`.
 | Generation | `FrozenSequentialTransferEngine` | none |
 | Frozen-base/LoRA FLUX.2 | `FrozenLruTransferEngine` | none |
 | Mutable training blocks | `MutableLruTransferEngine` through `LayerOffloadConductor` | after fused update |
+| SenseNova branch bundles | `MutableLruTransferEngine` through `BranchedLayerOffloadConductor` | method-aware |
 
 The mutable path is wired for Z-Image, Anima, Lens, Ideogram 4, MiniT2I,
-Krea 2, FLUX.2, LTX-2.3, MiniMax-H3, and ACE-Step 1.5. MiniMax-H3 supports LoRA
-only; its quantized base and trainable adapters are packed in separate dtype
-planes. SD1.5/SDXL use their U-Net memory path, and SenseNova uses MoT phase
-eviction rather than block swap.
+Krea 2, FLUX.2, LTX-2.3, MiniMax-H3, ACE-Step 1.5, and SenseNova. MiniMax-H3
+supports LoRA only; its quantized base and trainable adapters are packed in
+separate dtype planes. SenseNova keys each physical layer by MoT branch: LoRA
+streams frozen base bundles while adapters stay resident, and full fine-tuning
+writes updated bundles back. Its phase evictor may additionally manage the
+layers left resident by block swap. SD1.5/SDXL use their U-Net memory path.
 
 ## Required settings
 
@@ -22,6 +25,9 @@ eviction rather than block swap.
 - `gradient_checkpointing = true` for mutable training;
 - a fused-backward optimizer or fused optimizer groups;
 - `block_swap_ring_size >= 1` (`2` is the default).
+
+SenseNova requires ring size 2 or greater because a mixed-token decoder call
+can use both branch bundles of one physical layer simultaneously.
 
 The architecture setup refuses mutable swap without checkpointing. Optimizer
 setup separately refuses combinations that would update CPU parameters or retain

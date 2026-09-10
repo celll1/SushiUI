@@ -83,7 +83,7 @@ _STRUCTURAL_REFUSALS = {
         f"repo's own save stamp (sensenova_trained_branch / sensenova_save_format)."
     ),
     "blocks_to_swap": ValueError(
-        "SenseNova training does not implement blocks_to_swap; set it to 0"),
+        "SenseNova blocks_to_swap must be between 0 and 41, got 42"),
     "flux2_structure": ValueError(
         "FLUX.2 transformer does not have transformer_blocks/single_transformer_blocks; "
         "Block Swap cannot be set up for 20260101_000000_abcdef_step_000030.safetensors"),

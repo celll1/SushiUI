@@ -34,6 +34,7 @@ a generation half, so residency is keyed by `(branch, layer_index)`.
 
 ## Verification status
 
-Implementation is proceeding without test or GPU execution at the owner's
-request while another training run is active. CPU/import and real-GPU gates are
-therefore deferred and must be completed before treating this path as verified.
+Implementation was completed without test or GPU execution at the owner's
+request. CPU/import and real-GPU gates are therefore deferred and must be
+completed before treating this path as verified. The exact remaining matrix is
+recorded in `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.

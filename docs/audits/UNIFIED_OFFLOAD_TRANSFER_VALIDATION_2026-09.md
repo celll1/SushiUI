@@ -215,3 +215,34 @@ the backups. No C++/CUDA source changed, so no rebuild occurred or is required.
    enough: the 4096-token synthetic path stayed within 4% of GPU-state time
    while removing the exact optimizer-state allocation. The short-compute arm
    remains the counterexample, so no universal speedup claim is made.
+
+## Deferred SenseNova branch-conductor validation
+
+SenseNova was added after the measurements above. Its
+`BranchedLayerOffloadConductor` shares `MutableLruTransferEngine`, but the
+branch partition, hybrid phase ownership, and real checkpoint path are new and
+have not been executed. None of the earlier bit-exact, speed, or VRAM figures
+apply to this extension yet.
+
+Run the following matrix before changing its status from implemented to
+verified. Use separate fresh processes and the same fixed data item, seed,
+timestep/noise sample, attention backend, and optimizer state for each compared
+arm.
+
+| Gate | Required arms | Acceptance |
+|---|---|---|
+| Static/import | zero swap; 1 and 41 swapped; ring 1 refusal; ring 2/3 acceptance | no CUDA initialization for the stubbed import; all contracts fail before checkpoint load |
+| LoRA branch coverage | generation-only, understanding-only, both scopes; resident vs block-only | every intended adapter gets a finite gradient; frozen base hash is unchanged |
+| Full-FT branch coverage | generation-only, understanding-only, both halves; resident vs block-only | identical updated-parameter census; no dirty bundle remains at step end |
+| Hybrid ownership | LoRA phase eviction + block swap; full-FT both halves + block swap + phase + four-phase | conductor and phase-evictor tensor-ID sets are disjoint; save flush sees all weights on CPU masters |
+| Numerical parity | 2-3 deterministic steps for every branch shape, including ring 2 and ring 3 | checkpoint tensor hashes bit-exact where kernels are deterministic; otherwise document the first kernel-level divergence and bound it against a resident rerun |
+| Save/resume | save after a dirty swapped step, resume, then execute one more identical step | resumed weights and optimizer state match the uninterrupted arm |
+| Failure recovery | injected forward failure, backward failure, OOM retry, and emergency save | no active slot/recompute record survives; next step and checkpoint read succeed |
+| Transfer schedule | blocks 1/20/41 with ring 2/3, including an in-training sample that makes a mixed-token call | zero synchronous repair misses after warm-up; mixed call holds exactly two branch slots |
+| VRAM/host | resident, block-only 1/20/41, phase-only, block+phase, block+phase+four-phase | record load peak, steady allocated/reserved peak, pinned/pageable host peak, and verify monotonic resident-weight reduction rather than extrapolating layer fraction |
+| Throughput | same arms after warm-up, at a short and a long sequence/resolution | report median and tail iteration time plus H2D/D2H bytes; do not claim negligible overhead unless both workloads support it |
+
+The current parallel-test allowance of roughly 10 GiB free VRAM is a test-arm
+budget only. It is not a product limit or a reason to clamp the public swap
+range. Start with high-swap LoRA arms under that allowance; defer resident and
+full-FT comparisons until the other run releases the card.

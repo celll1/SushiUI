@@ -579,10 +579,8 @@ def test_only_a_sensenova_full_finetune_gets_fused_backward_without_block_swap(
 ):
     """blocks_to_swap=0 everywhere; only one of the three installs the hooks.
 
-    SenseNova refuses a non-zero blocks_to_swap before model loading. Its
-    architecture hook is a no-op at zero and refuses non-zero direct callers.
-    Everywhere else the fused backward pass is only set up inside
-    `blocks_to_swap > 0`.
+    SenseNova's architecture hook is a no-op at zero. Everywhere else the
+    fused backward pass is only set up inside `blocks_to_swap > 0`.
     Its full fine-tune would otherwise hold every gradient of the half it trains
     resident until optimizer.step().
     """
@@ -596,7 +594,7 @@ def test_only_a_sensenova_full_finetune_gets_fused_backward_without_block_swap(
 
 
 def test_fp16_is_refused_by_this_contract_and_not_by_the_block_swap_message():
-    """c56d8a19's refusal names Block Swap, which SenseNova never has.
+    """The fused route's scaler refusal must precede generic block-swap advice.
 
     It is reachable from `_setup_fused_backward_pass`, so this contract has to
     refuse the grad scaler first or the message would prescribe disabling

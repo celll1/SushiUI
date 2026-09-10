@@ -35,11 +35,23 @@ Every full-parameter run must satisfy all of the following:
   `unless: {enable_bucketing: true}`, so a client can pin the control while the
   condition stands and release it when bucketing lifts it;
 - EMA disabled;
-- `blocks_to_swap: 0`;
+- `blocks_to_swap: 0..41`; non-zero requires gradient checkpointing and a
+  transfer ring of at least two slots;
 - optimizer `adafactor`, or a supported ring-buffer optimizer with
   `optimizer_state_host_resident` enabled.
 
 Stochastic rounding is forced and announced for the accepted path.
+
+Block swap is branch-aware rather than layer-monolithic. Each physical decoder
+layer contributes independent understanding and generation transfer keys.
+LoRA leaves trainable adapter parameters resident and streams its frozen int8
+base; full fine-tuning uses fused per-parameter updates before dirty bundles are
+written back. `sensenova_mot_phase_eviction` can be combined with it and owns
+only the physical layers that remain resident. The four-phase backward split
+is still optional except where the existing trained-understanding/phase-
+eviction contract requires it. This composition is implemented but not yet GPU
+validated; see the pending matrix in
+`docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.
 
 `sensenova_full_finetune_save_format: int8` is the only export a NEW run may be
 pointed at as its base. A run resuming its OWN checkpoint is a narrower

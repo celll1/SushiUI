@@ -1,8 +1,8 @@
 # Training run storage v2
 
-Status: v2 metric storage is implemented for new diffusion, VAE, and tagger
-runs, with terminal-run migration for diffusion/VAE. The legacy store remains
-supported; central purge and terminal tagger migration are not yet implemented.
+Status: v2 metric storage and terminal-run migration are implemented for
+diffusion, VAE, and tagger runs. The legacy store remains supported; central
+purge is not yet implemented.
 
 ## Decision
 
@@ -174,6 +174,12 @@ Migrate selected terminal runs explicitly:
 
 ```powershell
 venv\Scripts\python.exe backend\migrations\migrate_training_run_details.py --run-id 123 --apply
+```
+
+Tagger runs use their UUID selector:
+
+```powershell
+venv\Scripts\python.exe backend\migrations\migrate_training_run_details.py --tagger-run-id <RUN_UUID> --apply
 ```
 
 The command copies and verifies data but does not purge central rows or compact

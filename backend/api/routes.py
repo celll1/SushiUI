@@ -20560,7 +20560,7 @@ _tagger_detail_executor = None
 
 
 def _get_tagger_detail_executor():
-    """One ordered mirror worker for all tagger runs, created on first use."""
+    """One ordered history writer for all tagger runs, created on first use."""
     global _tagger_detail_executor
     if _tagger_detail_executor is None:
         from concurrent.futures import ThreadPoolExecutor
@@ -20579,10 +20579,16 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     and stamped on every metric row + WS payload, so each resume
     contributes a distinct curve in the loss chart.
     """
+    from database.training_detail_store import open_tagger_history_session
     from sqlalchemy import func as _sa_func
     _db = training_db_factory()
+    _history_db = None
+    _owns_history_db = False
     try:
-        _max_seq = _db.query(
+        _history_db, _owns_history_db, _ = open_tagger_history_session(
+            _db, run_id
+        )
+        _max_seq = _history_db.query(
             _sa_func.coalesce(_sa_func.max(TaggerTrainingMetrics.resume_seq), -1)
         ).filter(TaggerTrainingMetrics.run_id == run_id).scalar()
         resume_seq = int(_max_seq) + 1   # 0 for fresh; existing_max + 1 on resume
@@ -20590,32 +20596,44 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
         print(f"[TaggerCallback] Could not determine resume_seq for {run_id}: {e}; defaulting to 0")
         resume_seq = 0
     finally:
+        if _owns_history_db and _history_db is not None:
+            _history_db.close()
         _db.close()
     if resume_seq > 0:
         print(f"[TaggerCallback] run_id={run_id}: resume_seq={resume_seq} (subsequent resume)")
     else:
         print(f"[TaggerCallback] run_id={run_id}: resume_seq=0 (initial run)")
 
-    def _mirror_detail(rid: str, keys) -> None:
-        mirror_db = training_db_factory()
+    def _write_metric(rid: str, step: int, values: dict) -> None:
+        catalog_db = training_db_factory()
+        history_db = None
+        owns_history_db = False
         try:
-            mirror_run = mirror_db.query(TaggerTrainingRun).filter(
-                TaggerTrainingRun.run_id == rid
-            ).first()
-            if mirror_run is None:
-                return
-            from database.training_detail_store import (
-                RUN_DB_V2,
-                detail_store_kind,
-                mirror_tagger_metrics_to_run_database,
+            history_db, owns_history_db, _ = open_tagger_history_session(
+                catalog_db, rid
             )
-            if detail_store_kind(mirror_run) == RUN_DB_V2 \
-                    and mirror_run.detail_state == "ready":
-                mirror_tagger_metrics_to_run_database(mirror_run, mirror_db, keys)
+            existing = history_db.query(TaggerTrainingMetrics).filter(
+                TaggerTrainingMetrics.run_id == rid,
+                TaggerTrainingMetrics.resume_seq == resume_seq,
+                TaggerTrainingMetrics.step == step,
+            ).first()
+            if existing:
+                for key, value in values.items():
+                    if value is not None:
+                        setattr(existing, key, value)
+            else:
+                history_db.add(TaggerTrainingMetrics(
+                    run_id=rid, resume_seq=resume_seq, step=step, **values
+                ))
+            history_db.commit()
         except Exception as exc:
-            print(f"[TaggerCallback] run-DB mirror error: {exc}")
+            if history_db is not None:
+                history_db.rollback()
+            print(f"[TaggerCallback] history write error: {exc}")
         finally:
-            mirror_db.close()
+            if owns_history_db and history_db is not None:
+                history_db.close()
+            catalog_db.close()
 
     def callback(rid: str, event_type: str, data: dict):
         db = training_db_factory()
@@ -20623,22 +20641,9 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             run = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == rid).first()
             if not run:
                 return
-            touched_metric_keys = []
+            metric_updates = []
             def _upsert_metric(step: int, **kwargs):
-                existing = db.query(TaggerTrainingMetrics).filter(
-                    TaggerTrainingMetrics.run_id == rid,
-                    TaggerTrainingMetrics.resume_seq == resume_seq,
-                    TaggerTrainingMetrics.step == step,
-                ).first()
-                if existing:
-                    for k, v in kwargs.items():
-                        if v is not None:
-                            setattr(existing, k, v)
-                else:
-                    db.add(TaggerTrainingMetrics(
-                        run_id=rid, resume_seq=resume_seq, step=step, **kwargs
-                    ))
-                touched_metric_keys.append((resume_seq, step))
+                metric_updates.append((step, kwargs))
 
             if event_type == "step":
                 run.current_step  = data.get("step", run.current_step)
@@ -20753,10 +20758,9 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.completed_at   = datetime.now()
                 run.latest_checkpoint_path = os.path.join(run.output_dir or "", "latest.safetensors")
             db.commit()
-            if touched_metric_keys:
-                _get_tagger_detail_executor().submit(
-                    _mirror_detail, rid, tuple(touched_metric_keys)
-                )
+            writer = _get_tagger_detail_executor()
+            for metric_step, values in metric_updates:
+                writer.submit(_write_metric, rid, metric_step, values)
         except Exception as e:
             print(f"[TaggerCallback] DB error: {e}")
             db.rollback()

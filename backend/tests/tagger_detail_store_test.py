@@ -25,6 +25,55 @@ def test_tagger_detail_executor_is_shared():
     assert routes._get_tagger_detail_executor() is first
 
 
+def test_tagger_callback_writes_v2_metrics_only_to_run_database(tmp_path):
+    from api import routes
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'catalog.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    TrainingBase.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    central = factory()
+    run = TaggerTrainingRun(
+        run_id="tagger-direct",
+        run_name="tagger-direct",
+        status="running",
+        vision_encoder_path="model",
+        output_dir=str(tmp_path / "output"),
+        detail_store=RUN_DB_V2,
+        detail_schema_version=2,
+        detail_state="ready",
+        detail_db_name="tagger_training_run.db",
+    )
+    central.add(run)
+    central.commit()
+    initialize_tagger_detail_database(run)
+    central.close()
+
+    callback = routes._make_tagger_progress_callback(run.run_id, factory)
+    callback(run.run_id, "step", {
+        "step": 3,
+        "epoch": 1,
+        "loss": 0.25,
+        "lr": 1e-4,
+        "progress": 0.3,
+    })
+    routes._get_tagger_detail_executor().submit(lambda: None).result(timeout=10)
+
+    central = factory()
+    stored_run = central.query(TaggerTrainingRun).filter_by(
+        run_id=run.run_id
+    ).one()
+    assert stored_run.current_step == 3
+    assert central.query(TaggerTrainingMetrics).count() == 0
+    local = open_tagger_detail_session(stored_run)
+    metric = local.query(TaggerTrainingMetrics).one()
+    assert (metric.step, metric.epoch, metric.loss) == (3, 1, 0.25)
+    local.close()
+    central.close()
+
+
 def test_tagger_metric_mirror_preserves_resume_key_and_updates(tmp_path):
     engine = create_engine("sqlite:///:memory:")
     TrainingBase.metadata.create_all(engine)

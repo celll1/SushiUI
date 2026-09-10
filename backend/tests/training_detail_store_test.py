@@ -10,6 +10,7 @@ from database.training_detail_store import (
     RUN_DB_V2,
     DetailStoreError,
     detail_db_path,
+    delete_run_database_metrics_after,
     initialize_run_detail_database,
     mirror_metrics_to_run_database,
     open_run_detail_session,
@@ -132,3 +133,20 @@ def test_metric_mirror_repairs_tail_and_same_step_updates(tmp_path):
     local.close()
     central.close()
     assert values == [0.5, 2.0]
+
+
+def test_run_database_rewind_deletes_future_metrics(tmp_path):
+    run = _model_run(tmp_path)
+    factory = initialize_run_detail_database(run)
+    local = factory()
+    local.add_all([
+        TrainingMetrics(run_id=run.id, step=step, loss=float(step))
+        for step in range(1, 5)
+    ])
+    local.commit()
+    local.close()
+
+    assert delete_run_database_metrics_after(run, 2) == 2
+    opened = open_run_detail_session(run)
+    assert [row.step for row in opened.query(TrainingMetrics).all()] == [1, 2]
+    opened.close()

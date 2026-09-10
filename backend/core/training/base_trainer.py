@@ -20157,6 +20157,18 @@ class BaseTrainer(ABC):
                     db.delete(metric)
 
                 db.commit()
+                from database.models import TrainingRun
+                from database.training_detail_store import (
+                    RUN_DB_V2,
+                    delete_run_database_metrics_after,
+                    detail_store_kind,
+                )
+                run = db.query(TrainingRun).filter(
+                    TrainingRun.id == self.run_id
+                ).first()
+                if run is not None and detail_store_kind(run) == RUN_DB_V2 \
+                        and run.detail_state == "ready":
+                    delete_run_database_metrics_after(run, current_step)
                 print(f"{self.log_prefix} Deleted {len(future_metrics)} old metrics")
             else:
                 print(f"{self.log_prefix} No old metrics beyond current step {current_step} (clean start)")

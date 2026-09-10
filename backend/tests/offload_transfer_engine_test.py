@@ -10,6 +10,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.memory_management.offload_transfer_engine import (  # noqa: E402
+    FrozenLruTransferEngine,
     FrozenSequentialTransferEngine,
 )
 from core.memory_management.block_offloading import TransformerBlockOffloader  # noqa: E402
@@ -106,6 +107,24 @@ def test_close_restores_all_cpu_masters_and_releases_slots():
         assert pointed[key][torch.float32].data_ptr() == masters[key][torch.float32].data_ptr()
 
 
+def test_lru_policy_serves_reverse_recompute_without_global_order():
+    sequential, masters, pointed = _engine(keys=(10, 11, 12), ring_size=2)
+    engine = FrozenLruTransferEngine(
+        keys=sequential.keys,
+        masters=masters,
+        ring_size=2,
+        device=torch.device("cpu"),
+        point_bundle=lambda key, bundle: pointed.__setitem__(key, bundle),
+    )
+    for key in (10, 11, 12, 11, 10):
+        engine.acquire(key)
+
+    assert engine.stats().acquire_misses == 4
+    assert set(engine.block_slot) == {10, 11}
+    assert torch.equal(pointed[10][torch.float32], masters[10][torch.float32])
+    engine.close()
+
+
 class SidecarLinear(nn.Linear):
     def __init__(self, value):
         super().__init__(2, 2, bias=False)
@@ -157,4 +176,27 @@ def test_flux_inference_path_uses_the_same_multi_plane_engine():
     assert torch.equal(dual[0].weight_scale, torch.full_like(dual[0].weight_scale, 11))
     offloader.submit_move_blocks_forward(0)
     assert offloader.h2d_engine.loaded_key[0] == 2
+    offloader.cleanup()
+
+
+def test_flux_frozen_training_path_uses_shared_lru_policy():
+    blocks = [SidecarLinear(1), SidecarLinear(2), SidecarLinear(3)]
+    for block in blocks:
+        block.weight.requires_grad_(False)
+    offloader = FluxBlockOffloader(
+        transformer_blocks=nn.ModuleList(blocks[:1]),
+        single_transformer_blocks=nn.ModuleList(blocks[1:]),
+        blocks_to_swap=3,
+        device=torch.device("cpu"),
+        supports_backward=True,
+        h2d_only=True,
+        ring_size=2,
+    )
+    offloader.prepare_block_devices_before_forward()
+    for key in (0, 1, 2, 1, 0):
+        offloader.wait_for_block(key)
+
+    assert isinstance(offloader.h2d_engine, FrozenLruTransferEngine)
+    assert offloader.h2d_engine.stats().acquire_misses == 4
+    assert torch.equal(blocks[0].weight_scale, torch.full_like(blocks[0].weight_scale, 11))
     offloader.cleanup()

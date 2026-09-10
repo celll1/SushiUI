@@ -15743,12 +15743,22 @@ class BaseTrainer(ABC):
                 try:
                     from database.models import TrainingMetrics
                     from database import get_training_db
+                    from database.training_detail_store import open_training_history_session
                     from sqlalchemy import func as _sqlfunc
-                    _db = next(get_training_db())
-                    _max_seq = _db.query(_sqlfunc.max(TrainingMetrics.resume_seq)).filter(
-                        TrainingMetrics.run_id == self.run_id
-                    ).scalar()
-                    _db.close()
+                    _catalog_db = next(get_training_db())
+                    _history_db = None
+                    _owns_history_db = False
+                    try:
+                        _history_db, _owns_history_db, _ = open_training_history_session(
+                            _catalog_db, self.run_id
+                        )
+                        _max_seq = _history_db.query(
+                            _sqlfunc.max(TrainingMetrics.resume_seq)
+                        ).filter(TrainingMetrics.run_id == self.run_id).scalar()
+                    finally:
+                        if _owns_history_db and _history_db is not None:
+                            _history_db.close()
+                        _catalog_db.close()
                     self.resume_seq = (int(_max_seq) + 1) if _max_seq is not None else 0
                 except Exception as _e:
                     print(f"{self.log_prefix} resume_seq detection failed ({_e}); defaulting to 0")
@@ -19949,12 +19959,18 @@ class BaseTrainer(ABC):
         if not buffer:
             return
 
+        catalog_db = None
+        history_db = None
+        owns_history_db = False
         try:
             from database.models import TrainingMetrics
             from database import get_training_db
+            from database.training_detail_store import open_training_history_session
 
-            # Get database session
-            db = next(get_training_db())
+            catalog_db = next(get_training_db())
+            history_db, owns_history_db, _ = open_training_history_session(
+                catalog_db, self.run_id
+            )
 
             for metrics in buffer:
                 m_step = metrics['step']
@@ -19978,7 +19994,7 @@ class BaseTrainer(ABC):
                 m_param_dft_ve   = metrics.get('param_cumulative_drift_ve')
 
                 # UPSERT: Check if metric exists for this (run_id, step)
-                existing = db.query(TrainingMetrics).filter(
+                existing = history_db.query(TrainingMetrics).filter(
                     TrainingMetrics.run_id == self.run_id,
                     TrainingMetrics.step == m_step
                 ).first()
@@ -20050,33 +20066,10 @@ class BaseTrainer(ABC):
                         param_cumulative_drift_te2=m_param_dft_te2,
                         param_cumulative_drift_ve=m_param_dft_ve,
                     )
-                    db.add(metric)
+                    history_db.add(metric)
 
             # Single commit for entire buffer
-            db.commit()
-
-            # New runs keep a central rollback copy during the v2 rollout and
-            # mirror the same committed rows into their run-owned database.
-            # This remains on the background DB worker, off the iteration path.
-            try:
-                from database.models import TrainingRun
-                from database.training_detail_store import (
-                    RUN_DB_V2,
-                    detail_store_kind,
-                    mirror_metrics_to_run_database,
-                )
-                _run = db.query(TrainingRun).filter(
-                    TrainingRun.id == self.run_id
-                ).first()
-                if _run is not None and detail_store_kind(_run) == RUN_DB_V2 \
-                        and _run.detail_state == "ready":
-                    mirror_metrics_to_run_database(
-                        _run, db, [entry["step"] for entry in buffer]
-                    )
-            except Exception as exc:
-                print(f"{self.log_prefix} WARNING: Failed to mirror metrics "
-                      f"to run database: {exc}")
-            db.close()
+            history_db.commit()
 
             # Broadcast latest metrics to WebSocket clients
             # Only send the most recent entry to avoid flooding
@@ -20106,6 +20099,11 @@ class BaseTrainer(ABC):
         except Exception as e:
             # Non-critical: Continue training even if DB logging fails
             print(f"{self.log_prefix} WARNING: Failed to log metrics to DB: {e}")
+        finally:
+            if owns_history_db and history_db is not None:
+                history_db.close()
+            if catalog_db is not None:
+                catalog_db.close()
 
     def _shutdown_db_executor(self):
         """Shutdown the DB executor and wait for pending writes to complete."""
@@ -20130,15 +20128,21 @@ class BaseTrainer(ABC):
         Args:
             current_step: Current global step (resume point)
         """
+        catalog_db = None
+        history_db = None
+        owns_history_db = False
         try:
             from database.models import TrainingMetrics
             from database import get_training_db
+            from database.training_detail_store import open_training_history_session
 
-            # Get database session
-            db = next(get_training_db())
+            catalog_db = next(get_training_db())
+            history_db, owns_history_db, _ = open_training_history_session(
+                catalog_db, self.run_id
+            )
 
             # Find future metrics (step > current_step)
-            future_metrics = db.query(TrainingMetrics).filter(
+            future_metrics = history_db.query(TrainingMetrics).filter(
                 TrainingMetrics.run_id == self.run_id,
                 TrainingMetrics.step > current_step
             ).all()
@@ -20154,30 +20158,21 @@ class BaseTrainer(ABC):
 
                 # Delete future metrics
                 for metric in future_metrics:
-                    db.delete(metric)
+                    history_db.delete(metric)
 
-                db.commit()
-                from database.models import TrainingRun
-                from database.training_detail_store import (
-                    RUN_DB_V2,
-                    delete_run_database_metrics_after,
-                    detail_store_kind,
-                )
-                run = db.query(TrainingRun).filter(
-                    TrainingRun.id == self.run_id
-                ).first()
-                if run is not None and detail_store_kind(run) == RUN_DB_V2 \
-                        and run.detail_state == "ready":
-                    delete_run_database_metrics_after(run, current_step)
+                history_db.commit()
                 print(f"{self.log_prefix} Deleted {len(future_metrics)} old metrics")
             else:
                 print(f"{self.log_prefix} No old metrics beyond current step {current_step} (clean start)")
 
-            db.close()
-
         except Exception as e:
             # Non-critical: Log warning but continue training
             print(f"{self.log_prefix} WARNING: Failed to cleanup future metrics: {e}")
+        finally:
+            if owns_history_db and history_db is not None:
+                history_db.close()
+            if catalog_db is not None:
+                catalog_db.close()
 
     def cleanup(self):
         """

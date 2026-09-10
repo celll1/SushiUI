@@ -223,7 +223,7 @@ def _apply_sensenova_training_contract(
             "understanding-only LoRA for img2txt, configure explicit i2t task_views "
             "and sensenova_train_scopes=['understanding_decoder']."
         )
-    _assert_sensenova_block_swap_disabled(train_config)
+    _assert_sensenova_block_swap_contract(train_config)
     # Normalized, not gated: reference conditioning is armed run-globally here and
     # applied per item (Phase 3), and composes with a trainable understanding
     # branch (Phase U-3) rather than being refused against it. Strict typing
@@ -340,7 +340,7 @@ def _apply_sensenova_training_contract(
             train_config, "block_swap_h2d_only", False
         ):
             raise ValueError(
-                "SenseNova MoT phase eviction is independent of block swap; "
+                "SenseNova chooses block-swap writeback from the training method; "
                 "set block_swap_h2d_only=false"
             )
     pageable_staging = _normalize_sensenova_bool(
@@ -381,10 +381,37 @@ def _apply_sensenova_training_contract(
     return True
 
 
-def _assert_sensenova_block_swap_disabled(train_config: Dict[str, Any]) -> None:
+def _assert_sensenova_block_swap_contract(train_config: Dict[str, Any]) -> None:
+    from api.param_defaults import TRAINING_DEFAULTS
+
     blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
-    if blocks_to_swap != 0:
-        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+    if not 0 <= blocks_to_swap < 42:
+        raise ValueError(
+            f"SenseNova blocks_to_swap must be between 0 and 41, got {blocks_to_swap}"
+        )
+    if blocks_to_swap == 0:
+        return
+    if not _normalize_sensenova_bool(
+        train_config,
+        "gradient_checkpointing",
+        TRAINING_DEFAULTS["gradient_checkpointing"],
+    ):
+        raise ValueError("SenseNova block swap requires gradient_checkpointing=true")
+    ring_size = _normalize_sensenova_integer(
+        train_config,
+        "block_swap_ring_size",
+        TRAINING_DEFAULTS["block_swap_ring_size"],
+    )
+    if ring_size < 2:
+        raise ValueError(
+            f"SenseNova block_swap_ring_size must be at least 2, got {ring_size}; "
+            "mixed understanding/generation calls need two simultaneous slots"
+        )
+    if _normalize_sensenova_bool(train_config, "block_swap_h2d_only", False):
+        raise ValueError(
+            "SenseNova selects block-swap writeback from the training method; "
+            "set block_swap_h2d_only=false"
+        )
 
 
 def _preflight_sensenova_before_dataset_config(
@@ -401,7 +428,7 @@ def _preflight_sensenova_before_dataset_config(
         lowered = (base_model_path or "").lower()
         is_sensenova = "sensenova" in lowered or "sense-nova" in lowered
     if is_sensenova:
-        _assert_sensenova_block_swap_disabled(train_config)
+        _assert_sensenova_block_swap_contract(train_config)
 
 
 def _apply_sensenova_task_contract(
@@ -548,8 +575,8 @@ def _apply_sensenova_full_finetune_contract(
             f"SenseNova full fine-tuning requires num_optimizer_groups=0, got "
             f"{groups}. Fused optimizer groups replace the per-parameter hooks "
             f"this route's memory budget depends on with a batched "
-            f"optimizer.step(), and they are only ever set up under Block Swap, "
-            f"which this architecture does not implement."
+            f"optimizer.step(). SenseNova block swap uses those same "
+            f"per-parameter updates before mutable weights return to CPU."
         )
     if _normalize_sensenova_bool(train_config, "use_ema", False):
         raise ValueError(

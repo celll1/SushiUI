@@ -207,9 +207,8 @@ def assert_full_finetune_contract(trainer: Any, optimizer_type: Any = None) -> N
             f"SenseNova full fine-tuning requires num_optimizer_groups=0, got "
             f"{groups}. Fused optimizer groups call a batched optimizer.step() "
             "instead of the per-parameter hooks this route's memory budget "
-            "depends on -- and they are only set up under Block Swap, which this "
-            "architecture does not implement, so a non-zero value here would "
-            "leave the run with no fused path at all."
+            "depends on. SenseNova block swap also relies on those per-parameter "
+            "updates before mutable weights return to their CPU masters."
         )
 
     accumulation = int(settings.get("gradient_accumulation_steps", 1) or 1)
@@ -1148,6 +1147,11 @@ def setup_block_swap(trainer: Any) -> None:
     if not 0 < blocks < len(layers):
         raise ValueError(
             f"SenseNova blocks_to_swap must be between 1 and {len(layers) - 1}, got {blocks}"
+        )
+    if int(getattr(trainer, "block_swap_ring_size", 2) or 0) < 2:
+        raise ValueError(
+            "SenseNova block_swap_ring_size must be at least 2; mixed "
+            "understanding/generation calls need two simultaneous slots"
         )
 
     from core.memory_management import BranchedLayerOffloadConductor

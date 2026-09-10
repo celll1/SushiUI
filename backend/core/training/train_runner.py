@@ -1259,6 +1259,52 @@ def _validate_minimax_h3_captions(
         )
 
 
+def _preflight_minimax_h3_reference_dataset_contract(
+    base_model_path: str, dataset_configs: List[Dict[str, Any]], datasets_db,
+) -> None:
+    """Reject paired reference datasets that H3 cannot condition on yet."""
+    from core.training.training_config import _detect_arch
+
+    if _detect_arch(base_model_path) != "minimax_h3":
+        return
+
+    offenders = []
+    for ds_config in dataset_configs:
+        dataset = datasets_db.query(Dataset).filter(
+            Dataset.id == ds_config.get("dataset_id")
+        ).first()
+        if dataset is not None and (dataset.reference_suffixes or []):
+            offenders.append(dataset.name or dataset.path)
+
+    if offenders:
+        detail = ", ".join(repr(name) for name in offenders)
+        raise ValueError(
+            "MiniMax-H3 cannot train paired source/target/instruction datasets yet "
+            "because its training path does not consume reference-image conditioning. "
+            f"Remove these datasets from the run or use ordinary target-only datasets: {detail}."
+        )
+
+
+def _validate_minimax_h3_reference_items(
+    base_model_path: str, items: List[Dict[str, Any]], *, dataset_label: str,
+) -> None:
+    """Catch paired items from stale caches or non-standard dataset producers."""
+    from core.training.training_config import _detect_arch
+
+    if _detect_arch(base_model_path) != "minimax_h3":
+        return
+    paired = [str(item.get("image_path", "<unknown>")) for item in items
+              if item.get("reference_images")]
+    if paired:
+        examples = ", ".join(paired[:3])
+        suffix = "" if len(paired) <= 3 else f" (+{len(paired) - 3} more)"
+        raise ValueError(
+            f"MiniMax-H3 dataset {dataset_label!r} produced {len(paired)} paired "
+            "item(s), but H3 training does not consume reference-image conditioning. "
+            f"Examples: {examples}{suffix}"
+        )
+
+
 def _validate_latent_io(trainer, train_config: Dict[str, Any]) -> None:
     """Check the loaded backbone and VAE agree on the latent space (§8.6).
 
@@ -2739,6 +2785,8 @@ def main():
             train_config, run.base_model_path, dataset_configs, datasets_db)
         _preflight_minimax_h3_caption_contract(
             run.base_model_path, dataset_configs, datasets_db)
+        _preflight_minimax_h3_reference_dataset_contract(
+            run.base_model_path, dataset_configs, datasets_db)
 
         # ============================================================
         # Detect Start Epoch for Resume Training (before dataset loading)
@@ -2816,6 +2864,8 @@ def main():
             )
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
             _validate_minimax_h3_captions(
+                run.base_model_path, dataset_items, dataset_label=dataset.name or dataset.path)
+            _validate_minimax_h3_reference_items(
                 run.base_model_path, dataset_items, dataset_label=dataset.name or dataset.path)
 
             # Add dataset_unique_id to each item for cache management
@@ -2913,6 +2963,8 @@ def main():
                     skip_captions=skip_captions,
                 )
                 _validate_minimax_h3_captions(
+                    run.base_model_path, items, dataset_label=self.unique_id)
+                _validate_minimax_h3_reference_items(
                     run.base_model_path, items, dataset_label=self.unique_id)
 
                 # Add dataset_unique_id for cache management

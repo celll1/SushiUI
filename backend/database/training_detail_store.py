@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+import os
 
-from sqlalchemy import create_engine, event, or_
+from sqlalchemy import create_engine, event, or_, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -16,6 +17,7 @@ RUN_DB_V2 = "run_db_v2"
 RUN_DB_FILENAME = "training_run.db"
 SUPPORTED_DETAIL_STORES = frozenset((CENTRAL_V1, RUN_DB_V2))
 RUN_DB_SCHEMA_VERSION = 2
+TERMINAL_RUN_STATUSES = frozenset(("completed", "failed", "stopped"))
 
 
 class DetailStoreError(ValueError):
@@ -225,3 +227,161 @@ def delete_run_database_metrics_after(run, step: int) -> int:
         raise
     finally:
         local_db.close()
+
+
+def _copy_owned_rows(central_db, local_db, model, run_id: int,
+                     batch_size: int) -> int:
+    """Resume an ID-ordered copy into a terminal run's temporary database."""
+    from sqlalchemy import func
+
+    local_max = local_db.query(func.max(model.id)).scalar() or 0
+    copied = 0
+    columns = [column.name for column in model.__table__.columns]
+    while True:
+        rows = central_db.query(model).filter(
+            model.run_id == run_id,
+            model.id > local_max,
+        ).order_by(model.id.asc()).limit(batch_size).all()
+        if not rows:
+            break
+        local_db.bulk_insert_mappings(model, [
+            {name: getattr(row, name) for name in columns}
+            for row in rows
+        ])
+        local_db.commit()
+        local_max = rows[-1].id
+        copied += len(rows)
+    return copied
+
+
+def _verify_migrated_counts(central_db, local_db, run_id: int) -> dict:
+    from .models import TrainingCheckpoint, TrainingMetrics, TrainingSample
+
+    counts = {}
+    for model in (TrainingMetrics, TrainingCheckpoint, TrainingSample):
+        central_count = central_db.query(model).filter(
+            model.run_id == run_id
+        ).count()
+        local_count = local_db.query(model).filter(
+            model.run_id == run_id
+        ).count()
+        if central_count != local_count:
+            raise DetailStoreError(
+                f"{model.__tablename__} count mismatch: "
+                f"central={central_count}, run_db={local_count}"
+            )
+        counts[model.__tablename__] = local_count
+    integrity = local_db.execute(text("PRAGMA integrity_check")).scalar()
+    if integrity != "ok":
+        raise DetailStoreError(f"Run database integrity_check failed: {integrity}")
+    return counts
+
+
+def migrate_terminal_run_to_v2(central_db, run, *, batch_size: int = 5000) -> dict:
+    """Copy one terminal legacy run and flip its catalogue pointer last.
+
+    Central detail rows are deliberately retained. Re-running after an
+    interrupted copy resumes from each temporary table's largest source ID.
+    """
+    from .models import (
+        TrainingCheckpoint,
+        TrainingMetrics,
+        TrainingRun,
+        TrainingSample,
+    )
+
+    if run.status not in TERMINAL_RUN_STATUSES:
+        raise DetailStoreError(
+            f"Run {run.id} is {run.status!r}; only terminal runs can migrate"
+        )
+    if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+        local_db = open_run_detail_session(run)
+        try:
+            counts = _verify_migrated_counts(central_db, local_db, run.id)
+        finally:
+            local_db.close()
+        return {"run_id": run.id, "already_migrated": True, **counts}
+
+    original = {
+        "detail_store": run.detail_store,
+        "detail_schema_version": run.detail_schema_version,
+        "detail_state": run.detail_state,
+        "detail_db_name": run.detail_db_name,
+    }
+    final_name = RUN_DB_FILENAME
+    temp_name = RUN_DB_FILENAME + ".migrating"
+    final_path = Path(run.output_dir) / final_name
+    if final_path.exists():
+        # Recovery seam: the atomic rename may have completed immediately
+        # before the catalogue flip failed. Accept only the matching, complete
+        # database; an unrelated file is still refused by identity/count checks.
+        probe_values = _copy_run_columns(run)
+        probe_values.update({
+            "detail_store": RUN_DB_V2,
+            "detail_schema_version": RUN_DB_SCHEMA_VERSION,
+            "detail_state": "ready",
+            "detail_db_name": final_name,
+        })
+        probe_run = TrainingRun(**probe_values)
+        local_db = open_run_detail_session(probe_run)
+        try:
+            counts = _verify_migrated_counts(central_db, local_db, run.id)
+        finally:
+            local_db.close()
+        run.detail_store = RUN_DB_V2
+        run.detail_schema_version = RUN_DB_SCHEMA_VERSION
+        run.detail_state = "ready"
+        run.detail_db_name = final_name
+        central_db.commit()
+        return {"run_id": run.id, "recovered_final_file": True, **counts}
+
+    run.detail_state = "migrating"
+    central_db.commit()
+    temp_values = _copy_run_columns(run)
+    temp_values.update({
+        "detail_store": RUN_DB_V2,
+        "detail_schema_version": RUN_DB_SCHEMA_VERSION,
+        "detail_state": "migrating",
+        "detail_db_name": temp_name,
+    })
+    temp_run = TrainingRun(**temp_values)
+
+    try:
+        factory = initialize_run_detail_database(temp_run)
+        local_db = factory()
+        try:
+            copied = {}
+            for model in (TrainingMetrics, TrainingCheckpoint, TrainingSample):
+                copied[model.__tablename__] = _copy_owned_rows(
+                    central_db, local_db, model, run.id, batch_size
+                )
+            counts = _verify_migrated_counts(central_db, local_db, run.id)
+            local_run = local_db.query(TrainingRun).filter(
+                TrainingRun.id == run.id
+            ).one()
+            run.detail_store = RUN_DB_V2
+            run.detail_schema_version = RUN_DB_SCHEMA_VERSION
+            run.detail_state = "ready"
+            run.detail_db_name = final_name
+            for name, value in _copy_run_columns(run).items():
+                setattr(local_run, name, value)
+            local_db.commit()
+            local_db.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        finally:
+            local_db.close()
+        factory.kw["bind"].dispose()
+        os.replace(str(Path(run.output_dir) / temp_name), str(final_path))
+        _run_db_session_factory.cache_clear()
+        central_db.commit()
+        return {
+            "run_id": run.id,
+            "already_migrated": False,
+            "copied": copied,
+            **counts,
+        }
+    except Exception:
+        central_db.rollback()
+        for name, value in original.items():
+            setattr(run, name, value)
+        central_db.commit()
+        raise

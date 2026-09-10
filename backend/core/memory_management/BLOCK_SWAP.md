@@ -7,6 +7,8 @@
 > `docs/audits/BLOCK_SWAP_RING_BUFFER_REVALIDATION_2026-09.md` for current
 > architecture-by-architecture status. The measured tables below have no raw
 > artifacts attached and must not be treated as current evidence.
+> Immutable inference and FLUX.2 frozen-base transfers have since moved to the
+> shared engine; see `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.
 
 Block Swapは、Transformerレイヤーを動的にCPU↔GPU間で転送することで、VRAM使用量を削減する機能です。SushiUIには2つの実装があります。
 

@@ -434,6 +434,8 @@ class SenseNovaArchHandler(ArchHandler):
         sensenova_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
+        if int(getattr(trainer, "blocks_to_swap", 0) or 0) == 0:
+            return
         raise NotImplementedError("SenseNova training block swap is not implemented")
 
     def depth_blocks(self, trainer):

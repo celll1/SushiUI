@@ -2378,6 +2378,22 @@ class VaeTrainer:
                         merged.update(entry["extra"])
                         row.extra_metrics = merged
                 db.commit()
+                try:
+                    from database.models import TrainingRun
+                    from database.training_detail_store import (
+                        RUN_DB_V2,
+                        detail_store_kind,
+                        mirror_metrics_to_run_database,
+                    )
+                    run = db.query(TrainingRun).filter(
+                        TrainingRun.id == self.run_id
+                    ).first()
+                    if run is not None and detail_store_kind(run) == RUN_DB_V2 \
+                            and run.detail_state == "ready":
+                        mirror_metrics_to_run_database(run, db, buffer.keys())
+                except Exception as exc:
+                    print(f"{self.log_prefix} metrics run-DB mirror failed "
+                          f"(non-fatal): {type(exc).__name__}: {exc}")
             finally:
                 db.close()
         except Exception as e:

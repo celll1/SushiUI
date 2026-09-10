@@ -11,6 +11,7 @@ from database.training_detail_store import (
     DetailStoreError,
     detail_db_path,
     initialize_run_detail_database,
+    mirror_metrics_to_run_database,
     open_run_detail_session,
     resolve_detail_store,
 )
@@ -98,3 +99,36 @@ def test_existing_run_database_rejects_another_run_identity(tmp_path):
     initialize_run_detail_database(_model_run(tmp_path, run_uuid="first"))
     with pytest.raises(DetailStoreError, match="identity mismatch"):
         initialize_run_detail_database(_model_run(tmp_path, run_uuid="second"))
+
+
+def test_metric_mirror_repairs_tail_and_same_step_updates(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from database.models import TrainingBase
+
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    run = _model_run(tmp_path)
+    central.add(run)
+    central.add_all([
+        TrainingMetrics(run_id=run.id, step=1, loss=1.0),
+        TrainingMetrics(run_id=run.id, step=2, loss=2.0),
+    ])
+    central.commit()
+    initialize_run_detail_database(run)
+
+    mirror_metrics_to_run_database(run, central, [1])
+    central.query(TrainingMetrics).filter_by(run_id=run.id, step=1).one().loss = 0.5
+    central.commit()
+    mirror_metrics_to_run_database(run, central, [1, 2])
+
+    local = open_run_detail_session(run)
+    values = [
+        row.loss for row in local.query(TrainingMetrics)
+        .order_by(TrainingMetrics.step).all()
+    ]
+    local.close()
+    central.close()
+    assert values == [0.5, 2.0]

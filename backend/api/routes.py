@@ -16546,6 +16546,12 @@ async def create_training_run(
         config_generator.save_config(config_yaml, config_path)
 
         # Create training run with specified run_id and run_name
+        from database.training_detail_store import (
+            RUN_DB_FILENAME,
+            RUN_DB_SCHEMA_VERSION,
+            RUN_DB_V2,
+            initialize_run_detail_database,
+        )
         training_run = TrainingRun(
             dataset_id=primary_dataset_id,  # Keep for backward compatibility
             dataset_configs=dataset_configs,  # New: multiple datasets
@@ -16556,10 +16562,16 @@ async def create_training_run(
             config_yaml=config_yaml,
             total_steps=calculated_total_steps,
             output_dir=output_dir_str,
-            status="pending"
+            status="pending",
+            detail_store=RUN_DB_V2,
+            detail_schema_version=RUN_DB_SCHEMA_VERSION,
+            detail_state="ready",
+            detail_db_name=RUN_DB_FILENAME,
         )
 
         training_db.add(training_run)
+        training_db.flush()
+        initialize_run_detail_database(training_run)
         training_db.commit()
         training_db.refresh(training_run)
 
@@ -18637,17 +18649,48 @@ async def get_training_metrics_db(
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
+    metrics_db = db
+    owns_metrics_db = False
     try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_run_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            try:
+                metrics_db = open_run_detail_session(run)
+                owns_metrics_db = True
+            except Exception:
+                # Dual-write is the rollback contract during rollout. An absent
+                # output drive must not turn retained central history into an
+                # empty graph.
+                metrics_db = db
+
         # Get min and max steps for this run
-        result = db.query(
+        result = metrics_db.query(
             func.min(TrainingMetrics.step),
             func.max(TrainingMetrics.step)
         ).filter(TrainingMetrics.run_id == run_id).first()
 
         min_step, max_step = result
+        if min_step is None and owns_metrics_db:
+            # A process can commit the rollback copy immediately before it
+            # mirrors the first batch (or be an older specialised trainer that
+            # has not adopted the mirror yet). Prefer retained data over a
+            # misleading empty chart.
+            central_bounds = db.query(
+                func.min(TrainingMetrics.step),
+                func.max(TrainingMetrics.step)
+            ).filter(TrainingMetrics.run_id == run_id).first()
+            if central_bounds[0] is not None:
+                metrics_db.close()
+                metrics_db = db
+                owns_metrics_db = False
+                min_step, max_step = central_bounds
         if min_step is None or max_step is None:
             # No metrics yet
-            return {
+            response = {
                 "loss": [],
                 "recon_loss": [],
                 "learning_rate": [],
@@ -18666,6 +18709,9 @@ async def get_training_metrics_db(
                 "epoch_boundaries": [],
                 "resume_markers": [],
             }
+            if owns_metrics_db:
+                metrics_db.close()
+            return response
 
         # Calculate uniform sample steps
         total_steps = max_step - min_step + 1
@@ -18684,7 +18730,7 @@ async def get_training_metrics_db(
                 sample_steps.append(max_step)
 
         # Fetch metrics for sampled steps
-        query = db.query(TrainingMetrics).filter(
+        query = metrics_db.query(TrainingMetrics).filter(
             TrainingMetrics.run_id == run_id,
             TrainingMetrics.step.in_(sample_steps)
         ).order_by(TrainingMetrics.step.asc())
@@ -18783,7 +18829,7 @@ async def get_training_metrics_db(
         # (first step of each resume_seq > 0), computed from ALL rows (not just the
         # sampled subset) so the markers are accurate. The UI draws dotted vertical
         # lines for epochs and a distinct marker for resume boundaries.
-        epoch_rows = db.query(
+        epoch_rows = metrics_db.query(
             TrainingMetrics.epoch, func.max(TrainingMetrics.step)
         ).filter(
             TrainingMetrics.run_id == run_id,
@@ -18794,7 +18840,7 @@ async def get_training_metrics_db(
             for e, s in epoch_rows if e is not None and s is not None
         ]
 
-        resume_rows = db.query(
+        resume_rows = metrics_db.query(
             TrainingMetrics.resume_seq, func.min(TrainingMetrics.step)
         ).filter(
             TrainingMetrics.run_id == run_id,
@@ -18804,7 +18850,7 @@ async def get_training_metrics_db(
             for rs, s in resume_rows if rs and int(rs) > 0 and s is not None
         ]
 
-        return {
+        response = {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
             "extra_metrics": extra_series,
@@ -18836,8 +18882,13 @@ async def get_training_metrics_db(
             "epoch_boundaries": epoch_boundaries,
             "resume_markers": resume_markers,
         }
+        if owns_metrics_db:
+            metrics_db.close()
+        return response
 
     except Exception as e:
+        if owns_metrics_db:
+            metrics_db.close()
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to read metrics from DB: {str(e)}")

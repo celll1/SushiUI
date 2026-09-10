@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, or_
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -157,3 +157,52 @@ def open_run_detail_session(run):
     except Exception:
         db.close()
         raise
+
+
+def mirror_metrics_to_run_database(run, central_db, touched_steps) -> None:
+    """Bring a dual-written run DB through the newest central metric batch.
+
+    A previous process may have committed centrally and exited before its mirror.
+    Copying the missing tail as well as the touched steps repairs that gap on the
+    next flush and preserves same-step partial updates.
+    """
+    from sqlalchemy import func
+
+    from .models import TrainingMetrics
+
+    steps = {int(step) for step in touched_steps}
+    if not steps:
+        return
+    local_db = open_run_detail_session(run)
+    try:
+        local_max = local_db.query(func.max(TrainingMetrics.step)).filter(
+            TrainingMetrics.run_id == run.id
+        ).scalar()
+        predicate = TrainingMetrics.step.in_(steps)
+        if local_max is not None:
+            predicate = or_(TrainingMetrics.step > int(local_max), predicate)
+        rows = central_db.query(TrainingMetrics).filter(
+            TrainingMetrics.run_id == run.id,
+            predicate,
+        ).order_by(TrainingMetrics.step.asc()).all()
+        columns = [
+            column.name for column in TrainingMetrics.__table__.columns
+            if column.name != "id"
+        ]
+        for source in rows:
+            target = local_db.query(TrainingMetrics).filter(
+                TrainingMetrics.run_id == run.id,
+                TrainingMetrics.step == source.step,
+            ).first()
+            values = {name: getattr(source, name) for name in columns}
+            if target is None:
+                local_db.add(TrainingMetrics(**values))
+            else:
+                for name, value in values.items():
+                    setattr(target, name, value)
+        local_db.commit()
+    except Exception:
+        local_db.rollback()
+        raise
+    finally:
+        local_db.close()

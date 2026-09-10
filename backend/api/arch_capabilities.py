@@ -1064,26 +1064,26 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sd15", "sdxl", "sensenova"}):
 # --- Block Swap -------------------------------------------------------------
 # `blocks_to_swap` is consumed on the training path by the per-arch
 # `ops/<arch>_ops.setup_block_swap` (anima, lens, ideogram4, krea2, minit2i,
-# ltx2, acestep, minimax_h3) or inside the loader (zimage, flux2). The three
-# architectures below have no such consumer at all.
+# ltx2, acestep, minimax_h3, sensenova) or inside the loader (zimage, flux2).
+# The two U-Net architectures below have no such consumer at all.
 _add_training_feature_unsupported(
     "sd15", "block_swap",
     "the SD1.5 U-Net training path has no block-swap consumer (arch/sd15.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
 _add_training_feature_unsupported(
     "sdxl", "block_swap",
     "the SDXL U-Net training path has no block-swap consumer (arch/sdxl.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
-_add_training_feature_unsupported(
-    "sensenova", "block_swap",
-    "SenseNova training does not implement block swap: arch/sensenova.py's setup_block_swap raises, and a non-zero blocks_to_swap is refused before the run starts (train_runner._apply_sensenova_training_contract). Its per-phase weight-half CPU eviction (sensenova_mot_phase_eviction) is the mechanism it offers instead")
-
 # --- Fused optimizer groups -------------------------------------------------
 # `num_optimizer_groups` is only read inside the `if self.blocks_to_swap > 0`
 # branch of base_trainer.setup_optimizer, so it governs nothing wherever block
 # swap itself is unavailable.
-for _a in ["sd15", "sdxl", "sensenova"]:
+for _a in ["sd15", "sdxl"]:
     _add_training_feature_unsupported(
         _a, "fused_optimizer_groups",
         "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
+_add_training_feature_unsupported(
+    "sensenova", "fused_optimizer_groups",
+    "SenseNova full fine-tuning applies and releases each gradient through per-parameter optimizer hooks; batched fused optimizer groups would violate that memory contract",
+    methods=["full_finetune"])
 
 # --- Reference-image conditioning -------------------------------------------
 # Three unrelated mechanisms, one run-global arm. FLUX.2 concatenates reference

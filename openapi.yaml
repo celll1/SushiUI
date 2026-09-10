@@ -11119,8 +11119,9 @@ components:
                     enum: [lora, relora, full_finetune, controlnet]
           example:
             sensenova:
-              block_swap:
-                reason: "SenseNova training does not implement block swap: arch/sensenova.py's setup_block_swap raises, and a non-zero blocks_to_swap is refused before the run starts (train_runner._apply_sensenova_training_contract). Its per-phase weight-half CPU eviction (sensenova_mot_phase_eviction) is the mechanism it offers instead"
+              fused_optimizer_groups:
+                reason: "SenseNova full fine-tuning applies and releases each gradient through per-parameter optimizer hooks; batched fused optimizer groups would violate that memory contract"
+                methods: [full_finetune]
             zimage:
               text_encoder_training:
                 reason: "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it"
@@ -24060,6 +24061,14 @@ components:
         blocks_to_swap:
           type: 'integer'
           default: 0
+          description: >-
+            Number of transformer layers streamed between CPU and GPU during
+            training. SenseNova accepts 0 through 41 and uses branch-aware
+            slots: the understanding and generation halves of the same physical
+            layer are independent transfer keys. It requires gradient
+            checkpointing when non-zero. With SenseNova LoRA only frozen base
+            weights are streamed; full fine-tuning writes updated weights back
+            to their CPU masters.
         use_pinned_memory:
           type: 'boolean'
           default: false
@@ -24072,8 +24081,10 @@ components:
             pinned CPU memory. Prefix keeps the understanding half resident;
             denoise, backward, optimizer step and periodic checkpoint save keep
             the generation half resident. Emergency saves may run after CPU
-            normalization. Requires batch_size=1, blocks_to_swap=0,
-            num_optimizer_groups=0 and block_swap_h2d_only=false.
+            normalization. It can share ownership with branch-aware block swap:
+            phase eviction manages only the layers left resident by block swap.
+            Requires batch_size=1, num_optimizer_groups=0 and
+            block_swap_h2d_only=false.
 
             The evicted half must be the FROZEN one, because the three-state
             machine moves it to CPU before backward: combining this with
@@ -24393,9 +24404,20 @@ components:
         block_swap_h2d_only:
           type: 'boolean'
           default: false
+          description: >-
+            Request frozen-base H2D-only streaming on architectures that expose
+            it as a selectable mode. SenseNova requires false because it derives
+            writeback policy from the training method: LoRA streams only its
+            frozen base, while full fine-tuning writes mutable weights back.
         block_swap_ring_size:
           type: 'integer'
           default: 2
+          minimum: 1
+          description: >-
+            GPU weight-buffer slots used by transfer-prefetch conductors.
+            SenseNova uses this for its branch-aware layer conductor and
+            requires at least 2 because a mixed-token call can need both halves
+            of one physical layer simultaneously.
         num_optimizer_groups:
           type: 'integer'
           default: 0

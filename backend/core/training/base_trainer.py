@@ -3207,8 +3207,6 @@ class BaseTrainer(ABC):
             minimax_h3_ops, sensenova_ops,
         )
         if self.is_sensenova:
-            if self.blocks_to_swap != 0:
-                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
             sensenova_ops.load_components(self)
         elif self.is_ltx2:
             ltx2_ops.load_components(self)
@@ -4368,8 +4366,6 @@ class BaseTrainer(ABC):
         #     return
 
         if self.is_sensenova:
-            if self.blocks_to_swap != 0:
-                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
             self.model_path = checkpoint_path
             from core.training.ops import sensenova_ops
             sensenova_ops.load_components(self)
@@ -7863,7 +7859,9 @@ class BaseTrainer(ABC):
                 # hooks inside _setup_fused_backward_pass, so their updates run before Block Swap
                 # moves each block to CPU (otherwise CPU-resident params are silently skipped).
                 self._setup_fused_backward_pass(optimizer_type)
-            elif optimizer_type.lower() in self._BLOCK_SWAP_UNSUPPORTED_OPTIMIZERS:
+            elif (optimizer_type.lower() in self._BLOCK_SWAP_UNSUPPORTED_OPTIMIZERS
+                  and not (getattr(self, "is_sensenova", False)
+                           and not is_full_finetune(self))):
                 # Every bitsandbytes optimizer -- 8-bit AND the 32-bit paged one --
                 # refuses a CPU-resident parameter: Optimizer.step() reaches
                 # bitsandbytes.functional.is_on_gpu(), which raises rather than
@@ -7900,9 +7898,9 @@ class BaseTrainer(ABC):
               and optimizer_type.lower() in FUSED_BACKWARD_OPTIMIZERS):
             # The hooks have no block-swap dependency; the setup above sits
             # inside `blocks_to_swap > 0` only because that is the one place
-            # every other architecture needs them. SenseNova refuses a non-zero
-            # blocks_to_swap and would otherwise hold every gradient of the half
-            # it trains resident until optimizer.step().
+            # every other architecture needs them. A resident SenseNova full
+            # fine-tune would otherwise hold every gradient of the half it
+            # trains until optimizer.step().
             self._setup_fused_backward_pass(optimizer_type)
 
         if (getattr(self, "is_sensenova", False) and is_full_finetune(self)
@@ -14408,8 +14406,6 @@ class BaseTrainer(ABC):
                     "enable_bucketing so every item in a batch has the same "
                     "resolution; batch_size=1 works without bucketing"
                 )
-            if self.blocks_to_swap != 0:
-                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
             if _sensenova_full_ft and int(gradient_accumulation_steps or 1) != 1:
                 # The argument, not the config value assert_full_finetune_contract
                 # read: train() is called with its own. Full fine-tuning here runs

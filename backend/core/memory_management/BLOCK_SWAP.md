@@ -1,5 +1,13 @@
 # Block Swap - VRAM最適化機能
 
+> **Status (2026-09): historical design note.** The training claims below do
+> not describe the currently reached hook path. In particular,
+> `LayerOffloadConductor` does not currently perform forward eviction or
+> reachable prefetch, and its fixed CPU arena can wrap over live weights. Use
+> `docs/audits/BLOCK_SWAP_RING_BUFFER_REVALIDATION_2026-09.md` for current
+> architecture-by-architecture status. The measured tables below have no raw
+> artifacts attached and must not be treated as current evidence.
+
 Block Swapは、Transformerレイヤーを動的にCPU↔GPU間で転送することで、VRAM使用量を削減する機能です。SushiUIには2つの実装があります。
 
 ---

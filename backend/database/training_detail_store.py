@@ -175,6 +175,22 @@ def open_run_detail_session(run):
         raise
 
 
+def open_training_history_session(catalog_db, run_id: int):
+    """Return the authoritative history session and whether the caller owns it."""
+    from .models import TrainingRun
+
+    run = catalog_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if run is None:
+        raise DetailStoreError(f"Training run {run_id} is missing from the catalogue")
+    if detail_store_kind(run) == CENTRAL_V1:
+        return catalog_db, False, run
+    if run.detail_state != "ready":
+        raise DetailStoreError(
+            f"Training run {run_id} detail store is not ready: {run.detail_state!r}"
+        )
+    return open_run_detail_session(run), True, run
+
+
 def mirror_metrics_to_run_database(run, central_db, touched_steps) -> None:
     """Bring a dual-written run DB through the newest central metric batch.
 
@@ -457,6 +473,26 @@ def open_tagger_detail_session(run):
     except Exception:
         db.close()
         raise
+
+
+def open_tagger_history_session(catalog_db, run_id: str):
+    """Return the authoritative tagger history session and ownership flag."""
+    from .models import TaggerTrainingRun
+
+    run = catalog_db.query(TaggerTrainingRun).filter(
+        TaggerTrainingRun.run_id == run_id
+    ).first()
+    if run is None:
+        raise DetailStoreError(
+            f"Tagger training run {run_id!r} is missing from the catalogue"
+        )
+    if detail_store_kind(run) == CENTRAL_V1:
+        return catalog_db, False, run
+    if run.detail_state != "ready":
+        raise DetailStoreError(
+            f"Tagger run {run_id!r} detail store is not ready: {run.detail_state!r}"
+        )
+    return open_tagger_detail_session(run), True, run
 
 
 def mirror_tagger_metrics_to_run_database(run, central_db, touched_keys) -> None:

@@ -15,6 +15,7 @@ from database.training_detail_store import (
     mirror_metrics_to_run_database,
     migrate_terminal_run_to_v2,
     open_run_detail_session,
+    open_training_history_session,
     resolve_detail_store,
 )
 from database.models import TrainingMetrics, TrainingRun
@@ -151,6 +152,61 @@ def test_run_database_rewind_deletes_future_metrics(tmp_path):
     opened = open_run_detail_session(run)
     assert [row.step for row in opened.query(TrainingMetrics).all()] == [1, 2]
     opened.close()
+
+
+def test_v2_history_session_writes_only_to_run_database(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from database.models import TrainingBase
+
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    run = _model_run(tmp_path)
+    central.add(run)
+    central.commit()
+    initialize_run_detail_database(run)
+
+    history, owned, selected = open_training_history_session(central, run.id)
+    assert owned is True
+    assert selected.run_id == run.run_id
+    history.add(TrainingMetrics(run_id=run.id, step=1, loss=0.25))
+    history.commit()
+    history.close()
+
+    assert central.query(TrainingMetrics).count() == 0
+    local = open_run_detail_session(run)
+    assert local.query(TrainingMetrics).one().loss == 0.25
+    local.close()
+    central.close()
+
+
+def test_legacy_history_session_keeps_central_writes(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from database.models import TrainingBase
+
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    run = _model_run(tmp_path)
+    run.detail_store = None
+    run.detail_schema_version = None
+    run.detail_state = None
+    run.detail_db_name = None
+    central.add(run)
+    central.commit()
+
+    history, owned, _ = open_training_history_session(central, run.id)
+    assert history is central
+    assert owned is False
+    history.add(TrainingMetrics(run_id=run.id, step=1, loss=0.5))
+    history.commit()
+
+    assert central.query(TrainingMetrics).one().loss == 0.5
+    central.close()
 
 
 def test_terminal_migration_copies_and_retains_central_history(tmp_path):

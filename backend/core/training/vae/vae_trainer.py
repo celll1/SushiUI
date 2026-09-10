@@ -2309,13 +2309,21 @@ class VaeTrainer:
         try:
             from database import get_training_db
             from database.models import TrainingMetrics
+            from database.training_detail_store import open_training_history_session
             from sqlalchemy import func as _sqlfunc
-            db = next(get_training_db())
+            catalog_db = next(get_training_db())
+            history_db = None
+            owns_history_db = False
             try:
-                max_seq = (db.query(_sqlfunc.max(TrainingMetrics.resume_seq))
+                history_db, owns_history_db, _ = open_training_history_session(
+                    catalog_db, self.run_id
+                )
+                max_seq = (history_db.query(_sqlfunc.max(TrainingMetrics.resume_seq))
                            .filter(TrainingMetrics.run_id == self.run_id).scalar())
             finally:
-                db.close()
+                if owns_history_db and history_db is not None:
+                    history_db.close()
+                catalog_db.close()
             self.resume_seq = (int(max_seq) + 1) if max_seq is not None else 0
         except Exception as e:
             print(f"{self.log_prefix} resume_seq detection failed ({e}); using 0")
@@ -2357,17 +2365,23 @@ class VaeTrainer:
         try:
             from database import get_training_db
             from database.models import TrainingMetrics
-            db = next(get_training_db())
+            from database.training_detail_store import open_training_history_session
+            catalog_db = next(get_training_db())
+            history_db = None
+            owns_history_db = False
             try:
+                history_db, owns_history_db, _ = open_training_history_session(
+                    catalog_db, self.run_id
+                )
                 for step, entry in sorted(buffer.items()):
-                    row = (db.query(TrainingMetrics)
+                    row = (history_db.query(TrainingMetrics)
                            .filter(TrainingMetrics.run_id == self.run_id,
                                    TrainingMetrics.step == step)
                            .first())
                     if row is None:
                         row = TrainingMetrics(run_id=self.run_id, step=step, epoch=0,
                                               resume_seq=self.resume_seq)
-                        db.add(row)
+                        history_db.add(row)
                     else:
                         row.resume_seq = self.resume_seq
                     for column in ("loss", "recon_loss", "learning_rate", "grad_norm"):
@@ -2377,25 +2391,11 @@ class VaeTrainer:
                         merged = dict(row.extra_metrics or {})
                         merged.update(entry["extra"])
                         row.extra_metrics = merged
-                db.commit()
-                try:
-                    from database.models import TrainingRun
-                    from database.training_detail_store import (
-                        RUN_DB_V2,
-                        detail_store_kind,
-                        mirror_metrics_to_run_database,
-                    )
-                    run = db.query(TrainingRun).filter(
-                        TrainingRun.id == self.run_id
-                    ).first()
-                    if run is not None and detail_store_kind(run) == RUN_DB_V2 \
-                            and run.detail_state == "ready":
-                        mirror_metrics_to_run_database(run, db, buffer.keys())
-                except Exception as exc:
-                    print(f"{self.log_prefix} metrics run-DB mirror failed "
-                          f"(non-fatal): {type(exc).__name__}: {exc}")
+                history_db.commit()
             finally:
-                db.close()
+                if owns_history_db and history_db is not None:
+                    history_db.close()
+                catalog_db.close()
         except Exception as e:
             print(f"{self.log_prefix} metrics flush failed (non-fatal): "
                   f"{type(e).__name__}: {e}")

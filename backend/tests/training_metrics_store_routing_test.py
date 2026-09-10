@@ -118,3 +118,11 @@ def test_tagger_metrics_come_from_run_database(tmp_path):
     data = get_tagger_training_metrics(run.run_id, 0, 2000, central)
     assert data[0]["loss"] == 0.2
     central.close()
+
+
+def test_unknown_tagger_metrics_preserve_legacy_empty_response(tmp_path):
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    assert get_tagger_training_metrics("missing", 0, 2000, central) == []
+    central.close()

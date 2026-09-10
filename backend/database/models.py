@@ -843,6 +843,12 @@ class TrainingRun(TrainingBase):
     # Output
     output_dir = Column(String, nullable=False)
     checkpoint_paths = Column(JSON, default=list)  # List of checkpoint file paths
+    # Detailed-history storage. NULL is deliberately the legacy central store,
+    # so a pre-v2 training.db needs no eager data migration.
+    detail_store = Column(String, nullable=True)  # NULL/central_v1 | run_db_v2
+    detail_schema_version = Column(Integer, nullable=True)
+    detail_state = Column(String, nullable=True)  # pending | ready | unavailable | migrating
+    detail_db_name = Column(String, nullable=True)
     
     # Logs
     log_file = Column(String, nullable=True)

@@ -77,7 +77,17 @@ def test_tagger_callback_writes_v2_metrics_only_to_run_database(tmp_path):
     assert (metric.step, metric.epoch, metric.loss, metric.train_f1) == (
         3, 1, 0.25, 0.75
     )
+    detail_run = local.query(TaggerTrainingRun).filter_by(
+        run_id=run.run_id
+    ).one()
+    detail_run.tag_vocabulary = {"num_tags": 2, "idx_to_tag": ["a", "b"]}
+    local.commit()
     local.close()
+    assert routes.get_tagger_training_vocabulary(run.run_id, central) == {
+        "num_tags": 2,
+        "idx_to_tag": ["a", "b"],
+    }
+    assert stored_run.tag_vocabulary is None
     central.close()
 
 

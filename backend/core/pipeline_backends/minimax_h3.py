@@ -501,14 +501,10 @@ class MiniMaxH3Mixin:
         on the device. Building and cleaning it up inside one generation is not
         a simplification, it is the only lifetime that matches the staging.
 
-        ``h2d_only`` is deliberately off. It coalesces each swappable block's
-        Linear weights into ONE flat buffer, which requires a single dtype
-        across them; a MiniMax-H3 block holds ``Fp8Linear`` weights
-        (``float8_e4m3fn``) next to the float32 ``adaln_proj.linear``, so the
-        offloader would detect the mixed dtype and fall back to the standard
-        swap anyway. Asking for the standard swap directly keeps the module's
-        own weights the owner of their storage, which is what makes the
-        end-of-generation ``.to("cpu")`` restore the model correctly.
+        The immutable H2D engine packs one plane per dtype, including weight
+        sidecars, so MiniMax-H3's FP8 and FP32 Linears share bounded GPU slots
+        without casts or a redundant D2H eviction. Cleanup repoints every
+        tensor to its CPU master before the outer model teardown.
         """
         from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
 
@@ -592,7 +588,8 @@ class MiniMaxH3Mixin:
             use_pinned_memory=False,
             transformer=transformer,
             supports_backward=False,
-            h2d_only=False,
+            h2d_only=True,
+            ring_size=int(params.get("block_swap_ring_size", 2) or 2),
         )
         offloader.prepare_block_devices_before_forward()
         # Adapters install BEFORE this (the generate function loads them one

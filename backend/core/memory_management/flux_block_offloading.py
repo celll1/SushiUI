@@ -23,7 +23,7 @@ from .block_offloading import (
     DtypeSplitGuardMixin, pairable_block_indices, weight_sidecar_names, weighs_to_device,
     _synchronize_device,
 )
-from .offload_transfer_engine import FrozenSequentialTransferEngine
+from .offload_transfer_engine import FrozenLruTransferEngine, FrozenSequentialTransferEngine
 
 
 class FluxBlockOffloader(DtypeSplitGuardMixin):
@@ -92,18 +92,12 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         # H2D-only state (built lazily on first forward)
         self.h2d_masters = None       # unified_idx -> (flat_cpu, [(module, offset, numel, shape)])
         self.h2d_ring = None          # slot -> flat GPU buffer (max block size)
-        self.h2d_slot_futures = None
         self.h2d_loaded_block = None
         self.h2d_swappable = None
         self.h2d_num_on_gpu = None
         self.h2d_engine = None
 
-        # Training H2D (order-agnostic pull-based residency): block<->slot maps + LRU order.
-        # Populated by _h2d_setup when not forward_only.
         self.h2d_training = False
-        self.h2d_block_slot = None     # unified_idx -> slot (currently resident)
-        self.h2d_slot_block = None     # slot -> unified_idx (or None)
-        self.h2d_lru = None            # list of slots, most-recently-used at the end
 
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.futures = {}
@@ -438,79 +432,7 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
                         if getattr(m, "bias", None) is not None and m.bias.data.device != self.device:
                             m.bias.data = m.bias.data.to(self.device)
 
-        if not self.h2d_training:
-            self._h2d_setup_frozen_engine()
-            return
-
-        frozen_only = self.h2d_training
-        dtypes = set()
-        for uidx in self.h2d_swappable:
-            for m in self._h2d_linear_modules(self._get_block(uidx), frozen_only=frozen_only):
-                dtypes.add(m.weight.data.dtype)
-        if len(dtypes) != 1:
-            print(f"[FluxBlockOffloader] H2D-only disabled: mixed Linear weight dtypes {dtypes}; "
-                  f"using standard block swap.")
-            self.h2d_only = False
-            return
-        flat_dtype = dtypes.pop()
-
-        # Permanent pinned flat CPU master per swappable block (dual and single differ in
-        # size). h2d_masters[uidx] = (flat_cpu, [(module, offset, numel, shape)]).
-        # The master inherits the weight dtype, so weight-only-FP8 models transfer fp8 bytes
-        # (~half the H2D of bf16) automatically -- no separate fp8 path needed.
-        self.h2d_masters = {}
-        max_numel = 0
-        pin_warned = False
-        for uidx in self.h2d_swappable:
-            mods = self._h2d_linear_modules(self._get_block(uidx), frozen_only=frozen_only)
-            total = sum(m.weight.data.numel() for m in mods)
-            flat_cpu = torch.empty(total, dtype=flat_dtype, device="cpu")
-            if self.cuda_available:
-                try:
-                    flat_cpu = flat_cpu.pin_memory(device=self.device)
-                except (RuntimeError, NotImplementedError) as e:
-                    if not pin_warned:
-                        print(f"[FluxBlockOffloader] pin_memory unavailable for dtype "
-                              f"{flat_cpu.dtype} ({e}); using non-pinned H2D masters.")
-                        pin_warned = True
-            layout = []
-            off = 0
-            for m in mods:
-                w = m.weight.data
-                n = w.numel()
-                shape = tuple(w.shape)
-                flat_cpu[off:off + n].copy_(w.reshape(-1))
-                m.weight.data = flat_cpu[off:off + n].view(shape)
-                layout.append((m, off, n, shape))
-                off += n
-            self.h2d_masters[uidx] = (flat_cpu, layout)
-            max_numel = max(max_numel, total)
-
-        # GPU ring sized to the largest swappable block; each load copies only its own bytes.
-        self.h2d_ring = [
-            torch.empty(max_numel, dtype=flat_dtype, device=self.device)
-            for _ in range(self.ring_size)
-        ]
-        self.h2d_slot_futures = [None] * self.ring_size
-        self.h2d_loaded_block = [None] * self.ring_size
-
-        if self.h2d_training:
-            # Order-agnostic pull-based residency (no async prefetch in v1). Slots start empty;
-            # _h2d_ensure_resident synchronously H2D-loads on demand and tracks block<->slot + LRU.
-            self.h2d_block_slot = {}
-            self.h2d_slot_block = [None] * self.ring_size
-            self.h2d_lru = list(range(self.ring_size))  # LRU victim = front, MRU = back
-            print(f"[FluxBlockOffloader] H2D-only ready (training, pull-based): "
-                  f"{num_swappable} swappable blocks, ring_size={self.ring_size}, "
-                  f"master dtype={flat_dtype}, frozen-base masters only "
-                  f"(no D2H eviction, LoRA adapters resident)")
-        else:
-            # Inference forward-only path: fixed-slot prefetch ring (unchanged, unit-tested).
-            for j in range(self.ring_size):
-                self._h2d_submit_load(self.h2d_swappable[j], j)
-            print(f"[FluxBlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
-                  f"ring_size={self.ring_size}, master dtype={flat_dtype}, coalesced flat "
-                  f"pinned CPU masters (no D2H eviction)")
+        self._h2d_setup_frozen_engine()
 
     def _h2d_setup_frozen_engine(self):
         """Pack heterogeneous FLUX blocks into the shared immutable engine."""
@@ -519,7 +441,9 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         for uidx in self.h2d_swappable:
             tensors = []
             plane_sizes = {}
-            for module in self._h2d_linear_modules(self._get_block(uidx)):
+            for module in self._h2d_linear_modules(
+                self._get_block(uidx), frozen_only=self.h2d_training
+            ):
                 for attr_name in ("weight", *weight_sidecar_names(module)):
                     tensor = getattr(module, attr_name).data
                     plane = tensor.dtype
@@ -550,7 +474,8 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
                 layout.append((module, attr_name, plane, offset, numel, shape))
             self.h2d_masters[uidx] = (planes, layout)
 
-        self.h2d_engine = FrozenSequentialTransferEngine(
+        engine_cls = FrozenLruTransferEngine if self.h2d_training else FrozenSequentialTransferEngine
+        self.h2d_engine = engine_cls(
             keys=self.h2d_swappable,
             masters={key: value[0] for key, value in self.h2d_masters.items()},
             ring_size=self.ring_size,
@@ -561,138 +486,30 @@ class FluxBlockOffloader(DtypeSplitGuardMixin):
         self.h2d_engine.prime()
         self.h2d_ring = self.h2d_engine.slots
         self.h2d_loaded_block = self.h2d_engine.loaded_key
+        mode = "training LRU" if self.h2d_training else "forward ring"
         print(f"[FluxBlockOffloader] H2D-only ready: {len(self.h2d_swappable)} swappable "
-              f"blocks, ring_size={self.ring_size}, shared multi-plane engine "
+              f"blocks, ring_size={self.ring_size}, shared multi-plane {mode} "
               f"(no D2H eviction)")
 
-    def _h2d_submit_load(self, unified_idx: int, slot: int):
-        if self.h2d_engine is not None:
-            self.h2d_engine.submit_load(unified_idx, slot)
-            return
-        flat_cpu = self.h2d_masters[unified_idx][0]
-        n = flat_cpu.numel()
-        flat_gpu = self.h2d_ring[slot]
-        self.h2d_loaded_block[slot] = unified_idx
-        if not self.cuda_available:
-            flat_gpu[:n].copy_(flat_cpu)
-            self.h2d_slot_futures[slot] = None
-            return
-        compute_done = torch.cuda.current_stream().record_event()
-
-        def load():
-            with torch.cuda.stream(self.stream):
-                self.stream.wait_event(compute_done)
-                flat_gpu[:n].copy_(flat_cpu, non_blocking=True)
-                ev = self.stream.record_event()
-            return unified_idx, slot, ev
-
-        self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
-
-    def _h2d_point_weights(self, unified_idx: int, flat_buf):
-        if self.h2d_engine is not None:
-            for module, attr_name, plane, off, n, shape in self.h2d_masters[unified_idx][1]:
-                getattr(module, attr_name).data = flat_buf[plane][off:off + n].view(shape)
-            return
-        for (m, off, n, shape) in self.h2d_masters[unified_idx][1]:
-            m.weight.data = flat_buf[off:off + n].view(shape)
-
-    def _h2d_touch_lru(self, slot: int):
-        """Mark slot as most-recently-used (move to back of the LRU list)."""
-        self.h2d_lru.remove(slot)
-        self.h2d_lru.append(slot)
-
-    def _h2d_ensure_resident(self, unified_idx: int):
-        """Order-agnostic pull-based residency for TRAINING H2D (design §5.2/5.3).
-
-        Guarantees ``unified_idx``'s frozen base weights point at a GPU slot on return.
-        - Already resident -> (re)point weights to its slot, touch LRU, return.
-        - Not resident -> evict the LRU victim (repoint the victim block's frozen weights back
-          to its permanent CPU master; NO device->host copy -- read-only frozen weights),
-          synchronously H2D-copy this block's flat master into the freed slot, point weights,
-          update maps + LRU.
-        """
-        if unified_idx < self.h2d_num_on_gpu:
-            return
-        slot = self.h2d_block_slot.get(unified_idx)
-        if slot is not None:
-            # Already resident: repoint (weights may have been pointed back to master by a prior
-            # eviction of a different block? No -- resident blocks keep pointing at the slot, but
-            # repoint defensively so a re-accessed block is always correct).
-            self._h2d_point_weights(unified_idx, self.h2d_ring[slot])
-            self._h2d_touch_lru(slot)
-            return
-
-        # Miss: pick LRU victim slot (front of list).
-        victim_slot = self.h2d_lru[0]
-        victim_block = self.h2d_slot_block[victim_slot]
-        if victim_block is not None:
-            # Repoint the evicted (frozen) block back to its CPU master. NO D2H copy: the frozen
-            # weight was never written on GPU, so the master is already byte-identical.
-            self._h2d_point_weights(victim_block, self.h2d_masters[victim_block][0])
-            del self.h2d_block_slot[victim_block]
-
-        # Synchronous H2D load of the requested block into the freed slot.
-        flat_cpu = self.h2d_masters[unified_idx][0]
-        n = flat_cpu.numel()
-        self.h2d_ring[victim_slot][:n].copy_(flat_cpu, non_blocking=bool(self.cuda_available))
-        if self.cuda_available:
-            torch.cuda.synchronize()
-        self.h2d_slot_block[victim_slot] = unified_idx
-        self.h2d_block_slot[unified_idx] = victim_slot
-        self.h2d_loaded_block[victim_slot] = unified_idx
-        self._h2d_point_weights(unified_idx, self.h2d_ring[victim_slot])
-        self._h2d_touch_lru(victim_slot)
+    def _h2d_point_weights(self, unified_idx: int, bundle):
+        for module, attr_name, plane, off, n, shape in self.h2d_masters[unified_idx][1]:
+            getattr(module, attr_name).data = bundle[plane][off:off + n].view(shape)
 
     def _h2d_wait(self, unified_idx: int):
-        if self.h2d_training:
-            # Pull-based: make the block resident on demand (serves forward, backward hook, and
-            # grad-checkpoint recompute -- every access point calls wait_for_block first).
-            self._h2d_ensure_resident(unified_idx)
-            return
         if unified_idx < self.h2d_num_on_gpu:
             return
         if self.h2d_engine is not None:
             self.h2d_engine.acquire(unified_idx)
             return
-        slot = (unified_idx - self.h2d_num_on_gpu) % self.ring_size
-        fut = self.h2d_slot_futures[slot]
-        if fut is not None and self.h2d_loaded_block[slot] == unified_idx:
-            bidx, s, ev = fut.result()
-            self.h2d_slot_futures[slot] = None
-            assert bidx == unified_idx and s == slot, f"H2D slot mismatch: {bidx}/{s} != {unified_idx}/{slot}"
-            if self.cuda_available and ev is not None:
-                torch.cuda.current_stream().wait_event(ev)
-        elif self.h2d_loaded_block[slot] != unified_idx:
-            if fut is not None:
-                fut.result()
-                self.h2d_slot_futures[slot] = None
-            flat_cpu = self.h2d_masters[unified_idx][0]
-            self.h2d_ring[slot][:flat_cpu.numel()].copy_(flat_cpu)
-            if self.cuda_available:
-                torch.cuda.synchronize()
-            self.h2d_loaded_block[slot] = unified_idx
-        self._h2d_point_weights(unified_idx, self.h2d_ring[slot])
+        raise RuntimeError("H2D-only FLUX offload has no transfer engine")
 
     def _h2d_submit(self, unified_idx: int):
-        if self.h2d_training:
-            # Pull-based residency: submit is a no-op. Residency is driven entirely by
-            # wait_for_block -> _h2d_ensure_resident. NO D2H of the just-executed frozen block
-            # (it stays resident until evicted as an LRU victim, still pointing at its slot).
-            return
         if unified_idx < self.h2d_num_on_gpu:
             return
         if self.h2d_engine is not None:
             self.h2d_engine.release(unified_idx)
             return
-        i = unified_idx - self.h2d_num_on_gpu
-        slot = i % self.ring_size
-        self._h2d_point_weights(unified_idx, self.h2d_masters[unified_idx][0])
-        next_i = i + self.ring_size
-        if next_i < len(self.h2d_swappable):
-            self._h2d_submit_load(self.h2d_swappable[next_i], slot)
-        else:
-            self.h2d_slot_futures[slot] = None
-            self.h2d_loaded_block[slot] = None
+        raise RuntimeError("H2D-only FLUX offload has no transfer engine")
 
     def _is_dual_block(self, block: nn.Module) -> bool:
         """Check if block is a dual stream block (has different structure than single)"""

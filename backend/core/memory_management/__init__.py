@@ -4,6 +4,7 @@ from .block_offloading import TransformerBlockOffloader
 from .flux_block_offloading import FluxBlockOffloader, create_flux_block_offloader
 from .transformer_registry import create_block_offloader_for_model
 from .ring_buffer_allocator import RingBufferAllocator, TensorAllocator, DynamicActivationAllocator
+from .offload_transfer_engine import FrozenLruTransferEngine, FrozenSequentialTransferEngine
 from .tensor_utils import (
     extract_tensors,
     replace_tensor_data,
@@ -23,6 +24,8 @@ __all__ = [
     # FLUX.2 block offloading
     "FluxBlockOffloader",
     "create_flux_block_offloader",
+    "FrozenLruTransferEngine",
+    "FrozenSequentialTransferEngine",
     # Ring buffer allocation (new, for advanced training)
     "RingBufferAllocator",
     "TensorAllocator",

@@ -163,3 +163,52 @@ class FrozenSequentialTransferEngine:
             acquire_misses=self._acquire_misses,
             consumer_waits=self._consumer_waits,
         )
+
+
+class FrozenLruTransferEngine(FrozenSequentialTransferEngine):
+    """Order-agnostic immutable residency for checkpoint recomputation."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.block_slot: Dict[int, int] = {}
+        self.slot_block: list[Optional[int]] = [None] * self.ring_size
+        self.lru = list(range(self.ring_size))
+
+    def prime(self) -> None:
+        # Training access order can differ between forward and recomputation.
+        return
+
+    def _touch(self, slot: int) -> None:
+        self.lru.remove(slot)
+        self.lru.append(slot)
+
+    def acquire(self, key: int) -> None:
+        try:
+            slot = self.block_slot[key]
+        except KeyError:
+            self._acquire_misses += 1
+            slot = self.lru[0]
+            victim = self.slot_block[slot]
+            if victim is not None:
+                self.point_bundle(victim, self.masters[victim])
+                del self.block_slot[victim]
+            self.submit_load(key, slot)
+            self.slot_block[slot] = key
+            self.block_slot[key] = slot
+
+        ready = self.ready_event[slot]
+        if self.cuda_available and ready is not None:
+            torch.cuda.current_stream(self.device).wait_event(ready)
+            self._consumer_waits += 1
+        self.point_bundle(key, self._views(key, slot))
+        self._touch(slot)
+
+    def release(self, key: int) -> None:
+        # Immutable weights remain resident until selected as an LRU victim.
+        return
+
+    def close(self) -> None:
+        super().close()
+        self.block_slot.clear()
+        self.slot_block = [None] * self.ring_size
+        self.lru = list(range(self.ring_size))

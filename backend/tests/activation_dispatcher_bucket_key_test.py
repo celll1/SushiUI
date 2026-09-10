@@ -37,6 +37,7 @@ Everything here is pure arithmetic on the real class. No GPU, no model.
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -319,6 +320,61 @@ class LatentKeyExtractionTest(unittest.TestCase):
 
     def test_three_d_latent_does_not_crash(self):
         self.assertEqual(self._key(torch.empty(2, 16, 64))[3], 2)
+
+
+class WorkloadFamilyKeyTest(unittest.TestCase):
+    """Each training tensor layout must describe work, not incidental channels."""
+
+    def _key(self, latent, text_batch=None):
+        from core.training.base_trainer import BaseTrainer
+        return BaseTrainer._actdispatch_workload_key(latent, text_batch)
+
+    def test_image_and_video_shapes_keep_their_spatial_meaning(self):
+        self.assertEqual(
+            self._key(torch.empty(2, 4, 96, 128)),
+            ("image", 96, 128, 1, 2),
+        )
+        self.assertEqual(
+            self._key(torch.empty(1, 128, 37, 48, 80)),
+            ("video", 48, 80, 37, 1),
+        )
+
+    def test_ace_audio_uses_sequence_length_not_channel_width(self):
+        self.assertEqual(
+            self._key(torch.empty(2, 100, 64)),
+            ("audio", 100, 1, 1, 2),
+        )
+
+    def test_sensenova_text_uses_mean_token_rows_for_serial_examples(self):
+        examples = [
+            {"input_ids": torch.empty(1, 10, dtype=torch.long)},
+            {"input_ids": torch.empty(1, 21, dtype=torch.long)},
+        ]
+        self.assertEqual(
+            self._key(torch.empty(2, 16, 64, 64), examples),
+            ("sensenova_text", 16, 1, 1, 2),
+        )
+
+    def test_predictors_are_isolated_between_workload_families(self):
+        from core.training.base_trainer import BaseTrainer
+        owner = SimpleNamespace(
+            _activation_dispatchers={},
+            activation_dispatcher=None,
+            activation_dispatch_margin_gb=1.0,
+            activation_dispatch_seed_coef=24.0e-6,
+            activation_dispatch_residual_frac=0.85,
+            activation_dispatch_threshold_mb=4,
+        )
+        image = BaseTrainer._activation_dispatcher_for_family(owner, "image", 48.0)
+        text = BaseTrainer._activation_dispatcher_for_family(
+            owner, "sensenova_text", 48.0)
+        self.assertIsNot(image, text)
+        self.assertIs(
+            BaseTrainer._activation_dispatcher_for_family(owner, "image", 48.0),
+            image,
+        )
+        image.record(64, 64, 1, "base", peak_gb=9.0, resident_gb=8.0)
+        self.assertNotEqual(image.base_act(64, 64, 1), text.base_act(64, 64, 1))
 
 
 if __name__ == "__main__":

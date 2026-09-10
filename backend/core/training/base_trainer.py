@@ -2736,6 +2736,9 @@ class BaseTrainer(ABC):
         self.activation_dispatch_residual_frac = _activation_dispatch["residual_frac"]
         self.activation_dispatch_threshold_mb = _activation_dispatch["threshold_mb"]
         self.activation_dispatcher = None
+        self._activation_dispatchers = {}
+        self._actdispatch_allocator_capped = False
+        self._actdispatch_logged = set()
         # Resolution buckets (image w, h) that OOM even at micro-batch=1 -> they
         # don't fit even one sample. Populated by the OOM recovery, consumed at the
         # next epoch's re-bucketing to drop those buckets (no point retrying every
@@ -10446,10 +10449,8 @@ class BaseTrainer(ABC):
         from .optimizers.update_census import reset_applied_updates
         reset_applied_updates()
 
-        if sensenova_text_batch is None:
-            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
-        else:
-            _disp_cm, _disp_info = None, None
+        _disp_cm, _disp_info = self._activation_dispatch_begin(
+            mnt_latents, sensenova_text_batch=sensenova_text_batch)
         _micro_bs = _disp_info[4] if _disp_info else None
         try:
             try:
@@ -10589,7 +10590,61 @@ class BaseTrainer(ABC):
         lt = int(shape[-3]) if len(shape) >= 5 else 1
         return lh, lw, max(1, lt), bs
 
-    def _activation_dispatch_begin(self, mnt_latents: torch.Tensor):
+    @staticmethod
+    def _actdispatch_workload_key(
+        mnt_latents: torch.Tensor,
+        sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """Return ``(family, h, w, t, batch)`` for the executed objective."""
+        if sensenova_text_batch is not None:
+            if not sensenova_text_batch:
+                raise ValueError("SenseNova text activation key requires examples")
+            token_rows = []
+            for example in sensenova_text_batch:
+                input_ids = example.get("input_ids")
+                if input_ids is None or input_ids.ndim < 1:
+                    raise ValueError("SenseNova text example is missing input_ids")
+                token_rows.append(int(input_ids.shape[-1]))
+            # train_i2t_step executes examples serially but retains every graph
+            # until one backward, so batch * mean tokens represents total work.
+            mean_tokens = (sum(token_rows) + len(token_rows) - 1) // len(token_rows)
+            return "sensenova_text", max(1, mean_tokens), 1, 1, len(token_rows)
+
+        shape = mnt_latents.shape
+        if len(shape) == 3:
+            # ACE-Step uses [B, sequence, channels]. Channels are not spatial work.
+            return "audio", max(1, int(shape[1])), 1, 1, int(shape[0])
+        lh, lw, lt, bs = BaseTrainer._actdispatch_latent_key(mnt_latents)
+        return ("video" if len(shape) >= 5 else "image"), lh, lw, lt, bs
+
+    def _activation_dispatcher_for_family(self, family: str, total_gb: float):
+        dispatchers = getattr(self, "_activation_dispatchers", None)
+        if dispatchers is None:
+            dispatchers = {}
+            self._activation_dispatchers = dispatchers
+        if not hasattr(self, "_actdispatch_logged"):
+            self._actdispatch_logged = set()
+        disp = dispatchers.get(family)
+        if disp is None:
+            from core.memory_management import ActivationDispatcher
+            disp = ActivationDispatcher(
+                budget_gb=total_gb,
+                margin_gb=self.activation_dispatch_margin_gb,
+                seed_coef=self.activation_dispatch_seed_coef,
+                residual_frac=self.activation_dispatch_residual_frac,
+                threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
+            )
+            dispatchers[family] = disp
+        # Preserve the historical public/internal handle for callers which inspect
+        # the dispatcher active on the most recent step.
+        self.activation_dispatcher = disp
+        return disp
+
+    def _activation_dispatch_begin(
+        self,
+        mnt_latents: torch.Tensor,
+        sensenova_text_batch: Optional[List[Dict[str, Any]]] = None,
+    ):
         """Decide the per-bucket activation-offload mode and enter the offload
         context. Returns (entered_context_or_None, info_or_None).
 
@@ -10600,7 +10655,8 @@ class BaseTrainer(ABC):
         if not self.activation_dispatch_enable or not torch.cuda.is_available():
             return None, None
         try:
-            lh, lw, lt, bs = self._actdispatch_latent_key(mnt_latents)
+            family, lh, lw, lt, bs = self._actdispatch_workload_key(
+                mnt_latents, sensenova_text_batch)
         except Exception:
             return None, None
 
@@ -10616,16 +10672,8 @@ class BaseTrainer(ABC):
         total_gb = torch.cuda.get_device_properties(0).total_memory / GB
         headroom_gb = (free_gb + (reserved_gb - resident_gb)) - self.activation_dispatch_margin_gb
 
-        if self.activation_dispatcher is None:
-            from core.memory_management import ActivationDispatcher
-            self.activation_dispatcher = ActivationDispatcher(
-                budget_gb=total_gb,
-                margin_gb=self.activation_dispatch_margin_gb,
-                seed_coef=self.activation_dispatch_seed_coef,
-                residual_frac=self.activation_dispatch_residual_frac,
-                threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
-            )
-            self._actdispatch_logged = set()
+        disp = self._activation_dispatcher_for_family(family, total_gb)
+        if not getattr(self, "_actdispatch_allocator_capped", False):
             # Cap the caching allocator near the FULL dedicated VRAM (not a startup
             # snapshot) so an over-budget allocation RAISES OutOfMemoryError instead
             # of silently spilling to shared host memory (WDDM). A high, fixed cap
@@ -10641,8 +10689,8 @@ class BaseTrainer(ABC):
             except Exception as _e:
                 print(f"{self.log_prefix} [ActDispatch] enabled (total~{total_gb:.1f}GB, "
                       f"headroom~{headroom_gb:.1f}GB; alloc cap failed: {_e})")
+            self._actdispatch_allocator_capped = True
 
-        disp = self.activation_dispatcher
         self._actdispatch_oom = False  # set by the reactive handler if this step OOMs
         mode = disp.decide(lh, lw, bs, headroom_gb, lt=lt)
         _headroom_gb = headroom_gb
@@ -10656,7 +10704,12 @@ class BaseTrainer(ABC):
 
         # Log label for the bucket. The temporal extent is shown only when there
         # is one, so image-arch log lines are byte-identical to before.
-        _bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
+        if family == "sensenova_text":
+            _bkt = f"{lh}tok"
+        elif family == "audio":
+            _bkt = f"{lh}steps"
+        else:
+            _bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
 
         # Throttle decision logging to once per (bucket, decision) so aspect
         # bucketing (hundreds of distinct shapes) doesn't flood the log.
@@ -10682,7 +10735,7 @@ class BaseTrainer(ABC):
                 # tensors to CPU is the correct lever before declaring the bucket
                 # un-fittable rather than silently spilling.
                 step_threshold = max(256 * 1024, disp.threshold_bytes // 16)
-                _log_once((lh, lw, lt, bs, "fused"),
+                _log_once((family, lh, lw, lt, bs, "fused"),
                           f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} won't fit; "
                           f"micro-batch split disabled under fused backward (Block Swap); "
                           f"offload with lowered threshold={step_threshold // 1024}KB")
@@ -10690,12 +10743,12 @@ class BaseTrainer(ABC):
                 planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb, lt=lt)
                 if planned < bs:
                     micro_bs = planned
-                    _log_once((lh, lw, lt, bs, "split", micro_bs),
+                    _log_once((family, lh, lw, lt, bs, "split", micro_bs),
                               f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} -> "
                               f"micro-batch={micro_bs} (act~{_act_pred_gb:.1f}GB, "
                               f"headroom~{_headroom_gb:.1f}GB, resident~{resident_gb:.1f}GB)")
                 else:
-                    _log_once((lh, lw, lt, bs, "tight"),
+                    _log_once((family, lh, lw, lt, bs, "tight"),
                               f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} tight at "
                               f"micro-batch=1 (act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
                               f"resident~{resident_gb:.1f}GB); offload only")
@@ -10714,27 +10767,33 @@ class BaseTrainer(ABC):
         cm.__enter__()
         # Mutable list so the reactive OOM ladder can swap in an offload retry
         # context (new mode/stats) and have dispatch_end record it correctly.
-        # `lt` is appended LAST so the existing positional indices (3=mode, 6=stats,
-        # 7=threshold) that the OOM ladder mutates in place keep their meaning.
-        return cm, [lh, lw, bs, mode, micro_bs, resident_gb, stats, step_threshold, lt]
+        # Workload metadata is appended so the OOM ladder's mutable indices remain
+        # stable (3=mode, 6=stats, 7=threshold).
+        return cm, [lh, lw, bs, mode, micro_bs, resident_gb, stats,
+                    step_threshold, lt, family]
 
     def _activation_dispatch_end(self, cm, info) -> None:
         """Exit the offload context and self-calibrate from the measured peak."""
         if cm is None:
             return
         cm.__exit__(None, None, None)
-        if info is None or self.activation_dispatcher is None:
+        if info is None:
             return
         lh, lw, bs, mode, micro_bs, resident_gb = info[0], info[1], info[2], info[3], info[4], info[5]
         stats = info[6] if len(info) > 6 else None
         lt = info[8] if len(info) > 8 else 1
+        family = info[9] if len(info) > 9 else "image"
+        disp = getattr(self, "_activation_dispatchers", {}).get(
+            family, self.activation_dispatcher)
+        if disp is None:
+            return
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
             if getattr(self, "_actdispatch_oom", False):
                 # This step raised OOM under the cap -> its true activation exceeds
                 # the headroom (the measured peak is only the capped lower bound).
                 # Flag the bucket to escalate next time instead of re-OOMing.
-                self.activation_dispatcher.mark_overflow(lh, lw, bs, lt=lt)
+                disp.mark_overflow(lh, lw, bs, lt=lt)
             else:
                 # Record every executed step. For a micro-split, the peak reflects
                 # micro_bs samples; record() scales it back to the full bucket so the
@@ -10746,7 +10805,7 @@ class BaseTrainer(ABC):
                 offloaded_gb = None
                 if record_mode == "offload" and stats is not None:
                     offloaded_gb = stats.get("bytes", 0) / (1024 ** 3)
-                self.activation_dispatcher.record(
+                disp.record(
                     lh, lw, bs, record_mode, peak_gb, resident_gb,
                     executed_bs=(micro_bs if micro_bs is not None else bs),
                     offloaded_gb=offloaded_gb,
@@ -10754,8 +10813,13 @@ class BaseTrainer(ABC):
                     lt=lt)
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
-                bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
-                cached = self.activation_dispatcher.base_act(lh, lw, bs, lt=lt)
+                if family == "sensenova_text":
+                    bkt = f"{lh}tok"
+                elif family == "audio":
+                    bkt = f"{lh}steps"
+                else:
+                    bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
+                cached = disp.base_act(lh, lw, bs, lt=lt)
                 print(f"{self.log_prefix} [ActDispatch] bucket {bkt} bs{bs} "
                       f"mode={mode}{extra} peak={peak_gb:.2f}GB cached_act={cached:.2f}GB")
         except Exception:
@@ -10774,7 +10838,9 @@ class BaseTrainer(ABC):
         Returns the new context, or None when a retry cannot help (no way to widen
         an already-minimal offload set).
         """
-        disp = self.activation_dispatcher
+        family = info[9] if info is not None and len(info) > 9 else "image"
+        disp = getattr(self, "_activation_dispatchers", {}).get(
+            family, self.activation_dispatcher)
         if disp is None or info is None:
             return None
         prev_mode = info[3]

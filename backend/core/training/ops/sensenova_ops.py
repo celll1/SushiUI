@@ -1106,6 +1106,75 @@ def setup_attention_backend(trainer: Any, backend: str) -> None:
         )
 
 
+def _block_swap_module_branch(path: str, module: nn.Module):
+    if not path or "rotary_emb" in path:
+        return None
+    owns_tensor = any(value is not None for value in module._parameters.values()) or any(
+        value is not None and name not in module._non_persistent_buffers_set
+        for name, value in module._buffers.items()
+    )
+    if not owns_tensor:
+        return None
+    return "generation" if "_mot_gen" in path else "understanding"
+
+
+def _block_swap_call_branches(args, kwargs):
+    del args
+    use_understanding = kwargs.get("exist_non_image_gen_tokens")
+    use_generation = kwargs.get("exist_image_gen_tokens")
+    branches = []
+    if bool(use_understanding):
+        branches.append("understanding")
+    if bool(use_generation):
+        branches.append("generation")
+    if not branches:
+        raise RuntimeError(
+            "SenseNova block swap could not resolve the MoT branch for a decoder call"
+        )
+    return tuple(branches)
+
+
+def setup_block_swap(trainer: Any) -> None:
+    blocks = int(getattr(trainer, "blocks_to_swap", 0) or 0)
+    if blocks == 0:
+        return
+    if getattr(trainer, "layer_offload_conductor", None) is not None:
+        return
+    if not getattr(trainer, "gradient_checkpointing", False):
+        raise ValueError("SenseNova block swap requires gradient_checkpointing=True")
+    layers = trainer.transformer.language_model.model.layers
+    if len(layers) != 42:
+        raise ValueError(f"SenseNova block swap expects 42 decoder layers, found {len(layers)}")
+    if not 0 < blocks < len(layers):
+        raise ValueError(
+            f"SenseNova blocks_to_swap must be between 1 and {len(layers) - 1}, got {blocks}"
+        )
+
+    from core.memory_management import BranchedLayerOffloadConductor
+
+    conductor = BranchedLayerOffloadConductor(
+        root=trainer.transformer,
+        layers=layers,
+        branches=("understanding", "generation"),
+        classify_module=_block_swap_module_branch,
+        resolve_call_branches=_block_swap_call_branches,
+        blocks_to_swap=blocks,
+        device=trainer.device,
+        use_pinned_memory=trainer.use_pinned_memory,
+        enable_prefetch=True,
+        ring_size=trainer.block_swap_ring_size,
+        frozen_base_only=not is_full_finetune(trainer),
+    )
+    trainer.layer_offload_conductor = conductor
+    trainer.transformer._layer_offload_conductor = conductor
+    conductor.register_hooks()
+    print(
+        f"{trainer.log_prefix} SenseNova branch block swap enabled "
+        f"(blocks={blocks}/42, ring_size={conductor.ring_size}, "
+        f"mode={'frozen-base' if conductor.frozen_base_only else 'mutable'})"
+    )
+
+
 def load_components(trainer: Any) -> None:
     """Load the SenseNova graph, method-aware.
 
@@ -1114,8 +1183,6 @@ def load_components(trainer: Any) -> None:
     train to real ``nn.Parameter`` weights here, on the CPU, before the model is
     staged to the GPU (SENSENOVA_TRAINING_DESIGN.md 6.4 route (a)).
     """
-    if getattr(trainer, "blocks_to_swap", 0) != 0:
-        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
     from core.models.sensenova.loader import load_sensenova_from_path
 
     training_method = resolve_training_method(trainer)
@@ -1182,7 +1249,13 @@ def load_components(trainer: Any) -> None:
     # adapter's job, as it is for every other architecture.
     trainer.transformer.requires_grad_(False)
     trainer.transformer.train()
-    trainer.transformer.to(trainer.device)
+    if int(getattr(trainer, "blocks_to_swap", 0) or 0) == 0:
+        trainer.transformer.to(trainer.device)
+    else:
+        print(
+            f"{trainer.log_prefix} SenseNova transformer retained on CPU until "
+            "branch block-swap setup"
+        )
     # Training mode must be stamped even when the selected backend is native.
     setup_attention_backend(trainer, trainer.attention_backend)
 

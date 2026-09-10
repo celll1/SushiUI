@@ -1,10 +1,26 @@
 import copy
+import io
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from core.memory_management.layer_offload_conductor import LayerOffloadConductor
 from core.memory_management.offload_transfer_engine import MutableLruTransferEngine
+from core.training.base_trainer import BaseTrainer
+
+
+def test_trainer_abort_releases_every_mutable_conductor():
+    calls = []
+    conductors = [
+        SimpleNamespace(abort_step=lambda key=key: calls.append(key))
+        for key in ("conditional", "unconditional")
+    ]
+    trainer = SimpleNamespace(_layer_offload_conductors=lambda: conductors)
+
+    BaseTrainer._abort_layer_offload_step(trainer)
+
+    assert calls == ["conditional", "unconditional"]
 
 
 def test_mutable_engine_writes_dirty_slot_back_before_reuse():
@@ -92,6 +108,14 @@ def test_checkpointed_mutable_conductor_matches_resident_update():
         assert torch.equal(left.detach().cpu(), right.detach().cpu())
     assert all(state == "cpu" for idx, state in conductor.layer_states.items() if idx >= 1)
     assert conductor.engine.stats().d2h_bytes > 0
+
+    checkpoint = io.BytesIO()
+    torch.save({key: value.detach().cpu() for key, value in swapped.state_dict().items()}, checkpoint)
+    checkpoint.seek(0)
+    resumed = copy.deepcopy(swapped).cpu()
+    resumed.load_state_dict(torch.load(checkpoint, map_location="cpu"), strict=True)
+    for left, right in zip(resident.parameters(), resumed.parameters()):
+        assert torch.equal(left.detach().cpu(), right.detach().cpu())
 
     conductor.cleanup()
     for handle in (*resident_handles, *swapped_handles):

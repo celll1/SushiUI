@@ -783,8 +783,10 @@ def test_partial_step_salvages_weights_only_not_optimizer_or_state():
     # The quarantine save itself is weights-only: it reuses the ordinary
     # save_checkpoint() (arch-specific formats) but never the optimizer/
     # training-state/EMA saves alongside it.
-    quarantine_fn = ast.unparse(_function("_save_quarantined_partial_step_checkpoint"))
+    quarantine_node = _function("_save_quarantined_partial_step_checkpoint")
+    quarantine_fn = ast.unparse(quarantine_node.body[1:])
     assert "save_checkpoint" in quarantine_fn
+    assert quarantine_fn.index("_abort_layer_offload_step") < quarantine_fn.index("save_checkpoint")
     assert "save_optimizer_state" not in quarantine_fn
     assert "save_training_state" not in quarantine_fn
 

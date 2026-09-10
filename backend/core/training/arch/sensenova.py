@@ -434,9 +434,9 @@ class SenseNovaArchHandler(ArchHandler):
         sensenova_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        if int(getattr(trainer, "blocks_to_swap", 0) or 0) == 0:
-            return
-        raise NotImplementedError("SenseNova training block swap is not implemented")
+        from core.training.ops import sensenova_ops
+
+        sensenova_ops.setup_block_swap(trainer)
 
     def depth_blocks(self, trainer):
         # One depth axis for both MoT halves: the generation and understanding

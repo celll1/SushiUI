@@ -331,12 +331,14 @@ class SenseNovaTrainingPhaseEvictor:
     def __init__(
         self, transformer: nn.Module, device: Any, *, four_phase: bool = False,
         pageable_staging: bool = False, overlap_transfer: bool = False,
+        layer_indices=None,
         streams_factory=_make_transfer_streams,
     ):
         selection = select_mot_weight_modules(
             transformer,
             require_exact_symmetry=True,
             allow_understanding_adapters=four_phase,
+            layer_indices=layer_indices,
         )
         self._gen_modules = selection.gen_modules
         self._und_modules = selection.und_modules
@@ -364,6 +366,7 @@ class SenseNovaTrainingPhaseEvictor:
         # ran rather than from what was configured.
         self._overlap_ran: Optional[bool] = None
         self._overlap_this_transition = False
+        self._partial_layer_selection = layer_indices is not None
         self.state = "full"
         self._warn_once: Dict[str, bool] = {}
         self.d2h_seconds = 0.0
@@ -441,10 +444,11 @@ class SenseNovaTrainingPhaseEvictor:
                 )
             except Exception as exc:
                 first_error = first_error or exc
-        try:
-            self.transformer.to("cpu")
-        except Exception as exc:
-            first_error = first_error or exc
+        if not self._partial_layer_selection:
+            try:
+                self.transformer.to("cpu")
+            except Exception as exc:
+                first_error = first_error or exc
         return first_error
 
     def _assert_grad_free(self, modules, half: str) -> None:
@@ -841,9 +845,14 @@ def install_training_phase_eviction(trainer: Any) -> SenseNovaTrainingPhaseEvict
     )
     if pageable_staging and overlap_transfer:
         raise ValueError(_OVERLAP_PAGEABLE_REFUSAL)
+    conductor = getattr(trainer, "layer_offload_conductor", None)
+    excluded = set(getattr(conductor, "swappable_layer_indices", ()))
+    all_layers = range(len(trainer.transformer.language_model.model.layers))
+    resident_layers = tuple(index for index in all_layers if index not in excluded)
     evictor = SenseNovaTrainingPhaseEvictor(
         trainer.transformer, trainer.device, four_phase=four_phase,
         pageable_staging=pageable_staging, overlap_transfer=overlap_transfer,
+        layer_indices=resident_layers if excluded else None,
     )
     trainer.sensenova_phase_evictor = evictor
     return evictor

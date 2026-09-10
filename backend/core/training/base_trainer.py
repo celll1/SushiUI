@@ -9249,7 +9249,10 @@ class BaseTrainer(ABC):
         """Move main model (U-Net or Transformer) to GPU for training."""
         if (
             self.is_sensenova
-            and getattr(self, "sensenova_phase_evictor", None) is not None
+            and (
+                getattr(self, "sensenova_phase_evictor", None) is not None
+                or getattr(self, "layer_offload_conductor", None) is not None
+            )
         ):
             return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
@@ -9263,7 +9266,10 @@ class BaseTrainer(ABC):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
         if (
             self.is_sensenova
-            and getattr(self, "sensenova_phase_evictor", None) is not None
+            and (
+                getattr(self, "sensenova_phase_evictor", None) is not None
+                or getattr(self, "layer_offload_conductor", None) is not None
+            )
         ):
             return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Tuple
+from typing import Iterable, Optional, Tuple
 
 from torch import nn
 
@@ -109,6 +109,7 @@ def select_mot_weight_modules(
     *,
     require_exact_symmetry: bool = False,
     allow_understanding_adapters: bool = False,
+    layer_indices: Optional[Iterable[int]] = None,
 ) -> MotWeightSelection:
     """Select owned Parameters and persistent buffers from both decoder halves.
 
@@ -118,6 +119,7 @@ def select_mot_weight_modules(
     their own half. Inference only classifies modules by path.
     """
     layers: Iterable[nn.Module] = transformer.language_model.model.layers
+    selected_indices = None if layer_indices is None else {int(i) for i in layer_indices}
     all_gen: list[nn.Module] = []
     all_und: list[nn.Module] = []
     all_pairs: list[tuple[nn.Module, nn.Module]] = []
@@ -125,6 +127,8 @@ def select_mot_weight_modules(
     und_unpaired: list[nn.Module] = []
     layer_count = 0
     for layer_index, layer in enumerate(layers):
+        if selected_indices is not None and layer_index not in selected_indices:
+            continue
         layer_count += 1
         gen, und = _select_layer_modules(layer)
         if require_exact_symmetry:
@@ -147,10 +151,18 @@ def select_mot_weight_modules(
         all_gen.extend(module for _, module in gen)
         all_und.extend(module for _, module in und)
 
-    if require_exact_symmetry and (layer_count != 42 or not all_gen or not all_und):
+    expected_layers = 42 if selected_indices is None else len(selected_indices)
+    if require_exact_symmetry and (
+        layer_count != expected_layers or not all_gen or not all_und
+    ):
+        if selected_indices is None:
+            raise RuntimeError(
+                "SenseNova MoT eviction requires exactly 42 non-empty decoder layers "
+                f"(found {layer_count})"
+            )
         raise RuntimeError(
-            "SenseNova MoT eviction requires exactly 42 non-empty decoder layers "
-            f"(found {layer_count})"
+            "SenseNova MoT eviction requires every selected decoder layer to be "
+            f"present and non-empty (expected {expected_layers}, found {layer_count})"
         )
     return MotWeightSelection(
         tuple(all_gen),

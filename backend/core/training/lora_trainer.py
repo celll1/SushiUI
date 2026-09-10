@@ -109,8 +109,6 @@ class LoRATrainer(BaseTrainer):
         # Apply LoRA using adapter
         self._apply_lora()
 
-        self._setup_sensenova_phase_eviction()
-
         # Block swap deferred until after LoRA wraps Linear modules — the
         # LayerOffloadConductor snapshots layer state_dicts at registration
         # time and post-wrap key changes would break the swap.
@@ -118,6 +116,7 @@ class LoRATrainer(BaseTrainer):
         if hasattr(self, "setup_ltx2_wrapper"):
             self.setup_ltx2_wrapper()
         self.arch.setup_block_swap(self)
+        self._setup_sensenova_phase_eviction()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)

@@ -2,6 +2,11 @@
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import torch
+
+torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
+torch.cuda._lazy_init = lambda *args, **kwargs: None
+torch._C._cuda_init = lambda *args, **kwargs: None
 
 from database.models import TaggerTrainingMetrics, TaggerTrainingRun, TrainingBase
 from database.training_detail_store import (
@@ -11,6 +16,13 @@ from database.training_detail_store import (
     mirror_tagger_metrics_to_run_database,
     open_tagger_detail_session,
 )
+
+
+def test_tagger_detail_executor_is_shared():
+    from api import routes
+
+    first = routes._get_tagger_detail_executor()
+    assert routes._get_tagger_detail_executor() is first
 
 
 def test_tagger_metric_mirror_preserves_resume_key_and_updates(tmp_path):

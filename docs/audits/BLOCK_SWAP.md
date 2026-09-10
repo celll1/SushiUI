@@ -4,7 +4,7 @@
 > event-ordering, H2D-only, quantization-sidecar, and optimizer-residency fixes,
 > and it did not detect that `LayerOffloadConductor` models use its hook path
 > rather than the separate method containing prefetch. See
-> `BLOCK_SWAP_RING_BUFFER_REVALIDATION_2026-09.md`; retain this file as history
+> `UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`; retain this file as history
 > and rationale only.
 
 本ドキュメントは SushiUI の block swap（ブロック単位の重み CPU オフロード）機構について、

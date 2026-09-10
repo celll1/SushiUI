@@ -2,9 +2,9 @@
 
 The two ring-buffer optimizers allocate their 8-bit state through an injected
 ``get_state_buffer(p, dtype=...)`` callable, falling back to GPU allocation when
-none is supplied. Nothing ever supplied one (since 190c876e), so their host-state
-mode -- the whole point of the name -- was unreachable in production. This module
-is the supplier, and ``BaseTrainer._ringbuffer_optimizer_kwargs`` passes it.
+none is supplied. This module is the production supplier, and
+``BaseTrainer._ringbuffer_optimizer_kwargs`` passes it when host residency is
+enabled.
 
 The retired layer arena handed out views into recycled bytes. Optimizer state
 lives for the whole run and therefore uses persistent, non-overlapping buffers.
@@ -18,9 +18,9 @@ the host RAM this route is budgeted for (G-RB2). Returning an already-pinned
 buffer makes that ``pin_memory()`` a no-op that returns the same tensor, and the
 accounting below deliberately stores byte counts, never the tensors.
 
-Pinned memory is also what makes the mode work at all: the update kernels are
-handed ``state['exp_avg']`` directly, and a pinned host allocation is addressable
-from the device through UVA (measured at PCIe line rate, 8c13c493).
+Pinned memory is also what makes the mode work: the compiled optimizer extension
+stages these buffers with asynchronous bulk H2D/D2H copies on its transfer
+stream (measured at PCIe line rate, 8c13c493).
 """
 
 from typing import Dict

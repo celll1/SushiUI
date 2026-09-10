@@ -18,7 +18,8 @@ The allocator IS supplied now (see AdamW8bit_RingBuffer's docstring for the full
 account): ``BaseTrainer._ringbuffer_optimizer_kwargs`` passes
 ``HostOptimizerStateAllocator`` whenever ``optimizer_state_host_resident`` is
 set, so the momentum lives in pinned host memory that the update kernel reads
-across PCIe through UVA. Without the flag ``get_state_buffer`` is still None and
+through asynchronous extension-owned H2D/D2H staging. Without the flag
+``get_state_buffer`` is still None and
 ``_init_param_state`` takes its GPU-allocation branch, giving a fused 8-bit Lion
 with GPU-resident state. See host_state_allocator.py,
 RINGBUFFER_OPTIMIZERS.md and docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.

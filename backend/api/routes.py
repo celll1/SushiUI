@@ -21275,22 +21275,21 @@ def get_tagger_training_metrics(
     run = training_db.query(TaggerTrainingRun).filter(
         TaggerTrainingRun.run_id == run_id
     ).first()
-    if run is None:
-        raise HTTPException(status_code=404, detail="Tagger training run not found")
-    try:
-        from database.training_detail_store import (
-            RUN_DB_V2,
-            detail_store_kind,
-            open_tagger_detail_session,
-        )
-        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
-            try:
-                metrics_db = open_tagger_detail_session(run)
-                owns_metrics_db = True
-            except Exception:
-                metrics_db = training_db
-    except Exception:
-        metrics_db = training_db
+    if run is not None:
+        try:
+            from database.training_detail_store import (
+                RUN_DB_V2,
+                detail_store_kind,
+                open_tagger_detail_session,
+            )
+            if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+                try:
+                    metrics_db = open_tagger_detail_session(run)
+                    owns_metrics_db = True
+                except Exception:
+                    metrics_db = training_db
+        except Exception:
+            metrics_db = training_db
     rows = (
         metrics_db.query(TaggerTrainingMetrics)
         .filter(

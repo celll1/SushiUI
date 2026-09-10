@@ -662,6 +662,9 @@ _UNQUANTIZED_GENERATE_ROUTES = frozenset({
     # diffusion backend runs the loaded model in whatever state it is already
     # in; the route exposes no quantization control of its own.
     "/generate/upscale",
+    # SenseNova's image-to-text head uses the already-loaded model and exposes
+    # neither diffusion-weight conversion nor quantized GEMM selection.
+    "/generate/img2txt",
 })
 
 

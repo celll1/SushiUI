@@ -316,7 +316,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         self.forward_only = not supports_backward
 
         # Forward-only weights are immutable, so every inference route uses the shared
-        # H2D engine. The option remains meaningful for training policies only.
+        # H2D engine. The argument remains accepted for request compatibility.
         self.h2d_only = self.forward_only
         self.ring_size = max(1, int(ring_size))
         if h2d_only and not self.forward_only:

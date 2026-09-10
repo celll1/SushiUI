@@ -206,3 +206,22 @@ def mirror_metrics_to_run_database(run, central_db, touched_steps) -> None:
         raise
     finally:
         local_db.close()
+
+
+def delete_run_database_metrics_after(run, step: int) -> int:
+    """Delete stale v2 history after a checkpoint rewind."""
+    from .models import TrainingMetrics
+
+    local_db = open_run_detail_session(run)
+    try:
+        deleted = local_db.query(TrainingMetrics).filter(
+            TrainingMetrics.run_id == run.id,
+            TrainingMetrics.step > int(step),
+        ).delete(synchronize_session=False)
+        local_db.commit()
+        return int(deleted)
+    except Exception:
+        local_db.rollback()
+        raise
+    finally:
+        local_db.close()

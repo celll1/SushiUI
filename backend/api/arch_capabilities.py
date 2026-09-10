@@ -944,18 +944,13 @@ _add("ltx2", "block_swap_ring_size",
      "(core.pipeline_backends.ltx2), so the offloader's default ring of 2 GPU weight-buffer slots "
      "is always used regardless of the request")
 _add("minimax_h3", "block_swap_h2d_only",
-     "MiniMax-H3's block-swap wrapper hardcodes h2d_only=False (core.pipeline_backends.minimax_h3): "
-     "a swappable block mixes float8_e4m3fn Fp8Linear weights with the float32 adaln_proj.linear, "
-     "and H2D-only's coalesced flat buffer needs one dtype across the block, so it would detect the "
-     "mismatch and fall back to the standard swap anyway; the per-generation toggle is not consulted")
+     "MiniMax-H3's block-swap wrapper selects the shared frozen-weight transfer engine directly "
+     "(core.pipeline_backends.minimax_h3). Read-only weights need no D2H writeback, and mixed FP8, "
+     "FP32, and sidecar tensors use separate dtype planes; the legacy H2D-only toggle is not consulted")
 _add("minimax_h3", "block_swap_pinned_memory",
      "MiniMax-H3's block-swap wrapper hardcodes use_pinned_memory=False at construction "
-     "(core.pipeline_backends.minimax_h3); the per-generation toggle is not consulted")
-_add("minimax_h3", "block_swap_ring_size",
-     "block_swap_ring_size only affects TransformerBlockOffloader's H2D-only ring, and "
-     "MiniMax-H3 hardcodes h2d_only=False (mixed Fp8Linear/float32 weights in a swappable "
-     "block cannot coalesce into one flat buffer), so the ring is never built and the "
-     "per-generation toggle is not consulted")
+     "(core.pipeline_backends.minimax_h3); the shared engine owns permanent pinned CPU masters, "
+     "so the legacy staging toggle is not consulted")
 
 # ---------------------------------------------------------------------------
 # MiniMax-H3 (joint video + audio DiT, driven through /generate/txt2vid).

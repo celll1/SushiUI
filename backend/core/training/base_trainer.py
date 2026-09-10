@@ -6642,7 +6642,7 @@ class BaseTrainer(ABC):
         """
         if self.run_id is not None:
             self._log_metrics_to_db(step=step, force_flush=True)
-        self._flush_layer_offload_conductors()
+        getattr(self, "_flush_layer_offload_conductors", lambda: None)()
         self._begin_checkpoint_bundle(step)
         _pre_save_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
         self.save_checkpoint(step=step, epoch=epoch)
@@ -7975,6 +7975,11 @@ class BaseTrainer(ABC):
     def _flush_layer_offload_conductors(self) -> None:
         for conductor in self._layer_offload_conductors():
             conductor.flush()
+
+    def _abort_layer_offload_step(self) -> None:
+        """Release mutable slots after an interrupted forward or backward."""
+        for conductor in self._layer_offload_conductors():
+            conductor.abort_step()
 
     def _finish_layer_offload_backward(self) -> None:
         for conductor in self._layer_offload_conductors():
@@ -11406,6 +11411,9 @@ class BaseTrainer(ABC):
         """
         original_run_name = self.run_name
         try:
+            # Preserve the deliberately half-applied weights: active GPU slots
+            # must reach their CPU masters before the architecture serializer runs.
+            self._abort_layer_offload_step()
             self.run_name = f"{original_run_name}{QUARANTINE_RUN_NAME_SUFFIX}"
             self.save_checkpoint(step=step, epoch=epoch)
             return True
@@ -19155,6 +19163,7 @@ class BaseTrainer(ABC):
             # Try to save checkpoint (even if it fails, continue to save state)
             checkpoint_saved = False
             try:
+                self._abort_layer_offload_step()
                 self._flush_layer_offload_conductors()
                 self.save_checkpoint(step=global_step, epoch=epoch)
                 checkpoint_saved = True
@@ -19290,6 +19299,14 @@ class BaseTrainer(ABC):
                 # this partial-mkdir failure mode.
                 self._cleanup_incomplete_step_checkpoint_dir(global_step)
             else:
+                # An exception may leave a recomputed block in a GPU slot. This
+                # is safe only after the partial-update guard above has passed.
+                try:
+                    self._abort_layer_offload_step()
+                    self._flush_layer_offload_conductors()
+                except Exception as offload_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to flush block swap: {offload_error}")
+
                 # For CUDA errors, first try to move model to CPU to free GPU memory
                 try:
                     print(f"{self.log_prefix} [EMERGENCY] Moving model to CPU to free GPU memory...")

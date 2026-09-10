@@ -73,7 +73,12 @@ from datetime import datetime
 backend_dir = Path(__file__).parent.parent.parent  # backend/
 sys.path.insert(0, str(backend_dir))
 
-from database import TrainingSessionLocal, get_training_db, get_datasets_db
+from database import (
+    TrainingSessionLocal,
+    ensure_training_schema,
+    get_datasets_db,
+    get_training_db,
+)
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 from core.training.caption_processor import (
@@ -2711,6 +2716,10 @@ def main():
     # here freed nothing and printed success while doing it. The real release now
     # runs in the backend, in start_training_run, before this process is spawned.
 
+    # This worker may be newer than a deliberately non-restarted backend.
+    # Reconcile before the ORM builds a SELECT containing newly added columns.
+    ensure_training_schema()
+
     # Get database sessions (separate DBs for training and datasets)
     training_db_gen = get_training_db()
     training_db = next(training_db_gen)
@@ -4816,11 +4825,16 @@ def main():
         traceback.print_exc()
 
         # Update run status to failed (in training.db)
-        run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
-        if run:
-            run.status = "failed"
-            run.error_message = str(e)
-            training_db.commit()
+        try:
+            training_db.rollback()
+            run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+            if run:
+                run.status = "failed"
+                run.error_message = str(e)
+                training_db.commit()
+        except Exception as status_error:
+            training_db.rollback()
+            print(f"[TrainRunner] WARNING: Could not persist failure status: {status_error}")
 
         sys.exit(1)
 

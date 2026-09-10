@@ -869,6 +869,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Block Swap settings (training VRAM optimization)
   const blocksToSwap = params.blocks_to_swap ?? 0;
   const usePinnedMemory = params.use_pinned_memory ?? false;
+  const senseNovaBlockSwap = isSenseNovaModel(baseModelPath);
+  const blockSwapLayerCount = senseNovaBlockSwap ? 42 : 30;
   const numOptimizerGroups = params.num_optimizer_groups ?? 0;
 
   // Per-bucket activation offload dispatcher
@@ -1845,6 +1847,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (params.use_pinned_memory) updateParam("use_pinned_memory", false);
       if (params.block_swap_h2d_only) updateParam("block_swap_h2d_only", false);
     }
+    if (senseNovaBlockSwap && params.block_swap_h2d_only) {
+      updateParam("block_swap_h2d_only", false);
+    }
     if (fusedGroupsUnsupported && params.num_optimizer_groups) {
       updateParam("num_optimizer_groups", 0);
     }
@@ -1909,7 +1914,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       params.sensenova_four_phase_eviction, params.sensenova_mot_phase_eviction,
       params.sensenova_four_phase_shared_prefix, params.sensenova_mot_pageable_staging,
       params.sensenova_mot_overlap_transfer,
-      params.train_unet, params.train_text_encoder]);
+      params.train_unet, params.train_text_encoder, senseNovaBlockSwap,
+      params.block_swap_h2d_only]);
 
   // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
   // when moving to an architecture whose reference path is unrelated.
@@ -5594,7 +5600,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
             </div>
             <p className="text-xs text-gray-500">
-              Keeps only the active understanding or generation weight half on GPU. Opt-in. This architecture has no block swap, so the Block Swap controls are not offered for it.
+              Keeps only the active understanding or generation weight half on GPU. Opt-in. With Block Swap enabled, this manages only the physical layers left resident; the branch-aware block ring owns the swapped layers.
             </p>
 
             {params.sensenova_mot_phase_eviction && (
@@ -5850,15 +5856,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={blocksToSwap}
                 onChange={(e) => updateParam("blocks_to_swap", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("blocks_to_swap", 0); }}
                 min={0}
+                max={senseNovaBlockSwap ? 41 : undefined}
                 step={1}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Number of transformer blocks to swap between GPU and CPU during training. Higher values reduce VRAM usage but may slow training. Default: 0 (disabled). Recommended: 10-20 for large models.
+                Number of transformer blocks to swap between GPU and CPU during training. Higher values reduce resident weight memory but may slow training. Default: 0 (disabled).{senseNovaBlockSwap ? " SenseNova accepts 1-41 of its 42 layers and requires gradient checkpointing." : ""}
               </p>
               {blocksToSwap > 0 && (
                 <p className="text-xs text-blue-400 mt-1">
-                  Estimated VRAM saving: ~{Math.round((blocksToSwap / 30) * 100)}% of transformer parameters
+                  Approximate transformer-layer share streamed: ~{Math.min(100, Math.round((blocksToSwap / blockSwapLayerCount) * 100))}%
+                </p>
+              )}
+              {senseNovaBlockSwap && blocksToSwap > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Understanding and generation weights use separate branch keys. LoRA streams the frozen base automatically; full fine-tuning writes updated weights back. MoT Phase Eviction and 4-phase eviction remain optional and can cover the resident layers.
                 </p>
               )}
             </div>
@@ -5880,8 +5892,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* H2D-only block swap (FLUX.2 LoRA training) */}
-            {!blockSwapUnsupported && blocksToSwap > 0 && (
+            {/* H2D-only block swap (selectable on non-SenseNova paths) */}
+            {!blockSwapUnsupported && blocksToSwap > 0 && !senseNovaBlockSwap && (
               <div className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -5896,19 +5908,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* H2D-only ring size */}
-            {!blockSwapUnsupported && blocksToSwap > 0 && (params.block_swap_h2d_only ?? false) && (
+            {/* Transfer ring size */}
+            {!blockSwapUnsupported && blocksToSwap > 0 && (
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Ring Size (GPU weight buffer slots)</label>
                 <input
                   type="number"
-                  min={1}
+                  min={senseNovaBlockSwap ? 2 : 1}
                   max={4}
                   value={params.block_swap_ring_size ?? 2}
                   onChange={(e) => updateParam("block_swap_ring_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
                   onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("block_swap_ring_size", 2); }}
                   className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                 />
+                {senseNovaBlockSwap && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Minimum 2: mixed-token calls can need both branches of one layer simultaneously.
+                  </p>
+                )}
               </div>
             )}
 

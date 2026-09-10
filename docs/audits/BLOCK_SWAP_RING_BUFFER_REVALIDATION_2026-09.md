@@ -215,10 +215,24 @@ the hook path actually called by models.  This report supersedes those claims.
 ## Verification status and next work
 
 Static source tracing is complete for all 13 training architectures.  The
-repository virtual environment currently cannot launch because its recorded
-base interpreter (`C:\Users\<redacted-local-user>\AppData\Local\Programs\Python\Python311\python.exe`)
-is absent, so the focused CPU suite could not be rerun in this checkout.  This
-is an environment blocker, not a test pass or a product-code failure.
+focused CPU optimizer-state suite passed under the repository virtual
+environment on 2026-09-10:
+
+```text
+optimizer host-state/fused path: 98 passed, 12 subtests passed
+block boundary/sidecar/video-wrapper path: 79 passed, 51 subtests passed
+```
+
+The suite covered host-state wiring, fail-loud CPU parameter handling,
+exactly-once update census, host-resident resume placement, AdamW defect guards,
+and fused-step behavior.  The second suite covered dtype-split/sidecar guards,
+strategy boundaries, MiniMax-H3 token-refiner staging and block-loop ordering,
+MiniMax Music 3 staged component offload, and video request plumbing.  These
+results support the named static contracts; they do not exercise CUDA transfer
+overlap or the `LayerOffloadConductor` residency lifecycle identified above.
+An initial sandboxed launch reported the virtual environment's external base
+interpreter as unavailable; rerunning the same repository-venv command with its
+approved execution scope succeeded, so there is no virtual-environment defect.
 
 Do not optimize around the present conductor.  The safe sequence is:
 

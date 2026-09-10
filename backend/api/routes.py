@@ -16740,7 +16740,8 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
             rows = detail_db.query(TrainingCheckpoint).filter(
                 TrainingCheckpoint.run_id == run.id
             ).order_by(TrainingCheckpoint.step.desc()).all()
-            data["checkpoint_paths"] = [row.file_path for row in rows]
+            if rows:
+                data["checkpoint_paths"] = [row.file_path for row in rows]
     except Exception as exc:
         print(f"[API] WARNING: could not read run {run_id} detail DB: {exc}")
     finally:
@@ -18154,6 +18155,13 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
         rows = checkpoint_db.query(TrainingCheckpoint).filter(
             TrainingCheckpoint.run_id == run.id
         ).order_by(TrainingCheckpoint.step.desc()).all()
+        if not rows and owns_checkpoint_db:
+            checkpoint_db.close()
+            checkpoint_db = db
+            owns_checkpoint_db = False
+            rows = checkpoint_db.query(TrainingCheckpoint).filter(
+                TrainingCheckpoint.run_id == run.id
+            ).order_by(TrainingCheckpoint.step.desc()).all()
         checkpoints = []
         for ckpt in rows:
             from pathlib import Path

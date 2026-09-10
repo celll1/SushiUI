@@ -917,3 +917,77 @@ def test_a_dataset_with_no_audio_items_is_untouched():
     t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("minimax_h3", temporal=object()))
     datasets = [_AudioOnlyDataset([{"item_type": "video", "image_path": "clip.mp4"}])]
     t._refuse_unsupported_audio_only_items(datasets)   # must not raise
+
+
+# ---------------------------------------------------------------------------
+# H1 -- empty-caption contract
+# ---------------------------------------------------------------------------
+
+
+class _H3DatasetQuery:
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def first(self):
+        return self.dataset
+
+
+class _H3DatasetDb:
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def query(self, _model):
+        return _H3DatasetQuery(self.dataset)
+
+
+def test_h3_caption_preflight_refuses_whole_caption_dropout(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    dataset = type("Dataset", (), {
+        "name": "h3-clips", "path": "/h3-clips",
+        "caption_processing": {"caption_dropout_rate": 0.1},
+    })()
+
+    with pytest.raises(ValueError, match="caption_dropout_rate=0"):
+        train_runner._preflight_minimax_h3_caption_contract(
+            "h3.safetensors", [{"dataset_id": 1}], _H3DatasetDb(dataset))
+
+
+def test_h3_caption_preflight_leaves_other_architectures_unchanged(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "sdxl")
+    dataset = type("Dataset", (), {
+        "name": "images", "path": "/images",
+        "caption_processing": {"caption_dropout_rate": 0.5},
+    })()
+    train_runner._preflight_minimax_h3_caption_contract(
+        "sdxl.safetensors", [{"dataset_id": 1}], _H3DatasetDb(dataset))
+
+
+def test_h3_processed_caption_validation_refuses_empty_items(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    with pytest.raises(ValueError, match=r"2 item\(s\).+empty caption"):
+        train_runner._validate_minimax_h3_captions(
+            "h3.safetensors",
+            [{"image_path": "blank.png", "caption": ""},
+             {"image_path": "spaces.png", "caption": "   "},
+             {"image_path": "ok.png", "caption": "a scene"}],
+            dataset_label="h3-stills",
+        )
+
+
+def test_h3_processed_caption_validation_accepts_nonempty_items(monkeypatch):
+    from core.training import train_runner, training_config
+
+    monkeypatch.setattr(training_config, "_detect_arch", lambda _path: "minimax_h3")
+    train_runner._validate_minimax_h3_captions(
+        "h3.safetensors", [{"image_path": "ok.mp4", "caption": "a scene"}],
+        dataset_label="h3-clips",
+    )

@@ -1198,6 +1198,67 @@ def _preflight_cfg_null_caption_conflict(
                          else exc.message)
 
 
+def _preflight_minimax_h3_caption_contract(
+    base_model_path: str, dataset_configs: List[Dict[str, Any]], datasets_db,
+) -> None:
+    """Reject whole-caption dropout for MiniMax-H3 before dataset/model work."""
+    from core.training.training_config import _detect_arch
+
+    if _detect_arch(base_model_path) != "minimax_h3":
+        return
+
+    offenders = []
+    for ds_config in dataset_configs:
+        dataset = datasets_db.query(Dataset).filter(
+            Dataset.id == ds_config.get("dataset_id")
+        ).first()
+        if dataset is None:
+            continue
+        processing = dataset.caption_processing or {}
+        try:
+            rate = float(processing.get("caption_dropout_rate", 0.0) or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"MiniMax-H3 dataset {dataset.name or dataset.path!r} has an invalid "
+                "caption_dropout_rate; expected a number in [0, 1]."
+            ) from exc
+        if not 0.0 <= rate <= 1.0:
+            raise ValueError(
+                f"MiniMax-H3 dataset {dataset.name or dataset.path!r} has an invalid "
+                f"caption_dropout_rate={rate:g}; expected a number in [0, 1]."
+            )
+        if rate > 0.0:
+            offenders.append((dataset.name or dataset.path, rate))
+
+    if offenders:
+        detail = ", ".join(f"{name!r}={rate:g}" for name, rate in offenders)
+        raise ValueError(
+            "MiniMax-H3 requires a non-empty caption for every item and cannot use "
+            "whole-caption dropout because its text encoder rejects an empty "
+            f"presentation. Set caption_dropout_rate=0 for: {detail}."
+        )
+
+
+def _validate_minimax_h3_captions(
+    base_model_path: str, items: List[Dict[str, Any]], *, dataset_label: str,
+) -> None:
+    """Validate the captions produced by the per-epoch processing pipeline."""
+    from core.training.training_config import _detect_arch
+
+    if _detect_arch(base_model_path) != "minimax_h3":
+        return
+    empty = [str(item.get("image_path", "<unknown>")) for item in items
+             if not str(item.get("caption", "")).strip()]
+    if empty:
+        examples = ", ".join(empty[:3])
+        suffix = "" if len(empty) <= 3 else f" (+{len(empty) - 3} more)"
+        raise ValueError(
+            f"MiniMax-H3 dataset {dataset_label!r} produced {len(empty)} item(s) "
+            "with an empty caption after caption processing. Every H3 item needs "
+            f"a non-empty presentation. Examples: {examples}{suffix}"
+        )
+
+
 def _validate_latent_io(trainer, train_config: Dict[str, Any]) -> None:
     """Check the loaded backbone and VAE agree on the latent space (§8.6).
 
@@ -2676,6 +2737,8 @@ def main():
         # cannot share a run with whole-caption dropout.
         _preflight_cfg_null_caption_conflict(
             train_config, run.base_model_path, dataset_configs, datasets_db)
+        _preflight_minimax_h3_caption_contract(
+            run.base_model_path, dataset_configs, datasets_db)
 
         # ============================================================
         # Detect Start Epoch for Resume Training (before dataset loading)
@@ -2752,6 +2815,8 @@ def main():
                 skip_captions=skip_captions,
             )
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
+            _validate_minimax_h3_captions(
+                run.base_model_path, dataset_items, dataset_label=dataset.name or dataset.path)
 
             # Add dataset_unique_id to each item for cache management
             for item in dataset_items:
@@ -2847,6 +2912,8 @@ def main():
                     force_reload=False,  # Use cache for epoch reloads
                     skip_captions=skip_captions,
                 )
+                _validate_minimax_h3_captions(
+                    run.base_model_path, items, dataset_label=self.unique_id)
 
                 # Add dataset_unique_id for cache management
                 for item in items:

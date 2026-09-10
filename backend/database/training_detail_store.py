@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 import os
 
-from sqlalchemy import create_engine, event, or_, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -189,74 +189,6 @@ def open_training_history_session(catalog_db, run_id: int):
             f"Training run {run_id} detail store is not ready: {run.detail_state!r}"
         )
     return open_run_detail_session(run), True, run
-
-
-def mirror_metrics_to_run_database(run, central_db, touched_steps) -> None:
-    """Bring a dual-written run DB through the newest central metric batch.
-
-    A previous process may have committed centrally and exited before its mirror.
-    Copying the missing tail as well as the touched steps repairs that gap on the
-    next flush and preserves same-step partial updates.
-    """
-    from sqlalchemy import func
-
-    from .models import TrainingMetrics
-
-    steps = {int(step) for step in touched_steps}
-    if not steps:
-        return
-    local_db = open_run_detail_session(run)
-    try:
-        local_max = local_db.query(func.max(TrainingMetrics.step)).filter(
-            TrainingMetrics.run_id == run.id
-        ).scalar()
-        predicate = TrainingMetrics.step.in_(steps)
-        if local_max is not None:
-            predicate = or_(TrainingMetrics.step > int(local_max), predicate)
-        rows = central_db.query(TrainingMetrics).filter(
-            TrainingMetrics.run_id == run.id,
-            predicate,
-        ).order_by(TrainingMetrics.step.asc()).all()
-        columns = [
-            column.name for column in TrainingMetrics.__table__.columns
-            if column.name != "id"
-        ]
-        for source in rows:
-            target = local_db.query(TrainingMetrics).filter(
-                TrainingMetrics.run_id == run.id,
-                TrainingMetrics.step == source.step,
-            ).first()
-            values = {name: getattr(source, name) for name in columns}
-            if target is None:
-                local_db.add(TrainingMetrics(**values))
-            else:
-                for name, value in values.items():
-                    setattr(target, name, value)
-        local_db.commit()
-    except Exception:
-        local_db.rollback()
-        raise
-    finally:
-        local_db.close()
-
-
-def delete_run_database_metrics_after(run, step: int) -> int:
-    """Delete stale v2 history after a checkpoint rewind."""
-    from .models import TrainingMetrics
-
-    local_db = open_run_detail_session(run)
-    try:
-        deleted = local_db.query(TrainingMetrics).filter(
-            TrainingMetrics.run_id == run.id,
-            TrainingMetrics.step > int(step),
-        ).delete(synchronize_session=False)
-        local_db.commit()
-        return int(deleted)
-    except Exception:
-        local_db.rollback()
-        raise
-    finally:
-        local_db.close()
 
 
 def _copy_owned_rows(central_db, local_db, model, run_id: int,
@@ -493,51 +425,6 @@ def open_tagger_history_session(catalog_db, run_id: str):
             f"Tagger run {run_id!r} detail store is not ready: {run.detail_state!r}"
         )
     return open_tagger_detail_session(run), True, run
-
-
-def mirror_tagger_metrics_to_run_database(run, central_db, touched_keys) -> None:
-    """Mirror committed tagger metric rows, including same-step updates."""
-    from sqlalchemy import and_, func
-
-    from .models import TaggerTrainingMetrics
-
-    keys = {(int(resume), int(step)) for resume, step in touched_keys}
-    if not keys:
-        return
-    local_db = open_tagger_detail_session(run)
-    try:
-        local_max = local_db.query(func.max(TaggerTrainingMetrics.id)).scalar() or 0
-        touched = or_(*[
-            and_(TaggerTrainingMetrics.resume_seq == resume,
-                 TaggerTrainingMetrics.step == step)
-            for resume, step in keys
-        ])
-        rows = central_db.query(TaggerTrainingMetrics).filter(
-            TaggerTrainingMetrics.run_id == run.run_id,
-            or_(TaggerTrainingMetrics.id > local_max, touched),
-        ).order_by(TaggerTrainingMetrics.id.asc()).all()
-        columns = [
-            column.name for column in TaggerTrainingMetrics.__table__.columns
-            if column.name != "id"
-        ]
-        for source in rows:
-            target = local_db.query(TaggerTrainingMetrics).filter(
-                TaggerTrainingMetrics.run_id == run.run_id,
-                TaggerTrainingMetrics.resume_seq == source.resume_seq,
-                TaggerTrainingMetrics.step == source.step,
-            ).first()
-            values = {name: getattr(source, name) for name in columns}
-            if target is None:
-                local_db.add(TaggerTrainingMetrics(**values))
-            else:
-                for name, value in values.items():
-                    setattr(target, name, value)
-        local_db.commit()
-    except Exception:
-        local_db.rollback()
-        raise
-    finally:
-        local_db.close()
 
 
 def _verify_tagger_migrated_counts(central_db, local_db, run_id: str) -> dict:

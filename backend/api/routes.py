@@ -20936,9 +20936,31 @@ def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(g
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
 
-    # Prefer DB-cached vocabulary
-    if run.tag_vocabulary:
-        return run.tag_vocabulary
+    vocabulary_db = training_db
+    owns_vocabulary_db = False
+    try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_tagger_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            vocabulary_db = open_tagger_detail_session(run)
+            owns_vocabulary_db = True
+            detail_run = vocabulary_db.query(TaggerTrainingRun).filter(
+                TaggerTrainingRun.run_id == run_id
+            ).one()
+            if detail_run.tag_vocabulary:
+                return detail_run.tag_vocabulary
+        elif run.tag_vocabulary:
+            return run.tag_vocabulary
+    except Exception as exc:
+        print(f"[TaggerTraining] vocabulary detail DB unavailable: {exc}")
+        if run.tag_vocabulary:
+            return run.tag_vocabulary
+    finally:
+        if owns_vocabulary_db:
+            vocabulary_db.close()
 
     # Fall back to reading vocabulary.json from disk
     if run.output_dir:
@@ -21174,7 +21196,7 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 resume_from_checkpoint=resume_from_checkpoint,
                 trainer_holder=trainer_holder,
             )
-            # Save vocabulary to DB
+            # Keep the vocabulary snapshot with the run's detailed history.
             vocab_path = os.path.join(output_dir, "vocabulary.json")
             if os.path.isfile(vocab_path):
                 import json as _json
@@ -21182,8 +21204,17 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                     vocab = _json.load(f)
                 row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
                 if row:
-                    row.tag_vocabulary = vocab
                     row.num_tags = vocab.get("num_tags")
+                    from database.training_detail_store import open_tagger_history_session
+                    vocabulary_db, owns_vocabulary_db, detail_run = \
+                        open_tagger_history_session(db, run_id)
+                    try:
+                        detail_run.tag_vocabulary = vocab
+                        detail_run.num_tags = vocab.get("num_tags")
+                        vocabulary_db.commit()
+                    finally:
+                        if owns_vocabulary_db:
+                            vocabulary_db.close()
                     db.commit()
         except Exception as e:
             row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()

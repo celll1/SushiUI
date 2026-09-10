@@ -10,9 +10,7 @@ from database.training_detail_store import (
     RUN_DB_V2,
     DetailStoreError,
     detail_db_path,
-    delete_run_database_metrics_after,
     initialize_run_detail_database,
-    mirror_metrics_to_run_database,
     migrate_terminal_run_to_v2,
     open_run_detail_session,
     open_training_history_session,
@@ -102,56 +100,6 @@ def test_existing_run_database_rejects_another_run_identity(tmp_path):
     initialize_run_detail_database(_model_run(tmp_path, run_uuid="first"))
     with pytest.raises(DetailStoreError, match="identity mismatch"):
         initialize_run_detail_database(_model_run(tmp_path, run_uuid="second"))
-
-
-def test_metric_mirror_repairs_tail_and_same_step_updates(tmp_path):
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from database.models import TrainingBase
-
-    engine = create_engine("sqlite:///:memory:")
-    TrainingBase.metadata.create_all(engine)
-    central = sessionmaker(bind=engine)()
-    run = _model_run(tmp_path)
-    central.add(run)
-    central.add_all([
-        TrainingMetrics(run_id=run.id, step=1, loss=1.0),
-        TrainingMetrics(run_id=run.id, step=2, loss=2.0),
-    ])
-    central.commit()
-    initialize_run_detail_database(run)
-
-    mirror_metrics_to_run_database(run, central, [1])
-    central.query(TrainingMetrics).filter_by(run_id=run.id, step=1).one().loss = 0.5
-    central.commit()
-    mirror_metrics_to_run_database(run, central, [1, 2])
-
-    local = open_run_detail_session(run)
-    values = [
-        row.loss for row in local.query(TrainingMetrics)
-        .order_by(TrainingMetrics.step).all()
-    ]
-    local.close()
-    central.close()
-    assert values == [0.5, 2.0]
-
-
-def test_run_database_rewind_deletes_future_metrics(tmp_path):
-    run = _model_run(tmp_path)
-    factory = initialize_run_detail_database(run)
-    local = factory()
-    local.add_all([
-        TrainingMetrics(run_id=run.id, step=step, loss=float(step))
-        for step in range(1, 5)
-    ])
-    local.commit()
-    local.close()
-
-    assert delete_run_database_metrics_after(run, 2) == 2
-    opened = open_run_detail_session(run)
-    assert [row.step for row in opened.query(TrainingMetrics).all()] == [1, 2]
-    opened.close()
 
 
 def test_v2_history_session_writes_only_to_run_database(tmp_path):

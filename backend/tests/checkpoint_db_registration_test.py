@@ -37,7 +37,12 @@ if str(BACKEND) not in sys.path:
 import core.training.base_trainer as bt  # noqa: E402
 import core.training.controlnet_trainer as ct  # noqa: E402
 import database as db_module  # noqa: E402
-from database.models import TrainingBase, TrainingCheckpoint, TrainingRun  # noqa: E402
+from database.models import (  # noqa: E402
+    TrainingBase,
+    TrainingCheckpoint,
+    TrainingMetrics,
+    TrainingRun,
+)
 from database.training_detail_store import (  # noqa: E402
     RUN_DB_V2,
     initialize_run_detail_database,
@@ -56,6 +61,7 @@ class FakeTrainer:
     _completed_checkpoint_bundle_stages = bt.BaseTrainer._completed_checkpoint_bundle_stages
     _record_checkpoint_db_row = bt.BaseTrainer._record_checkpoint_db_row
     _delete_checkpoint_db_row = bt.BaseTrainer._delete_checkpoint_db_row
+    _cleanup_future_metrics = bt.BaseTrainer._cleanup_future_metrics
     _cleanup_old_checkpoints = bt.BaseTrainer._cleanup_old_checkpoints
 
     def __init__(self, output_dir: Path, run_id=1, layout: str = "single_file"):
@@ -198,6 +204,34 @@ class RegistrationLayoutTest(TrainingDbCase):
 # ---------------------------------------------------------------------------
 
 class RegistrationBehaviorTest(TrainingDbCase):
+    def test_v2_rewind_deletes_only_run_database_metrics(self):
+        session = self.SessionLocal()
+        run = session.query(TrainingRun).filter_by(id=1).one()
+        run.detail_store = RUN_DB_V2
+        run.detail_schema_version = 2
+        run.detail_state = "ready"
+        run.detail_db_name = "training_run.db"
+        session.commit()
+        initialize_run_detail_database(run)
+        detail = open_run_detail_session(run)
+        detail.add_all([
+            TrainingMetrics(run_id=run.id, step=step, loss=float(step))
+            for step in range(1, 5)
+        ])
+        detail.commit()
+        detail.close()
+        session.close()
+
+        FakeTrainer(self.dir)._cleanup_future_metrics(2)
+
+        session = self.SessionLocal()
+        self.assertEqual(session.query(TrainingMetrics).count(), 0)
+        run = session.query(TrainingRun).filter_by(id=1).one()
+        detail = open_run_detail_session(run)
+        self.assertEqual([row.step for row in detail.query(TrainingMetrics).all()], [1, 2])
+        detail.close()
+        session.close()
+
     def test_v2_checkpoint_is_registered_only_in_run_database(self):
         session = self.SessionLocal()
         run = session.query(TrainingRun).filter_by(id=1).one()

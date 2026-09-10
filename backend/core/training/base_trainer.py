@@ -20054,6 +20054,28 @@ class BaseTrainer(ABC):
 
             # Single commit for entire buffer
             db.commit()
+
+            # New runs keep a central rollback copy during the v2 rollout and
+            # mirror the same committed rows into their run-owned database.
+            # This remains on the background DB worker, off the iteration path.
+            try:
+                from database.models import TrainingRun
+                from database.training_detail_store import (
+                    RUN_DB_V2,
+                    detail_store_kind,
+                    mirror_metrics_to_run_database,
+                )
+                _run = db.query(TrainingRun).filter(
+                    TrainingRun.id == self.run_id
+                ).first()
+                if _run is not None and detail_store_kind(_run) == RUN_DB_V2 \
+                        and _run.detail_state == "ready":
+                    mirror_metrics_to_run_database(
+                        _run, db, [entry["step"] for entry in buffer]
+                    )
+            except Exception as exc:
+                print(f"{self.log_prefix} WARNING: Failed to mirror metrics "
+                      f"to run database: {exc}")
             db.close()
 
             # Broadcast latest metrics to WebSocket clients

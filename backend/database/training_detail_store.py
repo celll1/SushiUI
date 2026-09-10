@@ -502,3 +502,155 @@ def mirror_tagger_metrics_to_run_database(run, central_db, touched_keys) -> None
         raise
     finally:
         local_db.close()
+
+
+def _verify_tagger_migrated_counts(central_db, local_db, run_id: str) -> dict:
+    from .models import TaggerTrainingMetrics
+
+    central_count = central_db.query(TaggerTrainingMetrics).filter(
+        TaggerTrainingMetrics.run_id == run_id
+    ).count()
+    local_count = local_db.query(TaggerTrainingMetrics).filter(
+        TaggerTrainingMetrics.run_id == run_id
+    ).count()
+    if central_count != local_count:
+        raise DetailStoreError(
+            f"tagger_training_metrics count mismatch: "
+            f"central={central_count}, run_db={local_count}"
+        )
+    integrity = local_db.execute(text("PRAGMA integrity_check")).scalar()
+    if integrity != "ok":
+        raise DetailStoreError(f"Tagger run database integrity_check failed: {integrity}")
+    return {"tagger_training_metrics": local_count}
+
+
+def migrate_terminal_tagger_run_to_v2(central_db, run,
+                                      *, batch_size: int = 5000) -> dict:
+    """Copy one terminal tagger run, retaining its central rollback rows."""
+    from sqlalchemy import func
+
+    from .models import TaggerTrainingMetrics, TaggerTrainingRun
+
+    if run.status not in TERMINAL_RUN_STATUSES:
+        raise DetailStoreError(
+            f"Tagger run {run.run_id} is {run.status!r}; "
+            "only terminal runs can migrate"
+        )
+    if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+        local_db = open_tagger_detail_session(run)
+        try:
+            counts = _verify_tagger_migrated_counts(
+                central_db, local_db, run.run_id
+            )
+        finally:
+            local_db.close()
+        return {"run_id": run.run_id, "already_migrated": True, **counts}
+
+    original = {
+        "detail_store": run.detail_store,
+        "detail_schema_version": run.detail_schema_version,
+        "detail_state": run.detail_state,
+        "detail_db_name": run.detail_db_name,
+    }
+    final_name = TAGGER_RUN_DB_FILENAME
+    temp_name = TAGGER_RUN_DB_FILENAME + ".migrating"
+    final_path = Path(run.output_dir or "") / final_name
+    if not run.output_dir:
+        raise DetailStoreError(f"Tagger run {run.run_id} has no output directory")
+    if final_path.exists():
+        probe_values = {
+            column.name: getattr(run, column.name)
+            for column in TaggerTrainingRun.__table__.columns
+        }
+        probe_values.update({
+            "detail_store": RUN_DB_V2,
+            "detail_schema_version": RUN_DB_SCHEMA_VERSION,
+            "detail_state": "ready",
+            "detail_db_name": final_name,
+        })
+        probe_run = TaggerTrainingRun(**probe_values)
+        local_db = open_tagger_detail_session(probe_run)
+        try:
+            counts = _verify_tagger_migrated_counts(
+                central_db, local_db, run.run_id
+            )
+        finally:
+            local_db.close()
+        run.detail_store = RUN_DB_V2
+        run.detail_schema_version = RUN_DB_SCHEMA_VERSION
+        run.detail_state = "ready"
+        run.detail_db_name = final_name
+        central_db.commit()
+        return {"run_id": run.run_id, "recovered_final_file": True, **counts}
+
+    run.detail_state = "migrating"
+    central_db.commit()
+    values = {
+        column.name: getattr(run, column.name)
+        for column in TaggerTrainingRun.__table__.columns
+    }
+    values.update({
+        "detail_store": RUN_DB_V2,
+        "detail_schema_version": RUN_DB_SCHEMA_VERSION,
+        "detail_state": "migrating",
+        "detail_db_name": temp_name,
+    })
+    temp_run = TaggerTrainingRun(**values)
+    try:
+        factory = initialize_tagger_detail_database(temp_run)
+        local_db = factory()
+        try:
+            local_max = local_db.query(
+                func.max(TaggerTrainingMetrics.id)
+            ).scalar() or 0
+            copied = 0
+            columns = [
+                column.name
+                for column in TaggerTrainingMetrics.__table__.columns
+            ]
+            while True:
+                rows = central_db.query(TaggerTrainingMetrics).filter(
+                    TaggerTrainingMetrics.run_id == run.run_id,
+                    TaggerTrainingMetrics.id > local_max,
+                ).order_by(TaggerTrainingMetrics.id.asc()).limit(batch_size).all()
+                if not rows:
+                    break
+                local_db.bulk_insert_mappings(TaggerTrainingMetrics, [
+                    {name: getattr(row, name) for name in columns}
+                    for row in rows
+                ])
+                local_db.commit()
+                local_max = rows[-1].id
+                copied += len(rows)
+            counts = _verify_tagger_migrated_counts(
+                central_db, local_db, run.run_id
+            )
+            run.detail_store = RUN_DB_V2
+            run.detail_schema_version = RUN_DB_SCHEMA_VERSION
+            run.detail_state = "ready"
+            run.detail_db_name = final_name
+            local_run = local_db.query(TaggerTrainingRun).filter(
+                TaggerTrainingRun.run_id == run.run_id
+            ).one()
+            for column in TaggerTrainingRun.__table__.columns:
+                setattr(local_run, column.name, getattr(run, column.name))
+            local_db.commit()
+            local_db.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        finally:
+            local_db.close()
+        factory.kw["bind"].dispose()
+        os.replace(str(Path(run.output_dir) / temp_name), str(final_path))
+        _run_db_session_factory.cache_clear()
+        central_db.commit()
+        return {
+            "run_id": run.run_id,
+            "already_migrated": False,
+            "copied": copied,
+            **counts,
+        }
+    except Exception:
+        central_db.rollback()
+        for name, value in original.items():
+            setattr(run, name, value)
+        central_db.commit()
+        raise

@@ -11,13 +11,17 @@ torch.cuda._lazy_init = lambda *args, **kwargs: None
 torch._C._cuda_init = lambda *args, **kwargs: None
 
 from api.routes import (  # noqa: E402
+    _resolve_training_epoch,
     get_tagger_training_metrics,
+    get_training_checkpoints,
     get_training_metrics_db,
+    get_training_run,
 )
 from database.models import (  # noqa: E402
     TaggerTrainingMetrics,
     TaggerTrainingRun,
     TrainingBase,
+    TrainingCheckpoint,
     TrainingMetrics,
     TrainingRun,
 )
@@ -75,6 +79,21 @@ def test_v2_metrics_come_from_run_database(tmp_path):
     central.close()
 
 
+def test_v2_epoch_status_comes_from_run_database(tmp_path):
+    central, run = _central(tmp_path, v2=True)
+    run.current_step = 3
+    run.config_yaml = "config:\n  process:\n    - train:\n        epochs: 4\n"
+    central.commit()
+    initialize_run_detail_database(run)
+    local = open_run_detail_session(run)
+    local.add(TrainingMetrics(run_id=run.id, step=3, epoch=1, loss=0.2))
+    local.commit()
+    local.close()
+
+    assert _resolve_training_epoch(run, central) == (2, 4)
+    central.close()
+
+
 def test_missing_v2_database_falls_back_to_retained_central_rows(tmp_path):
     central, run = _central(tmp_path, v2=True)
     assert _metrics(central, run)["loss"][0]["value"] == 0.1
@@ -85,6 +104,27 @@ def test_empty_v2_database_falls_back_to_first_central_batch(tmp_path):
     central, run = _central(tmp_path, v2=True)
     initialize_run_detail_database(run)
     assert _metrics(central, run)["loss"][0]["value"] == 0.1
+    central.close()
+
+
+def test_v2_checkpoint_endpoints_read_run_database(tmp_path):
+    central, run = _central(tmp_path, v2=True)
+    initialize_run_detail_database(run)
+    local = open_run_detail_session(run)
+    local.add(TrainingCheckpoint(
+        run_id=run.id,
+        checkpoint_name="step-4",
+        step=4,
+        file_path=str(tmp_path / "step-4.safetensors"),
+    ))
+    local.commit()
+    local.close()
+
+    checkpoints = asyncio.run(get_training_checkpoints(run.id, central))
+    detail = asyncio.run(get_training_run(run.id, central))
+
+    assert checkpoints["checkpoints"][0]["step"] == 4
+    assert detail["checkpoint_paths"] == [str(tmp_path / "step-4.safetensors")]
     central.close()
 
 

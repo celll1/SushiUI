@@ -2407,15 +2407,21 @@ class VaeTrainer:
         try:
             from database import get_training_db
             from database.models import TrainingCheckpoint
+            from database.training_detail_store import open_training_history_session
             size = sum(f.stat().st_size for f in ckpt_dir.glob("*") if f.is_file())
-            db = next(get_training_db())
+            catalog_db = next(get_training_db())
+            history_db = None
+            owns_history_db = False
             try:
-                existing = (db.query(TrainingCheckpoint)
+                history_db, owns_history_db, _ = open_training_history_session(
+                    catalog_db, self.run_id
+                )
+                existing = (history_db.query(TrainingCheckpoint)
                             .filter(TrainingCheckpoint.run_id == self.run_id,
                                     TrainingCheckpoint.step == step)
                             .first())
                 if existing is None:
-                    db.add(TrainingCheckpoint(
+                    history_db.add(TrainingCheckpoint(
                         run_id=self.run_id,
                         checkpoint_name=ckpt_dir.name,
                         step=step,
@@ -2426,9 +2432,11 @@ class VaeTrainer:
                 else:
                     existing.file_path = str(ckpt_dir)
                     existing.file_size = size
-                db.commit()
+                history_db.commit()
             finally:
-                db.close()
+                if owns_history_db and history_db is not None:
+                    history_db.close()
+                catalog_db.close()
         except Exception as e:
             print(f"{self.log_prefix} checkpoint DB row failed (non-fatal): {e}")
 
@@ -2438,15 +2446,23 @@ class VaeTrainer:
         try:
             from database import get_training_db
             from database.models import TrainingCheckpoint
-            db = next(get_training_db())
+            from database.training_detail_store import open_training_history_session
+            catalog_db = next(get_training_db())
+            history_db = None
+            owns_history_db = False
             try:
-                (db.query(TrainingCheckpoint)
+                history_db, owns_history_db, _ = open_training_history_session(
+                    catalog_db, self.run_id
+                )
+                (history_db.query(TrainingCheckpoint)
                  .filter(TrainingCheckpoint.run_id == self.run_id,
                          TrainingCheckpoint.checkpoint_name == ckpt_dir.name)
                  .delete())
-                db.commit()
+                history_db.commit()
             finally:
-                db.close()
+                if owns_history_db and history_db is not None:
+                    history_db.close()
+                catalog_db.close()
         except Exception as e:
             print(f"{self.log_prefix} checkpoint row delete failed (non-fatal): {e}")
 

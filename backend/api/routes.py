@@ -16727,7 +16727,26 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
-    return run.to_dict()
+    data = run.to_dict()
+    detail_db = None
+    try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_run_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            detail_db = open_run_detail_session(run)
+            rows = detail_db.query(TrainingCheckpoint).filter(
+                TrainingCheckpoint.run_id == run.id
+            ).order_by(TrainingCheckpoint.step.desc()).all()
+            data["checkpoint_paths"] = [row.file_path for row in rows]
+    except Exception as exc:
+        print(f"[API] WARNING: could not read run {run_id} detail DB: {exc}")
+    finally:
+        if detail_db is not None:
+            detail_db.close()
+    return data
 
 
 @router.get("/training/runs/{run_id}/danbooru-metrics")
@@ -17983,9 +18002,19 @@ def _resolve_training_epoch(run, db: Session):
     from database.models import TrainingMetrics
 
     current_epoch = None
+    metrics_db = db
+    owns_metrics_db = False
     try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_run_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            metrics_db = open_run_detail_session(run)
+            owns_metrics_db = True
         row = (
-            db.query(TrainingMetrics.epoch)
+            metrics_db.query(TrainingMetrics.epoch)
             .filter(
                 TrainingMetrics.run_id == run.id,
                 TrainingMetrics.step <= (run.current_step or 0),
@@ -17997,6 +18026,9 @@ def _resolve_training_epoch(run, db: Session):
             current_epoch = int(row[0]) + 1
     except Exception as e:
         print(f"[API] WARNING: could not resolve current epoch for run {run.id}: {e}")
+    finally:
+        if owns_metrics_db:
+            metrics_db.close()
 
     total_epochs = None
     try:
@@ -18102,18 +18134,40 @@ async def get_training_checkpoints(run_id: int, db: Session = Depends(get_traini
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
 
-    # Get checkpoints from DB (already sorted by step descending)
-    checkpoints = []
-    for ckpt in sorted(run.checkpoints, key=lambda x: x.step, reverse=True):
-        from pathlib import Path
-        checkpoints.append({
-            "step": ckpt.step,
-            "epoch": ckpt.epoch,
-            "filename": Path(ckpt.file_path).name,
-            "path": ckpt.file_path,
-            "file_size": ckpt.file_size,
-            "created_at": ckpt.created_at.isoformat() if ckpt.created_at else None,
-        })
+    checkpoint_db = db
+    owns_checkpoint_db = False
+    try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_run_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            checkpoint_db = open_run_detail_session(run)
+            owns_checkpoint_db = True
+    except Exception as exc:
+        print(f"[API] WARNING: using retained central checkpoints for run {run_id}: {exc}")
+        checkpoint_db = db
+        owns_checkpoint_db = False
+
+    try:
+        rows = checkpoint_db.query(TrainingCheckpoint).filter(
+            TrainingCheckpoint.run_id == run.id
+        ).order_by(TrainingCheckpoint.step.desc()).all()
+        checkpoints = []
+        for ckpt in rows:
+            from pathlib import Path
+            checkpoints.append({
+                "step": ckpt.step,
+                "epoch": ckpt.epoch,
+                "filename": Path(ckpt.file_path).name,
+                "path": ckpt.file_path,
+                "file_size": ckpt.file_size,
+                "created_at": ckpt.created_at.isoformat() if ckpt.created_at else None,
+            })
+    finally:
+        if owns_checkpoint_db:
+            checkpoint_db.close()
 
     return {"checkpoints": checkpoints}
 

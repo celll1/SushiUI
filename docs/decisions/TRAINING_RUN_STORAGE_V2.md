@@ -1,8 +1,8 @@
 # Training run storage v2
 
-Status: v2 diffusion/VAE metric storage and terminal-run migration are
-implemented. The legacy store remains supported; central purge and tagger-run
-detail stores are not yet implemented.
+Status: v2 metric storage is implemented for new diffusion, VAE, and tagger
+runs, with terminal-run migration for diffusion/VAE. The legacy store remains
+supported; central purge and terminal tagger migration are not yet implemented.
 
 ## Decision
 
@@ -160,10 +160,11 @@ The implementation must cover:
 
 ## Operator boundary
 
-New diffusion and VAE runs create `training_run.db` automatically. During the
-rollback window their metrics are also retained centrally. Existing runs are
-not moved automatically. After the updated backend has initialized the nullable
-catalogue columns, inspect candidates without writing:
+New diffusion and VAE runs create `training_run.db`; new tagger runs create
+`tagger_training_run.db`. During the rollback window their metrics are also
+retained centrally. Existing runs are not moved automatically. After the
+updated backend has initialized the nullable catalogue columns, inspect
+diffusion/VAE candidates without writing:
 
 ```powershell
 venv\Scripts\python.exe backend\migrations\migrate_training_run_details.py --all-terminal

@@ -1156,6 +1156,11 @@ class TaggerTrainingRun(TrainingBase):
     vision_encoder_path = Column(String, nullable=False)    # path to .safetensors
     dataset_configs = Column(JSON, nullable=True)           # [{dataset_id: int, caption_types: [str]}]
     output_dir = Column(String, nullable=True)
+    # NULL remains the legacy central store for pre-v2 tagger runs.
+    detail_store = Column(String, nullable=True)
+    detail_schema_version = Column(Integer, nullable=True)
+    detail_state = Column(String, nullable=True)
+    detail_db_name = Column(String, nullable=True)
 
     # Hyperparameters (stored as JSON for flexibility)
     config = Column(JSON, nullable=True)                    # full config dict

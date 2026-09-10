@@ -10,11 +10,22 @@ torch.cuda.get_device_capability = lambda *args, **kwargs: (8, 9)
 torch.cuda._lazy_init = lambda *args, **kwargs: None
 torch._C._cuda_init = lambda *args, **kwargs: None
 
-from api.routes import get_training_metrics_db  # noqa: E402
-from database.models import TrainingBase, TrainingMetrics, TrainingRun  # noqa: E402
+from api.routes import (  # noqa: E402
+    get_tagger_training_metrics,
+    get_training_metrics_db,
+)
+from database.models import (  # noqa: E402
+    TaggerTrainingMetrics,
+    TaggerTrainingRun,
+    TrainingBase,
+    TrainingMetrics,
+    TrainingRun,
+)
 from database.training_detail_store import (  # noqa: E402
     RUN_DB_V2,
+    initialize_tagger_detail_database,
     initialize_run_detail_database,
+    open_tagger_detail_session,
     open_run_detail_session,
 )
 
@@ -74,4 +85,36 @@ def test_empty_v2_database_falls_back_to_first_central_batch(tmp_path):
     central, run = _central(tmp_path, v2=True)
     initialize_run_detail_database(run)
     assert _metrics(central, run)["loss"][0]["value"] == 0.1
+    central.close()
+
+
+def test_tagger_metrics_come_from_run_database(tmp_path):
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    run = TaggerTrainingRun(
+        run_id="tagger-uuid",
+        run_name="tagger",
+        vision_encoder_path="model",
+        output_dir=str(tmp_path),
+        detail_store=RUN_DB_V2,
+        detail_schema_version=2,
+        detail_state="ready",
+        detail_db_name="tagger_training_run.db",
+    )
+    central.add(run)
+    central.add(TaggerTrainingMetrics(
+        run_id=run.run_id, resume_seq=0, step=1, loss=0.1
+    ))
+    central.commit()
+    initialize_tagger_detail_database(run)
+    local = open_tagger_detail_session(run)
+    local.add(TaggerTrainingMetrics(
+        run_id=run.run_id, resume_seq=0, step=1, loss=0.2
+    ))
+    local.commit()
+    local.close()
+
+    data = get_tagger_training_metrics(run.run_id, 0, 2000, central)
+    assert data[0]["loss"] == 0.2
     central.close()

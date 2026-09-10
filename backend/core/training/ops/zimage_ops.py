@@ -102,55 +102,43 @@ def load_components(trainer) -> None:
     trainer.text_encoder.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
 
-    # Setup Block Swap if enabled (before moving to GPU)
-    trainer.layer_offload_conductor = None  # Will be initialized if blocks_to_swap > 0
-
-    if trainer.blocks_to_swap > 0:
-        print(f"{trainer.log_prefix} Block Swap enabled for training: {trainer.blocks_to_swap} blocks")
-        print(f"{trainer.log_prefix} Using LayerOffloadConductor (Ring Buffer implementation)")
-        print(f"{trainer.log_prefix} Pinned memory: {trainer.use_pinned_memory}")
-
-        # Import new ring buffer implementation
-        from core.memory_management import LayerOffloadConductor
-
-        # Check if transformer has layers attribute
-        if not hasattr(trainer.transformer_original, 'layers'):
-            raise ValueError(
-                f"Transformer must have 'layers' attribute for Block Swap. "
-                f"Found: {type(trainer.transformer_original)}"
-            )
-
-        # Initialize Layer Offload Conductor
-        trainer.layer_offload_conductor = LayerOffloadConductor(
-            layers=trainer.transformer_original.layers,
-            blocks_to_swap=trainer.blocks_to_swap,
-            device=trainer.device,
-            use_pinned_memory=trainer.use_pinned_memory,
-            cpu_buffer_size_mb=8192,  # 8GB CPU buffer for layer params
-            activation_buffer_size_mb=4096,  # 4GB CPU buffer for activations
-            enable_prefetch=True,  # Enable prefetching next layer
-            enable_activation_offload=False  # Disable for now (experimental)
-        )
-
-        # Attach to transformer for reference
-        trainer.transformer_original._layer_offload_conductor = trainer.layer_offload_conductor
-
-        # Register hooks for automatic layer swapping
-        trainer.layer_offload_conductor.register_hooks()
-
-        print(f"{trainer.log_prefix} LayerOffloadConductor initialized successfully")
-        print(f"{trainer.log_prefix} Ring buffer allocation strategy enabled")
-    else:
+    # Structural adapter changes happen after component load, so block swap is
+    # installed later by setup_block_swap().
+    trainer.layer_offload_conductor = None
+    if trainer.blocks_to_swap <= 0:
         print(f"{trainer.log_prefix} Block Swap disabled (blocks_to_swap=0)")
-        # Move Transformer to GPU normally
         print(f"{trainer.log_prefix} Moving Transformer to {trainer.device}...")
         trainer.transformer_original.to(trainer.device)
-        # Note: trainer.transformer.transformer is the same object as trainer.transformer_original
-        # No need to call trainer.transformer.to(device) again
 
     print(f"{trainer.log_prefix} Z-Image model loaded successfully")
     print(f"{trainer.log_prefix} Scheduler type: {trainer.scheduler.__class__.__name__}")
     print(f"{trainer.log_prefix} VAE latent channels: {trainer.vae.config.latent_channels}")
+
+
+def setup_block_swap(trainer) -> None:
+    """Install mutable block swap after LoRA/full-FT changes the module tree."""
+    if not trainer.is_zimage or trainer.blocks_to_swap <= 0:
+        return
+    if getattr(trainer, "layer_offload_conductor", None) is not None:
+        return
+    if not trainer.gradient_checkpointing:
+        raise ValueError("Z-Image mutable block swap requires gradient_checkpointing=True")
+    if not hasattr(trainer.transformer_original, "layers"):
+        raise ValueError("Z-Image transformer must expose `.layers` for block swap")
+    from core.memory_management import LayerOffloadConductor
+
+    trainer.layer_offload_conductor = LayerOffloadConductor(
+        layers=trainer.transformer_original.layers,
+        blocks_to_swap=trainer.blocks_to_swap,
+        device=trainer.device,
+        use_pinned_memory=trainer.use_pinned_memory,
+        enable_prefetch=True,
+        enable_activation_offload=False,
+        ring_size=trainer.block_swap_ring_size,
+    )
+    trainer.transformer_original._layer_offload_conductor = trainer.layer_offload_conductor
+    trainer.layer_offload_conductor.register_hooks()
+    print(f"{trainer.log_prefix} Shared mutable block swap initialized for Z-Image")
 
 
 def setup_attention_backend(trainer, backend: str):

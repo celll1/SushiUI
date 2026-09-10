@@ -53,10 +53,8 @@ class ZImageArchHandler(ArchHandler):
         zimage_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        # P3a: Z-Image has NO dedicated setup_*_block_swap method — block-swap
-        # wiring (LayerOffloadConductor) is done inline inside load_components.
-        # No-op here (nothing to move); block swap is already set up at load.
-        return None
+        from core.training.ops import zimage_ops
+        zimage_ops.setup_block_swap(trainer)
 
     def depth_blocks(self, trainer):
         # The same list the loader hands LayerOffloadConductor. `transformer` is

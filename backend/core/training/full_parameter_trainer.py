@@ -98,22 +98,9 @@ class FullParameterTrainer(BaseTrainer):
         # / freezes-the-right-things. For Full FT this isn't strictly required
         # (no LoRA wrap to break the snapshot) but the post-adapter ordering
         # keeps the contract uniform with LoRATrainer. No-op for other archs.
-        if hasattr(self, "setup_anima_block_swap"):
-            self.setup_anima_block_swap()
-        if hasattr(self, "setup_lens_block_swap"):
-            self.setup_lens_block_swap()
-        if hasattr(self, "setup_ideogram4_block_swap"):
-            self.setup_ideogram4_block_swap()
-        if hasattr(self, "setup_minit2i_block_swap"):
-            self.setup_minit2i_block_swap()
-        if hasattr(self, "setup_krea2_block_swap"):
-            self.setup_krea2_block_swap()
         if hasattr(self, "setup_ltx2_wrapper"):
             self.setup_ltx2_wrapper()
-        if hasattr(self, "setup_ltx2_block_swap"):
-            self.setup_ltx2_block_swap()
-        if hasattr(self, "setup_acestep_block_swap"):
-            self.setup_acestep_block_swap()
+        self.arch.setup_block_swap(self)
 
         self._setup_sensenova_phase_eviction()
 

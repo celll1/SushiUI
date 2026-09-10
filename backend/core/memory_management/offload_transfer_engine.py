@@ -212,3 +212,188 @@ class FrozenLruTransferEngine(FrozenSequentialTransferEngine):
         self.block_slot.clear()
         self.slot_block = [None] * self.ring_size
         self.lru = list(range(self.ring_size))
+
+
+@dataclass(frozen=True)
+class MutableTransferStats:
+    h2d_bytes: int
+    d2h_bytes: int
+    h2d_submissions: int
+    d2h_submissions: int
+    acquire_misses: int
+    consumer_waits: int
+
+
+class MutableLruTransferEngine:
+    """Stream mutable CPU masters through fixed GPU slots.
+
+    A key is active between :meth:`acquire` and :meth:`release`; active slots
+    are never selected as victims. Dirty release orders D2H after the current
+    compute stream, so an optimizer kernel enqueued before release is included
+    in the CPU master. All DMA for one slot is serialized on ``stream``.
+    """
+
+    def __init__(
+        self,
+        *,
+        keys: Sequence[int],
+        masters: Mapping[int, Mapping[Plane, torch.Tensor]],
+        ring_size: int,
+        device: torch.device,
+        point_bundle: Callable[[int, Mapping[Plane, torch.Tensor]], None],
+        stream=None,
+    ) -> None:
+        if not keys:
+            raise ValueError("keys must not be empty")
+        self.keys = tuple(keys)
+        if len(set(self.keys)) != len(self.keys):
+            raise ValueError("keys must be unique")
+        self.masters = {key: dict(masters[key]) for key in self.keys}
+        self.ring_size = max(1, min(int(ring_size), len(self.keys)))
+        self.device = torch.device(device)
+        self.cuda_available = self.device.type == "cuda"
+        self.point_bundle = point_bundle
+        self.stream = stream
+        if self.cuda_available and self.stream is None:
+            self.stream = torch.cuda.Stream(device=self.device)
+
+        planes = set().union(*(bundle.keys() for bundle in self.masters.values()))
+        if not planes:
+            raise ValueError("masters must contain at least one tensor plane")
+        self.slots: list[Dict[Plane, torch.Tensor]] = []
+        for _ in range(self.ring_size):
+            slot = {}
+            for plane in planes:
+                tensors = [bundle[plane] for bundle in self.masters.values() if plane in bundle]
+                dtype = tensors[0].dtype
+                if any(t.device.type != "cpu" for t in tensors):
+                    raise ValueError("master tensors must be on CPU")
+                if any(t.dtype != dtype for t in tensors):
+                    raise ValueError(f"plane {plane!r} contains mixed dtypes")
+                slot[plane] = torch.empty(
+                    max(t.numel() for t in tensors), dtype=dtype, device=self.device
+                )
+            self.slots.append(slot)
+
+        self.key_slot: Dict[int, int] = {}
+        self.slot_key: list[Optional[int]] = [None] * self.ring_size
+        self.ready_event = [None] * self.ring_size
+        self.active: set[int] = set()
+        self.lru = list(range(self.ring_size))
+        self._h2d_bytes = self._d2h_bytes = 0
+        self._h2d_submissions = self._d2h_submissions = 0
+        self._acquire_misses = self._consumer_waits = 0
+
+    def _views(self, key: int, slot: int) -> Dict[Plane, torch.Tensor]:
+        return {
+            plane: self.slots[slot][plane][:master.numel()]
+            for plane, master in self.masters[key].items()
+        }
+
+    def _touch(self, slot: int) -> None:
+        self.lru.remove(slot)
+        self.lru.append(slot)
+
+    def _victim_slot(self) -> int:
+        for slot in self.lru:
+            key = self.slot_key[slot]
+            if key is None or key not in self.active:
+                return slot
+        raise RuntimeError(
+            "mutable offload ring exhausted: every GPU slot is still active; "
+            "increase block_swap_ring_size or verify checkpoint release hooks"
+        )
+
+    def _submit_load(self, key: int, slot: int) -> None:
+        bundle = self.masters[key]
+        if self.cuda_available:
+            compute_done = torch.cuda.current_stream(self.device).record_event()
+            with torch.cuda.stream(self.stream):
+                self.stream.wait_event(compute_done)
+                for plane, master in bundle.items():
+                    self.slots[slot][plane][:master.numel()].copy_(master, non_blocking=True)
+                ready = self.stream.record_event()
+        else:
+            for plane, master in bundle.items():
+                self.slots[slot][plane][:master.numel()].copy_(master)
+            ready = None
+        self.ready_event[slot] = ready
+        self._h2d_bytes += sum(t.numel() * t.element_size() for t in bundle.values())
+        self._h2d_submissions += len(bundle)
+
+    def prefetch(self, key: int) -> None:
+        if key in self.key_slot:
+            return
+        if key not in self.masters:
+            raise KeyError(f"unregistered offload key: {key}")
+        slot = self._victim_slot()
+        victim = self.slot_key[slot]
+        if victim is not None:
+            self.point_bundle(victim, self.masters[victim])
+            del self.key_slot[victim]
+        self._submit_load(key, slot)
+        self.key_slot[key] = slot
+        self.slot_key[slot] = key
+        self._touch(slot)
+
+    def acquire(self, key: int) -> None:
+        if key not in self.key_slot:
+            self._acquire_misses += 1
+            self.prefetch(key)
+        slot = self.key_slot[key]
+        ready = self.ready_event[slot]
+        if self.cuda_available and ready is not None:
+            torch.cuda.current_stream(self.device).wait_event(ready)
+            self._consumer_waits += 1
+        self.point_bundle(key, self._views(key, slot))
+        self.active.add(key)
+        self._touch(slot)
+
+    def release(self, key: int, *, dirty: bool) -> None:
+        try:
+            slot = self.key_slot[key]
+        except KeyError as exc:
+            raise RuntimeError(f"release of non-resident key {key}") from exc
+        if dirty:
+            bundle = self.masters[key]
+            views = self._views(key, slot)
+            if self.cuda_available:
+                compute_done = torch.cuda.current_stream(self.device).record_event()
+                with torch.cuda.stream(self.stream):
+                    self.stream.wait_event(compute_done)
+                    for plane, master in bundle.items():
+                        master.copy_(views[plane], non_blocking=True)
+                    ready = self.stream.record_event()
+            else:
+                for plane, master in bundle.items():
+                    master.copy_(views[plane])
+                ready = None
+            self.ready_event[slot] = ready
+            self._d2h_bytes += sum(t.numel() * t.element_size() for t in bundle.values())
+            self._d2h_submissions += len(bundle)
+        self.point_bundle(key, self.masters[key])
+        self.active.discard(key)
+
+    def synchronize(self) -> None:
+        if self.cuda_available:
+            self.stream.synchronize()
+
+    def close(self) -> None:
+        self.synchronize()
+        for key in self.keys:
+            self.point_bundle(key, self.masters[key])
+        self.active.clear()
+        self.key_slot.clear()
+        self.slot_key = [None] * self.ring_size
+        self.ready_event = [None] * self.ring_size
+        self.slots.clear()
+
+    def stats(self) -> MutableTransferStats:
+        return MutableTransferStats(
+            h2d_bytes=self._h2d_bytes,
+            d2h_bytes=self._d2h_bytes,
+            h2d_submissions=self._h2d_submissions,
+            d2h_submissions=self._d2h_submissions,
+            acquire_misses=self._acquire_misses,
+            consumer_waits=self._consumer_waits,
+        )

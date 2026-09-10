@@ -124,6 +124,34 @@ def wire_block_swap_driver(trainer):
           f"(wrapper + backward hooks registered)")
 
 
+def setup_mutable_block_swap(trainer) -> None:
+    """Install the shared mutable engine for FLUX.2 denoiser full-FT."""
+    if trainer.blocks_to_swap <= 0 or not trains_denoiser_weights(trainer):
+        return
+    if getattr(trainer, "layer_offload_conductor", None) is not None:
+        return
+    if getattr(trainer, "flux2_block_offloader", None) is not None:
+        raise RuntimeError("FLUX.2 mutable and frozen block offloaders cannot coexist")
+    if not getattr(trainer, "gradient_checkpointing", False):
+        raise ValueError("FLUX.2 mutable block swap requires gradient_checkpointing=True")
+    blocks = list(trainer.transformer.transformer_blocks)
+    blocks.extend(trainer.transformer.single_transformer_blocks)
+    from core.memory_management import LayerOffloadConductor
+
+    trainer.layer_offload_conductor = LayerOffloadConductor(
+        layers=blocks,
+        blocks_to_swap=trainer.blocks_to_swap,
+        device=trainer.device,
+        use_pinned_memory=trainer.use_pinned_memory,
+        enable_prefetch=True,
+        enable_activation_offload=False,
+        ring_size=trainer.block_swap_ring_size,
+    )
+    trainer.transformer._layer_offload_conductor = trainer.layer_offload_conductor
+    trainer.layer_offload_conductor.register_hooks()
+    print(f"{trainer.log_prefix} Shared mutable block swap initialized for FLUX.2")
+
+
 def load_components(trainer) -> None:
     """Load FLUX.2 Klein model components.
 
@@ -226,51 +254,28 @@ def load_components(trainer) -> None:
     trainer.flux2_transformer_wrapper = None  # Drives the offloader during forward
 
     if trainer.blocks_to_swap > 0:
-        print(f"{trainer.log_prefix} Block Swap enabled for FLUX.2 training: {trainer.blocks_to_swap} blocks")
-        print(f"{trainer.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
-        print(f"{trainer.log_prefix} Pinned memory: {trainer.use_pinned_memory}")
-
-        # Policy gate: FLUX.2 training block swap requires H2D-only + frozen base
-        # (LoRA) + gradient checkpointing. Raises on any unsupported combination.
-        _h2d_args = trainer._flux2_block_swap_h2d_args()
-
-        # Import FLUX.2 specific block offloader
-        from core.memory_management import create_flux_block_offloader
-
-        # Check if transformer has required attributes
-        if not hasattr(trainer.transformer, 'transformer_blocks') or not hasattr(trainer.transformer, 'single_transformer_blocks'):
-            raise ValueError(
-                f"FLUX.2 Transformer must have 'transformer_blocks' and 'single_transformer_blocks' attributes for Block Swap. "
-                f"Found: {type(trainer.transformer)}"
+        if trains_denoiser_weights(trainer):
+            print(f"{trainer.log_prefix} Deferring FLUX.2 mutable block swap until "
+                  "full-FT parameter selection is complete")
+        else:
+            _h2d_args = trainer._flux2_block_swap_h2d_args()
+            from core.memory_management import create_flux_block_offloader
+            if (not hasattr(trainer.transformer, "transformer_blocks")
+                    or not hasattr(trainer.transformer, "single_transformer_blocks")):
+                raise ValueError("FLUX.2 transformer does not expose both block lists")
+            trainer.flux2_block_offloader = create_flux_block_offloader(
+                transformer=trainer.transformer,
+                blocks_to_swap=trainer.blocks_to_swap,
+                device=trainer.device,
+                target_dtype=trainer.training_dtype,
+                use_pinned_memory=trainer.use_pinned_memory,
+                supports_backward=True,
+                **_h2d_args,
             )
+            trainer.flux2_block_offloader.prepare_block_devices_before_forward()
+            trainer._wire_flux2_block_swap_driver()
+            print(f"{trainer.log_prefix} FLUX.2 frozen-base block swap initialized")
 
-        # Initialize FLUX.2 Block Offloader
-        trainer.flux2_block_offloader = create_flux_block_offloader(
-            transformer=trainer.transformer,
-            blocks_to_swap=trainer.blocks_to_swap,
-            device=trainer.device,
-            target_dtype=trainer.training_dtype,
-            use_pinned_memory=trainer.use_pinned_memory,
-            supports_backward=True,  # Training mode
-            **_h2d_args,
-        )
-
-        # Prepare block devices (keep some on GPU, offload rest to CPU)
-        trainer.flux2_block_offloader.prepare_block_devices_before_forward()
-
-        # Wire the offloader into the forward (wrapper) and backward (hooks).
-        # Without this the offloader is never driven -> device mismatch.
-        trainer._wire_flux2_block_swap_driver()
-
-        num_dual = len(trainer.transformer.transformer_blocks)
-        num_single = len(trainer.transformer.single_transformer_blocks)
-        print(f"{trainer.log_prefix} FLUX.2 Block Swap initialized:")
-        print(f"{trainer.log_prefix}   Dual stream blocks: {num_dual}")
-        print(f"{trainer.log_prefix}   Single stream blocks: {num_single}")
-        print(f"{trainer.log_prefix}   Total blocks: {num_dual + num_single}")
-        print(f"{trainer.log_prefix}   Blocks to swap: {trainer.blocks_to_swap}")
-
-        # Move VAE and Text Encoder to device (Transformer managed by block offloader)
         print(f"{trainer.log_prefix} Moving VAE to {trainer.device}...")
         trainer.vae.to(trainer.device)
         print(f"{trainer.log_prefix} Moving Text Encoder to {trainer.device}...")

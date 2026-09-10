@@ -47,6 +47,7 @@ machine-local working material.
 | `docs/guides/DYNAMIC_CROP_BUCKETING.md` | Epoch-dynamic crop and bucket behavior. |
 | `docs/guides/SDXL_REGULARIZATION.md` | SD/SDXL regularization behavior. |
 | `docs/guides/SENSENOVA_TRAINING_DESIGN.md` | SenseNova training contract and implemented/pending boundary. |
+| `docs/decisions/TRAINING_RUN_STORAGE_V2.md` | Accepted staged migration from central detailed training history to a lightweight catalogue plus per-run databases. |
 | `docs/guides/INT8_CONVROT_TRAINING_DESIGN.md` | INT8 ConvRot investigation and measurement status. |
 | `docs/guides/CONVERGENCE_ACCELERATION_DESIGN.md` | Convergence-acceleration candidates and the gates each one has to pass. |
 | `docs/guides/CONVERGENCE_ACCELERATION_PLAN.md` | Phase plan for that design: implemented phases, gate results, and the measurements behind each decision. |

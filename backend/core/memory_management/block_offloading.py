@@ -13,6 +13,8 @@ from typing import Dict, Iterable, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from .offload_transfer_engine import FrozenSequentialTransferEngine
+
 
 def _synchronize_device(device: torch.device):
     """Synchronize device operations"""
@@ -338,6 +340,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         self.h2d_loaded_block = None  # slot -> block_idx currently (being) loaded (or None)
         self.h2d_swappable = None     # list of swappable block indices
         self.h2d_num_on_gpu = None
+        self.h2d_engine = None
 
         # Backward hook handles (for training)
         self.backward_hook_handles = []
@@ -611,161 +614,77 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
             return
         self.ring_size = max(1, min(self.ring_size, num_swappable))
 
-        # H2D-only coalesces every swappable block's `.weight` into ONE flat
-        # single-dtype master and only ever repoints `.weight.data`; it has no
-        # notion of a Linear's quantization sidecar buffers (weight_s_rel,
-        # weight_scale, ...; see weight_sidecar_names), so a block it manages
-        # would leave those stranded on whatever device they were on before
-        # this setup ran (CPU, per prepare_block_devices_before_forward -- a
-        # forward would then read a CPU weight_s_rel against a GPU weight and
-        # raise, or read a stale copy if a caller partially patched around it).
-        # Rather than silently corrode that state, fall back to the standard
-        # (per-tensor, sidecar-aware) swap whenever a swappable block actually
-        # has one -- the same fallback pattern as the mixed-`.weight`-dtype
-        # case just below. Architectures with no sidecar buffers (e.g.
-        # LTX-2.3) are unaffected and keep the coalesced H2D-only path.
-        for bidx in self.h2d_swappable:
-            for m in self._linear_weight_modules(self.blocks[bidx]):
-                sidecars = weight_sidecar_names(m)
-                if sidecars:
-                    print(f"[BlockOffloader] H2D-only disabled: block {bidx} has quantization "
-                          f"sidecar buffers ({', '.join(sidecars)}) that the coalesced H2D-only "
-                          f"path does not manage; using standard block swap (sidecar-aware).")
-                    self.h2d_only = False
-                    return
-
-        # Coalescing into one flat buffer requires a single dtype across all swappable Linear
-        # weights. Fall back to standard block swap if mixed (keeps correctness).
-        dtypes = set()
-        for bidx in self.h2d_swappable:
-            for m in self._linear_weight_modules(self.blocks[bidx]):
-                dtypes.add(m.weight.data.dtype)
-        if len(dtypes) != 1:
-            print(f"[BlockOffloader] H2D-only disabled: mixed Linear weight dtypes {dtypes}; "
-                  f"using standard block swap.")
-            self.h2d_only = False
-            return
-        flat_dtype = dtypes.pop()
-
-        # Permanent pinned flat CPU master per swappable block. Never overwritten (read-only).
-        # h2d_masters[bidx] = (flat_cpu, [(module, offset, numel, shape), ...])
-        # The master inherits the weight dtype, so weight-only-FP8 models transfer fp8 bytes
-        # (~half the H2D of bf16) automatically -- no separate fp8 path needed.
+        # Pack one flat plane per dtype. Quantization sidecars therefore travel with their
+        # weights without casts or a separate DMA for every module.
         self.h2d_masters = {}
         pin_warned = False
         for bidx in self.h2d_swappable:
             mods = self._linear_weight_modules(self.blocks[bidx])
-            total = sum(m.weight.data.numel() for m in mods)
-            flat_cpu = torch.empty(total, dtype=flat_dtype, device="cpu")
-            if self.cuda_available:
-                try:
-                    flat_cpu = flat_cpu.pin_memory(device=self.device)
-                except (RuntimeError, NotImplementedError) as e:
-                    if not pin_warned:
-                        print(f"[BlockOffloader] pin_memory unavailable for dtype "
-                              f"{flat_cpu.dtype} ({e}); using non-pinned H2D masters.")
-                        pin_warned = True
+            tensors = []
+            plane_sizes = {}
+            for module in mods:
+                for attr_name in ("weight", *weight_sidecar_names(module)):
+                    tensor = getattr(module, attr_name).data
+                    plane = tensor.dtype
+                    offset = plane_sizes.get(plane, 0)
+                    tensors.append((module, attr_name, plane, offset, tensor.numel(), tuple(tensor.shape)))
+                    plane_sizes[plane] = offset + tensor.numel()
+
+            planes = {}
+            for plane, total in plane_sizes.items():
+                flat_cpu = torch.empty(total, dtype=plane, device="cpu")
+                if self.cuda_available:
+                    try:
+                        flat_cpu = flat_cpu.pin_memory(device=self.device)
+                    except (RuntimeError, NotImplementedError) as e:
+                        if not pin_warned:
+                            print(f"[BlockOffloader] pin_memory unavailable ({e}); "
+                                  "using pageable H2D masters.")
+                            pin_warned = True
+                planes[plane] = flat_cpu
             layout = []
-            off = 0
-            for m in mods:
-                w = m.weight.data
-                n = w.numel()
-                shape = tuple(w.shape)
-                flat_cpu[off:off + n].copy_(w.reshape(-1))
-                m.weight.data = flat_cpu[off:off + n].view(shape)  # master view (CPU)
-                layout.append((m, off, n, shape))
-                off += n
-            self.h2d_masters[bidx] = (flat_cpu, layout)
+            for module, attr_name, plane, off, n, shape in tensors:
+                source = getattr(module, attr_name).data
+                planes[plane][off:off + n].copy_(source.reshape(-1))
+                getattr(module, attr_name).data = planes[plane][off:off + n].view(shape)
+                layout.append((module, attr_name, plane, off, n, shape))
+            self.h2d_masters[bidx] = (planes, layout)
 
-        # GPU ring: ring_size flat buffers (all swappable blocks share size/structure).
-        flat_numel = self.h2d_masters[self.h2d_swappable[0]][0].numel()
-        for bidx in self.h2d_swappable:
-            assert self.h2d_masters[bidx][0].numel() == flat_numel, (
-                "H2D-only requires identically-structured swappable blocks")
-        self.h2d_ring = [
-            torch.empty(flat_numel, dtype=flat_dtype, device=self.device)
-            for _ in range(self.ring_size)
-        ]
-        self.h2d_slot_futures = [None] * self.ring_size
-        self.h2d_loaded_block = [None] * self.ring_size
-
-        # Prime the first ring_size swappable blocks into slots 0..ring_size-1.
-        for j in range(self.ring_size):
-            self._h2d_submit_load(self.h2d_swappable[j], j)
+        self.h2d_engine = FrozenSequentialTransferEngine(
+            keys=self.h2d_swappable,
+            masters={key: value[0] for key, value in self.h2d_masters.items()},
+            ring_size=self.ring_size,
+            device=self.device,
+            point_bundle=self._h2d_point_weights,
+            stream=self.stream,
+        )
+        self.h2d_engine.prime()
+        self.h2d_ring = self.h2d_engine.slots
+        self.h2d_loaded_block = self.h2d_engine.loaded_key
 
         print(f"[BlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
-              f"ring_size={self.ring_size}, master dtype={flat_dtype}, coalesced flat "
-              f"pinned CPU masters (no D2H eviction)")
+              f"ring_size={self.ring_size}, dtype planes={len(next(iter(self.h2d_masters.values()))[0])}, "
+              f"coalesced CPU masters (no D2H eviction)")
 
     def _h2d_submit_load(self, block_idx: int, slot: int):
-        """Submit an async single-copy H2D load of block_idx's flat master into ring[slot]."""
-        flat_cpu = self.h2d_masters[block_idx][0]
-        flat_gpu = self.h2d_ring[slot]
-        self.h2d_loaded_block[slot] = block_idx
-        if not self.cuda_available:
-            flat_gpu.copy_(flat_cpu)
-            self.h2d_slot_futures[slot] = None
-            return
-        # Order the H2D after the compute that last used this slot (the block vacating it),
-        # captured as an event on the compute stream at submit time.
-        compute_done = torch.cuda.current_stream().record_event()
+        self.h2d_engine.submit_load(block_idx, slot)
 
-        def load():
-            with torch.cuda.stream(self.stream):
-                self.stream.wait_event(compute_done)
-                flat_gpu.copy_(flat_cpu, non_blocking=True)
-                ev = self.stream.record_event()
-            return block_idx, slot, ev
-
-        self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
-
-    def _h2d_point_weights(self, block_idx: int, flat_buf):
-        """Point each Linear's weight.data at its slice/view of the given flat buffer."""
-        for (m, off, n, shape) in self.h2d_masters[block_idx][1]:
-            m.weight.data = flat_buf[off:off + n].view(shape)
+    def _h2d_point_weights(self, block_idx: int, planes):
+        for module, attr_name, plane, off, n, shape in self.h2d_masters[block_idx][1]:
+            getattr(module, attr_name).data = planes[plane][off:off + n].view(shape)
 
     def _h2d_wait(self, block_idx: int):
         """Ensure block_idx's weights are resident in its ring slot, then point weight.data
         at views into the slot's flat GPU buffer. Self-heals at step boundaries."""
-        if block_idx < self.h2d_num_on_gpu:
-            return
-        slot = (block_idx - self.h2d_num_on_gpu) % self.ring_size
-        fut = self.h2d_slot_futures[slot]
-        if fut is not None and self.h2d_loaded_block[slot] == block_idx:
-            bidx, s, ev = fut.result()
-            self.h2d_slot_futures[slot] = None
-            assert bidx == block_idx and s == slot, f"H2D slot mismatch: {bidx}/{s} != {block_idx}/{slot}"
-            if self.cuda_available and ev is not None:
-                torch.cuda.current_stream().wait_event(ev)
-        elif self.h2d_loaded_block[slot] != block_idx:
-            # Slot does not hold this block (e.g. first blocks of a new denoise step) -> load
-            # synchronously.
-            if fut is not None:
-                fut.result()
-                self.h2d_slot_futures[slot] = None
-            self.h2d_ring[slot].copy_(self.h2d_masters[block_idx][0])
-            if self.cuda_available:
-                torch.cuda.synchronize()
-            self.h2d_loaded_block[slot] = block_idx
-        self._h2d_point_weights(block_idx, self.h2d_ring[slot])
+        if block_idx >= self.h2d_num_on_gpu:
+            self.h2d_engine.acquire(block_idx)
 
     def _h2d_submit(self, block_idx: int):
         """After block_idx ran: repoint it to its CPU master (no copy) and prefetch the
         block ring_size ahead into the freed slot."""
         if block_idx < self.h2d_num_on_gpu:
             return
-        i = block_idx - self.h2d_num_on_gpu
-        slot = i % self.ring_size
-        # Repoint the just-run block back to its permanent flat CPU master (no D2H).
-        self._h2d_point_weights(block_idx, self.h2d_masters[block_idx][0])
-        # Prefetch ring_size blocks ahead into this freed slot (no wrap across the step end;
-        # the first blocks of the next step self-heal in _h2d_wait).
-        next_i = i + self.ring_size
-        if next_i < len(self.h2d_swappable):
-            self._h2d_submit_load(self.h2d_swappable[next_i], slot)
-        else:
-            self.h2d_slot_futures[slot] = None
-            self.h2d_loaded_block[slot] = None
+        self.h2d_engine.release(block_idx)
 
     def _dtype_split_blocks(self):
         return [self.blocks[i] for i in pairable_block_indices(
@@ -1156,6 +1075,10 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
 
         # Remove hooks
         self.remove_backward_hooks()
+
+        if self.h2d_engine is not None:
+            self.h2d_engine.close()
+            self.h2d_engine = None
 
         # Shutdown thread pool
         self.thread_pool.shutdown(wait=True)

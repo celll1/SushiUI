@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ if str(BACKEND) not in sys.path:
 from core.memory_management.offload_transfer_engine import (  # noqa: E402
     FrozenSequentialTransferEngine,
 )
+from core.memory_management.block_offloading import TransformerBlockOffloader  # noqa: E402
 
 
 def _engine(keys=(10, 11, 12, 13, 14), ring_size=2):
@@ -101,3 +103,35 @@ def test_close_restores_all_cpu_masters_and_releases_slots():
     assert engine.loaded_key == [None, None]
     for key in engine.keys:
         assert pointed[key][torch.float32].data_ptr() == masters[key][torch.float32].data_ptr()
+
+
+class SidecarLinear(nn.Linear):
+    def __init__(self, value):
+        super().__init__(2, 2, bias=False)
+        self.weight.data.fill_(value)
+        self.register_buffer("weight_scale", torch.full((2,), value + 10, dtype=torch.float32))
+
+
+def test_transformer_h2d_path_packs_weight_and_sidecar_planes():
+    blocks = nn.ModuleList([SidecarLinear(1), SidecarLinear(2), SidecarLinear(3)])
+    offloader = TransformerBlockOffloader(
+        blocks=blocks,
+        blocks_to_swap=3,
+        device=torch.device("cpu"),
+        h2d_only=True,
+        ring_size=2,
+    )
+    offloader.prepare_block_devices_before_forward()
+    offloader.wait_for_block(0)
+
+    assert offloader.h2d_only
+    assert torch.equal(blocks[0].weight, torch.ones_like(blocks[0].weight))
+    assert torch.equal(blocks[0].weight_scale, torch.full_like(blocks[0].weight_scale, 11))
+    weight_ptr = blocks[0].weight.data_ptr()
+    scale_ptr = blocks[0].weight_scale.data_ptr()
+    assert weight_ptr != offloader.h2d_masters[0][0][torch.float32].data_ptr()
+    assert scale_ptr != offloader.h2d_masters[0][0][torch.float32].data_ptr()
+
+    offloader.submit_move_blocks_forward(0)
+    assert blocks[0].weight.data_ptr() == offloader.h2d_masters[0][0][torch.float32].data_ptr()
+    offloader.cleanup()

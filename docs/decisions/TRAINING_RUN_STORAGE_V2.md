@@ -1,8 +1,8 @@
 # Training run storage v2
 
-Status: v2 metric storage and terminal-run migration are implemented for
-diffusion, VAE, and tagger runs. The legacy store remains supported; central
-purge is not yet implemented.
+Status: direct v2 detail writes and terminal-run migration are implemented for
+diffusion, VAE, and tagger runs. The legacy store remains readable and writable
+for legacy runs; central purge is not yet implemented.
 
 ## Decision
 
@@ -94,8 +94,10 @@ current store until it stops.
 1. Add the nullable catalogue columns and the resolver without changing any
    row's behavior.
 2. Exercise v2 with dual-write for new runs, keeping legacy detailed rows usable
-   by the previous application version during the rollback window.
-3. Stop central detail writes for newly created v2 runs after parity tests pass.
+   by the previous application version during the rollback window. This gate was
+   completed before the direct-write cutover.
+3. New `run_db_v2` runs write detailed rows only to their run database. Legacy
+   runs continue writing centrally; store choice is fixed per run.
 4. For a terminal legacy run, copy into `training_run.db.tmp`, validate identity,
    row counts, step bounds, representative values, and `integrity_check`, close
    it, then atomically rename it in the output directory.
@@ -109,10 +111,10 @@ Copying, verification, discriminator flip, purge, and compaction are distinct
 operations. The migration command is restartable and records enough state to
 distinguish an abandoned temporary copy from an authoritative run database.
 
-An old `training.db` therefore continues to work unchanged with new code. During
-the dual-write window, rolling back the application also keeps new runs readable.
-After central rows for a v2 run are purged, rollback to a version that has no v2
-reader is no longer promised.
+An old `training.db` therefore continues to work unchanged with new code. A new
+v2 run requires a version with a v2 reader; rolling the application back to a
+central-only version does not expose that run's detail history. Existing legacy
+runs retain their former behavior until explicitly migrated.
 
 ## Deletion and retention
 
@@ -135,7 +137,7 @@ raw points.
 
 The implementation must cover:
 
-- legacy-only, v2-only, dual-written, missing-v2, corrupt-v2, and wrong-identity
+- legacy-only, v2-only, retained dual-written, missing-v2, corrupt-v2, and wrong-identity
   fixtures through the unchanged API response contracts;
 - interruption before and after every migration state transition;
 - resume-from-earlier-step cleanup and same-step partial metric updates;
@@ -161,9 +163,12 @@ The implementation must cover:
 ## Operator boundary
 
 New diffusion and VAE runs create `training_run.db`; new tagger runs create
-`tagger_training_run.db`. During the rollback window their metrics are also
-retained centrally. Existing runs are not moved automatically. After the
-updated backend has initialized the nullable catalogue columns, inspect
+`tagger_training_run.db`. Their detailed history is not written to
+`training.db`. Existing runs are not moved automatically. The training process
+that was already running when this cutover was deployed keeps its in-memory old
+code until the next ordinary backend start; no live database is rewritten by
+the code deployment. After the updated backend has initialized the nullable
+catalogue columns, inspect
 diffusion/VAE candidates without writing:
 
 ```powershell

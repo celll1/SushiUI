@@ -43,6 +43,61 @@ The matrix describes training.  Inference also uses
 separate from the broken conductor path and must not be used as evidence that
 training prefetch works.
 
+## Generation matrix
+
+| Architecture | Generation block-swap path | Static verdict |
+|---|---|---|
+| SD1.5, SDXL | no block-loop driver | unsupported |
+| Z-Image | native layer loop + `TransformerBlockOffloader` | wired for txt2img/img2img/inpaint; standard and optional H2D-only paths |
+| Anima | native `.blocks` loop + explicit block list | wired; standard and optional H2D-only paths |
+| Lens | native `transformer_blocks` loop + explicit block list | wired; standard and optional H2D-only paths |
+| Ideogram 4 | native `.layers` loop | wired; standard and optional H2D-only paths |
+| MiniT2I | MM-JiT `double_blocks` loop + explicit block list | wired; preamble/single blocks remain resident by design |
+| Krea 2 | no `_block_offloader` consumer in the model loop | unsupported |
+| FLUX.2 | `Flux2BlockSwapWrapper`, unified dual/single indices | wired; standard and optional H2D-only paths |
+| LTX-2.3 | `Ltx2BlockLoopWrapper` | wired and forces H2D-only frozen-weight mode |
+| MiniMax-H3 | `MiniMaxH3BlockLoopWrapper` | wired; forces standard sidecar-aware swap with pageable staging |
+| ACE-Step 1.5 | no generation block-loop driver | unsupported |
+| SenseNova U1.5 | no block-swap driver | unsupported; other component/phase eviction is a different mechanism |
+| MiniMax Music 3 | no training or generation block-swap driver | unsupported |
+
+The generic registry clamps a generation request to `[0, num_blocks - 1]` and
+supports explicit non-`.layers` block lists.  Model loops listed as wired call
+`wait_for_block(i)` before and `submit_move_blocks_forward(i)` after the actual
+block, so their boundary placement is statically correct.
+
+### Generation transfer efficiency
+
+The three forward-only modes have different hot paths:
+
+- **standard + pageable model weights** (the default when
+  `use_pinned_memory=False`) uses two pinned staging sets but performs host-side
+  `Event.synchronize()` calls inside the per-tensor swap loop.  It overlaps
+  portions of D2H/H2D but repeatedly stalls Python and does not coalesce a
+  block's tensors;
+- **standard + fully pinned weights** removes those per-tensor host waits after
+  one-time buffer creation, but retains D2H traffic even though inference
+  weights are immutable;
+- **H2D-only, ring size >= 2** keeps permanent CPU masters, coalesces a block
+  into one flat copy, and uses compute/transfer events to prefetch `ring_size`
+  blocks ahead.  This is the best current steady-state schedule when the block
+  has one weight dtype and no quantization sidecars.
+
+The H2D-only implementation has a step-boundary hole: `_h2d_submit()` stops
+prefetching when `next_i` reaches the end of the swappable list and clears the
+slot.  On the next denoise step, `_h2d_wait()` self-heals that empty/mismatched
+slot with an immediate copy followed by `torch.cuda.synchronize()`.  The FLUX
+variant has the same behavior.  Standard forward-only swap already wraps its
+last submission to the first swappable block, so this regression is specific
+to the nominal fast path.  Ring wrap-prefetch should be implemented and measured
+before describing multi-step H2D-only overhead as minimal.
+
+MiniMax-H3 deliberately uses standard, sidecar-aware swapping and
+`use_pinned_memory=False`; its large per-block compute can hide much of the
+cost, as previous generation probes observed, but the implementation still
+pays per-tensor host waits and both transfer directions.  That observation is
+not proof that the transfer schedule itself is optimal.
+
 ## Common `LayerOffloadConductor` defects
 
 ### C1. Registered hooks never reach the prefetch scheduler

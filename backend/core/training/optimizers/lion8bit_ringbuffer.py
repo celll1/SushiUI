@@ -75,7 +75,7 @@ class Lion8bit_RingBuffer(Optimizer):
         weight_decay: Weight decay coefficient (default: 0.0)
         use_8bit: Enable 8-bit quantization (default: True)
         cautious: Enable cautious masking (default: False)
-        get_state_buffer: Callable to allocate Ring Buffer state (from RingBufferAllocator)
+        get_state_buffer: Callable returning persistent optimizer-state storage
     """
 
     def __init__(

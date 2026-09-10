@@ -1,6 +1,8 @@
 # Training run storage v2
 
-Status: accepted for staged implementation. The legacy store remains supported.
+Status: v2 diffusion/VAE metric storage and terminal-run migration are
+implemented. The legacy store remains supported; central purge and tagger-run
+detail stores are not yet implemented.
 
 ## Decision
 
@@ -156,3 +158,23 @@ The implementation must cover:
 8. Add cursor pagination and incremental frontend loading independently of the
    storage migration if browser measurement shows it is needed.
 
+## Operator boundary
+
+New diffusion and VAE runs create `training_run.db` automatically. During the
+rollback window their metrics are also retained centrally. Existing runs are
+not moved automatically. After the updated backend has initialized the nullable
+catalogue columns, inspect candidates without writing:
+
+```powershell
+venv\Scripts\python.exe backend\migrations\migrate_training_run_details.py --all-terminal
+```
+
+Migrate selected terminal runs explicitly:
+
+```powershell
+venv\Scripts\python.exe backend\migrations\migrate_training_run_details.py --run-id 123 --apply
+```
+
+The command copies and verifies data but does not purge central rows or compact
+`training.db`. Those remain separate future operations so migration itself is
+rollback-safe.

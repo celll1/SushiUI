@@ -13,6 +13,7 @@ from database.training_detail_store import (
     delete_run_database_metrics_after,
     initialize_run_detail_database,
     mirror_metrics_to_run_database,
+    migrate_terminal_run_to_v2,
     open_run_detail_session,
     resolve_detail_store,
 )
@@ -150,3 +151,53 @@ def test_run_database_rewind_deletes_future_metrics(tmp_path):
     opened = open_run_detail_session(run)
     assert [row.step for row in opened.query(TrainingMetrics).all()] == [1, 2]
     opened.close()
+
+
+def test_terminal_migration_copies_and_retains_central_history(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from database.models import (
+        TrainingBase,
+        TrainingCheckpoint,
+        TrainingSample,
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    TrainingBase.metadata.create_all(engine)
+    central = sessionmaker(bind=engine)()
+    run = _model_run(tmp_path)
+    run.detail_store = None
+    run.detail_schema_version = None
+    run.detail_state = None
+    run.detail_db_name = None
+    run.status = "completed"
+    central.add(run)
+    central.add_all([
+        TrainingMetrics(run_id=run.id, step=1, loss=0.5),
+        TrainingMetrics(run_id=run.id, step=2, loss=0.25),
+        TrainingCheckpoint(run_id=run.id, checkpoint_name="step-2", step=2,
+                           file_path="step-2.safetensors"),
+        TrainingSample(run_id=run.id, step=2, prompt="p", image_path="p.png"),
+    ])
+    central.commit()
+
+    result = migrate_terminal_run_to_v2(central, run, batch_size=1)
+
+    assert result["training_metrics"] == 2
+    assert central.query(TrainingMetrics).filter_by(run_id=run.id).count() == 2
+    assert run.detail_store == RUN_DB_V2
+    local = open_run_detail_session(run)
+    assert local.query(TrainingMetrics).count() == 2
+    assert local.query(TrainingCheckpoint).count() == 1
+    assert local.query(TrainingSample).count() == 1
+    local.close()
+    central.close()
+
+
+def test_nonterminal_migration_is_refused(tmp_path):
+    run = _model_run(tmp_path)
+    run.detail_store = None
+    run.status = "running"
+    with pytest.raises(DetailStoreError, match="only terminal runs"):
+        migrate_terminal_run_to_v2(None, run)

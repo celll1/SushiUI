@@ -17,8 +17,7 @@ arm's allocator state is still around):
   the per-parameter slope is separated from the constant term (quantization
   maps, stochastic-rounding scratch).
 * ``cpuring`` -- the ring-buffer CPU-state path, reached by passing
-  ``get_state_buffer`` from here. No production caller supplies one
-  (``optimizer_factory.py:130``), so this is the unwired path, driven through
+  the production ``HostOptimizerStateAllocator`` explicitly, driven through
   both ``step()`` and the fused hook.
 * ``fusedgrad`` -- whether the post-accumulate-grad hooks' ``tensor.grad = None``
   really keeps gradient residency to one parameter.
@@ -132,8 +131,9 @@ def build_optimizer(
 ) -> Tuple[Any, List[str]]:
     """Construct + patch exactly as OptimizerFactory / BaseTrainer would.
 
-    ``get_state_buffer`` is supplied only by this probe: no production caller
-    passes one. Returns (optimizer, notes-about-what-was-attached).
+    ``get_state_buffer`` is injected explicitly so the probe can compare the
+    production host-resident and GPU-resident modes. Returns the optimizer and
+    notes about attached hooks.
     """
     from core.training.optimizer_factory import OptimizerFactory
     from core.training.optimizers.stochastic_rounding import attach_stochastic_rounding
@@ -454,7 +454,7 @@ def arm_vram() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 class HostStateAllocator:
-    """The ``get_state_buffer`` no production caller supplies.
+    """Probe-local equivalent of the production persistent host allocator.
 
     Signature taken from the two call sites in ``_init_param_state``:
     ``get_state_buffer(p, dtype=torch.uint8)``, returning a flat buffer of

@@ -15,9 +15,11 @@ Ideogram4, MiniT2I, FLUX.2, LTX-2.3, and MiniMax-H3. MiniMax-H3 now uses the
 multi-plane path instead of forcing the bidirectional legacy swap: FP8 weights,
 FP32 projections, and quantization sidecars retain their own dtype.
 
-FLUX.2 frozen-base/LoRA training uses the common LRU policy. Trainable adapters
-remain resident; immutable base weights have no D2H writeback. FLUX.2 full-FT
-still falls back to its mutable legacy policy.
+FLUX.2 frozen-base/LoRA training uses the common frozen LRU policy. Mutable
+training across all supported DiT block-swap routes uses
+`MutableLruTransferEngine`: persistent non-aliasing CPU masters, fixed
+dtype-separated GPU slots, clean forward eviction, reverse recompute prefetch,
+post-optimizer D2H, and a checkpoint flush boundary.
 
 AdamW8bit_RingBuffer and Lion8bit_RingBuffer now pass host state directly to
 their compiled extensions. The extensions already owned a dedicated transfer
@@ -79,9 +81,66 @@ shape compatibility remains covered by the existing suite.
 The isolated one-parameter host-state path is deliberately slower because it
 measures PCIe transfer with no later backward compute to hide it. The result is
 not evidence of optimizer speedup. Its benefits are bounded persistent VRAM and
-the ability to overlap writeback with subsequent parameter backward work. A
-whole-model iteration benchmark is still required before claiming an iteration
-speed improvement for RB optimizer state.
+the ability to overlap writeback with subsequent parameter backward work.
+
+The production fused-hook path was also measured with 24 BF16 linear layers
+(100,663,296 parameters) in a separate process per arm:
+
+```text
+venv/Scripts/python.exe backend/core/training/probes/ringbuffer_overlap.py --arm {adamw_host,adamw_gpu,lion_host,lion_gpu} --tokens 256,4096
+```
+
+| Optimizer | State | 256-token median | 4096-token median | 4096 peak |
+|---|---|---:|---:|---:|
+| AdamW8bit RB | host | 23.574 ms | 37.122 ms | 0.6360 GiB |
+| AdamW8bit RB | GPU | 6.327 ms | 38.089 ms | 0.8235 GiB |
+| Lion8bit RB | host | 13.166 ms | 35.870 ms | 0.6345 GiB |
+| Lion8bit RB | GPU | 3.373 ms | 34.569 ms | 0.7283 GiB |
+
+At 4096 tokens, where later backward compute can cover state traffic, host
+state was within 4% of GPU state (Adam 2.54% faster in this sample; Lion 3.77%
+slower). Peak allocated fell by exactly the expected state sizes: 192 MiB for
+Adam and 96 MiB for Lion. The 256-token arm confirms that insufficient compute
+exposes PCIe cost. These are synthetic throughput results, not a claim that
+host state universally accelerates a real architecture.
+
+The design proposal considered replacing the extension staging with shared
+Python-side fixed slots grouped by model block. The measured production path
+already provides the required transfer stream/event overlap and exact bounded
+peak reduction, while grouping would change optimizer ordering and require a
+new C++/CUDA ABI. The audit therefore retains the native staging implementation:
+sharing the model-weight Python allocator would add a second scheduler without
+removing PCIe bytes. This is the documented implementation decision for design
+sequence item 6, not an unimplemented migration step.
+
+### Mutable training weights
+
+Command, once per mode:
+
+```text
+venv/Scripts/python.exe backend/core/training/probes/mutable_offload_validation.py --mode {resident,ring1,ring2} --blocks 12 --swap 10 --dim 2048 --batch 32 --steps 3
+```
+
+All three modes produced parameter SHA-256
+`b7c224fb003e0d02520002c23914c1f3327a4ad2a6555bbce01134da051436e7`
+after three fused BF16 SGD updates.
+
+| Mode | Median | Peak allocated | Steady allocated |
+|---|---:|---:|---:|
+| Resident | 8.364 ms | 0.2137 GiB | 0.2040 GiB |
+| Ring 1 | 23.548 ms | 0.0731 GiB | 0.0634 GiB |
+| Ring 2 | 18.690 ms | 0.0887 GiB | 0.0790 GiB |
+
+Ring 2 reduced peak allocated memory by 58.48% versus residency and improved
+median iteration time by 20.63% versus the minimum-memory ring 1. It issued 50
+H2D bundles instead of ring 1's 55; both wrote 30 dirty bundles after updates.
+
+The real MiniMax-H3 FP8-scaled checkpoint also passed a short joint video/audio
+LoRA train step with 40 of 50 blocks swapped. Loss was exactly
+`3.1203932762145996`, matching the recorded resident and legacy-swap runs, all
+600 LoRA gradients were finite, peak allocated fell from the legacy path's
+21.97 GiB to 8.13 GiB, and wall time was 6.20 s. This is a one-run architecture
+gate, not a stable throughput benchmark.
 
 ## Test evidence
 
@@ -93,11 +152,25 @@ speed improvement for RB optimizer state.
   and training-gate suite: 290 passed plus 487 subtests;
 - py_compile and a real import with CUDA initialization stubbed passed for every
   changed backend module.
+- mutable engine state/writeback and real checkpoint recomputation: 3 tests;
+- architecture wiring and checkpointing refusal for nine named routes plus
+  FLUX.2 full-FT, including the MiniMax generation ring capability: 20 tests;
+- final combined mutable/frozen transfer, activation dispatch, optimizer,
+  checkpoint/resume, quantized-training, video threading, and architecture
+  contract suite: 506 passed plus 449 subtests;
+- the root-import layer strategy test passed independently.
 
 A separate broad quantization-capability run passed 131 tests plus 222 subtests
 and failed one unrelated pre-existing classification guard: the live
 `/generate/img2txt` route is absent from that test's two route sets. This change
 does not alter that endpoint or the classification table.
+
+The complete backend suite was additionally sampled through 43% before its
+42-GiB CPU test was stopped under the allowed long-test omission. Its first
+independently reproduced failure is unrelated and pre-existing:
+`adapter_execution_backend_cheap_test` rejects the unmodified
+`core/adapters/composite.py` dispatch call. The focused suite above contains
+all files touched by, or contract-adjacent to, this migration and is green.
 
 ## Binary preservation and rebuild decision
 
@@ -113,7 +186,7 @@ directory `local/offload_engine_backup_20260910_224033`.
 loaders reported `ninja: no work to do`, and the post-test hashes still match
 the backups. No C++/CUDA source changed, so no rebuild occurred or is required.
 
-## Audit findings and remaining boundary
+## Final audit findings
 
 1. The immutable transfer engine is bit-exact, bounded, and removes the old
    end-of-denoise-step synchronous repair. No hot-path global CUDA synchronize
@@ -123,23 +196,18 @@ the backups. No C++/CUDA source changed, so no rebuild occurred or is required.
 3. The RB Python hot path no longer duplicates the extension's staging. Its
    numerical parity is proven, but an isolated host-state update is slower than
    GPU-resident state; do not market it as a speed optimization.
-4. `LayerOffloadConductor` remains a separate mutable full-parameter training
-   implementation for Z-Image, Anima, Lens, Ideogram4, MiniT2I, Krea2,
-   LTX-2.3, MiniMax-H3, and ACE-Step. The earlier audit's defects still apply:
-   its hook path does not reach forward prefetch or forward eviction, performs
-   duplicate moves, and its fixed CPU arena can alias live masters. It cannot be
-   mechanically routed through an immutable engine because updated weights need
-   D2H only after the fused optimizer event, while non-reentrant checkpoint
-   recomputation occurs inside architecture-specific closures that module hooks
-   do not see.
-5. Consequently, the migration is complete for immutable generation weights,
-   FLUX.2 frozen-base training, and native RB state transfer, but **not** for the
-   nine mutable `LayerOffloadConductor` training routes or FLUX.2 full-FT. Those
-   paths require a mutable policy plus explicit checkpoint-recompute and
-   post-update callbacks per architecture. Claiming full all-architecture
-   training completion from the present evidence would be incorrect.
-
-The next safe unit is one image DiT and one video DiT with a mutable engine,
-checkpoint flush/save-resume parity, and an optimizer-completion event. Only
-after those two representatives pass should the remaining architecture adapters
-be migrated and `LayerOffloadConductor` deleted.
+4. `LayerOffloadConductor` is now an architecture adapter over the common
+   mutable engine; the recycled CPU arena, duplicate `.to()` plus copy path,
+   unreachable `forward_layer`, and dead activation allocator were deleted.
+5. Z-Image initialization now occurs after adapter injection, as every other
+   mutable route does. FLUX.2 full-FT is likewise deferred to the mutable engine;
+   its frozen-base route remains on the immutable LRU policy.
+6. Mutable swap fails closed without gradient checkpointing and at runtime if a
+   block reaches backward without recomputation. Checkpoint save synchronizes
+   CPU masters, interrupted/emergency saves resolve active slots, OOM recovery
+   releases active slots, and Ideogram's second conductor participates in
+   update observation, flush, and cleanup.
+7. Whole-model RB optimizer overlap is effective when layer compute is large
+   enough: the 4096-token synthetic path stayed within 4% of GPU-state time
+   while removing the exact optimizer-state allocation. The short-compute arm
+   remains the counterexample, so no universal speedup claim is made.

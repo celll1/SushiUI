@@ -19,12 +19,11 @@ still None and ``_init_param_state`` takes its "Ring Buffer disabled: GPU
 allocation (bitsandbytes-compatible)" branch, which is the plain fused 8-bit
 AdamW with GPU-resident state.
 
-The host buffers are PINNED, which is what makes the mode work rather than
-merely fit: the update kernels are handed ``state['exp_avg']`` directly and read
-it across PCIe through UVA, so there is no per-step copy to stage. The transfer
-therefore overlaps the backward that triggers each per-parameter update instead
-of serialising after it. See host_state_allocator.py, RINGBUFFER_OPTIMIZERS.md
-and docs/guides/SENSENOVA_TRAINING_DESIGN.md section 6.5.
+The host buffers are pinned so the compiled extension can stage them with
+asynchronous bulk H2D/D2H copies. Its device-local transfer stream and CUDA
+events overlap each parameter's writeback with later backward work. See
+host_state_allocator.py, RINGBUFFER_OPTIMIZERS.md and
+docs/guides/SENSENOVA_TRAINING_DESIGN.md section 6.5.
 
 The "~75% VRAM savings for optimizer states" this docstring used to claim is
 arithmetic from RINGBUFFER_OPTIMIZERS.md's hypothetical 350M-parameter table, not a

@@ -15,9 +15,8 @@ Arms (ONE PER PROCESS -- ``--arm``; a HOST arm and a GPU arm in the same process
 an allocator and a warm PCIe path, which is the thing being compared):
 
 * ``compute``       -- forward+backward with no optimizer at all. The t_compute(N) baseline.
-* ``adamw_host``    -- AdamW8bit_RingBuffer, state in pinned host memory (probe-supplied
-                       ``get_state_buffer``; no production caller supplies one).
-* ``adamw_gpu``     -- same optimizer, production wiring (state on GPU).
+* ``adamw_host``    -- AdamW8bit_RingBuffer with the production pinned-host allocator.
+* ``adamw_gpu``     -- same optimizer with state on GPU.
 * ``lion_host`` / ``lion_gpu`` -- Lion8bit_RingBuffer, one state tensor instead of two.
 * ``adafactor``     -- zero state traffic, the reference line.
 
@@ -144,24 +143,6 @@ class Chain(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return x
-
-
-class HostStateAllocator:
-    """The ``get_state_buffer`` no production caller supplies.
-
-    Signature from the ``_init_param_state`` call sites: ``(p, dtype=torch.uint8)``
-    returning a flat ``p.numel()`` buffer. The optimizers pin it themselves.
-    """
-
-    def __init__(self) -> None:
-        self.buffers: List[torch.Tensor] = []
-        self.bytes = 0
-
-    def __call__(self, p: torch.Tensor, dtype=torch.uint8) -> torch.Tensor:
-        buf = torch.zeros(p.numel(), dtype=dtype, device="cpu")
-        self.buffers.append(buf)
-        self.bytes += buf.numel() * buf.element_size()
-        return buf
 
 
 def build_and_hook(
@@ -335,7 +316,11 @@ def run_arm(arm: str, tokens_list: List[int]) -> Dict[str, Any]:
     sync_free()
     model = Chain(DEPTH, WIDTH)
     params = [p for p in model.parameters() if p.requires_grad]
-    alloc = HostStateAllocator() if host else None
+    if host:
+        from core.training.optimizers.host_state_allocator import HostOptimizerStateAllocator
+        alloc = HostOptimizerStateAllocator()
+    else:
+        alloc = None
     opt = build_and_hook(name, model, alloc) if name else None
 
     rows = []
@@ -350,8 +335,8 @@ def run_arm(arm: str, tokens_list: List[int]) -> Dict[str, Any]:
     result = {
         "arm": arm,
         "optimizer": name,
-        "state_residency": ("host (probe-supplied get_state_buffer)" if host
-                            else ("gpu (production wiring)" if name else "none")),
+        "state_residency": ("host (production allocator)" if host
+                            else ("gpu" if name else "none")),
         "seam": "fused post_accumulate_grad hook" if name else "no optimizer",
         "depth": DEPTH,
         "width": WIDTH,
@@ -383,7 +368,11 @@ def run_verify(arm: str, tokens: int, steps: int) -> Dict[str, Any]:
     model = Chain(DEPTH, WIDTH)
     params = [p for p in model.parameters() if p.requires_grad]
     before = [p.detach().clone().float() for p in params]
-    alloc = HostStateAllocator() if host else None
+    if host:
+        from core.training.optimizers.host_state_allocator import HostOptimizerStateAllocator
+        alloc = HostOptimizerStateAllocator()
+    else:
+        alloc = None
     opt = build_and_hook(name, model, alloc)
 
     gen = torch.Generator(device="cuda").manual_seed(777)

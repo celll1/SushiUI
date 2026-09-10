@@ -1,0 +1,30 @@
+{
+  "probe": "minimax_h3_activation_dispatch",
+  "scope": "real_transformer_production_lora_and_train_step_cached_inputs",
+  "checkpoint": "M:\\model\\minimax_h3\\diffusion_models\\minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+  "variant": "fl2va",
+  "clip": "short",
+  "geometry": {"pixel_frames": 22, "latent_frames": 7},
+  "canvas_pixels": [384, 640],
+  "prompt_tokens": 32,
+  "audio_present": true,
+  "gradient_checkpointing": true,
+  "blocks_to_swap": 40,
+  "block_swap_ring_size": 2,
+  "lora_rank": 1,
+  "lora_targets": 300,
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "torch_version": "2.10.0+cu130",
+  "entry_free_gib": 46.1162109375,
+  "total_gib": 47.98779296875,
+  "result": {
+    "loss": 3.1203932762145996,
+    "finite": true,
+    "gradient_tensor_count": 600,
+    "resident_before_gib": 5.867737293243408,
+    "peak_allocated_gib": 8.12621545791626,
+    "peak_reserved_gib": 21.27734375,
+    "elapsed_seconds": 6.204700400005095
+  },
+  "passed": true
+}

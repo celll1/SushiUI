@@ -1,0 +1,35 @@
+{
+  "device": "NVIDIA RTX 6000 Ada Generation",
+  "model": {"depth": 24, "width": 2048, "parameters": 100663296, "parameter_bytes_bf16": 201326592},
+  "method": "independent process per arm; production fused hook and production HostOptimizerStateAllocator",
+  "adamw8bit_ringbuffer": {
+    "host_state_bytes": 201326592,
+    "tokens_256": {
+      "host_median_seconds": 0.02357400004984811,
+      "gpu_median_seconds": 0.006326799979433417,
+      "host_peak_allocated_gib": 0.2463388442993164,
+      "gpu_peak_allocated_gib": 0.4279794692993164
+    },
+    "tokens_4096": {
+      "host_median_seconds": 0.03712189994985238,
+      "gpu_median_seconds": 0.03808864997699857,
+      "host_peak_allocated_gib": 0.6359872817993164,
+      "gpu_peak_allocated_gib": 0.8234872817993164
+    }
+  },
+  "lion8bit_ringbuffer": {
+    "host_state_bytes": 100663296,
+    "tokens_256": {
+      "host_median_seconds": 0.01316560001578182,
+      "gpu_median_seconds": 0.0033734000753611326,
+      "host_peak_allocated_gib": 0.2409677505493164,
+      "gpu_peak_allocated_gib": 0.3327646255493164
+    },
+    "tokens_4096": {
+      "host_median_seconds": 0.0358702500234358,
+      "gpu_median_seconds": 0.03456880000885576,
+      "host_peak_allocated_gib": 0.6345224380493164,
+      "gpu_peak_allocated_gib": 0.7282724380493164
+    }
+  }
+}

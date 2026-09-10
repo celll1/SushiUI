@@ -139,6 +139,7 @@ def _zero_grad(layers: dict) -> None:
 
 def _execute(trainer, layers, inputs, enabled: bool, seed: int, capture: bool) -> dict:
     _zero_grad(layers)
+    trainer._probe_gradients = {}
     trainer._pending_extra_metrics = {}
     torch.manual_seed(seed)
     torch.cuda.reset_peak_memory_stats()
@@ -159,17 +160,23 @@ def _execute(trainer, layers, inputs, enabled: bool, seed: int, capture: bool) -
         loss.backward()
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
-    gradients = _capture_gradients(layers) if capture else None
+    if trainer.layer_offload_conductor is not None:
+        gradients = dict(trainer._probe_gradients) if capture else None
+        grad_values = trainer._probe_gradients.values()
+    else:
+        gradients = _capture_gradients(layers) if capture else None
+        grad_values = (param.grad for _name, param in _trainable(layers)
+                       if param.grad is not None)
     finite = bool(torch.isfinite(loss).item()) and all(
-        torch.isfinite(param.grad).all().item()
-        for _name, param in _trainable(layers)
-        if param.grad is not None
+        torch.isfinite(grad).all().item() for grad in grad_values
     )
     result = {
         "loss": float(loss.detach()),
         "finite": finite,
-        "gradient_tensor_count": sum(
-            param.grad is not None for _name, param in _trainable(layers)
+        "gradient_tensor_count": (
+            len(trainer._probe_gradients)
+            if trainer.layer_offload_conductor is not None
+            else sum(param.grad is not None for _name, param in _trainable(layers))
         ),
         "offloaded_bytes": int(stats["bytes"]),
         "resident_before_gib": allocated_before / GIB,
@@ -262,6 +269,8 @@ def main() -> int:
         adapter_config={},
         arch=None,
         blocks_to_swap=args.blocks_to_swap,
+        block_swap_ring_size=2,
+        gradient_checkpointing=not args.no_gradient_checkpointing,
         use_pinned_memory=False,
         layer_offload_conductor=None,
         is_minimax_h3=True,
@@ -286,6 +295,16 @@ def main() -> int:
     _initialise_lora(layers)
     if args.blocks_to_swap:
         minimax_h3_ops.setup_block_swap(trainer)
+        trainer._probe_gradients = {}
+        trainer._probe_update_handles = []
+        for name, parameter in _trainable(layers):
+            def capture_and_clear(tensor, key=name):
+                trainer._probe_gradients[key] = tensor.grad.detach().cpu().clone()
+                tensor.grad = None
+            trainer._probe_update_handles.append(
+                parameter.register_post_accumulate_grad_hook(capture_and_clear)
+            )
+        trainer.layer_offload_conductor.register_optimizer_hooks()
     inputs = _build_inputs(args.clip)
 
     captured = {}
@@ -301,11 +320,15 @@ def main() -> int:
             captured[enabled] = _execute(
                 trainer, layers, inputs, enabled, seed=8181, capture=True
             )
+            if trainer.layer_offload_conductor is not None:
+                trainer.layer_offload_conductor.abort_step()
             samples = [captured[enabled]["elapsed_seconds"]]
             for repeat in range(1, args.repeats):
                 result = _execute(
                     trainer, layers, inputs, enabled, seed=8181, capture=repeat == 1
                 )
+                if trainer.layer_offload_conductor is not None:
+                    trainer.layer_offload_conductor.abort_step()
                 samples.append(result["elapsed_seconds"])
                 if repeat == 1:
                     replicated[enabled] = result
@@ -435,6 +458,10 @@ def main() -> int:
     print(encoded)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(encoded + "\n", encoding="utf-8")
+    for handle in getattr(trainer, "_probe_update_handles", ()):
+        handle.remove()
+    if trainer.layer_offload_conductor is not None:
+        trainer.layer_offload_conductor.cleanup()
     return 0 if payload["passed"] else 1
 
 

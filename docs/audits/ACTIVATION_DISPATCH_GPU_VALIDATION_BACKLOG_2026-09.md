@@ -5,6 +5,10 @@ real-transformer cached-input matrix is recorded in
 `MINIMAX_H3_ACTIVATION_DISPATCH_GPU_RESULT_2026-09.md`; the other rows and the
 remaining H3 end-to-end dataset/encoder coverage are still open.
 
+The 2026-09-10 campaign stopped at this reduced scope with owner approval. See
+`ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md`. Open rows below are a
+reproducible future backlog, not unfinished claims in the current result.
+
 ## Validation contract
 
 For each row, run the same checkpoint, dataset batch, seed, dtype, optimizer,

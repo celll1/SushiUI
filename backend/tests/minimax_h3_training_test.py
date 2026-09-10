@@ -186,6 +186,7 @@ def test_audio_collation_moves_every_input_to_cpu_before_stacking():
     assert out["audio_latents"].shape == (2, 74, 32)
     assert out["audio_latents"].device.type == "cpu"
     assert out["audio_present"].tolist() == [True, True]
+    assert out["audio_valid_rows"].all()
 
 
 def test_audio_collation_handles_a_silent_item():
@@ -196,6 +197,8 @@ def test_audio_collation_handles_a_silent_item():
     assert out["audio_latents"].shape == (2, 74, 32)
     assert out["audio_latents"].device.type == "cpu"
     assert torch.count_nonzero(out["audio_latents"][1]) == 0
+    assert out["audio_valid_rows"][0].all()
+    assert not out["audio_valid_rows"][1].any()
 
 
 def test_audio_collation_pads_a_short_window():
@@ -206,6 +209,8 @@ def test_audio_collation_pads_a_short_window():
     assert out["audio_latents"].shape == (2, 74, 32)
     assert out["audio_present"].tolist() == [True, True]
     assert torch.count_nonzero(out["audio_latents"][1][70:]) == 0
+    assert out["audio_valid_rows"][1, :70].all()
+    assert not out["audio_valid_rows"][1, 70:].any()
 
 
 def test_audio_collation_with_no_audio_at_all_emits_no_tensor():
@@ -832,6 +837,41 @@ def test_train_step_reports_full_audio_presence_when_every_item_has_audio():
     assert t._logged["h3_audio_present"] == 1.0
     assert t._logged["h3_audio_loss"] >= 0.0
     assert math.isfinite(t._logged["h3_audio_loss"])
+
+
+class _PaddedRowPerturbTransformer:
+    def __init__(self, padded_offset):
+        self.padded_offset = padded_offset
+
+    def __call__(self, hidden_states=None, audio_hidden_states=None, **kwargs):
+        audio = audio_hidden_states.clone()
+        audio[:, 4:] += self.padded_offset
+        return hidden_states.clone(), audio
+
+
+def test_train_step_excludes_padded_audio_rows_from_loss():
+    latents = _h3_latents()
+    prompt_embeds = torch.randn(1, 5, 5120)
+    h3_aux = {
+        "num_text_tokens": torch.tensor([5]),
+        "audio_latents": torch.randn(1, 8, 32),
+        "audio_present": torch.tensor([True]),
+        "audio_valid_rows": torch.tensor(
+            [[True, True, True, True, False, False, False, False]]),
+    }
+
+    losses = []
+    for offset in (0.0, 1_000.0):
+        trainer = _FakeTrainStepTrainer()
+        trainer.transformer = _PaddedRowPerturbTransformer(offset)
+        torch.manual_seed(1234)
+        OPS.train_step(
+            trainer, latents, prompt_embeds, h3_aux,
+            timesteps=torch.tensor([0.5]),
+        )
+        losses.append(trainer._logged["h3_audio_loss"])
+
+    assert losses[0] == pytest.approx(losses[1])
 
 
 # ===========================================================================

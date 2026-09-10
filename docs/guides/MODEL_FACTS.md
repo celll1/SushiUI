@@ -1865,7 +1865,8 @@ Paths below are relative to `backend/core/training/`.
     audio comes from a paired video item's own track) and is refused at
     trainer setup, before any GPU work, rather than failing mid-run on a PIL
     "cannot identify image file" error; the guard is generic over both video
-    archs.
+    archs. Short end-of-clip audio windows carry a row-level validity mask, so
+    batch-shape padding is not supervised as real silence.
   - **Full fine-tuning is refused**, in three live layers: the
     `TRAINING_UNSUPPORTED["minimax_h3"]["full_finetune"]` declaration served by
     `GET /schema/arch-capabilities` (which the training UI filters its method

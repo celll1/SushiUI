@@ -9725,10 +9725,9 @@ class BaseTrainer(ABC):
         batch order.
 
         Returns ``{"audio_latents": [B, 2*T_aud, 32] or absent,
-        "audio_present": [B] bool}``. A silent or audio-less source contributes
-        zero rows and a False flag; ``train_step`` then feeds that sample noise
-        audio rows and excludes it from the audio loss, rather than training the
-        audio head on silence that was never in the file.
+        "audio_present": [B] bool, "audio_valid_rows": [B, 2*T_aud] bool when
+        latents are present}``. Silent sources and short-window padding are
+        excluded from the audio loss.
         """
         # EVERYTHING is brought to the CPU before stacking. The two producers
         # disagree about device by construction: a cache HIT comes back on
@@ -9750,21 +9749,23 @@ class BaseTrainer(ABC):
             return out
         rows = max(m.shape[0] for m in real)
         cols = real[0].shape[1]
-        stacked = []
+        stacked, valid_rows = [], []
         for m in mats:
             if m is None:
                 stacked.append(torch.zeros(rows, cols, dtype=real[0].dtype))
+                valid_rows.append(torch.zeros(rows, dtype=torch.bool))
             elif m.shape[0] != rows:
                 # Reachable when a window at the very end of a source yields a
                 # short audio read (the clip span and the clip duration differ by
-                # one frame); the sample's rows are zero-padded to the batch shape
-                # and its `audio_present` flag still says the audio is real, which
-                # is what the loss reads.
+                # one frame); keep the padding out of the loss.
                 pad = torch.zeros(rows - m.shape[0], cols, dtype=m.dtype)
                 stacked.append(torch.cat([m, pad], dim=0))
+                valid_rows.append(torch.arange(rows) < m.shape[0])
             else:
                 stacked.append(m)
+                valid_rows.append(torch.ones(rows, dtype=torch.bool))
         out["audio_latents"] = torch.stack(stacked, dim=0)
+        out["audio_valid_rows"] = torch.stack(valid_rows, dim=0)
         return out
 
     @staticmethod
@@ -10975,7 +10976,8 @@ class BaseTrainer(ABC):
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_minimax_h3:
-            # MiniMax-H3 carries {num_text_tokens, audio_latents, audio_present}
+            # MiniMax-H3 carries {num_text_tokens, audio_latents, audio_present,
+            # audio_valid_rows}
             # in mnt_attention_mask as a dict (collate_aux + the per-clip audio
             # injection below), same pattern as ltx2/anima. latents are 5D
             # [B, 24, T_lat, H', W'].

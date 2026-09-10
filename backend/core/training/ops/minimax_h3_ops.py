@@ -683,7 +683,8 @@ def train_step(
         latents: normalized video latents ``[B, 24, T_lat, H', W']``.
         prompt_embeds: Qwen3-VL layer-50 hidden states ``[B, S, 5120]``.
         h3_aux: ``{"num_text_tokens": [B], "audio_latents": [B, 2*T_aud, 32] or
-            None, "audio_present": [B] bool}``.
+            None, "audio_present": [B] bool, "audio_valid_rows": [B, 2*T_aud]
+            bool}``.
 
     Returns ``(loss, pred_loss_value, recon_loss_value)``.
 
@@ -746,6 +747,7 @@ def train_step(
 
     audio = h3_aux.get("audio_latents") if isinstance(h3_aux, dict) else None
     present = h3_aux.get("audio_present") if isinstance(h3_aux, dict) else None
+    valid_rows = h3_aux.get("audio_valid_rows") if isinstance(h3_aux, dict) else None
     if isinstance(audio, torch.Tensor):
         audio = audio.to(device=device, dtype=torch.float32, non_blocking=True)
         if audio.dim() == 2:
@@ -769,6 +771,17 @@ def train_step(
     else:
         audio_mask = torch.full((batch_size,), 1.0 if audio is not None else 0.0,
                                 device=device)
+
+    if isinstance(valid_rows, torch.Tensor):
+        if tuple(valid_rows.shape) != (batch_size, n_aud_rows):
+            raise ValueError(
+                "[train_step_minimax_h3] audio_valid_rows must have shape "
+                f"{(batch_size, n_aud_rows)}, got {tuple(valid_rows.shape)}")
+        audio_row_mask = valid_rows.to(device=device, dtype=torch.float32)
+    else:
+        audio_row_mask = torch.ones(
+            (batch_size, n_aud_rows), device=device, dtype=torch.float32)
+    audio_row_mask = audio_row_mask * audio_mask[:, None]
 
     # --- sigma: ONE draw, BOTH schedules (K0.4's inference pair) ---
     #
@@ -862,9 +875,14 @@ def train_step(
     video_loss = F.mse_loss(video_velocity.float(), target_v.float())
 
     audio_weight = float(getattr(trainer, "audio_loss_weight", 1.0))
-    if audio_mask.sum() > 0 and audio_weight > 0.0:
-        per_sample = ((audio_velocity.float() - target_a.float()) ** 2).mean(dim=(1, 2))
-        audio_loss = (per_sample * audio_mask).sum() / audio_mask.sum()
+    if audio_weight > 0.0:
+        row_mse = ((audio_velocity.float() - target_a.float()) ** 2).mean(dim=2)
+        valid_count = audio_row_mask.sum(dim=1)
+        per_sample = (
+            (row_mse * audio_row_mask).sum(dim=1) / valid_count.clamp_min(1.0)
+        )
+        sample_mask = (valid_count > 0).to(dtype=per_sample.dtype)
+        audio_loss = (per_sample * sample_mask).sum() / sample_mask.sum().clamp_min(1.0)
     else:
         # Keeps the audio head in the graph with a zero contribution, so a
         # silent dataset (or audio_loss_weight=0) cannot change the video path.

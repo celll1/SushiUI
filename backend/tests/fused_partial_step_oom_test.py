@@ -2,7 +2,7 @@
 
 Under the fused paths -- ``_setup_fused_backward_pass`` (Adafactor / AdamW8bit /
 the two ring-buffer optimizers, installed for ANY architecture whenever Block
-Swap is on, and for SenseNova's full fine-tune at ``blocks_to_swap=0``) and
+Swap is on, and for a resident SenseNova full fine-tune) and
 ``_setup_fused_optimizer_groups`` -- there is no ``optimizer.step()``. Each
 parameter is updated from its own post-accumulate-grad hook the moment its
 gradient exists. So an out-of-memory error raised partway through

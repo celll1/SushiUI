@@ -10,9 +10,9 @@ added:
    architecture was shown only because no checkbox governed it; the filter was
    simply blind to lens/ideogram4/minit2i/krea2/ltx2/acestep/minimax_h3/
    sensenova.
-2. The Block Swap section was rendered for every base model, including
-   SenseNova, whose arch handler raises on `setup_block_swap` and whose runs are
-   refused before they start.
+2. The Block Swap section was once rendered for architectures whose handlers
+   could not consume it. SenseNova now has a branch-aware consumer; SD1.5 and
+   SDXL remain declared unsupported.
 
 Both are now backend declarations (`TRAINING_FEATURE_UNSUPPORTED`,
 `ARCH_DISPLAY_NAMES`) that the form reads. What this file fixes is the
@@ -141,6 +141,13 @@ def test_method_scope_narrows_rather_than_hides():
     assert training_feature_unsupported_reason("brand_new_arch", "block_swap") is None
     assert training_feature_unsupported_reason(None, "block_swap") is None
     assert training_feature_unsupported_reason("sensenova", "no_such_feature") is None
+    assert training_feature_unsupported_reason("sensenova", "block_swap", "lora") is None
+    assert training_feature_unsupported_reason(
+        "sensenova", "fused_optimizer_groups", "lora"
+    ) is None
+    assert training_feature_unsupported_reason(
+        "sensenova", "fused_optimizer_groups", "full_finetune"
+    )
 
 
 def test_route_serves_the_new_capability_keys():

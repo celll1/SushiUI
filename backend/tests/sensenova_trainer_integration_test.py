@@ -87,6 +87,29 @@ def test_phase_eviction_rejects_block_swap_only_optimizer_modes(extra, message):
             _apply_sensenova_training_contract("model", "lora", train, {})
 
 
+def test_runner_accepts_branch_block_swap_with_defaults():
+    train = {"batch_size": 1, "blocks_to_swap": 41}
+    with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
+        assert _apply_sensenova_training_contract("model", "lora", train, {})
+    assert train["gradient_checkpointing"] is True
+    assert train["block_swap_ring_size"] == 2
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        ({"gradient_checkpointing": False}, "gradient_checkpointing"),
+        ({"block_swap_ring_size": 1}, "block_swap_ring_size"),
+        ({"block_swap_h2d_only": True}, "block_swap_h2d_only"),
+    ],
+)
+def test_runner_refuses_invalid_branch_block_swap_modes(extra, message):
+    train = {"batch_size": 1, "blocks_to_swap": 1, **extra}
+    with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
+        with pytest.raises(ValueError, match=message):
+            _apply_sensenova_training_contract("model", "lora", train, {})
+
+
 def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
     from api.param_defaults import TRAINING_DEFAULTS
     from api.routes import TrainingRunCreateRequest, get_training_defaults
@@ -126,7 +149,7 @@ def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
 @pytest.mark.parametrize(
     "train,network,message",
     [
-        ({"batch_size": 1, "blocks_to_swap": 1}, "lora", "blocks_to_swap"),
+        ({"batch_size": 1, "blocks_to_swap": 42}, "lora", "blocks_to_swap"),
         ({"batch_size": 1, "blocks_to_swap": -1}, "lora", "blocks_to_swap"),
         # full_finetune is ACCEPTED now (U-2-2 step 3); relora and controlnet
         # are not, and are refused by name rather than by "not lora".
@@ -202,7 +225,7 @@ def test_process_preflight_fails_before_dataset_discovery_with_neutral_name():
             return super().get(key, default)
 
     process = _Process(
-        train={"batch_size": 1, "blocks_to_swap": 1}, network={"type": "lora"}, sample={}
+        train={"batch_size": 1, "blocks_to_swap": 42}, network={"type": "lora"}, sample={}
     )
     config = {"config": {"process": [process]}}
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
@@ -428,34 +451,24 @@ def test_base_dispatch_loads_sensenova_ops():
     load.assert_called_once_with(trainer)
 
 
-@pytest.mark.parametrize("blocks", [1, -1, 0.5, "0"])
-def test_both_base_load_paths_reject_nonzero_sensenova_block_swap(blocks):
+def test_both_base_load_paths_accept_sensenova_block_swap():
     trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
-    trainer.blocks_to_swap = blocks
+    trainer.blocks_to_swap = 1
     trainer.model_path = "model"
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"), patch(
         "core.training.ops.sensenova_ops.load_components"
     ) as load:
-        with pytest.raises(ValueError, match="blocks_to_swap"):
-            trainer._load_model_components()
-        load.assert_not_called()
+        trainer._load_model_components()
+        load.assert_called_once_with(trainer)
 
     trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
-    trainer.blocks_to_swap = blocks
+    trainer.blocks_to_swap = 1
+    trainer.log_prefix = "[test]"
     with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"), patch(
         "core.training.ops.sensenova_ops.load_components"
     ) as load:
-        with pytest.raises(ValueError, match="blocks_to_swap"):
-            trainer._load_checkpoint_as_base("checkpoint")
-        load.assert_not_called()
-
-
-@pytest.mark.parametrize("blocks", [1, -1, 0.5, "0"])
-def test_sensenova_ops_reject_nonzero_block_swap_before_loading(blocks):
-    trainer = SimpleNamespace(blocks_to_swap=blocks)
-    with pytest.raises(ValueError, match="blocks_to_swap"):
-        from core.training.ops.sensenova_ops import load_components
-        load_components(trainer)
+        trainer._load_checkpoint_as_base("checkpoint")
+        load.assert_called_once_with(trainer)
 
 
 def test_encode_caption_returns_prefix_without_tensor_cache_payload():
@@ -613,12 +626,3 @@ def test_train_method_batch_guard_precedes_dataset_setup():
     trainer.blocks_to_swap = 0
     with pytest.raises(ValueError, match="enable_bucketing"):
         trainer.train(datasets=[], batch_size=2, enable_bucketing=False)
-
-
-@pytest.mark.parametrize("blocks", [1, -1, 0.5, "0"])
-def test_train_method_rejects_nonzero_sensenova_block_swap(blocks):
-    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
-    trainer.is_sensenova = True
-    trainer.blocks_to_swap = blocks
-    with pytest.raises(ValueError, match="blocks_to_swap"):
-        trainer.train(datasets=[], batch_size=1)

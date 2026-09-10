@@ -214,7 +214,7 @@ class LayerOffloadStrategy:
         print(f"  Total Layers:     {summary['num_layers']}")
         print(f"  Blocks to Swap:   {summary['blocks_to_swap']}")
         print(f"  Resident Layers:  {summary['num_resident_layers']} (stay on GPU)")
-        print(f"  Offloadable:      {summary['blocks_to_swap']} (swap CPU ↔ GPU)")
+        print(f"  Offloadable:      {summary['blocks_to_swap']} (swap CPU <-> GPU)")
         print(f"  Device:           {summary['device']}")
         print()
         print(f"  Resident:         {summary['resident_layers']}")

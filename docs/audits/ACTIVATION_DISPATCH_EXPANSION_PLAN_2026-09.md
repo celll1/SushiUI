@@ -1,5 +1,8 @@
 # Activation dispatch expansion plan (2026-09)
 
+Status: complete. GPU/VRAM validation remains separately tracked in
+`ACTIVATION_DISPATCH_GPU_VALIDATION_BACKLOG_2026-09.md`.
+
 ## Scope
 
 Expand the existing `BaseTrainer` activation dispatcher to every supported

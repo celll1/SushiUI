@@ -1,6 +1,14 @@
 # Activation dispatch architecture coverage report (2026-09)
 
-Status: static review complete; no model load or GPU measurement was performed.
+Status: static review and implementation complete; no model load or GPU
+measurement was performed. Required execution work is tracked in
+`ACTIVATION_DISPATCH_GPU_VALIDATION_BACKLOG_2026-09.md`.
+
+Implementation follow-up: `BaseTrainer` now resolves the five settings from the
+shared run configuration for every trainer method, uses workload-native keys for
+4-D image, 5-D video, 3-D ACE-Step audio, and SenseNova instruction/text paths,
+and keeps their learned predictors separate. The reachability findings below
+describe the pre-expansion baseline that motivated those changes.
 
 ## Executive conclusion
 
@@ -9,21 +17,21 @@ saved-tensor hook and its forward/backward lifetime live in `BaseTrainer`, so
 the core mechanism is already architecture-neutral. MiniMax-H3's 5-D latent and
 clip length are explicitly supported by the prediction key as well.
 
-The actual gap is configuration reachability:
+The actual gap found by the audit was configuration reachability:
 
-- the five `activation_dispatch_*` values are passed to
+- the five `activation_dispatch_*` values were passed to
   `FullParameterTrainer` only (`train_runner.py:4024-4028`);
-- `LoRATrainer`, `ReLoRATrainer`, and `ControlNetTrainer` receive
-  `train_config`, but `BaseTrainer` does not read these five values back from
-  that dict; their constructor defaults therefore keep dispatch disabled;
-- MiniMax-H3 supports LoRA only, so its existing dispatcher implementation is
-  currently unreachable in every supported H3 run.
+- `LoRATrainer`, `ReLoRATrainer`, and `ControlNetTrainer` received
+  `train_config`, but `BaseTrainer` did not read these five values back from
+  that dict; their constructor defaults therefore kept dispatch disabled;
+- MiniMax-H3 supports LoRA only, so its existing dispatcher implementation was
+  unreachable in every supported H3 run.
 
-Accordingly, MiniMax-H3 is **viable with caveats** and does not need a new H3
-forward hook. It first needs the shared constructor plumbing connected to the
-LoRA path. It then needs real H3 measurements before being called production
-ready, because the cold-start predictor and PCIe/host-memory costs were tuned
-and timed on SDXL, not H3.
+Accordingly, MiniMax-H3 is **implemented with validation caveats** and does not
+need a new H3 forward hook. The shared LoRA plumbing is now connected. Real H3
+measurements remain required before calling it production ready, because the
+cold-start predictor and PCIe/host-memory costs were tuned and timed on SDXL,
+not H3.
 
 ## 1. What the feature actually does
 
@@ -73,7 +81,7 @@ Method abbreviations below are L=LoRA, R=ReLoRA, F=full parameter, and
 C=ControlNet. Unsupported methods are taken from
 `api/arch_capabilities.py:1020-1067`.
 
-| Architecture | Training methods | Denoiser input at dispatch | Effective today | Verdict after shared plumbing |
+| Architecture | Training methods | Denoiser input at dispatch | Pre-expansion reachability | Implemented result |
 |---|---:|---|---|---|
 | SD1.5 | L/R/F/C | 4-D latent | F only | L/R/F/C viable |
 | SDXL | L/R/F/C | 4-D latent | F only | L/R/F/C viable; existing measured baseline |
@@ -86,8 +94,8 @@ C=ControlNet. Unsupported methods are taken from
 | FLUX.2 | L/R/F | 4-D latent | F only | L/R/F viable, including reference-latent batches |
 | LTX-2.3 | L/R/F | 5-D video latent | F only | L/R/F viable; temporal key already implemented |
 | MiniMax-H3 | L | 5-D video latent | none | **L viable with caveats; highest-priority gap** |
-| ACE-Step 1.5 | L/R/F | 3-D audio latent | F only | Viable, but give the predictor an audio-native key |
-| SenseNova U1.5 | L/F | 4-D flow image tensor | F flow objective only | Flow L/F viable; text objectives need a separate key/seam |
+| ACE-Step 1.5 | L/R/F | 3-D audio latent | F only | L/R/F connected with an audio-native key |
+| SenseNova U1.5 | L/F | 4-D flow image or text batch | F flow objective only | Flow and text L/F connected with separate predictors |
 
 ControlNet is implemented only for SD1.5 and SDXL, so connecting its constructor
 does not expose the feature to unsupported architectures.
@@ -117,13 +125,12 @@ The hook surrounds `minimax_h3_ops.train_step`, including its packed
 `[text | audio | video]` transformer forward and backward. H3 therefore needs
 no block-by-block instrumentation for the synchronous dispatcher.
 
-### 3.2 What prevents use today
+### 3.2 Pre-expansion blocker (resolved)
 
-H3's only supported method is LoRA. Since `LoRATrainer(...)` does not receive
-the dispatcher arguments, `self.activation_dispatch_enable` remains `False`
-even when the API/YAML/UI value is `True`. The H3 architecture reference saying
-“training only, opt-in” describes the generic code but omits this method-level
-reachability failure.
+H3's only supported method is LoRA. Before the expansion,
+`self.activation_dispatch_enable` remained `False` even when the API/YAML/UI
+value was `True`. `BaseTrainer` now resolves the value from `train_config`, so
+the supported H3 LoRA route is opt-in reachable.
 
 ### 3.3 H3-specific caveats after connection
 
@@ -176,30 +183,24 @@ LTX results.
 
 ### 4.3 ACE-Step 1.5
 
-The generic code runs today for ACE-Step full fine-tuning, despite
-`docs/reference/architectures/acestep.md` calling activation dispatch
-unsupported by referring only to the disabled conductor flag. That document is
-stale with respect to the generic dispatcher.
+The generic code was already present for ACE-Step full fine-tuning, despite the
+architecture reference calling activation dispatch unsupported by referring
+only to the disabled conductor flag. The reference is now corrected.
 
-ACE-Step's 3-D `[B, T, C]` tensor is currently interpreted as `H=T, W=C,
-T_lat=1`. Because `C` is fixed, exact per-length cache entries remain distinct
-and the fitted volume is proportional to sequence length, so the mechanism can
-work. It is nevertheless semantically fragile. A handler-provided workload key
-such as `(sequence_rows, 1, 1, batch)` would avoid treating channel width as a
-spatial axis and would make cold-start priors easier to reason about.
+ACE-Step's 3-D `[B, T, C]` tensor previously became the pseudo-spatial key
+`H=T, W=C, T_lat=1`. It now uses the audio-native representation
+`(sequence_rows, 1, 1, batch)` and a predictor isolated from other workload
+families.
 
 ### 4.4 SenseNova
 
-The flow/image objective uses the generic path and is reachable in full
-fine-tuning today. LoRA flow training becomes reachable with the same shared
-plumbing.
+The flow/image objective uses the image workload family and is reachable in both
+LoRA and full-parameter runs through the shared configuration plumbing.
 
-Instruction text objectives deliberately bypass `_activation_dispatch_begin`
-when `sensenova_text_batch` is present (`base_trainer.py:10415-10418`). Their
-cost scales primarily with prefix/target token counts, while the placeholder
-image tensor is not a sufficient predictor. They need a token-volume key and a
-review of their token-weighted micro-batch reduction before dispatch is enabled;
-removing the bypass alone is not safe.
+Instruction text objectives now use mean input-token rows as their workload and
+an independent predictor. Their existing token-weighted micro-batch reduction
+is retained. Real execution is still required to calibrate the cold-start prior
+and confirm the approximation across different image grids and target lengths.
 
 ## 5. Composition and correctness boundaries
 
@@ -237,29 +238,21 @@ There is no equivalent end-to-end H3, LTX-2.3, ACE-Step, or quantized-DiT result
 in the tracked evidence. H3's two activation-footprint observations validate
 the temporal predictor only.
 
-## 7. Recommended implementation order
+## 7. Implementation outcome and remaining order
 
-### P0 — connect the already implemented feature
+### P0 — shared connection (complete)
 
-Create one shared helper for the five constructor kwargs and expand it into
-`LoRATrainer`, `ReLoRATrainer`, `FullParameterTrainer`, and
-`ControlNetTrainer`. Do not copy five independent argument lists again. Add a
-static contract test proving every `BaseTrainer` subclass constructed by
-`train_runner` receives the same five values.
+`BaseTrainer` resolves all five settings from the shared `train_config`, and a
+static contract test proves every trainer constructed by `train_runner`
+receives it. H3 LoRA and the other supported adapter paths are now reachable;
+the default remains `False`.
 
-This phase enables H3 LoRA and all other supported adapter paths without
-touching an architecture forward. Keep the default `False`.
+### P1 — workload-family keys (complete; priors deferred)
 
-### P1 — make cold start architecture-aware
-
-Add a handler hook that returns a prediction workload/key and optional
-conservative prior. Preserve the current 4-D image result byte-for-byte.
-
-1. retain `(H,W,T,B)` for H3/LTX and calibrate separate priors;
-2. use audio sequence rows for ACE-Step;
-3. leave SenseNova text tasks disabled until a token-count predictor exists;
-4. prefer offload-first or a conservative prior for an unseen H3 clip length,
-   because batch 1 cannot fall back to a smaller micro-batch.
+The implementation preserves the 4-D image result, retains `(H,W,T,B)` for
+H3/LTX, uses sequence rows for ACE-Step, and gives SenseNova text batches a
+token-row key. Predictors are isolated by workload family. Family-specific
+priors and an optional offload-first H3 policy remain measurement-dependent.
 
 ### P2 — add CPU and real-checkpoint gates
 
@@ -269,7 +262,7 @@ CPU/static tests:
 - 4-D image and 5-D video key invariants;
 - H3 clip lengths never share cache entries;
 - ACE 3-D key behavior;
-- SenseNova text batches remain explicitly refused/bypassed;
+- SenseNova text batches use their token-row workload family;
 - fused paths never micro-split;
 - no double activation offload with a conductor.
 
@@ -293,18 +286,18 @@ that the current pageable synchronous implementation deliberately avoids.
 
 ## 8. Final verdict
 
-- **MiniMax-H3:** viable with caveats; implementation exists, LoRA configuration
-  path is disconnected. Highest-value next implementation target.
-- **Other image architectures and LTX-2.3:** viable through the same shared
-  plumbing; no per-block changes required.
-- **ACE-Step:** viable, but replace the accidental pseudo-spatial key with an
-  audio-native workload key before relying on cold-start predictions.
-- **SenseNova flow:** viable; LoRA needs plumbing. **SenseNova text tasks:** not
-  ready for the generic predictor.
+- **MiniMax-H3:** opt-in implementation is connected to LoRA; highest-priority
+  real-checkpoint validation target.
+- **Other image architectures and LTX-2.3:** implemented through the shared
+  plumbing; no per-block changes were required.
+- **ACE-Step:** implemented with an audio-native sequence-row key.
+- **SenseNova flow:** implemented for LoRA/full parameter. **SenseNova text
+  tasks:** implemented with a separate token-row predictor; real-checkpoint
+  validation remains.
 - **VAE/tagger:** possible in principle through saved-tensor hooks, but not a
   small architecture extension because they own separate loops and predictors.
 - **MiniMax Music 3:** not applicable while training itself is unavailable.
 
-The immediate implementation should therefore be small and shared: repair
-constructor propagation first, then measure H3. A new H3-specific activation
-offload engine would duplicate code that is already on its training spine.
+The shared implementation is complete. The next step is the real-checkpoint
+matrix, starting with H3; a new H3-specific activation offload engine would
+duplicate code that is already on its training spine.

@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 CENTRAL_V1 = "central_v1"
 RUN_DB_V2 = "run_db_v2"
 RUN_DB_FILENAME = "training_run.db"
+TAGGER_RUN_DB_FILENAME = "tagger_training_run.db"
 SUPPORTED_DETAIL_STORES = frozenset((CENTRAL_V1, RUN_DB_V2))
 RUN_DB_SCHEMA_VERSION = 2
 TERMINAL_RUN_STATUSES = frozenset(("completed", "failed", "stopped"))
@@ -50,6 +51,19 @@ def detail_db_path(run) -> Path:
     candidate = Path(name)
     if candidate.name != name or candidate.is_absolute() or name in ("", ".", ".."):
         raise DetailStoreError(f"Invalid training detail database name: {name!r}")
+    return Path(output_dir) / name
+
+
+def tagger_detail_db_path(run) -> Path:
+    """Resolve the fixed tagger DB name beneath its output directory."""
+    output_dir = getattr(run, "output_dir", None)
+    if not output_dir:
+        raise DetailStoreError("Tagger training run has no output directory")
+    configured_name = getattr(run, "detail_db_name", None)
+    name = TAGGER_RUN_DB_FILENAME if configured_name is None else configured_name
+    candidate = Path(name)
+    if candidate.name != name or candidate.is_absolute() or name in ("", ".", ".."):
+        raise DetailStoreError(f"Invalid tagger detail database name: {name!r}")
     return Path(output_dir) / name
 
 
@@ -385,3 +399,106 @@ def migrate_terminal_run_to_v2(central_db, run, *, batch_size: int = 5000) -> di
             setattr(run, name, value)
         central_db.commit()
         raise
+
+
+def initialize_tagger_detail_database(run):
+    """Create and identify a tagger run's isolated detail database."""
+    from .models import TaggerTrainingMetrics, TaggerTrainingRun
+
+    path = tagger_detail_db_path(run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    factory = run_db_session_factory(path)
+    engine = factory.kw["bind"]
+    for table in (TaggerTrainingRun.__table__, TaggerTrainingMetrics.__table__):
+        table.create(bind=engine, checkfirst=True)
+    values = {
+        column.name: getattr(run, column.name)
+        for column in TaggerTrainingRun.__table__.columns
+    }
+    db = factory()
+    try:
+        local = db.query(TaggerTrainingRun).filter(
+            TaggerTrainingRun.run_id == run.run_id
+        ).first()
+        if local is None:
+            if db.query(TaggerTrainingRun).count():
+                raise DetailStoreError(
+                    f"Tagger detail database identity mismatch at {path}"
+                )
+            db.add(TaggerTrainingRun(**values))
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    return factory
+
+
+def open_tagger_detail_session(run):
+    """Open an existing tagger run DB and verify its UUID identity."""
+    from .models import TaggerTrainingRun
+
+    if detail_store_kind(run) != RUN_DB_V2:
+        raise DetailStoreError("Tagger run does not use a v2 detail database")
+    path = tagger_detail_db_path(run)
+    if not path.is_file():
+        raise DetailStoreError(f"Tagger detail database is unavailable: {path}")
+    db = run_db_session_factory(path)()
+    try:
+        local = db.query(TaggerTrainingRun).filter(
+            TaggerTrainingRun.run_id == run.run_id
+        ).first()
+        if local is None:
+            raise DetailStoreError(
+                f"Tagger detail database identity mismatch at {path}"
+            )
+        return db
+    except Exception:
+        db.close()
+        raise
+
+
+def mirror_tagger_metrics_to_run_database(run, central_db, touched_keys) -> None:
+    """Mirror committed tagger metric rows, including same-step updates."""
+    from sqlalchemy import and_, func
+
+    from .models import TaggerTrainingMetrics
+
+    keys = {(int(resume), int(step)) for resume, step in touched_keys}
+    if not keys:
+        return
+    local_db = open_tagger_detail_session(run)
+    try:
+        local_max = local_db.query(func.max(TaggerTrainingMetrics.id)).scalar() or 0
+        touched = or_(*[
+            and_(TaggerTrainingMetrics.resume_seq == resume,
+                 TaggerTrainingMetrics.step == step)
+            for resume, step in keys
+        ])
+        rows = central_db.query(TaggerTrainingMetrics).filter(
+            TaggerTrainingMetrics.run_id == run.run_id,
+            or_(TaggerTrainingMetrics.id > local_max, touched),
+        ).order_by(TaggerTrainingMetrics.id.asc()).all()
+        columns = [
+            column.name for column in TaggerTrainingMetrics.__table__.columns
+            if column.name != "id"
+        ]
+        for source in rows:
+            target = local_db.query(TaggerTrainingMetrics).filter(
+                TaggerTrainingMetrics.run_id == run.run_id,
+                TaggerTrainingMetrics.resume_seq == source.resume_seq,
+                TaggerTrainingMetrics.step == source.step,
+            ).first()
+            values = {name: getattr(source, name) for name in columns}
+            if target is None:
+                local_db.add(TaggerTrainingMetrics(**values))
+            else:
+                for name, value in values.items():
+                    setattr(target, name, value)
+        local_db.commit()
+    except Exception:
+        local_db.rollback()
+        raise
+    finally:
+        local_db.close()

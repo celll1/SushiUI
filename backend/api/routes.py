@@ -20584,12 +20584,39 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
     else:
         print(f"[TaggerCallback] run_id={run_id}: resume_seq=0 (initial run)")
 
+    from concurrent.futures import ThreadPoolExecutor
+    detail_executor = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="tagger_detail_db"
+    )
+
+    def _mirror_detail(rid: str, keys) -> None:
+        mirror_db = training_db_factory()
+        try:
+            mirror_run = mirror_db.query(TaggerTrainingRun).filter(
+                TaggerTrainingRun.run_id == rid
+            ).first()
+            if mirror_run is None:
+                return
+            from database.training_detail_store import (
+                RUN_DB_V2,
+                detail_store_kind,
+                mirror_tagger_metrics_to_run_database,
+            )
+            if detail_store_kind(mirror_run) == RUN_DB_V2 \
+                    and mirror_run.detail_state == "ready":
+                mirror_tagger_metrics_to_run_database(mirror_run, mirror_db, keys)
+        except Exception as exc:
+            print(f"[TaggerCallback] run-DB mirror error: {exc}")
+        finally:
+            mirror_db.close()
+
     def callback(rid: str, event_type: str, data: dict):
         db = training_db_factory()
         try:
             run = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == rid).first()
             if not run:
                 return
+            touched_metric_keys = []
             def _upsert_metric(step: int, **kwargs):
                 existing = db.query(TaggerTrainingMetrics).filter(
                     TaggerTrainingMetrics.run_id == rid,
@@ -20604,6 +20631,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     db.add(TaggerTrainingMetrics(
                         run_id=rid, resume_seq=resume_seq, step=step, **kwargs
                     ))
+                touched_metric_keys.append((resume_seq, step))
 
             if event_type == "step":
                 run.current_step  = data.get("step", run.current_step)
@@ -20718,6 +20746,10 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.completed_at   = datetime.now()
                 run.latest_checkpoint_path = os.path.join(run.output_dir or "", "latest.safetensors")
             db.commit()
+            if touched_metric_keys:
+                detail_executor.submit(
+                    _mirror_detail, rid, tuple(touched_metric_keys)
+                )
         except Exception as e:
             print(f"[TaggerCallback] DB error: {e}")
             db.rollback()
@@ -20745,6 +20777,12 @@ def create_tagger_training_run(
     config = request.dict()
     config["vision_encoder_path"] = request.vision_encoder_path
 
+    from database.training_detail_store import (
+        RUN_DB_SCHEMA_VERSION,
+        RUN_DB_V2,
+        TAGGER_RUN_DB_FILENAME,
+        initialize_tagger_detail_database,
+    )
     run = TaggerTrainingRun(
         run_id=run_id,
         run_name=run_name,
@@ -20755,8 +20793,14 @@ def create_tagger_training_run(
         output_dir=output_dir,
         config=config,
         total_epochs=request.epochs,
+        detail_store=RUN_DB_V2,
+        detail_schema_version=RUN_DB_SCHEMA_VERSION,
+        detail_state="ready",
+        detail_db_name=TAGGER_RUN_DB_FILENAME,
     )
     training_db.add(run)
+    training_db.flush()
+    initialize_tagger_detail_database(run)
     training_db.commit()
     training_db.refresh(run)
     return run.to_dict()
@@ -21226,8 +21270,29 @@ def get_tagger_training_metrics(
     max_points : Maximum number of data points to return (uniform decimation).
                  0 = no limit (not recommended for long runs).
     """
+    metrics_db = training_db
+    owns_metrics_db = False
+    run = training_db.query(TaggerTrainingRun).filter(
+        TaggerTrainingRun.run_id == run_id
+    ).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    try:
+        from database.training_detail_store import (
+            RUN_DB_V2,
+            detail_store_kind,
+            open_tagger_detail_session,
+        )
+        if detail_store_kind(run) == RUN_DB_V2 and run.detail_state == "ready":
+            try:
+                metrics_db = open_tagger_detail_session(run)
+                owns_metrics_db = True
+            except Exception:
+                metrics_db = training_db
+    except Exception:
+        metrics_db = training_db
     rows = (
-        training_db.query(TaggerTrainingMetrics)
+        metrics_db.query(TaggerTrainingMetrics)
         .filter(
             TaggerTrainingMetrics.run_id == run_id,
             TaggerTrainingMetrics.step >= since_step,
@@ -21235,6 +21300,19 @@ def get_tagger_training_metrics(
         .order_by(TaggerTrainingMetrics.resume_seq, TaggerTrainingMetrics.step)
         .all()
     )
+    if not rows and owns_metrics_db:
+        metrics_db.close()
+        metrics_db = training_db
+        owns_metrics_db = False
+        rows = (
+            metrics_db.query(TaggerTrainingMetrics)
+            .filter(
+                TaggerTrainingMetrics.run_id == run_id,
+                TaggerTrainingMetrics.step >= since_step,
+            )
+            .order_by(TaggerTrainingMetrics.resume_seq, TaggerTrainingMetrics.step)
+            .all()
+        )
     # Group by resume_seq so each curve gets its own decimation budget.
     # Without this, sparse early resumes can get fully decimated away when a
     # later resume has many more points.
@@ -21272,6 +21350,8 @@ def get_tagger_training_metrics(
     else:
         for seq in sorted(groups):
             data.extend(m.to_dict() for m in groups[seq])
+    if owns_metrics_db:
+        metrics_db.close()
     return data
 
 

@@ -41,6 +41,14 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
     print(f"[VRAM] Device Status: {stage}")
     print(f"{'='*60}")
 
+    if not show_details:
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            print(f"  VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        print(f"{'='*60}\n")
+        return
+
     def get_dtype_info(module):
         """Get dtype information from module parameters"""
         try:
@@ -115,21 +123,19 @@ def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_c
             else:
                 print(f"  U-Net:          {device} ({dtype})")
 
-            if show_details:
-                # Check for any CPU submodules
-                cpu_modules = []
-                for name, module in pipeline.unet.named_modules():
-                    try:
-                        mod_device = next(module.parameters()).device
-                        if mod_device.type == 'cpu':
-                            cpu_modules.append(name)
-                    except StopIteration:
-                        pass
+            cpu_modules = []
+            for name, module in pipeline.unet.named_modules():
+                try:
+                    mod_device = next(module.parameters()).device
+                    if mod_device.type == 'cpu':
+                        cpu_modules.append(name)
+                except StopIteration:
+                    pass
 
-                if cpu_modules:
-                    print(f"    WARNING: {len(cpu_modules)} submodules on CPU")
-                    for name in cpu_modules[:3]:
-                        print(f"      - {name}")
+            if cpu_modules:
+                print(f"    WARNING: {len(cpu_modules)} submodules on CPU")
+                for name in cpu_modules[:3]:
+                    print(f"      - {name}")
         except:
             print(f"  U-Net:          no parameters")
 

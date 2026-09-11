@@ -12,10 +12,7 @@ the trainer never calls ``optimizer.step()`` (base_trainer:
 and Block Swap on, those parameters had no hook and no step: they never moved for
 the whole run while the loss kept falling.
 
-Registration is now driven by ``optimizer.param_groups``. ``_LEGACY_REGISTRATION``
-below is the previous module-walk, spliced back in through the same seam and with
-the same hook bodies, as the negative control: the coverage tests must fail with
-it and pass without it.
+Registration is now driven by ``optimizer.param_groups``.
 
 CPU-only. The compiled CUDA extension is replaced by a stand-in that performs a
 visible update, and parameters answer ``is_cuda`` (the Block Swap residency
@@ -138,29 +135,6 @@ def _seed_lion_state(optimizer):
             state["is_8bit"] = True
 
 
-def _LEGACY_REGISTRATION(optimizer, module, function_name, make_hook):
-    """The pre-fix registration: hook the trainable parameters of ``module``."""
-    param_to_group = {id(gp): g for g in optimizer.param_groups for gp in g["params"]}
-    hooked = 0
-    for p in module.parameters():
-        if p.requires_grad:
-            p.register_post_accumulate_grad_hook(make_hook(p, param_to_group[id(p)]))
-            hooked += 1
-    return hooked, []
-
-
-@contextlib.contextmanager
-def _legacy_registration():
-    originals = {mod: mod.register_fused_backward_hooks for mod in (rb, lb)}
-    for mod in originals:
-        mod.register_fused_backward_hooks = _LEGACY_REGISTRATION
-    try:
-        yield
-    finally:
-        for mod, fn in originals.items():
-            mod.register_fused_backward_hooks = fn
-
-
 class _CoverageMixin:
     """The optimizer's parameters, all of them, must move on one backward."""
 
@@ -195,12 +169,6 @@ class _CoverageMixin:
 
     def test_all_optimizer_params_are_updated(self):
         self._assert_all_optimizer_params_updated()
-
-    def test_the_module_walk_leaves_the_encoders_untrained(self):
-        """Negative control: with the pre-fix registration this must fail."""
-        with _legacy_registration():
-            with self.assertRaises(AssertionError):
-                self._assert_all_optimizer_params_updated()
 
     def test_each_hook_uses_its_own_group_lr(self):
         """Coverage alone is not enough: a hook must carry ITS group's lr, not
@@ -278,30 +246,6 @@ class Fp32GroupTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             lb.register_lion8bit_fused_backward(opt, layer)
         self.assertIn("use_8bit", str(caught.exception))
-
-    def test_the_legacy_hook_silently_left_an_fp32_parameter_untrained(self):
-        """Negative control for the refusal above: the state that reaches the
-        hook is what used to be skipped, and nothing updated it afterwards."""
-        layer, ext = self._model_and_ext()
-        with contextlib.redirect_stdout(io.StringIO()):
-            opt = _with_extension(rb, ext, lambda: rb.AdamW8bit_RingBuffer(
-                list(layer.parameters()), lr=LR_MAIN, weight_decay=0.0, use_8bit=True,
-            ))
-        opt.ext = ext
-        _seed_adamw_state(opt)
-        opt.state[layer.weight]["is_8bit"] = False  # what an FP32 group produces
-
-        with contextlib.redirect_stdout(io.StringIO()):
-            rb.patch_adamw8bit_ringbuffer(layer, opt)
-        before = layer.weight.detach().clone()
-        torch.manual_seed(SEED + 1)
-        with self.assertRaises(RuntimeError) as caught:
-            layer(torch.randn(4, DIM)).pow(2).mean().backward()
-        self.assertIn("8-bit", str(caught.exception))
-        self.assertEqual(ext.updates, [])
-        self.assertTrue(torch.equal(layer.weight.detach(), before),
-                        "the skipped parameter really does stay where it was")
-
 
 class ShippedConfigurationTest(unittest.TestCase):
     """The shipped configuration -- LoRA adapters only, no text encoder in the

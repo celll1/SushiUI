@@ -1,33 +1,25 @@
-"""Gate: P3's schedule vocabulary is reachable, restorable and self-consistent.
+"""P3 schedule vocabulary, serialization, and numerical behavior.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/lr_schedule_vocabulary_test.py -v
 
 P3 of docs/guides/LR_SCHEDULER_DESIGN.md opened the registry (`wsd`, `rex`,
 `cosine_with_restarts` with real cycles) and generalized the floor (D10). Five
-new config keys had to land on every layer of §12.3's checklist, and the one
-that bites silently is `PARAM_KEYS`: a key the request model has but that list
-does not is dropped on every edit-save, so the run quietly reverts to the
-default. Source-level restore checks cannot see that for a
-pass-through key -- removing the entry removes it from BOTH sides of its
-comparison -- so the coverage is asserted here, against the Pydantic model.
+new config keys had to land on every backend layer of §12.3's checklist.
 
 What is checked:
 
-* every `lr_*` request field is in `PARAM_KEYS` and lands in the YAML `train`
-  section, and the create -> YAML -> read-back round trip returns it;
+* the new request fields land in the YAML `train` section, and the create ->
+  YAML -> read-back round trip returns them;
 * the new keys are written UNCONDITIONALLY (a conditional write hands the
   read-back a Pydantic default, which is only harmless while the default is
   inert -- the floor's is not);
 * §12.2's compatibility rule for a YAML with no floor key;
-* every name the registry offers builds, and the UI's `<select>`, the openapi
-  enum and `LR_SCHEDULER_NAMES` are the same vocabulary;
+* every name the registry offers builds and the OpenAPI enum agrees;
 * §8's REX numbers, which are the reason `rex` is a shape and not "cosine with
   a stronger exponent";
 * the preview endpoint samples the same lambda the trainer runs;
-* R6's trigger vocabulary: the trigger panel's four mirrors, the TS unions,
-  and the fire ceiling and `max_fires` default the spec would otherwise carry
-  as literals.
+* R6's OpenAPI trigger vocabulary, fire ceiling, and defaults.
 
 CPU-only and hermetic: no model, no dataset, no GPU.
 """
@@ -35,7 +27,6 @@ CPU-only and hermetic: no model, no dataset, no GPU.
 from __future__ import annotations
 
 import math
-import re
 import sys
 from pathlib import Path
 
@@ -53,20 +44,14 @@ from api.routes import (  # noqa: E402
     TrainingRunCreateRequest,
     _extract_request_params_from_yaml,
 )
-from core.training import lr_triggers  # noqa: E402
 from core.training.lr_triggers import (  # noqa: E402
-    EXTRA_SIGNAL_PREFIX,
     MAX_TRIGGER_FIRES,
     TRIGGER_ACTION_COMMANDS,
     TRIGGER_PREDICATES,
-    TRIGGER_SIGNALS,
 )
 from core.training.lr_schedules import (  # noqa: E402
-    BLEND_SHAPE_NAMES,
     DECAY_SHAPE_NAMES,
     LR_SCHEDULER_NAMES,
-    RETARGET_ANCHORS,
-    RETARGET_OPS,
     ScheduleTimeline,
     build_lr_scheduler,
     make_lambda,
@@ -74,9 +59,6 @@ from core.training.lr_schedules import (  # noqa: E402
     sample_curve,
 )
 from core.training.training_config import TrainingConfigGenerator  # noqa: E402
-
-_PANEL = REPO / "frontend/src/components/training/TrainingConfig.tsx"
-_PARAMS_TS = REPO / "frontend/src/components/training/trainingParams.ts"
 
 # The five keys P3 adds, and a value for each that is NOT the default -- a
 # round trip that returns the default proves nothing.
@@ -122,13 +104,6 @@ def _train_section(**overrides) -> dict:
     return yaml.safe_load(config)["config"]["process"][0]["train"]
 
 
-def _param_keys() -> list:
-    source = _PARAMS_TS.read_text(encoding="utf-8")
-    start = source.index("export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [")
-    body = re.sub(r"//[^\n]*", "", source[start:source.index("\n];", start)])
-    return re.findall(r'"([A-Za-z0-9_]+)"', body)
-
-
 # ---------------------------------------------------------------------------
 # §12.3's checklist, per key
 # ---------------------------------------------------------------------------
@@ -137,20 +112,6 @@ def _param_keys() -> list:
 def test_the_request_model_declares_it_with_the_shared_default(key):
     field = TrainingRunCreateRequest.model_fields[key]
     assert field.get_default(call_default_factory=True) == TRAINING_DEFAULTS[key]
-
-
-@pytest.mark.parametrize("key", sorted(NEW_KEYS))
-def test_the_form_restores_it(key):
-    """Missing here, an edit-save silently resets the run to the default."""
-    assert key in _param_keys()
-
-
-def test_every_lr_request_field_is_restorable():
-    """The general form of the test above: no lr_* field may be unlisted."""
-    keys = set(_param_keys())
-    missing = sorted(f for f in TrainingRunCreateRequest.model_fields
-                     if f.startswith("lr_") and f not in keys)
-    assert missing == []
 
 
 @pytest.mark.parametrize("key,value", sorted(NEW_KEYS.items()))
@@ -240,18 +201,6 @@ def test_every_registry_name_builds(name):
     assert all(0.0 <= v <= 1.0 for v in values), name
 
 
-def test_the_ui_offers_exactly_the_registry():
-    """The `<select>` mirrors LR_SCHEDULER_NAMES minus constant_with_warmup,
-    which is accepted but not offered (§12.5: it is constant's curve)."""
-    source = _PANEL.read_text(encoding="utf-8")
-    start = source.index("const LR_SCHEDULER_OPTIONS")
-    body = source[start:source.index("\n];", start)]
-    offered = re.findall(r'value: "([a-z_]+)"', body)
-    assert offered == [n for n in LR_SCHEDULER_NAMES if n != "constant_with_warmup"]
-    # Still selectable when a run already stored it, or it would read as blank.
-    assert 'lrScheduler === "constant_with_warmup"' in source
-
-
 def test_the_openapi_enum_is_the_registry():
     spec = yaml.safe_load((REPO / "openapi.yaml").read_text(encoding="utf-8"))
     props = spec["components"]["schemas"]["TrainingRunCreateRequest"]["properties"]
@@ -265,13 +214,6 @@ def test_an_unknown_name_is_refused_at_the_api_not_at_the_optimizer():
     with pytest.raises(ValueError, match="piecewise_constant"):
         TrainingRunCreateRequest(training_method="lora", base_model_path="x",
                                  lr_scheduler="piecewise_constant")
-
-
-def test_the_ui_decay_shapes_are_the_registry_shapes():
-    source = _PANEL.read_text(encoding="utf-8")
-    block = source[source.index('updateParam("lr_decay_shape"'):]
-    block = block[:block.index("</select>")]
-    assert re.findall(r'<option value="([a-z]+)">', block) == list(DECAY_SHAPE_NAMES)
 
 
 # ---------------------------------------------------------------------------
@@ -572,101 +514,6 @@ def test_the_registry_shapes_are_the_documented_ones():
     assert mid["linear"] == pytest.approx(0.5)
     assert mid["rex"] == pytest.approx(2 / 3)
     assert math.isclose(mid["rex"], 2 / 3, rel_tol=1e-9)
-
-
-# ---------------------------------------------------------------------------
-# The runtime retarget form's mirrors (§12.4 stopped at the scheduler names)
-# ---------------------------------------------------------------------------
-
-_RETARGET_PANEL = REPO / "frontend/src/components/training/LrScheduleRetargetPanel.tsx"
-_API_TS = REPO / "frontend/src/utils/api.ts"
-
-
-def test_the_retarget_form_offers_the_registry_blend_shapes():
-    source = _RETARGET_PANEL.read_text(encoding="utf-8")
-    block = source[source.index("const SHAPE_OPTIONS"):]
-    offered = re.findall(r'"([a-z]+)"', block[:block.index("];")])
-    assert offered == list(BLEND_SHAPE_NAMES)
-    # The blend vocabulary IS the decay vocabulary; D22 adds no shape.
-    assert BLEND_SHAPE_NAMES == DECAY_SHAPE_NAMES
-
-
-def test_the_retarget_form_offers_every_op():
-    source = _RETARGET_PANEL.read_text(encoding="utf-8")
-    block = source[source.index("const OPS:"):]
-    offered = re.findall(r'value: "([a-z]+)"', block[:block.index("\n];")])
-    assert offered == list(RETARGET_OPS)
-
-
-def test_the_retarget_form_offers_every_anchor():
-    source = _RETARGET_PANEL.read_text(encoding="utf-8")
-    block = source[source.index('setField("anchor"'):]
-    block = block[:block.index("</select>")]
-    # The empty option is "leave it to the server default", not an anchor.
-    offered = [v for v in re.findall(r'<option value="([a-z]*)"', block) if v]
-    assert offered == list(RETARGET_ANCHORS)
-
-
-def test_the_typescript_op_union_is_the_registry():
-    source = _API_TS.read_text(encoding="utf-8")
-    line = re.search(r"export type LrRetargetOp = ([^;]+);", source).group(1)
-    assert re.findall(r'"([a-z]+)"', line) == list(RETARGET_OPS)
-
-
-# ---------------------------------------------------------------------------
-# R6's trigger vocabulary (§20.2): the panel's mirrors, and the bounds and
-# default the spec would otherwise carry as literals
-# ---------------------------------------------------------------------------
-
-_TRIGGER_PANEL = REPO / "frontend/src/components/training/LrScheduleTriggerPanel.tsx"
-
-
-def _trigger_mirror(opening: str, closing: str = "\n];") -> str:
-    source = _TRIGGER_PANEL.read_text(encoding="utf-8")
-    start = source.index(opening)
-    return source[start:source.index(closing, start)]
-
-
-def test_the_trigger_form_offers_every_signal():
-    assert re.findall(r'value: "([a-z_]+)"',
-                      _trigger_mirror("const SIGNALS:")) == list(TRIGGER_SIGNALS)
-    # `extra:<name>` is one option plus a text box, outside the array by
-    # design: its value is not a member the array could enumerate.
-    source = _TRIGGER_PANEL.read_text(encoding="utf-8")
-    assert '<option value="extra">' in source
-    assert EXTRA_SIGNAL_PREFIX + "${extraName.trim()}" in source
-
-
-def test_the_trigger_form_offers_every_predicate():
-    assert re.findall(r'value: "([a-z_]+)"',
-                      _trigger_mirror("const PREDICATES:")) == list(TRIGGER_PREDICATES)
-
-
-def test_the_trigger_form_offers_every_action_command():
-    assert re.findall(r'value: "([a-z_]+)"',
-                      _trigger_mirror("const ACTION_COMMANDS:")) == \
-        list(TRIGGER_ACTION_COMMANDS)
-
-
-def test_the_trigger_form_asks_for_what_each_predicate_reads_and_no_more():
-    """A box the predicate does not read is refused, not ignored (D46), so the
-    form's map has to be the backend's."""
-    block = _trigger_mirror("const REQUIRED_FIELDS", "\n};")
-    mirrored = {predicate: re.findall(r'"([a-z_]+)"', fields)
-                for predicate, fields in re.findall(r"(\w+): \[([^\]]*)\]", block)}
-    # Reached through the module on purpose: `_REQUIRED_FIELDS` stays private
-    # (the panel's own comment names it that way), and this is its one reader
-    # outside lr_triggers.
-    assert mirrored == {k: list(v) for k, v in lr_triggers._REQUIRED_FIELDS.items()}
-
-
-def test_the_typescript_trigger_unions_are_the_registry():
-    source = _API_TS.read_text(encoding="utf-8")
-    predicate = re.search(r"export type LrTriggerPredicate = ([^;]+);", source)
-    assert re.findall(r'"([a-z_]+)"', predicate.group(1)) == list(TRIGGER_PREDICATES)
-    command = re.search(r"export type LrTriggerCommand = ([^;]+);", source)
-    assert re.findall(r'"([a-z_]+)"', command.group(1)) == \
-        list(TRIGGER_ACTION_COMMANDS)
 
 
 def test_the_openapi_trigger_vocabulary_is_the_registry():

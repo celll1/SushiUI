@@ -312,12 +312,64 @@ class SenseNovaMixin:
         print(f"[SenseNova] Attention backend: {attn_backend} "
               f"(from attention_type={params.get('attention_type')!r}, {count} module(s) stamped)")
 
+    @staticmethod
+    def _sensenova_block_offload_branch(path, module):
+        if not path or "rotary_emb" in path:
+            return None
+        owns_tensor = any(value is not None for value in module._parameters.values()) or any(
+            value is not None and name not in module._non_persistent_buffers_set
+            for name, value in module._buffers.items()
+        )
+        if not owns_tensor:
+            return None
+        return "generation" if "_mot_gen" in path else "understanding"
+
+    @staticmethod
+    def _sensenova_block_offload_call_branches(args, kwargs):
+        del args
+        branches = []
+        if bool(kwargs.get("exist_non_image_gen_tokens")):
+            branches.append("understanding")
+        if bool(kwargs.get("exist_image_gen_tokens")):
+            branches.append("generation")
+        if not branches:
+            raise RuntimeError("SenseNova could not resolve a generation MoT branch")
+        return tuple(branches)
+
+    def _sensenova_maybe_install_block_offload(self, params, transformer, device):
+        if not bool(params.get("enable_block_swap", False)):
+            return None
+        requested = int(params.get("blocks_to_swap", 0) or 0)
+        if requested <= 0:
+            return None
+        if bool(params.get("sensenova_mot_phase_eviction", False)):
+            raise ValueError(
+                "SenseNova generation block offload and MoT phase eviction cannot "
+                "own the same branch weights; disable one of them"
+            )
+        layers = transformer.language_model.model.layers
+        from core.memory_management import FrozenBranchedLayerOffloadConductor
+
+        conductor = FrozenBranchedLayerOffloadConductor(
+            root=transformer,
+            layers=layers,
+            branches=("understanding", "generation"),
+            classify_module=self._sensenova_block_offload_branch,
+            resolve_call_branches=self._sensenova_block_offload_call_branches,
+            blocks_to_swap=requested,
+            device=device,
+            use_pinned_memory=bool(params.get("use_pinned_memory", False)),
+        )
+        conductor.register_hooks()
+        print(f"[SenseNova] Common branch block offload enabled "
+              f"({conductor.blocks_to_swap}/{len(layers)} layers, ring=2)")
+        return conductor
+
     def _sensenova_maybe_install_mot_eviction(self, params: Dict[str, Any], transformer, device):
         """Install the MoT phase-exclusive half-weight evictor when requested.
 
-        See mot_phase_eviction.py for the mechanism; `blocks_to_swap` is NOT
-        wired here (it is inert for SenseNova today, and this boolean is not
-        an alias for it).
+        See mot_phase_eviction.py for the mechanism. Generation block offload
+        is a separate mutually-exclusive weight owner, not an alias for it.
         """
         from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
 
@@ -657,18 +709,22 @@ class SenseNovaMixin:
         applied_lora = 0
         evictor = None
         kv_streamer = None
+        block_offloader = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             # Installed AFTER LoRA (if any) has wrapped the gen-branch Linears
             # in place -- see mot_phase_eviction.py's MotPhaseEvictor docstring.
-            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            block_offloader = self._sensenova_maybe_install_block_offload(
+                params, transformer, device)
+            evictor = None if block_offloader is not None else \
+                self._sensenova_maybe_install_mot_eviction(params, transformer, device)
             # Split-aware placement, not a blanket move -- see
             # move_non_gen_to_device's docstring. Unlike _sensenova_move it
             # raises rather than warning, so a placement failure aborts the
             # generation; the finally below still restores device state.
             if evictor is not None:
                 evictor.move_non_gen_to_device()
-            else:
+            elif block_offloader is None:
                 self._sensenova_move("transformer", device)
             # Independent of MoT eviction (disjoint tensors/hooks); must be
             # installed before encode_prompt() so _finalize_prefix_caches sees it.
@@ -754,6 +810,8 @@ class SenseNovaMixin:
             # Unconditional: a partial application that then raised wraps modules
             # without returning a count, and a second unload is a no-op once
             # `_sensenova_lora_keys` is empty.
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_move("vae", "cpu")
@@ -787,15 +845,19 @@ class SenseNovaMixin:
         applied_lora = 0
         evictor = None
         kv_streamer = None
+        block_offloader = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
             # docstring. Split-aware placement, not a blanket move -- see
             # txt2img's move_non_gen_to_device comment.
-            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            block_offloader = self._sensenova_maybe_install_block_offload(
+                params, transformer, device)
+            evictor = None if block_offloader is not None else \
+                self._sensenova_maybe_install_mot_eviction(params, transformer, device)
             if evictor is not None:
                 evictor.move_non_gen_to_device()
-            else:
+            elif block_offloader is None:
                 self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
             # A no-op unless this checkpoint declares a swapped VAE.
@@ -858,6 +920,8 @@ class SenseNovaMixin:
             # Unconditional: a partial application that then raised wraps modules
             # without returning a count, and a second unload is a no-op once
             # `_sensenova_lora_keys` is empty.
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_move("vae", "cpu")
@@ -892,15 +956,19 @@ class SenseNovaMixin:
         applied_lora = 0
         evictor = None
         kv_streamer = None
+        block_offloader = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
             # docstring. Split-aware placement, not a blanket move -- see
             # txt2img's move_non_gen_to_device comment.
-            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            block_offloader = self._sensenova_maybe_install_block_offload(
+                params, transformer, device)
+            evictor = None if block_offloader is not None else \
+                self._sensenova_maybe_install_mot_eviction(params, transformer, device)
             if evictor is not None:
                 evictor.move_non_gen_to_device()
-            else:
+            elif block_offloader is None:
                 self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
             # A no-op unless this checkpoint declares a swapped VAE.
@@ -963,6 +1031,8 @@ class SenseNovaMixin:
             # Unconditional: a partial application that then raised wraps modules
             # without returning a count, and a second unload is a no-op once
             # `_sensenova_lora_keys` is empty.
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_move("vae", "cpu")

@@ -264,11 +264,16 @@ class ZImageMixin:
         really converts -- a request that converts nothing leaves every attribute
         exactly as it found it.
         """
-        from core.vram_optimization import apply_runtime_int8_quantization
+        from core.vram_optimization import (
+            _discard_runtime_quantization_cache,
+            apply_runtime_int8_quantization,
+        )
 
         components = getattr(self, "zimage_components", None)
         if not components:
             return None
+        if str(params.get("unet_quantization") or "").lower() == "int8":
+            _discard_runtime_quantization_cache(components, "transformer")
         transformer = components.get("transformer")
         if transformer is None:
             return None
@@ -639,6 +644,14 @@ class ZImageMixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.zimage_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.zimage_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -751,8 +764,11 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                )
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -790,8 +806,11 @@ class ZImageMixin:
 
             if not enable_block_swap:
                 # Normal mode: move entire Transformer to GPU
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                    )
 
                 if lora_configs and params.get("developer_mode", False):
                     for attn_name, attn_module in transformer.named_modules():
@@ -983,6 +1002,14 @@ class ZImageMixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.zimage_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.zimage_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -1085,8 +1112,11 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                )
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1229,8 +1259,11 @@ class ZImageMixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                    )
                 log_device_status("Ready for Z-Image denoising loop (img2img)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,
@@ -1394,6 +1427,14 @@ class ZImageMixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.zimage_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.zimage_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -1477,8 +1518,11 @@ class ZImageMixin:
             transformer = self._zimage_runtime_int8(
                 params, progress_callback=progress_callback) or transformer
 
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                )
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1644,8 +1688,11 @@ class ZImageMixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.zimage_components, cache_identity=_kh_model_key,
+                    )
                 log_device_status("Ready for Z-Image denoising loop (inpaint)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,

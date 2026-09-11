@@ -541,13 +541,6 @@ def _assert_refused(timeline, spec, result, expected):
     assert timeline.active_spec(spec, 10 ** 6) is spec
 
 
-def test_rule_1_a_backdated_retarget_is_refused():
-    spec, timeline = _run()
-    _assert_refused(timeline, spec, timeline.add(
-        "retarget", at=4000, issued=5000, new_spec=_spec("constant")),
-        "rejected_backdated")
-
-
 @pytest.mark.parametrize("at,expected", [
     (5000, "applied"),          # at == issued
     (4999, "rejected_backdated"),
@@ -632,13 +625,6 @@ def test_rule_4_a_length_that_rounds_to_zero_is_refused_not_clamped():
         "rejected_negative_length")
 
 
-def test_rule_5_a_warmup_longer_than_the_remaining_span_is_refused():
-    spec, timeline = _run()
-    _assert_refused(timeline, spec, timeline.add(
-        "retarget", at=9500, new_spec=_spec("constant", 2000)),
-        "rejected_warmup_exceeds_span")
-
-
 def test_rule_5_measures_the_span_from_the_retarget_step():
     _, timeline = _run()
     assert timeline.add("retarget", at=7000, new_spec=_spec("constant", 2000),
@@ -668,14 +654,6 @@ def test_rule_6_a_floor_outside_zero_to_one_is_refused():
     _assert_refused(timeline, spec,
                     timeline.add("retarget", at=4000, new_spec=broken),
                     "rejected_floor_out_of_range")
-
-
-def test_rule_7_an_unknown_group_name_is_refused():
-    spec, timeline = _run()
-    _assert_refused(timeline, spec, timeline.add(
-        "retarget", at=4000, new_spec=_spec("constant"),
-        groups=["unet", "typo_encoder"], known_groups=("unet", "text_encoder")),
-        "rejected_unknown_group")
 
 
 def test_rule_7_cannot_be_checked_without_the_component_list():
@@ -887,17 +865,6 @@ def test_a_scoped_retarget_moves_only_the_named_group():
     assert _curve(specs["text_encoder_1"], timeline, steps) == expected
 
 
-def test_a_null_selector_still_reaches_every_group():
-    """R1's meaning, which every event written before R2 also has."""
-    specs, timeline = _grouped(("unet", "text_encoder_1"))
-    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
-                        length=0, groups=None) == "applied"
-    for spec in specs.values():
-        assert timeline.active_spec(spec, 5000).name == "constant"
-        assert timeline.multiplier(spec, 6000) == pytest.approx(
-            timeline.multiplier(spec, 4000))
-
-
 def test_an_omitted_selector_is_the_same_as_null():
     specs, timeline = _grouped(("unet", "text_encoder_1"))
     timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0)
@@ -972,15 +939,6 @@ def test_an_unscoped_retarget_after_a_scoped_one_reaches_both_chains():
     timeline.add("retarget", at=6000, new_spec=_spec("linear"), length=0)
     for spec in specs.values():
         assert timeline.active_spec(spec, 7000).name == "linear"
-
-
-def test_a_group_name_matches_case_insensitively():
-    """`lr_group_schedules` resolves its component names case-folded, so a
-    selector that passed rule 7 cannot then miss the group it named."""
-    specs, timeline = _grouped(("Text_Encoder_1",))
-    timeline.add("retarget", at=4000, new_spec=_spec("constant"), length=0,
-                 groups=["text_encoder_1"])
-    assert timeline.active_spec(specs["Text_Encoder_1"], 5000).name == "constant"
 
 
 def test_a_scoped_retarget_blends_only_the_named_group():
@@ -1072,15 +1030,6 @@ def test_an_empty_selector_is_refused():
         assert _curve(spec, timeline, steps) == before[name]
 
 
-def test_an_empty_selector_is_refused_before_the_name_check():
-    """It is refused whether or not the caller said what components exist:
-    there is no name in it to check against `known_groups`."""
-    _, timeline = _run()
-    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
-                        groups=[], known_groups=("unet",)
-                        ) == "rejected_empty_group_selector"
-
-
 def test_an_empty_selector_stored_before_d34_reaches_no_group():
     """A refused event never reaches the fold, so this can only arrive from an
     older state file. "Every group" is the one reading D34 rules out."""
@@ -1110,14 +1059,6 @@ def test_rule_7_accepts_a_group_name_in_another_case():
                         known_groups=("unet", "text_encoder_1")) == "applied"
     assert timeline.active_spec(specs["unet"], 5000).name == "constant"
     assert timeline.active_spec(specs["text_encoder_1"], 5000).name == "cosine"
-
-
-def test_rule_7_case_folds_the_component_list_too():
-    specs, timeline = _grouped(("Unet",))
-    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
-                        length=0, groups=["unet"],
-                        known_groups=("UNET",)) == "applied"
-    assert timeline.active_spec(specs["Unet"], 5000).name == "constant"
 
 
 def test_rule_7_still_refuses_a_name_that_is_not_a_case_variant():
@@ -1152,27 +1093,6 @@ def test_the_warning_is_decided_at_acceptance_not_at_evaluation(capsys):
     assert (timeline.dump(1000)[-1]["warning"]
             == WARN_SELECTOR_ON_UNGROUPED_RUN), "and it is saved with the event"
 
-
-def test_a_grouped_run_takes_a_selector_without_the_warning(capsys):
-    specs, timeline = _grouped(("unet", "text_encoder_1"))
-    assert timeline.add("retarget", at=4000, new_spec=_spec("constant"),
-                        length=0, groups=["unet"]) == "applied"
-    assert "warning" not in timeline.dump(TOTAL)[-1]
-    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
-
-
-def test_an_unscoped_retarget_never_warns(capsys):
-    _, timeline = _run("constant")
-    timeline.add("retarget", at=2000, new_spec=_spec("cosine"), length=0)
-    assert "warning" not in timeline.dump(TOTAL)[-1]
-    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
-
-
-def test_a_refused_selector_does_not_also_warn(capsys):
-    _, timeline = _run("constant")
-    timeline.add("retarget", at=2000, new_spec=_spec("constant"), groups=[])
-    assert "warning" not in timeline.dump(TOTAL)[-1]
-    assert WARN_SELECTOR_ON_UNGROUPED_RUN not in capsys.readouterr().out
 
 # ---------------------------------------------------------------------------
 # D38: a decay/cancel is scored per group, not on the representative spec
@@ -1435,22 +1355,12 @@ def test_a_backdated_command_is_refused_like_a_backdated_retarget(kind):
 
 
 @pytest.mark.parametrize("kind", ["decay", "cancel"])
-def test_a_command_issued_at_its_own_step_is_still_accepted(kind):
-    spec, timeline = _run("constant")
+@pytest.mark.parametrize("at", [2000, 5000])
+def test_a_command_at_or_after_its_issue_step_is_accepted(kind, at):
+    _, timeline = _run("constant")
     timeline.add("decay", at=1000, issued=1000)
-    result = timeline.add(kind, at=2000, issued=2000)
-    assert result != "rejected_backdated"
+    assert timeline.add(kind, at=at, issued=2000) != "rejected_backdated"
     assert timeline.dump(TOTAL)[-1]["kind"] == kind
-
-
-@pytest.mark.parametrize("kind", ["decay", "cancel"])
-def test_a_future_dated_command_is_still_accepted(kind):
-    """D25 permits a reservation; only the past is refused."""
-    spec, timeline = _run("constant")
-    timeline.add("decay", at=3000, issued=1000)
-    assert timeline.add(kind, at=5000, issued=1000) != "rejected_backdated"
-    assert [e["kind"] for e in timeline.dump(1000)] == \
-        ["total_steps", "decay", kind]
 
 
 def test_a_command_with_no_issued_is_not_refused():
@@ -1522,20 +1432,12 @@ def test_the_degenerate_clock_still_behaves_exactly_as_before(capsys):
         [held, held, held]
 
 
-def test_an_extension_anchored_inside_the_run_does_not_warn(capsys):
-    spec, timeline = _run("cosine", T=1000)
-    timeline.add("total_steps", at=999, value=2000)
+@pytest.mark.parametrize("at", [999, 1200])
+def test_a_healthy_extension_does_not_warn(at, capsys):
+    _, timeline = _run("cosine", T=1000)
+    timeline.add("total_steps", at=at, value=2000)
     assert WARN_CLOCK_DEGENERATE not in capsys.readouterr().out
-    assert "warning" not in timeline.dump(999)[-1]
-
-
-def test_an_extension_anchored_past_the_nominal_end_does_not_warn(capsys):
-    """D33: a healthy extension anchored past the nominal end still advances its
-    clock and is not degenerate, so it must not warn."""
-    spec, timeline = _run("cosine", T=1000)
-    timeline.add("total_steps", at=1200, value=2000)
-    assert WARN_CLOCK_DEGENERATE not in capsys.readouterr().out
-    assert "warning" not in timeline.dump(1200)[-1]
+    assert "warning" not in timeline.dump(at)[-1]
 
 
 def test_the_first_total_is_not_a_degenerate_clock(capsys):

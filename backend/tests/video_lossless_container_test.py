@@ -17,6 +17,8 @@ in `video_utils.save_video_with_metadata`'s docstring.
 import os
 import sys
 import json
+import shutil
+import subprocess
 
 import numpy as np
 import pytest
@@ -174,3 +176,26 @@ def test_streaming_surfaces_ffmpeg_error_after_broken_pipe(monkeypatch):
 
     assert returncode == 9
     assert stderr == "codec rejected input"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_real_ffv1_streaming_roundtrip_is_byte_exact(monkeypatch, tmp_path):
+    rng = np.random.default_rng(912_2026)
+    frames = rng.integers(0, 256, size=(4, 6, 8, 3), dtype=np.uint8)
+    monkeypatch.setattr(video_utils.settings, "outputs_dir", str(tmp_path))
+
+    filename, _preview = video_utils.save_video_with_metadata(
+        frames, None, None, {"frame_rate": 12.0, "seed": 77}, "cpu_roundtrip",
+        lossless=True,
+    )
+    decoded = subprocess.run(
+        [
+            video_utils._locate_ffmpeg(), "-v", "error", "-i", str(tmp_path / filename),
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert decoded.stdout == frames.tobytes()

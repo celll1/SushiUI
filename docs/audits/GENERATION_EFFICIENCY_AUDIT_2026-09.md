@@ -280,18 +280,21 @@ the equivalent-refactoring implementation scope:
 
 The remaining CPU-capable proof is handled separately from the GPU backlog:
 
-1. Exercise every SD scheduler in `SAMPLER_MAP` and prove that its returned
-   `pred_original_sample` does not share storage with the next-step
-   `prev_sample`; this is the ownership condition for the removed preview
-   clone.
-2. Compare a seeded CPU generation kernel through the executor with grad mode
-   enabled and through the new no-grad boundary, requiring bit-exact tensor
-   output and unchanged RNG advancement.
-3. Compare schedule snapshots against the former per-element `.item()` path
-   for every CPU floating dtype supported by PyTorch.
-4. When FFmpeg is installed, encode deterministic RGB frames through the real
+1. **Passed:** exercise every SD scheduler in `SAMPLER_MAP` and prove that its
+   returned `pred_original_sample` does not share storage with the next-step
+   `prev_sample` or retained scheduler state. All steps passed for the eight
+   schedulers that expose x0; DPM++ 2M/SDE, PNDM and UniPC expose none.
+2. **Passed:** compare a seeded CPU generation kernel through the executor with
+   grad mode enabled and through the new no-grad boundary, requiring bit-exact
+   tensor output and unchanged RNG advancement.
+3. **Passed:** compare schedule snapshots against the former per-element
+   `.item()` path for FP16, BF16, FP32 and FP64, including a strided tensor.
+4. **Passed:** encode deterministic RGB frames through the installed real
    streaming path and decode the FFV1 master back to RGB, requiring byte-exact
    equality.
+
+The combined CPU suite also re-runs callback demand/CFG equivalence, MiniMax-H3
+prompt-cache isolation and runtime-FP8 cache lifecycle checks: 77 tests pass.
 
 ## GPU verification backlog
 

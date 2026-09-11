@@ -28,7 +28,6 @@ from core.models.common import vae_source as vs
 from core.models.common.single_file_format import build_component_metadata
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _tiny_vae(latent_channels):
     """A real AutoencoderKL, small enough to build in milliseconds."""
@@ -120,9 +119,6 @@ def loader(monkeypatch):
     return ml.ModelLoader, recorder
 
 
-# ---------------------------------------------------------------------------
-# 1. A bundled declaration drives construction, the VAE and the identity
-# ---------------------------------------------------------------------------
 
 def test_a_bundled_declaration_builds_the_backbone_at_its_channel_count(
         tmp_path, loader):
@@ -314,9 +310,6 @@ def test_a_checkpoint_whose_convs_disagree_with_its_declaration_is_refused(
         ModelLoader.reconstruct_sd_sdxl_pipeline(path, "sdxl", torch.float32, "cpu")
 
 
-# ---------------------------------------------------------------------------
-# 3. The capability gate (§9.7, §13.3)
-# ---------------------------------------------------------------------------
 
 def test_the_feature_is_declared_with_its_arming_key_and_a_label():
     from api.arch_capabilities import (

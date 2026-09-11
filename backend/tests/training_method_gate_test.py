@@ -45,9 +45,6 @@ class FullParameterTrainer:  # name-matched on purpose: the MRO walk keys on it
     pass
 
 
-# ---------------------------------------------------------------------------
-# The resolver
-# ---------------------------------------------------------------------------
 
 class _RealSubclass(FullParameterTrainer):
     """What train_runner constructs: the config carries no training_method."""
@@ -149,9 +146,6 @@ def test_train_section_still_omits_training_method():
     assert "training_method" not in set(_keys(yaml.safe_load(generated)))
 
 
-# ---------------------------------------------------------------------------
-# Site 1: fp8_base_dtype quantising the base a full FT is about to train
-# ---------------------------------------------------------------------------
 
 class _Stub(nn.Module):
     def __init__(self):

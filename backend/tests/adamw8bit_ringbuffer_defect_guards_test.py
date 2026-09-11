@@ -219,9 +219,6 @@ class StepCountPersistenceTest(unittest.TestCase):
         self.assertEqual(set(ext.steps), {138})
 
 
-# ---------------------------------------------------------------------------
-# (2) Schedule-Free + fused hooks
-# ---------------------------------------------------------------------------
 
 class ScheduleFreeFusedBackwardTest(unittest.TestCase):
     def test_patching_a_schedule_free_optimizer_is_refused(self):

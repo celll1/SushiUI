@@ -54,9 +54,6 @@ from core.training.training_events import TRAINING_EVENT_SENTINEL
 CKPT_LR = 9.876e-06   # what a checkpoint's optimizer state carries back in
 
 
-# ---------------------------------------------------------------------------
-# A trainer stand-in carrying the real methods
-# ---------------------------------------------------------------------------
 
 class _Probe:
     _build_component_lr_list = BaseTrainer._build_component_lr_list
@@ -147,9 +144,6 @@ def _params(n=1):
     return [nn.Parameter(torch.ones(2)) for _ in range(n)]
 
 
-# ---------------------------------------------------------------------------
-# Real adapter param groups
-# ---------------------------------------------------------------------------
 
 class _AnimaBlock(nn.Module):
     def __init__(self):
@@ -237,9 +231,6 @@ def _sdxl_custom_te_groups(probe):
     return SDXLFullParameterAdapter(probe).setup_trainable_parameters()
 
 
-# ---------------------------------------------------------------------------
-# The negative control: the shipped broadcast, with the auditor's numbers
-# ---------------------------------------------------------------------------
 
 def _anima_probe():
     """lr 1e-4, unet_lr 2e-5, attn_mlp x2.0, mod x0.5 -- the audited run."""
@@ -292,9 +283,6 @@ def test_negative_control_single_group_dit_gets_learning_rate_not_unet_lr():
     assert _resume(probe) == [2e-05]              # fixed: the configured unet_lr
 
 
-# ---------------------------------------------------------------------------
-# Mode 1: the component list is EMPTY (every DiT architecture)
-# ---------------------------------------------------------------------------
 
 _EMPTY_LIST_ARCHS = {
     "anima_full": _anima_full_groups,
@@ -409,9 +397,6 @@ def test_sdxl_custom_te_groups_are_described_by_the_adapter_not_by_te1_te2():
     assert _group_lrs(shipped) == [2e-05, 4e-06, 5e-06]   # bridge/TE body swapped
 
 
-# ---------------------------------------------------------------------------
-# The aligned architectures are unchanged
-# ---------------------------------------------------------------------------
 
 def test_sdxl_unet_te1_te2_resume_is_unchanged():
     probe = _Probe(learning_rate=1e-4, unet_lr=1e-5,
@@ -494,9 +479,6 @@ def test_controlnet_single_group_is_unchanged():
     assert _resume(probe) == [2e-5]
 
 
-# ---------------------------------------------------------------------------
-# What happens when no description can be built
-# ---------------------------------------------------------------------------
 
 def test_resume_refuses_to_write_when_the_description_cannot_be_built():
     probe = _anima_probe()
@@ -530,9 +512,6 @@ def test_no_param_groups_is_a_no_op():
     probe._reassert_config_lr_on_resume()       # must not raise
 
 
-# ---------------------------------------------------------------------------
-# The snapshot's other properties
-# ---------------------------------------------------------------------------
 
 def test_snapshot_is_the_base_rate_not_the_warmup_scaled_one():
     """The scheduler exists by the time the snapshot is taken; at step 0 a
@@ -583,9 +562,6 @@ def test_fused_optimizer_groups_snapshot_the_flattened_rate():
     assert probe._configured_group_lrs == [1e-4, 1e-4]
 
 
-# ---------------------------------------------------------------------------
-# The setup-time report
-# ---------------------------------------------------------------------------
 
 def test_warmup_does_not_look_like_a_dead_group_at_setup():
     """Pre-fix, the report compared the schedule-scaled ``lr``: with any warmup

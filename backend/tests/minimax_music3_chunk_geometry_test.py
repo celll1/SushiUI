@@ -36,9 +36,6 @@ from core.models.minimax_music3.vendor import (
 )
 
 
-# ---------------------------------------------------------------------------
-# prepare_chunks: pure arithmetic, no model needed.
-# ---------------------------------------------------------------------------
 def _pipeline_for_chunk_math():
     return MiniMaxMusic3Pipeline(
         tokenizer=None,

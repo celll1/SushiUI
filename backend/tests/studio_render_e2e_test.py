@@ -127,12 +127,6 @@ def _two_clip_manifest() -> dict:
 
 @pytest.mark.skipif(_find_ffprobe() is None, reason="ffprobe/ffmpeg not available in this environment")
 def test_two_clip_manifest_stages_with_nonzero_frame_positions(env):
-    """MUTANT: reverting the C1 fix (re-canonicalizing `initial` instead of
-    `raw_manifest`) makes this raise `StudioRenderValidationError` on the
-    second clip (missing 'duration' after the first pass stripped it to
-    `duration_frames`) -- i.e. this call does not even return. Verified
-    live against the pre-fix code: it raised
-    `StudioRenderValidationError: clip duration must be a number`."""
     db, outputs_dir, cache_dir = env
     manifest = _two_clip_manifest()
     job_id = "e2e0000000000000000000000000001"
@@ -248,11 +242,6 @@ def _canonical_with_fake_staged_assets(tmp_path, raw_manifest: dict) -> dict:
 
 
 def test_muted_video_track_still_produces_a_video_overlay(tmp_path):
-    """MUTANT: `if track["kind"] != "video" or track.get("muted") or ...`
-    (the pre-fix condition) treats `muted` as a reason to skip the VISUAL
-    overlay filter, not just the audio graph. Verified live by reverting to
-    that condition: this test then failed (no `overlay=` filter for the
-    muted track's clip); reverted after confirming."""
     manifest = _canonical_with_fake_staged_assets(tmp_path, _single_clip_manifest_on_video_track(muted=True))
     command = srj.build_render_command(manifest, str(tmp_path), "ffmpeg", str(tmp_path / "out.mp4"))
     filter_arg = command[command.index("-filter_complex") + 1] if "-filter_complex" in command else None
@@ -278,12 +267,6 @@ def test_unmuted_and_muted_video_tracks_produce_the_same_visual_graph(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_transition_only_succeeds_from_the_declared_source_states(env):
-    """MUTANT: a read-then-write implementation (`if job.state == "queued":
-    job.state = "running"`) would let this succeed regardless of the row's
-    ACTUAL current state, because the precondition check and the write are
-    two separate steps an interleaved cancel could land between. Here the
-    precondition is baked into the UPDATE's WHERE clause, so a job that is
-    already "running" can never be re-claimed as if it were "queued"."""
     db, _, _ = env
     job = StudioRenderJob(id="h2-race-1", state="running", manifest={}, input_dir="", progress=0.0)
     db.add(job)

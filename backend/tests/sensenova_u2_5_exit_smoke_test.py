@@ -53,9 +53,6 @@ _DEPTH = 3
 _WIDTH = 2
 
 
-# ---------------------------------------------------------------------------
-# A. The prefix forward sits outside the checkpointed region (SS11 2b-5)
-# ---------------------------------------------------------------------------
 
 class _CountingUndLayer(nn.Module):
     """An understanding layer that records every invocation against a shared log."""
@@ -245,9 +242,6 @@ def test_a_no_grad_prefix_is_still_refused_under_a_trainable_generation_pass():
         _gen_pass(gen, cache, checkpoint_layers=True)
 
 
-# ---------------------------------------------------------------------------
-# B. The U-2-5 update-nonzero criterion
-# ---------------------------------------------------------------------------
 
 def _enumerate(branch: str) -> list[str]:
     from sensenova_full_finetune_save_test import _Decoder

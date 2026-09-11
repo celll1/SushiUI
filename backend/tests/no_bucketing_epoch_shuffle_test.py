@@ -36,10 +36,6 @@ def _read_base_trainer_source() -> str:
         return f.read()
 
 
-# ===========================================================================
-# Pinned copy of the fixed non-bucketed batch-building code
-# (base_trainer.py, BaseTrainer.train(), the `else: # no bucket_manager` arm).
-# ===========================================================================
 
 def _build_non_bucketed_batches(_image_all_items, batch_size, priority_config=None,
                                  classify_items=None):
@@ -61,9 +57,6 @@ def _make_items(n):
     return [({"image_path": f"img_{i}.png"}, f"ds") for i in range(n)]
 
 
-# ===========================================================================
-# (a) epoch-to-epoch order changes
-# ===========================================================================
 
 def test_order_changes_across_epochs():
     items = _make_items(64)
@@ -139,9 +132,6 @@ def test_priority_items_keep_entry_index_order_only_normal_shuffled():
     )
 
 
-# ===========================================================================
-# (d) video/audio group homogeneity is untouched by the item-level shuffle
-# ===========================================================================
 
 def test_video_audio_batches_are_never_built_from_image_all_items():
     """The image-level shuffle in the fixed code operates on `_image_all_items`,

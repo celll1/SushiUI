@@ -84,9 +84,6 @@ def test_notice_fits_the_event_message_bound():
     assert len(_notice(inject_batch_size=999, inject_interval=999)) < MAX_EVENT_MESSAGE_CHARS
 
 
-# ---------------------------------------------------------------------------
-# (b) every other combination is silent
-# ---------------------------------------------------------------------------
 
 def test_silent_when_repa_is_off():
     assert _notice(repa_enable=False) is None
@@ -108,9 +105,6 @@ def test_silent_for_every_other_latent_mode(mode):
     assert _notice(latent_encoding_mode=mode) is None
 
 
-# ---------------------------------------------------------------------------
-# (c) once per run, outside every loop
-# ---------------------------------------------------------------------------
 
 def _call_sites(name):
     tree = ast.parse(BASE_TRAINER_SRC)
@@ -158,9 +152,6 @@ def test_notice_is_emitted_on_the_training_event_channel():
     assert any(isinstance(n, ast.If) for n in chain), "emitted unconditionally"
 
 
-# ---------------------------------------------------------------------------
-# (d) it reaches the operator and stays there
-# ---------------------------------------------------------------------------
 
 def test_notice_persists_on_the_run_row(capsys):
     from core.training.training_events import emit_training_warning
@@ -176,9 +167,6 @@ def test_notice_persists_on_the_run_row(capsys):
     assert merge_run_warnings(kept, events[0]) is None
 
 
-# ---------------------------------------------------------------------------
-# (e) the per-item paths were already latched and stay latched
-# ---------------------------------------------------------------------------
 
 def _pixel_trainer():
     return SimpleNamespace(log_prefix="[test]", repa_size=16,
@@ -201,9 +189,6 @@ def test_unreadable_source_logs_once_not_per_batch(capsys):
     assert capsys.readouterr().out.count("clean-image load failed") == 1
 
 
-# ---------------------------------------------------------------------------
-# (f) the loss is untouched
-# ---------------------------------------------------------------------------
 
 def test_notice_only_reads_and_only_prints():
     """A pure function of five scalars: no trainer, no tensors, no assignment

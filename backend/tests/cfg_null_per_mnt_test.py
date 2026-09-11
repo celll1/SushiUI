@@ -38,9 +38,6 @@ class _Trainer:
         self.config = {"cfg_uncond_drop_per_mnt": per_mnt}
 
 
-# ---------------------------------------------------------------------------
-# mnt_index == 0 always keeps the assembly draw
-# ---------------------------------------------------------------------------
 
 def test_mnt_index_zero_returns_the_batch_mask_unchanged():
     trainer = _Trainer(rate=0.5)
@@ -55,9 +52,6 @@ def test_mnt_index_zero_is_unchanged_even_with_per_mnt_off():
     assert trainer.cfg_drop_mask_for_mnt(batch_mask, 0, 1) is batch_mask
 
 
-# ---------------------------------------------------------------------------
-# rate falsy / no label at all
-# ---------------------------------------------------------------------------
 
 def test_a_none_mask_stays_none_regardless_of_mnt_index():
     """A falsy rate never draws a batch mask in the first place
@@ -78,9 +72,6 @@ def test_a_zero_rate_never_redraws_even_if_a_mask_were_passed():
     assert result is batch_mask
 
 
-# ---------------------------------------------------------------------------
-# per_mnt=False reproduces the shared-window behaviour exactly
-# ---------------------------------------------------------------------------
 
 def test_disabled_reproduces_the_old_shared_window_behaviour():
     torch.manual_seed(0)
@@ -144,9 +135,6 @@ def test_the_empirical_null_fraction_converges_to_the_configured_rate():
     assert abs(empirical - rate) < 0.02, (empirical, rate)
 
 
-# ---------------------------------------------------------------------------
-# SenseNova's four-phase shared-window route: forced off, warned once
-# ---------------------------------------------------------------------------
 
 def test_the_shared_window_route_keeps_the_batch_label_regardless_of_the_setting(capsys):
     trainer = _Trainer(rate=0.5)
@@ -240,9 +228,6 @@ def test_a_set_prefix_cfg_null_of_false_does_not_raise():
     assert result[3] == "assembly"
 
 
-# ---------------------------------------------------------------------------
-# FIX 4b: the phase-eviction disclosure, gated on all three conditions
-# ---------------------------------------------------------------------------
 
 class _StubSenseNovaArch:
     name = "sensenova"

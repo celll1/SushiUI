@@ -82,10 +82,6 @@ class RecordModelVariantTest(unittest.TestCase):
         self.assertEqual(params["model_variant"], "ref2va")
 
     def test_mutant_echo_params_value_would_report_the_wrong_partition(self):
-        """MUTANT: record whatever `params` already claims instead of the
-        loader's resolved variant -- proves the previous test actually
-        distinguishes "reads pipeline_manager" from "trusts the caller".
-        """
 
         def mutant_record_model_variant(params, pipeline_manager):
             if not getattr(pipeline_manager, "is_minimax_h3_model", False):

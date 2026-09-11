@@ -58,9 +58,6 @@ def _pinned_video_frames(generated_frames=GENERATED, overlap=OVERLAP):
     return tuple(i for i, (_lo, hi) in enumerate(spans) if hi <= overlap)
 
 
-# --------------------------------------------------------------------------
-# 1. The addressable overlap lengths -- ONE enumerator, and it CYCLES
-# --------------------------------------------------------------------------
 
 def test_the_overlap_lengths_are_the_cycling_cumulative_sums():
     """1, 5, 9, 13, 17 -- not 1, 5, 17, 33.
@@ -149,9 +146,6 @@ def test_boundary_frame_is_unchanged_and_refuses_a_meaningless_overlap():
         plan_video_continuation_context("boundary_frame", 5, "minimax_h3", "fl2va")
 
 
-# --------------------------------------------------------------------------
-# 2. The placement: the OUTPUT length is what stays fixed
-# --------------------------------------------------------------------------
 
 def test_the_generated_span_absorbs_the_overlap_and_the_output_length_holds():
     """A wider overlap lengthens the span, not the answer.
@@ -219,9 +213,6 @@ def test_the_video_and_audio_pins_cover_the_same_overlap():
         assert video_end - audio_end < 1 / 40.0, "a whole audio latent inside the overlap is free"
 
 
-# --------------------------------------------------------------------------
-# 4. The row invariants, in THIS configuration (both tracks pinned at once)
-# --------------------------------------------------------------------------
 
 # The chain shape at a size a CPU can run: a leading prefix of video latent
 # frames and of audio latents, pinned together.
@@ -366,9 +357,6 @@ def test_the_free_rows_of_both_tracks_keep_the_continuation_off_noise():
     assert bool((video_rows[:n_video] == 1000.0).all())
 
 
-# --------------------------------------------------------------------------
-# 5. The orchestration: what is pinned, and what the output is made of
-# --------------------------------------------------------------------------
 
 GENERATED_VALUE = 7
 HEAD_VALUE = 200

@@ -74,9 +74,6 @@ def _grid() -> VideoGridSpec:
     return VideoGridSpec.from_video_constraints(video_constraints_payload()["minimax_h3"])
 
 
-# --------------------------------------------------------------------------
-# 1. The anchors: uniform, deterministic, and inside the pre-roll
-# --------------------------------------------------------------------------
 
 def test_the_anchors_are_uniform_and_span_the_whole_preroll():
     """First anchor at the oldest pre-roll frame, last at the boundary frame.
@@ -126,9 +123,6 @@ def test_a_preroll_too_small_for_its_anchors_is_refused():
         motion_preroll_anchor_frames(9, 1)
 
 
-# --------------------------------------------------------------------------
-# 2. The bounds, and every refusal that is a refusal
-# --------------------------------------------------------------------------
 
 def test_the_capability_advertises_the_mode_and_its_own_bounds():
     entry = chain_context_for("minimax_h3", "fl2va")
@@ -225,9 +219,6 @@ def test_motion_preroll_is_refused_where_it_is_not_advertised(arch, variant):
         assert entry["chain_supports_sparse_motion_anchors"] is False
 
 
-# --------------------------------------------------------------------------
-# 3. The discard arithmetic: what the plan promises is what comes back
-# --------------------------------------------------------------------------
 
 def test_the_generated_span_absorbs_the_preroll_and_the_output_length_holds():
     params = {"total_frames": 500, "input_offset_frames": 0}
@@ -428,13 +419,9 @@ def test_the_preserved_prefix_is_exact_and_only_the_new_suffix_is_appended():
     assert seed == 4242
     # 1. bit-exact prefix, every frame of it.
     assert np.array_equal(frames[:head.shape[0]], head)
-    # 2. the discard: the generated clip is `generated` frames, of which the
-    #    first PREROLL never reach the output.
     assert captured["params"]["num_frames"] == generated
     assert frames.shape[0] == head.shape[0] + generated - PREROLL
     assert (frames[head.shape[0]:] == GENERATED_VALUE).all()
-    # 3. and the model's version of the pre-roll is nowhere in the output: the
-    #    frames at those instants are the preserved clip's own.
     assert np.array_equal(frames[head.shape[0] - PREROLL:head.shape[0]], head[-PREROLL:])
     assert not (frames[head.shape[0] - PREROLL:head.shape[0]] == GENERATED_VALUE).all()
 

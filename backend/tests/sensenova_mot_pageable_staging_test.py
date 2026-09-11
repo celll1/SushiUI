@@ -40,9 +40,6 @@ from sensenova_mot_staging_highwater_test import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# _stage_tensor / stage_modules_to_pinned_cpu, pageable=True (no CUDA)
-# ---------------------------------------------------------------------------
 
 
 def test_pageable_stage_never_attempts_a_pinned_allocation():
@@ -107,9 +104,6 @@ def test_negative_control_default_still_pins_by_attempted_call():
     assert calls == [True]
 
 
-# ---------------------------------------------------------------------------
-# Evictor threading: pageable_staging -> stage_modules_to_pinned_cpu(pageable=)
-# ---------------------------------------------------------------------------
 
 
 def _spy_move_to_cpu(captured):
@@ -299,9 +293,6 @@ def test_pageable_staging_defaults_off_and_does_not_arm_the_refusal():
             "model", "lora", _config(), {"sample": {}})
 
 
-# ---------------------------------------------------------------------------
-# Capability table parity (CLAUDE.md: 4ab32d65's openapi-parity fix)
-# ---------------------------------------------------------------------------
 
 
 def test_the_flag_is_declared_as_its_own_feature_not_folded_into_mot_eviction():

@@ -74,9 +74,6 @@ def save_keys(adapter, layers, tmp_path, name):
         return list(f.keys())
 
 
-# ---------------------------------------------------------------------------
-# Stub trees + real-adapter drivers, one per architecture
-# ---------------------------------------------------------------------------
 
 def _clip_te(n_layers=2):
     layers = nn.ModuleList([

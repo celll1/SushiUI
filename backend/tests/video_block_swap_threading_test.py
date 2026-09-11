@@ -186,10 +186,6 @@ class SchemaEndpointTest(unittest.TestCase):
                 self.assertIn(f'"{key}":', source)
 
 
-# ---------------------------------------------------------------------------
-# 4. frontend/src/utils/api.ts: type interfaces + senders + the shared max
-#    constant.
-# ---------------------------------------------------------------------------
 class FrontendApiTest(unittest.TestCase):
     @staticmethod
     def _function_source(source: str, name: str) -> str:
@@ -232,10 +228,6 @@ class FrontendApiTest(unittest.TestCase):
                       frontend_definition("VIDEO_BLOCK_SWAP_MAX"))
 
 
-# ---------------------------------------------------------------------------
-# 5. The four panels: literal `blocks_to_swap: params.video_blocks_to_swap`
-#    sites, source-anchored (a revert of any one of these fails this test).
-# ---------------------------------------------------------------------------
 class PanelLiteralSiteTest(unittest.TestCase):
     @staticmethod
     def _block(source: str, start_marker: str) -> str:

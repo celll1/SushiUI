@@ -42,9 +42,6 @@ from core.pipeline_backends.minimax_h3 import build_outpaint_references  # noqa:
 from core.models.minimax_h3.h3_references import MIN_REFERENCE_VIDEO_FRAMES  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# The decision table (minimax_h3_outpaint_refs_design.md §3)
-# ---------------------------------------------------------------------------
 
 def _gate(variant, *, has_reference_images, placement, generated_frames=None):
     return resolve_minimax_h3_outpaint_reference_gate(
@@ -138,9 +135,6 @@ def test_the_gate_never_names_ref2vid_as_a_destination():
     assert not any("ref2vid" in message.lower() for message in refusals)
 
 
-# ---------------------------------------------------------------------------
-# The reference row order (minimax_h3_outpaint_refs_design.md §1)
-# ---------------------------------------------------------------------------
 
 def _head(num_frames: int, height: int = 4, width: int = 4) -> np.ndarray:
     """A synthetic preserved clip whose frame VALUE is its own index, so a

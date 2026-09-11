@@ -124,9 +124,6 @@ def test_audio_refusal_names_the_matching_audio_route(acestep_loaded, endpoint, 
     assert expected in str(excinfo.value), str(excinfo.value)
 
 
-# --------------------------------------------------------------------------
-# Wiring: a correct mapping is useless if the routes never pass their endpoint.
-# --------------------------------------------------------------------------
 @pytest.mark.parametrize("func_name,endpoint", [
     ("generate_txt2img", "/generate/txt2img"),
     ("generate_img2img", "/generate/img2img"),

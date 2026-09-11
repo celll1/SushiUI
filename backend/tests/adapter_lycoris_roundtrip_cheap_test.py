@@ -49,9 +49,6 @@ STRENGTH = 0.75
 STRENGTH_B = 0.4
 
 
-# --------------------------------------------------------------------------
-# Architecture rows
-# --------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Arch:
@@ -444,9 +441,6 @@ NOT_DORA = tuple(n for n in NAMES if n not in DORA_NAMES)
 DORA_JITTER = 0.35
 
 
-# --------------------------------------------------------------------------
-# Fixtures and helpers
-# --------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def resolve_verbatim(monkeypatch):
@@ -557,9 +551,6 @@ def load_one(arch: Arch, backend, path, strength=STRENGTH):
     return arch.load(backend, [{"path": str(path), "strength": strength}])
 
 
-# --------------------------------------------------------------------------
-# 1. set equality against the architecture's own target iterator
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
@@ -652,9 +643,6 @@ def test_dropping_the_alpha_tensor_changes_the_scale(name, algorithm, tmp_path,
     assert sole_branch(a[target]).scale != sole_branch(b[target]).scale
 
 
-# --------------------------------------------------------------------------
-# 3. malformed files, on the architecture's real session
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
@@ -712,9 +700,6 @@ def test_a_partial_tensor_group_refuses_lora_incompatible(name, algorithm,
     assert not composites(model)
 
 
-# --------------------------------------------------------------------------
-# 4. unload restores by identity, with the swap FIRST
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
@@ -751,9 +736,6 @@ def test_unload_after_a_component_swap_restores_by_object_identity(
     assert not (module_ids(model_b) & a_ids)
 
 
-# --------------------------------------------------------------------------
-# Dense DoRA, on the three architectures whose row Phase 3 opened
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", DORA_NAMES)
 def test_a_dora_file_covers_exactly_the_iterators_target_set(
@@ -1438,9 +1420,6 @@ def test_an_undetectable_file_is_not_refused_by_the_block_swap_gate(
     assert composites(backend_model(arch, backend)) == set(tensors)
 
 
-# --------------------------------------------------------------------------
-# MiniMax-H3: the fused QKV row split, and the fc1 half swap generalized
-# --------------------------------------------------------------------------
 
 _H3_PREFIX = "diffusion_model."
 _H3_IN = 16          # minimax_h3_lora_roundtrip_cheap_test._HIDDEN
@@ -1657,9 +1636,6 @@ def test_minimax_h3_native_and_comfy_lycoris_reach_the_same_delta(tmp_path):
                               atol=1e-6), leaf
 
 
-# --------------------------------------------------------------------------
-# SenseNova: the one architecture that OPTS IN to key canonicalization
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("algorithm", ALGEBRAS)
 def test_sensenova_canonicalizes_a_peft_prefixed_lycoris_file(
@@ -1690,9 +1666,6 @@ def test_sensenova_canonicalizes_a_peft_prefixed_lycoris_file(
     assert not warning_codes(warnings_seen)
 
 
-# --------------------------------------------------------------------------
-# The quantized base: what MiniMax-H3's and SenseNova's targets ACTUALLY are
-# --------------------------------------------------------------------------
 
 def _quantized_stub(cls, bias):
     """The SenseNova stub with every ``nn.Linear`` replaced by ``cls``.

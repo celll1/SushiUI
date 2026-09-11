@@ -91,7 +91,6 @@ def _spec(trainer, pair):
     return trainer
 
 
-# --- the table. One row per architecture, built out of its own gate ---------
 
 def _krea2(models, algorithm):
     return krea2_gate.Krea2LoRAAdapter(

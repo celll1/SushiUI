@@ -51,10 +51,6 @@ def _seeded(*shape, seed=0):
     return torch.randn(*shape, generator=g)
 
 
-# ---------------------------------------------------------------------------
-# Per-arch cases. `encode` = real pack + the declared input module;
-# `decode` = the declared output module + real unpack, returning [B, C, ...].
-# ---------------------------------------------------------------------------
 
 class Case:
     name: str

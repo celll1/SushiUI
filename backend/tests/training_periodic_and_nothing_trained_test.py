@@ -55,9 +55,6 @@ BASE_TRAINER_SRC = (BACKEND / "core" / "training" / "base_trainer.py").read_text
 )
 
 
-# --------------------------------------------------------------------------
-# Negative control 1: what shipped for save_every = 0.
-# --------------------------------------------------------------------------
 
 class _ShippedLoop:
     """Replica of the shipped train-loop shape: an unguarded modulo inside the
@@ -92,9 +89,6 @@ def test_negative_control_shipped_loop_is_fine_for_positive_intervals():
     assert loop.checkpoints_written == [("periodic", 2), ("periodic", 4)]
 
 
-# --------------------------------------------------------------------------
-# Fix 1: 0 means never; positive intervals are unchanged.
-# --------------------------------------------------------------------------
 
 def test_due_never_fires_for_zero_and_never_divides_by_zero():
     for step in range(0, 200):
@@ -263,9 +257,6 @@ def test_relora_refuses_zero_merge_interval():
     assert "relora_merge_every must be >= 1" in src
 
 
-# --------------------------------------------------------------------------
-# API surface: 0 is accepted and documented, negatives are refused.
-# --------------------------------------------------------------------------
 
 def _create_request_model():
     from api.routes import TrainingRunCreateRequest
@@ -309,9 +300,6 @@ def test_openapi_documents_the_bounds():
     assert props["relora_merge_every"]["minimum"] == 1
 
 
-# --------------------------------------------------------------------------
-# Negative control 2: what shipped when a bucket exclusion emptied the epoch.
-# --------------------------------------------------------------------------
 
 def _batch(w, h):
     return [({"bucket_width": w, "bucket_height": h}, object())]

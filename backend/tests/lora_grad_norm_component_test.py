@@ -33,9 +33,6 @@ from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 from core.training.base_trainer import BaseTrainer
 
 
-# --------------------------------------------------------------------------
-# Minimal module trees (no real model is loaded anywhere in this file)
-# --------------------------------------------------------------------------
 
 
 class Transformer2DModel(nn.Module):
@@ -136,9 +133,6 @@ class _SenseNovaTransformer(nn.Module):
         self.language_model = language_model
 
 
-# --------------------------------------------------------------------------
-# Per-adapter component registration
-# --------------------------------------------------------------------------
 
 
 def test_sdxl_registers_unet_te1_and_te2_separately():
@@ -219,9 +213,6 @@ def test_registering_an_unknown_component_is_rejected():
         adapter.register_lora_layer({}, "x", nn.Linear(2, 2), "decoder")
 
 
-# --------------------------------------------------------------------------
-# Grad-norm aggregation
-# --------------------------------------------------------------------------
 
 
 def _lora_layer(grad_value: float) -> LoRALinearLayer:

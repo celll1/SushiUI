@@ -180,9 +180,6 @@ def test_warning_does_not_mutate_trainer_state(capsys):
     assert trainer.energy_regularization_loss is energy_module
 
 
-# ---------------------------------------------------------------------------
-# (d) reconstruction_loss_weight: consumption is per-arch AND per-forward.
-# ---------------------------------------------------------------------------
 
 def _consuming_archs():
     return {name for name, cls in ARCH_REGISTRY.items()

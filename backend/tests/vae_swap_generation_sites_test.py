@@ -34,7 +34,6 @@ SWAPPED = {
 }
 
 
-# --- 1. live preview decoder routing ---------------------------------------
 
 class TestPreviewRouting:
     def test_a_family_answers_for_every_registry_vae(self):
@@ -231,7 +230,6 @@ class TestPreviewScaling:
                                       SimpleNamespace())["latent_scaling_factor"] is None
 
 
-# --- 2. the inpaint channel test -------------------------------------------
 
 class TestInpaintChannelGate:
     def _pipeline(self, latent_channels):
@@ -272,7 +270,6 @@ class TestInpaintChannelGate:
         assert "unet.config.in_channels == 2 * latent_channels_for(pipeline) + 1" in source
 
 
-# --- 3. keep_hot model key --------------------------------------------------
 
 class TestKeepHotKey:
     def test_a_native_models_key_is_stable(self):
@@ -311,7 +308,6 @@ class TestKeepHotKey:
         assert compute_model_key(SimpleNamespace(), {"unet_quantization": None})
 
 
-# --- 4. the latent shape constant ------------------------------------------
 
 class TestLatentScaleFactor:
     def test_the_loaded_wiring_answers(self, monkeypatch):
@@ -343,7 +339,6 @@ class TestLatentScaleFactor:
         assert "// 8" not in block
 
 
-# --- 5. load-time warning replay -------------------------------------------
 
 class TestLoadWarningReplay:
     def test_the_queue_dedups_and_drains_once(self):

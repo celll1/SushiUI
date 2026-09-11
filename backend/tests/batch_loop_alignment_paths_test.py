@@ -44,9 +44,6 @@ BASE_TRAINER_SRC = open(
     encoding="utf-8").read()
 
 
-# ===========================================================================
-# harness
-# ===========================================================================
 
 class _Trainer:
     """The BaseTrainer surface these producers touch. Real methods throughout --
@@ -132,9 +129,6 @@ def test_batch_loop_head_mirror_is_current():
     assert "self._assert_item_pixel_align(item, width, height)" in BASE_TRAINER_SRC
 
 
-# ===========================================================================
-# F1 -- injected Danbooru samples
-# ===========================================================================
 
 def _assign_bucket(bucket_res, w, h):
     """The collector's REAL bucket pick, over the trainer's bucket set."""
@@ -281,9 +275,6 @@ def test_priority_normal_bucket_manager_mirrors_the_live_divisibility():
     assert "divisibility=8," not in src[:400]
 
 
-# ===========================================================================
-# F3 -- video items keep their annotation across a reload
-# ===========================================================================
 
 VIDEO_ROWS = [
     ("a.webm", 1280, 720, 97, 24.0),
@@ -365,9 +356,6 @@ def test_zero_dimension_item_does_not_read_a_header_it_cannot_read():
     assert items[0]["width"] % 16 == 0 and items[0]["height"] % 16 == 0
 
 
-# ===========================================================================
-# resolution curriculum -- the branch every other test leaves unconstrained
-# ===========================================================================
 
 def test_curriculum_skip_still_ends_the_epoch_aligned():
     """`_prepare_epoch_items` SKIPS the fit when the curriculum is active, because

@@ -300,12 +300,7 @@ class SenseNovaBlockSwapFlagRoundTripTest(unittest.TestCase):
 
 class HostResidentStateRoundTripTest(unittest.TestCase):
     """The flag SenseNova full fine-tuning conditions its ring-buffer optimizers
-    on has to reach the YAML, and clearing it has to clear it.
-
-    MUTANT: leave it out of ``_build_train_section`` and a form that ticks the
-    box produces a config whose optimizer is refused before the load, with a
-    message about a setting the user did set.
-    """
+    on has to reach the YAML, and clearing it has to clear it."""
 
     KEY = "optimizer_state_host_resident"
 

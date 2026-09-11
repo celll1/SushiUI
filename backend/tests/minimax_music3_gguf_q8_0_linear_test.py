@@ -103,9 +103,6 @@ def test_dequantize_q8_0_rejects_a_shape_mismatch():
         dequantize_q8_0(codes, scale, torch.float32)
 
 
-# ---------------------------------------------------------------------------
-# Row-split exactness: dequantize-then-split == split-then-dequantize.
-# ---------------------------------------------------------------------------
 
 def test_row_split_of_packed_data_matches_split_of_the_dequantized_tensor():
     out_features, in_features = 24, 64  # 2 blocks/row
@@ -313,10 +310,6 @@ def test_install_packed_q8_0_linears_refuses_a_non_linear_target():
         install_packed_q8_0_linears(root, {"proj.weight": (codes, scale)}, torch.float32)
 
 
-# ---------------------------------------------------------------------------
-# End-to-end packed builder: a REAL (non-placeholder) Q8_0-encoded tiny GGUF
-# text encoder, through the full loader path.
-# ---------------------------------------------------------------------------
 
 def test_pruned_gguf_q8_0_text_encoder_builder_round_trip(tmp_path):
     from core.models.minimax_music3 import loader

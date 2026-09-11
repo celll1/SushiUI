@@ -95,9 +95,6 @@ def _stub_build(monkeypatch, seen=None):
     monkeypatch.setattr(h3_reload, "_build_transformer", build)
 
 
-# ---------------------------------------------------------------------------
-# the request
-# ---------------------------------------------------------------------------
 
 def test_no_request_is_a_base_only_load():
     assert normalize_hybrid_request(None) is None
@@ -140,9 +137,6 @@ def test_more_than_one_overlay_refuses():
     assert _request_refusal({"overlay_file": ["a", "b"]}) == "multiple_overlays"
 
 
-# ---------------------------------------------------------------------------
-# section 7 -- model identity
-# ---------------------------------------------------------------------------
 
 def test_an_unvalidated_spec_has_no_identity():
     spec = MiniMaxH3HybridSpec(base_dit_path="b", overlay_dit_path="o")
@@ -332,9 +326,6 @@ def test_a_hybrid_on_a_source_that_is_not_h3_refuses(monkeypatch, tmp_path):
     assert excinfo.value.code == "not_an_h3_tree"
 
 
-# ---------------------------------------------------------------------------
-# section 5.1 -- THE FILENAME TRAP
-# ---------------------------------------------------------------------------
 
 def test_a_hybrid_whose_base_is_named_fl2va_reports_variant_hybrid(monkeypatch, tmp_path):
     base, overlay = _tree(tmp_path)
@@ -487,9 +478,6 @@ def test_a_base_that_is_not_the_validated_one_refuses(monkeypatch, tmp_path):
         h3_reload.build_dit_only_reload(_components(), base, overlay, hybrid=hybrid)
 
 
-# ---------------------------------------------------------------------------
-# the pipeline swap: model info and persistence
-# ---------------------------------------------------------------------------
 
 def _swap(monkeypatch, source, hybrid):
     import utils.hash_cache as hash_cache
@@ -581,9 +569,6 @@ def test_a_base_only_generation_records_no_hybrid_keys(monkeypatch, tmp_path):
     assert list(params) == ["model_variant"]
 
 
-# ---------------------------------------------------------------------------
-# last_model.json
-# ---------------------------------------------------------------------------
 
 def _last_model_file(monkeypatch, tmp_path):
     from core import pipeline as pipeline_module

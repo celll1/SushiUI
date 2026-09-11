@@ -124,7 +124,6 @@ def test_no_convrot_layers_is_a_pure_pass_through():
     assert f"{PLAIN_LAYER}.weight" in sd_for_load
 
 
-# --- Debug ablation group classifier -----------------------------------
 
 
 @pytest.mark.parametrize(
@@ -158,7 +157,6 @@ def test_ablation_groups_tuple_matches_classifier_vocabulary():
     }
 
 
-# --- Debug ablation env-var parsing (unknown group name) ----------------
 
 
 def test_ablation_unknown_group_name_raises(monkeypatch):

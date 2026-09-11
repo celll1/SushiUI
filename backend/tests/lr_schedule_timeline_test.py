@@ -78,9 +78,6 @@ def _cos(q: float) -> float:
 PLATEAU = {"lr_decay_start_ratio": 0.85, "lr_floor_ratio": 0.25}
 
 
-# ---------------------------------------------------------------------------
-# Ordering and idempotency (§17.3)
-# ---------------------------------------------------------------------------
 
 def test_two_events_at_the_same_step_are_accepted_in_seq_order():
     spec, timeline, fn = _run("constant", 50, 1000)
@@ -132,9 +129,6 @@ def test_a_refused_request_is_idempotent_too():
     assert kinds.count("noop") == 1 and "decay" not in kinds
 
 
-# ---------------------------------------------------------------------------
-# Refusals (§5.3 / §17.3)
-# ---------------------------------------------------------------------------
 
 def test_a_decay_during_warmup_is_refused():
     spec, timeline, fn = _run("constant", 100, 1000)
@@ -167,9 +161,6 @@ def test_a_second_decay_and_a_second_cancel_are_ignored():
     assert timeline.state_at(spec, 310).code == STATE_RECOVERING
 
 
-# ---------------------------------------------------------------------------
-# The state machine (§5.3 with §17.3's formulas)
-# ---------------------------------------------------------------------------
 
 def test_a_decay_starts_at_the_current_multiplier_with_no_ramp_factor():
     """§17.3: m(s) = F + (m_start - F)*k(q). The ramp(s) factor §5 wrote is
@@ -250,9 +241,6 @@ def test_the_recovery_length_is_baked_into_the_cancel():
     assert timeline.events[-1]["length"] == 10
 
 
-# ---------------------------------------------------------------------------
-# The cancel voids the config-declared decay (§17.3)
-# ---------------------------------------------------------------------------
 
 def test_cancel_disarms_a_scheduled_config_decay():
     spec, timeline, fn = _run("plateau_cosine_floor", 0, 1000, PLATEAU)
@@ -290,9 +278,6 @@ def test_cancel_on_a_curve_with_no_config_decay_is_ignored():
     assert timeline.state_at(spec, 500).code == STATE_BASE
 
 
-# ---------------------------------------------------------------------------
-# Per-group state over one shared event list (§17.3)
-# ---------------------------------------------------------------------------
 
 def test_one_event_list_two_specs_two_states():
     plateau = _spec("plateau_cosine_floor", 40, 1000, PLATEAU)
@@ -328,9 +313,6 @@ def test_the_start_multiplier_comes_from_the_group_s_own_curve():
     assert constant_fn(750) == pytest.approx(1.0 * _cos(0.5))
 
 
-# ---------------------------------------------------------------------------
-# The total_steps warp (§7.2 / §7.3)
-# ---------------------------------------------------------------------------
 
 def test_an_extension_leaves_the_past_bit_identical_and_still_lands_on_the_floor():
     spec, timeline, fn = _run("plateau_cosine_floor", 0, 10000, PLATEAU)
@@ -414,9 +396,6 @@ def test_an_explicit_length_is_a_real_axis_length_an_extension_does_not_stretch(
     assert fn(19000) == 0.25
 
 
-# ---------------------------------------------------------------------------
-# Purity, WITH events present (§4.3)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ["constant", "cosine", "linear",
                                   "plateau_cosine_floor"])
@@ -457,9 +436,6 @@ def test_every_scheduler_of_a_fused_run_sees_the_same_timeline():
         assert len(values) == 1, (step, values)
 
 
-# ---------------------------------------------------------------------------
-# Persistence (§5.5 / D4)
-# ---------------------------------------------------------------------------
 
 def test_dump_truncates_to_the_checkpoint_position():
     _, timeline, _ = _run("constant", 0, 10000)
@@ -497,9 +473,6 @@ def test_a_reloaded_timeline_reproduces_the_curve_exactly():
     assert [restored_fn(s) for s in range(0, 20001, 13)] == expected
 
 
-# ---------------------------------------------------------------------------
-# The trainer seams
-# ---------------------------------------------------------------------------
 
 from core.training.base_trainer import (  # noqa: E402
     dump_lr_schedule_events,

@@ -48,9 +48,6 @@ class _StubTrainer:
         self.arch = _StubArch()
 
 
-# ---------------------------------------------------------------------------
-# What the trainer can see: its own train section
-# ---------------------------------------------------------------------------
 
 def test_the_trainer_refuses_an_explicit_rate_beside_danbooru_caption_dropout():
     trainer = _StubTrainer(**{CFG_KEY: 0.2, "danbooru_aug_enable": True,
@@ -101,9 +98,6 @@ def test_without_those_configs_the_dataset_half_simply_does_not_fire():
     assert trainer.cfg_null_drop_rate() == 0.2
 
 
-# ---------------------------------------------------------------------------
-# train_runner's pre-flight
-# ---------------------------------------------------------------------------
 
 class _StubQuery:
     def __init__(self, datasets):

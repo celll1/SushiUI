@@ -42,9 +42,6 @@ from core.models.minimax_h3.hybrid_spec import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# header fixtures
-# ---------------------------------------------------------------------------
 
 def _t(dtype, shape):
     return {"dtype": dtype, "shape": list(shape), "data_offsets": [0, 0]}
@@ -126,9 +123,6 @@ def _refusal_code(base, overlay, **kwargs):
     return excinfo.value.code
 
 
-# ---------------------------------------------------------------------------
-# the accepting case
-# ---------------------------------------------------------------------------
 
 def test_a_matching_pair_validates_and_gets_a_digest(tmp_path):
     base, overlay = _tree(tmp_path)
@@ -153,9 +147,6 @@ def test_the_defaults_are_the_design_docs(tmp_path):
     assert spec.compatibility_digest is None and not spec.validated
 
 
-# ---------------------------------------------------------------------------
-# 4.2 -- the refusals
-# ---------------------------------------------------------------------------
 
 def test_a_missing_overlay_refuses_by_name(tmp_path):
     base, overlay = _tree(tmp_path)
@@ -346,9 +337,6 @@ def test_an_unclassified_sidecar_outside_the_range_does_not_refuse(tmp_path):
     assert "blocks.5.adaln_proj.linear.weight_scale_2" not in result.overlay_keys
 
 
-# ---------------------------------------------------------------------------
-# 4.3 -- the selector as a pure predicate
-# ---------------------------------------------------------------------------
 
 def test_the_selector_picks_exactly_the_requested_blocks_and_nothing_else():
     selector = BlockRangeAdalnSelector(block_range_start=25, block_range_end=49,
@@ -434,9 +422,6 @@ def test_source_for_is_total_for_every_key_the_selection_does_not_touch():
     assert excinfo.value.code == "adaln_sidecar_unknown"
 
 
-# ---------------------------------------------------------------------------
-# 8 -- the non-MVP recipes are refused by name
-# ---------------------------------------------------------------------------
 
 def test_custom_glob_full_overlay_and_multiple_overlays_are_refused():
     for preset in ("custom_glob", "full_overlay", "all", "multi_overlay"):

@@ -147,9 +147,6 @@ def test_entries_are_distinguishable_by_name(tmp_path, monkeypatch):
     assert any("ref2va" in n for n in h3_names)
 
 
-# --------------------------------------------------------------------------
-# Negative control: removing the pre-pass reproduces the original defect
-# --------------------------------------------------------------------------
 
 def test_removing_the_top_level_expansion_reproduces_the_defect(tmp_path, monkeypatch):
     """Mutant: `_expand_minimax_h3_tree` always reports nothing.

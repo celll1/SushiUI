@@ -52,9 +52,6 @@ TEXT_DIM = 128
 GGUF_NAME = "qwen3-vl-4b-heretic-Q8_0.gguf"
 
 
-# ---------------------------------------------------------------------------
-# Synthetic files
-# ---------------------------------------------------------------------------
 
 def _pack_q8_0(values: np.ndarray) -> np.ndarray:
     """``[rows, cols]`` float -> ``[rows, blocks*34]`` uint8, llama.cpp's layout."""
@@ -230,9 +227,6 @@ def _drop(model):
     gc.collect()
 
 
-# ---------------------------------------------------------------------------
-# Q8_0
-# ---------------------------------------------------------------------------
 
 def test_q8_0_unpack_matches_a_hand_built_block():
     """One block, built byte by byte: ``x[i] = d * qs[i]``."""
@@ -276,9 +270,6 @@ def test_a_packed_width_from_the_wrong_row_is_refused():
         dequantize_q8_0(torch.zeros(2, 2720, dtype=torch.uint8), 2688)
 
 
-# ---------------------------------------------------------------------------
-# Type coverage
-# ---------------------------------------------------------------------------
 
 def test_an_unsupported_ggml_type_is_refused_by_name(tmp_path):
     path = _write_gguf(tmp_path / "q4.gguf",
@@ -314,9 +305,6 @@ def test_the_listing_reports_an_unsupported_type_instead_of_offering_the_file(tm
     assert "Q4_K" in entry["reason"] and "te_gguf_convert" in entry["reason"]
 
 
-# ---------------------------------------------------------------------------
-# The tap rule
-# ---------------------------------------------------------------------------
 
 def test_only_blocks_below_the_tap_are_mapped(tmp_path):
     path = _write_gguf(tmp_path / GGUF_NAME)
@@ -377,9 +365,6 @@ def test_a_converted_file_keeps_the_equality_gate(tmp_path):
             num_hidden_layers=3, text_dim=TEXT_DIM, override=projection)
 
 
-# ---------------------------------------------------------------------------
-# Selection
-# ---------------------------------------------------------------------------
 
 def test_the_glob_fallback_never_selects_a_gguf(tmp_path):
     root = _tree(tmp_path)
@@ -445,9 +430,6 @@ def test_the_choices_pair_a_gguf_with_the_trained_projection(tmp_path):
     assert entry["agreement"] is None
 
 
-# ---------------------------------------------------------------------------
-# The modules, and the streaming trip the encode path makes
-# ---------------------------------------------------------------------------
 
 def test_packed_buffers_survive_the_gpu_module_params_trip():
     """``_gpu_module_params`` must hand the uint8 codes over unwidened."""
@@ -481,9 +463,6 @@ def test_the_embedding_dequantizes_only_the_rows_it_gathers():
     assert torch.equal(got[0, 1], whole[7])
 
 
-# ---------------------------------------------------------------------------
-# The real build
-# ---------------------------------------------------------------------------
 
 def test_the_module_is_built_from_the_gguf_metadata_at_the_projections_tap(tmp_path, capsys):
     official = _official_tree(tmp_path)

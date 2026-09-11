@@ -39,9 +39,6 @@ from core.training.base_trainer import BaseTrainer  # noqa: E402
 from core.training.train_runner import _is_bf16_native_base_model  # noqa: E402
 
 
-# ===========================================================================
-# helpers
-# ===========================================================================
 
 class _FakeTrainer:
     """The narrow surface `normalize_dtypes` / the batch guard read."""
@@ -85,9 +82,6 @@ class _DeviceSentinel(torch.Tensor):
         return torch.Tensor(self).clone()
 
 
-# ===========================================================================
-# F1 -- unconditional bf16 normalization
-# ===========================================================================
 
 @pytest.mark.parametrize("weight,training", [
     (torch.float32, torch.float16),   # the UI's non-bf16-native preset
@@ -137,9 +131,6 @@ def test_train_runner_treats_minimax_h3_as_bf16_native():
     assert _is_bf16_native_base_model("/models/sdxl/base.safetensors") is False
 
 
-# ===========================================================================
-# F8 -- batch_size > 1 refused at config time
-# ===========================================================================
 
 def test_batch_size_guard_is_config_time():
     """The refusal lives in `load_components`, before the model, the latent
@@ -219,9 +210,6 @@ def test_audio_collation_with_no_audio_at_all_emits_no_tensor():
     assert out["audio_present"].tolist() == [False, False]
 
 
-# ===========================================================================
-# F4 -- audio_loss_weight bound
-# ===========================================================================
 
 def test_audio_loss_weight_rejects_a_negative_value():
     """A negative weight inverts the audio gradient: the audio head would be
@@ -305,9 +293,6 @@ def test_relora_refusal_reads_the_capability_table(monkeypatch):
     ReLoRATrainer._refuse_unsupported_relora("any/path")
 
 
-# ===========================================================================
-# timestep composition + audio-row geometry
-# ===========================================================================
 
 def test_minimax_h3_registers_a_uniform_timestep_default():
     """For this arch the sampler's output is the PRE-SHIFT draw u, which
@@ -678,9 +663,6 @@ def test_latent_regeneration_does_not_assume_a_unet(tmp_path):
     assert next(fake.transformer_original.parameters()).device.type == "cpu"
 
 
-# ===========================================================================
-# F2 -- still bucketing follows arch.pixel_align
-# ===========================================================================
 
 def test_still_buckets_follow_the_arch_pixel_align():
     """F2. The still `BucketManager` hardcoded `divisibility=8` while the two
@@ -764,9 +746,6 @@ def test_only_640_and_768_change_and_ltx2_is_affected_the_same_way():
         assert len(dims(res, 8)) == len(dims(res, 16)) == len(dims(res, 32))
 
 
-# ===========================================================================
-# Phase A1 -- per-modality losses surfaced via log_extra_metric
-# ===========================================================================
 
 class _EchoTransformer:
     """Returns its own inputs as the predicted velocities, so both targets are
@@ -801,11 +780,7 @@ def test_train_step_logs_per_modality_losses_and_audio_presence_when_silent():
     """A1. `h3_video_loss` / `h3_audio_loss` / `h3_audio_present` must be
     logged every step, and `h3_audio_present` must read 0 for a batch with no
     audio track at all -- the exact case that makes a silent-video dataset
-    diagnosable.
-
-    MUTANT: deleting the three `trainer.log_extra_metric(...)` calls in
-    `train_step` makes `t._logged` stay empty and every assertion below fails
-    (verified by temporarily removing them and re-running this test)."""
+    diagnosable."""
     t = _FakeTrainStepTrainer()
     latents = _h3_latents()
     prompt_embeds = torch.randn(1, 5, 5120)
@@ -905,10 +880,7 @@ def test_audio_only_item_is_refused_before_reaching_the_stills_path():
     fell through every latent-encoding mode's default branch into
     `Image.open(item["image_path"])` -- the stills path -- and crashed with
     PIL's `UnidentifiedImageError: cannot identify image file`, deep inside
-    training instead of at setup.
-
-    MUTANT: reverting `_refuse_unsupported_audio_only_items` to a no-op (`pass`)
-    makes this test fail (no ValueError raised)."""
+    training instead of at setup."""
     t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("minimax_h3", temporal=object()))
     datasets = [_AudioOnlyDataset([{"item_type": "audio", "image_path": "clip.wav"}])]
 

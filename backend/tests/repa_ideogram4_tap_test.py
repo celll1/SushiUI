@@ -69,9 +69,6 @@ ENC_DIM = 8
 ENC_GRID = 4
 
 
-# ---------------------------------------------------------------------------
-# Stubs and fixtures
-# ---------------------------------------------------------------------------
 
 class _StubEncoder(nn.Module):
     """A frozen teacher shaped like SigLIP2: a square token grid, no CLS."""
@@ -171,9 +168,6 @@ def _train_step(trainer, *, repa_pixels, seed=7, text_len=TEXT_LEN):
     )
 
 
-# ---------------------------------------------------------------------------
-# (a) the disabled path
-# ---------------------------------------------------------------------------
 
 def test_a_fresh_ideogram4_carries_the_tap_attributes_unarmed():
     """Inference loads the same class; the attributes must exist and be inert."""
@@ -258,9 +252,6 @@ def test_a_forward_clears_what_a_previous_one_stashed():
     assert model._repa_tap_out is None
 
 
-# ---------------------------------------------------------------------------
-# the handler's answer
-# ---------------------------------------------------------------------------
 
 def test_the_handler_answers_with_the_conditional_dit_its_width_and_block_count():
     model = _tiny_ideogram4()
@@ -319,9 +310,6 @@ def test_ideogram4_does_not_consume_the_block_loop_features():
     assert ARCH_REGISTRY["ideogram4"].consumes_block_loop_features is False
 
 
-# ---------------------------------------------------------------------------
-# (b) the gradient reaches the model
-# ---------------------------------------------------------------------------
 
 def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     model = _tiny_ideogram4()
@@ -352,9 +340,6 @@ def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     assert _grad_norm(model.input_proj) > 0
 
 
-# ---------------------------------------------------------------------------
-# (c) spatial correspondence and (e) the text prefix
-# ---------------------------------------------------------------------------
 
 def test_the_tap_is_the_packed_sequence_and_the_slice_is_the_grid():
     model = _tiny_ideogram4().eval()
@@ -407,9 +392,6 @@ def test_the_image_rows_are_row_major_over_the_latent_grid(index):
     assert float(moved[index]) > 2.0 * float(moved.median())
 
 
-# ---------------------------------------------------------------------------
-# the per-step path
-# ---------------------------------------------------------------------------
 
 def test_train_step_adds_a_finite_alignment_term_that_reaches_the_dit():
     model = _tiny_ideogram4()
@@ -538,9 +520,6 @@ def test_the_arch_handler_passes_the_batch_pixels_through():
     assert seen["repa_pixels"] is pixels
 
 
-# ---------------------------------------------------------------------------
-# (d) the checkpoint pairing
-# ---------------------------------------------------------------------------
 
 def test_a_lora_save_pairs_the_projector_with_the_checkpoint(tmp_path):
     from core.training.adapters.ideogram4_adapter import Ideogram4LoRAAdapter
@@ -568,9 +547,6 @@ def test_full_finetuning_refuses_before_it_could_return_no_path():
         adapter.write_checkpoint(5, 0, Path("unused"))
 
 
-# ---------------------------------------------------------------------------
-# the capability table
-# ---------------------------------------------------------------------------
 
 def test_ideogram4_is_offered_the_repa_control():
     assert "repa" not in TRAINING_FEATURE_UNSUPPORTED.get("ideogram4", {})

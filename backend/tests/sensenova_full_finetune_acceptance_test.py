@@ -64,9 +64,6 @@ def _train(**overrides):
     return train
 
 
-# ---------------------------------------------------------------------------
-# The two gates
-# ---------------------------------------------------------------------------
 
 def test_the_capability_table_no_longer_refuses_a_full_finetune():
     assert "full_finetune" not in TRAINING_UNSUPPORTED["sensenova"]
@@ -116,9 +113,6 @@ def test_vae_decoder_is_still_exempt_from_the_whole_contract():
     assert train == {"batch_size": 4}
 
 
-# ---------------------------------------------------------------------------
-# The adapter, and the zero it prevents
-# ---------------------------------------------------------------------------
 
 def test_the_sensenova_adapter_is_selected_not_the_sd15_fallthrough():
     stub = _dispatch_stub(is_sensenova=True)
@@ -152,9 +146,6 @@ def test_negative_control_the_fallthrough_collects_zero_of_the_294_it_paid_for()
     assert tensors == 294
 
 
-# ---------------------------------------------------------------------------
-# The envelope, from the acceptance path
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "overrides,pattern",
@@ -192,9 +183,6 @@ def test_the_allowed_optimizers_are_the_only_allowed_optimizers():
 @pytest.mark.parametrize(
     "optimizer", ["adamw8bit_ringbuffer", "lion8bit_ringbuffer"])
 def test_a_ring_buffer_optimizer_needs_host_resident_state(optimizer):
-    """MUTANT: drop the assert_ringbuffer_host_state call from
-    _apply_sensenova_full_finetune_contract and a product-started run allocates
-    16.5-32.9 GB of 8-bit state on the GPU and OOMs inside step 1."""
     with _sensenova():
         with pytest.raises(ValueError, match="optimizer_state_host_resident"):
             _apply_sensenova_training_contract(
@@ -254,9 +242,6 @@ def test_the_trainer_side_contract_still_refuses_on_the_config_channel(
         assert_full_finetune_contract(trainer, "adafactor")
 
 
-# ---------------------------------------------------------------------------
-# Stochastic rounding is a route requirement, still
-# ---------------------------------------------------------------------------
 
 def test_stochastic_rounding_is_forced_and_its_attachment_is_verified():
     from core.training.ops.sensenova_ops import (
@@ -282,9 +267,6 @@ def test_stochastic_rounding_is_forced_and_its_attachment_is_verified():
         assert_full_finetune_stochastic_rounding_attached(trainer, "adafactor")
 
 
-# ---------------------------------------------------------------------------
-# The updated-parameter census, on the one optimizer this route allows
-# ---------------------------------------------------------------------------
 
 def test_adafactors_fused_seam_reports_to_the_update_census():
     """It did not, and the census called a correct run 294-of-294 missing.
@@ -382,9 +364,6 @@ def test_the_embedded_geometry_block_is_the_source_config_verbatim(tmp_path):
         _assert_config_metadata_reloads(sensenova_export_metadata(fallback))
 
 
-# ---------------------------------------------------------------------------
-# LoRA is unchanged
-# ---------------------------------------------------------------------------
 
 def test_a_lora_run_keeps_accumulation_and_its_own_batch_size_advice():
     train = _train(gradient_accumulation_steps=8, optimizer="adamw8bit",

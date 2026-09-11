@@ -163,9 +163,6 @@ def test_the_measurement_matrix_is_where_the_advisories_say_it_is():
     assert "OOM" in rows["B3"]["step_raw"]
 
 
-# ---------------------------------------------------------------------------
-# FINDING 1a -- resolution
-# ---------------------------------------------------------------------------
 
 def test_negative_control_the_advisory_denied_measurements_that_existed():
     """`8aef7a6a` measured 512 and 1024; `9937bf54`'s advisory still said no."""
@@ -273,9 +270,6 @@ def test_what_the_eviction_buys_is_stated_with_the_same_provenance():
     assert "34.551 GiB cap" in reason
 
 
-# ---------------------------------------------------------------------------
-# The two strings stay byte-identical to what openapi advertises
-# ---------------------------------------------------------------------------
 
 def _openapi_advisory_example():
     import yaml
@@ -389,9 +383,6 @@ def test_the_designed_shape_is_still_accepted():
                     sensenova_four_phase_eviction=True), {"sample": {}})
 
 
-# ---------------------------------------------------------------------------
-# FINDING 3 -- host requirements
-# ---------------------------------------------------------------------------
 
 def _host_commits():
     """The pair that did not reproduce, read off whichever row carries it."""
@@ -457,9 +448,6 @@ def test_the_design_doc_separates_measured_from_recommended():
     assert "arch_capabilities.py" in block and "text_encoder_training" in block
 
 
-# ---------------------------------------------------------------------------
-# max_grad_norm under the fused route
-# ---------------------------------------------------------------------------
 
 def test_the_warning_now_reaches_the_user_so_the_form_is_the_only_gap():
     """`339790b5` gave trainer notices a channel and the monitor renders them,

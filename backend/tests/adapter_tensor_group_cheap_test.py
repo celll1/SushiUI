@@ -94,7 +94,6 @@ def _keys(tensors, dialect=0, stem=STEM):
     return written
 
 
-# -- suffix table ----------------------------------------------------------
 
 
 def test_no_suffix_is_a_suffix_of_another():
@@ -128,7 +127,6 @@ def test_a_non_adapter_key_matches_nothing(key):
     assert split_adapter_suffix(key) is None
 
 
-# -- grouping --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("algorithm", sorted(ALGORITHMS))
@@ -215,7 +213,6 @@ def test_unmatched_keys_are_reported_and_not_grouped():
     assert set(result.groups[STEM]) == set(_lora_tensors())
 
 
-# -- legacy aliases --------------------------------------------------------
 
 
 def test_the_legacy_aliases_return_the_same_objects_as_the_canonical_names():
@@ -242,7 +239,6 @@ def test_iteration_yields_canonical_names_only():
     assert len(group) == 2
 
 
-# -- fused-QKV row splitting -----------------------------------------------
 
 _ORACLE = {"lora": lora_delta_weight, "loha": loha_delta_weight,
            "lokr": lokr_delta_weight}
@@ -358,7 +354,6 @@ def test_a_dora_or_tucker_or_partial_group_is_never_split():
     assert split_group_on_out_rows(TensorGroup(STEM, half), 3, 4) is None
 
 
-# -- build_adapter_branch --------------------------------------------------
 
 
 def _linear(out_features=D_OUT, in_features=D_IN):
@@ -472,7 +467,6 @@ def test_a_foreign_lokr_factorization_builds_rather_than_raising():
     assert branch.factors == ((2, 6), (2, 6))
 
 
-# -- to_spec ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize("algorithm", sorted(ALGORITHMS))

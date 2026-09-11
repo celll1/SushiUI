@@ -64,9 +64,6 @@ def _marker(payload: bytes) -> torch.Tensor:
     return torch.tensor(list(payload), dtype=torch.uint8)
 
 
-# ---------------------------------------------------------------------------
-# fixtures: a small but structurally complete DiT
-# ---------------------------------------------------------------------------
 
 def _dit_tensors(num_blocks: int, *, offset: float, adaln_bias: bool = True,
                  quant_marker: bool = True):
@@ -210,9 +207,6 @@ def test_open_dit_reader_without_an_overlay_yields_a_single_reader(tmp_path):
                            torch.arange(4, dtype=torch.float32))
 
 
-# ---------------------------------------------------------------------------
-# source selection: exactly the AdaLN of blocks 25..49 comes from the overlay
-# ---------------------------------------------------------------------------
 
 def _selector(start=25, end=49, **kwargs):
     return BlockRangeAdalnSelector(block_range_start=start, block_range_end=end, **kwargs)
@@ -309,9 +303,6 @@ def test_a_hybrid_reader_without_a_selector_is_refused():
         HybridTensorReader(base, overlay, None)
 
 
-# ---------------------------------------------------------------------------
-# the realised selection is checked against the preflight's
-# ---------------------------------------------------------------------------
 
 class _Preflight:
     def __init__(self, overlay_keys):
@@ -337,9 +328,6 @@ def test_a_realised_selection_that_differs_from_the_preflight_is_refused():
             path="fixture.safetensors")
 
 
-# ---------------------------------------------------------------------------
-# end to end over real (tiny) files: preflight -> reader -> mapped state dict
-# ---------------------------------------------------------------------------
 
 def _real_pair(tmp_path, *, num_blocks=50):
     root = str(tmp_path / "h3")

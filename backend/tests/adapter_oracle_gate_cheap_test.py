@@ -729,7 +729,6 @@ def test_a_built_branch_reproduces_the_source_layer_bit_for_bit(algebra):
                                   metadata_alpha=ALPHA)
     assert torch.equal(_delta_weight(branch), expected)
 
-# -- the decomposition axis, past what the oracle can witness ---------------
 
 
 @pytest.mark.parametrize("algebra", DECOMPOSED, ids=lambda a: a.name)

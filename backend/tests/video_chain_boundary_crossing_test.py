@@ -73,9 +73,6 @@ def _grid() -> VideoGridSpec:
     return VideoGridSpec.from_video_constraints(video_constraints_payload()["minimax_h3"])
 
 
-# --------------------------------------------------------------------------
-# 1. The core message says which shot, which frames, and where it is cut
-# --------------------------------------------------------------------------
 
 def _crossing_request(mode: str, allow: bool):
     grid = _grid()
@@ -135,9 +132,6 @@ def test_the_default_is_the_refusal():
     ) is False
 
 
-# --------------------------------------------------------------------------
-# 2. Over the wire (POST /video-chain/plan), no server started
-# --------------------------------------------------------------------------
 
 def _app():
     from fastapi import FastAPI
@@ -267,9 +261,6 @@ def test_an_unknown_policy_is_a_400():
     assert "boundary_crossing_policy" in payload["error"]
 
 
-# --------------------------------------------------------------------------
-# 3. The editor exposes the choice and the interaction it has with the overlap
-# --------------------------------------------------------------------------
 
 def _frontend(*parts: str) -> str:
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

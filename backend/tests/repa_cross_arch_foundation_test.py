@@ -42,9 +42,6 @@ PATCH = 16
 ENC_DIM = 8
 
 
-# ---------------------------------------------------------------------------
-# Stubs
-# ---------------------------------------------------------------------------
 
 class _Net(nn.Module):
     """Stands in for the MM-JiT net: only the two tap attributes matter."""
@@ -90,9 +87,6 @@ def _stub_encoder(monkeypatch, *, calls=None):
     monkeypatch.setattr(repa_module, "load_repa_encoder", _fake)
 
 
-# ---------------------------------------------------------------------------
-# (a) MiniT2I's numbers are unchanged
-# ---------------------------------------------------------------------------
 
 def test_minit2i_tap_matches_the_shipped_expressions():
     """The resolver returns what ``base_trainer`` hardcoded before this change."""
@@ -148,9 +142,6 @@ def test_sidecar_path_replaces_only_a_trailing_suffix():
             == "a.safetensors/c.repa.safetensors")
 
 
-# ---------------------------------------------------------------------------
-# (b) every adapter carries the projector
-# ---------------------------------------------------------------------------
 
 def _shipped_adapters(base):
     return sorted((cls for cls in base.__subclasses__()
@@ -316,9 +307,6 @@ def test_optimizer_setup_refuses_a_projector_outside_every_group():
         BaseTrainer.setup_optimizer(trainer)
 
 
-# ---------------------------------------------------------------------------
-# (c) refusal surface
-# ---------------------------------------------------------------------------
 
 REFUSAL_MARKERS = {
     "acestep": "1-D time axis",
@@ -382,9 +370,6 @@ def test_setup_repa_is_inert_when_disabled():
     assert trainer._repa_tap_module is None
 
 
-# ---------------------------------------------------------------------------
-# (d) depth-feature conflicts
-# ---------------------------------------------------------------------------
 
 def _feature_trainer(**built):
     """A trainer carrying only the built block-loop configs the check reads."""

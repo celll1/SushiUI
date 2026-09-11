@@ -38,9 +38,6 @@ def test_absent_component_lr_resolves_to_learning_rate():
     assert resolve_component_lr(run, "unet_lr") == 5e-6
 
 
-# ---------------------------------------------------------------------------
-# The resolver's rule
-# ---------------------------------------------------------------------------
 
 def test_resolver_precedence_first_configured_then_learning_rate():
     run = _trainer(learning_rate=1e-4, text_encoder_lr=3e-5, text_encoder_1_lr=7e-5)
@@ -56,9 +53,6 @@ def test_resolver_refuses_rather_than_inventing_a_rate():
         resolve_component_lr(SimpleNamespace(), "unet_lr", label="nothing configured")
 
 
-# ---------------------------------------------------------------------------
-# Per-adapter behaviour with a real fake trainer
-# ---------------------------------------------------------------------------
 
 def _lora_layers():
     """The real branch class, not a stub: it owns the tensor protocol the
@@ -122,9 +116,6 @@ def test_full_parameter_adapter_group_uses_the_configured_lr(name):
     assert [g["lr"] for g in adapter_cls(zero).setup_trainable_parameters()] == [0.0]
 
 
-# ---------------------------------------------------------------------------
-# SenseNova: the two MoT halves
-# ---------------------------------------------------------------------------
 
 def _sensenova_full_adapter(**lrs):
     from sensenova_int8_materialize_test import _Decoder
@@ -162,9 +153,6 @@ def test_sensenova_full_ft_run_121_configuration_is_unchanged():
     assert [g["lr"] for g in groups] == [1e-6, 1e-6]
 
 
-# ---------------------------------------------------------------------------
-# The effective LR is reported, and a surprise is warned about
-# ---------------------------------------------------------------------------
 
 def _optimizer(group_lrs):
     return SimpleNamespace(param_groups=[
@@ -248,9 +236,6 @@ def test_the_check_announces_when_the_component_list_raises():
     events, text = _report(probe)
     assert "per-component LR verification did not run" in text
     assert [e["code"] for e in events] == []
-# ---------------------------------------------------------------------------
-# The path that actually destroys per-component LRs
-# ---------------------------------------------------------------------------
 
 def test_fused_optimizer_groups_flattening_is_reported():
     """``_setup_fused_optimizer_groups`` rebuilds N optimizers from a flat

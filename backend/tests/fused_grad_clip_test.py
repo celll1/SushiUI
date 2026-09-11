@@ -191,7 +191,6 @@ def test_a_gradient_free_parameter_is_skipped():
     assert clipper.take_step_summary() is None
 
 
-# --- the spike record ---------------------------------------------------------
 
 
 def _batch(path: str, caption: str = "a caption"):
@@ -303,7 +302,6 @@ def test_the_file_stops_growing_but_the_count_does_not(tmp_path):
     assert log.baseline() > 1000
 
 
-# --- reach: a site that forgets the call is silently unprotected ---------------
 
 
 _HOOK_SITES = (

@@ -42,9 +42,6 @@ from core.models.minimax_music3.loader import (  # noqa: E402
     detect_minimax_music3_text_encoder_source,
 )
 
-# ---------------------------------------------------------------------------
-# Detector matrix -- one real (tiny) fixture per source kind.
-# ---------------------------------------------------------------------------
 
 def test_flat_non_pruned_safetensors_detected(tmp_path):
     from tests.minimax_music3_flat_text_encoder_fixture import (
@@ -202,9 +199,6 @@ def test_directory_path_refused_not_a_crash(tmp_path):
         detect_minimax_music3_text_encoder_source(str(d))
 
 
-# ---------------------------------------------------------------------------
-# Gate matrix -- `_minimax_music3_te_selection_differs`, real implementation.
-# ---------------------------------------------------------------------------
 
 def _manager(**overrides):
     from core import pipeline as pipeline_module
@@ -280,11 +274,6 @@ def test_h3_gate_false_when_no_h3_model_loaded_even_with_fields_set():
     assert method(manager, None, "/some/projection.safetensors") is False
 
 
-# ---------------------------------------------------------------------------
-# Persistence across a restart (audit F2). Mirrors minimax_h3_te_selection_
-# api_test.py's own "Persistence across a restart" section exactly, one
-# architecture over.
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def music3_manager(tmp_path, monkeypatch):

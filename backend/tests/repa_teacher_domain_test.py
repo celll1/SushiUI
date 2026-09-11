@@ -153,9 +153,6 @@ def _require_real(model_dir):
         pytest.skip(f"{repos} configs are not in the local HuggingFace cache")
 
 
-# ---------------------------------------------------------------------------
-# (a) + (c) the two checkpoints that exist in this repo
-# ---------------------------------------------------------------------------
 
 def test_real_naflex_tagger_checkpoint_is_refused():
     _require_real(NAFLEX_DIR)
@@ -199,9 +196,6 @@ def test_a_checkpoint_sidecar_naming_a_variable_repo_is_refused(tmp_path):
         repa_module.assert_repa_teacher_fixed_resolution("tagger", tagger_model_dir=d)
 
 
-# ---------------------------------------------------------------------------
-# (d) no evidence refuses nothing
-# ---------------------------------------------------------------------------
 
 def test_unreadable_configs_refuse_nothing(tmp_path):
     d = _tagger_dir(tmp_path, "run", str(tmp_path / "not-a-repo"))
@@ -213,9 +207,6 @@ def test_an_unresolvable_tagger_dir_is_left_to_the_loader(tmp_path):
         "tagger", tagger_model_dir=str(tmp_path / "missing")) is None
 
 
-# ---------------------------------------------------------------------------
-# _setup_repa
-# ---------------------------------------------------------------------------
 
 def _trainer(tagger_dir, *, enable=True):
     from core.training.arch import ARCH_REGISTRY

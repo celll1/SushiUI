@@ -226,9 +226,6 @@ def test_resume_requires_both_frame_and_prefix_codes_together():
         )
 
 
-# ---------------------------------------------------------------------------
-# Item 2: budget guards.
-# ---------------------------------------------------------------------------
 def test_resume_is_rejected_when_it_would_exceed_the_frame_cap():
     pipeline = _build_tiny_pipeline(max_position_embeddings=1_000_000)  # do not trip the position guard first
     text_ids = pipeline.encode_text("a caption", "[verse]\nhello world")

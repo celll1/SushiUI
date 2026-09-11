@@ -41,9 +41,6 @@ D_IN, TEXT_DIM = 6, 9
 _LOAD_SUITE = ta.load_suite
 
 
-# ---------------------------------------------------------------------------
-# Fixtures: a store, a suite, a stub encoder, and a "loaded" H3 model
-# ---------------------------------------------------------------------------
 
 class _Tokenizer:
     def __call__(self, text, add_special_tokens=True):
@@ -193,9 +190,6 @@ def no_tree_scan(monkeypatch):
                         lambda model_path: {"text_encoders": [], "clip_projections": []})
 
 
-# ---------------------------------------------------------------------------
-# 1. Mutual exclusion with generation, both directions
-# ---------------------------------------------------------------------------
 
 def test_a_build_is_refused_while_a_generation_runs(tmp_path, monkeypatch, store, suite):
     from api import generation_status
@@ -266,9 +260,6 @@ def test_a_second_build_is_refused_while_one_runs(tmp_path, monkeypatch, store, 
     _await_job()
 
 
-# ---------------------------------------------------------------------------
-# 2. The two refusals the engine owns
-# ---------------------------------------------------------------------------
 
 def test_a_substitute_encoder_cannot_be_the_reference(tmp_path, monkeypatch, store, suite):
     _install(monkeypatch, _Manager(_substitute_components(tmp_path)))
@@ -303,9 +294,6 @@ def test_a_non_h3_model_has_no_bank_to_build(monkeypatch, store, suite):
     assert _status()["supported"] is False
 
 
-# ---------------------------------------------------------------------------
-# 3. Progress and completion
-# ---------------------------------------------------------------------------
 
 def test_a_build_reports_progress_and_stores_the_bank(tmp_path, monkeypatch, store, suite,
                                                       stub_encode, no_tree_scan):
@@ -346,9 +334,6 @@ def test_a_build_reports_progress_and_stores_the_bank(tmp_path, monkeypatch, sto
     assert status["job"]["state"] == "completed"
 
 
-# ---------------------------------------------------------------------------
-# 4. Cancellation
-# ---------------------------------------------------------------------------
 
 def test_a_cancelled_build_leaves_no_bank_behind(tmp_path, monkeypatch, store, suite,
                                                  stub_encode):
@@ -385,9 +370,6 @@ def test_cancelling_with_nothing_running_is_a_no_op(store):
     assert asyncio.run(routes.cancel_minimax_h3_reference_bank()) == {"state": "idle"}
 
 
-# ---------------------------------------------------------------------------
-# 5. The status document
-# ---------------------------------------------------------------------------
 
 def test_status_without_a_bank_states_the_cost_and_no_bank(tmp_path, monkeypatch, store,
                                                            suite, no_tree_scan):

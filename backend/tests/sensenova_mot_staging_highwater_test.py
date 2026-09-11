@@ -26,9 +26,6 @@ from core.training import sensenova_phase_eviction
 from core.training.sensenova_phase_eviction import SenseNovaTrainingPhaseEvictor
 
 
-# --------------------------------------------------------------------------
-# synthetic tree
-# --------------------------------------------------------------------------
 
 
 class _Attn(nn.Module):
@@ -90,9 +87,6 @@ def _transformer(*, count=42, with_gen_lora=False, layer_cls=None):
     return root
 
 
-# --------------------------------------------------------------------------
-# the ledger
-# --------------------------------------------------------------------------
 
 
 def _owned(module):
@@ -165,9 +159,6 @@ def _instrumented(evictor):
     )
 
 
-# --------------------------------------------------------------------------
-# (A) the release point the whole defect rests on
-# --------------------------------------------------------------------------
 
 
 def test_the_model_holds_the_staged_host_tensor_until_the_h2d_reassignment():
@@ -199,9 +190,6 @@ def test_the_model_holds_the_staged_host_tensor_until_the_h2d_reassignment():
     assert incoming.scale.device.type == "meta"
 
 
-# --------------------------------------------------------------------------
-# (E) negative control: the shipped batched order, in bytes
-# --------------------------------------------------------------------------
 
 
 def _shipped_batched_swap(evictor, evicted):
@@ -304,9 +292,6 @@ def test_device_residency_never_holds_both_halves():
     assert ledger.device_peak == _HALF_BYTES  # not one byte over a single half
 
 
-# --------------------------------------------------------------------------
-# (A) what the selector actually guarantees
-# --------------------------------------------------------------------------
 
 
 class _DupLayer(nn.Module):
@@ -379,9 +364,6 @@ def test_partial_pairing_is_refused_at_construction():
             SenseNovaTrainingPhaseEvictor(_transformer(), "meta")
 
 
-# --------------------------------------------------------------------------
-# (C) the four-phase pre-flight survives the interleave
-# --------------------------------------------------------------------------
 
 
 def test_grad_check_still_pre_flights_the_whole_outgoing_half():
@@ -418,9 +400,6 @@ def test_three_state_evictor_takes_no_gradient_check_under_the_interleave():
     assert evictor.state == "denoise"
 
 
-# --------------------------------------------------------------------------
-# (E) the inference-side evictor: does it share this path?
-# --------------------------------------------------------------------------
 
 
 def test_inference_evictor_shares_the_staging_module():

@@ -76,9 +76,6 @@ def _write(path, identity=None, metadata=None):
     return path
 
 
-# ---------------------------------------------------------------------------
-# The table itself
-# ---------------------------------------------------------------------------
 
 def test_channel_mismatch_refuses():
     verdict = check_base_latent(NATIVE, SWAPPED_16, name="x.safetensors")
@@ -181,9 +178,6 @@ def test_the_trainer_side_writes_the_runs_latent_space():
     assert base_latent_metadata(pixel) == {}
 
 
-# ---------------------------------------------------------------------------
-# Read path 1: core.extensions.lora_manager (sd15 / sdxl, through diffusers)
-# ---------------------------------------------------------------------------
 
 def _manager(tmp_path):
     manager = LoRAManager(lora_dir=str(tmp_path))
@@ -354,9 +348,6 @@ def test_the_listing_reports_the_declared_identity(tmp_path):
     assert entries["plain.safetensors"]["base_vae_identity_native"] is None
 
 
-# ---------------------------------------------------------------------------
-# Read path 2: AdapterSession (the other eleven architectures)
-# ---------------------------------------------------------------------------
 
 def _session(model_identity, warnings, architecture="zimage"):
     return AdapterSession(

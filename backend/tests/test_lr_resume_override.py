@@ -695,7 +695,6 @@ class VaeResumeWiringTest(_LrAssertions):
         self.ckpt_dir = Path(self._tmp.name) / "step_00178101"
         self.ckpt_dir.mkdir(parents=True)
 
-        # ---- write a checkpoint that carries the OLD LR --------------------
         names = ["decoder.a", "decoder.b"]
         ckpt_params = [torch.nn.Parameter(torch.full((4,), 3.0)) for _ in names]
         ckpt_opt = torch.optim.AdamW(
@@ -716,7 +715,6 @@ class VaeResumeWiringTest(_LrAssertions):
                                   "decoder_blocks": "all", "optimizer": "adamw",
                                   "optimizer_weight_decay": 0.2}}, f)
 
-        # ---- a trainer built from the NEW config LR ------------------------
         trainer = VaeTrainer.__new__(VaeTrainer)
         trainer.log_prefix = "[VaeTrainer]"
         trainer.device = "cpu"

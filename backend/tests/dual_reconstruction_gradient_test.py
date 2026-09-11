@@ -76,9 +76,6 @@ def prefix_ops(tmp_path_factory):
         sys.modules.pop(f"_prefix_{n}_ops", None)
 
 
-# ---------------------------------------------------------------------------
-# Stand-in networks: one trainable projection is enough
-# ---------------------------------------------------------------------------
 
 class _AnimaDiT(nn.Module):
     def __init__(self, channels: int = 16):
@@ -139,9 +136,6 @@ def _trainer(net, recon_weight: float, **extra):
     )
 
 
-# ---------------------------------------------------------------------------
-# One runner per architecture
-# ---------------------------------------------------------------------------
 
 SEED = 4321
 
@@ -257,9 +251,6 @@ def test_the_monitoring_path_is_untouched(prefix_ops, arch):
     assert torch.equal(g_now, g_before)
 
 
-# ===========================================================================
-# The five architectures that read the key nowhere at all
-# ===========================================================================
 
 @pytest.fixture(scope="module")
 def silent_prefix_ops(tmp_path_factory):

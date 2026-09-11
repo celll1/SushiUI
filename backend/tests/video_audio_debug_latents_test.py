@@ -42,9 +42,6 @@ def _assert_warned(capsys):
     assert "No space left on device" in out
 
 
-# ----------------------------------------------------------------------
-# window sizing
-# ----------------------------------------------------------------------
 
 def test_window_is_the_minimum_decodable_window():
     # LTX-2.3 decodes a single latent frame; MiniMax-H3 needs 22 pixel frames,
@@ -82,9 +79,6 @@ def test_channel_stats_flag_a_collapsed_prediction():
     assert stats["std"] == pytest.approx([0.0, 0.0, 0.0])
 
 
-# ----------------------------------------------------------------------
-# LTX-2.3
-# ----------------------------------------------------------------------
 
 LTX_SHAPE = (2, 6, 3, 2, 2)  # [B, C, T_lat, H', W']
 
@@ -212,9 +206,6 @@ def test_ltx2_sign_is_xt_minus_sigma_v(tmp_path):
     assert torch.allclose(data["predicted_latent"], expected, atol=1e-5)
 
 
-# ----------------------------------------------------------------------
-# MiniMax-H3
-# ----------------------------------------------------------------------
 
 H3_SHAPE = (1, 4, 12, 4, 4)  # [B, C, T_lat, H', W'] — T_lat > the 7-frame window
 H3_AUDIO_CHANNELS = 32
@@ -373,9 +364,6 @@ def test_h3_sign_is_xt_plus_sigma_v(tmp_path):
         data[p + "noisy_latents"] + sigma_a * data[p + "predicted_velocity"], atol=1e-5)
 
 
-# ----------------------------------------------------------------------
-# ACE-Step
-# ----------------------------------------------------------------------
 
 ACE_SHAPE = (2, 6, 64)  # [B, T_lat, 64]
 

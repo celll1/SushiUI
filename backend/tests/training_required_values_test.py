@@ -72,9 +72,6 @@ def _shipped_train_config(**overrides):
     return config
 
 
-# ---------------------------------------------------------------------------
-# (1) NEGATIVE CONTROLS: the shipped defaults, refused
-# ---------------------------------------------------------------------------
 
 def test_negative_control_shipped_defaults_are_refused_for_a_full_finetune():
     """The optimizer default is `adamw8bit` and this route allows only
@@ -240,12 +237,7 @@ def test_the_two_encoding_modes_are_the_overwritten_pair(param):
 
 
 def test_the_declared_optimizer_set_is_the_allowlist_the_trainer_holds():
-    """The same set, not a second opinion.
-
-    MUTANT: add a name to SENSENOVA_FULL_FINETUNE_OPTIMIZERS without adding it
-    to the table and the form offers a shorter list than the run accepts; add it
-    to the table only and the form offers a value refused before the load.
-    """
+    'The same set, not a second opinion.'
     entry = training_required_values("sensenova", "full_finetune")["optimizer"]
     assert entry["values"] == list(SENSENOVA_FULL_FINETUNE_OPTIMIZERS)
     # `value` is the default member of that set, not a fourth opinion.
@@ -381,9 +373,6 @@ def test_the_pin_converges_on_value_drift_not_on_arch_method_identity():
     assert "(params as any)[param] !== entry.value" in effect
 
 
-# ---------------------------------------------------------------------------
-# (2) train_unet on the LoRA path
-# ---------------------------------------------------------------------------
 
 def _trainer_call_keywords(source: str, name: str) -> dict:
     calls = [node for node in ast.walk(ast.parse(source))
@@ -474,9 +463,6 @@ def test_a_lora_run_that_does_not_touch_the_flags_is_unchanged():
     assert config["train_unet"] is True and config["train_text_encoder"] is False
 
 
-# ---------------------------------------------------------------------------
-# (2) "train nothing", now reachable on both paths
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("network_type", ["lora", "relora", "full_finetune"])
 def test_a_run_that_would_train_nothing_is_refused_before_the_load(network_type):

@@ -120,7 +120,6 @@ class TestCropDecodeAutograd:
         vae = ProbeMockVAE(scale=8)
         vae.eval()
 
-        # Run minimal sweep with 2 margins
         data = measure_parity_and_cost(
             vae=vae,
             device=torch.device("cpu"),

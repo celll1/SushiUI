@@ -29,9 +29,6 @@ def _train_section(config_yaml: str) -> dict:
 
 
 def test_default_is_none_so_existing_runs_keep_inheriting_every_gpu():
-    """MUTANT: default 0. Every pre-existing run would suddenly be pinned to
-    device 0 -- correct on a single-GPU box, wrong the moment a second card
-    exists, and invisible either way."""
     assert TRAINING_DEFAULTS["gpu_index"] is None
 
 
@@ -46,9 +43,6 @@ def test_index_is_used_verbatim_when_the_parent_sees_every_gpu():
 
 
 def test_index_composes_with_an_inherited_visible_list():
-    """MUTANT: return str(gpu_index) unconditionally. With the backend started
-    as CUDA_VISIBLE_DEVICES=2,3, picking index 1 means physical GPU 3; writing
-    "1" would hand the child physical GPU 1 -- a card the UI never offered."""
     assert resolve_cuda_visible_devices("2,3", 0) == "2"
     assert resolve_cuda_visible_devices("2,3", 1) == "3"
     assert resolve_cuda_visible_devices(" 4 , 5 ", 1) == "5"
@@ -66,9 +60,6 @@ def test_index_past_the_inherited_list_is_refused():
     ["lora", "relora", "full_finetune", "controlnet", "vae_decoder"],
 )
 def test_every_generator_emits_gpu_index(method):
-    """MUTANT: emit it only from _build_train_section. generate_vae_config
-    builds its own train literal, so VAE runs would drop the selection with no
-    error -- the run just starts on the default GPU."""
     generator = TrainingConfigGenerator()
     params = {"gpu_index": 1, "learning_rate": 1e-4}
     kwargs = dict(
@@ -101,9 +92,6 @@ def test_create_process_forwards_the_index_to_the_child():
 
 
 def test_create_process_defaults_to_no_pinning():
-    """MUTANT: make gpu_index a required argument. Every existing caller and
-    test breaks, and a run started through an older path would raise instead of
-    inheriting the previous behaviour."""
     manager = TrainingProcessManager()
     process = manager.create_process(run_id=1, config_path="c.yaml", output_dir="o")
     assert process.gpu_index is None

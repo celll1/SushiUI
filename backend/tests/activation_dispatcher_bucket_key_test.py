@@ -79,7 +79,6 @@ def _image_scenario():
     snap("after1_128x128_bs2", 128, 128, 2)
     snap("after1_192x96_bs4", 192, 96, 4)
 
-    # 3. A second, differently-sized base step -> the 2-term fit engages.
     d.record(192, 96, 4, "base", peak_gb=17.0, resident_gb=8.0)
     snap("after2_128x128_bs2", 128, 128, 2)
     snap("after2_192x96_bs4", 192, 96, 4)
@@ -93,7 +92,6 @@ def _image_scenario():
     snap("off2_unseen_256x256_bs2", 256, 256, 2)
     snap("off2_160x160_bs2", 160, 160, 2)
 
-    # 5. A micro-split step: peak reflects executed_bs, record() scales to bs.
     d.record(320, 320, 4, "offload", peak_gb=14.0, resident_gb=8.0,
              executed_bs=2, offloaded_gb=2.0)
     snap("split_320x320_bs4", 320, 320, 4)

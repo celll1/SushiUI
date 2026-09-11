@@ -72,12 +72,6 @@ class ParamDefaultsTest(unittest.TestCase):
                 self.assertFalse(defaults["spectrum_enable"])
 
 
-# ---------------------------------------------------------------------------
-# 2. Backend request shapes: Txt2VidRequest (JSON) and the three multipart
-#    video routes (img2vid/ref2vid) all accept every acceleration field. This
-#    was already true (backend-side plumbing predates this task); guards
-#    against a future regression removing one.
-# ---------------------------------------------------------------------------
 class BackendRouteFieldsTest(unittest.TestCase):
     def test_txt2vid_request_declares_every_acceleration_field(self):
         for field in _ACCEL_FIELDS:
@@ -96,11 +90,6 @@ class BackendRouteFieldsTest(unittest.TestCase):
                     )
 
 
-# ---------------------------------------------------------------------------
-# 3. frontend/src/utils/api.ts: Txt2VidParams declares every field, and every
-#    one of the three video senders (generateTxt2Vid JSON body,
-#    generateImg2Vid/generateRef2Vid FormData) sends it.
-# ---------------------------------------------------------------------------
 class FrontendApiTest(unittest.TestCase):
     @staticmethod
     def _function_source(source: str, name: str) -> str:
@@ -135,11 +124,6 @@ class FrontendApiTest(unittest.TestCase):
                     self.assertIn(f'formData.append("{field}"', fn)
 
 
-# ---------------------------------------------------------------------------
-# 4. The four panels: literal `videoParams`/`refParams` object-literal sites
-#    carry every acceleration field, source-anchored like the block-swap
-#    threading test (a revert of any one field fails this test).
-# ---------------------------------------------------------------------------
 class PanelLiteralSiteTest(unittest.TestCase):
     @staticmethod
     def _block(source: str, start_marker: str) -> str:

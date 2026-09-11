@@ -62,9 +62,6 @@ def _toy_inputs(model: Qwen3Model, seq_len: int = 11):
     return input_ids, indexes, mask
 
 
-# ---------------------------------------------------------------------------
-# (a) fast-vs-eager K/V parity, real 4-layer Qwen3Model
-# ---------------------------------------------------------------------------
 
 
 def test_fast_vs_eager_kv_parity():
@@ -95,9 +92,6 @@ def test_fast_vs_eager_kv_parity():
         assert dv < 1e-5, f"layer{i} V maxabs {dv:.3e}"
 
 
-# ---------------------------------------------------------------------------
-# (b) classifier gate over the real get_thw_indexes, 0/1/2 reference images
-# ---------------------------------------------------------------------------
 
 
 class _IndexHost:
@@ -147,9 +141,6 @@ def test_classifier_matches_real_mask_for_n_reference_images(n_images):
         assert is_plain_causal_thw_index(t_index) is False
 
 
-# ---------------------------------------------------------------------------
-# (c) dispatch_attention call-count/reach, both checkpoint_layers values
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("checkpoint_layers", [False, True])

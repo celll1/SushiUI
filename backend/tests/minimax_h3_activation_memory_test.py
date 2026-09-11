@@ -69,9 +69,6 @@ def _make_norm(hidden, dtype):
     return nn.RMSNorm(hidden, eps=1e-5).to(dtype)
 
 
-# ---------------------------------------------------------------------------
-# A2a: chunked_ada_modulate
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("seq_len,row_budget", _SHAPES)
@@ -171,9 +168,6 @@ def test_ada_modulate_short_sequence_takes_zero_overhead_path():
     assert calls["n"] == 1
 
 
-# ---------------------------------------------------------------------------
-# A2b: gated_residual_add
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("seq_len,row_budget", _SHAPES)
@@ -249,9 +243,6 @@ def test_gated_residual_add_mutates_in_place_on_the_short_circuit_path_too():
     assert out.data_ptr() == ptr_before
 
 
-# ---------------------------------------------------------------------------
-# A1: chunked_norm_out
-# ---------------------------------------------------------------------------
 
 class _FakeNormOut(nn.Module):
     def __init__(self, hidden, time_embed_dim, dtype, apply_silu=False):
@@ -486,9 +477,6 @@ def test_fuse_output_proj_flag_defaults_off_on_the_real_model():
     assert model.fuse_output_proj is False
 
 
-# ---------------------------------------------------------------------------
-# A3: apply_rotary_emb (in-place RoPE)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("seq_len", [1, 5, 97, 100])

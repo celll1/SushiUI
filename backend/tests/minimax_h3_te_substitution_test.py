@@ -79,9 +79,6 @@ class _Backend(MiniMaxH3Mixin):
     """The mixin alone: every method exercised here reads only its arguments."""
 
 
-# ---------------------------------------------------------------------------
-# 1. The projection, applied at the encode seam
-# ---------------------------------------------------------------------------
 
 def test_projection_preserves_the_token_count_and_produces_text_dim(tmp_path):
     """S is load-bearing geometry (media rows' rotary clock starts at S)."""
@@ -127,9 +124,6 @@ def test_a_projection_that_does_not_fit_the_dit_is_refused(tmp_path):
         ops.project_prompt_embeds(hidden, projection, text_dim=TEXT_DIM, device="cpu")
 
 
-# ---------------------------------------------------------------------------
-# 2. The encode-phase wiring: applied, recorded, warned about
-# ---------------------------------------------------------------------------
 
 def test_the_encode_seam_projects_records_and_warns(tmp_path):
     projection = _projection(tmp_path)
@@ -237,9 +231,6 @@ def test_an_unmeasured_pairing_says_so_rather_than_borrowing_a_number(tmp_path):
     assert "cosine" not in warnings[0]["message"]
 
 
-# ---------------------------------------------------------------------------
-# 3. The refusals
-# ---------------------------------------------------------------------------
 
 def test_gate_passes_a_released_encoder_through(tmp_path):
     resolve_minimax_h3_text_only_te_gate(

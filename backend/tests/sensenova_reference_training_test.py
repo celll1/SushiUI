@@ -141,7 +141,6 @@ def _encode_with_references(trainer, prompt, ref_paths, loader=None):
     return prefix, load
 
 
-# --- 3-2: prefix construction ------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -265,7 +264,6 @@ def test_reference_encode_still_drives_the_phase_evictor(tmp_path):
     assert calls == ["prefix", "denoise", "resident"]
 
 
-# --- 3-3: reference-conditioned sampling during training ---------------------
 
 
 class _SampleTransformer(nn.Module):
@@ -475,7 +473,6 @@ def test_sample_unreadable_reference_never_takes_the_run_down(tmp_path):
     assert transformer.training is True
 
 
-# --- 3-1: the six flux2 hard gates ------------------------------------------
 
 
 def _source(relative):

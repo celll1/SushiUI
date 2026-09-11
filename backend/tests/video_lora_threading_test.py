@@ -70,10 +70,6 @@ class ParamDefaultsTest(unittest.TestCase):
                 self.assertEqual(defaults["loras"], [])
 
 
-# ---------------------------------------------------------------------------
-# 2. Pydantic model: Txt2VidRequest (the one JSON video route) declares the
-#    field.
-# ---------------------------------------------------------------------------
 class Txt2VidRequestTest(unittest.TestCase):
     def test_txt2vid_request_has_a_loras_field(self):
         self.assertIn("loras", routes.Txt2VidRequest.model_fields)
@@ -325,9 +321,6 @@ class Ltx2BackendLoraApplicationTest(unittest.TestCase):
     # read, in ltx2_lora_roundtrip_cheap_test.py.
 
 
-# ---------------------------------------------------------------------------
-# 5. openapi.yaml: every video request schema documents `loras`.
-# ---------------------------------------------------------------------------
 class OpenApiVideoLoraTest(unittest.TestCase):
     def test_every_video_request_schema_has_loras(self):
         spec_path = os.path.join(_REPO, "openapi.yaml")
@@ -374,9 +367,6 @@ class OpenApiVideoLoraTest(unittest.TestCase):
             yaml.load(handle, Loader=_UniqueKeyLoader)  # raises on a duplicate
 
 
-# ---------------------------------------------------------------------------
-# 6. frontend/src/utils/api.ts: every video sender appends/serializes `loras`.
-# ---------------------------------------------------------------------------
 class FrontendVideoLoraSenderTest(unittest.TestCase):
     @staticmethod
     def _function_source(source: str, name: str) -> str:
@@ -411,10 +401,6 @@ class FrontendVideoLoraSenderTest(unittest.TestCase):
                 self.assertIn("loras?: LoRAConfig[];", match.group(1))
 
 
-# ---------------------------------------------------------------------------
-# 7. The six panel literal sites, source-anchored (a revert of any one of
-#    these fails this test).
-# ---------------------------------------------------------------------------
 class PanelLiteralLoraSiteTest(unittest.TestCase):
     @staticmethod
     def _block(source: str, start_marker: str) -> str:

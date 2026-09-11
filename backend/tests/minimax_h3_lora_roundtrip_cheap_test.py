@@ -185,9 +185,6 @@ def resolve_by_path(monkeypatch):
     monkeypatch.setattr(lm.lora_manager, "_resolve_lora_path", lambda p: p)
 
 
-# ---------------------------------------------------------------------------
-# Enumeration
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_generation_covers_exactly_the_targets_the_trainer_wrapped(
         tmp_path, resolve_by_path):
@@ -217,9 +214,6 @@ def test_minimax_h3_branches_keep_the_architectures_own_layer_class(
         assert type(branch) is MiniMaxH3LoRALinearLayer, target
 
 
-# ---------------------------------------------------------------------------
-# The fused-QKV scale survives runtime strength changes
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_restrengthening_a_branch_reproduces_the_checkpoints_ratio(
         tmp_path, resolve_by_path):
@@ -240,9 +234,6 @@ def test_minimax_h3_restrengthening_a_branch_reproduces_the_checkpoints_ratio(
             float(weights["scale_ratio"]) * STRENGTH_B, module_path
 
 
-# ---------------------------------------------------------------------------
-# Gates 1-3: the stack
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_the_same_file_selected_twice_is_two_branches(tmp_path, resolve_by_path):
     """Branch names are per REQUEST INDEX, so a duplicate selection doubles the
@@ -290,9 +281,6 @@ def test_minimax_h3_a_comfy_lora_stacks_onto_a_native_one(tmp_path, resolve_by_p
     assert "lora_stacking_unsupported" not in warning_codes(warnings_seen)
 
 
-# ---------------------------------------------------------------------------
-# Gate 5: restore identity
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_a_leaked_wrapper_is_restored_before_the_next_load(
         tmp_path, resolve_by_path):
@@ -371,9 +359,6 @@ def test_minimax_h3_unmatched_target_is_refused_atomically(tmp_path, resolve_by_
     assert "lora_partial" in warning_codes(warnings_seen)
 
 
-# ---------------------------------------------------------------------------
-# Quantizer reach, and block swap
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_wrapper_roots_are_countable_but_no_quantizer_reads_them(
         tmp_path, resolve_by_path):

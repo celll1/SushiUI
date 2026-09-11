@@ -168,9 +168,6 @@ class TestDefaultOff:
         spy.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# 2. grad_x bitwise equality
-# ---------------------------------------------------------------------------
 
 @CUDA
 class TestGradXBitwiseEquality:
@@ -235,9 +232,6 @@ class TestGradXBitwiseEquality:
             "bitwise assertion above would be vacuous")
 
 
-# ---------------------------------------------------------------------------
-# 3. No weight/scale/bias/sidecar gradient
-# ---------------------------------------------------------------------------
 
 @CUDA
 class TestNoFrozenOperandGradient:
@@ -324,9 +318,6 @@ class TestNoFrozenOperandGradient:
             "no-gradient assertion in this class would not catch a real leak")
 
 
-# ---------------------------------------------------------------------------
-# 4. Retention: dequant path retains a fresh weight, fused path retains none
-# ---------------------------------------------------------------------------
 
 @CUDA
 class TestRetention:
@@ -423,9 +414,6 @@ class TestRetention:
             "retention regression")
 
 
-# ---------------------------------------------------------------------------
-# 5. Trainable weight refused loudly
-# ---------------------------------------------------------------------------
 
 class TestTrainableWeightRefused:
     def test_refuses_a_parameter_weight_naming_the_layer_and_the_reason(self):

@@ -46,9 +46,6 @@ _UNGATED = ("sample_every", "width", "height", "prompts", "neg", "seed",
             "guidance_scale", "sample_steps")
 
 
-# ---------------------------------------------------------------------------
-# The table agrees with the handlers that read it
-# ---------------------------------------------------------------------------
 
 def test_the_allowlist_names_the_fields_the_arch_handlers_actually_read():
     """The gate is only safe because the table is not aspirational: every key
@@ -67,9 +64,6 @@ def test_the_allowlist_names_the_fields_the_arch_handlers_actually_read():
         assert readers == declared, (key, sorted(readers), sorted(declared))
 
 
-# ---------------------------------------------------------------------------
-# The gate predicate
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("key", _UNGATED + ("prompt", "steps", "cfg_scale"))
 def test_an_ungated_key_is_supported_everywhere(key):
@@ -100,9 +94,6 @@ def test_an_undeclared_architecture_is_not_stripped():
         assert training_sample_key_supported(None, key)
 
 
-# ---------------------------------------------------------------------------
-# The generated YAML section
-# ---------------------------------------------------------------------------
 
 def _section(arch):
     return _build_sample_section({}, [{"positive": "p", "negative": ""}], arch)

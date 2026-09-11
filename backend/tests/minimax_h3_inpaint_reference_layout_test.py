@@ -59,9 +59,6 @@ from api.generation_utils import (  # noqa: E402
 from core.models.minimax_h3 import h3_pipeline_ops as ops  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# The decision table (minimax_h3_inpaint_refs_design.md, Gate registration (B))
-# ---------------------------------------------------------------------------
 
 def _gate(variant, *, has_images=False, has_videos=False, has_audios=False,
           has_vision_conditioning=False):

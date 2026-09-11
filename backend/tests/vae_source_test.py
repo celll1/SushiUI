@@ -22,7 +22,6 @@ from core.models.common.single_file_format import build_component_metadata
 from core.models.common.vae_store import LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _ldm_vae_state(channels=4, downsamplers=3, seed=0):
     """An original/LDM-keyed AutoencoderKL: one downsampler per halving."""
@@ -82,7 +81,6 @@ _SDXL_CONFIG = {"_class_name": "AutoencoderKL", "latent_channels": 4,
                 "scaling_factor": 0.13025, "block_out_channels": [128, 256, 512, 512]}
 
 
-# --- source strings ---------------------------------------------------------
 
 def test_the_three_source_forms_parse_and_nothing_else_does():
     assert vs.parse_vae_source("registry:flux1") == ("registry", "flux1")
@@ -95,7 +93,6 @@ def test_the_three_source_forms_parse_and_nothing_else_does():
             vs.parse_vae_source(bad)
 
 
-# --- file: ------------------------------------------------------------------
 
 def test_a_standalone_diffusers_directory_resolves_from_its_own_config(tmp_path):
     directory = _write_diffusers_dir(tmp_path, _diffusers_vae_state(channels=16),
@@ -160,7 +157,6 @@ def test_a_file_that_holds_no_vae_is_refused(tmp_path):
         vs.resolve_vae_source(f"file:{path}")
 
 
-# --- registry: --------------------------------------------------------------
 
 def test_a_registry_key_carries_the_family_scaling_when_the_config_omits_it(
         tmp_path, monkeypatch):
@@ -179,7 +175,6 @@ def test_an_unknown_registry_key_is_refused():
         vs.resolve_vae_source("registry:not_a_family")
 
 
-# --- model: (extraction) ----------------------------------------------------
 
 @pytest.mark.parametrize("prefix", ["first_stage_model.", "vae."])
 def test_both_bundling_conventions_extract(tmp_path, prefix):
@@ -239,7 +234,6 @@ def test_an_extracted_vae_hashes_the_same_as_the_standalone_one(tmp_path):
     assert vs.resolve_vae_source(f"file:{moved}").content_hash != a.content_hash
 
 
-# --- observation ------------------------------------------------------------
 
 def test_a_batchnorm_vae_declares_the_domain_its_statistics_live_on():
     shapes = {k: tuple(v.shape)
@@ -265,7 +259,6 @@ def test_a_five_dimensional_decoder_reports_five_dimensional_latents():
     assert "scale_factor" not in observed and "scale_temporal" not in observed
 
 
-# --- struct_native / identity_native ---------------------------------------
 
 def test_the_architectures_own_shape_is_struct_native_but_identity_needs_a_hash(
         tmp_path):
@@ -300,7 +293,6 @@ def test_no_architecture_means_both_flags_stay_unknown(tmp_path):
     assert resolved.struct_native is None and resolved.identity_native is None
 
 
-# --- the family gate (§7.4) -------------------------------------------------
 
 def test_more_channels_at_the_same_geometry_is_the_supported_swap():
     facts = {"latent_channels": 16, "scale_factor": 8, "scale_temporal": 1,
@@ -350,7 +342,6 @@ def test_a_pixel_space_architecture_without_a_migration_is_refused():
     assert compatible is False and "pixel-space" in reason
 
 
-# --- the cheap listing path -------------------------------------------------
 
 def test_describing_a_candidate_reads_no_tensor_data(tmp_path, monkeypatch):
     directory = _write_diffusers_dir(tmp_path, _diffusers_vae_state(channels=16),

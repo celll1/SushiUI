@@ -64,9 +64,6 @@ def _cuts(spans):
     return [span.owned_end_frame for span in spans]
 
 
-# --------------------------------------------------------------------------
-# 1. The boundaries follow the shots
-# --------------------------------------------------------------------------
 
 def test_boundaries_land_exactly_on_shot_boundaries_when_the_grid_allows_it():
     """Zero crossings: both shot starts are reachable cuts, so both are used.
@@ -144,9 +141,6 @@ def test_the_planner_never_moves_a_shot_timestamp():
     ]
 
 
-# --------------------------------------------------------------------------
-# 2. The round trip the design says has to disappear
-# --------------------------------------------------------------------------
 
 REPORTED_TIMESTAMPS = [132, 264, 384]   # 00:05.500 / 00:11.000 / 00:16.000 @ 24fps
 REPORTED_BOUNDARIES = [124, 247, 370]   # what the fixed plan cut at
@@ -237,9 +231,6 @@ def test_an_unknown_mode_is_refused():
         build_segment_geometry(_grid(), 500, SEGMENT, None, 1, "nearest_shot", [124])
 
 
-# --------------------------------------------------------------------------
-# 4. The pinned-tail overlap arithmetic still holds
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("overlap", [1, 5, 9, 17])
 def test_each_shot_aligned_request_produces_the_span_the_plan_planned(overlap):
@@ -280,9 +271,6 @@ def test_a_wider_pin_moves_which_cuts_exist_and_alignment_follows_them(overlap, 
     assert _cuts(spans)[:2] == boundaries
 
 
-# --------------------------------------------------------------------------
-# 5. Over the wire (POST /video-chain/plan), no server started
-# --------------------------------------------------------------------------
 
 H3_PROMPT = (
     "integrated_multimodal_description: [Shot 1] A courier steps off a tram into "

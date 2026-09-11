@@ -69,9 +69,6 @@ def _config(**overrides):
     return section
 
 
-# ---------------------------------------------------------------------------
-# Rate resolution on the trainer side (strategy §3 rules 2 and 4)
-# ---------------------------------------------------------------------------
 
 def test_an_omitted_key_still_label_drops_at_the_inherited_rate():
     trainer = _StubTrainer(_config())
@@ -190,9 +187,6 @@ def test_every_mnt_iteration_sees_the_same_label():
     assert mask.dtype is torch.bool and mask.shape == (4,)
 
 
-# ---------------------------------------------------------------------------
-# Micro-batch slicing (strategy §5: "slice it wherever the batch is sliced")
-# ---------------------------------------------------------------------------
 
 class _MicroBatchStub:
     _microbatch_two_stage = BaseTrainer._microbatch_two_stage
@@ -266,9 +260,6 @@ def test_the_oom_retry_reuses_the_mask_rather_than_redrawing():
     raise AssertionError("_forward_backward_with_oom_recovery not found")
 
 
-# ---------------------------------------------------------------------------
-# The MiniT2I collated rewrite (strategy §6.1)
-# ---------------------------------------------------------------------------
 
 def test_the_rewrite_is_out_of_place():
     """The conditioning belongs to the assembled batch and is handed to every
@@ -377,9 +368,6 @@ def test_the_inference_null_is_still_a_zeroed_mask_on_the_same_text():
     assert "u_text, u_mask = text, torch.zeros_like(mask)" in source
 
 
-# ---------------------------------------------------------------------------
-# Handler wiring
-# ---------------------------------------------------------------------------
 
 def test_the_handler_declares_the_collated_stage_and_implements_its_hook():
     handler = MiniT2IArchHandler.__new__(MiniT2IArchHandler)

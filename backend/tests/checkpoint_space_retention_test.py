@@ -39,7 +39,6 @@ from core.training.checkpoint_space import (  # noqa: E402
     survivors_after_prune,
 )
 
-# Run 121's real numbers.
 SET_BYTES = int(60.85 * GIB)
 FREE_BYTES = int(32.7 * GIB)
 
@@ -59,9 +58,6 @@ class FakeSafetensorError(Exception):
     pass
 
 
-# ---------------------------------------------------------------------------
-# Fake trainer: the real retention methods over a temp directory
-# ---------------------------------------------------------------------------
 
 # Bytes each bundle stage writes, complete and half-written. The bundle is NOT
 # atomic on disk: run 121's weights were complete and valid when the optimizer
@@ -112,7 +108,6 @@ class FakeTrainer:
         self.saved_steps = []
         self._attempt_fails = False
 
-    # -- the bundle's individual writers, faked at byte level ----------
     def _write_stage(self, step, stage):
         path = self.output_dir / (
             f"{self.run_name}_step_{step:06d}{_STAGE_FILE_SUFFIX[stage]}")
@@ -183,15 +178,9 @@ class TempDirCase(unittest.TestCase):
         self.dir = Path(self._tmp.name)
 
 
-# ---------------------------------------------------------------------------
-# 1. The preflight arithmetic
-# ---------------------------------------------------------------------------
 
 class RetentionPlanTest(unittest.TestCase):
     def test_ample_space_keeps_the_request_and_does_not_reorder(self):
-        """MUTANT: pruning unconditionally before the write. With room to
-        spare, the retention pass must stay where it was (after the save) --
-        pruning first briefly holds one complete set fewer."""
         plan = plan_retention(
             free=500 * GIB, required=SET_BYTES,
             set_sizes_newest_first=[SET_BYTES, SET_BYTES], requested_keep=2,
@@ -202,9 +191,6 @@ class RetentionPlanTest(unittest.TestCase):
         self.assertFalse(plan.prune_first)
 
     def test_run_121_reduces_keep_and_prunes_first(self):
-        """MUTANT: the shipped ordering (save, then prune). 32.7 GiB free with
-        two 60.85 GiB sets on disk and keep=2 is the incident: keep must drop to
-        the floor and the prune must move ahead of the write."""
         plan = plan_retention(
             free=FREE_BYTES, required=SET_BYTES,
             set_sizes_newest_first=[SET_BYTES, SET_BYTES], requested_keep=2,
@@ -215,17 +201,12 @@ class RetentionPlanTest(unittest.TestCase):
         self.assertGreaterEqual(plan.free_bytes + plan.reclaim_bytes, SET_BYTES)
 
     def test_keep_is_reduced_only_as_far_as_needed(self):
-        """MUTANT: dropping straight to the floor whenever space is tight.
-        Five sets, room for one more after deleting two -> keep 4, not 2."""
         sizes = [10, 10, 10, 10, 10]
         plan = plan_retention(free=5, required=20, set_sizes_newest_first=sizes,
                               requested_keep=6)
         self.assertEqual(plan.effective_keep, 4)
 
     def test_floor_is_never_breached_and_a_hopeless_save_is_flagged(self):
-        """MUTANT: letting the search run to keep=0/1 before the write. Even
-        when nothing can make the save fit, the newest set on disk (the run's
-        resume target) survives and the plan reports fits=False."""
         plan = plan_retention(free=1, required=10_000,
                               set_sizes_newest_first=[10, 10, 10], requested_keep=3)
         self.assertEqual(plan.effective_keep, KEEP_FLOOR_BEFORE_WRITE)
@@ -240,18 +221,12 @@ class RetentionPlanTest(unittest.TestCase):
         self.assertEqual(tight.effective_keep, 2)
 
     def test_unreadable_volume_changes_nothing(self):
-        """MUTANT: treating an unknown free-space reading as zero, which would
-        prune to the floor on every save on a volume shutil cannot stat."""
         plan = plan_retention(free=None, required=SET_BYTES,
                               set_sizes_newest_first=[SET_BYTES], requested_keep=3)
         self.assertEqual(plan.effective_keep, 3)
         self.assertFalse(plan.prune_first)
 
     def test_keep_one_plans_the_prune_the_trainer_will_actually_run(self):
-        """MUTANT: survivors = keep - 1 without the floor. At keep=1 the plan
-        budgets for reclaiming EVERY set including the newest, while the trainer
-        floors survivors at 1 -- so it reports fits=True on bytes it will never
-        take, and the save it green-lights runs out of space."""
         plan = plan_retention(free=5, required=20, set_sizes_newest_first=[10, 10],
                               requested_keep=1, floor=1)
         self.assertEqual(survivors_after_prune(plan.effective_keep, 2), 1)
@@ -266,8 +241,6 @@ class RetentionPlanTest(unittest.TestCase):
 
 class DiskFullClassifierTest(unittest.TestCase):
     def test_every_writer_that_can_report_enospc_is_recognized(self):
-        """MUTANT: matching only OSError.errno. Neither of the two writers that
-        actually failed on run 121 raises an OSError."""
         self.assertTrue(is_disk_full_error(FakeSafetensorError(SAFETENSORS_ENOSPC)))
         self.assertTrue(is_disk_full_error(RuntimeError(TORCH_SHORT_WRITE)))
         self.assertTrue(is_disk_full_error(OSError(28, "No space left on device")))
@@ -277,16 +250,11 @@ class DiskFullClassifierTest(unittest.TestCase):
         self.assertFalse(is_disk_full_error(PermissionError(13, "Access is denied")))
 
     def test_another_inline_container_assertion_is_not_a_full_disk(self):
-        """MUTANT: matching "enforce fail at inline_container" alone. Every
-        inline_container check reports that way; reading a corrupt zip as ENOSPC
-        prunes the directory to a single checkpoint entry."""
         self.assertFalse(is_disk_full_error(RuntimeError(
             "[enforce fail at inline_container.cc:250] . file not found: archive/data.pkl"
         )))
 
     def test_a_rewrapped_writer_error_is_still_recognized(self):
-        """MUTANT: looking only at the outermost exception. A save helper that
-        re-raises through its own error type would restore the original bug."""
         try:
             raise FakeSafetensorError(SAFETENSORS_ENOSPC)
         except FakeSafetensorError as inner:
@@ -317,14 +285,9 @@ class EstimateTest(unittest.TestCase):
         )
 
 
-# ---------------------------------------------------------------------------
-# 2. The estimate and the floor, against a real directory
-# ---------------------------------------------------------------------------
 
 class MeasuredEstimateTest(TempDirCase):
     def test_estimate_uses_the_largest_set_not_the_newest(self):
-        """MUTANT: measuring the NEWEST set. Run 121's newest set is the
-        truncated one; sizing the next save from it under-books the space."""
         trainer = FakeTrainer(self.dir)
         write_set(self.dir, trainer.run_name, 100, weight_bytes=64, optimizer_bytes=64)
         write_set(self.dir, trainer.run_name, 200, weight_bytes=64, optimizer_bytes=1)
@@ -334,10 +297,6 @@ class MeasuredEstimateTest(TempDirCase):
                          max(w + s for w, s in parts))
 
     def test_a_set_with_no_sidecar_does_not_halve_the_estimate(self):
-        """MUTANT: max(whole set). Two sets whose _optimizer.pt is gone -- an
-        already-pruned sidecar, an emergency save that wrote weights only, or
-        save_optimizer_state deleting its own failed output -- make every whole
-        set weights-sized, and the next save books half of what it needs."""
         trainer = FakeTrainer(self.dir)
         for step in (100, 200):
             write_set(self.dir, trainer.run_name, step,
@@ -358,9 +317,6 @@ class MeasuredEstimateTest(TempDirCase):
 
 class OptimizerRetentionTest(TempDirCase):
     def test_optimizer_states_prune_harder_than_the_weights(self):
-        """MUTANT: deleting optimizer states only as a side effect of pruning
-        their parent checkpoint (the shipped behaviour). Four sets kept, one
-        optimizer state: the .pt files must go while the weights stay."""
         trainer = FakeTrainer(self.dir)
         for step in (100, 200, 300, 400):
             write_set(self.dir, trainer.run_name, step)
@@ -371,9 +327,6 @@ class OptimizerRetentionTest(TempDirCase):
         self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [400])
 
     def test_the_resume_targets_state_survives_even_out_of_step_order(self):
-        """MUTANT: keeping the newest N .pt files and nothing else. An
-        optimizer state written for a step whose weights are the newest
-        checkpoint must not be deleted because a later .pt exists."""
         trainer = FakeTrainer(self.dir)
         write_set(self.dir, trainer.run_name, 100)
         write_set(self.dir, trainer.run_name, 200)
@@ -386,13 +339,8 @@ class OptimizerRetentionTest(TempDirCase):
         self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [200, 300])
 
     def test_a_stale_higher_step_stump_does_not_protect_itself(self):
-        """MUTANT: protecting max(step) over the DIRECTORY. Run 121's leftovers
-        exactly: an INTACT 029332 state and a truncated 039672 stump. Protecting
-        "the newest entry" keeps the stump -- the file a host-resident resume
-        treats as fatal -- and deletes the state the run would actually use."""
         trainer = FakeTrainer(self.dir)
         write_set(self.dir, trainer.run_name, 29332, weight_bytes=64, optimizer_bytes=64)
-        # Run 121's leftovers: complete weights at 39672, truncated .pt beside them.
         (self.dir / f"{trainer.run_name}_step_039672.safetensors").write_bytes(b"w" * 64)
         (self.dir / f"{trainer.run_name}_step_039672_optimizer.pt").write_bytes(b"o")
 
@@ -401,9 +349,6 @@ class OptimizerRetentionTest(TempDirCase):
         self.assertEqual(steps_on_disk(self.dir, "_optimizer.pt"), [29332])
 
     def test_a_periodic_save_never_prunes_its_own_optimizer_state(self):
-        """MUTANT: ranking every .pt in the directory. A run resumed from 029332
-        with a higher-step 039672 leftover would, at every interval, delete the
-        state it JUST wrote and 029332's, leaving only the stump."""
         trainer = FakeTrainer(self.dir)
         patch_free(self, 10 * GIB)
         write_set(self.dir, trainer.run_name, 29332, weight_bytes=64, optimizer_bytes=64)
@@ -434,9 +379,6 @@ class OptimizerRetentionTest(TempDirCase):
         self.assertTrue(quarantined.exists())
 
 
-# ---------------------------------------------------------------------------
-# 3. The save path
-# ---------------------------------------------------------------------------
 
 class PeriodicSaveSpaceGuardTest(TempDirCase):
     def _trainer(self, free, fail_saves=0):
@@ -445,7 +387,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         return trainer
 
     def test_ample_space_saves_then_prunes(self):
-        """MUTANT: moving the retention pass before the write unconditionally."""
         trainer = self._trainer(free=10 * GIB)
         write_set(self.dir, trainer.run_name, 100)
         trainer._periodic_save_with_space_guard(
@@ -459,9 +400,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertLess(kinds.index("save"), kinds.index("prune"))
 
     def test_tight_space_prunes_before_writing(self):
-        """MUTANT: the shipped save-then-prune ordering. With three sets on
-        disk and room for well under two, the prune must precede the save --
-        that ordering is the whole reason keep=2 needed 3 sets of space."""
         trainer = self._trainer(free=40)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -475,9 +413,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertIn(400, steps_on_disk(self.dir))
 
     def test_the_last_complete_set_is_never_pruned_before_the_write(self):
-        """MUTANT: a pre-write floor of 1 (i.e. deleting every old set to make
-        room). The save that follows may itself fail; the newest existing set
-        is what the run would resume from."""
         trainer = self._trainer(free=1)
         write_set(self.dir, trainer.run_name, 100)
         trainer._periodic_save_with_space_guard(
@@ -488,8 +423,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertIn(100, steps_on_disk(self.dir))
 
     def test_reduced_retention_reaches_the_warning_channel(self):
-        """MUTANT: reducing retention silently. A run that quietly stops
-        keeping the checkpoints the user asked for must say so."""
         emitted = []
         original = bt.emit_training_warning
         bt.emit_training_warning = lambda message, **kw: emitted.append((message, kw))
@@ -516,8 +449,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertEqual(len(emitted), 1)
 
     def test_enospc_is_retried_once_after_pruning(self):
-        """MUTANT: letting the first ENOSPC end the run. One failure, then a
-        prune, then a successful retry -- the run continues."""
         trainer = self._trainer(free=40, fail_saves=1)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -531,9 +462,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertEqual(trainer.saved_steps, [400])
 
     def test_a_failed_write_leaves_no_partial_artefact(self):
-        """MUTANT: leaving the half-written file where it fell. Run 121's
-        truncated 14.04 GB optimizer .pt is fatal for a host-resident resume
-        and blocks it until a human deletes the file."""
         trainer = self._trainer(free=40, fail_saves=1)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -548,12 +476,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertEqual(partial.stat().st_size, 32)
 
     def test_a_hopeless_enospc_fails_with_the_numbers(self):
-        """MUTANT: re-raising the raw SafetensorError. The shipped failure is a
-        localized OS string with no free/required/volume in it.
-
-        Run 121's incident shape: the weights are COMPLETE and the optimizer
-        stage is what ran out of room. The complete weights must survive -- they
-        are 10,340 steps of compute -- and only the stump goes."""
         trainer = self._trainer(free=40, fail_saves=5)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -593,9 +515,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertNotIn(400, steps_on_disk(self.dir, "_optimizer.pt"))
 
     def test_a_retry_that_truncates_the_weights_does_not_keep_the_first_attempt(self):
-        """MUTANT: recording stage completion once per STEP instead of per
-        attempt. The retry rewrites the weights; if it truncates them, the fact
-        that attempt 1 got them complete says nothing about the bytes on disk."""
         trainer = self._trainer(free=40, fail_saves=2)
         for step in (100, 200, 300):
             write_set(self.dir, trainer.run_name, step)
@@ -617,10 +536,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertNotIn(400, steps_on_disk(self.dir))
 
     def test_a_disk_full_is_catchable_where_the_periodic_save_is_called(self):
-        """MUTANT: CheckpointSaveSpaceError(RuntimeError). The call site catches
-        (PermissionError, OSError) and continues to the next interval; a
-        RuntimeError escapes to the emergency handler and ENDS the run -- the
-        opposite of what the space guard exists to do."""
         self.assertTrue(issubclass(CheckpointSaveSpaceError, OSError))
         trainer = self._trainer(free=40, fail_saves=5)
         for step in (100, 200, 300):
@@ -637,11 +552,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
             self.fail("expected the guard to raise")
 
     def test_a_prune_failure_after_a_good_save_does_not_arm_the_emergency_delete(self):
-        """MUTANT: setting _last_periodic_checkpoint_step only after the guard
-        RETURNS. The post-write prune runs after the bundle succeeded; if it
-        raises, the outer handler swallows it with the marker still on the
-        previous step, and the emergency handler that follows in the same
-        iteration deletes the complete set that was just written."""
         trainer = self._trainer(free=10 * GIB)
         write_set(self.dir, trainer.run_name, 100)
 
@@ -665,7 +575,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
         self.assertIn(400, steps_on_disk(self.dir, "_optimizer.pt"))
 
     def test_a_non_space_failure_is_not_swallowed(self):
-        """MUTANT: treating every save failure as ENOSPC and retrying it."""
         trainer = self._trainer(free=10 * GIB)
 
         def boom(*args, **kwargs):
@@ -684,9 +593,6 @@ class PeriodicSaveSpaceGuardTest(TempDirCase):
 
 class MarkerPlacementTest(unittest.TestCase):
     def test_the_completed_save_marker_is_set_inside_the_bundle(self):
-        """MUTANT: setting it in train() after the guard returns. Everything
-        between the weights write and that assignment -- the rest of the bundle,
-        both prunes -- is a window in which a complete set reads as partial."""
         import ast
 
         source = (BACKEND / "core" / "training" / "base_trainer.py").read_text(
@@ -706,10 +612,6 @@ class MarkerPlacementTest(unittest.TestCase):
 
 class PartialArtefactCleanupTest(TempDirCase):
     def test_a_completed_periodic_save_is_not_mistaken_for_a_partial_one(self):
-        """MUTANT: deleting every file for the step unconditionally. The
-        emergency handler can run LATER in the same iteration as a periodic
-        save that already succeeded at this step; its own failed
-        save_checkpoint must not take that good set with it."""
         trainer = FakeTrainer(self.dir)
         write_set(self.dir, trainer.run_name, 400)
         trainer._last_periodic_checkpoint_step = 400
@@ -721,9 +623,6 @@ class PartialArtefactCleanupTest(TempDirCase):
 
 class SaveOptimizerStatePartialTest(TempDirCase):
     def test_a_failed_torch_save_deletes_its_own_output(self):
-        """MUTANT: no try/except around torch.save. This is exactly how run
-        121's truncated optimizer file was produced -- by the EMERGENCY
-        handler, which no space preflight covers."""
         import torch
 
         trainer = FakeTrainer(self.dir)
@@ -752,10 +651,6 @@ class SaveOptimizerStatePartialTest(TempDirCase):
         self.assertEqual(list(self.dir.glob("*.tmp")), [])
 
     def test_a_failed_rewrite_does_not_destroy_the_previous_bytes(self):
-        """MUTANT: torch.save straight onto the final path. It truncates its
-        target before writing, so "delete my own output on failure" cannot put
-        the old state back -- it is only ever safe by accident, because the
-        periodic filename happens to be new each step."""
         import torch
 
         trainer = FakeTrainer(self.dir)
@@ -816,15 +711,9 @@ class UndeletableStumpTest(TempDirCase):
             (self.dir / f"{trainer.run_name}_step_029500_optimizer.pt").stat().st_size, 64)
 
 
-# ---------------------------------------------------------------------------
-# 4. The parameter's own round trip
-# ---------------------------------------------------------------------------
 
 class ParameterRoundTripTest(unittest.TestCase):
     def test_it_survives_a_config_panel_edit(self):
-        """MUTANT: omitting the ("save",) entry in _YAML_FIELD_LOCATIONS. The
-        extractor would then look for it in process.train, find nothing, and
-        every config edit would silently reset it to the default."""
         import yaml
 
         from api.param_defaults import TRAINING_DEFAULTS

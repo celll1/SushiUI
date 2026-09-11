@@ -105,9 +105,6 @@ def _load(monkeypatch, **fields):
     return manager.seen
 
 
-# ---------------------------------------------------------------------------
-# defaults: one source, three places
-# ---------------------------------------------------------------------------
 
 def test_the_defaults_bundle_is_the_loaders_own_constants():
     """Re-typed 25/49 here would let the API advertise a range the loader does
@@ -136,9 +133,6 @@ def test_every_form_default_comes_from_the_bundle(field, key):
     assert default.default == H3_HYBRID_LOAD_DEFAULTS[key]
 
 
-# ---------------------------------------------------------------------------
-# no overlay: the load path is the one it always was
-# ---------------------------------------------------------------------------
 
 def test_a_load_without_an_overlay_passes_no_hybrid_argument_at_all(monkeypatch):
     """Not `hybrid=None` -- ABSENT. The default in `load_model`'s own signature
@@ -162,9 +156,6 @@ def test_an_empty_overlay_forwards_exactly_the_pre_c5_kwargs(monkeypatch):
                          "text_encoder_file", "clip_projection_file"}
 
 
-# ---------------------------------------------------------------------------
-# with an overlay: the request the loader accepts, and nothing else
-# ---------------------------------------------------------------------------
 
 def test_an_overlay_reaches_the_pipeline_as_a_hybrid_request(monkeypatch):
     seen = _load(monkeypatch, overlay_file="Z:/model/minimax_h3/o.safetensors",
@@ -305,9 +296,6 @@ def test_a_busy_lifecycle_gate_is_still_a_409_with_a_hybrid(monkeypatch):
     assert status == 409
 
 
-# ---------------------------------------------------------------------------
-# GET /models/minimax-h3/hybrid-overlays
-# ---------------------------------------------------------------------------
 
 def test_the_listing_offers_the_other_partition_and_not_the_base(tmp_path):
     base, overlay = _tree(tmp_path)
@@ -419,9 +407,6 @@ def test_the_listing_route_maps_a_refusal_to_400(monkeypatch, tmp_path):
     assert "[header_unreadable]" in excinfo.value.detail
 
 
-# ---------------------------------------------------------------------------
-# the spec says what the implementation does
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def openapi():

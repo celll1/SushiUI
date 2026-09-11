@@ -115,9 +115,6 @@ def test_an_identity_permutation_changes_nothing_but_the_count(pinned, label):
     assert torch.equal(pin["video_row_order"], identity)
 
 
-# ---------------------------------------------------------------------------
-# The prefix addresses the requested frames -- the mutant that matters
-# ---------------------------------------------------------------------------
 
 def test_the_prefix_carries_the_pinned_frames_clock():
     """NEGATIVE CONTROL: a permutation that is built and then not applied.
@@ -366,9 +363,6 @@ def test_matches_the_ti1_probe_harness_arithmetic():
         assert torch.equal(shipped["video_row_order"], torch.argsort(permutation))
 
 
-# ---------------------------------------------------------------------------
-# The preview -- the one denoise-side change, and the actual defect surface
-# ---------------------------------------------------------------------------
 
 class _StubScheduler:
     """Steps by `sample - 0.25 * velocity`, so a preview read from the POST-step

@@ -73,9 +73,6 @@ def test_capability_payload_carries_the_placements():
         "extend_forward", "extend_backward", "bridge"]
 
 
-# --------------------------------------------------------------------------
-# LTX-2.3 / unknown archs: unchanged behaviour
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ["ltx2", None, "sdxl"])
 def test_free_placement_archs_are_not_constrained(arch):
@@ -89,9 +86,6 @@ def test_bridge_clip_is_refused_where_there_is_no_bridge_placement():
         plan_video_outpaint_placement(_params(121, 0), "ltx2", head_frames=25, tail_frames=25)
 
 
-# --------------------------------------------------------------------------
-# MiniMax-H3: the three placements it can anchor
-# --------------------------------------------------------------------------
 
 def test_extend_forward_solves_for_the_generated_span():
     """A 124-frame clip + a 124-frame generated span = 247 output frames.

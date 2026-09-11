@@ -168,9 +168,6 @@ def test_a_segment_prompt_edit_still_moves_the_hash():
     assert result["manifest"]["plan_hash"] != manifest["plan_hash"]
 
 
-# --------------------------------------------------------------------------
-# the failure path still describes its own root prompt
-# --------------------------------------------------------------------------
 
 
 def _sha256(text: str) -> str:

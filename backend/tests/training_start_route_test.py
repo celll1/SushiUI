@@ -126,9 +126,6 @@ def _patch_common(monkeypatch, tmp_path, release=None):
 
 
 def test_start_releases_backend_vram_before_spawning(monkeypatch, tmp_path):
-    """MUTANT: deleting the release block from start_training_run. The backend is
-    the process that holds the generation VRAM; the trainer child cannot free it,
-    so nothing else in the system does."""
     manager, calls, created = _patch_common(monkeypatch, tmp_path)
     run = _make_run(tmp_path)
 
@@ -153,10 +150,6 @@ def test_the_lifecycle_gate_is_released_after_the_start(monkeypatch, tmp_path):
 
 
 def test_release_holds_the_gate_while_it_runs(monkeypatch, tmp_path):
-    """MUTANT: calling release_gpu_memory() with no model-state gate. Moving the
-    U-Net to CPU under a running denoise kills that generation; a generation that
-    survives re-stages and re-marks keep-hot in its own finally, putting the
-    freed GiB straight back while the release log claims success."""
     seen = {}
 
     def _release(reason=""):
@@ -170,10 +163,6 @@ def test_release_holds_the_gate_while_it_runs(monkeypatch, tmp_path):
 
 
 def test_a_blocked_gate_warns_but_still_starts_the_run(monkeypatch, tmp_path):
-    """MUTANT: letting ModelStateBusyError abort the start (a 409). The release
-    is a VRAM optimization, not a precondition — the user asked for the run to
-    start. It must surface through the SAME warning path as any other release
-    failure."""
     def _release(reason=""):
         raise ModelStateBusyError("Cannot start x; blocked by: 1 generation request.")
 
@@ -192,8 +181,6 @@ def test_a_blocked_gate_warns_but_still_starts_the_run(monkeypatch, tmp_path):
 
 
 def test_start_refuses_a_run_with_a_live_child(monkeypatch, tmp_path):
-    """MUTANT: deleting the 409/reap block. The DB status is not liveness; a
-    second spawn overwrites the registry entry and orphans the first child."""
     manager, _calls, _created = _patch_common(monkeypatch, tmp_path)
     manager.processes[1] = types.SimpleNamespace(
         process=types.SimpleNamespace(returncode=None, pid=9), is_running=True)
@@ -205,10 +192,6 @@ def test_start_refuses_a_run_with_a_live_child(monkeypatch, tmp_path):
 
 
 def test_start_refuses_a_registered_but_unspawned_entry(monkeypatch, tmp_path):
-    """MUTANT: `is_live` returning False for an entry registered but not yet
-    spawned. create_process and the spawn are seconds apart (pre-flight, the VRAM
-    release); request B arriving in that window used to reap request A's entry
-    and spawn its own — two trainers on one GPU, A's child unstoppable."""
     manager, _calls, _created = _patch_common(monkeypatch, tmp_path)
     manager.processes[1] = types.SimpleNamespace(process=None, is_running=False)
     run = _make_run(tmp_path, status="starting")
@@ -252,10 +235,6 @@ def test_a_failed_start_removes_its_own_unspawned_entry(monkeypatch, tmp_path):
 
 
 def test_stop_is_allowed_whenever_a_child_is_live(monkeypatch, tmp_path):
-    """MUTANT: gating stop on run.status alone. /start's 409 tells the user to
-    stop the run first; in exactly that state (status 'failed' with a live child)
-    the old status check answered 400, leaving the run unstartable AND
-    unstoppable until a backend restart."""
     manager, _calls, _created = _patch_common(monkeypatch, tmp_path)
     child = _FakeProcess()
     child.process = types.SimpleNamespace(returncode=None, pid=11)
@@ -288,9 +267,6 @@ class _FakeChild:
 
 
 def test_create_process_refuses_to_overwrite_a_live_process():
-    """MUTANT: `self.processes[run_id] = process` unconditionally. Two
-    train_runner children for one run orphan the first -- the registry entry
-    that could stop it is gone."""
     manager = TrainingProcessManager()
     existing = types.SimpleNamespace(process=_FakeChild(returncode=None), is_running=True)
     manager.processes[7] = existing
@@ -303,9 +279,6 @@ def test_create_process_refuses_to_overwrite_a_live_process():
 
 
 def test_is_live_is_false_only_for_an_exited_or_absent_process():
-    """MUTANT: reading `is_running` instead of the child's returncode. The flag
-    is cleared only once the monitor task observes the exit, so it is stale
-    exactly during the window a restart is attempted."""
     manager = TrainingProcessManager()
     manager.processes[1] = types.SimpleNamespace(process=_FakeChild(returncode=0), is_running=True)
     assert manager.is_live(1) is False
@@ -313,12 +286,6 @@ def test_is_live_is_false_only_for_an_exited_or_absent_process():
 
 
 def test_a_registered_but_unspawned_entry_counts_as_live():
-    """MUTANT: `process.process is None -> not live` (what this file used to
-    assert as intended). create_process and the spawn are seconds apart --
-    pre-flight rescan, the pre-training VRAM release -- and in that window the
-    route's reap branch deleted the OTHER request's entry and spawned a second
-    trainer on the same GPU, orphaning the first child with no registry entry
-    left to stop it: verbatim the failure the double-start guard prevents."""
     manager = TrainingProcessManager()
     manager.processes[2] = types.SimpleNamespace(process=None, is_running=False)
     assert manager.is_live(2) is True
@@ -326,9 +293,6 @@ def test_a_registered_but_unspawned_entry_counts_as_live():
         manager.create_process(run_id=2, config_path="c.yaml", output_dir="out")
 
 
-# ---------------------------------------------------------------------------
-# Per-run GPU selection (config.process[0].train.gpu_index)
-# ---------------------------------------------------------------------------
 
 def _gpu_yaml(gpu_index):
     return f"config:\n  process:\n  - train:\n      gpu_index: {gpu_index}\n"
@@ -340,8 +304,6 @@ def _patch_device_count(monkeypatch, count):
 
 
 def test_gpu_index_reaches_the_child(monkeypatch, tmp_path):
-    """MUTANT: read the key but never pass it to create_process. The selection
-    round-trips through the UI and the YAML and changes nothing."""
     manager, calls, created = _patch_common(monkeypatch, tmp_path)
     _patch_device_count(monkeypatch, 2)
     run = _make_run(tmp_path, config_yaml=_gpu_yaml(1))
@@ -361,9 +323,6 @@ def test_no_gpu_index_leaves_the_child_unpinned(monkeypatch, tmp_path):
 
 
 def test_a_gpu_index_this_machine_lacks_is_refused(monkeypatch, tmp_path):
-    """MUTANT: skip the device_count check. CUDA_VISIBLE_DEVICES=5 on a 2-GPU
-    box hides every device, so the child silently trains on CPU -- at a speed
-    that reads as a hang, with no error anywhere."""
     manager, calls, created = _patch_common(monkeypatch, tmp_path)
     _patch_device_count(monkeypatch, 2)
     run = _make_run(tmp_path, config_yaml=_gpu_yaml(5))
@@ -380,9 +339,6 @@ def test_a_gpu_index_this_machine_lacks_is_refused(monkeypatch, tmp_path):
 
 
 def test_a_run_pinned_elsewhere_does_not_release_the_generation_vram(monkeypatch, tmp_path):
-    """MUTANT: release unconditionally. release_gpu_memory() is device-agnostic,
-    so starting a run on GPU 1 would tear down the generation stack on GPU 0 --
-    destroying the one thing a second GPU is chosen for."""
     manager, calls, created = _patch_common(monkeypatch, tmp_path)
     _patch_device_count(monkeypatch, 2)
     run = _make_run(tmp_path, config_yaml=_gpu_yaml(1))

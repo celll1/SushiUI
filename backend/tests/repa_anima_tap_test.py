@@ -46,9 +46,6 @@ TEXT_LEN = 5
 TEXT_DIM = 16
 
 
-# ---------------------------------------------------------------------------
-# Stubs
-# ---------------------------------------------------------------------------
 
 class _StubLLMAdapter(nn.Module):
     """Anima._preprocess_text_embeds calls this; nothing here reads it."""
@@ -158,9 +155,6 @@ def _train_step(trainer, model, *, repa_pixels, seed=7):
     )
 
 
-# ---------------------------------------------------------------------------
-# (a) the disabled path
-# ---------------------------------------------------------------------------
 
 def test_a_fresh_anima_carries_the_tap_attributes_unarmed():
     """Inference loads the same class; the attributes must exist and be inert."""
@@ -204,9 +198,6 @@ def test_a_forward_clears_what_a_previous_one_stashed():
     assert model._repa_tap_out is None
 
 
-# ---------------------------------------------------------------------------
-# the handler's answer
-# ---------------------------------------------------------------------------
 
 def test_the_handler_answers_with_the_dit_its_width_and_its_block_count():
     model = _tiny_anima()
@@ -240,9 +231,6 @@ def test_setup_repa_arms_the_anima_dit(monkeypatch):
     assert trainer.repa_projector.net[0].in_features == CHANNELS
 
 
-# ---------------------------------------------------------------------------
-# (b) the gradient reaches the model
-# ---------------------------------------------------------------------------
 
 def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     model = _tiny_anima()
@@ -272,9 +260,6 @@ def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     assert _grad_norm(model.x_embedder) > 0
 
 
-# ---------------------------------------------------------------------------
-# (c) spatial correspondence
-# ---------------------------------------------------------------------------
 
 def test_the_tap_grid_is_the_latent_grid_over_the_patch_size():
     model = _tiny_anima()
@@ -313,9 +298,6 @@ def test_the_tokens_are_row_major_over_that_grid(cell):
     assert int(moved.argmax()) == h * gw + w
 
 
-# ---------------------------------------------------------------------------
-# the per-step path
-# ---------------------------------------------------------------------------
 
 def test_train_step_adds_a_finite_alignment_term_that_reaches_the_dit():
     model = _tiny_anima()

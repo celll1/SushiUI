@@ -217,9 +217,6 @@ def _kv_loss(cache):
     return sum(layer.keys.sum() + layer.values.sum() for layer in cache.layers)
 
 
-# ---------------------------------------------------------------------------
-# A. The refusal this phase lifts, and the seam the design's claim missed
-# ---------------------------------------------------------------------------
 
 # U-2-5, the commit that recorded this gap; its tree still carries both guards.
 SHIPPED_COMMIT = "ce713b58"
@@ -323,9 +320,6 @@ def test_prefix_loop_takes_exactly_one_entry(kwargs):
         )
 
 
-# ---------------------------------------------------------------------------
-# B. What flows
-# ---------------------------------------------------------------------------
 
 
 def test_reference_prefix_is_differentiable_and_carries_the_vit_rows(tmp_path):
@@ -399,9 +393,6 @@ def test_a_reference_only_signal_still_reaches_the_understanding_layers(tmp_path
     assert reached == set(targets) - und_gradient_unreachable_paths(_LAYERS)
 
 
-# ---------------------------------------------------------------------------
-# C. The vision tower stays frozen
-# ---------------------------------------------------------------------------
 
 
 def test_vision_tower_holds_no_gradient_after_a_reference_backward(tmp_path):
@@ -453,9 +444,6 @@ def test_the_tower_runs_under_no_grad_so_no_activation_is_retained(tmp_path):
     assert seen["embeds_grad_fn"] is None
 
 
-# ---------------------------------------------------------------------------
-# D. The four-phase split
-# ---------------------------------------------------------------------------
 
 
 def test_four_phase_reference_prefix_cuts_to_boundary_leaves(tmp_path):

@@ -25,9 +25,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from core.models.minimax_music3 import pruned_text_encoder_remap as pv  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 def test_eoa_row_is_zero_and_head_vocab_is_semantic_plus_one():
     """Pinned against the real checkpoint (see module docstring): row 0 of
@@ -36,9 +33,6 @@ def test_eoa_row_is_zero_and_head_vocab_is_semantic_plus_one():
     assert pv.AUDIO_HEAD_VOCAB_SIZE == pv.SEMANTIC_VOCAB_SIZE + 1 == 16385
 
 
-# ---------------------------------------------------------------------------
-# lm_qkv_split_sizes
-# ---------------------------------------------------------------------------
 
 def test_lm_qkv_split_sizes_gqa_explicit():
     sizes = pv.lm_qkv_split_sizes({
@@ -52,9 +46,6 @@ def test_lm_qkv_split_sizes_falls_back_to_plain_mha_when_fields_absent():
     assert sizes == (8, 8, 8)  # head_dim = 8//2 = 4, kv_heads defaults to num_attention_heads=2 -> kv_dim=8
 
 
-# ---------------------------------------------------------------------------
-# Plan: structural coverage over a tiny fused key set
-# ---------------------------------------------------------------------------
 
 _TINY_LM_CONFIG = {"num_attention_heads": 2, "num_key_value_heads": 1, "head_dim": 4, "hidden_size": 8}
 # q_dim=8, kv_dim=4 -> qkv_proj is [16, 8]
@@ -166,9 +157,6 @@ def test_plan_still_accepts_an_already_unfused_lm_suffix():
         "model.layers.0.self_attn.q_proj.weight"
 
 
-# ---------------------------------------------------------------------------
-# Apply: real tensors, splits verified against the fused source
-# ---------------------------------------------------------------------------
 
 def _tiny_pruned_state_dict(num_layers=1, num_depth_layers=1, dim=8):
     generator = torch.Generator().manual_seed(42)

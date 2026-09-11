@@ -34,9 +34,6 @@ from api.param_defaults import AUDIO_GEN_DEFAULTS
 from database.models import GeneratedImage
 
 
-# ---------------------------------------------------------------------------
-# F1, leg 1: the generic audio sidecar (utils.audio_utils)
-# ---------------------------------------------------------------------------
 
 def test_save_audio_with_metadata_sidecar_prefers_the_music3_step_and_cfg_keys(tmp_path, monkeypatch):
     from config.settings import settings
@@ -121,9 +118,6 @@ def test_save_audio_with_metadata_treats_a_real_zero_acestep_value_as_present(tm
     assert sidecar["guidance_scale"] == 0.0
 
 
-# ---------------------------------------------------------------------------
-# F1, leg 2: the gallery row (database.models.GeneratedImage.to_dict)
-# ---------------------------------------------------------------------------
 
 def test_generated_image_to_dict_surfaces_music3_step_and_cfg_fields():
     image = GeneratedImage(
@@ -159,9 +153,6 @@ def test_generated_image_to_dict_is_a_noop_when_music3_fields_absent():
     assert result["inference_steps"] == "8"
 
 
-# ---------------------------------------------------------------------------
-# F4: arch-specific audio bounds enforcement
-# ---------------------------------------------------------------------------
 
 def test_validate_audio_params_clamps_an_over_ceiling_duration_with_a_warning():
     params = {"audio_duration": 600.0}
@@ -224,9 +215,6 @@ def test_validate_audio_params_is_a_full_noop_for_an_unknown_arch():
     assert params["num_inference_steps"] == 0
 
 
-# ---------------------------------------------------------------------------
-# F5: the frame-code sidecar is removed on delete
-# ---------------------------------------------------------------------------
 
 class _FakeImageRow:
     """Everything `routes._generated_image_file_paths` reads off a

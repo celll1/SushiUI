@@ -160,9 +160,6 @@ def _te(root, name):
     return str(root / "text_encoders" / name)
 
 
-# ---------------------------------------------------------------------------
-# GET /models/minimax-h3/text-encoders
-# ---------------------------------------------------------------------------
 
 def test_listing_reports_the_default_selection_and_both_kinds_of_file(tmp_path):
     root = _tree(tmp_path)
@@ -214,9 +211,6 @@ def test_listing_refuses_a_path_that_is_not_an_h3_tree(tmp_path):
         h3_loader.describe_minimax_h3_text_encoder_choices(str(tmp_path))
 
 
-# ---------------------------------------------------------------------------
-# Hazard 3: an explicit named parameter at every hop
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("func", [
     ModelLoader.load_model,
@@ -283,9 +277,6 @@ def test_a_huggingface_source_refuses_both_fields():
                                text_encoder_file="Z:/whatever.safetensors")
 
 
-# ---------------------------------------------------------------------------
-# A projection named for an encoder that takes none
-# ---------------------------------------------------------------------------
 
 def test_a_projection_for_the_released_encoder_is_refused_not_ignored(tmp_path, monkeypatch):
     root = _tree(tmp_path, converted=False)
@@ -411,9 +402,6 @@ def test_the_load_reports_the_pairing_it_actually_built(h3_manager, monkeypatch)
     assert info["te_text_only"] is True
 
 
-# ---------------------------------------------------------------------------
-# Persistence across a restart
-# ---------------------------------------------------------------------------
 
 def test_the_chosen_pairing_is_persisted_and_replayed(h3_manager, monkeypatch):
     from core import pipeline as pipeline_module
@@ -450,9 +438,6 @@ def test_a_last_model_file_without_the_two_keys_still_auto_loads(h3_manager, mon
     assert replayed["clip_projection_file"] is None
 
 
-# ---------------------------------------------------------------------------
-# The route itself
-# ---------------------------------------------------------------------------
 
 # Posted as a real multipart form, never as `await routes.load_model(...)`:
 # called directly, every unsent field is its `Form(...)` sentinel rather than

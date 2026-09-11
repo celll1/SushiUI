@@ -229,9 +229,6 @@ def test_sdxl_explicit_prediction_type_is_carried():
     assert scheduler.config["prediction_type"] == "epsilon"
 
 
-# ---------------------------------------------------------------------------
-# 3. Every schedule key is written on every call: no residue across switches
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("source_name", sorted(ALL_SOURCES))
 def test_consecutive_switches_leave_no_residue(source_name):
@@ -293,9 +290,6 @@ def test_karras_spacing_does_not_depend_on_the_previous_schedule():
                           sigmas_of(from_uniform.scheduler))
 
 
-# ---------------------------------------------------------------------------
-# 4. The schedules actually differ where the sampler supports them
-# ---------------------------------------------------------------------------
 
 def test_sd15_uniform_and_exponential_differ():
     uniform = get_scheduler(pipeline=sd15_source(), sampler="euler",
@@ -434,9 +428,6 @@ def test_unknown_sampler_still_raises():
                       schedule_type="uniform")
 
 
-# ---------------------------------------------------------------------------
-# 6. The accepted-key set is the one diffusers actually filters against
-# ---------------------------------------------------------------------------
 
 class StandInScheduler(SchedulerMixin, ConfigMixin):
     """Takes ``use_karras_sigmas`` but lists it in ``ignore_for_config``.

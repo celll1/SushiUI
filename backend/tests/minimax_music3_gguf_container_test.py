@@ -29,9 +29,6 @@ from core.models.common import gguf_container as g  # noqa: E402
 from tests.minimax_music3_gguf_fixture import write_gguf  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Round trip: F32/F16/BF16, non-square shapes, dim-order.
-# ---------------------------------------------------------------------------
 
 def test_round_trips_f32_f16_bf16_tensors_with_correct_values(tmp_path):
     path = os.path.join(str(tmp_path), "tiny.gguf")
@@ -406,9 +403,6 @@ def test_refuses_huge_tensor_count_on_a_short_file(tmp_path):
     assert time.time() - t0 < 2.0
 
 
-# ---------------------------------------------------------------------------
-# F3: `general.alignment` of an unexpected TYPE.
-# ---------------------------------------------------------------------------
 
 def test_refuses_string_typed_alignment(tmp_path):
     path = os.path.join(str(tmp_path), "bad_alignment_str.gguf")

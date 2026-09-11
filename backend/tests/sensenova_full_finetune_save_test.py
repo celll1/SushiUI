@@ -44,9 +44,6 @@ _BRANCHES = ("gen", "und", "both")
 _FORMATS = ("mixed", "bf16", "int8")
 
 
-# ---------------------------------------------------------------------------
-# Synthetic tree
-# ---------------------------------------------------------------------------
 
 def _int8_linear_from(weight: torch.Tensor) -> Int8Linear:
     codes, scale = quantize_weight_to_int8(weight)
@@ -160,9 +157,6 @@ def _save(transformer, tmp_path, branch, save_format, **kwargs):
     )
 
 
-# ---------------------------------------------------------------------------
-# Round trip: every branch x every format
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("branch", _BRANCHES)
 @pytest.mark.parametrize("save_format", _FORMATS)
@@ -258,9 +252,6 @@ def test_mixed_degenerates_to_bf16_when_both_halves_are_trained(tmp_path):
     assert read_state_dict(mixed)[1]["sensenova_save_format_requested"] == "mixed"
 
 
-# ---------------------------------------------------------------------------
-# NEGATIVE CONTROL 1 -- the stale weight_scale trap (design 6.4 / loader gate)
-# ---------------------------------------------------------------------------
 
 def test_stale_weight_scale_is_refused_on_read_by_the_wrong_message(tmp_path):
     """A "mixed" file that KEPT the dequantized half's scales cannot be read.
@@ -329,9 +320,6 @@ def test_writer_refuses_a_scale_beside_a_materialized_linear(tmp_path):
     assert not list(tmp_path.glob("*.safetensors*"))
 
 
-# ---------------------------------------------------------------------------
-# NEGATIVE CONTROL 2 -- a partial half loads clean; the writer refuses it
-# ---------------------------------------------------------------------------
 
 def _truncated_state_dict(tmp_path, kept: int):
     """A "mixed" gen file in which only ``kept`` of the 294 gen Linears are bf16."""
@@ -408,9 +396,6 @@ def test_nothing_readable_survives_a_write_that_fails_midway(tmp_path, monkeypat
     assert list(tmp_path.iterdir()) == []
 
 
-# ---------------------------------------------------------------------------
-# Memory discipline
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("max_shard_bytes", [8192, 64])
 def test_the_writer_never_holds_more_than_one_shard(tmp_path, max_shard_bytes):
@@ -528,9 +513,6 @@ def test_int8_requantization_discards_updates_below_half_a_grid_step(tmp_path):
                for p in codes["large"])
 
 
-# ---------------------------------------------------------------------------
-# Adapter: format resolution and refusals
-# ---------------------------------------------------------------------------
 
 def _adapter(transformer, branch, save_format):
     trainer = SimpleNamespace(
@@ -604,9 +586,6 @@ def test_adapter_stamps_the_configured_base_model_identity(tmp_path):
     assert metadata["sensenova_base_model_identity"] == sensenova_base_model_identity(base_path)
 
 
-# ---------------------------------------------------------------------------
-# The setting's plumbing, end to end
-# ---------------------------------------------------------------------------
 
 def test_save_format_api_yaml_openapi_and_frontend_parity():
     import asyncio
@@ -677,11 +656,6 @@ def test_trainer_reads_the_setting_off_the_train_config():
     assert 'self.sensenova_full_finetune_save_format = str(_tc.get(' in source
 
 
-# ---------------------------------------------------------------------------
-# Gate G: the two step-3 refusals are OPEN (U-2-2 step 3). The precondition this
-# file's own subject was -- a writable checkpoint format -- is what unlocked
-# them; sensenova_full_finetune_acceptance_test.py owns the acceptance path.
-# ---------------------------------------------------------------------------
 
 def test_full_finetune_is_accepted_now_that_a_format_exists():
     from api.arch_capabilities import TRAINING_UNSUPPORTED

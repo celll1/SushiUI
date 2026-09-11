@@ -28,7 +28,6 @@ from core.training.vae_swap import module_latent_hash
 NAMESPACE = "sdxl__c4__dtfloat16"
 
 
-# --- driving the real pre-encode pass ---------------------------------------
 
 def _cache(tmp_path):
     return LatentCache("ds1", base_cache_dir=str(tmp_path), namespace=NAMESPACE)
@@ -70,7 +69,6 @@ def _latent(value, size=64):
     return torch.full((1, 4, size // 8, size // 8), value)
 
 
-# --- image ------------------------------------------------------------------
 
 def test_force_recache_replaces_an_existing_image_latent(tmp_path):
     cache = _cache(tmp_path)
@@ -94,7 +92,6 @@ def test_without_force_recache_an_existing_image_latent_is_kept(tmp_path):
         cache.load_latent(items[0]["image_path"], 64, 64, device="cpu"), _latent(1.0))
 
 
-# --- video clip -------------------------------------------------------------
 
 CLIP_KEY = ("v.mp4", 32, 32, 0, 4, 1)
 
@@ -149,7 +146,6 @@ def test_without_force_recache_a_cached_clip_is_returned_unencoded(tmp_path, _no
     assert torch.equal(_encode_clip(cache, 2.0), torch.full((1, 8, 2, 4, 4), 1.0))
 
 
-# --- audio clip -------------------------------------------------------------
 
 AUDIO_KEY = ("a.wav", 4.0, 48000)
 
@@ -180,7 +176,6 @@ def test_without_force_recache_a_cached_audio_latent_is_returned_unencoded(
     assert torch.equal(_encode_audio(cache, 2.0), torch.full((1, 8, 64), 1.0))
 
 
-# --- the pre-encode pass reaches both seams with the flag -------------------
 
 def test_the_video_branch_passes_force_recache_to_the_seam(tmp_path, monkeypatch, capsys):
     calls = []
@@ -217,7 +212,6 @@ def test_the_audio_branch_passes_force_recache_to_the_seam(tmp_path, monkeypatch
     assert calls[0]["force_recache"] is True
 
 
-# --- the stamp the overwrite leaves behind ----------------------------------
 
 def _tiny_vae():
     from diffusers import AutoencoderKL

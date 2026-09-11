@@ -79,7 +79,6 @@ def test_init_image_normalization_block(name):
     torch.testing.assert_close(namespace["init_latents"], normalize(vae.raw, vae), rtol=0, atol=0)
 
 
-# --- the spec is the source, not the VAE ------------------------------------
 
 def test_the_runs_wiring_decides_the_normalisation_not_the_vae():
     """Z-Image reads ``trainer.wiring`` like the other eleven architectures.

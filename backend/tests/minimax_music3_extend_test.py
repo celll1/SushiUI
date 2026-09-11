@@ -246,9 +246,6 @@ def test_extend_preserves_the_original_waveform_sample_exact_end_to_end(tmp_path
     assert torch.equal(result.waveform[..., :original_wave.shape[-1]], original_wave)
 
 
-# ---------------------------------------------------------------------------
-# Extend-of-an-extend.
-# ---------------------------------------------------------------------------
 def test_extend_of_an_extend_works(tmp_path):
     pipeline = _build_tiny_pipeline()
     manager = _Manager(pipeline)
@@ -291,9 +288,6 @@ def test_extend_of_an_extend_works(tmp_path):
     assert second.waveform.shape[-1] > first.waveform.shape[-1]
 
 
-# ---------------------------------------------------------------------------
-# Refusals that need no real model at all.
-# ---------------------------------------------------------------------------
 def _placeholder_manager():
     manager = _Manager.__new__(_Manager)
     manager.minimax_music3_components = {

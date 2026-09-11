@@ -59,9 +59,6 @@ PER_HALF = 294
 RUN_NAME = "20260825_120000_abc123"
 
 
-# ---------------------------------------------------------------------------
-# A MoT-shaped tree, small enough to build 588 Linears of in the test process
-# ---------------------------------------------------------------------------
 
 _INT8_SEEDS = itertools.count()
 
@@ -198,9 +195,6 @@ def _matching_frozen_tree(base_tree: nn.Module, half: str, trained_half: str) ->
     return tree
 
 
-# ---------------------------------------------------------------------------
-# The census the acceptance is decided on
-# ---------------------------------------------------------------------------
 
 def test_layout_counts_each_half_by_exact_class():
     layout = _half_linear_layout(_MoTTree(gen_factory=_float, und_factory=_int8))
@@ -252,9 +246,6 @@ def test_resume_selection_requires_all_four_conditions(tmp_path):
         _trainer(tmp_path, entry=sharded)) is not None
 
 
-# ---------------------------------------------------------------------------
-# Acceptance
-# ---------------------------------------------------------------------------
 
 def test_a_mixed_checkpoint_resumes_its_own_single_half_run(tmp_path):
     entry = f"{RUN_NAME}_step_000100.safetensors"
@@ -335,9 +326,6 @@ def test_a_missing_sidecar_warns_rather_than_refusing(tmp_path):
     assert "_state.json" not in warn.call_args.args[0]
 
 
-# ---------------------------------------------------------------------------
-# Negative controls: the trust rule's refusals
-# ---------------------------------------------------------------------------
 
 def test_the_wrong_layout_for_the_branch_is_refused(tmp_path):
     """Neither the 'mixed' Int8Linear layout nor the 'bf16' float layout: a
@@ -590,9 +578,6 @@ def test_the_stamp_cannot_widen_acceptance_past_the_structure(tmp_path):
             branch="gen")
 
 
-# ---------------------------------------------------------------------------
-# load_components: what the two routes do to the tree
-# ---------------------------------------------------------------------------
 
 def _load_components_trainer(tmp_path, entry, *, resume, branch):
     return SimpleNamespace(
@@ -716,9 +701,6 @@ def test_a_run_with_nothing_to_train_is_not_warned_about_a_branch_it_lacks():
     assert warn.call_args.kwargs["code"] == "sensenova_save_format_resume_needs_base"
 
 
-# ---------------------------------------------------------------------------
-# The two user-facing surfaces, kept honest and kept in step with each other
-# ---------------------------------------------------------------------------
 
 REPO_ROOT = BACKEND_ROOT.parent
 _OPENAPI = (REPO_ROOT / "openapi.yaml").read_text(encoding="utf-8")

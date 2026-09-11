@@ -177,9 +177,6 @@ def warnings_seen(monkeypatch):
     return warning_probe(monkeypatch)
 
 
-# ---------------------------------------------------------------------------
-# Enumeration and the headline Phase-0 fix
-# ---------------------------------------------------------------------------
 
 def test_flux2_generation_wraps_both_halves_the_trainer_wrapped(tmp_path):
     """The headline fix: a mixed checkpoint's text-encoder half must apply."""
@@ -415,9 +412,6 @@ def test_flux2_unmatched_pair_refuses_partial(tmp_path, warnings_seen):
     assert "lora_partial" in warning_codes(warnings_seen)
 
 
-# ---------------------------------------------------------------------------
-# The quantizer gates, over a composite
-# ---------------------------------------------------------------------------
 
 def test_flux2_text_encoder_quantization_is_still_dropped_over_a_composite(
         tmp_path, warnings_seen):
@@ -463,9 +457,6 @@ def test_flux2_int8_refusal_counts_composite_roots_not_branches(tmp_path):
     assert lora_wrapped_count(transformer) == 0
 
 
-# ---------------------------------------------------------------------------
-# Block swap: the offloader's view of the wrapped tree
-# ---------------------------------------------------------------------------
 
 def test_flux2_block_swap_sees_one_base_per_target_and_a_uniform_rename(tmp_path):
     """The offloader selects by ``__class__.__name__.endswith("Linear")`` plus a
@@ -506,8 +497,3 @@ def test_flux2_block_swap_sees_one_base_per_target_and_a_uniform_rename(tmp_path
 
     backend._unload_lora_flux2()
     assert [set(linear_weight_dtypes(b)) for b in blocks] == bare
-
-
-# ---------------------------------------------------------------------------
-# Model reload
-# ---------------------------------------------------------------------------

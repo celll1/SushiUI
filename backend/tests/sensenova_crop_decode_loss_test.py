@@ -100,7 +100,6 @@ def _call(trainer, x0_pred, x0, z_image, t, main_loss, *, lat: int = 16):
     )
 
 
-# --- the guard ---------------------------------------------------------------
 
 
 def test_train_step_call_site_is_guarded_by_both_keys():
@@ -150,7 +149,6 @@ def test_pixel_space_run_is_a_noop(capsys):
     assert capsys.readouterr().out.count("[crop_decode_loss]") == 1
 
 
-# --- token space -> 2D -------------------------------------------------------
 
 
 def test_unpatchify_inverts_the_train_step_token_layout():
@@ -174,7 +172,6 @@ def test_unpatchify_inverts_the_train_step_token_layout():
     assert torch.equal(restored, decoded)
 
 
-# --- gradient and decoder domain ---------------------------------------------
 
 
 def test_gradient_reaches_the_token_prediction():

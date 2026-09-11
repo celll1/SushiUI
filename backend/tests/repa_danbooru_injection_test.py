@@ -52,9 +52,6 @@ PRE_FIX_SRC = subprocess.run(
     cwd=REPO, capture_output=True, text=True, encoding="utf-8", check=True).stdout
 
 
-# ---------------------------------------------------------------------------
-# Harness
-# ---------------------------------------------------------------------------
 
 def _trainer(**over):
     """The BaseTrainer surface the onthefly_gpu block touches, real methods bound.
@@ -117,9 +114,6 @@ def _fingerprint(t, cells=8):
         t.float(), size=(cells, cells), mode="area")[0].numpy()
 
 
-# ---------------------------------------------------------------------------
-# The batch-loop mirror, pinned to both sources
-# ---------------------------------------------------------------------------
 
 # The three lines that decide whether the decode reaches REPA. `current` is this
 # fix; `prefix` is c6292216, where an injected item took the `elif` and left
@@ -271,9 +265,6 @@ def test_handover_equals_decoding_the_bytes_again(strategy, tmp_path):
         assert torch.equal(reused, fresh), f"{mode}/{fmt}"
 
 
-# ---------------------------------------------------------------------------
-# (c) nothing else moves
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("strategy", ["resize", "crop", "random_crop"])
 def test_repa_off_is_bit_identical_to_the_baseline(strategy):

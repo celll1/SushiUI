@@ -157,9 +157,6 @@ def _reference_norms():
     return _norms(_Trainer(model, fused=False))
 
 
-# --------------------------------------------------------------------------
-# The fused paths
-# --------------------------------------------------------------------------
 
 
 class _FusedPathMixin:
@@ -322,9 +319,6 @@ class FusedOptimizerGroupsTest(_FusedPathMixin, unittest.TestCase):
         self.groups.reset_counters()  # base_trainer does this per step
 
 
-# --------------------------------------------------------------------------
-# LoRA component attribution (dd0b10c7) under fused backward
-# --------------------------------------------------------------------------
 
 
 class _LoraTrainee(nn.Module):
@@ -394,9 +388,6 @@ class LoraComponentsUnderFusedTest(unittest.TestCase):
         for value, expected in zip(self._fused(), self._reference()):
             self.assertAlmostEqual(value, expected, places=PLACES)
 
-# --------------------------------------------------------------------------
-# max_grad_norm under fused backward
-# --------------------------------------------------------------------------
 
 
 class ClipWarningTest(unittest.TestCase):
@@ -435,9 +426,6 @@ class ClipWarningTest(unittest.TestCase):
         self.assertEqual(self._warn(_Trainer(fused=True), 0.0), "")
 
 
-# --------------------------------------------------------------------------
-# The accumulator itself
-# --------------------------------------------------------------------------
 
 
 class AccumulatorTest(unittest.TestCase):

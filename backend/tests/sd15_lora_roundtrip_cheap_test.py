@@ -108,8 +108,6 @@ def test_sd15_generation_wraps_exactly_the_targets_the_trainer_wrapped(tmp_path)
     unet, text_encoder = build_unet(), build_text_encoder()
     load_into(directory, name, unet, text_encoder)
 
-    # Set EQUALITY on both components: a partial conversion (kohya stem -> module
-    # path) is as wrong as none and much quieter.
     assert peft_wrapped_paths(unet) == unet_paths
     assert peft_wrapped_paths(text_encoder) == te_paths
 

@@ -36,6 +36,5 @@ def test_train_runner_reconciles_before_opening_the_catalog():
     source = (Path(__file__).parents[1] / "core" / "training" / "train_runner.py").read_text(
         encoding="utf-8"
     )
-    start = source.index("def main()")
-    worker = source[start:]
+    worker = source[source.index("def main()") :]
     assert worker.index("ensure_training_schema()") < worker.index("get_training_db()")

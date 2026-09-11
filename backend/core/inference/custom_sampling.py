@@ -10,6 +10,7 @@ Based on diffusers' pipeline implementation but with added flexibility.
 
 import os
 import torch
+from core.inference.callback_utils import callback_requests
 
 # Every latent normalisation below goes through the shared layer, deliberately
 # WITHOUT a wiring spec: `_loaded_wiring()` still reports sd15/sdxl's own
@@ -2790,11 +2791,17 @@ def custom_sampling_loop(
         step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
         latents = step_output.prev_sample
 
-        # Get predicted x0 (original sample) if available from scheduler
-        # This is the model's prediction of what the final denoised image should look like
-        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
-        # This prevents GPU sync delays during TAESD preview decoding
-        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        needs_pred_original = (
+            first_iteration_debug
+            or (flatten_in_loop and i in _flatten_inject_steps)
+            or callback_requests(
+                progress_callback, "wants_predicted_x0", i, len(timesteps)
+            )
+        )
+        pred_original_sample = (
+            getattr(step_output, 'pred_original_sample', None)
+            if needs_pred_original else None
+        )
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
 
@@ -2827,7 +2834,9 @@ def custom_sampling_loop(
         # so we pass len(timesteps) as the total to avoid showing progress > 100%
         if progress_callback is not None:
             cfg_metrics = None
-            if do_classifier_free_guidance:
+            if do_classifier_free_guidance and callback_requests(
+                progress_callback, "wants_cfg_metrics", i, len(timesteps)
+            ):
                 cfg_metrics = calculate_cfg_metrics(
                     noise_pred_uncond,
                     noise_pred_text,
@@ -3890,9 +3899,17 @@ def custom_img2img_sampling_loop(
         step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
         latents = step_output.prev_sample
 
-        # Get predicted x0 (original sample) if available from scheduler
-        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
-        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        needs_pred_original = (
+            first_iteration_debug
+            or (flatten_in_loop and i in _flatten_inject_steps)
+            or callback_requests(
+                progress_callback, "wants_predicted_x0", i, len(timesteps)
+            )
+        )
+        pred_original_sample = (
+            getattr(step_output, 'pred_original_sample', None)
+            if needs_pred_original else None
+        )
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
 
@@ -3923,7 +3940,9 @@ def custom_img2img_sampling_loop(
         # Progress callback
         if progress_callback is not None:
             cfg_metrics = None
-            if do_classifier_free_guidance:
+            if do_classifier_free_guidance and callback_requests(
+                progress_callback, "wants_cfg_metrics", i, len(timesteps)
+            ):
                 cfg_metrics = calculate_cfg_metrics(
                     noise_pred_uncond,
                     noise_pred_text,
@@ -6344,9 +6363,18 @@ def custom_inpaint_sampling_loop(
                     "sigma": _dbg_sigma,
                 }) + "\n")
 
-        # Get predicted x0 (original sample) if available from scheduler
-        # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory
-        pred_original_sample = getattr(step_output, 'pred_original_sample', None)
+        callback_total = len(_outpaint_visit_schedule)
+        needs_pred_original = (
+            first_iteration_debug
+            or (flatten_in_loop and i in _flatten_inject_steps)
+            or callback_requests(
+                progress_callback, "wants_predicted_x0", visit_idx, callback_total
+            )
+        )
+        pred_original_sample = (
+            getattr(step_output, 'pred_original_sample', None)
+            if needs_pred_original else None
+        )
         if pred_original_sample is not None:
             pred_original_sample = pred_original_sample.detach().clone()
 
@@ -6452,7 +6480,9 @@ def custom_inpaint_sampling_loop(
 
         if progress_callback is not None:
             cfg_metrics = None
-            if do_classifier_free_guidance:
+            if do_classifier_free_guidance and callback_requests(
+                progress_callback, "wants_cfg_metrics", visit_idx, callback_total
+            ):
                 cfg_metrics = calculate_cfg_metrics(
                     noise_pred_uncond,
                     noise_pred_text,

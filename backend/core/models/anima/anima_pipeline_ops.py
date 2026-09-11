@@ -17,6 +17,7 @@ from PIL import Image
 
 from .anima_scheduler import AnimaFlowMatchScheduler, calculate_shift_anima
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.callback_utils import callback_requests
 from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 
@@ -788,9 +789,12 @@ def sample_txt2img(
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 
-        # Predicted clean latent for preview: x_0 = x_t - sigma * v
-        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
-        pred_x0 = latents - sigma_now * v
+        pred_x0 = None
+        if callback_requests(
+            step_callback, "wants_predicted_x0", i, num_inference_steps
+        ):
+            sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+            pred_x0 = latents - sigma_now * v
 
         latents = scheduler.step(v, i, latents)
 
@@ -990,15 +994,20 @@ def sample_img2img(
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 
-        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
-        pred_x0 = latents - sigma_now * v
+        callback_step = i - start_step
+        callback_total = num_inference_steps - start_step
+        pred_x0 = None
+        if callback_requests(
+            step_callback, "wants_predicted_x0", callback_step, callback_total
+        ):
+            sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+            pred_x0 = latents - sigma_now * v
 
         latents = scheduler.step(v, i, latents)
 
         if step_callback is not None:
             try:
-                step_callback(i - start_step, num_inference_steps - start_step,
-                               latents, cfg_metrics, pred_x0)
+                step_callback(callback_step, callback_total, latents, cfg_metrics, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
@@ -1199,8 +1208,14 @@ def sample_inpaint(
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 
-        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
-        pred_x0 = latents - sigma_now * v
+        callback_step = i - start_step
+        callback_total = num_inference_steps - start_step
+        pred_x0 = None
+        if callback_requests(
+            step_callback, "wants_predicted_x0", callback_step, callback_total
+        ):
+            sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+            pred_x0 = latents - sigma_now * v
 
         latents = scheduler.step(v, i, latents)
 
@@ -1214,12 +1229,13 @@ def sample_inpaint(
 
         # For inpaint preview, also blend pred_x0 with the known regions so the
         # preview reflects the inpainted area against the original image.
-        preview_pred_x0 = mask_latents * pred_x0 + (1 - mask_latents) * init_latents
+        preview_pred_x0 = None
+        if pred_x0 is not None:
+            preview_pred_x0 = mask_latents * pred_x0 + (1 - mask_latents) * init_latents
 
         if step_callback is not None:
             try:
-                step_callback(i - start_step, num_inference_steps - start_step,
-                               latents, cfg_metrics, preview_pred_x0)
+                step_callback(callback_step, callback_total, latents, cfg_metrics, preview_pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 

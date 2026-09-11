@@ -309,6 +309,14 @@ def create_progress_callback_factory(
     Returns:
         プログレスコールバック関数
     """
+    def should_generate_preview(step: int, total_steps: int) -> bool:
+        return preview_enabled and (
+            step == -1
+            or step == 0
+            or step == total_steps - 1
+            or (step > 0 and step % preview_interval == 0)
+        )
+
     def progress_callback(step, total_steps, latents, cfg_metrics=None, pred_original_sample=None, phase_label: Optional[str] = None):
         # Decoupled decode-phase progress (e.g. PiD decode): no denoise latent to
         # preview, just forward (step, total_steps, phase_label) as-is.
@@ -335,17 +343,9 @@ def create_progress_callback_factory(
         preview_image = None
         send_metrics = None
 
-        # Determine if we should generate preview for this step
-        # Always generate for: initial (-1), first step (0), last step, or at interval
-        is_last_step = (step == total_steps - 1)
-        should_generate_preview = preview_enabled and (
-            step == -1 or
-            step == 0 or
-            is_last_step or
-            (step > 0 and step % preview_interval == 0)
-        )
+        generate_preview = should_generate_preview(step, total_steps)
 
-        if should_generate_preview:
+        if generate_preview:
             try:
                 # Debug: Log model type being used for preview
                 if step == -1 or step == 0:
@@ -385,7 +385,7 @@ def create_progress_callback_factory(
                 print(f"Preview generation error: {e}")
 
         # Send CFG metrics (only when preview is generated to reduce transfer)
-        if should_generate_preview:
+        if generate_preview:
             send_metrics = cfg_metrics
 
         if step == -1:
@@ -419,6 +419,11 @@ def create_progress_callback_factory(
     # call sites, e.g. the PiD decode-progress adapter in custom_sampling.py):
     # this closure supports the decoupled `phase_label` kwarg.
     progress_callback._supports_phase_label = True
+    progress_callback.wants_predicted_x0 = (
+        lambda step, total_steps: preview_predicted_x0
+        and should_generate_preview(step, total_steps)
+    )
+    progress_callback.wants_cfg_metrics = should_generate_preview
 
     return progress_callback
 

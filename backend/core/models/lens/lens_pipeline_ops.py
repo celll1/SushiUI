@@ -16,6 +16,7 @@ from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.callback_utils import callback_requests
 from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 
@@ -965,13 +966,19 @@ def denoise_loop(
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
 
-            # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
-            pred_x0 = latents - sigma_t * noise_pred
+            pred_x0 = None
+            if callback_requests(
+                progress_callback, "wants_predicted_x0", i, total_steps
+            ):
+                pred_x0 = latents - sigma_t * noise_pred
 
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
             if progress_callback is not None:
-                progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+                progress_callback(
+                    i, total_steps, latents.detach(), cfg_metrics,
+                    pred_x0.detach() if pred_x0 is not None else None,
+                )
     finally:
         # Defensive clear: never let a stale StyleContext leak into a later forward
         # (e.g. a subsequent non-style generation reusing this transformer instance,
@@ -1114,12 +1121,19 @@ def denoise_loop_img2img(
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
 
-            pred_x0 = latents - sigma_t * noise_pred
+            pred_x0 = None
+            if callback_requests(
+                progress_callback, "wants_predicted_x0", i, total_steps
+            ):
+                pred_x0 = latents - sigma_t * noise_pred
 
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
             if progress_callback is not None:
-                progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+                progress_callback(
+                    i, total_steps, latents.detach(), cfg_metrics,
+                    pred_x0.detach() if pred_x0 is not None else None,
+                )
     finally:
         if hasattr(real_transformer, "_style_ctx"):
             real_transformer._style_ctx = None
@@ -1266,7 +1280,11 @@ def denoise_loop_inpaint(
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
 
-            pred_x0 = latents - sigma_t * noise_pred
+            pred_x0 = None
+            if callback_requests(
+                progress_callback, "wants_predicted_x0", i, total_steps
+            ):
+                pred_x0 = latents - sigma_t * noise_pred
 
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
@@ -1275,9 +1293,13 @@ def denoise_loop_inpaint(
             latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
 
             if progress_callback is not None:
-                # Blend pred_x0 with known region for a geometry-aware preview
-                preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
-                progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
+                preview_x0 = None
+                if pred_x0 is not None:
+                    preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
+                progress_callback(
+                    i, total_steps, latents.detach(), cfg_metrics,
+                    preview_x0.detach() if preview_x0 is not None else None,
+                )
     finally:
         if hasattr(real_transformer, "_style_ctx"):
             real_transformer._style_ctx = None

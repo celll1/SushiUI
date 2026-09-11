@@ -862,8 +862,6 @@ class LensMixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._lens_move("vae", "cpu")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Lens] txt2img completed")
@@ -1059,8 +1057,6 @@ class LensMixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._lens_move("vae", "cpu")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Lens] img2img completed")
@@ -1265,8 +1261,6 @@ class LensMixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._lens_move("vae", "cpu")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Lens] inpaint completed")

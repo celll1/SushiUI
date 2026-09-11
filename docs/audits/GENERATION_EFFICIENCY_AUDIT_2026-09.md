@@ -276,6 +276,23 @@ the equivalent-refactoring implementation scope:
 8. **Completed:** stream raw video frames into FFmpeg without whole-video
    `bytes` copies.
 
+## CPU numerical verification follow-up
+
+The remaining CPU-capable proof is handled separately from the GPU backlog:
+
+1. Exercise every SD scheduler in `SAMPLER_MAP` and prove that its returned
+   `pred_original_sample` does not share storage with the next-step
+   `prev_sample`; this is the ownership condition for the removed preview
+   clone.
+2. Compare a seeded CPU generation kernel through the executor with grad mode
+   enabled and through the new no-grad boundary, requiring bit-exact tensor
+   output and unchanged RNG advancement.
+3. Compare schedule snapshots against the former per-element `.item()` path
+   for every CPU floating dtype supported by PyTorch.
+4. When FFmpeg is installed, encode deterministic RGB frames through the real
+   streaming path and decode the FFV1 master back to RGB, requiring byte-exact
+   equality.
+
 ## GPU verification backlog
 
 For each affected image family, run the same seed/configuration before and after

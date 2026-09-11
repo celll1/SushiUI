@@ -19,7 +19,7 @@ forecasts the output at skipped steps — no extra forward.
 `h` = the RAW U-Net output `noise_pred` BEFORE CFG combine (batch [2,...] for CFG,
 [3,...] for NAG; NAG/NegPip/ControlNet effects are baked into the recorded anchor
 output, so skipped steps inherit them). Downstream CFG combine + scheduler.step are
-unchanged. DEUS 2-pass path is excluded in v1 (separate uncond/text tensors).
+unchanged.
 
 ## Anchor / skip schedule (U = actual pass, V = forecast)
 Paper adaptive scheduler: `U = {⌊α·r(r+1)/2⌋}` — dense early, sparse late — plus a

@@ -992,7 +992,7 @@ async def get_timestep_defaults_by_arch():
 async def get_bundle_vae_defaults_by_arch():
     """Per-architecture default bundle_vae for full-parameter saves.
 
-    sd15/sdxl/deus default True (comfy-layout checkpoints consumed by
+    sd15/sdxl default True (comfy-layout checkpoints consumed by
     A1111/ComfyUI require the first_stage_model.* VAE section); other
     architectures default False. "_default" is the global fallback. The frontend
     applies the selected model's entry when the base model changes (user edits win).
@@ -10339,10 +10339,9 @@ async def switch_current_model_component(
 
 @router.get("/samplers")
 async def get_samplers():
-    """Get available samplers (depends on current model type: SD/SDXL/DEUS vs Flow Matching models)"""
+    """Get samplers compatible with the currently loaded model."""
     try:
         # Check if current model is Flow Matching (Z-Image, FLUX.2)
-        # Note: DEUS uses SDXL-like architecture with standard diffusion, NOT Flow Matching
         is_flow_matching = (
             pipeline_manager.is_zimage_model or
             pipeline_manager.is_flux2_model or
@@ -10362,7 +10361,7 @@ async def get_samplers():
                 {"id": "heun", "name": "Heun (Flow Match)"},
             ]
         else:
-            # SD/SDXL/DEUS samplers (standard diffusion)
+            # SD/SDXL samplers (standard diffusion)
             samplers = get_available_samplers()
             display_names = get_sampler_display_names()
             samplers_list = [
@@ -15741,7 +15740,7 @@ class TrainingRunCreateRequest(BaseModel):
     res_curriculum_warmup_steps: int = TRAINING_DEFAULTS["res_curriculum_warmup_steps"]
     res_curriculum_warmup_scale: float = TRAINING_DEFAULTS["res_curriculum_warmup_scale"]
     # Full-parameter save: embed the VAE into the single-file checkpoint.
-    # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
+    # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl True,
     # others False); an explicit boolean always wins.
     bundle_vae: Optional[bool] = TRAINING_DEFAULTS["bundle_vae"]
     # Gradient checkpointing (activation recompute). Default True = prior behavior.

@@ -407,7 +407,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # Spectrum: Adaptive Spectral Feature Forecasting (training-free acceleration).
     # Skips U-Net forwards on selected steps by forecasting the output from a Chebyshev
     # fit over actual passes. Most useful at high step counts (>=30); little benefit on
-    # low-step/distilled models. Auto-disabled with prompt-editing/ControlNet/DEUS.
+    # low-step/distilled models. Auto-disabled with prompt-editing/ControlNet.
     "spectrum_enable": False,
     "spectrum_w": 0.5,             # spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     "spectrum_w_decay": 0.0,       # OPT-IN per-step decay exponent for spectrum_w (0 = off, default)
@@ -2437,7 +2437,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "vae_dtype": "fp16",                    # Fix: frontend had "fp32"
     # Full-parameter save: also embed the VAE weights into the single-file
     # checkpoint. None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH below):
-    # sd15/sdxl/deus comfy-layout checkpoints are consumed by A1111/ComfyUI which
+    # sd15/sdxl comfy-layout checkpoints are consumed by A1111/ComfyUI which
     # expect first_stage_model.* baked in, so they default True; all other archs
     # default False (their loaders fall back to default VAE resolution when the
     # section is absent). Ignored for LoRA and for pixel-space MiniT2I (no VAE).
@@ -3092,7 +3092,7 @@ def resolve_training_sample_defaults(
 # Per-architecture default bundle_vae (full-parameter save VAE embedding)
 # ---------------------------------------------------------------------------
 # bundle_vae=None (the TRAINING_DEFAULTS value) resolves per-arch here.
-# sd15/sdxl/deus comfy-layout single files are consumed by A1111/ComfyUI, which
+# sd15/sdxl comfy-layout single files are consumed by A1111/ComfyUI, which
 # expect first_stage_model.* baked in — a VAE-less save silently produces
 # corrupt decodes there, so they default True. All other archs' loaders fall
 # back to default VAE resolution when the section is absent, so they default
@@ -3101,7 +3101,6 @@ BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
     "_default": False,
     "sd15": True,
     "sdxl": True,
-    "deus": True,
 }
 
 

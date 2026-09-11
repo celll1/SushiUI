@@ -553,7 +553,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // already been applied, so model changes apply the model's default exactly once
   // while user edits (which don't change baseModelPath) are never clobbered.
   const lastTimestepModelRef = useRef<string | null>(null);
-  // Same pattern for the per-arch default bundle_vae (sd15/sdxl/deus -> true).
+  // Same pattern for the per-arch default bundle_vae (sd15/sdxl -> true).
   const lastBundleVaeModelRef = useRef<string | null>(null);
   const lastSampleDefaultsModelRef = useRef<string | null>(null);
   const sampleDefaultsExplicitlySetRef = useRef(false);
@@ -924,12 +924,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Helper: Detect model architecture. These exist for arch-SPECIFIC config
   // blocks (an option only that architecture has). A capability gate must not
   // be written with them — use unsupportedTrainingFeature/Method below.
-  // DEUS support removed
-  // const isDEUSModel = (modelPath: string): boolean => {
-  //   const model = availableModels.find(m => m.path === modelPath);
-  //   return model?.architecture === "deus";
-  // };
-
   const isFlux2Model = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "flux2";
@@ -1685,7 +1679,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // Dtype presets based on architecture:
-    // - SD1.5/SDXL/DEUS: VAE=fp16, weight=fp32, training=fp16, save=fp16
+    // - SD1.5/SDXL: VAE=fp16, weight=fp32, training=fp16, save=fp16
     // - Z-Image/FLUX.2: VAE=fp32, weight=bf16, training=bf16, save=bf16
     if (arch === "zimage" || arch === "flux2") {
       // Z-Image/FLUX.2: bf16 for weights/training/output, fp32 for VAE
@@ -1715,7 +1709,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       updateParam("output_dtype", "bf16");
       updateParam("vae_dtype", "fp32");
     } else {
-      // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
+      // SD1.5/SDXL: fp32 for weights, fp16 for training/output/VAE
       updateParam("weight_dtype", "fp32");
       updateParam("training_dtype", "fp16");
       updateParam("output_dtype", "fp16");
@@ -1750,7 +1744,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, [baseModelPath, timestepDefaultsByArch]);
 
   // Apply the per-architecture default bundle_vae when the base model changes
-  // (sd15/sdxl/deus -> true: their comfy-layout checkpoints are consumed by
+  // (sd15/sdxl -> true: their comfy-layout checkpoints are consumed by
   // A1111/ComfyUI which require the first_stage_model.* VAE section; others ->
   // false). Fetched from the backend (param_defaults SSOT); applied once per model
   // so user edits persist; skipped during YAML/edit restore.
@@ -5146,7 +5140,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 )}
               </div>
 
-              {/* Train Image Encoder - DEUS support removed */}
             </div>
 
             {/* U-Net Learning Rate */}
@@ -5269,7 +5262,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* Image Encoder Learning Rate - DEUS support removed */}
           </div>
         </div>
 

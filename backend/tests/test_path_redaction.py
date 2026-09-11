@@ -16,7 +16,7 @@ Two failure modes matter equally and both have occurred:
      worse than it sounds: the fixtures below are REAL values taken from this
      repo's gallery.db, and earlier revisions of the regex
        * deleted four feature names from a degradation notice
-         ("not compatible with NAG / NegPip / DEUS / ..." -> "NAG  FBCache"),
+         ("not compatible with NAG / NegPip / style transfer / ..." -> "NAG  FBCache"),
          i.e. made the PNG assert something false about what was disabled;
        * stripped the A1111 escapes out of "azarin \\(exs-tia\\)", turning a
          literal parenthesis into an emphasis group so the recorded prompt no
@@ -207,7 +207,7 @@ class TestProseIsNotRewritten(unittest.TestCase):
     warning message from gallery.db that an earlier revision corrupted."""
 
     REAL_WARNINGS = [
-        "Regional additional prompt disabled: not compatible with NAG / NegPip / DEUS / "
+        "Regional additional prompt disabled: not compatible with NAG / NegPip / "
         "style transfer / Spectrum / FBCache in this version.",
         "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
         "Paste-band reconciliation feather: the last 24 row(s)/column(s) of the preserved rect "

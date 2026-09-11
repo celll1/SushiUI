@@ -617,14 +617,13 @@ class ModelLoader:
 
     @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
-        """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
+        """Detect the model architecture from config or checkpoint structure.
 
         Supports:
         - Z-Image diffusers format (directory with transformer/, vae/, etc.)
         - Z-Image Comfy format (single safetensors with transformer weights only)
         - FLUX.2 Klein (single safetensors with Flux2Transformer2DModel weights)
         - SD1.5/SDXL diffusers and safetensors
-        Note: DEUS support has been removed (architecture no longer maintained)
         """
         # From-scratch MiniT2I sentinel ("scratch:minit2i:<variant>:<vae_type>"):
         # not a filesystem path — handled by the in-memory build path in the loader.
@@ -2199,7 +2198,7 @@ class ModelLoader:
 
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
-            - Dict of components for Z-Image/DEUS
+            - Dict of components for component-based architectures
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Model file not found: {file_path}")
@@ -2650,7 +2649,7 @@ class ModelLoader:
 
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
-            - Dict of components for Z-Image/DEUS
+            - Dict of components for component-based architectures
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model directory not found: {model_path}")

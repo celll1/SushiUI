@@ -453,7 +453,7 @@ def _build_train_section(
     # Phase D memory optimisations (Anima only — other archs ignore).
     # Full-parameter save: embed the VAE into the single-file checkpoint.
     # None passes through = per-arch default resolved by the adapters
-    # (BUNDLE_VAE_DEFAULTS_BY_ARCH in api/param_defaults.py; sd15/sdxl/deus True,
+    # (BUNDLE_VAE_DEFAULTS_BY_ARCH in api/param_defaults.py; sd15/sdxl True,
     # others False); an explicit boolean always wins.
     # Read unconditionally; LoRA / pixel-space archs ignore it.
     train["bundle_vae"] = p.get("bundle_vae", None)

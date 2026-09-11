@@ -2936,7 +2936,7 @@ class BaseTrainer(ABC):
         # Full-parameter save: embed the trained VAE into the single-file checkpoint.
         # Kept as Optional[bool]: None = per-arch default. Each full-FT save adapter
         # resolves it via api.param_defaults.resolve_bundle_vae(value, arch)
-        # (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True, others False).
+        # (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl True, others False).
         self.bundle_vae = self.config.get("bundle_vae", None)
         if self.bundle_vae is not None:
             self.bundle_vae = bool(self.bundle_vae)
@@ -3156,7 +3156,6 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = False
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
@@ -4220,7 +4219,6 @@ class BaseTrainer(ABC):
 
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
-        self.is_deus = False
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")

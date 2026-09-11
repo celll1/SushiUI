@@ -698,8 +698,6 @@ class Krea2Mixin:
             else:
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Krea2] txt2img completed")
@@ -814,8 +812,6 @@ class Krea2Mixin:
             else:
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Krea2] img2img completed")
@@ -943,8 +939,6 @@ class Krea2Mixin:
             else:
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
             _kh_gen_succeeded = True
             print("[Krea2] inpaint completed")

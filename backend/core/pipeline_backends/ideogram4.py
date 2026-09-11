@@ -1117,8 +1117,6 @@ class Ideogram4Mixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._ideogram4_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # All GPU work (incl. decode) succeeded.
             _kh_gen_succeeded = True
@@ -1299,8 +1297,6 @@ class Ideogram4Mixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._ideogram4_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # All GPU work (incl. decode) succeeded.
             _kh_gen_succeeded = True
@@ -1495,8 +1491,6 @@ class Ideogram4Mixin:
                 mark_resident(self, "vae", _kh_model_key)
             else:
                 self._ideogram4_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
             # All GPU work (incl. decode) succeeded.
             _kh_gen_succeeded = True

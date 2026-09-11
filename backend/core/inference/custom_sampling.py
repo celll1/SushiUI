@@ -1866,7 +1866,6 @@ def custom_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
-    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
@@ -1954,12 +1953,7 @@ def custom_sampling_loop(
     # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
-    # This is required because DEUS has variable sequence length embeddings
-    if is_deus:
-        print(f"[CustomSampling] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
-
-    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+    print(f"[CustomSampling] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
     step_generator = ancestral_generator
     if ancestral_generator is not None:
@@ -2070,20 +2064,18 @@ def custom_sampling_loop(
 
     # Spectrum (Adaptive Spectral Feature Forecasting): skip U-Net forwards on selected
     # steps by forecasting the raw output from a Chebyshev fit over actual passes.
-    # Auto-disabled when the per-step conditioning is not stable (prompt editing,
-    # ControlNet), for DEUS (2-pass output), or when there are too few steps to warm up.
+    # Auto-disabled when per-step conditioning is unstable or there are too few
+    # steps to warm up.
     spectrum = None
     spectrum_block_ctrl = None
     if spectrum_enable:
         _n_steps = len(timesteps)
-        _spectrum_blocked = (
-            is_deus or has_controlnet or (prompt_embeds_callback is not None)
-        )
+        _spectrum_blocked = has_controlnet or (prompt_embeds_callback is not None)
         if _spectrum_blocked:
-            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS "
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet "
                   "change the output per step; needs stable conditioning)")
             _add_generation_warning(
-                "Spectrum was requested but disabled: prompt-editing / ControlNet / DEUS "
+                "Spectrum was requested but disabled: prompt-editing / ControlNet "
                 "change the output per step and need stable conditioning",
                 code="feature_auto_disabled",
             )
@@ -2157,7 +2149,7 @@ def custom_sampling_loop(
     # FBCache (First Block Cache): dynamic per-step deep-block caching via the same
     # per-block interception as Spectrum block mode. Mutually exclusive with Spectrum
     # (same monkey-patch), and auto-disabled for the same unstable-conditioning cases
-    # (prompt editing / ControlNet / DEUS) that make per-step block outputs non-reusable.
+    # (prompt editing / ControlNet) that make per-step block outputs non-reusable.
     # Also disabled when style transfer is active: the style branch's per-step capture
     # forward (on the style ref latent) would run through the FBCache block wrappers
     # and pollute the cache with the style ref's residuals (begin_step/end_step reset
@@ -2172,11 +2164,11 @@ def custom_sampling_loop(
                 "same block interception (mutually exclusive)",
                 code="feature_auto_disabled",
             )
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+        elif has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / "
                   "style transfer change the block outputs per step; needs stable conditioning)")
             _add_generation_warning(
-                "FBCache was requested but disabled: prompt-editing / ControlNet / DEUS / "
+                "FBCache was requested but disabled: prompt-editing / ControlNet / "
                 "style transfer change the block outputs per step and need stable conditioning",
                 code="feature_auto_disabled",
             )
@@ -2351,9 +2343,9 @@ def custom_sampling_loop(
                 nag_negative_prompt_embeds_padded
             ], dim=0)
         elif do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS (variable seq-len embeds) or active style transfer (single- or
-                # multi-reference): prepare a single (batch=1) latent -- the U-Net is
+            if style_active or style_refs_active:
+                # Active style transfer (single- or multi-reference) prepares a
+                # single (batch=1) latent -- the U-Net is
                 # called twice below with different embeds/context instead of a
                 # batch-2 concatenation, so style's reference-K/V injection can be
                 # isolated to ONLY the conditional pass (mirrors the Krea2 wiring's
@@ -2483,51 +2475,7 @@ def custom_sampling_loop(
             # Use autocast for FP8 quantized U-Net (required for FP16 activations)
             use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
-            if is_deus and do_classifier_free_guidance:
-                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
-                # This is required because DEUS has variable sequence length embeddings
-                # that cannot be batch concatenated
-
-                if first_iteration_debug:
-                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
-                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
-                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
-                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
-                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
-
-                # Pass 1: Unconditional (negative) prediction
-                unet_kwargs_uncond = {
-                    "encoder_hidden_states": current_negative_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-                else:
-                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-
-                # Pass 2: Conditional (positive) prediction
-                unet_kwargs_cond = {
-                    "encoder_hidden_states": current_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-                else:
-                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-
-                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
-            elif style_active and do_classifier_free_guidance:
+            if style_active and do_classifier_free_guidance:
                 # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
                 # so the reference-style KV injection can be isolated to ONLY the
                 # conditional (positive) pass -- the unconditional pass is always run
@@ -2793,8 +2741,8 @@ def custom_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS / active style transfer (single- or multi-reference): noise_pred_uncond
+            if style_active or style_refs_active:
+                # Active style transfer (single- or multi-reference): noise_pred_uncond
                 # and noise_pred_text are already separate (from the 2-Pass CFG block above).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
@@ -3013,7 +2961,6 @@ def custom_img2img_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
-    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
@@ -3104,11 +3051,7 @@ def custom_img2img_sampling_loop(
 
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
-    if is_deus:
-        print(f"[CustomSampling] [img2img] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
-
-    print(f"[CustomSampling] [img2img] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+    print(f"[CustomSampling] [img2img] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
     step_generator = ancestral_generator
     if ancestral_generator is not None:
@@ -3301,14 +3244,14 @@ def custom_img2img_sampling_loop(
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
     # Spectrum (Adaptive Spectral Feature Forecasting) acceleration -- see the txt2img
-    # loop for details. Auto-disabled for unstable per-step conditioning / DEUS / very
+    # loop for details. Auto-disabled for unstable per-step conditioning or very
     # few steps.
     spectrum = None
     spectrum_block_ctrl = None
     if spectrum_enable:
         _n_steps = len(timesteps)
-        if is_deus or has_controlnet or (prompt_embeds_callback is not None):
-            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS; "
+        if has_controlnet or (prompt_embeds_callback is not None):
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet; "
                   "needs stable conditioning)")
         elif _n_steps < spectrum_warmup_steps + 3:
             print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3)")
@@ -3357,15 +3300,15 @@ def custom_img2img_sampling_loop(
         style_refs_active = False
 
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
-    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet),
     # and also for style transfer (its capture forward would pollute the cache; see
     # the txt2img loop for details).
     fbcache_ctrl = None
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+        elif has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / "
                   "style transfer; needs stable conditioning)")
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
@@ -3493,9 +3436,9 @@ def custom_img2img_sampling_loop(
             ], dim=0)
 
         elif do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS (variable seq-len embeds) or active multi-reference style
-                # transfer: prepare a single (batch=1) latent -- the U-Net is called
+            if style_active or style_refs_active:
+                # Active multi-reference style transfer prepares a single (batch=1)
+                # latent -- the U-Net is called
                 # twice below with different embeds/context instead of a batch-2
                 # concatenation (see the txt2img loop's style branch for the
                 # rationale). Both single-ref (style_active) and multi-ref
@@ -3628,47 +3571,7 @@ def custom_img2img_sampling_loop(
             # Use autocast for FP8 quantized U-Net (required for FP16 activations)
             use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
-            if is_deus and do_classifier_free_guidance:
-                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
-
-                if first_iteration_debug:
-                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
-                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
-                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
-                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
-                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
-
-                # Pass 1: Unconditional (negative) prediction
-                unet_kwargs_uncond = {
-                    "encoder_hidden_states": current_negative_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-                else:
-                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-
-                # Pass 2: Conditional (positive) prediction
-                unet_kwargs_cond = {
-                    "encoder_hidden_states": current_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-                else:
-                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-            elif style_active and do_classifier_free_guidance:
+            if style_active and do_classifier_free_guidance:
                 # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
                 # so the reference-style KV injection can be isolated to ONLY the
                 # conditional (positive) pass -- the unconditional pass is always run
@@ -3934,8 +3837,8 @@ def custom_img2img_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS / active multi-reference style transfer: noise_pred_uncond and
+            if style_active or style_refs_active:
+                # Active multi-reference style transfer: noise_pred_uncond and
                 # noise_pred_text are already separate (from the 2-Pass CFG block
                 # above), for both single-ref (style_active) and multi-ref
                 # (style_refs_active). style_active was previously MISSING from this
@@ -4216,7 +4119,6 @@ def custom_inpaint_sampling_loop(
     nag_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Separate negative embeds for NAG
     nag_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # Separate pooled embeds for NAG (SDXL)
     attention_type: str = "normal",  # Attention backend - "normal", "sage", or "flash"
-    is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
@@ -4421,11 +4323,7 @@ def custom_inpaint_sampling_loop(
 
     is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-    # DEUS uses 2-Pass CFG (separate negative/positive passes) instead of batch concatenation
-    if is_deus:
-        print(f"[CustomSampling] [inpaint] DEUS mode: Using 2-Pass CFG (separate negative/positive passes)")
-
-    print(f"[CustomSampling] [inpaint] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}, is_deus: {is_deus}")
+    print(f"[CustomSampling] [inpaint] Pipeline type: {type(pipeline).__name__}, is_sdxl: {is_sdxl}")
 
     step_generator = ancestral_generator
     if ancestral_generator is not None:
@@ -4767,7 +4665,7 @@ def custom_inpaint_sampling_loop(
     # string non-empty) -- resolved here (region_has_positive/region_has_negative
     # are pre-computed upstream in pipeline.py from the stripped strings, so
     # this needs no string handling). The FINAL compatibility gate
-    # (`region_cfg_active`, NAG/NegPip/DEUS/style/Spectrum/FBCache) is resolved
+    # (`region_cfg_active`, NAG/NegPip/style/Spectrum/FBCache) is resolved
     # further below once those flags have all settled. Build the feathered
     # mask ONCE here -- only when requested, so an inactive feature never
     # builds it (no extra cost, byte-identical to before this feature).
@@ -5007,7 +4905,7 @@ def custom_inpaint_sampling_loop(
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
     # Spectrum (Adaptive Spectral Feature Forecasting) acceleration -- see the txt2img
-    # loop for details. Auto-disabled for unstable per-step conditioning / DEUS / very
+    # loop for details. Auto-disabled for unstable per-step conditioning or very
     # few steps.
     spectrum = None
     spectrum_block_ctrl = None
@@ -5026,8 +4924,8 @@ def custom_inpaint_sampling_loop(
                 "(revisited timesteps break its monotonic anchor/forecast assumptions).",
                 code="outpaint_resample_spectrum_disabled",
             )
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
-            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS; "
+        elif has_controlnet or (prompt_embeds_callback is not None):
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet; "
                   "needs stable conditioning)")
         elif _n_steps < spectrum_warmup_steps + 3:
             print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3)")
@@ -5090,7 +4988,7 @@ def custom_inpaint_sampling_loop(
         outpaint_reference_active = False
 
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
-    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet),
     # and also for style transfer / OUTPAINT B3 reference KV injection (their capture
     # forward would pollute the cache; see the txt2img loop for details).
     fbcache_ctrl = None
@@ -5108,9 +5006,9 @@ def custom_inpaint_sampling_loop(
             )
         elif spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif (is_deus or has_controlnet or (prompt_embeds_callback is not None)
+        elif (has_controlnet or (prompt_embeds_callback is not None)
                 or style_active or style_refs_active or outpaint_reference_active):
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / "
                   "style transfer / outpaint reference KV injection; needs stable conditioning)")
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
@@ -5127,7 +5025,7 @@ def custom_inpaint_sampling_loop(
 
     # REGIONAL ADDITIONAL PROMPT (STAGE R1 method "cfg" / STAGE R2 method
     # "attention"): final compatibility gate, resolved now that NAG/NegPip/
-    # DEUS/style/Spectrum/FBCache have all settled to their FINAL values above.
+    # style/Spectrum/FBCache have all settled to their final values above.
     # `region_cfg_active`/`region_attention_active` are LOOP-INVARIANT flags
     # (evaluated once, not re-checked per step -- if NAG later self-deactivates
     # mid-loop via nag_sigma_end, regional prompting stays off for the rest of
@@ -5150,13 +5048,13 @@ def custom_inpaint_sampling_loop(
         # negpip_processor.py) -- the attention method's cross-attention hook
         # (attention_processors.UnifiedAttnProcessor._region_ctx) would never
         # be consulted in that case, so both methods share this gate.
-        _region_incompatible = nag_active or negpip_active or is_deus or style_active or style_refs_active or \
+        _region_incompatible = nag_active or negpip_active or style_active or style_refs_active or \
             spectrum is not None or fbcache_ctrl is not None
         if _region_incompatible:
-            print("[RegionalPrompt] requested but disabled (NAG / NegPip / DEUS / style transfer / "
+            print("[RegionalPrompt] requested but disabled (NAG / NegPip / style transfer / "
                   "Spectrum / FBCache is active; needs a stable standard-CFG or OUTPAINT-B3 model call)")
             _add_generation_warning(
-                "Regional additional prompt disabled: not compatible with NAG / NegPip / DEUS / "
+                "Regional additional prompt disabled: not compatible with NAG / NegPip / "
                 "style transfer / Spectrum / FBCache in this version.",
                 code="region_prompt_incompatible",
             )
@@ -5451,9 +5349,9 @@ def custom_inpaint_sampling_loop(
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active or outpaint_reference_active or region_attention_active:
-                # DEUS (variable seq-len embeds), active multi-reference style
-                # transfer, OUTPAINT B3 reference KV injection, or the regional
+            if style_active or style_refs_active or outpaint_reference_active or region_attention_active:
+                # Active multi-reference style transfer, OUTPAINT B3 reference KV
+                # injection, or the regional
                 # additional prompt's "attention" method (STAGE R2 -- needs a
                 # separate uncond/cond U-Net call so `region_ctx.side` can be
                 # toggled per pass): prepare a single (batch=1) latent (see the
@@ -5608,47 +5506,7 @@ def custom_inpaint_sampling_loop(
             # Use autocast for FP8 quantized U-Net (required for FP16 activations)
             use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
-            if is_deus and do_classifier_free_guidance:
-                # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
-
-                if first_iteration_debug:
-                    print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION (DEUS 2-Pass CFG) ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
-                    print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
-                    print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
-                    print(f"[CustomSampling] [Debug] negative_prompt_embeds shape: {current_negative_prompt_embeds.shape}, dtype: {current_negative_prompt_embeds.dtype}")
-                    print(f"[CustomSampling] [Debug] positive_prompt_embeds shape: {current_prompt_embeds.shape}, dtype: {current_prompt_embeds.dtype}")
-
-                # Pass 1: Unconditional (negative) prediction
-                unet_kwargs_uncond = {
-                    "encoder_hidden_states": current_negative_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-                else:
-                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
-
-                # Pass 2: Conditional (positive) prediction
-                unet_kwargs_cond = {
-                    "encoder_hidden_states": current_prompt_embeds,
-                }
-                if down_block_res_samples is not None:
-                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
-                if mid_block_res_sample is not None:
-                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
-
-                if use_autocast:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):
-                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-                else:
-                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
-            elif style_active and do_classifier_free_guidance:
+            if style_active and do_classifier_free_guidance:
                 # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
                 # so the reference-style KV injection can be isolated to ONLY the
                 # conditional (positive) pass -- the unconditional pass is always run
@@ -6098,8 +5956,8 @@ def custom_inpaint_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active or outpaint_reference_active or region_attention_active:
-                # DEUS / active multi-reference style transfer / OUTPAINT B3 reference KV
+            if style_active or style_refs_active or outpaint_reference_active or region_attention_active:
+                # Active multi-reference style transfer / OUTPAINT B3 reference KV
                 # injection / the regional additional prompt's "attention" method (STAGE
                 # R2): noise_pred_uncond and noise_pred_text are already separate (from
                 # the 2-Pass CFG block above), for single-ref (style_active), multi-ref

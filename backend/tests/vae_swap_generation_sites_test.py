@@ -126,9 +126,9 @@ class TestPreviewDecode:
         manager = TAESDManager()
         seen = {}
 
-        def _load(is_sdxl=False, is_zimage=False, is_deus=False,
+        def _load(is_sdxl=False, is_zimage=False,
                   is_zimage_sdxl_vae=False, is_flux2=False):
-            seen.update(is_sdxl=is_sdxl, is_zimage=is_zimage, is_deus=is_deus,
+            seen.update(is_sdxl=is_sdxl, is_zimage=is_zimage,
                         is_zimage_sdxl_vae=is_zimage_sdxl_vae, is_flux2=is_flux2)
             return None  # stop before any hub download
 
@@ -144,7 +144,7 @@ class TestPreviewDecode:
         manager, seen = self._manager_with_stub_taesd()
         manager.decode_latent(torch.zeros(1, 16, 8, 8), is_sdxl=True,
                               vae_preview_kind="taef1")
-        assert seen == dict(is_sdxl=False, is_zimage=True, is_deus=False,
+        assert seen == dict(is_sdxl=False, is_zimage=True,
                             is_zimage_sdxl_vae=False, is_flux2=False)
 
     def test_an_sdxl_vae_on_sd15_takes_the_taesdxl_path(self):
@@ -333,7 +333,7 @@ class TestLatentScaleFactor:
             assert spec.vae_scale_factor == 8
         source = (Path(_BACKEND) / "core" / "inference" / "custom_sampling.py").read_text(
             encoding="utf-8")
-        block = source[source.index("    # Prepare latents\n"):][:600]
+        block = source[source.index("        _scale = latent_scale_factor(pipeline)\n"):][:300]
         assert "latent_height = height // _scale" in block
         assert "latent_width = width // _scale" in block
         assert "// 8" not in block

@@ -2025,7 +2025,6 @@ def _broadcast_training_preview_frame(frame: dict) -> None:
             lat,
             is_sdxl=bool(frame.get("is_sdxl", False)),
             is_zimage=bool(frame.get("is_zimage", False)),
-            is_deus=False,
             is_zimage_sdxl_vae=False,
             is_flux2=False,
             is_anima=bool(frame.get("is_anima", False)),

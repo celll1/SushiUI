@@ -82,15 +82,14 @@ class MiniT2IMixin:
         the same in-place-mutation reason: a resident TE would carry a stale
         LoRA-wrapped state into the next generation). The transformer is
         additionally gated off under block-swap streaming. The VAE is absent for
-        pixel-space checkpoints (``vae_type == "none"``) -- component_nbytes(None)
-        is 0 and ``_minit2i_move`` no-ops on a missing component, so it is simply
-        never eligible in that case.
+        pixel-space checkpoints (``vae_type == "none"``), so it is omitted from
+        the planned resident set in that case.
 
         Returns (model_key, keep_te, keep_transformer, keep_vae, is_block_swapped).
         """
         from core.keep_hot import (
             invalidate_if_model_changed, should_keep_resident, compute_model_key,
-            component_nbytes, keep_hot_requested,
+            additional_residency_nbytes, keep_hot_requested,
         )
         requested = keep_hot_requested(params)
         model_key = compute_model_key(self, params)
@@ -115,18 +114,18 @@ class MiniT2IMixin:
             ),
         )
 
-        total_bytes = 0
+        components = {}
         if requested:
             if not has_loras:
-                total_bytes += component_nbytes(self.minit2i_components.get("text_encoder"))
+                components["text_encoder"] = self.minit2i_components.get("text_encoder")
                 if not is_block_swapped:
-                    total_bytes += component_nbytes(self.minit2i_components.get("transformer"))
+                    components["transformer"] = self.minit2i_components.get("transformer")
             if has_vae:
-                total_bytes += component_nbytes(self.minit2i_components.get("vae"))
+                components["vae"] = self.minit2i_components.get("vae")
         guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=total_bytes,
+            component_bytes=additional_residency_nbytes(self, model_key, components),
         ) if requested else False
 
         keep_te = requested and guard_ok and not has_loras
@@ -217,7 +216,8 @@ class MiniT2IMixin:
         return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
 
     def _minit2i_style_triple(self, style_dict: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
-                              model_key: Optional[str] = None, ref_index: int = 0):
+                              model_key: Optional[str] = None, ref_index: int = 0,
+                              keep_vae: bool = False):
         """Build a single ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from one
         style_transfer dict.
 
@@ -269,9 +269,10 @@ class MiniT2IMixin:
                 vae, style_dict["image"], height, width, device, dtype,
                 is_latent=True, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=ref_seed,
             )
-            self._minit2i_move("vae", "cpu")
-            if model_key is not None:
-                discard_resident(self, "vae")
+            if not keep_vae:
+                self._minit2i_move("vae", "cpu")
+                if model_key is not None:
+                    discard_resident(self, "vae")
         else:
             height, width = cfg["height"], cfg["width"]
             ref_x0, eps_ref = prepare_style_reference(
@@ -281,7 +282,7 @@ class MiniT2IMixin:
         return style_cfg, ref_x0, eps_ref
 
     def _minit2i_style_config(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
-                              model_key: Optional[str] = None):
+                              model_key: Optional[str] = None, keep_vae: bool = False):
         """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
         ``params["style_transfer"]`` (assembled by
         ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
@@ -294,10 +295,12 @@ class MiniT2IMixin:
         if not style_dict or not style_dict.get("image"):
             return None, None, None
 
-        return self._minit2i_style_triple(style_dict, cfg, device, dtype, model_key=model_key, ref_index=0)
+        return self._minit2i_style_triple(
+            style_dict, cfg, device, dtype, model_key=model_key, ref_index=0,
+            keep_vae=keep_vae)
 
     def _minit2i_style_configs(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
-                               model_key: Optional[str] = None):
+                               model_key: Optional[str] = None, keep_vae: bool = False):
         """Build the full style-transfer configuration for MiniT2I generation,
         covering both the single-reference path (legacy ``(style_cfg, style_ref_x0,
         style_eps_ref)`` triple, exactly as ``_minit2i_style_config`` would return)
@@ -317,7 +320,9 @@ class MiniT2IMixin:
             for idx, style_dict in enumerate(style_list):
                 if not style_dict or not style_dict.get("image"):
                     continue
-                refs.append(self._minit2i_style_triple(style_dict, cfg, device, dtype, model_key=model_key, ref_index=idx))
+                refs.append(self._minit2i_style_triple(
+                    style_dict, cfg, device, dtype, model_key=model_key, ref_index=idx,
+                    keep_vae=keep_vae))
             if len(refs) > 1:
                 return None, None, None, refs, combine_mode
             if len(refs) == 1:
@@ -325,7 +330,8 @@ class MiniT2IMixin:
                 return style_cfg_single, x0, eps, None, combine_mode
             return None, None, None, None, combine_mode
 
-        style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(params, cfg, device, dtype, model_key=model_key)
+        style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
+            params, cfg, device, dtype, model_key=model_key, keep_vae=keep_vae)
         return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _minit2i_nag_wrap(self, params, transformer, nag_text, nag_mask):
@@ -935,7 +941,9 @@ class MiniT2IMixin:
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
-                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+                self._minit2i_style_configs(
+                    params, cfg, device, dtype, model_key=_kh_model_key,
+                    keep_vae=_kh_keep_vae)
             style_active = style_cfg is not None or style_refs is not None
             # Style transfer is mutually exclusive with NAG/NegPip: both ALSO monkey-patch
             # DoubleStreamDiTBlock.forward (core.inference.style_minit2i), so installing
@@ -1017,22 +1025,22 @@ class MiniT2IMixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
             if cfg["is_latent"]:
                 from core.keep_hot import is_resident, discard_resident
-                # First use of VAE this generation only: honor cross-generation residency
-                # on entry, but always offload after (VAE is reused again at decode, so
-                # this is an intermediate step, not the generation's final exit point).
                 if not is_resident(self, "vae", _kh_model_key):
                     vae = self._minit2i_move("vae", device)
                 else:
                     vae = self.minit2i_components["vae"]
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
-                self._minit2i_move("vae", "cpu")
-                discard_resident(self, "vae")
+                if not _kh_keep_vae:
+                    self._minit2i_move("vae", "cpu")
+                    discard_resident(self, "vae")
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
-                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+                self._minit2i_style_configs(
+                    params, cfg, device, dtype, model_key=_kh_model_key,
+                    keep_vae=_kh_keep_vae)
             style_active = style_cfg is not None or style_refs is not None
             if style_active:
                 call_target, nag_wrapper, negpip_wrapper = transformer, None, None
@@ -1098,16 +1106,14 @@ class MiniT2IMixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
             if cfg["is_latent"]:
                 from core.keep_hot import is_resident, discard_resident
-                # First use of VAE this generation only: honor cross-generation residency
-                # on entry, but always offload after (VAE is reused again at decode, so
-                # this is an intermediate step, not the generation's final exit point).
                 if not is_resident(self, "vae", _kh_model_key):
                     vae = self._minit2i_move("vae", device)
                 else:
                     vae = self.minit2i_components["vae"]
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
-                self._minit2i_move("vae", "cpu")
-                discard_resident(self, "vae")
+                if not _kh_keep_vae:
+                    self._minit2i_move("vae", "cpu")
+                    discard_resident(self, "vae")
                 # mask at latent resolution (1=regenerate, 0=keep)
                 mask_latent = prepare_mask(mask_image, cfg["latent_h"], cfg["latent_w"], device, dtype)
             else:
@@ -1116,7 +1122,9 @@ class MiniT2IMixin:
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(prepared_loras)
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
-                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+                self._minit2i_style_configs(
+                    params, cfg, device, dtype, model_key=_kh_model_key,
+                    keep_vae=_kh_keep_vae)
             style_active = style_cfg is not None or style_refs is not None
             if style_active:
                 call_target, nag_wrapper, negpip_wrapper = transformer, None, None

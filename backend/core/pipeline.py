@@ -4113,8 +4113,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         owns the offload-on-failure contract."""
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
             move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
@@ -4133,11 +4133,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 _kh_vae_to_cpu(self.txt2img_pipeline),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not _kh_cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "text_encoder", None))
-                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "text_encoder_2", None))
+                _kh_components["text_encoder"] = (
+                    getattr(self.txt2img_pipeline, "text_encoder", None),
+                    getattr(self.txt2img_pipeline, "text_encoder_2", None),
+                )
             # LoRA hazard gate (Phase A): LoRA mutates the U-Net per generation, so
             # keeping it resident is only safe when the next gen's LoRA set is
             # guaranteed identical. Routes.py currently reloads/unloads LoRA around
@@ -4146,12 +4148,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # no-LoRA case only. TODO(Phase A follow-up / Phase B): once routes.py
             # skips the LoRA unload/reload for an unchanged model_key, drop this gate.
             if not _kh_has_loras:
-                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "unet", None))
-            _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "vae", None))
+                _kh_components["unet"] = getattr(self.txt2img_pipeline, "unet", None)
+            _kh_components["vae"] = getattr(self.txt2img_pipeline, "vae", None)
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
         _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
@@ -4632,6 +4635,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 loop_decode=params.get("loop_decode", "full"),
+                keep_denoiser_resident=_kh_keep_unet,
+                keep_vae_resident=_kh_keep_vae,
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -4848,8 +4853,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         owns the offload-on-failure contract."""
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
             move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
@@ -4865,19 +4870,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 _kh_vae_to_cpu(self.img2img_pipeline),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not _kh_cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "text_encoder", None))
-                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "text_encoder_2", None))
+                _kh_components["text_encoder"] = (
+                    getattr(self.img2img_pipeline, "text_encoder", None),
+                    getattr(self.img2img_pipeline, "text_encoder_2", None),
+                )
             # LoRA hazard gate (Phase A) -- see generate_txt2img for rationale.
             if not _kh_has_loras:
-                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "unet", None))
-            _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "vae", None))
+                _kh_components["unet"] = getattr(self.img2img_pipeline, "unet", None)
+            _kh_components["vae"] = getattr(self.img2img_pipeline, "vae", None)
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
         _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
@@ -5163,9 +5171,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
                 del image_tensor, latent, resized_latent, decoded
 
-                # Move VAE back to CPU after latent resize operations
-                move_vae_to_cpu(pipeline_to_use)
-                torch.cuda.empty_cache()
+                if not _kh_keep_vae:
+                    move_vae_to_cpu(pipeline_to_use)
+                    torch.cuda.empty_cache()
 
         requested_steps = params.get("steps", settings.default_steps)
         denoising_strength = params.get("denoising_strength", 0.75)
@@ -5378,6 +5386,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 loop_decode=params.get("loop_decode", "full"),
                 init_latents_override=init_latents_override,
+                keep_denoiser_resident=_kh_keep_unet,
+                keep_vae_resident=_kh_keep_vae,
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -5599,8 +5609,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         owns the offload-on-failure contract."""
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
             move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
@@ -5616,19 +5626,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 _kh_vae_to_cpu(self.inpaint_pipeline),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not _kh_cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "text_encoder", None))
-                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "text_encoder_2", None))
+                _kh_components["text_encoder"] = (
+                    getattr(self.inpaint_pipeline, "text_encoder", None),
+                    getattr(self.inpaint_pipeline, "text_encoder_2", None),
+                )
             # LoRA hazard gate (Phase A) -- see generate_txt2img for rationale.
             if not _kh_has_loras:
-                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "unet", None))
-            _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "vae", None))
+                _kh_components["unet"] = getattr(self.inpaint_pipeline, "unet", None)
+            _kh_components["vae"] = getattr(self.inpaint_pipeline, "vae", None)
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
         _kh_keep_unet = (_kh_requested and _kh_guard_ok and not _kh_has_loras
@@ -6047,6 +6060,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             loop_decode=params.get("loop_decode", "full"),
+            keep_denoiser_resident=_kh_keep_unet,
+            keep_vae_resident=_kh_keep_vae,
             outpaint_noise_init=bool(params.get("_outpaint_noise_init", False)),
             outpaint_boundary_color_strength=params.get("outpaint_boundary_color_strength", 0.25),
             outpaint_resample_count=params.get("outpaint_resample_count", 2),

@@ -808,8 +808,8 @@ class Flux2Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -838,16 +838,17 @@ class Flux2Mixin:
             offload_cached_runtime_quantization(self.flux2_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.flux2_components.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+                _kh_components["transformer"] = self.flux2_components.get("transformer")
+            _kh_components["vae"] = self.flux2_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -1023,7 +1024,8 @@ class Flux2Mixin:
 
             if ref_images:
                 print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
-                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(
+                    ref_images, device=self.device, keep_vae_resident=_kh_keep_vae)
                 if ref_tokens is not None:
                     ref_tokens = ref_tokens.to(prompt_embeds.dtype)
                     ref_ids = ref_ids.to(self.device)
@@ -2216,7 +2218,12 @@ class Flux2Mixin:
             noise_pred = noise_pred_cond
         return noise_pred
 
-    def encode_flux2_image_refs(self, images: List[Image.Image], device: str = "cuda") -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_flux2_image_refs(
+        self,
+        images: List[Image.Image],
+        device: str = "cuda",
+        keep_vae_resident: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode reference images for FLUX.2 Image Edit feature
 
@@ -2244,7 +2251,7 @@ class Flux2Mixin:
         # Pixel limits based on number of images
         limit_pixels = 2024**2 if len(images) == 1 else 1024**2
 
-        vae = self.flux2_components["vae"]
+        vae = self.flux2_components["vae"].to(device)
         vae_device = next(vae.parameters()).device
         vae_dtype = next(vae.parameters()).dtype
 
@@ -2322,9 +2329,9 @@ class Flux2Mixin:
 
         print(f"[FLUX.2 Image Edit] Total reference tokens: {ref_tokens.shape[1]}, shape: {ref_tokens.shape}")
 
-        # Offload VAE to CPU after encoding reference images
-        vae.to("cpu")
-        torch.cuda.empty_cache()
+        if not keep_vae_resident:
+            vae.to("cpu")
+            torch.cuda.empty_cache()
 
         return ref_tokens, ref_ids
 
@@ -2350,8 +2357,8 @@ class Flux2Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -2378,16 +2385,17 @@ class Flux2Mixin:
             offload_cached_runtime_quantization(self.flux2_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.flux2_components.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+                _kh_components["transformer"] = self.flux2_components.get("transformer")
+            _kh_components["vae"] = self.flux2_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -2563,7 +2571,8 @@ class Flux2Mixin:
 
             if ref_images:
                 print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
-                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(
+                    ref_images, device=self.device, keep_vae_resident=_kh_keep_vae)
                 if ref_tokens is not None:
                     ref_tokens = ref_tokens.to(prompt_embeds.dtype)
                     ref_ids = ref_ids.to(self.device)
@@ -2588,11 +2597,9 @@ class Flux2Mixin:
             init_latents = _vae_normalize(init_latents, vae)
             init_latents = self._flux2_patchify_latents(init_latents)
 
-            # NOTE: this offload is a within-generation VRAM-relief step (VAE is
-            # needed again for decode after denoising), not the keep-hot exit
-            # boundary -- intentionally left unconditional; see core/keep_hot.py.
-            vae.to("cpu")
-            torch.cuda.empty_cache()
+            if not _kh_keep_vae:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
 
             print("[FLUX.2] Stage 3: Preparing latents...")
 
@@ -3087,10 +3094,8 @@ class Flux2Mixin:
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()
-            # NOTE: VAE was already staged to GPU once for input-image encoding
-            # (Stage 2) and unconditionally offloaded again there -- so this
-            # reload always runs (never resident-skipped); see keep-hot NOTE above.
-            vae = vae.to(self.device)
+            if not is_resident(self, "vae", _kh_model_key):
+                vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 
@@ -3179,8 +3184,8 @@ class Flux2Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -3207,16 +3212,17 @@ class Flux2Mixin:
             offload_cached_runtime_quantization(self.flux2_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.flux2_components.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+                _kh_components["transformer"] = self.flux2_components.get("transformer")
+            _kh_components["vae"] = self.flux2_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -3397,7 +3403,8 @@ class Flux2Mixin:
 
             if ref_images:
                 print(f"[FLUX.2 Image Edit] Encoding {len(ref_images)} reference image(s)...")
-                ref_tokens, ref_ids = self.encode_flux2_image_refs(ref_images, device=self.device)
+                ref_tokens, ref_ids = self.encode_flux2_image_refs(
+                    ref_images, device=self.device, keep_vae_resident=_kh_keep_vae)
                 if ref_tokens is not None:
                     ref_tokens = ref_tokens.to(prompt_embeds.dtype)
                     ref_ids = ref_ids.to(self.device)
@@ -3435,11 +3442,9 @@ class Flux2Mixin:
                 _vae_normalize(init_latents, vae))
             init_latents = self._flux2_patchify_latents(init_latents)
 
-            # NOTE: this offload is a within-generation VRAM-relief step (VAE is
-            # needed again for decode after denoising), not the keep-hot exit
-            # boundary -- intentionally left unconditional; see core/keep_hot.py.
-            vae.to("cpu")
-            torch.cuda.empty_cache()
+            if not _kh_keep_vae:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
 
             print("[FLUX.2] Stage 3: Preparing latents...")
 
@@ -3956,10 +3961,8 @@ class Flux2Mixin:
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()
-            # NOTE: VAE was already staged to GPU once for input-image/mask
-            # encoding (Stage 2) and unconditionally offloaded again there -- so
-            # this reload always runs (never resident-skipped).
-            vae = vae.to(self.device)
+            if not is_resident(self, "vae", _kh_model_key):
+                vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
 

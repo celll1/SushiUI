@@ -404,7 +404,7 @@ class LensMixin:
         """
         from core.keep_hot import (
             invalidate_if_model_changed, should_keep_resident, compute_model_key,
-            component_nbytes, keep_hot_requested,
+            additional_residency_nbytes, keep_hot_requested,
         )
         requested = keep_hot_requested(params)
         model_key = compute_model_key(self, params)
@@ -427,15 +427,15 @@ class LensMixin:
             ),
         )
 
-        total_bytes = 0
+        components = {}
         if requested:
             if not is_block_swapped and not has_loras:
-                total_bytes += component_nbytes(self.lens_components.get("transformer"))
-            total_bytes += component_nbytes(self.lens_components.get("vae"))
+                components["transformer"] = self.lens_components.get("transformer")
+            components["vae"] = self.lens_components.get("vae")
         guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=total_bytes,
+            component_bytes=additional_residency_nbytes(self, model_key, components),
         ) if requested else False
 
         keep_transformer = requested and guard_ok and not is_block_swapped and not has_loras
@@ -481,7 +481,8 @@ class LensMixin:
 
     def _lens_style_triple(self, style_dict: Dict[str, Any], params: Dict[str, Any],
                            transformer, height: int, width: int,
-                           device, dtype, model_key: Optional[str] = None, ref_index: int = 0):
+                           device, dtype, model_key: Optional[str] = None, ref_index: int = 0,
+                           keep_vae: bool = False):
         """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
         style_transfer dict.
 
@@ -519,9 +520,10 @@ class LensMixin:
             self._lens_move("vae", device)
         vae_gpu = self.lens_components["vae"]
         ref_x0 = vae_encode(vae_gpu, style_dict["image"], height, width, device=device, dtype=dtype)
-        self._lens_move("vae", "cpu")
-        discard_resident(self, "vae")
-        if torch.cuda.is_available():
+        if not keep_vae:
+            self._lens_move("vae", "cpu")
+            discard_resident(self, "vae")
+        if torch.cuda.is_available() and not keep_vae:
             torch.cuda.empty_cache()
 
         seed = params.get("seed", -1)
@@ -531,7 +533,8 @@ class LensMixin:
         return cfg, ref_x0, eps_ref
 
     def _lens_style_config(self, params: Dict[str, Any], transformer, height: int, width: int,
-                           device, dtype, model_key: Optional[str] = None):
+                           device, dtype, model_key: Optional[str] = None,
+                           keep_vae: bool = False):
         """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
         ``params["style_transfer"]`` (assembled by
         ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
@@ -544,10 +547,12 @@ class LensMixin:
             return None, None, None
 
         return self._lens_style_triple(style_dict, params, transformer, height, width,
-                                       device, dtype, model_key=model_key, ref_index=0)
+                                       device, dtype, model_key=model_key, ref_index=0,
+                                       keep_vae=keep_vae)
 
     def _lens_style_configs(self, params: Dict[str, Any], transformer, height: int, width: int,
-                            device, dtype, model_key: Optional[str] = None):
+                            device, dtype, model_key: Optional[str] = None,
+                            keep_vae: bool = False):
         """Build the full style-transfer configuration for Lens generation,
         covering both the single-reference path (legacy ``(style_cfg,
         style_ref_x0, style_eps_ref)`` triple, exactly as ``_lens_style_config``
@@ -571,6 +576,7 @@ class LensMixin:
                 refs.append(self._lens_style_triple(
                     style_dict, params, transformer, height, width,
                     device, dtype, model_key=model_key, ref_index=idx,
+                    keep_vae=keep_vae,
                 ))
             if len(refs) > 1:
                 return None, None, None, refs, combine_mode
@@ -580,7 +586,8 @@ class LensMixin:
             return None, None, None, None, combine_mode
 
         style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
-            params, transformer, height, width, device, dtype, model_key=model_key
+            params, transformer, height, width, device, dtype, model_key=model_key,
+            keep_vae=keep_vae,
         )
         return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
@@ -810,7 +817,7 @@ class LensMixin:
             # code path (both here and inside denoise_loop) is untouched.
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._lens_style_configs(params, transformer, height, width, device, dtype,
-                                        model_key=_kh_model_key)
+                                        model_key=_kh_model_key, keep_vae=_kh_keep_vae)
             if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 
@@ -987,16 +994,14 @@ class LensMixin:
 
             # Stage 2: Encode init image
             print("[Lens] Stage 2: Encoding init image...")
-            # First use of VAE this generation only: honor cross-generation residency
-            # on entry, but always offload after (VAE is reused again at Stage 4, so
-            # this is an intermediate step, not the generation's final exit point).
             if not is_resident(self, "vae", _kh_model_key):
                 self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
-            self._lens_move("vae", "cpu")
-            discard_resident(self, "vae")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._lens_move("vae", "cpu")
+                discard_resident(self, "vae")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             # Training-free reference-style transfer setup (no-op / None when no style
@@ -1004,7 +1009,7 @@ class LensMixin:
             # txt2img comment above for the single-ref/multi-ref routing invariant.
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._lens_style_configs(params, transformer, height, width, device, dtype,
-                                        model_key=_kh_model_key)
+                                        model_key=_kh_model_key, keep_vae=_kh_keep_vae)
             if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 
@@ -1188,16 +1193,14 @@ class LensMixin:
 
             # Stage 2: Encode init image + prepare mask
             print("[Lens] Stage 2: Encoding init image...")
-            # First use of VAE this generation only: honor cross-generation residency
-            # on entry, but always offload after (VAE is reused again at Stage 4, so
-            # this is an intermediate step, not the generation's final exit point).
             if not is_resident(self, "vae", _kh_model_key):
                 self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
-            self._lens_move("vae", "cpu")
-            discard_resident(self, "vae")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._lens_move("vae", "cpu")
+                discard_resident(self, "vae")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             mask_latent = prepare_mask_latent(mask_image, latent_h, latent_w, device=device, dtype=dtype)
@@ -1207,7 +1210,7 @@ class LensMixin:
             # txt2img comment above for the single-ref/multi-ref routing invariant.
             style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                 self._lens_style_configs(params, transformer, height, width, device, dtype,
-                                        model_key=_kh_model_key)
+                                        model_key=_kh_model_key, keep_vae=_kh_keep_vae)
             if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 

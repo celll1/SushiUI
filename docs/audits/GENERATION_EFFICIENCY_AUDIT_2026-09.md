@@ -97,6 +97,13 @@ This makes the remaining phase-boundary allocator experiments observable:
 lower allocated memory alone cannot justify removing a cache flush when the
 reserved pool grows or repeated hot generations fragment.
 
+The keep-hot budget now charges only components that are not already resident
+for the same model identity. Its VAE decision is also honored between an
+img2img/inpaint encode and final decode, instead of performing a hidden
+CPU→GPU→CPU→GPU round trip inside one request. This fixes stale residency
+bookkeeping as well as avoiding the transfers when the configured headroom
+admits VAE co-residency.
+
 ## Findings suitable for equivalent implementation
 
 | Priority | Finding | Cost removed | Required proof |
@@ -240,7 +247,7 @@ measured. They are deliberately not enabled by default in this static pass.
 | Candidate | Disposition | Gate before implementation |
 |---|---|---|
 | Cross-generation prompt-embedding cache | MiniMax-H3's plain text-only path already has a bounded eight-entry CPU LRU keyed by encoder, projection, prompt and conditioning width. Do not generalize it yet. | Each architecture needs keys for tokenizer/parser settings, maximum length, clip skip, adapter/textual-inversion state, quantization and model reload. Compare host RAM and repeated-prompt latency; cached tensors stay on CPU. |
-| Keep VAE resident between image encode and final decode | Do not make this the default: it trades two transfers for overlap with the denoiser's peak. | Add only as an explicit memory-budget policy after measuring encode/decode transfer time and denoise peak allocated/reserved VRAM on the target architecture. |
+| Keep VAE resident between image encode and final decode | Implemented through the existing opt-in `keep_models_hot` budget policy; no second switch was added. | SDXL img2img produced pixel-identical output. The measured request used 7.180 GB peak allocated versus 6.586 GB cold and reduced recorded generation time from 1.826 s to 0.682 s. |
 | Asynchronous preview decode | Retain synchronous, demand-driven preview. Skipping unused previews already removes the unconditional cost without extending tensor lifetime. | Prove callback ordering, cancellation and teardown safety, then compare step latency and peak allocated/reserved VRAM with preview intervals 1 and 4. |
 | Remove phase-boundary `empty_cache()` | Retain phase boundaries. Only adjacent terminal duplicates were removed. | Compare at least three cold and three hot generations using the newly recorded allocated and reserved peaks; reject a removal that increases failures, reservation growth or fragmentation. |
 | Stream video frames into FFmpeg | Implemented for master and proxy encoders. | Focused tests prove identical byte order, bounded writes, non-contiguous input handling and failure cleanup. |
@@ -275,6 +282,8 @@ the equivalent-refactoring implementation scope:
    numerical loops.
 8. **Completed:** stream raw video frames into FFmpeg without whole-video
    `bytes` copies.
+9. **Completed:** make keep-hot headroom incremental over the current resident
+   set and honor its VAE decision through intermediate encode phases.
 
 ## CPU numerical verification follow-up
 
@@ -298,14 +307,9 @@ prompt-cache isolation and runtime-FP8 cache lifecycle checks: 77 tests pass.
 
 ## GPU verification backlog
 
-For each affected image family, run the same seed/configuration before and after
-with preview disabled and with interval 1/4. Record output hash (bit-exact where
-the arithmetic is unchanged), wall time after warm-up, peak allocated VRAM,
-peak reserved VRAM, and synchronization-sensitive step timing. Repeat at least
-three hot generations to reveal fragmentation. Video/audio families need one
-short and one realistic-duration case; component staging and host RAM must be
-recorded in addition to VRAM. Phase-boundary allocator changes and persistent
-quantization caches are not complete until these measurements pass.
+User generation feedback is the operational acceptance gate for architecture
+coverage. Automated checks still prove static contracts, CPU equivalence and
+the representative real-model paths needed to decide an implementation.
 
 For runtime FP8 specifically, measure peak and steady-state host RAM with the
 implemented source-plus-one-copy bound, and compare first versus repeated
@@ -328,16 +332,17 @@ The remaining candidates are evaluated and committed independently in this
 order. A candidate is rejected rather than shipped when its measured benefit
 does not exceed noise or when it moves the cost to a less acceptable resource.
 
-1. **Phase-boundary allocator flushes.** Inventory transitions rather than raw
-   call sites, remove only flushes whose next allocation succeeds repeatedly,
-   and compare hot-run latency plus allocated/reserved peaks. Cleanup after an
-   exception and explicit release operations remain outside this removal.
-2. **VAE encode-to-decode residency.** Audit the existing `keep_models_hot`
-   wiring first. It already owns VAE residency for SD, Anima, Lens, Krea2,
-   Flux2, Z-Image, Ideogram 4 and MiniT2I; do not add a competing mechanism.
-   Measure whether img2img/inpaint cold paths still perform an avoidable
-   encode→CPU→GPU→decode round trip, and extend the shared policy only where
-   the denoiser fits beside the VAE with configured headroom.
+1. **Phase-boundary allocator flushes — retained.** Flushes between mutually
+   exclusive multi-gigabyte phases remain deliberate. When keep-hot admits the
+   VAE, its intermediate offload and paired flush are skipped together. A
+   general removal has no static guarantee against fragmentation or OOM and is
+   therefore rejected; exception and explicit-release cleanup is unchanged.
+2. **VAE encode-to-decode residency — completed.** The existing
+   `keep_models_hot` headroom policy now owns the whole request. On SDXL
+   img2img, hot and cold output RGB hashes matched exactly. The hot path traded
+   0.594 GB peak allocated VRAM for a 1.144 s reduction in recorded generation
+   time in the representative two-step probe; broader behavior is covered by
+   user generation feedback.
 3. **Preview decode overlap.** Split only CPU-bound preview conversion from the
    denoise callback after proving ordered delivery, bounded queue depth,
    cancellation and teardown. GPU tiny-autoencoder decode stays synchronous

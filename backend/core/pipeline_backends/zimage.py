@@ -620,8 +620,8 @@ class ZImageMixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -653,16 +653,17 @@ class ZImageMixin:
             offload_cached_runtime_quantization(self.zimage_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.zimage_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.zimage_components.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(self.zimage_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.zimage_components.get("vae"))
+                _kh_components["transformer"] = self.zimage_components.get("transformer")
+            _kh_components["vae"] = self.zimage_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -980,8 +981,8 @@ class ZImageMixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -1011,16 +1012,17 @@ class ZImageMixin:
             offload_cached_runtime_quantization(self.zimage_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.zimage_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.zimage_components.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(self.zimage_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.zimage_components.get("vae"))
+                _kh_components["transformer"] = self.zimage_components.get("transformer")
+            _kh_components["vae"] = self.zimage_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -1202,8 +1204,8 @@ class ZImageMixin:
                     print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
                           f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
 
-            # Offload VAE to CPU after encoding
-            move_zimage_vae_to_cpu(vae)
+            if not _kh_keep_vae:
+                move_zimage_vae_to_cpu(vae)
 
             device = torch.device(self.device)
 
@@ -1316,13 +1318,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 5: VAE Decode
             # ============================================================
-            # NOTE: VAE was already staged to GPU once for input-image encoding
-            # (Stage 2) and offloaded again there unconditionally -- that offload
-            # is a within-generation VRAM-relief step, not the keep-hot exit
-            # boundary, so it is intentionally left untouched by keep-hot. This
-            # reload IS a normal re-stage every time (never resident-skipped)
-            # because the mid-generation offload above always runs.
-            move_zimage_vae_to_gpu(vae)
+            if not is_resident(self, "vae", _kh_model_key):
+                move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1403,8 +1400,8 @@ class ZImageMixin:
         """
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -1436,17 +1433,18 @@ class ZImageMixin:
             offload_cached_runtime_quantization(self.zimage_components, "transformer")
             discard_resident(self, "transformer")
 
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             _comps = getattr(self, "zimage_components", None) or {}
-            _kh_total_bytes += component_nbytes(_comps.get("text_encoder"))
+            _kh_components["text_encoder"] = _comps.get("text_encoder")
             if not _kh_has_loras and not _kh_is_block_swapped:
-                _kh_total_bytes += component_nbytes(_comps.get("transformer"))
-            _kh_total_bytes += component_nbytes(_comps.get("vae"))
+                _kh_components["transformer"] = _comps.get("transformer")
+            _kh_components["vae"] = _comps.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
@@ -1631,8 +1629,8 @@ class ZImageMixin:
                     print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
                           f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
 
-            # Offload VAE to CPU after encoding
-            move_zimage_vae_to_cpu(vae)
+            if not _kh_keep_vae:
+                move_zimage_vae_to_cpu(vae)
 
             device = torch.device(self.device)
 
@@ -1747,11 +1745,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 5: VAE Decode
             # ============================================================
-            # NOTE: VAE was already staged to GPU once for input-image/mask
-            # encoding (Stage 2) and offloaded again there unconditionally --
-            # that offload is a within-generation VRAM-relief step, not the
-            # keep-hot exit boundary, so it is intentionally left untouched.
-            move_zimage_vae_to_gpu(vae)
+            if not is_resident(self, "vae", _kh_model_key):
+                move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,

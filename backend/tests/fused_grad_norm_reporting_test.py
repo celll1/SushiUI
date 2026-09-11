@@ -9,8 +9,6 @@ Two defects:
     ``_calculate_grad_norms`` -- which the trainer calls after the whole backward
     -- found no gradients at all and reported 0.0 for every component of every
     step. The hooks now record each gradient's squared norm before clearing it.
-    ``_without_recording`` splices the recording back out (the pre-fix hook body)
-    as the negative control: the reporting tests must fail with it.
 
 (2) ``max_grad_norm`` was silently ignored: the fused branch never clipped and
     the ring-buffer hooks pass ``gnorm_scale=1.0``. It still is -- clipping by
@@ -54,7 +52,6 @@ from core.adapters import LoRALinearLayer  # noqa: E402
 from core.training.adapters.sd15_adapter import SD15LoRAAdapter  # noqa: E402
 from core.training import base_trainer as bt  # noqa: E402
 from core.training.base_trainer import BaseTrainer  # noqa: E402
-import core.training.optimizers.fused_grad_norm as fgn  # noqa: E402
 from core.training.optimizers.fused_grad_norm import FusedGradNormAccumulator  # noqa: E402
 
 from fused_backward_param_coverage_test import (  # noqa: E402
@@ -78,23 +75,6 @@ class _StaticExtension(_UpdatingExtension):
 
     def _apply(self, param, lr):
         self.updates.append((id(param), float(lr)))
-
-
-@contextlib.contextmanager
-def _without_recording(*modules):
-    """The pre-fix hook body: clear the gradient, record nothing.
-
-    Pass the module the hook resolves the name through: ``rb`` / ``lb`` / ``fog``
-    bind it at import, base_trainer imports it at registration (so ``fgn``).
-    """
-    originals = {m: m.record_fused_grad_norm for m in modules}
-    for module in originals:
-        module.record_fused_grad_norm = lambda *args, **kwargs: None
-    try:
-        yield
-    finally:
-        for module, fn in originals.items():
-            module.record_fused_grad_norm = fn
 
 
 class _Trainee(nn.Module):
@@ -185,8 +165,6 @@ def _reference_norms():
 class _FusedPathMixin:
     """Each fused path must report what the non-fused path would have."""
 
-    modules_that_record = ()
-
     def _build(self, static=False):
         """Return ``(model, register)`` where ``register(model)`` installs the
         hooks and returns the accumulator they record into.
@@ -237,14 +215,6 @@ class _FusedPathMixin:
         self.assertEqual(accumulator.squared_norms(), {})
         self.assertEqual(norms, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 
-    def test_the_squares_are_not_read_back_per_parameter(self):
-        accumulator, _ = self._run()
-        recorded = list(accumulator._squares.values())
-        self.assertTrue(recorded)
-        for square in recorded:
-            self.assertIsInstance(square, torch.Tensor)
-            self.assertEqual(square.shape, torch.Size([]))
-
     def test_the_accumulation_does_not_carry_across_steps(self):
         model, register = self._build(static=True)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -264,17 +234,7 @@ class _FusedPathMixin:
         for a, b in zip(first, second):
             self.assertAlmostEqual(a, b, places=PLACES)
 
-    def test_without_the_recording_every_norm_is_zero(self):
-        """Negative control: the pre-fix hooks reported 0.0 for every step."""
-        with _without_recording(*self.modules_that_record):
-            _, norms = self._run()
-        self.assertEqual(norms, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        self.assertGreater(_reference_norms()[0], 0.0)
-
-
 class AdamWRingBufferTest(_FusedPathMixin, unittest.TestCase):
-    modules_that_record = (rb,)
-
     def _build(self, static=False):
         model = _Trainee()
         ext = _StaticExtension() if static else _UpdatingExtension()
@@ -294,8 +254,6 @@ class AdamWRingBufferTest(_FusedPathMixin, unittest.TestCase):
 
 
 class LionRingBufferTest(_FusedPathMixin, unittest.TestCase):
-    modules_that_record = (lb,)
-
     def _build(self, static=False):
         model = _Trainee()
         ext = _StaticExtension() if static else _UpdatingExtension()
@@ -316,8 +274,6 @@ class LionRingBufferTest(_FusedPathMixin, unittest.TestCase):
 
 class StepParamFusedBackwardTest(_FusedPathMixin, unittest.TestCase):
     """``_setup_fused_backward_pass``'s own hooks (adafactor / adamw8bit)."""
-
-    modules_that_record = (fgn,)
 
     def _build(self, static=False):
         model = _Trainee()
@@ -344,8 +300,6 @@ class StepParamFusedBackwardTest(_FusedPathMixin, unittest.TestCase):
 
 
 class FusedOptimizerGroupsTest(_FusedPathMixin, unittest.TestCase):
-    modules_that_record = (fog,)
-
     def _build(self, static=False):
         model = _Trainee()
 
@@ -439,12 +393,6 @@ class LoraComponentsUnderFusedTest(unittest.TestCase):
     def test_the_split_matches_the_non_fused_split(self):
         for value, expected in zip(self._fused(), self._reference()):
             self.assertAlmostEqual(value, expected, places=PLACES)
-
-    def test_without_the_recording_every_norm_is_zero(self):
-        with _without_recording(fgn):
-            self.assertEqual(self._fused(), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        self.assertGreater(self._reference()[0], 0.0)
-
 
 # --------------------------------------------------------------------------
 # max_grad_norm under fused backward

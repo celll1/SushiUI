@@ -9,14 +9,16 @@ nothing about what earlier commits contain.
 
 Checks
 ------
-1. Every tracked Markdown file under `docs/` sits in the published taxonomy.
+1. Every tracked file under `docs/` sits in the published taxonomy.
 2. No tracked file matches `.gitignore` (a tracked-and-ignored file is invisible
    to one of the two views of the repository and drifts).
-3. `docs/` holds no untracked or ignored Markdown, so the directory can be read
+3. `docs/` holds no untracked or ignored files, so the directory can be read
    as "this is what ships".
 4. No tracked file records this machine's private roots.
-5. Relative Markdown links resolve to something that exists.
-6. Every vendored package appears in the third-party provenance ledger.
+5. Relative Markdown links resolve to a tracked target.
+6. Maintained Markdown is covered by the documentation map.
+7. Raw result JSON and credential-shaped values do not enter public docs.
+8. Every vendored package appears in the third-party provenance ledger.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ DOC_DIRS = ("guides", "reference", "decisions", "audits", "legal")
 DOC_ROOT_FILES = ("README.md",)
 
 LEDGER = "docs/legal/THIRD_PARTY_PROVENANCE.md"
+DOC_MAP = "docs/guides/DOC_MAP.md"
 
 # Verbatim upstream license texts are reproduced as-is and are not edited to
 # satisfy local rules.
@@ -52,6 +55,17 @@ PRIVATE_VALUES = tuple({
 })
 
 WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?<![A-Za-z0-9_])[a-z]:[\\/]")
+
+# Assemble signatures so the checker does not match its own source text.
+SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN " + r"(?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\b" + "sk" + r"-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)"
+        r"\s*[:=]\s*[\"']?(?!<|dummy\b|example\b|redacted\b|test\b)"
+        r"[A-Za-z0-9_./+=-]{16,}"
+    ),
+)
 
 BINARY_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".ico", ".gif", ".pdf",
                    ".safetensors", ".gguf", ".zip", ".woff", ".woff2", ".ttf",
@@ -76,7 +90,7 @@ def read(relative: str) -> str:
 
 def check_taxonomy(files: list[str], report) -> None:
     for path in files:
-        if not path.startswith("docs/") or not path.endswith(".md"):
+        if not path.startswith("docs/"):
             continue
         rest = path[len("docs/"):]
         if "/" not in rest:
@@ -106,8 +120,6 @@ def check_untracked_docs(report) -> None:
     for line in out.splitlines():
         status, _, path = line.partition(" ")
         path = line[3:].strip().strip('"')
-        if not path.endswith(".md"):
-            continue
         if status in ("??", "!!"):
             report(path, "is under docs/ but is not tracked")
 
@@ -129,8 +141,25 @@ def check_private_paths(files: list[str], report) -> None:
             if any(value in normalized for value in PRIVATE_VALUES):
                 report(f"{path}:{number}", "records a value from the local environment")
                 continue
-            if path.startswith("docs/") and WINDOWS_ABSOLUTE_PATH.search(line):
+            if (path.startswith("docs/") or path == "openapi.yaml") and WINDOWS_ABSOLUTE_PATH.search(line):
                 report(f"{path}:{number}", "uses a machine-specific absolute path")
+
+
+def check_public_content(files: list[str], report) -> None:
+    for path in files:
+        if not (path.startswith("docs/") or path == "openapi.yaml"):
+            continue
+        if path.startswith(EXEMPT_PREFIXES) or path.endswith(BINARY_SUFFIXES):
+            continue
+        if path.startswith("docs/audits/") and path.endswith(".json"):
+            report(path, "is raw structured output; keep it under local/measurements")
+            continue
+        if not os.path.isfile(os.path.join(REPO, path)):
+            continue
+        content = read(path)
+        for number, line in enumerate(content.splitlines(), 1):
+            if any(pattern.search(line) for pattern in SECRET_PATTERNS):
+                report(f"{path}:{number}", "contains a credential-shaped value")
 
 
 def check_links(files: list[str], report) -> None:
@@ -148,9 +177,21 @@ def check_links(files: list[str], report) -> None:
             if not cleaned:
                 continue
             resolved = os.path.normpath(os.path.join(base, cleaned)).replace(os.sep, "/")
-            if resolved in tracked or os.path.exists(os.path.join(REPO, resolved)):
+            if resolved in tracked:
                 continue
             report(path, f"links to `{target}`, which does not exist")
+
+
+def check_doc_map(files: list[str], report) -> None:
+    index = read(DOC_MAP)
+    covered_prefixes = ("docs/reference/architectures/", "docs/legal/licenses/")
+    for path in files:
+        if not path.startswith("docs/") or not path.endswith(".md"):
+            continue
+        if path == DOC_MAP or path.startswith(covered_prefixes):
+            continue
+        if path not in index:
+            report(DOC_MAP, f"does not index `{path}`")
 
 
 def check_vendor_ledger(files: list[str], report) -> None:
@@ -175,7 +216,9 @@ def main() -> int:
     check_tracked_and_ignored(files, report)
     check_untracked_docs(report)
     check_private_paths(files, report)
+    check_public_content(files, report)
     check_links(files, report)
+    check_doc_map(files, report)
     check_vendor_ledger(files, report)
 
     for problem in problems:

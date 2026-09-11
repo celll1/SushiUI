@@ -41,7 +41,7 @@ contract. A tracked document must not depend on that local copy.
 1. `tools/doc_hygiene.py` embeds a local user name and checks only a narrow set
    of path forms.
 2. Five tracked files under `docs/plans/` and five binary figures under
-   `docs/rope_analysis/` sit outside the published taxonomy.
+   `docs/rope_analysis/` sat outside the published taxonomy and were archived.
 3. The documentation map omits standalone tracked documents and presents most
    paths as code spans rather than navigable links.
 4. Completed plans, superseded audits, current contracts, and open ideas are

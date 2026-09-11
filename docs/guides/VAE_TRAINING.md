@@ -136,16 +136,13 @@ reproducible for a seed and independent of `num_workers`. Until 2026-07-31 the
 key was `(seed, item index)` only, which silently gave each image exactly one
 crop and one `mixed` factor for the entire run.
 
-`crop_scale_policy` decides how much the image is **resampled before that crop**,
-which the crop-geometry study
-(`scratchpad/vae_training/results_crop_geometry.md`) measured to be the dominant
-control on what the fine-tune learns.
+`crop_scale_policy` decides how much the image is **resampled before that crop**.
+The crop-geometry study measured it as the dominant control on what the
+fine-tune learns.
 
-Every figure in the table below is from `results_crop_geometry.md` **§8**
-(n = 400 items, `resolution: 512`, dated 2026-07-30, reproducible via
-`scratchpad/vae_training/harness/crop_policy_verify.py`; method, sampling rule
-and limitations recorded there). Loader cost is §8.4 and is quoted as a **ratio**,
-because the absolutes move with machine load.
+Every figure in the table below comes from a 400-item study at
+`resolution: 512`, dated 2026-07-30. Loader cost is quoted as a **ratio** because
+the absolutes move with machine load.
 
 | policy | geometry | realised downscale factor (§8.2) | loader cost (§8.4) |
 |---|---|---|---|
@@ -694,9 +691,8 @@ artifact.
 ### What `l_invented_weight` is for
 
 Every other term in the bank compares the decode with the source, which is the
-family the SDXL VAE was already trained on. Measured outcome of a full fine-tune
-under that bank (`scratchpad/vae_training/results_flat_region_noise.md`): in
-flat regions the *error* fell 21%, while the total high-frequency energy the
+family the SDXL VAE was already trained on. In a measured full fine-tune under
+that bank, flat-region *error* fell 21%, while the total high-frequency energy the
 decoder emits there moved **+0.4% (not significant)**. The decoder kept
 fabricating the same amount of detail and aimed it better. In dark flat windows
 **66% of the fine high frequency is fabricated**, and at the exposure gain a

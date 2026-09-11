@@ -24,6 +24,7 @@ import numpy as np
 import torch
 from core.inference.generation_timing import time_phase
 from core.inference.callback_utils import callback_requests
+from core.inference.schedule_utils import snapshot_schedule_scalars
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from core.inference.spectrum_forecaster import build_output_forecaster
@@ -671,7 +672,7 @@ def _ideogram4_style_step(
     from core.inference.reference_style import StyleContext
     from core.models.ideogram4.style_ideogram4 import set_ideogram4_style_context
 
-    sigma_now = float(t.item()) / num_train_timesteps
+    sigma_now = sigma_t
     ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
     progress = style_cfg.step_progress(step_idx, total_steps)
 
@@ -804,7 +805,7 @@ def _ideogram4_style_step_multi(
     from core.inference.reference_style import StyleContext
     from core.models.ideogram4.style_ideogram4 import set_ideogram4_style_context
 
-    sigma_now = float(t.item()) / num_train_timesteps
+    sigma_now = sigma_t
     max_text = cond["max_text_tokens"]
     t_dtype = transformer.dtype
     batch = latents.shape[0]
@@ -1009,9 +1010,10 @@ def _run_loop(
     if fbcache_uncond is not None:
         real_uncond._fbcache = fbcache_uncond
 
+    timestep_scalars = snapshot_schedule_scalars(timesteps)
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
-        sigma_t = t.item() / num_train_timesteps
+        sigma_t = timestep_scalars[i] / num_train_timesteps
         t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(transformer.dtype)
 
         # Spectrum: forecast the dual-branch velocity on skip steps

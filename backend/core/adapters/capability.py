@@ -226,6 +226,7 @@ def decompose_refusal_reason(architecture: Optional[str],
 BEFORE_SPLIT = "before_split"
 AFTER_SPLIT = "after_split"
 NO_BLOCK_SWAP = "no_block_swap"
+PACKED_WITH_BLOCK = "packed_with_block"
 
 BLOCK_SWAP_ADAPTER_ORDER: Mapping[str, str] = MappingProxyType({
     # prepare_block_devices does blocks[i].to(device) for EVERY tensor and only
@@ -239,12 +240,11 @@ BLOCK_SWAP_ADAPTER_ORDER: Mapping[str, str] = MappingProxyType({
     "zimage": BEFORE_SPLIT,
     "flux2": BEFORE_SPLIT,
     "minimax_h3": BEFORE_SPLIT,
-    "krea2": NO_BLOCK_SWAP,
-    "acestep": NO_BLOCK_SWAP,
-    # SenseNova's blocks_to_swap is inert (its backend never reads it); its MoT
-    # phase evictor is not a TransformerBlockOffloader and moves a module's own
-    # parameters, so it carries a LyCORIS branch with the half it sits under.
-    "sensenova": NO_BLOCK_SWAP,
+    # The hook conductor snapshots every recursive parameter after adapter
+    # installation, including bare LyCORIS factors, into the block bundle.
+    "krea2": PACKED_WITH_BLOCK,
+    "acestep": PACKED_WITH_BLOCK,
+    "sensenova": PACKED_WITH_BLOCK,
     # The offloader is already built when the adapters install, so a branch over
     # a swapped-out block is built on the HOST and nothing ever moves it:
     # _minit2i_stage_transformer / _ensure_ltx2_block_swap_wrapper, and
@@ -282,6 +282,7 @@ __all__ = [
     "BLOCK_SWAP_REFUSAL_CODE",
     "BLOCK_SWAP_WARNING_CODE",
     "NO_BLOCK_SWAP",
+    "PACKED_WITH_BLOCK",
     "AdapterPair",
     "ENABLED_ADAPTER_PAIRS",
     "ORDINARY_LORA",

@@ -107,3 +107,14 @@ worktree's two pre-existing uncommitted files were hash-verified before and
 after, and no affected commit or blob remains reachable from local refs. The
 verified ignored bundle is retained; the hosted `flux2` branch still requires
 an explicit lease-protected force-push.
+
+Post-rewrite integrity audit: the affected interval is a linear sequence of
+441 commits from the unchanged base `5e6351e0`. Every old commit maps to exactly
+one new commit with the same parent relationship, author and committer
+identity, timestamps, encoding, and message. Their combined metadata stream has
+SHA-256 `9B5093DA04A6A6D0F32409BD83F4D73DBE201A2762053B77954383563CF672F6`
+on both sides. Comparing every complete tree produced 435 changed entries over
+432 snapshots; every entry was one of the three predeclared old-blob to
+redacted-blob substitutions, with unchanged file mode and path. No other blob,
+file, or topology change was found. The old and rewritten remote-tracking tips
+also match the same mapping.

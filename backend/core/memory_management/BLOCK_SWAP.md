@@ -6,7 +6,8 @@ All weight streaming uses `offload_transfer_engine.py`.
 
 | Path | Policy | Writeback |
 |---|---|---|
-| Generation | `FrozenSequentialTransferEngine` | none |
+| Generation explicit block loops | `FrozenSequentialTransferEngine` | none |
+| Generation hook units | `FrozenModuleOffloadConductor` / `FrozenBranchedLayerOffloadConductor` | none |
 | Frozen-base/LoRA FLUX.2 | `FrozenLruTransferEngine` | none |
 | Mutable training blocks | `MutableLruTransferEngine` through `LayerOffloadConductor` | after fused update |
 | SenseNova branch bundles | `MutableLruTransferEngine` through `BranchedLayerOffloadConductor` | method-aware |
@@ -17,7 +18,13 @@ supports LoRA only; its quantized base and trainable adapters are packed in
 separate dtype planes. SenseNova keys each physical layer by MoT branch: LoRA
 streams frozen base bundles while adapters stay resident, and full fine-tuning
 writes updated bundles back. Its phase evictor may additionally manage the
-layers left resident by block swap. SD1.5/SDXL use their U-Net memory path.
+layers left resident by block swap.
+
+Generation covers every architecture. SD1.5/SDXL stream top-level U-Net stages;
+Krea 2 and ACE-Step stream their native block/layer lists; SenseNova streams
+branch-qualified MoT layers; MiniMax Music 3 independently streams its AR and
+flow stages. The other generation backends retain their explicit-loop drivers,
+which use the same immutable transfer engine underneath.
 
 ## Required settings
 
@@ -28,6 +35,8 @@ layers left resident by block swap. SD1.5/SDXL use their U-Net memory path.
 
 SenseNova requires ring size 2 or greater because a mixed-token decoder call
 can use both branch bundles of one physical layer simultaneously.
+Its generation conductor fixes the ring at exactly two slots; its mutable
+training conductor accepts larger rings.
 
 The architecture setup refuses mutable swap without checkpointing. Optimizer
 setup separately refuses combinations that would update CPU parameters or retain

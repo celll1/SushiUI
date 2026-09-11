@@ -10,10 +10,11 @@ recomputation.
 
 All forward-only `TransformerBlockOffloader` and `FluxBlockOffloader` instances
 use the common engine, irrespective of the legacy `block_swap_h2d_only` flag.
-This covers the generation block-swap routes for Z-Image, Anima, Lens,
-Ideogram4, MiniT2I, FLUX.2, LTX-2.3, and MiniMax-H3. MiniMax-H3 now uses the
-multi-plane path instead of forcing the bidirectional legacy swap: FP8 weights,
-FP32 projections, and quantization sidecars retain their own dtype.
+This originally covered the generation block-swap routes for Z-Image, Anima,
+Lens, Ideogram4, MiniT2I, FLUX.2, LTX-2.3, and MiniMax-H3. The common engine is
+now also wired through hook conductors for SD1.5, SDXL, Krea 2, ACE-Step,
+SenseNova, and MiniMax Music 3. The measurements below predate those new
+routes and must not be presented as their validation.
 
 FLUX.2 frozen-base/LoRA training uses the common frozen LRU policy. Mutable
 training across all supported DiT block-swap routes uses
@@ -246,3 +247,26 @@ The current parallel-test allowance of roughly 10 GiB free VRAM is a test-arm
 budget only. It is not a product limit or a reason to clamp the public swap
 range. Start with high-swap LoRA arms under that allowance; defer resident and
 full-FT comparisons until the other run releases the card.
+
+## Deferred generation-conductor validation
+
+The hook-driven generation routes were implemented without runtime or GPU
+execution at the owner's request. Until this matrix is complete, they are
+implemented but unverified; the earlier synthetic immutable-engine figures
+validate the transport primitive, not these architecture boundaries.
+
+| Architecture/path | Required comparison | Additional gate |
+|---|---|---|
+| SD1.5/SDXL txt2img, img2img, inpaint, outpaint | resident vs 1 and max-1 U-Net stages | same-seed output parity; skip tensors survive stage eviction; torch.compile refusal; LoRA unload and keep-hot normalization |
+| Krea 2 all image routes | resident vs 1/mid/max-1 blocks | BF16, runtime INT8 and checkpoint-quantized weights; LoRA/LyCORIS recursive bundle census |
+| ACE-Step txt2aud, aud2aud/repaint, outpaint | resident vs 1/mid/max-1 decoder layers | waveform parity; all three routes restore adapters and component placement after success/cancel/failure |
+| SenseNova txt2img, img2img, inpaint | resident vs 1/20/41 physical layers | understanding-only, generation-only and mixed calls; fixed two-slot occupancy; KV streaming composition; phase-eviction conflict refusal |
+| MiniMax Music 3 txt2aud, extend, regenerate, rerender | each AR and flow stage resident vs 1/mid/max-1 blocks | phase teardown between AR/flow; sidecar equality; preserved waveform spans remain exact |
+
+For every arm record peak allocated/reserved VRAM, load peak, pinned/pageable
+host peak, warmed median/p95 wall time, H2D bytes/submissions, synchronous repair
+misses, and active-slot state after injected exceptions. Numerical acceptance is
+bit-exact where the resident and swapped paths invoke deterministic kernels;
+otherwise document the first kernel divergence and bound it against a second
+resident run. No claim of negligible overhead or a specific VRAM saving is made
+for these routes before those measurements exist.

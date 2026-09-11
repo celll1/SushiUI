@@ -86,7 +86,9 @@ Reasoning, the shipped boundary and the engine's design live in
   (`minit2i`, `ltx2`, `anima`, `lens`, `ideogram4`) **refuse** it when block
   swap is actually live (`lora_blockswap_unsupported`), because a branch whose factors are bare
   parameters is not moved by an offloader that looks for `Linear` modules;
-  `krea2`, `acestep` and `sensenova` are `NO_BLOCK_SWAP`.
+  `krea2`, `acestep` and `sensenova` use `PACKED_WITH_BLOCK`: their common
+  hook conductor is installed after adapters and recursively packs bare branch
+  factors with the owning block, so the branch is offloaded too.
 - **Execution backend**: `backend/core/adapters/execution/` is a registry in
   the shape of `core/attention/registry.py`, but `reference` is the only
   registered backend and **nothing is auto-selected** — an unrecognised name is
@@ -2275,11 +2277,11 @@ Paths below are relative to `backend/core/training/`.
       halves equal in size and disjoint. The TRAINING selector
       (`require_exact_symmetry=True`) never sees a generation-side wrapper, and
       raises identically over a composite tree and over a plain-wrapper one.
-    - **No block swap and no quantization hazard at generation.** SenseNova
-      wires no block offloader (`blocks_to_swap` is inert; MoT phase eviction
-      is the analogue) and `pipeline_backends/sensenova.py` contains no FP8
-      deep-copy or in-place quantization path, so the branch-casting gap
-      Z-Image and Anima carry does not exist here. SenseNova is absent from
+    - **Generation block swap snapshots the adapter graph.** SenseNova installs
+      `FrozenBranchedLayerOffloadConductor` after adapter wrapping; its recursive
+      bundles carry both quantized base sidecars and branch factors. It remains
+      mutually exclusive with MoT phase eviction because both would own the
+      same weights. SenseNova is absent from
       `RUNTIME_INT8_ARCHS` (its int8 comes from the checkpoint), so the
       `lora_wrapped_count` refusal never fires for it; the count is asserted
       anyway (588 roots over a 1176-branch stack) because that is the number a
@@ -2856,24 +2858,13 @@ Paths below are relative to `backend/core/training/`.
       generations run with the toggle off. The measured peaks already fit a
       48 GB card without this feature (worst case 43.82 GB); it is for
       operators who are VRAM-constrained and have host RAM to spare.
-    - **Generic rolling block-swap was deliberately not built for this
-      arch** (`TransformerBlockOffloader`, the mechanism 5 other
-      architectures use): its transformer is never registered with it
-      (`core.memory_management.transformer_registry` detects it as
-      "unknown"), and rewriting the 3-branch denoise loop's
-      layer-outer/branch-inner ordering to support it would cost 2-3x more
-      PCIe traffic than this phase-exclusive scheme, while activations and
-      KV-cache dominate the peak regardless — the marginal ceiling did not
-      justify it. `blocks_to_swap` warns rather than being silently inert
-      here (also unsupported, same reason, on sd15/sdxl/krea2/
-      minimax_music3's generation path; see `arch_capabilities.py`).
-      **Reopening condition**: a concrete workload whose measured peak
-      exceeds ~44 GB after this feature is active, or an explicit
-      requirement to run on a <48 GB card. This refusal is GENERATION-side;
-      training refuses `blocks_to_swap` separately and for its own reason
-      (see the Phase 1 LoRA bullet above), and `SENSENOVA_TRAINING_DESIGN.md`
-      §8.1 records why the mechanical argument here does not transfer to a
-      training step.
+    - **Generation now has branch-aware rolling block swap.**
+      `FrozenBranchedLayerOffloadConductor` follows the layer-outer,
+      branch-inner call order without registering SenseNova in the legacy
+      transformer registry. It transfers only branches selected by each call,
+      uses a fixed two-slot ring, and refuses simultaneous MoT phase eviction.
+      Runtime VRAM and throughput have not yet been measured; see the unified
+      offload validation audit before making savings claims.
     - **A separate TRAINING implementation of the same concept exists**
       (`training/sensenova_phase_eviction.py`, `TRAINING_DEFAULTS`
       boolean of the same name, opt-in, default off). It reuses this
@@ -3015,8 +3006,9 @@ Paths below are relative to `backend/core/training/`.
       population.
     - **Composes with `sensenova_mot_phase_eviction`**: disjoint tensors,
       hook points, cadences, and CUDA streams, with no shared coordinator.
-      `enable_block_swap` remains unsupported/warned for this arch, same as
-      above.
+      KV-cache streaming also composes with branch-aware block swap because it
+      owns prefix K/V activations rather than weights. MoT phase eviction and
+      block swap themselves are refused together.
     - **No applicability to `train_step`**: a training step is a
       single-timestep forward/backward with no multi-step denoise loop, so
       there is no persistent read-many KV cache to stream; training-side
@@ -3184,9 +3176,9 @@ Paths below are relative to `backend/core/training/`.
     resolves its own remapped paths through `_acestep_walk_module_path`), but
     it installs through the same `_wrap_with_lora_acestep` and its composites
     are discovered structurally at restore, so load and unload cannot disagree.
-  - **No block swap exists on this backend at all** (`blocks_to_swap` has no
-    path here), so the composite's effect on a swap job list is moot — the
-    opposite of LTX-2.3. The runtime-INT8 conversion still refuses a LoRA'd
+  - **Generation block swap uses recursive frozen bundles.** It is installed
+    after LoRA and runtime-INT8 handling over `dit.decoder.layers`, so composite
+    adapter branches are packed with their owning layer. Runtime-INT8 still refuses a LoRA'd
     DiT: `count_adapter_wrapper_roots` counts a composite as ONE root
     (verified: 1 root over 2 branches), and `_acestep_runtime_int8` still runs
     after the LoRA gate.

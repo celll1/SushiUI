@@ -231,31 +231,31 @@ samplers. The explicit callback adapter now invokes both contracts and forwards
 preview/metric demand predicates from the progress callback. Its calling
 convention and step-only behavior have focused regression coverage.
 
-## Measurement-dependent or non-equivalent ideas
+## Measurement-gated equivalent ideas
 
-The following are not approved as equivalent static cleanup:
+These candidates can preserve tensor arithmetic or media bytes, but cannot be
+called a general efficiency improvement until the displaced resource cost is
+measured. They are deliberately not enabled by default in this static pass.
 
-- Cross-generation prompt-embedding caches. Keys must cover model/tokenizer,
-  prompt parsing, maximum length, clip skip, adapter state and quantization;
-  GPU caching also consumes persistent VRAM.
-- Keeping the VAE resident from image encode through final decode. It avoids
-  transfers but raises denoising peak VRAM.
+| Candidate | Disposition | Gate before implementation |
+|---|---|---|
+| Cross-generation prompt-embedding cache | MiniMax-H3's plain text-only path already has a bounded eight-entry CPU LRU keyed by encoder, projection, prompt and conditioning width. Do not generalize it yet. | Each architecture needs keys for tokenizer/parser settings, maximum length, clip skip, adapter/textual-inversion state, quantization and model reload. Compare host RAM and repeated-prompt latency; cached tensors stay on CPU. |
+| Keep VAE resident between image encode and final decode | Do not make this the default: it trades two transfers for overlap with the denoiser's peak. | Add only as an explicit memory-budget policy after measuring encode/decode transfer time and denoise peak allocated/reserved VRAM on the target architecture. |
+| Asynchronous preview decode | Retain synchronous, demand-driven preview. Skipping unused previews already removes the unconditional cost without extending tensor lifetime. | Prove callback ordering, cancellation and teardown safety, then compare step latency and peak allocated/reserved VRAM with preview intervals 1 and 4. |
+| Remove phase-boundary `empty_cache()` | Retain phase boundaries. Only adjacent terminal duplicates were removed. | Compare at least three cold and three hot generations using the newly recorded allocated and reserved peaks; reject a removal that increases failures, reservation growth or fragmentation. |
+| Stream video frames into FFmpeg | Implemented for master and proxy encoders. | Focused tests prove identical byte order, bounded writes, non-contiguous input handling and failure cleanup. |
+
+## Intentionally non-equivalent ideas
+
+The following alter numerical, random, or kernel behavior and remain outside
+the equivalent-refactoring implementation scope:
+
 - Changing attention backends, precision, quantization, `torch.compile`, tiled
-  decode or interpolation implementations. These change numerical or kernel
-  behavior and remain opt-in.
-- Asynchronous preview decode. It changes CUDA stream contention and tensor
-  lifetime and needs end-to-end measurement.
-- Removing all phase-boundary `empty_cache()` calls. Measure repeated cold/hot
-  generations and allocator fragmentation first.
-- Replacing the SciPy latent-resize round trip with `torch.interpolate`. The
-  interpolation result is not assumed numerically equivalent.
+  decode or interpolation implementations.
+- Replacing the SciPy latent-resize round trip with `torch.interpolate`.
 - Reusing a fixed Z-Image inpaint noise tensor. The current per-step random draw
-  is suspicious for reproducibility and allocation cost, but changing it alters
-  RNG/output semantics and belongs in a separate correctness review.
-- **Implemented:** stream video frames to both lossless and proxy encoders in
-  bounded chunks. This removes the duplicate full-video host copies without
-  changing the raw RGB byte stream; subprocess/codec failure behavior has
-  focused coverage.
+  merits a separate correctness review, but changing it alters RNG/output
+  semantics.
 
 ## Implementation sequence
 
@@ -293,3 +293,11 @@ generation startup time. The CPU tests already cover identity reuse, one-entry
 eviction, source restoration, block-swap offload, runtime-INT8 discard and the
 four Flux2/Z-Image text-encoder/transformer move paths; the real model sizes and
 host allocator behavior still require observation.
+
+The static pass intentionally does not load a real generation checkpoint.
+For a candidate branch, use identical model/component/adapters, seed, prompt,
+dimensions, scheduler and preview settings. Compare saved output hashes first;
+then use `generation_time`, phase timings, `peak_vram_gb` and
+`peak_vram_reserved_gb` from each output's metadata. A single cold run is not
+evidence for allocator changes: record warm runs separately and preserve the
+per-run sequence so reservation growth is visible.

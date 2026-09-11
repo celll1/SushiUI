@@ -1,6 +1,6 @@
 # Phase 1 診断計測: SenseNova + 差し替え 4ch VAE の実条件
 
-**対象プラン: [CONVERGENCE_ACCELERATION_PLAN.md](CONVERGENCE_ACCELERATION_PLAN.md) の Phase 1**
+**対象機能: [TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md](TRAINING_DIAGNOSTICS_AND_AUXILIARY_LOSSES.md)**
 **状態: ブリーフ（実装未着手）**  日付: 2026-09-08
 
 プランの Phase 1 は汎用の診断として書かれていた。対象ランが

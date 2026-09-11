@@ -80,11 +80,12 @@ instead of dropping one or calling it with the sampler's incompatible
 signature. Numerical denoise, mask and visit-schedule loops remain separate.
 
 Runtime-FP8 failure paths no longer clone an unchanged full-precision model.
-A successful cross-generation FP8 cache is deliberately not added yet: it
-would retain both the original and quantized CPU models, needs a bounded
-eviction policy, and must be reconciled with keep-hot object identity. This is
-the remaining measurement-gated item, not a statically equivalent memory
-cleanup.
+Successful Flux2 and Z-Image FP8 copies are now cached under model-, adapter-,
+quantization- and source-object-aware identities. Each component retains at
+most one quantized copy beside its source; switching identity or FP8 format
+evicts that copy, block-swap offloads it, runtime INT8 discards it, and the
+active component slot follows the object tracked by keep-hot. Real-model host
+RAM and warm-generation timing remain in the verification backlog.
 
 ## Findings suitable for equivalent implementation
 
@@ -200,8 +201,8 @@ resident-object bookkeeping need dedicated tests before implementation.
 | Architecture | Static result |
 |---|---|
 | SD1.5 / SDXL | Common no-grad, demand-driven previews/metrics, non-copying preview views and schedule snapshots implemented; numerical loops remain separate |
-| Z-Image | Diagnostics, preview work and scalar synchronization reduced; successful runtime-FP8 caching remains measurement-gated |
-| Flux2 | Preview work and scalar synchronization reduced; successful runtime-FP8 caching remains measurement-gated |
+| Z-Image | Diagnostics, preview work and scalar synchronization reduced; bounded runtime-FP8 reuse implemented |
+| Flux2 | Preview work and scalar synchronization reduced; bounded runtime-FP8 reuse implemented with attention implementation/backend in its identity |
 | Anima | Preview/metric demand, scalar snapshots and dual-callback composition implemented |
 | Lens | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
 | Krea2 | Preview/metric demand, scalar snapshots and duplicate terminal-flush removal implemented |
@@ -254,9 +255,10 @@ The following are not approved as equivalent static cleanup:
 4. **Completed:** snapshot denoise schedule scalars by architecture family.
 5. **Completed:** remove only the three proven duplicate terminal allocator
    flushes; retain phase boundaries pending measurement.
-6. **Partially completed:** failure/unsupported quantization preserves original
-   identity without cloning. Successful persistent caching remains gated on
-   host-RAM, eviction and keep-hot tests.
+6. **Implemented, measurement pending:** failure/unsupported quantization
+   preserves original identity without cloning; successful runtime FP8 uses a
+   one-entry-per-component cache with mode-switch, block-swap, runtime-INT8 and
+   keep-hot lifecycle tests.
 7. **Completed to the static-safe boundary:** extract callback demand,
    schedule-snapshot and callback-composition helpers; retain distinct
    numerical loops.
@@ -273,6 +275,8 @@ recorded in addition to VRAM. Phase-boundary allocator changes and persistent
 quantization caches are not complete until these measurements pass.
 
 For runtime FP8 specifically, measure peak and steady-state host RAM with the
-original plus one cached quantized text encoder/transformer, define a one-entry
-or byte-budget eviction rule per component, and test mode switches together
-with keep-hot invalidation before persisting successful copies.
+implemented source-plus-one-copy bound, and compare first versus repeated
+generation startup time. The CPU tests already cover identity reuse, one-entry
+eviction, source restoration, block-swap offload, runtime-INT8 discard and the
+four Flux2/Z-Image text-encoder/transformer move paths; the real model sizes and
+host allocator behavior still require observation.

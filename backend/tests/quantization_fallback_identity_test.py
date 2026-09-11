@@ -175,3 +175,46 @@ def test_runtime_fp8_move_paths_reuse_the_cached_active_object(
     assert owner[component_name] is candidate
     assert calls == [(source, "fp8_e4m3fn")]
     assert candidate.last_move == "cuda:0"
+
+
+@pytest.mark.parametrize(
+    ("mixin_path", "mixin_name", "method_name", "components_name"),
+    [
+        (
+            "core.pipeline_backends.flux2", "Flux2Mixin",
+            "_flux2_runtime_int8", "flux2_components",
+        ),
+        (
+            "core.pipeline_backends.zimage", "ZImageMixin",
+            "_zimage_runtime_int8", "zimage_components",
+        ),
+    ],
+)
+def test_runtime_int8_entry_discards_the_fp8_transformer_cache(
+    monkeypatch, mixin_path, mixin_name, method_name, components_name
+):
+    module = __import__(mixin_path, fromlist=[mixin_name])
+    manager = getattr(module, mixin_name)()
+    source = _Model()
+    owner = {"transformer": source}
+    _cached_runtime_quantization(
+        source, "fp8_e4m3fn", lambda _model, _mode: _Model(),
+        cache_owner=owner, cache_identity="model-a", component_name="transformer",
+    )
+    setattr(manager, components_name, owner)
+
+    monkeypatch.setattr(
+        vram_optimization,
+        "apply_runtime_int8_quantization",
+        lambda _manager, model, *_args, **_kwargs: (model, False),
+    )
+    if method_name == "_flux2_runtime_int8":
+        result = getattr(manager, method_name)(
+            {"unet_quantization": "int8"}, owner["transformer"]
+        )
+    else:
+        result = getattr(manager, method_name)({"unet_quantization": "int8"})
+
+    assert result is source
+    assert owner["transformer"] is source
+    assert "_runtime_fp8_cache" not in owner

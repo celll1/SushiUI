@@ -25,6 +25,7 @@ import numpy as np
 import torch
 from core.inference.generation_timing import time_phase
 from core.inference.callback_utils import callback_requests
+from core.inference.schedule_utils import snapshot_schedule_scalars
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
@@ -408,6 +409,7 @@ def _run_loop(
 
     num_train = scheduler.config.num_train_timesteps
     total_steps = len(timesteps)
+    timestep_scalars = snapshot_schedule_scalars(timesteps)
     do_cfg = neg_prompt_embeds is not None and guidance > 0.0
     t_dtype = transformer.dtype
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
@@ -416,7 +418,7 @@ def _run_loop(
         raise_if_cancelled()
         # FlowMatchEuler timesteps == sigmas * num_train_timesteps, so sigma = t/num_train
         # (robust to the trimmed img2img/inpaint schedule, unlike indexing sigmas[i]).
-        sigma_now = float(t.item()) / num_train
+        sigma_now = timestep_scalars[i] / num_train
         timestep = (t / num_train).expand(latents.shape[0]).to(t_dtype)
 
         if style_refs is not None and len(style_refs) > 1:
@@ -606,7 +608,7 @@ def _run_loop(
         latents = scheduler.step(v, t, latents, return_dict=False)[0]
 
         if mask_latent is not None and init_latents is not None and init_noise is not None:
-            sigma_next = float(timesteps[i + 1].item()) / num_train if (i + 1) < total_steps else 0.0
+            sigma_next = timestep_scalars[i + 1] / num_train if (i + 1) < total_steps else 0.0
             noised_init = (1.0 - sigma_next) * init_latents + sigma_next * init_noise
             latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
             if progress_callback is not None:

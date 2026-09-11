@@ -281,6 +281,28 @@ class AceStepMixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _acestep_maybe_install_block_offload(self, params, dit, device):
+        requested = int(params.get("blocks_to_swap", 0) or 0)
+        if requested <= 0:
+            return None
+        layers = getattr(getattr(dit, "decoder", None), "layers", None)
+        if layers is None or len(layers) < 2:
+            raise ValueError("ACE-Step block offload requires dit.decoder.layers")
+        from core.memory_management import FrozenModuleOffloadConductor
+
+        conductor = FrozenModuleOffloadConductor(
+            root=dit,
+            modules=layers,
+            blocks_to_swap=requested,
+            device=device,
+            use_pinned_memory=bool(params.get("use_pinned_memory", False)),
+            ring_size=int(params.get("block_swap_ring_size", 2) or 2),
+        )
+        conductor.register_hooks()
+        print(f"[AceStep] Common block offload enabled "
+              f"({conductor.blocks_to_swap}/{len(layers)} layers)")
+        return conductor
+
     # ------------------------------------------------------------------
     # Silence-latent asset (lazy, cached on self.acestep_components so it
     # survives across generate calls for the currently loaded model, and is
@@ -1221,6 +1243,7 @@ class AceStepMixin:
 
         # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
+        block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
             with torch.inference_mode():
                 outputs = dit.generate_audio(
@@ -1249,6 +1272,8 @@ class AceStepMixin:
                 )
             pred_latents = outputs["target_latents"]  # [1, T, 64]
         finally:
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._acestep_move("dit", "cpu")
             self._acestep_empty_cache()
 
@@ -1570,6 +1595,7 @@ class AceStepMixin:
 
         # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
+        block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
             with torch.inference_mode():
                 outputs = dit.generate_audio(
@@ -1598,6 +1624,8 @@ class AceStepMixin:
                 )
             pred_latents = outputs["target_latents"]  # [1, T, 64]
         finally:
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._acestep_move("dit", "cpu")
             self._acestep_empty_cache()
 
@@ -1932,6 +1960,7 @@ class AceStepMixin:
 
         # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
+        block_offloader = self._acestep_maybe_install_block_offload(params, dit, device)
         try:
             with torch.inference_mode():
                 outputs = dit.generate_audio(
@@ -1960,6 +1989,8 @@ class AceStepMixin:
                 )
             pred_latents = outputs["target_latents"]  # [1, T_total, 64]
         finally:
+            if block_offloader is not None:
+                block_offloader.cleanup()
             self._acestep_move("dit", "cpu")
             self._acestep_empty_cache()
 

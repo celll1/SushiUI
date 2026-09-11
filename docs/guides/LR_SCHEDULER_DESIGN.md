@@ -720,7 +720,7 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
 8. `TrainingConfig.tsx` DEFAULT_PARAMS + UI（条件表示は `lr_scheduler` 値で）
 9. **`trainingParams.ts:32-33` の `PARAM_KEYS`**（漏れると編集保存のたびに既定へ戻る）
 10. `PRESET_EXCLUDED_KEYS`（`:189-199`）には入れない（LR キーはプリセットが運ぶ）
-11. ガードテスト `backend/tests/training_preset_payload_test.py`、`training_edit_restore_coverage_test.py`
+11. ガードテスト `backend/tests/training_preset_payload_test.py`
 
 ### 12.4 語彙（D18）
 
@@ -1036,7 +1036,7 @@ P0 が**やっていない**こと: 実行時タイムライン（`ScheduleTimel
 
 - **P3: §12.3 のチェックリストには `PARAM_KEYS` を守るガードが無い。** 9 番の
   「漏れると編集保存のたびに既定へ戻る」は正しいが、それを固定するはずの
-  `training_edit_restore_coverage_test.py` は pass-through キーでは無力である:
+  source-level restore checks are unreliable for pass-through keys:
   そのテストの「送っているキー」集合自体が `PARAM_KEYS` から作られるので、
   エントリを消すと送信側と復元側の両方から同時に消え、差が出ない
   （実際に消して確認した）。リテラルに名前が出る computed キーだけが守られている。

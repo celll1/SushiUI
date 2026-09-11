@@ -8,7 +8,7 @@ P3 of docs/guides/LR_SCHEDULER_DESIGN.md opened the registry (`wsd`, `rex`,
 new config keys had to land on every layer of §12.3's checklist, and the one
 that bites silently is `PARAM_KEYS`: a key the request model has but that list
 does not is dropped on every edit-save, so the run quietly reverts to the
-default. `training_edit_restore_coverage_test.py` cannot see that for a
+default. Source-level restore checks cannot see that for a
 pass-through key -- removing the entry removes it from BOTH sides of its
 comparison -- so the coverage is asserted here, against the Pydantic model.
 

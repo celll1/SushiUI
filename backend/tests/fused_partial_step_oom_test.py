@@ -78,9 +78,6 @@ LR = 1e-1
 OOM = "CUDA out of memory. Tried to allocate 20.00 MiB"
 
 
-# --------------------------------------------------------------------------
-# A three-layer model whose backward dies between the layers.
-# --------------------------------------------------------------------------
 
 
 _TRAP: list = [None]  # what the trap raises; None means the ordinary OOM
@@ -239,9 +236,6 @@ def test_the_unfused_path_applies_nothing_during_backward():
     assert applied_updates() == 0
 
 
-# --------------------------------------------------------------------------
-# Negative control: the shipped recovery, spliced back in.
-# --------------------------------------------------------------------------
 
 
 class _ShippedRecovery:
@@ -308,9 +302,6 @@ def test_negative_control_the_census_is_blind_to_it():
     )
 
 
-# --------------------------------------------------------------------------
-# (C) The fix, driven through the real recovery method.
-# --------------------------------------------------------------------------
 
 
 def _recovery_stub(rig=None, fused=True, batch=1, on_forward_backward=None):
@@ -510,9 +501,6 @@ def test_a_non_cuda_error_is_still_raised_untouched():
         _recover(stub)
 
 
-# --------------------------------------------------------------------------
-# The message, and where the failure is allowed to go.
-# --------------------------------------------------------------------------
 
 
 def _message(stub, applied=12):

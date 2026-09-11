@@ -194,9 +194,6 @@ def _events(text):
             for line in text.splitlines() if TRAINING_EVENT_SENTINEL in line]
 
 
-# ---------------------------------------------------------------------------
-# The shipped statements, verbatim, for the negative controls
-# ---------------------------------------------------------------------------
 
 def _shipped_save(probe, step):
     """HEAD~: ``self.optimizer`` alone."""
@@ -349,9 +346,6 @@ def test_repa_style_trailing_group_partial_load_still_works(tmp_path):
     assert _moments_equal(_moments(wider)[:N_PARAMS], before)
 
 
-# ---------------------------------------------------------------------------
-# Changing num_optimizer_groups between runs
-# ---------------------------------------------------------------------------
 
 def test_a_pre_fix_file_restores_group_zero_and_says_so(tmp_path):
     """Files written before the fix hold only optimizer 0; nothing can invent
@@ -487,9 +481,6 @@ def test_d6_group_zero_size_match_alone_is_not_enough(tmp_path):
     assert "re-slicing" in text
 
 
-# ---------------------------------------------------------------------------
-# The learning rate and the schedule position, for every group
-# ---------------------------------------------------------------------------
 
 def test_negative_control_shipped_lr_reassert_reaches_only_the_first_optimizer(tmp_path):
     from core.training.lr_utils import reassert_config_lr
@@ -632,9 +623,6 @@ def test_arch_adapter_groups_round_trip_under_fused_groups(tmp_path, name):
     assert _moments_equal(_moments(resumed), before)
 
 
-# ---------------------------------------------------------------------------
-# Wiring, in the shipping source
-# ---------------------------------------------------------------------------
 
 def _source():
     return Path(sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")

@@ -169,9 +169,6 @@ def _dataset_items(tmp_path, n=4):
     return items
 
 
-# --------------------------------------------------------------------------
-# Negative control: what the VAE loop shipped for a zero-backward run.
-# --------------------------------------------------------------------------
 
 def _shipped_vae_tail(trainer):
     """The pre-fix tail of `VaeTrainer.train`, verbatim in behaviour."""
@@ -297,9 +294,6 @@ def test_vae_does_not_count_backwards_it_never_reads():
     assert "_backwards_completed" not in VAE_SRC
 
 
-# ==========================================================================
-# Tagger
-# ==========================================================================
 
 class _HazardReferenceLoop:
     """A hand-written model of the "count the wrong event" hazard class, NOT an

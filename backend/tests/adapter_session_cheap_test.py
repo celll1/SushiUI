@@ -130,7 +130,6 @@ def warned():
     return []
 
 
-# -- the fixture must really work, or every "nothing was installed" is vacuous --
 
 def test_a_whole_request_installs_and_two_files_sum_over_one_slot(tmp_path, warned):
     model = _Stub()
@@ -202,7 +201,6 @@ def test_unload_removes_only_the_calling_sessions_branches(tmp_path, warned):
     assert not composites(model)
 
 
-# -- 1. atomic installation ---------------------------------------------------
 
 def test_a_failure_part_way_through_installation_leaves_nothing_installed(tmp_path,
                                                                           warned):
@@ -254,7 +252,6 @@ def test_a_rollback_leaves_an_earlier_requests_wrappers_alone(tmp_path, warned):
     assert session.state("transformer").wrapped == set(TARGETS)
 
 
-# -- 2. restore in a finally --------------------------------------------------
 
 def test_activate_restores_when_the_body_raises(tmp_path, warned):
     """REVERT THAT PROVES THIS BITES: in ``AdapterSession.activate`` replace the
@@ -275,7 +272,6 @@ def test_activate_restores_when_the_body_raises(tmp_path, warned):
     assert not session.state("transformer").wrapped
 
 
-# -- 3. the weakref-keyed reset -----------------------------------------------
 
 def test_replacing_the_module_resets_the_bookkeeping_before_an_unload(tmp_path,
                                                                      warned):
@@ -364,7 +360,6 @@ def test_unload_restores_from_what_is_installed_not_from_the_map(tmp_path, warne
     assert not composites(model)
 
 
-# -- 4. refusal before mutation, and the code as data -------------------------
 
 def test_a_missing_second_file_leaves_the_first_uninstalled(tmp_path, warned):
     """REVERT THAT PROVES THIS BITES: install per file (call ``self._install``
@@ -491,7 +486,6 @@ def test_the_refusal_carries_its_code_with_no_warning_channel_at_all(tmp_path):
     assert excinfo.value.code == "lora_not_found"
 
 
-# -- 5. the capability gate (core/adapters/capability.py) ---------------------
 
 def write_loha(tmp_path, name="loha.safetensors", targets=TARGETS):
     """A LyCORIS LoHa file. ``hada_w1_a`` alone is what the codec detects on."""
@@ -749,7 +743,6 @@ def test_an_unrecognized_algebra_is_left_to_the_architecture(tmp_path, warned):
     assert not composites(model)
 
 
-# -- per-component accounting (the shape FLUX.2 needs) ------------------------
 
 def test_a_disabled_component_is_not_walked_and_is_accounted_separately(tmp_path,
                                                                        warned):
@@ -768,7 +761,6 @@ def test_a_disabled_component_is_not_walked_and_is_accounted_separately(tmp_path
     assert composites(transformer) == set(TARGETS)
 
 
-# -- 5. the hooks an architecture owns ----------------------------------------
 
 TE = "te::"
 
@@ -1116,15 +1108,12 @@ def test_step_range_dynamic_activation(tmp_path, warned):
     branch_name = "0:a.safetensors"
     assert composite.has_branch(branch_name)
 
-    # Step 100 of 1000 (10%): below 20% -> inactive
     session.set_step(100, 1000)
     assert not composite.is_active(branch_name)
 
-    # Step 500 of 1000 (50%): between 20% and 80% -> active
     session.set_step(500, 1000)
     assert composite.is_active(branch_name)
 
-    # Step 900 of 1000 (90%): above 80% -> inactive
     session.set_step(900, 1000)
     assert not composite.is_active(branch_name)
 

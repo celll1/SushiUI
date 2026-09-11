@@ -491,7 +491,6 @@ class FusedBackwardHookTest(unittest.TestCase):
         return model, initial, ext
 
     def _assert_hook_path(self, runner, label):
-        # ---- stochastic rounding OFF: the shipped behaviour ----
         model, initial, ext = runner(False)
         expected_calls = self.BACKWARDS * len(initial)
         self.assertEqual(len(ext.calls), expected_calls, f"{label}: hooks did not fire")
@@ -513,7 +512,6 @@ class FusedBackwardHookTest(unittest.TestCase):
                 f"{label}: round-to-nearest is expected to freeze these weights",
             )
 
-        # ---- stochastic rounding ON: the fix, through the same hook ----
         model, initial, ext = runner(True)
         self.assertEqual(len(ext.calls), expected_calls, f"{label}: hooks did not fire")
         self.assertEqual(

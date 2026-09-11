@@ -244,9 +244,6 @@ class H3RevisePayloadTest(unittest.TestCase):
         self.assertFalse(result["revise"])
 
 
-# ---------------------------------------------------------------------------
-# Music 3 caption rewriter: the BPM/key/exclusion allow-set trap.
-# ---------------------------------------------------------------------------
 
 class CaptionInstructionAllowSetTest(unittest.TestCase):
     """The actual reported failure class: an instruction that legitimately
@@ -727,9 +724,6 @@ class LyricsRevisePayloadTest(unittest.TestCase):
         self.assertIn("+Shadows swallow the light", result["diff_summary"])
 
 
-# ---------------------------------------------------------------------------
-# Shared diff-summary helper.
-# ---------------------------------------------------------------------------
 
 class SummarizeDiffTest(unittest.TestCase):
     def test_identical_text_produces_an_empty_diff(self):

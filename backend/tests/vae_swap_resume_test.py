@@ -29,7 +29,6 @@ from core.models.common import vae_source as vs
 from core.training.base_trainer import BaseTrainer
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _tiny_vae(latent_channels=16):
     """A real AutoencoderKL, small enough to build in milliseconds."""
@@ -314,9 +313,6 @@ def test_a_legacy_sushi_checkpoint_resumes_exactly_as_before(tmp_path, loader,
     assert declaration["component.vae.prefix"] == "vae."
 
 
-# ---------------------------------------------------------------------------
-# 3. A native checkpoint is untouched
-# ---------------------------------------------------------------------------
 
 def test_a_native_checkpoint_still_takes_the_plain_path(tmp_path, loader):
     from safetensors.torch import save_file

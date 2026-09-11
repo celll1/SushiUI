@@ -99,9 +99,6 @@ def _sdf_timeline_and_masks():
     return timeline, {"left": left, "right": right}
 
 
-# --------------------------------------------------------------------------
-# The addressable unit: identical numbers to rasterize_mask_timeline
-# --------------------------------------------------------------------------
 
 def test_the_preview_rasterizes_the_exact_same_values_as_generation():
     """THE CORE CLAIM. Fails if the preview re-derives its own numbers
@@ -142,9 +139,6 @@ def test_a_frame_past_the_last_keyframe_holds_like_generation_does():
     assert np.array_equal(tile_30, tile_60)
 
 
-# --------------------------------------------------------------------------
-# The downscale
-# --------------------------------------------------------------------------
 
 def test_max_size_downscales_and_preserves_aspect_ratio():
     timeline, masks = _sdf_timeline_and_masks()
@@ -171,9 +165,6 @@ def test_max_size_larger_than_canvas_does_not_upscale():
     assert (metadata["frame_width"], metadata["frame_height"]) == (WIDTH, HEIGHT)
 
 
-# --------------------------------------------------------------------------
-# The refusals
-# --------------------------------------------------------------------------
 
 def test_frames_must_be_non_empty_and_within_the_per_request_cap():
     timeline, masks = _sdf_timeline_and_masks()
@@ -279,9 +270,6 @@ def test_an_underlying_rasterization_error_is_not_swallowed():
         build_mask_preview_strip(timeline, masks, [5], max_size=256)
 
 
-# --------------------------------------------------------------------------
-# The route: multipart request in, JSON preview out, 400 on bad input
-# --------------------------------------------------------------------------
 
 def _post_preview(app_module, manifest_dict, mask_png_by_id, frames, max_size=256):
     import httpx

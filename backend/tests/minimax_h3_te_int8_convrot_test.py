@@ -65,9 +65,6 @@ def _entry(tensor):
     return {"dtype": names[tensor.dtype], "shape": list(tensor.shape)}
 
 
-# ---------------------------------------------------------------------------
-# Marker -> `_rewrite_te_key` -> module path
-# ---------------------------------------------------------------------------
 
 def test_marker_layers_map_through_rewrite_te_key_to_the_live_module_path():
     """The exact mapping `_build_text_encoder` performs, run standalone.
@@ -107,9 +104,6 @@ def test_marker_layers_map_through_rewrite_te_key_to_the_live_module_path():
     }
 
 
-# ---------------------------------------------------------------------------
-# The [out, 1] -> [out] weight_scale reshape
-# ---------------------------------------------------------------------------
 
 def test_weight_scale_reshape_is_a_zero_copy_view_and_matches_int8linear_shape():
     """`Int8Linear.weight_scale` registers `(out_features,)`; the file's
@@ -169,9 +163,6 @@ def test_te_guard_still_refuses_nvfp4_pre_quant_scale(tmp_path):
         _guard_component_file(str(path), label="text encoder", allow_h3_int8_convrot=True)
 
 
-# ---------------------------------------------------------------------------
-# Census/verify catching an unexpected (unswapped) quantized tensor
-# ---------------------------------------------------------------------------
 
 def test_census_verify_pattern_catches_a_scaled_layer_the_te_builder_cannot_swap():
     """`_build_text_encoder` swaps ONLY the validated ConvRot layers; it has no
@@ -205,9 +196,6 @@ def test_census_verify_pattern_is_silent_on_an_ordinary_bf16_te():
     verify_quantized_swap(None, 0, arch="MiniMax-H3", path="fixture.safetensors", label="text encoder")
 
 
-# ---------------------------------------------------------------------------
-# Synthetic `_gpu_module_params` + `functional_call` numerical check
-# ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Comfy-Kitchen CUDA ConvRot path")
 def test_gpu_module_params_functional_call_matches_a_plain_convrot_forward():

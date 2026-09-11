@@ -126,10 +126,6 @@ class RealUploadPathRoundTripTest(unittest.TestCase):
         self.assertEqual(resp.json()["reference_images"], [NAME])
 
     def test_mutant_skip_recovery_fails_the_latin1_case(self):
-        """MUTANT: store UploadFile.filename directly, without
-        recover_upload_filename -- the code before this fix. Proves the
-        fixed test actually distinguishes correct from broken behaviour.
-        """
         app = FastAPI()
 
         @app.post("/upload")

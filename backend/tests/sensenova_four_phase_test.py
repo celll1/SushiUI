@@ -39,10 +39,6 @@ from core.training.sensenova_four_phase import (
 from core.training.sensenova_phase_eviction import SenseNovaTrainingPhaseEvictor
 
 
-# --------------------------------------------------------------------------
-# A synthetic stand-in for the und/gen pair: stage A produces "K/V", stage B
-# consumes it. Small enough to differentiate exactly, shaped like the real cut.
-# --------------------------------------------------------------------------
 
 
 class UnderstandingStage(nn.Module):
@@ -138,9 +134,6 @@ def _split_backward(model: Pair, tokens, image, target, *, cut=True):
     return float(loss), _und_grads(model)
 
 
-# --------------------------------------------------------------------------
-# (D) gradient parity + negative control
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
@@ -208,9 +201,6 @@ def test_recomputed_forward_reproduces_its_own_forward_bitwise():
         assert torch.equal(v1, v2)
 
 
-# --------------------------------------------------------------------------
-# (C) the graph-cut helper the production path uses
-# --------------------------------------------------------------------------
 
 
 class _Cache:
@@ -309,9 +299,6 @@ def test_immutable_prefix_cache_routes_boundary_leaf_past_the_grad_fn_check():
         sensenova_ops._assert_immutable_prefix_cache(cache, 1, trainable=True)
 
 
-# --------------------------------------------------------------------------
-# (B) the evictor's fourth phase
-# --------------------------------------------------------------------------
 
 
 class _Half(nn.Module):
@@ -404,9 +391,6 @@ def test_teardown_accepts_the_new_state():
     assert evictor.state == "closed"
 
 
-# --------------------------------------------------------------------------
-# (E) census x four-phase ordering -- 12 records this as UNTESTED
-# --------------------------------------------------------------------------
 
 
 def test_eviction_refuses_a_half_whose_gradients_the_hooks_never_consumed():

@@ -104,9 +104,6 @@ def _state_digest(module: nn.Module) -> str:
     return digest.hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# Numerics
-# ---------------------------------------------------------------------------
 
 def _plant(transformer: nn.Module, module: nn.Module, *, path=("mlp", "up_proj")):
     """Install ``module`` at layer 0's understanding-branch slot ``path``."""
@@ -164,9 +161,6 @@ def test_materialized_linear_reproduces_the_int8_forward_bitwise():
     assert torch.equal(parent.up_proj.bias.detach(), bias)
 
 
-# ---------------------------------------------------------------------------
-# Scope: the counts the existing enumerator reports
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("branch,expected", [("gen", 294), ("und", 294), ("both", 588)])
 def test_materialization_covers_exactly_the_branch_scope(branch, expected):
@@ -250,9 +244,6 @@ def test_negative_control_int8_weights_are_buffers_and_invisible_to_parameters()
         assert list(module.parameters()) == []
 
 
-# ---------------------------------------------------------------------------
-# Refusals
-# ---------------------------------------------------------------------------
 
 def test_materialization_refuses_a_convrot_base():
     transformer = _Decoder(factory=lambda seed: _convrot(seed))
@@ -301,9 +292,6 @@ def test_materialization_refuses_an_already_materialized_target():
         materialize_int8_decoder_linears(transformer, branch="und")
 
 
-# ---------------------------------------------------------------------------
-# Method / branch plumbing
-# ---------------------------------------------------------------------------
 
 class FullParameterTrainer:  # name-matched on purpose: the MRO walk keys on it
     pass
@@ -356,8 +344,6 @@ def _load_with(trainer_extra: dict, transformer: nn.Module):
         weight_dtype=torch.bfloat16,
         device=torch.device("cpu"),
         attention_backend="native",
-        # Read by the shared VAE-swap fold load_components now runs; a caller
-        # that names its own training method supplies its own.
         **{"config": {}, **trainer_extra},
     )
     components = {"transformer": transformer, "tokenizer": object(), "config": object()}

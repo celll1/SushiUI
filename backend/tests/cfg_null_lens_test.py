@@ -56,9 +56,6 @@ def _positive(num_layers=3, seq_len=5, dim=6, seed=0):
     return features, mask
 
 
-# ---------------------------------------------------------------------------
-# Representation equality with lens_pipeline_ops.encode_prompt (strategy §6.2)
-# ---------------------------------------------------------------------------
 
 def test_the_dropped_row_is_the_inference_empty_negative_row():
     """The rewritten row equals what `encode_prompt` puts on its uncond row when
@@ -216,9 +213,6 @@ def test_a_cpu_label_rewrites_conditioning_on_another_device():
     assert out_mask[1].all()
 
 
-# ---------------------------------------------------------------------------
-# The structural consequence, on the vendored transformer (strategy §7)
-# ---------------------------------------------------------------------------
 
 def _tiny_transformer(seed=3):
     """A randomly initialised LensTransformer2DModel at toy geometry.
@@ -302,9 +296,6 @@ def test_the_rewritten_row_and_a_zero_text_row_agree_through_the_model():
     assert torch.equal(rewritten, original)
 
 
-# ---------------------------------------------------------------------------
-# Handler and train_step wiring
-# ---------------------------------------------------------------------------
 
 def test_the_handler_declares_the_collated_stage_and_implements_its_hook():
     handler = LensArchHandler.__new__(LensArchHandler)

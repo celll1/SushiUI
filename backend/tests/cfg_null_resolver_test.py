@@ -70,9 +70,6 @@ def collated_arch(monkeypatch):
     return "minit2i"
 
 
-# ---------------------------------------------------------------------------
-# The resolver matrix (strategy §3 rules 1-5)
-# ---------------------------------------------------------------------------
 
 def test_omitted_resolves_the_per_architecture_default():
     for arch, expected in CFG_UNCOND_DROP_DEFAULTS_BY_ARCH.items():
@@ -191,9 +188,6 @@ def test_absent_explicit_fields_treats_a_present_value_as_explicit(collated_arch
     assert resolve_cfg_uncond_drop_rate(params, arch=collated_arch).rate == 0.0
 
 
-# ---------------------------------------------------------------------------
-# Conflict with caption augmentation (strategy §4)
-# ---------------------------------------------------------------------------
 
 def test_explicit_rate_refuses_dataset_caption_dropout(collated_arch):
     params = _params(explicit=[CFG_KEY], **{CFG_KEY: 0.1})
@@ -268,9 +262,6 @@ def test_no_conflict_means_no_warning(collated_arch):
     assert check_caption_dropout_conflict(resolution, _params(), []) == []
 
 
-# ---------------------------------------------------------------------------
-# Capability declaration + parameter checklist
-# ---------------------------------------------------------------------------
 
 def test_the_stage_mirror_matches_the_arch_handlers():
     """CFG_NULL_STAGE_BY_ARCH restates ArchHandler.cfg_null_stage because

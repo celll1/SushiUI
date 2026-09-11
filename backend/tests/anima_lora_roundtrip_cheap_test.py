@@ -323,9 +323,6 @@ def test_anima_a_narrow_checkpoint_wraps_only_the_targets_it_names(tmp_path,
     assert backend._unload_lora_anima() == len(mlp_paths)
 
 
-# ---------------------------------------------------------------------------
-# Interchange codec (`diffusion_model.*.lora_A/lora_B.weight`)
-# ---------------------------------------------------------------------------
 
 def interchange_copy(path, out_path):
     """The same tensors, spelled the way third-party tooling exports them."""

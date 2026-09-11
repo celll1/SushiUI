@@ -49,9 +49,6 @@ BASE_TRAINER_SRC = open(
     encoding="utf-8").read()
 
 
-# ---------------------------------------------------------------------------
-# Harness
-# ---------------------------------------------------------------------------
 
 def _trainer(**over):
     """The BaseTrainer surface these two methods touch, with real methods bound.
@@ -368,9 +365,6 @@ def test_source_size_memo_keeps_working_past_its_cap(tmp_path, monkeypatch):
     assert _region(t, {"image_path": fresh}, 8, 8, "resize") == (0, 0, 48, 16)
 
 
-# ---------------------------------------------------------------------------
-# (d) repa_enable=false changes nothing
-# ---------------------------------------------------------------------------
 
 def test_setup_repa_returns_before_any_check_when_disabled(monkeypatch):
     """Not even the preprocessing refusal fires: a disabled run is untouched."""
@@ -412,9 +406,6 @@ def test_batch_loop_touches_the_region_only_under_repa_active():
         assert code[-1] == "if _repa_pixel_mode:", stmt
 
 
-# ---------------------------------------------------------------------------
-# The setup-time refusal
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("strategy,mode", [
     ("resize", "swap_onthefly"),
@@ -467,9 +458,6 @@ def test_setup_does_not_refuse_on_a_config_key_train_overrides(monkeypatch):
         repa_module.assert_repa_region_reconstructible("swap_onthefly", "random_crop")
 
 
-# ---------------------------------------------------------------------------
-# (e) the onthefly_gpu decode is reused rather than repeated
-# ---------------------------------------------------------------------------
 
 def _sources(tmp_path):
     """One picture written in the formats and modes the batch loop meets."""
@@ -555,9 +543,6 @@ def test_a_cache_that_still_hits_keeps_its_entries(tmp_path, monkeypatch):
     assert len(t._repa_pix_cache) == 20
 
 
-# ---------------------------------------------------------------------------
-# (g) a run whose hit rate is knowable up front never holds the RAM at all
-# ---------------------------------------------------------------------------
 
 def _ds(n):
     """A dataset of n distinct paths, materialized lazily (1.5M is a real size)."""

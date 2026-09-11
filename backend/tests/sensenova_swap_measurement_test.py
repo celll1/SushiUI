@@ -147,7 +147,6 @@ def test_the_steady_state_summary_excludes_the_warmup_steps(frozen_clock):
     recorder.install(trainer)
     recorder.start()
 
-    # Step 1 is the unrepresentative one: a whole second of cudaHostAlloc.
     walls = [3.0, 1.0, 1.0, 2.0]
     d2h = [2.0, 0.2, 0.4, 0.6]
     for index, (wall, seconds) in enumerate(zip(walls, d2h), start=1):

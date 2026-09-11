@@ -25,9 +25,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from core.models.minimax_music3 import flat_remap as fr  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# DiT: structural plan
-# ---------------------------------------------------------------------------
 
 def _tiny_flat_dit_keys(num_layers=2):
     keys = [
@@ -109,9 +106,6 @@ def test_dit_plan_flags_an_unknown_per_layer_suffix():
     assert plan.unrecognized == ["diffusion_transformer.transformer.layers.0.some_new_thing.weight"]
 
 
-# ---------------------------------------------------------------------------
-# DiT: applying the plan to real tensors -- the QKV split
-# ---------------------------------------------------------------------------
 
 def _tiny_flat_dit_state_dict(num_layers=1, dim=8):
     keys = _tiny_flat_dit_keys(num_layers=num_layers)
@@ -183,9 +177,6 @@ def test_apply_dit_raises_on_a_qkv_row_count_not_divisible_by_three():
         fr.apply_flat_dit_state_dict(sd)
 
 
-# ---------------------------------------------------------------------------
-# Text encoder: pruned detection and refusal
-# ---------------------------------------------------------------------------
 
 def test_is_pruned_detects_any_single_tell():
     assert fr.is_pruned_flat_text_encoder(["model.embed_tokens_prefill.weight"])
@@ -240,9 +231,6 @@ def test_lm_layer_whitelist_flags_the_pruned_variants_fused_qkv_and_gate_up():
     }
 
 
-# ---------------------------------------------------------------------------
-# Text encoder: structural plan (non-pruned)
-# ---------------------------------------------------------------------------
 
 def _tiny_flat_text_encoder_keys(num_layers=2, num_depth_layers=1):
     keys = [
@@ -344,9 +332,6 @@ def test_apply_text_encoder_drops_tokenizer_json_and_produces_no_key_for_it():
         sum(v.numel() for k, v in sd.items() if k != "tokenizer_json")
 
 
-# ---------------------------------------------------------------------------
-# Totality assertion
-# ---------------------------------------------------------------------------
 
 def test_assert_totality_passes_on_matching_sets():
     fr.assert_state_dict_matches_module_keys(["a", "b"], ["b", "a"], component="x")  # must not raise

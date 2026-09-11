@@ -96,9 +96,6 @@ def _reloaded(timeline: ScheduleTimeline, upto: int = 10 ** 9,
     return restored
 
 
-# ---------------------------------------------------------------------------
-# Serialization (§19.5)
-# ---------------------------------------------------------------------------
 
 ROUND_TRIP_SPECS = [
     ("cosine", None),
@@ -175,9 +172,6 @@ def test_the_event_stores_the_spec_in_its_serialized_form():
     json.dumps(event)  # the state file has to be able to hold it
 
 
-# ---------------------------------------------------------------------------
-# §19.3 row 1: a retarget in BASE
-# ---------------------------------------------------------------------------
 
 def test_a_retarget_in_base_starts_from_the_current_base_value():
     spec, timeline = _run("cosine")
@@ -198,9 +192,6 @@ def test_the_new_curve_replaces_the_old_one_for_good():
     assert timeline.multiplier(spec, 4001) != pytest.approx(plain(4001))
 
 
-# ---------------------------------------------------------------------------
-# §19.3 row 2: DECAYING / FLOOR / RECOVERING are ABSORBED (D26)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("state_code,at", [
     (STATE_DECAYING, 4200),
@@ -241,9 +232,6 @@ def test_the_absorbed_overlay_does_not_disarm_the_new_config_decay():
     assert at_end == pytest.approx(0.25 * at_start, rel=1e-9)
 
 
-# ---------------------------------------------------------------------------
-# §19.3 row 3: a retarget during warmup
-# ---------------------------------------------------------------------------
 
 def test_a_retarget_during_warmup_is_allowed_and_stays_in_base():
     """The blend must not be read as "a decay that raises the LR": the state
@@ -380,9 +368,6 @@ def test_a_cancel_after_a_retarget_recovers_over_the_new_warmup_length():
     assert timeline.state_at(spec, 4400).code == STATE_BASE
 
 
-# ---------------------------------------------------------------------------
-# §19.3 rows 6-7: cycle restarts, and the group selector with D16 off
-# ---------------------------------------------------------------------------
 
 def test_a_relora_restart_event_is_not_a_retarget():
     """Two different things that share a word (§19.3): a ReLoRA merge event
@@ -410,9 +395,6 @@ def test_a_group_selector_is_accepted_and_applies_to_every_spec():
         assert timeline.active_spec(spec, 3000).name == "cosine"
 
 
-# ---------------------------------------------------------------------------
-# §19.2: blending, both anchors, L = 0 and L > 0
-# ---------------------------------------------------------------------------
 
 def test_length_zero_switches_instantly():
     spec, timeline = _run("constant")
@@ -482,9 +464,6 @@ def test_gain_scales_the_new_curve(anchor):
             2.0 * timeline.multiplier(spec, step))
 
 
-# ---------------------------------------------------------------------------
-# §19.2: the chain rule
-# ---------------------------------------------------------------------------
 
 def test_a_retarget_mid_blend_starts_from_the_realized_value():
     spec, timeline = _run("constant")
@@ -530,9 +509,6 @@ def test_the_blend_never_exceeds_either_curve():
         assert lo - 1e-12 <= blended <= hi + 1e-12, step
 
 
-# ---------------------------------------------------------------------------
-# §19.4: the eight refusals
-# ---------------------------------------------------------------------------
 
 def _assert_refused(timeline, spec, result, expected):
     assert result == expected
@@ -711,9 +687,6 @@ def test_a_retarget_needs_its_new_spec():
         timeline.add("retarget", at=100)
 
 
-# ---------------------------------------------------------------------------
-# §19.5: persistence by `issued`
-# ---------------------------------------------------------------------------
 
 def test_a_future_reservation_survives_a_save_at_an_earlier_step():
     spec, timeline = _run("constant")
@@ -834,9 +807,6 @@ def test_a_decay_and_a_cancel_with_no_retarget_follow_the_closed_form():
         ratio = min(1.0, (step - 2300) / 100.0)
         assert fn(step) == pytest.approx(m_c + (1.0 - m_c) * ratio), step
 
-# ---------------------------------------------------------------------------
-# R2: the `groups` selector (D24, §19.3's last row)
-# ---------------------------------------------------------------------------
 
 def _grouped(names, name: str = "cosine", W: int = 0, T: int = TOTAL,
              config=None):
@@ -1010,9 +980,6 @@ def test_a_decay_command_still_reaches_a_group_a_retarget_skipped():
     timeline.add("decay", at=4000, length=500, spec=specs["text_encoder_1"])
     assert timeline.multiplier(specs["text_encoder_1"], 4500) == pytest.approx(0.0)
 
-# ---------------------------------------------------------------------------
-# D34: an empty selector names no group
-# ---------------------------------------------------------------------------
 
 def test_an_empty_selector_is_refused():
     """`null` is the only spelling of "every group". An array the UI sent with
@@ -1046,9 +1013,6 @@ def test_an_empty_selector_stored_before_d34_reaches_no_group():
         assert _curve(spec, twin, steps) == before[name]
 
 
-# ---------------------------------------------------------------------------
-# D35: one spelling of a component name
-# ---------------------------------------------------------------------------
 
 def test_rule_7_accepts_a_group_name_in_another_case():
     """§10.1 resolves the mapping case-folded, so an exact-match acceptance
@@ -1068,9 +1032,6 @@ def test_rule_7_still_refuses_a_name_that_is_not_a_case_variant():
         known_groups=("unet", "text_encoder_1")), "rejected_unknown_group")
 
 
-# ---------------------------------------------------------------------------
-# D37: a selector on a run whose groups all share one spec
-# ---------------------------------------------------------------------------
 
 def test_a_selector_on_an_ungrouped_run_is_accepted_with_a_warning(capsys):
     spec, timeline = _run("constant")
@@ -1168,9 +1129,6 @@ def test_a_caller_supplied_length_and_shape_are_still_baked():
     assert event["length"] == 200 and event["shape"] == "linear"
 
 
-# ---------------------------------------------------------------------------
-# D39: the reach a scoped event was accepted with is frozen on the event
-# ---------------------------------------------------------------------------
 
 LONG = 10000
 
@@ -1335,9 +1293,6 @@ def test_a_scoped_retarget_does_not_hand_its_decay_parameters_to_other_groups():
     assert timeline.multiplier(te, 600) == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# R3: one backdating rule for every event kind (D25 / §19.5.1 item 1)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("kind", ["decay", "cancel"])
 def test_a_backdated_command_is_refused_like_a_backdated_retarget(kind):
@@ -1371,9 +1326,6 @@ def test_a_command_with_no_issued_is_not_refused():
     assert "issued" not in timeline.dump(TOTAL)[-1]
 
 
-# ---------------------------------------------------------------------------
-# R3: the blend length defaults to the run's warmup (D31)
-# ---------------------------------------------------------------------------
 
 def test_an_omitted_blend_length_is_the_runs_warmup():
     spec, timeline = _run("cosine", W=200)
@@ -1460,9 +1412,6 @@ def test_the_warning_survives_a_state_round_trip(capsys):
         WARN_CLOCK_DEGENERATE
 
 
-# ---------------------------------------------------------------------------
-# R3: inheritance of omitted fields (D44)
-# ---------------------------------------------------------------------------
 
 def test_retarget_inherits_omitted_floor_from_active_spec():
     """D44: a YAML with no lr_floor_ratio gets floor 0.0 under §12.2. A retarget
@@ -1514,9 +1463,6 @@ def test_retarget_with_no_active_spec_uses_defaults():
 
 
 
-# ---------------------------------------------------------------------------
-# R5: scale / hold / undo (D27, §19.6)
-# ---------------------------------------------------------------------------
 
 def _derived(timeline, spec, op, position, **payload):
     """One derived op, resolved and applied the way the trainer applies it."""

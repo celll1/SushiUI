@@ -43,9 +43,6 @@ from core.models.components.wiring import (  # noqa: E402
 )
 
 
-# --------------------------------------------------------------------------
-# The declared spec
-# --------------------------------------------------------------------------
 
 def test_declared_floors():
     """The two archs differ, and the difference is what the payload serves."""
@@ -66,9 +63,6 @@ def test_capability_payload_carries_the_step_contract():
         assert payload[arch]["steps_are_sigma_grid_points"] is spec.steps_are_sigma_grid_points
 
 
-# --------------------------------------------------------------------------
-# The spec vs. the real schedulers
-# --------------------------------------------------------------------------
 
 def test_h3_scheduler_agrees_with_its_declared_floor():
     """N grid points -> N-1 evaluations, and N below the floor raises."""
@@ -103,9 +97,6 @@ def test_ltx2_scheduler_agrees_with_its_declared_floor():
     assert scheduler_8.timesteps.numel() == 8
 
 
-# --------------------------------------------------------------------------
-# The route-level guard
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("steps", [1, 0, -1])
 def test_h3_below_floor_is_a_validation_error(steps):

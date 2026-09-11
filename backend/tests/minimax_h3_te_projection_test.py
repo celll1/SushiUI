@@ -63,9 +63,6 @@ def _tiny_projection(tmp_path, **kwargs):
     return load_te_projection(read_te_projection_spec(path))
 
 
-# ---------------------------------------------------------------------------
-# The forward
-# ---------------------------------------------------------------------------
 
 def test_forward_is_the_linear_skip_plus_the_mlp(tmp_path):
     """``(z @ W + mlp(z)) * std_out + mean_out``, computed independently here."""
@@ -162,9 +159,6 @@ def test_spec_refuses_a_missing_tensor(tmp_path):
         read_te_projection_spec(str(tmp_path / "p.safetensors"))
 
 
-# ---------------------------------------------------------------------------
-# Discovery and the pairing gates
-# ---------------------------------------------------------------------------
 
 def _pair_dir(tmp_path):
     root = tmp_path / "minimax_h3"

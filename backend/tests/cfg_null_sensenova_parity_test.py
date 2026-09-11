@@ -55,9 +55,6 @@ def _builders():
     return probe.QueryBuilders(template=template)
 
 
-# ---------------------------------------------------------------------------
-# Step 1: tokens
-# ---------------------------------------------------------------------------
 
 
 def test_the_null_query_equals_inferences_uncond_query_with_a_stub_tokenizer():
@@ -80,9 +77,6 @@ def test_the_null_token_ids_equal_inferences_under_the_real_tokenizer():
     assert result["null_token_count"] < result["conditional_token_count"]
 
 
-# ---------------------------------------------------------------------------
-# Step 2: image indexes
-# ---------------------------------------------------------------------------
 
 
 def test_the_image_indexes_equal_inferences_at_several_resolutions():

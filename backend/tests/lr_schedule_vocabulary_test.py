@@ -104,9 +104,6 @@ def _train_section(**overrides) -> dict:
     return yaml.safe_load(config)["config"]["process"][0]["train"]
 
 
-# ---------------------------------------------------------------------------
-# §12.3's checklist, per key
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("key", sorted(NEW_KEYS))
 def test_the_request_model_declares_it_with_the_shared_default(key):
@@ -145,9 +142,6 @@ def test_the_plateau_ratio_stays_conditional():
         lr_scheduler="plateau_cosine_floor")
 
 
-# ---------------------------------------------------------------------------
-# §12.2: the floor of a YAML that predates D10
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
 def test_a_yaml_without_a_floor_key_reads_as_the_old_behaviour(name):
@@ -187,9 +181,6 @@ def test_constant_ignores_the_floor():
     assert fn(10) == 1.0 and fn(100) == 1.0 and fn(500) == 1.0
 
 
-# ---------------------------------------------------------------------------
-# The vocabulary is one vocabulary
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
 def test_every_registry_name_builds(name):
@@ -216,9 +207,6 @@ def test_an_unknown_name_is_refused_at_the_api_not_at_the_optimizer():
                                  lr_scheduler="piecewise_constant")
 
 
-# ---------------------------------------------------------------------------
-# The curves themselves
-# ---------------------------------------------------------------------------
 
 def test_rex_is_not_a_steeper_cosine():
     """§8: the shapes differ at the midpoint and enter the decay at different
@@ -315,9 +303,6 @@ def test_evaluation_order_still_does_not_matter(name):
     assert [descending[s] for s in range(0, 500)] == ascending
 
 
-# ---------------------------------------------------------------------------
-# The preview endpoint (D20)
-# ---------------------------------------------------------------------------
 
 def _preview(**kwargs):
     import asyncio
@@ -401,9 +386,6 @@ def test_sample_curve_is_clamped_and_includes_both_ends():
     assert points == sorted(points)
 
 
-# ---------------------------------------------------------------------------
-# The two warnings P3 turns on (§13)
-# ---------------------------------------------------------------------------
 
 class _WarnTrainer:
     log_prefix = "[Test]"
@@ -471,9 +453,6 @@ def test_a_decay_that_runs_to_the_end_is_stretched_and_says_nothing_extra():
     assert "lr_schedule_extension_on_floor" not in log
 
 
-# ---------------------------------------------------------------------------
-# What a runtime command inherits from the config (§12.1)
-# ---------------------------------------------------------------------------
 
 def test_a_start_decay_command_takes_its_length_and_shape_from_the_config(tmp_path):
     """The POST body carries only `command`; both come from the run's spec."""

@@ -143,9 +143,6 @@ def request_for(name, strength=STRENGTH):
     return [{"path": name, "strength": strength}]
 
 
-# ---------------------------------------------------------------------------
-# The case the feature exists for: stacking during a LoRA run.
-# ---------------------------------------------------------------------------
 
 def test_stack_over_an_in_training_lora_changes_the_forward(loras_in):
     name = save_extra_lora(loras_in)
@@ -233,9 +230,6 @@ def test_strength_reaches_the_stacked_adapter(loras_in):
     assert scalings == {round((ALPHA / RANK) * 0.5, 9)}
 
 
-# ---------------------------------------------------------------------------
-# Refusals.
-# ---------------------------------------------------------------------------
 
 def test_non_sd_architecture_refuses_by_name(loras_in):
     name = save_extra_lora(loras_in)
@@ -270,9 +264,6 @@ def test_preexisting_peft_adapters_refuse(loras_in):
     assert generator._lora_stack is None
 
 
-# ---------------------------------------------------------------------------
-# Awkward detach orderings.
-# ---------------------------------------------------------------------------
 
 def test_a_stack_that_fails_half_way_still_detaches_what_loaded(loras_in):
     name = save_extra_lora(loras_in)

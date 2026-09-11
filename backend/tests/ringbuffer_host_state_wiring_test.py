@@ -170,11 +170,7 @@ class HostStateOffTest(unittest.TestCase):
 
 
 class HostRamAnnounceTest(unittest.TestCase):
-    """The pinned budget is stated BEFORE the allocation is taken.
-
-    MUTANT: delete the call in setup_optimizer and a run commits an unpageable
-    30.19 GiB (SenseNova both halves, AdamW) with nothing said in advance.
-    """
+    'The pinned budget is stated BEFORE the allocation is taken.'
 
     def _announce(self, name: str, numel: int) -> str:
         stub = _Stub()
@@ -206,12 +202,7 @@ class HostRamAnnounceTest(unittest.TestCase):
 
 
 class StateResidencyAssertionTest(unittest.TestCase):
-    """The trainer checks the census, not the flag.
-
-    MUTANT: replace the call with ``if self.optimizer_state_host_resident:
-    pass`` and a ``get_state_buffer`` that handed back CUDA tensors leaves the
-    flag true and 32.9 GB on the GPU -- the misbudget this route cannot absorb.
-    """
+    'The trainer checks the census, not the flag.'
 
     class _FakeOptimizer:
         def __init__(self, buffers):

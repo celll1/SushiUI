@@ -48,9 +48,6 @@ from core.adapters.spec import (  # noqa: E402
     OPTION_USE_TUCKER,
 )
 
-# ---------------------------------------------------------------------------
-# AdapterSpec
-# ---------------------------------------------------------------------------
 
 
 def _down_up_tensors():
@@ -220,9 +217,6 @@ def test_options_are_read_only():
         spec.options[OPTION_FACTOR] = 8
 
 
-# ---------------------------------------------------------------------------
-# AdapterTarget
-# ---------------------------------------------------------------------------
 
 
 class _Tree(nn.Module):
@@ -345,9 +339,6 @@ def test_enumeration_passes_the_branch_dtype_default_through():
         branch_dtype_default=torch.float64).branch_dtype is torch.float64
 
 
-# ---------------------------------------------------------------------------
-# Architecture adapter capability matrix
-# ---------------------------------------------------------------------------
 
 #: What round-trips today, per architecture. Growing a row is a Phase 2/3
 #: change, not a test-maintenance chore -- see

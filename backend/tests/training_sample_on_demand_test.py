@@ -44,9 +44,6 @@ BASE_TRAINER_SRC = (BACKEND / "core" / "training" / "base_trainer.py").read_text
 ROUTES_SRC = (BACKEND / "api" / "routes.py").read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Transport
-# ---------------------------------------------------------------------------
 
 def test_request_round_trip(tmp_path):
     payload = rpc.queue_request(tmp_path, seed=1234)
@@ -92,9 +89,6 @@ def test_malformed_request_is_claimed_and_discarded(tmp_path):
     assert not rpc.request_path(tmp_path, "deadbeef").exists()
 
 
-# ---------------------------------------------------------------------------
-# Throttle
-# ---------------------------------------------------------------------------
 
 def test_queue_is_capped(tmp_path):
     for _ in range(rpc.MAX_PENDING_REQUESTS):
@@ -166,9 +160,6 @@ def test_claim_returns_the_request_when_no_stop_is_pending(tmp_path):
     assert stub._claim_on_demand_sample_request()["seed"] == 99
 
 
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
 
 def test_request_has_no_ttl_and_survives_a_phase_that_never_polls(tmp_path):
     """Dataset scan / bucketing / latent+TE caching poll only the stop flag, and
@@ -211,9 +202,6 @@ def test_stale_requests_are_cleared_before_the_next_run_is_spawned():
     assert "clear_all" not in BASE_TRAINER_SRC
 
 
-# ---------------------------------------------------------------------------
-# Filenames
-# ---------------------------------------------------------------------------
 
 def test_on_demand_filename_does_not_collide_with_a_scheduled_one():
     scheduled = rpc.sample_filename(4210, 0)
@@ -281,9 +269,6 @@ def test_step0_marker_is_not_set_by_an_on_demand_sample():
     assert guard.startswith("if on_demand_request is None and sample_step == 0")
 
 
-# ---------------------------------------------------------------------------
-# Seed
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("configured", [-1, "-1", None, "nonsense"])
 def test_seed_is_resolved_to_a_concrete_value(configured):
@@ -479,9 +464,6 @@ def test_results_are_pruned_but_the_recent_ones_survive(tmp_path):
     assert results[0]["step"] == rpc.MAX_KEPT_RESULTS + 4   # newest first
 
 
-# ---------------------------------------------------------------------------
-# Injection point and API surface
-# ---------------------------------------------------------------------------
 
 def test_on_demand_goes_through_the_scheduled_sample_block():
     """Not a second sampling path: the job loop wraps the existing block, so the

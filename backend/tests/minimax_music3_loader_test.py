@@ -63,9 +63,6 @@ def _write_flat_dit_header(path):
         fh.write(raw)
 
 
-# ---------------------------------------------------------------------------
-# Detection: all three accepted spellings
-# ---------------------------------------------------------------------------
 
 def test_detects_root_directory(tmp_path):
     official = _make_official_tree(str(tmp_path))
@@ -107,9 +104,6 @@ def test_flat_dit_file_with_no_official_tree_is_still_identified(tmp_path):
     assert layout["flat_dit"] == dit_path
 
 
-# ---------------------------------------------------------------------------
-# Negative cases: no cross-claiming with other archs' directory shapes
-# ---------------------------------------------------------------------------
 
 def test_does_not_claim_an_unrelated_directory(tmp_path):
     (tmp_path / "some_file.txt").write_text("nothing here")
@@ -144,9 +138,6 @@ def test_flat_dit_key_signature_does_not_match_an_unrelated_safetensors_header(t
     assert loader.detect_minimax_music3_layout(str(path)) is None
 
 
-# ---------------------------------------------------------------------------
-# Ordering / refusal contracts the loader itself enforces
-# ---------------------------------------------------------------------------
 
 def test_missing_layout_raises_value_error_naming_expectations(tmp_path):
     with pytest.raises(ValueError, match="MiniMax Music 3 model layout not found"):
@@ -567,9 +558,6 @@ def test_pre_load_and_post_load_rope_gates_share_one_tolerance(tmp_path):
         loader._assert_language_model_rope_theta(_FakeModel())
 
 
-# ---------------------------------------------------------------------------
-# qwen_7B is a permanent exclusion: nothing in this module ever paths through it
-# ---------------------------------------------------------------------------
 
 def test_qwen_7b_is_never_referenced_by_any_official_path_construction(tmp_path):
     official = _make_official_tree(str(tmp_path))

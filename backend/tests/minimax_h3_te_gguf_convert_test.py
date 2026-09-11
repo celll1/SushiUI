@@ -120,9 +120,6 @@ def _header(path):
         return json.loads(fh.read(length))
 
 
-# ---------------------------------------------------------------------------
-# Name map and truncation
-# ---------------------------------------------------------------------------
 
 def test_output_keys_are_exactly_the_kept_blocks_in_flat_hf_naming(converted):
     path, summary = converted
@@ -210,9 +207,6 @@ def test_metadata_matches_the_shipped_files_own_key_and_wording(converted):
     assert isinstance(metadata["minimax_h3_te"], str)
 
 
-# ---------------------------------------------------------------------------
-# Numerics
-# ---------------------------------------------------------------------------
 
 def test_row_chunked_dequant_is_bit_identical_to_one_shot(converted):
     assert converted[1]["chunked_dequant_max_abs_diff"] == 0.0
@@ -239,9 +233,6 @@ def test_values_round_trip_through_q8_0_within_bf16(converted, synthetic_gguf):
     assert torch.equal(written, reference.to(torch.bfloat16))
 
 
-# ---------------------------------------------------------------------------
-# Loud failures
-# ---------------------------------------------------------------------------
 
 def test_unmapped_tensor_fails_loudly_naming_it(tmp_path):
     path = _write_gguf(tmp_path / "extra.gguf", extra_tensors={"v.patch_embed.weight": (HIDDEN,)})

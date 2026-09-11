@@ -260,9 +260,6 @@ def test_an_encoder_that_needs_no_projection_lists_no_candidates(tmp_path):
     assert entry["projection_candidates"] == []
 
 
-# ---------------------------------------------------------------------------
-# Auto-resolution still refuses; an explicit pick gets through (load path)
-# ---------------------------------------------------------------------------
 
 def test_auto_resolution_still_refuses_when_two_declare_the_width(tmp_path):
     _root, dit, converted, _first, _second = _two_projection_tree(tmp_path)
@@ -285,9 +282,6 @@ def test_an_explicitly_named_projection_is_adopted_on_the_load_path(tmp_path, wh
     assert bundle["te_text_only"] is True
 
 
-# ---------------------------------------------------------------------------
-# The switch path
-# ---------------------------------------------------------------------------
 
 def test_the_switch_installs_the_named_projection_of_an_ambiguous_pair(tmp_path):
     root, dit, converted, _first, second = _two_projection_tree(tmp_path)
@@ -380,9 +374,6 @@ def test_a_projection_path_is_refused_for_a_slot_that_cannot_use_one(tmp_path):
         }, manager.model_revision, manager.component_revision, projection_path=projection)
 
 
-# ---------------------------------------------------------------------------
-# The route that carries the choice
-# ---------------------------------------------------------------------------
 
 def test_the_switch_route_forwards_projection_path(monkeypatch):
     """A dropped field would switch the encoder onto a guessed projection."""
@@ -424,9 +415,6 @@ def test_the_switch_request_defaults_projection_path_to_absent():
     assert request.projection_path is None
 
 
-# ---------------------------------------------------------------------------
-# The catalog the live-switch UI offers from
-# ---------------------------------------------------------------------------
 
 def _catalog_entry(tmp_path, manager, dit, basename=CONVERTED):
     choices = loader.describe_minimax_h3_text_encoder_choices(dit)["text_encoders"]

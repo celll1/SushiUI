@@ -45,7 +45,6 @@ TINY_ANIMA_CONFIG = dict(
 )
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _anima(channels=16):
     return Anima(**dict(TINY_ANIMA_CONFIG, in_channels=channels,
@@ -97,7 +96,6 @@ def _resume_trainer(model_path, **overrides):
     return trainer
 
 
-# --- anima ------------------------------------------------------------------
 
 @pytest.fixture
 def anima_companions(monkeypatch, tmp_path):
@@ -226,7 +224,6 @@ def test_the_anima_resume_reads_the_dit_from_the_checkpoint_not_the_base(
     assert trainer.anima_companion_path == anima_companions.base
 
 
-# --- lens -------------------------------------------------------------------
 
 @pytest.fixture
 def lens_base(monkeypatch, tmp_path):

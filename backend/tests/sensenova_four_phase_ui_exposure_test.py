@@ -119,9 +119,6 @@ def test_negative_control_the_eviction_section_was_lora_only():
             {"sample": {}})
 
 
-# ---------------------------------------------------------------------------
-# The interlock, read off the backend
-# ---------------------------------------------------------------------------
 
 def test_understanding_training_alone_needs_neither_eviction_nor_the_split():
     """The brief's premise, checked: `und` alone runs a single backward."""
@@ -258,9 +255,6 @@ def test_the_openapi_description_no_longer_calls_eviction_lora_only():
     assert "sensenova_four_phase_eviction" in description
 
 
-# ---------------------------------------------------------------------------
-# The UI surface
-# ---------------------------------------------------------------------------
 
 def test_the_flag_has_a_frontend_type_and_a_default():
     assert "sensenova_four_phase_eviction?: boolean;" in API_TS.read_text(encoding="utf-8")

@@ -39,9 +39,6 @@ from core.training.train_runner import _apply_sensenova_training_contract
 from sensenova_training_phase_eviction_test import transformer  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# fakes: streams, events, and the two transfer primitives
-# ---------------------------------------------------------------------------
 
 
 class _Source:
@@ -190,23 +187,10 @@ _SHIPPED_ORDER = (
 
 
 def test_overlap_off_reproduces_the_shipped_operation_order_exactly():
-    """MUTANT: routing the default path through the overlap runner (or changing
-    the serial loop's signature) shows up here as a different op sequence."""
     assert _order(SenseNovaTrainingPhaseEvictor(transformer(), "meta")) == _SHIPPED_ORDER
 
 
 def test_overlap_on_a_non_cuda_device_falls_back_to_the_same_order(capsys):
-    """MUTANT: a flag that assumes CUDA makes a CPU/meta evictor crash rather
-    than no-op.
-
-    The real ``_make_transfer_streams`` runs here, but it returns None on a
-    non-CUDA device BEFORE constructing a ``_TransferStreams``, so this covers
-    that guard and not the stream object -- see
-    ``test_the_transfer_streams_object_routes_and_joins_both_streams`` for that.
-
-    MUTANT: latching the downgrade silently (which is what shipped) leaves a
-    user who ticked the box with no line saying it did nothing.
-    """
     evictor = SenseNovaTrainingPhaseEvictor(
         transformer(), "meta", overlap_transfer=True
     )
@@ -223,8 +207,6 @@ def test_overlap_on_a_non_cuda_device_falls_back_to_the_same_order(capsys):
 
 
 def test_install_refuses_overlap_together_with_pageable_staging():
-    """MUTANT: silently dropping one of the two flags. Both names must appear,
-    since either one is a legitimate thing for the caller to turn off."""
     trainer = type("T", (), {})()
     trainer.transformer = transformer()
     trainer.device = "meta"
@@ -275,19 +257,12 @@ def test_install_defaults_to_false_with_no_config_attribute_at_all():
     assert install_training_phase_eviction(trainer)._overlap is False
 
 
-# ---------------------------------------------------------------------------
-# the overlapped path itself
-# ---------------------------------------------------------------------------
 
 
 def test_at_most_k_incoming_modules_are_admitted_ahead_of_their_twins():
     """The whole cost of the relaxation. An incoming module is "ahead" from the
     moment its h2d is issued until its outgoing twin's d2h has been WAITED on
-    (a queued copy has not freed anything).
-
-    MUTANT: dropping the window cap -- issuing the whole plan and joining once
-    at the end -- drives this to one full half.
-    """
+    (a queued copy has not freed anything)."""
     harness = _Harness()
     evictor = _evictor(harness)
     with harness.patched():
@@ -309,11 +284,7 @@ def test_at_most_k_incoming_modules_are_admitted_ahead_of_their_twins():
 
 def test_both_streams_are_joined_before_the_transition_returns():
     """``assert_generation_resident`` checks DEVICE PLACEMENT only, so it would
-    pass on a queued-but-unfinished copy.
-
-    MUTANT: returning without the join, or without draining the window, leaves
-    issues unmatched by retires and no join at the tail.
-    """
+    pass on a queued-but-unfinished copy."""
     harness = _Harness()
     evictor = _evictor(harness)
     with harness.patched():
@@ -333,14 +304,7 @@ def test_every_d2h_source_is_record_streamed_before_the_next_leg_is_issued():
     the copy is issued, so the model's reference is already gone; what keeps the
     block alive across that is the ``sources`` list, and ``record_stream`` has to
     land before that list is released and before any later leg can be handed the
-    block.
-
-    MUTANT: omitting ``record_stream`` lets the caching allocator hand that
-    block to the concurrent h2d destination -- silent corruption.
-    MUTANT: hoisting the loop to the end of the plan (record everything once,
-    after the whole swap) breaks the adjacency below while still populating
-    ``recorded``.
-    """
+    block."""
     harness = _Harness()
     evictor = _evictor(harness)
     with harness.patched():
@@ -366,11 +330,7 @@ def test_the_h2d_leg_is_handed_the_stream_seam_instead_of_being_wrapped_in_it():
     freed on the default stream, so every incoming module would cudaMalloc fresh
     and the window bound would be a whole half rather than four modules.
     ``_move_modules_to_device`` therefore allocates outside and enters the
-    context for the copies alone.
-
-    MUTANT: wrapping the h2d leg in ``streams.stream_context`` at the runner (as
-    shipped) puts an enter/exit around the issue here.
-    """
+    context for the copies alone."""
     harness = _Harness()
     evictor = _evictor(harness)
     with harness.patched():
@@ -386,13 +346,7 @@ def test_the_h2d_leg_is_handed_the_stream_seam_instead_of_being_wrapped_in_it():
 def test_the_h2d_pinned_source_is_held_until_its_own_event_is_waited_on():
     """Symmetric hazard: ``_move_modules_to_device`` drops the pinned source
     into torch's caching HOST allocator, which the next ``_stage_tensor`` may
-    re-hand out. Torch may event-guard this; that is not verified here.
-
-    MUTANT: dropping the keepalive at issue time empties every h2d entry below.
-    MUTANT: releasing it and only then waiting -- the named property is UNTIL
-    the event is waited on, so ``held_at_sync`` is measured inside
-    ``synchronize`` rather than around ``_retire``.
-    """
+    re-hand out. Torch may event-guard this; that is not verified here."""
     harness = _Harness()
     evictor = _evictor(harness)
     seen = []
@@ -427,11 +381,7 @@ def test_the_h2d_pinned_source_is_held_until_its_own_event_is_waited_on():
 
 def test_the_seconds_are_measured_with_events_not_a_perf_counter_sandwich():
     """Under overlap a ``perf_counter`` around a non-blocking issue measures the
-    launch, not the copy.
-
-    MUTANT: keeping the host sandwich makes these totals ~0 rather than the
-    fake event's 2 ms per operation.
-    """
+    launch, not the copy."""
     harness = _Harness()
     evictor = _evictor(harness)
     with harness.patched():
@@ -476,11 +426,7 @@ def test_the_leading_barrier_precedes_every_side_stream_issue():
     barrier, not the timing convenience 8.6 introduced it as: the side streams
     read -- and free -- weights the preceding phase's still-queued compute may
     still be writing, and ``join()`` at the tail only makes the DEFAULT stream
-    wait on the side streams, never the reverse.
-
-    MUTANT: deleting it as redundant (the serial copies block the host anyway)
-    leaves the first side-stream issue ahead of any barrier.
-    """
+    wait on the side streams, never the reverse."""
     harness = _Harness()
     evictor = _evictor(harness)
 
@@ -500,10 +446,6 @@ def test_the_leading_barrier_precedes_every_side_stream_issue():
     assert sum(1 for entry in harness.log if entry == ("sync", None)) == 2
 
 
-# ---------------------------------------------------------------------------
-# the two pieces the evictor's own fakes replace: _TransferStreams and the
-# device-side move
-# ---------------------------------------------------------------------------
 
 
 class _FakeCudaStream:
@@ -550,16 +492,7 @@ class _FakeCuda:
 def test_the_transfer_streams_object_routes_and_joins_both_streams():
     """``_TransferStreams`` itself was never constructed by any test: the
     evictor injects a whole fake in its place, and ``_make_transfer_streams``
-    returns None before building one on a non-CUDA device.
-
-    MUTANT: routing both directions to one stream (serializing the swap while
-    still paying every correctness cost), or joining only one of them, which
-    leaves ``assert_generation_resident`` passing on a queued copy.
-    MUTANT: ``stream_context`` ignoring its argument (``self._cuda.stream(
-    self.d2h)``) -- entered with both streams below, since entering with only
-    the d2h one cannot tell the two apart, and the evictor-level test runs
-    against the injected fake rather than this class.
-    """
+    returns None before building one on a non-CUDA device."""
     cuda = _FakeCuda()
     streams = _TransferStreams("cuda:0", cuda=cuda)
 
@@ -587,18 +520,7 @@ def test_the_h2d_destination_is_allocated_outside_the_side_streams_context():
     requested inside the side stream's context can never be handed the block the
     paired d2h just freed on the default stream: it cudaMallocs instead, and the
     transient extra residency becomes a whole half rather than
-    ``_OVERLAP_WINDOW_PAIRS`` modules.
-
-    MUTANT: allocating with ``.to(device)`` inside the context (as shipped) puts
-    the allocation between the enter and the exit below.
-    MUTANT: dropping ``record_stream`` on the destination lets the default
-    stream free a block the side stream is still writing.
-    MUTANT: hoisting ``destination.copy_`` above the ``with`` -- only the record
-    needs the context -- runs every transfer on the DEFAULT stream, so the flag
-    becomes pure overhead at the full correctness cost and zero overlap. The
-    copy is logged for that reason: with only the record logged, that mutant
-    produces an identical sequence.
-    """
+    ``_OVERLAP_WINDOW_PAIRS`` modules."""
     log = []
 
     class _Dest(torch.Tensor):
@@ -656,10 +578,7 @@ def test_the_h2d_destination_is_allocated_outside_the_side_streams_context():
 def test_an_already_resident_tensor_is_not_reallocated_by_the_split_path():
     """``Tensor.to`` short-circuits an already-resident tensor and the split
     path has to keep that: re-allocating one would copy a whole half that never
-    left the device.
-
-    MUTANT: taking the empty_like path unconditionally.
-    """
+    left the device."""
     module = nn.Module()
     resident = torch.ones(3, device="meta")
     module.register_buffer("weight", resident)
@@ -680,18 +599,12 @@ def test_an_already_resident_tensor_is_not_reallocated_by_the_split_path():
     assert module._buffers["weight"] is resident
 
 
-# ---------------------------------------------------------------------------
-# failure and recovery
-# ---------------------------------------------------------------------------
 
 
 def test_a_pin_failure_drops_to_the_serial_path_for_the_rest_of_the_run(capsys):
     """``_stage_tensor`` falls back to a pageable destination per tensor, warned
     once. Continuing to issue async copies against it would be exactly the
-    combination the installer refuses, arrived at silently.
-
-    MUTANT: ignoring ``warn_once`` leaves every later call non_blocking=True.
-    """
+    combination the installer refuses, arrived at silently."""
     harness = _Harness(fail_pin_at=10)
     evictor = _evictor(harness)
     with harness.patched():
@@ -708,11 +621,7 @@ def test_a_pin_failure_drops_to_the_serial_path_for_the_rest_of_the_run(capsys):
 def test_best_effort_cpu_synchronizes_before_its_first_staged_check():
     """``_module_already_staged_cpu`` checks device and pin flag, never content:
     a pinned buffer whose d2h has not landed reads as already staged and is
-    skipped, yielding a corrupt CPU half.
-
-    MUTANT: moving the barrier below the loop (or after the first predicate
-    call) puts a 'staged' answer before the join.
-    """
+    skipped, yielding a corrupt CPU half."""
     harness = _Harness()
     evictor = _evictor(harness)
     evictor._streams = harness.streams
@@ -741,12 +650,7 @@ def test_best_effort_cpu_synchronizes_before_its_first_staged_check():
 def test_the_straddling_transition_is_charted_as_serial_not_overlapped():
     """``sn_swap_overlap`` is the UNIT LABEL for sn_d2h_s/sn_h2d_s, so the
     transition that begins overlapped and finishes on the serial path -- part
-    CUDA event milliseconds, part host wall seconds -- must not claim either.
-
-    MUTANT: setting the flag from whether streams EXIST, at the top of
-    ``_transition`` and before the downgrade can fire (as shipped), reports 1 for
-    a transition whose seconds are a mixture.
-    """
+    CUDA event milliseconds, part host wall seconds -- must not claim either."""
     harness = _Harness(fail_pin_at=10)
     evictor = _evictor(harness)
     with harness.patched():
@@ -774,11 +678,7 @@ def test_a_fully_overlapped_step_ands_to_true_and_the_drain_resets_it():
 def test_a_failed_transition_drains_the_window_before_it_unwinds():
     """The in-flight deque and every pinned keepalive in it are released as
     ``_run_overlapped``'s frame unwinds, handing those blocks back to the
-    caching HOST allocator while their copies may still be reading them.
-
-    MUTANT: leaving the drain to ``_best_effort_cpu`` (as shipped) puts the
-    first join AFTER the unwind rather than before it.
-    """
+    caching HOST allocator while their copies may still be reading them."""
     harness = _Harness()
     evictor = _evictor(harness)
     calls = []
@@ -814,14 +714,7 @@ def test_a_failed_transition_drains_the_window_before_it_unwinds():
 def test_the_drain_synchronizes_the_device_after_joining_the_streams():
     """``_sync_transfers`` is a join AND a device sync, in that order. Every
     other test of it runs on a ``"meta"`` evictor, where ``_sync_device`` is
-    None and ``_sync`` is a silent no-op, so they observe only the join.
-
-    MUTANT: reducing ``_sync_transfers`` to ``self._streams.join()``.
-    ``join()`` only makes the DEFAULT STREAM wait on the side streams -- the
-    HOST does not -- so ``_run_overlapped``'s frame unwinds and hands pinned
-    blocks back to the caching host allocator while their d2h copies are still
-    reading them, which is the corruption this path exists to prevent.
-    """
+    None and ``_sync`` is a silent no-op, so they observe only the join."""
     harness = _Harness()
     calls = []
 
@@ -944,9 +837,6 @@ def test_overlap_defaults_off_and_does_not_arm_the_refusal():
             "model", "lora", _config(), {"sample": {}})
 
 
-# ---------------------------------------------------------------------------
-# surface parity with sensenova_mot_pageable_staging
-# ---------------------------------------------------------------------------
 
 
 def test_the_flag_is_declared_as_its_own_feature():

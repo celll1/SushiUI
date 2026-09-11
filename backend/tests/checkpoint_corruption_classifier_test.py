@@ -197,9 +197,6 @@ def test_an_unchained_wrap_is_caught_by_the_readers_own_text():
     assert is_checkpoint_corruption_error(exc) is True
 
 
-# ---------------------------------------------------------------------------
-# What each classification costs, in checkpoint loads
-# ---------------------------------------------------------------------------
 
 class _Probe:
     _get_sorted_checkpoints = BaseTrainer._get_sorted_checkpoints
@@ -316,9 +313,6 @@ def test_a_healthy_checkpoint_loads_once(tmp_path):
     assert probe.loads == [f"{RUN_NAME}_step_000030.safetensors"]
 
 
-# ---------------------------------------------------------------------------
-# One discriminator, both decision points
-# ---------------------------------------------------------------------------
 
 def _source():
     return Path(sys.modules[BaseTrainer.__module__].__file__).read_text(encoding="utf-8")

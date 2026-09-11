@@ -98,20 +98,12 @@ def test_cuda_bytes_only_counts_gpu_residents():
 
 
 def test_arch_component_sets_covers_every_components_attribute():
-    """MUTANT: deleting any row from ARCH_COMPONENT_SETS. The inventory is the
-    only thing the reload cleanup and release_gpu_memory iterate, so a missing
-    row is an architecture whose weights are silently never released."""
     manager = DiffusionPipelineManager()
     assert {a for a in vars(manager) if a.endswith("_components")} == \
         {attr for attr, _label, _flag in pipeline_module.ARCH_COMPONENT_SETS}
 
 
 def test_unmeasurable_component_is_offloaded_not_skipped():
-    """MUTANT: returning 0 instead of None for a component with no
-    `parameters()`, which collapses "CPU-resident" and "residency unknown" into
-    one answer and skips the offload. Live instance:
-    `ltx2_components["pipeline"]` is a DiffusionPipeline -- the per-arch cleanup
-    blocks this replaced used `hasattr(comp, 'to')`, which is strictly wider."""
     class _Pipelineish:
         def __init__(self):
             self.moves = []
@@ -148,9 +140,6 @@ def test_unknown_residency_fallback_never_touches_an_nn_module():
 
 
 def test_pid_decoder_hook_runs_on_both_offload_branches():
-    """MUTANT: dropping the `_stage_pid_cpu` hook from either branch. The PiD
-    wrapper stages its decoder net independently of `.to()`, so a wrapper that
-    reports 0 CUDA bytes (or is unmeasurable) can still be holding ~6 GB."""
     class _PidWrapper(_FakeComponent):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -169,10 +158,6 @@ def test_pid_decoder_hook_runs_on_both_offload_branches():
 
 
 def test_component_cleanup_resets_the_ltx2_and_h3_special_cases(monkeypatch):
-    """MUTANT: deleting the `ltx2`/`minimax_h3` special cases from the shared
-    cleanup loop. LTX-2.3's offload guard would stay True and the next load would
-    never re-attach its cpu-offload hooks; H3's prompt cache would answer for a
-    model that is no longer loaded."""
     manager = _bare_manager()
     manager._ltx2_offload_enabled = True
     manager.ltx2_components = {"pipeline": _FakeComponent("pipeline")}
@@ -193,9 +178,6 @@ def test_component_cleanup_resets_the_ltx2_and_h3_special_cases(monkeypatch):
 
 
 def test_offload_skips_cpu_component_and_records_failure(capsys):
-    """MUTANT: swallowing the `.to()` failure silently (`except Exception: pass`).
-    The component NAME must reach the log -- its absence is what made the
-    original retention incident undiagnosable."""
     cpu_comp = _FakeComponent("already_cpu", cuda=False)
     released = []
     assert offload_component_to_cpu("te", cpu_comp, released) == 0
@@ -211,10 +193,6 @@ def test_offload_skips_cpu_component_and_records_failure(capsys):
 
 
 def test_release_gpu_memory_offloads_every_arch_and_clears_keep_hot():
-    """MUTANT: releasing only the SD pipelines (what the dead trainer-side block
-    tried to do), or clearing keep-hot bookkeeping WITHOUT offloading first.
-    clear_resident is bookkeeping-only by design, so a mutant that only clears
-    leaves the VRAM held while claiming it is free."""
     from core.keep_hot import mark_resident, resident_components
 
     manager = _bare_manager()
@@ -247,8 +225,6 @@ def test_release_gpu_memory_offloads_every_arch_and_clears_keep_hot():
 
 
 def test_release_gpu_memory_offloads_taesd(monkeypatch):
-    """MUTANT: deleting the taesd_manager.offload_to_cpu() call. The cheap-decode
-    models are a process-global cache that no generation owns."""
     from core.utils import taesd as taesd_module
 
     manager = _bare_manager()
@@ -267,11 +243,6 @@ def test_release_gpu_memory_offloads_taesd(monkeypatch):
 
 
 def test_release_sweeps_the_backends_other_gpu_holders(monkeypatch):
-    """MUTANT: releasing only the loaded model. TIPO (an fp16 causal LM on cuda
-    with an unload_model() nothing called), the tagger's ONNX CUDA session
-    (auto_unload is a per-request parameter) and the cached spandrel upscaler are
-    all resident in THIS process and reproduce the incident with an identical
-    "release succeeded" log."""
     from core.extensions import tipo_manager as tipo_module
     from core.extensions import tagger_manager as tagger_module
     from core import upscaler as upscaler_module
@@ -301,8 +272,6 @@ def test_release_sweeps_the_backends_other_gpu_holders(monkeypatch):
 
 
 def test_release_gpu_memory_also_offloads_controlnets(monkeypatch):
-    """MUTANT: leaving the ControlNet/LLLite caches out of the training-start
-    release. They are process-global and never evicted."""
     manager = _bare_manager()
     calls = []
     monkeypatch.setattr(manager, "_offload_controlnets_after_generation",
@@ -315,9 +284,6 @@ def test_release_gpu_memory_also_offloads_controlnets(monkeypatch):
 
 
 def test_failed_generation_offloads_staged_components():
-    """MUTANT: restricting the offload to the denoise try/finally. Text encoders
-    and the U-Net are staged to the GPU BEFORE it, so a failure in between (OOM,
-    cancel, ControlNet setup) leaked them for the process lifetime."""
     from core.keep_hot import mark_resident, resident_components
 
     manager = _bare_manager()
@@ -337,8 +303,6 @@ def test_failed_generation_offloads_staged_components():
 
 
 def test_generate_txt2img_guard_offloads_when_body_raises(monkeypatch):
-    """MUTANT: dropping the outer except/finally from generate_txt2img (the
-    pre-staging hole) -- the body raises before its own try/finally is entered."""
     manager = _bare_manager()
     unet = _FakeComponent("unet", nbytes=4096)
     manager.txt2img_pipeline = types.SimpleNamespace(
@@ -361,9 +325,6 @@ def test_generate_txt2img_guard_offloads_when_body_raises(monkeypatch):
 
 
 def test_generate_txt2img_guard_offloads_controlnets_on_success(monkeypatch):
-    """MUTANT: putting the ControlNet offload only on the failure path. The
-    caches must come off the GPU after a SUCCESSFUL generation too (keep-hot
-    covers the model's own components, never the ControlNet caches)."""
     manager = _bare_manager()
     manager.txt2img_pipeline = types.SimpleNamespace(
         unet=None, text_encoder=None, text_encoder_2=None, vae=None)
@@ -380,9 +341,6 @@ def test_generate_txt2img_guard_offloads_controlnets_on_success(monkeypatch):
 @pytest.mark.parametrize("exc", [KeyboardInterrupt, GeneratorExit,
                                  __import__("asyncio").CancelledError])
 def test_generate_guards_catch_base_exceptions(monkeypatch, exc):
-    """MUTANT: narrowing `except BaseException` to `except Exception`. A user
-    cancel arrives as CancelledError and a Ctrl-C as KeyboardInterrupt -- neither
-    derives from Exception, and both leave the U-Net staged."""
     manager = _bare_manager()
     unet = _FakeComponent("unet", nbytes=4096)
     manager.txt2img_pipeline = types.SimpleNamespace(
@@ -400,9 +358,6 @@ def test_generate_guards_catch_base_exceptions(monkeypatch, exc):
 
 
 def test_img2img_guard_covers_the_pipeline_construction_staging(monkeypatch):
-    """MUTANT: opening the try below the img2img/inpaint construction block. Its
-    `.to(self.device)` stages the U-Net, both text encoders and the VAE, so an
-    OOM there leaks exactly what the guard exists to cover."""
     manager = _bare_manager()
     unet = _FakeComponent("unet", nbytes=4096)
     te = _FakeComponent("text_encoder", nbytes=2048)
@@ -435,9 +390,6 @@ def test_img2img_guard_covers_the_pipeline_construction_staging(monkeypatch):
 
 
 def test_pid_stage_sets_the_device_flag_before_moving():
-    """MUTANT: reverting pid_vae_wrapper to `net.to("cuda")` then flag=cuda.
-    nn.Module.to() moves parameters one at a time, so a mid-move OOM leaves some
-    on the GPU while the flag still reads "cpu"."""
     from core.models.pid.pid_vae_wrapper import PidVaeWrapper
 
     wrapper = PidVaeWrapper.__new__(PidVaeWrapper)
@@ -467,8 +419,6 @@ def test_pid_stage_sets_the_device_flag_before_moving():
 
 
 def test_pid_offload_is_unconditional_even_when_the_flag_says_cpu():
-    """MUTANT: restoring the `if self._pid_device != "cpu"` guard around the
-    offload. After a partial stage the flag cannot be trusted."""
     from core.models.pid.pid_vae_wrapper import PidVaeWrapper
 
     wrapper = PidVaeWrapper.__new__(PidVaeWrapper)
@@ -492,10 +442,6 @@ def test_pid_offload_is_unconditional_even_when_the_flag_says_cpu():
 
 
 def test_offload_controlnets_covers_lllite_state_dicts():
-    """MUTANT: iterating `loaded_controlnets` only. LLLite state dicts are loaded
-    with device="cuda" into a second cache that nothing ever moved off the GPU.
-    `device` in the record is the COMPUTE device for the next module build and
-    must NOT be rewritten to cpu."""
     manager = ControlNetManager()
     cn = _FakeComponent("cn", nbytes=1024)
     manager.loaded_controlnets = {"cn.safetensors": cn}

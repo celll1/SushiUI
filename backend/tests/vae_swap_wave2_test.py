@@ -31,7 +31,6 @@ from core.models.components.wiring import (
 from core.training.vae_swap import preflight_vae_swap, swap_metadata
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _zimage(in_channels=16):
     """A real ZImageTransformer2DModel, 1 layer, built in milliseconds."""
@@ -86,9 +85,6 @@ def _resolved(channels=4, **overrides):
     return vs.ResolvedVAE(**fields)
 
 
-# ---------------------------------------------------------------------------
-# 1. The packed algebra of the two archs this wave adds
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("old,new", [(16, 4), (4, 16)])
 def test_zimage_resizes_both_latent_faces_in_both_directions(old, new):
@@ -162,9 +158,6 @@ def test_a_raw_config_arch_is_untouched_by_the_packed_declaration():
     assert model.in_channels == 32  # raw, not 32*4
 
 
-# ---------------------------------------------------------------------------
-# 2. Which candidate each arch's family gate admits (design 7.4)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("channels", [4, 16])
 def test_zimage_accepts_an_8x_image_vae_in_both_directions(channels):
@@ -231,9 +224,6 @@ def test_an_arch_that_declares_no_temporal_ratio_still_refuses():
     assert not refused and "temporal compression ratio is not declared" in why
 
 
-# ---------------------------------------------------------------------------
-# 3. The capability decision, and its enforcement
-# ---------------------------------------------------------------------------
 
 def test_wave_two_lifts_zimage_and_krea2_for_a_full_finetune():
     from api.arch_capabilities import training_feature_unsupported_reason
@@ -258,9 +248,6 @@ def test_the_served_refusal_is_enforced_at_preflight():
                            method="full_finetune", bundle_vae_explicit_false=False)
 
 
-# ---------------------------------------------------------------------------
-# 4. Save -> read back, through the writer these archs actually use
-# ---------------------------------------------------------------------------
 
 def _swapped_trainer(arch, vae, **extra):
     resolved = _resolved(
@@ -376,9 +363,6 @@ def test_the_zimage_reader_splits_the_unified_vae_prefix_out():
     assert layout == "official"
 
 
-# ---------------------------------------------------------------------------
-# 5. Krea 2's pixel rank: its own VAE is 3-D, a replacement is 2-D
-# ---------------------------------------------------------------------------
 
 def test_krea2_encode_and_decode_follow_the_vaes_own_pixel_rank():
     from PIL import Image

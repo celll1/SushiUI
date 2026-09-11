@@ -42,7 +42,6 @@ SDXL_SCALING = 0.13025
 FLUX1_SCALING, FLUX1_SHIFT = 0.3611, 0.1159
 
 
-# --- the formulas P7 replaces (verbatim, from the pre-P7 file) ---------------
 
 def _old_encode(sample, vae):
     return (sample - (getattr(vae.config, "shift_factor", None) or 0.0)) * vae.config.scaling_factor
@@ -53,7 +52,6 @@ def _old_decode(latent, vae):
         getattr(vae.config, "shift_factor", None) or 0.0)
 
 
-# --- fakes ------------------------------------------------------------------
 
 class _Dist:
     def __init__(self, tensor):
@@ -320,9 +318,6 @@ def test_the_batchnorm_statistics_stay_on_their_own_packed_domain():
     assert torch.allclose(denormalize(out, vae), raw, atol=1e-5)
 
 
-# ---------------------------------------------------------------------------
-# 3. No site was left behind
-# ---------------------------------------------------------------------------
 
 _SOURCE = Path(cs.__file__).read_text(encoding="utf-8")
 _TREE = ast.parse(_SOURCE)

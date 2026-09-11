@@ -63,9 +63,6 @@ def _layout(pin: bool, anchors=("first",)):
     )
 
 
-# --------------------------------------------------------------------------
-# How long the track has to be
-# --------------------------------------------------------------------------
 
 def test_the_required_length_is_the_audio_grid_not_the_clip_duration():
     """124 frames need 165 600 samples, which is MORE than the video's 165 333.
@@ -99,9 +96,6 @@ def test_the_required_length_is_the_clip_when_the_grid_rounds_the_other_way():
     assert required == clip
 
 
-# --------------------------------------------------------------------------
-# Preparing the track
-# --------------------------------------------------------------------------
 
 def _tone(samples: int, channels: int = 2, sample_rate: int = 32000) -> torch.Tensor:
     t = torch.arange(samples, dtype=torch.float32) / sample_rate
@@ -261,9 +255,6 @@ def test_pinning_half_the_rows_would_pin_one_channel_not_half_the_timeline():
     assert torch.equal(times[:half], times[half:])
 
 
-# --------------------------------------------------------------------------
-# The noise draw
-# --------------------------------------------------------------------------
 
 def _rows_for_one_request(seed: int, *, pin: bool):
     """The backend's own pre-denoise sequence, mirrored: draw, THEN substitute.
@@ -342,7 +333,6 @@ def test_the_draw_is_structurally_unconditional():
     assert len(draws) == 1, "exactly one draw, or the order is no longer one thing"
     draw = draws[0]
 
-    # 1. No conditional anywhere between the function body and the call.
     ancestors, node = [], draw
     while hasattr(node, "parent"):
         node = node.parent
@@ -431,9 +421,6 @@ def test_the_backend_muxes_the_source_and_does_not_decode_the_pinned_rows():
     assert "decode_audio(" not in if_body
 
 
-# --------------------------------------------------------------------------
-# Reaching the backend at all
-# --------------------------------------------------------------------------
 
 def test_an_imageless_request_is_a_real_request_when_a_track_is_sent():
     """No keyframes + a pinned track = pure a2v, which is measured working.
@@ -472,9 +459,6 @@ def test_a_pinned_track_and_references_are_refused_as_two_mechanisms():
     assert "ia2v" in str(error.value)
 
 
-# --------------------------------------------------------------------------
-# The API surface
-# --------------------------------------------------------------------------
 
 def test_the_default_lives_in_param_defaults():
     assert "input_audio" in IMG2VID_DEFAULTS

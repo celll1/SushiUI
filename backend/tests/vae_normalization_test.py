@@ -73,7 +73,6 @@ def _ltx_vae(channels=8, scaling_factor=1.0, seed=3):
         config=SimpleNamespace(scaling_factor=scaling_factor))
 
 
-# --- the formulas P5 replaces (verbatim, with their provenance) -------------
 
 def _old_flux2_bn(x, vae):
     """flux2_ops.vae_encode / pipeline_backends/flux2.py, on PACKED latents."""
@@ -136,7 +135,6 @@ def _old_ltx2_per_channel(x, vae):
     return (x - mean) * scaling_factor / std
 
 
-# --- the pack domain --------------------------------------------------------
 
 def test_the_pack_domain_is_the_arch_pack_function_and_is_lossless():
     from core.models.lens.lens_pipeline_ops import _patchify, _unpatchify
@@ -177,7 +175,6 @@ def test_the_flux2_generation_reordering_is_value_preserving(dtype):
                        unpatchify(_old_flux2_bn_inverse(packed, vae)))
 
 
-# --- bit identity, per arch, per dtype --------------------------------------
 
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_flux2_training_encode_is_bit_identical(dtype):
@@ -272,7 +269,6 @@ def test_sd_sdxl_encode_is_unchanged_for_a_native_vae(dtype):
     assert torch.equal(normalize(raw, flux1, None), normalize_latent(raw, flux1))
 
 
-# --- crossing the normalisation domain (what P5 unblocks) -------------------
 
 def test_a_batchnorm_vae_normalises_into_an_arch_that_does_not_pack():
     """§11's P5 acceptance case: a 32ch FLUX.2-family VAE under sdxl's wiring.
@@ -330,7 +326,6 @@ def test_the_normalisation_domains_may_now_be_crossed():
     assert vs.check_vae_compatibility(dict(bn, norm="per_channel"), "sd15") == (True, None)
 
 
-# --- "no scaling factor" means unknown, never 1.0 ---------------------------
 
 def test_a_missing_scaling_factor_is_refused_rather_than_read_as_one():
     vae = SimpleNamespace(config=SimpleNamespace(scaling_factor=None))
@@ -347,7 +342,6 @@ def test_a_batchnorm_arch_refuses_a_vae_without_one():
         normalize(_seeded(1, 16, 4, 4), vae, FLUX2_WIRING)
 
 
-# --- the declarations the shared layer now reads ----------------------------
 
 def test_each_wiring_declares_what_its_vae_actually_does():
     assert (LENS_WIRING.vae_norm, LENS_WIRING.vae_norm_pack) == ("batchnorm", 2)

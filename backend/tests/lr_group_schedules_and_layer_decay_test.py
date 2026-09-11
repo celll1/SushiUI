@@ -103,9 +103,6 @@ BUSY_CONFIG = {
 }
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def _blocks(n=6, width=3):
     return nn.ModuleList([nn.Linear(width, width) for _ in range(n)])
@@ -279,9 +276,6 @@ def test_a_factor_of_one_returns_the_groups_untouched():
     assert [g["name"] for g in out] == ["unet"]
 
 
-# ---------------------------------------------------------------------------
-# D16: a per-component schedule diverges
-# ---------------------------------------------------------------------------
 
 def _two_group_probe(mapping, run_schedule="cosine"):
     probe = _Probe(config={"lr_group_schedules": mapping,
@@ -406,9 +400,6 @@ def test_relora_ignores_the_mapping_and_says_so():
     assert "ReLoRA" in output
 
 
-# ---------------------------------------------------------------------------
-# R2: a `groups`-scoped retarget through the lambdas the trainer builds
-# ---------------------------------------------------------------------------
 
 def test_the_resolved_group_specs_carry_their_component_name():
     """D24's identity comes from the optimizer group's `component`, which is
@@ -585,9 +576,6 @@ def test_a_spec_list_of_the_wrong_length_is_refused():
         build_lr_scheduler(optimizer, spec, timeline, group_specs=[spec, spec])
 
 
-# ---------------------------------------------------------------------------
-# D17: the depth factors
-# ---------------------------------------------------------------------------
 
 def test_the_factors_are_geometric_in_depth():
     blocks = _blocks(n=5)
@@ -724,9 +712,6 @@ def test_fused_groups_without_block_swap_do_not_refuse():
     assert len(groups) == len(blocks)
 
 
-# ---------------------------------------------------------------------------
-# §17.3: a changed group structure takes the reset path
-# ---------------------------------------------------------------------------
 
 def _split_optimizer(n_blocks=3, factor=0.5, name="unet"):
     blocks = _blocks(n=n_blocks)
@@ -827,9 +812,6 @@ def test_no_declared_arch_returns_a_single_block():
         apply_layer_lr_decay(probe, _groups_from(_blocks(n=1)))
 
 
-# ---------------------------------------------------------------------------
-# §12.3's checklist, per key
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("key", sorted(NEW_KEYS))
 def test_the_request_model_declares_it_with_the_shared_default(key):

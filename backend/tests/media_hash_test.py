@@ -131,9 +131,6 @@ class MediaCallSiteHashTest(unittest.TestCase):
         self.assertIn(f'{needle}"",', broken_snippet)
 
 
-# ---------------------------------------------------------------------------
-# 2. GET /images/by-hash/{hash} exists in the live router AND in openapi.yaml
-# ---------------------------------------------------------------------------
 class ByHashRouteTest(unittest.TestCase):
     def test_route_registered_on_the_live_router(self):
         from api.routes import router
@@ -201,9 +198,6 @@ class ByHashRouteTest(unittest.TestCase):
             yaml.load(f, Loader=_DupCheckLoader)  # raises on any duplicate key
 
 
-# ---------------------------------------------------------------------------
-# 3. Video source-side / target-side hash definitions agree
-# ---------------------------------------------------------------------------
 class VideoHashRoundTripTest(unittest.TestCase):
     """The design requires source_image_hash (hashed from the uploaded
     bytes, in memory, via `calculate_bytes_hash`) and a later row's

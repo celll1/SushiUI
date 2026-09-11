@@ -23,10 +23,6 @@ from core.models.minimax_music3.defaults import AUDIO_CFG_TOKEN_ID, MAX_PROMPT_T
 from core.models.minimax_music3.pipeline import MiniMaxMusic3Pipeline, _clean_caption, _normalize_lyrics
 
 
-# ---------------------------------------------------------------------------
-# _clean_caption: markdown-strip + special-tag rewrite (upstream
-# encoders.py::_clean_caption).
-# ---------------------------------------------------------------------------
 def test_clean_caption_rewrites_special_tags():
     assert _clean_caption("<|genre pop|>") == "genre is pop"
     # A tag with no second word (no split point) is left as its bare content.
@@ -54,10 +50,6 @@ def test_clean_caption_strips_horizontal_rules_and_bullet_dots_and_collapses_bla
     assert "• " not in cleaned
 
 
-# ---------------------------------------------------------------------------
-# _normalize_lyrics: structure-tag normalization (upstream
-# encoders.py::_normalize_lyrics).
-# ---------------------------------------------------------------------------
 def test_normalize_lyrics_prepends_start_tag():
     assert _normalize_lyrics("hello").startswith("[start]\n")
 
@@ -90,10 +82,6 @@ def test_normalize_lyrics_splits_bracket_and_caret_separated_tags_onto_new_lines
     assert "line two" in result_caret.split("\n")
 
 
-# ---------------------------------------------------------------------------
-# encode_text: full prompt assembly + the conditional/unconditional token-id
-# pair (upstream encoders.py::MiniMaxMusic3TextEncoderStep).
-# ---------------------------------------------------------------------------
 class _SpyTokenizer:
     """Records the exact text passed in and returns a small deterministic id sequence."""
 

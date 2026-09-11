@@ -233,9 +233,6 @@ def _accounted():
 
 
 def test_transfer_byte_counters_match_the_moved_half():
-    """MUTANT: charging every tensor instead of the ones the operation will
-    actually copy makes the one-sided ``full -> prefix`` report a nonzero h2d.
-    """
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
     with _accounted():
         evictor.enter_prefix()
@@ -247,8 +244,6 @@ def test_transfer_byte_counters_match_the_moved_half():
 
 
 def test_both_directions_are_timed_into_separate_buckets():
-    """MUTANT: accumulating both directions into one bucket, or reusing the d2h
-    elapsed for the h2d, leaves one of these two totals at zero."""
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
     with _accounted():
         evictor.enter_prefix()
@@ -261,8 +256,6 @@ def test_both_directions_are_timed_into_separate_buckets():
 
 
 def test_drain_resets_so_consecutive_steps_do_not_double_count():
-    """MUTANT: a drain that reads without resetting turns the per-step series
-    into a run-cumulative one -- the second step below would report both."""
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
     with _accounted():
         evictor.enter_prefix()
@@ -282,8 +275,6 @@ def test_drain_resets_so_consecutive_steps_do_not_double_count():
 
 
 def test_a_non_cuda_device_never_synchronizes():
-    """MUTANT: dropping the device guard in ``_sync`` makes every synthetic-tree
-    test raise on a machine without CUDA, and needlessly sync on one with it."""
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
     calls = []
     with _accounted(), patch(
@@ -299,14 +290,7 @@ def test_a_non_cuda_device_never_synchronizes():
 def test_a_cuda_device_takes_the_barrier_it_resolves():
     """The positive half of the guard above. Both barrier-ordering tests patch
     ``_sync`` ITSELF, and every other evictor here runs on ``"meta"``, so
-    nothing pins that ``_sync`` reaches ``torch.cuda.synchronize`` at all.
-
-    MUTANT: narrowing the ``_sync_device`` guard to
-    ``self._device_obj.type == "cuda:0"`` (never true -- ``torch.device`` splits
-    the index off the type) leaves ``_sync`` a no-op on real hardware, so the
-    barrier this commit raised to a correctness invariant silently disappears in
-    production while every existing test stays green.
-    """
+    nothing pins that ``_sync`` reaches ``torch.cuda.synchronize`` at all."""
     calls = []
     # Only the two calls the guard and the barrier make are patched; no CUDA
     # allocation happens on this synthetic tree.
@@ -325,14 +309,7 @@ def test_the_staging_sources_list_holds_the_original_device_tensors():
     """``sources`` is what keeps a d2h source alive across the reassignment
     below it: ``parameter.data = staged`` drops the MODEL's reference the moment
     the copy is issued, and the overlap path's ``record_stream`` on that block
-    runs strictly later.
-
-    MUTANT: deleting the two ``sources.append`` lines leaves the CUDA source
-    unreferenced from the reassignment onwards, so the caching allocator is free
-    to hand the block to the concurrent h2d destination and ``record_stream``
-    never runs on it. Every other test of this property replaces
-    ``_move_modules_to_cpu`` with a fake that appends a source of its own.
-    """
+    runs strictly later."""
     seen = []
 
     def stage(tensor, warn_once, warn_message, *, pageable=False, non_blocking=False):
@@ -370,14 +347,7 @@ def test_a_transition_takes_exactly_one_barrier_and_takes_it_first():
     phase's still-queued compute and inflating the d2h bucket (the defect behind
     the retracted number in 8.3.2), and under ``sensenova_mot_overlap_transfer``
     it is the only thing that stops the side streams reading and freeing weights
-    that compute is still writing.
-
-    MUTANT: deleting it as redundant -- the copies block the host anyway -- makes
-    the sequence start at a copy.
-    MUTANT: syncing per operation instead (~250 device-wide barriers per
-    four-phase step, each charging its own latency to the bucket it is supposed
-    to be measuring) shows up as more than one entry.
-    """
+    that compute is still writing."""
     evictor = SenseNovaTrainingPhaseEvictor(transformer(), "meta")
     order = []
 

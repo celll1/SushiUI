@@ -35,9 +35,6 @@ REPO = Path(__file__).resolve().parents[2]
 PRE_FIX_COMMIT = "095206c0"  # the ops sources as they were before this fix
 
 
-# ---------------------------------------------------------------------------
-# The pre-fix sources, imported as separate modules
-# ---------------------------------------------------------------------------
 
 def _load_prefix(rel_path: str, mod_name: str, tmp_dir: Path):
     source = subprocess.run(
@@ -69,9 +66,6 @@ def prefix_ops(tmp_path_factory):
         sys.modules.pop(name, None)
 
 
-# ---------------------------------------------------------------------------
-# Stand-ins: a decoder with parameters is enough, no real VAE is loaded
-# ---------------------------------------------------------------------------
 
 class _MockVAE(nn.Module):
     def __init__(self, latent_channels: int, scale: int = 8):
@@ -136,9 +130,6 @@ def _trainer(net_attr: str, net, vae, *, crop_on: bool, recon_weight: float = 0.
     return trainer
 
 
-# ---------------------------------------------------------------------------
-# One runner per architecture: (module, trainer) -> loss tensor
-# ---------------------------------------------------------------------------
 
 SEED = 1234
 
@@ -232,9 +223,6 @@ def test_the_pre_fix_module_shows_the_defect(prefix_ops, arch):
     assert "crop_decode_grad_norm_ratio" not in tr_on.metrics
 
 
-# ---------------------------------------------------------------------------
-# Everything else stays where it was, to the bit
-# ---------------------------------------------------------------------------
 
 INVARIANT_CONFIGS = {
     # crop decode off: the fix must not be observable at all

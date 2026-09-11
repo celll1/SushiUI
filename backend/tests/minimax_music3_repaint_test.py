@@ -456,9 +456,6 @@ def test_regenerate_requires_at_least_two_chunks():
             )
 
 
-# ---------------------------------------------------------------------------
-# Refusals that need no real model at all.
-# ---------------------------------------------------------------------------
 class _FakeConfig:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():

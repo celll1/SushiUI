@@ -86,9 +86,6 @@ def _nvfp4_layer_tensors(out_features, in_features, *, with_pre_quant_scale):
     return tensors
 
 
-# ---------------------------------------------------------------------------
-# E2M1 code table via comfy_kitchen.dequantize_nvfp4, hi_first=True
-# ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn"), reason="float8_e4m3fn not available"
@@ -212,9 +209,6 @@ def test_te_guard_accepts_a_valid_nvfp4_file_including_pre_quant_scale(tmp_path)
     assert "model.layers.0.self_attn.o_proj.pre_quant_scale" in header
 
 
-# ---------------------------------------------------------------------------
-# Marker -> _rewrite_te_key -> module path (NVFP4 layers + embed_tokens)
-# ---------------------------------------------------------------------------
 
 def test_nvfp4_and_embedding_markers_map_through_rewrite_te_key():
     q_tensors = _nvfp4_layer_tensors(8, 32, with_pre_quant_scale=False)
@@ -247,9 +241,6 @@ def test_nvfp4_and_embedding_markers_map_through_rewrite_te_key():
     assert set(mapped_embed) == {"model.language_model.embed_tokens"}
 
 
-# ---------------------------------------------------------------------------
-# Nvfp4Linear: swap + forward (pre_quant_scale applied to the activation)
-# ---------------------------------------------------------------------------
 
 def test_swap_linears_to_nvfp4_and_forward_runs_on_cpu():
     """128 output rows / 64 input features: the smallest shape
@@ -319,9 +310,6 @@ def test_pre_quant_scale_multiplies_the_activation_not_the_weight():
     )
 
 
-# ---------------------------------------------------------------------------
-# Int8Embedding: gather-then-scale
-# ---------------------------------------------------------------------------
 
 def test_int8_embedding_gather_then_scale_matches_manual_dequant():
     from core.models.common.int8_embedding import Int8Embedding, swap_embedding_to_int8
@@ -355,10 +343,6 @@ def test_int8_embedding_gather_then_scale_matches_manual_dequant():
     torch.testing.assert_close(out, expected)
 
 
-# ---------------------------------------------------------------------------
-# _gpu_module_params + functional_call: uint8 codes AND float8 block scale
-# survive unwidened (the bug this format exposed)
-# ---------------------------------------------------------------------------
 
 def test_gpu_module_params_preserves_uint8_codes_and_float8_block_scale():
     """The exact regression this format found: `is_floating_point()` is TRUE

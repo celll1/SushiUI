@@ -90,9 +90,6 @@ def _collected(groups):
     return len(params), sum(p.numel() for p in params)
 
 
-# ---------------------------------------------------------------------------
-# The negative control
-# ---------------------------------------------------------------------------
 
 def test_negative_control_the_sd15_fallthrough_collects_zero():
     """Reproduces the bug the ``elif`` branch prevents, with the numbers.
@@ -154,9 +151,6 @@ def test_create_adapter_dispatches_sensenova_above_the_sd15_fallthrough():
     assert isinstance(other.adapter, SD15FullParameterAdapter)
 
 
-# ---------------------------------------------------------------------------
-# Collection scope == materialization scope
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("branch,expected", [("gen", 294), ("und", 294), ("both", 588)])
 def test_collection_scope_is_exactly_the_loaders_materialization_scope(branch, expected):
@@ -248,9 +242,6 @@ def test_an_unmaterialized_half_is_refused_rather_than_silently_empty():
     )
 
 
-# ---------------------------------------------------------------------------
-# Learning rates
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "attrs,expected",
@@ -286,9 +277,6 @@ def test_a_single_half_produces_a_single_group():
         assert len(groups[0]["params"]) == 294
 
 
-# ---------------------------------------------------------------------------
-# The checkpoint format (round trips live in sensenova_full_finetune_save_test)
-# ---------------------------------------------------------------------------
 
 def test_saving_defaults_to_the_mixed_format(tmp_path):
     from api.param_defaults import TRAINING_DEFAULTS
@@ -348,9 +336,6 @@ def test_the_optimizer_refusal_states_the_two_conditions_and_the_measured_cost()
                        ("lion8bit_ringbuffer", "1.015625")])
 def test_a_ring_buffer_optimizer_is_refused_without_host_resident_state(
         name, per_param):
-    """MUTANT: make assert_ringbuffer_host_state a no-op and the run allocates
-    that many bytes per parameter of 8-bit state on the GPU, on top of the
-    materialized bf16 halves."""
     trainer = _full_ft_trainer("gen", _Decoder())
     with pytest.raises(ValueError) as excinfo:
         assert_full_finetune_contract(trainer, name)

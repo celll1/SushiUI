@@ -89,9 +89,6 @@ def _post(app, path, **kwargs):
     return asyncio.run(run())
 
 
-# ---------------------------------------------------------------------------
-# /generate/txt2vid -- the ONE surface C7 released for a merged checkpoint
-# ---------------------------------------------------------------------------
 
 def _txt2vid(monkeypatch, variant, hybrid_provenance=None, **body):
     manager = _StubPipelineManager(variant=variant)
@@ -199,9 +196,6 @@ def test_a_non_h3_video_model_is_untouched_by_the_gate(monkeypatch):
     assert recorded == []
 
 
-# ---------------------------------------------------------------------------
-# /generate/img2vid -- denylist flipped to an allowlist over NAMED variants
-# ---------------------------------------------------------------------------
 
 def _img2vid(monkeypatch, variant, files=None):
     app = _app(monkeypatch, _StubPipelineManager(variant=variant),
@@ -307,9 +301,6 @@ def test_ref2vid_is_unchanged_for_ref2va(monkeypatch):
     assert payload["error"] == "ref2vid needs at least one reference"
 
 
-# ---------------------------------------------------------------------------
-# The shared outpaint reference gate (route + backend re-check)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("placement", ["extend_forward", "extend_backward", "bridge"])
 @pytest.mark.parametrize("has_refs", [False, True])

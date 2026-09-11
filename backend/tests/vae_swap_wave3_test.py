@@ -30,7 +30,6 @@ from core.models.components.wiring import (
 from core.training.vae_swap import apply_latent_space, preflight_vae_swap, swap_metadata
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _anima(in_channels=16, out_channels=None):
     from core.models.anima.anima_models import Anima
@@ -111,9 +110,6 @@ def _swap_config(directory):
             "training_method": "full_finetune"}
 
 
-# ---------------------------------------------------------------------------
-# 1. anima: opposite orders on the two sides, plus the padding-mask channel
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("old,new", [(16, 32), (32, 16)])
 def test_anima_resizes_both_latent_faces_in_both_directions(old, new):
@@ -220,9 +216,6 @@ def test_anima_refuses_a_two_dimensional_image_vae():
     assert not refused and "4-D latents cannot drive anima" in why
 
 
-# ---------------------------------------------------------------------------
-# 2. flux2 / lens: the packed config numbers, and lens's asymmetry
-# ---------------------------------------------------------------------------
 
 def test_flux2_writes_the_packed_channel_count_into_both_config_numbers():
     model = _flux2(128)
@@ -282,9 +275,6 @@ def test_lens_and_flux2_admit_a_batchnorm_vae_and_a_scalar_one():
         assert not refused and "16x" in why
 
 
-# ---------------------------------------------------------------------------
-# 3. minit2i: the pack size is a per-checkpoint config value
-# ---------------------------------------------------------------------------
 
 def test_minit2i_resolves_its_pack_size_from_the_loaded_config():
     from core.training.arch.minit2i import MiniT2IArchHandler
@@ -373,9 +363,6 @@ def test_minit2i_peeks_its_geometry_out_of_a_saved_checkpoint(tmp_path):
     assert peek_io_config(str(tmp_path / "absent.safetensors")) == {}
 
 
-# ---------------------------------------------------------------------------
-# 4. The capability decision, and its enforcement
-# ---------------------------------------------------------------------------
 
 def test_wave_three_lifts_all_four_for_a_full_finetune():
     from api.arch_capabilities import training_feature_unsupported_reason
@@ -432,9 +419,6 @@ def test_preflight_admits_a_latent_minit2i_base(tmp_path):
         base_model_path=str(base)) == f"file:{directory}"
 
 
-# ---------------------------------------------------------------------------
-# 5. The training fold: resolve a real standalone VAE, resize the real backbone
-# ---------------------------------------------------------------------------
 
 def _trainer(arch, transformer, vae, config, **extra):
     trainer = SimpleNamespace(
@@ -521,9 +505,6 @@ def test_an_anima_run_swaps_to_a_five_dimensional_vae(tmp_path):
     assert trainer.wiring.vae_norm == "per_channel"
 
 
-# ---------------------------------------------------------------------------
-# 6. Save -> read back, through the writer each arch actually uses
-# ---------------------------------------------------------------------------
 
 def _swapped_trainer(arch, vae, **extra):
     resolved = _resolved(

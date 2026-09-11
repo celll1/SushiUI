@@ -51,9 +51,6 @@ IN_RANGE = [0.0, 0.3, 0.5, 1.0]
 OUT_OF_RANGE = [1.0001, 1.5, 2.0, -0.0001, -0.3, -1.0]
 
 
-# ---------------------------------------------------------------------------
-# The shared validator
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("weight", IN_RANGE)
 def test_the_closed_interval_endpoints_and_interior_pass(weight):
@@ -82,9 +79,6 @@ def test_the_bounds_are_the_ones_the_mixing_formula_implies():
     assert (RECONSTRUCTION_LOSS_WEIGHT_MIN, RECONSTRUCTION_LOSS_WEIGHT_MAX) == (0.0, 1.0)
 
 
-# ---------------------------------------------------------------------------
-# Layer 1: the API request model
-# ---------------------------------------------------------------------------
 
 def _request(weight):
     from api.routes import TrainingRunCreateRequest
@@ -115,9 +109,6 @@ def test_the_pydantic_default_comes_from_param_defaults():
     assert getattr(request, KEY) == TRAINING_DEFAULTS[KEY]
 
 
-# ---------------------------------------------------------------------------
-# Layer 2: config generation
-# ---------------------------------------------------------------------------
 
 def _train_section(weight):
     from core.training.training_config import _build_train_section
@@ -144,9 +135,6 @@ def test_an_omitted_key_still_emits_the_default():
     assert section[KEY] == TRAINING_DEFAULTS[KEY]
 
 
-# ---------------------------------------------------------------------------
-# Layer 3: BaseTrainer.__init__ -- the path hand-written YAML actually takes
-# ---------------------------------------------------------------------------
 
 def _trainer_class():
     from core.training.base_trainer import BaseTrainer
@@ -214,9 +202,6 @@ def test_openapi_declares_the_same_bounds_exactly_once():
     assert prop["default"] == TRAINING_DEFAULTS[KEY]
 
 
-# ---------------------------------------------------------------------------
-# Negative controls: the three layers as they shipped
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("layer,source,marker", [
     ("routes", "backend/api/routes.py",

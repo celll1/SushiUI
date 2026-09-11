@@ -44,9 +44,6 @@ def _frames(plan):
     return [entry["frame"] for entry in plan["anchors"]]
 
 
-# --------------------------------------------------------------------------
-# Resolution
-# --------------------------------------------------------------------------
 
 def test_the_legacy_request_still_resolves_to_the_two_string_anchors():
     """`image` + `last_frame_image` is `("first", "last")`, as it always was.
@@ -143,9 +140,6 @@ def test_reordering_the_uploads_is_the_same_request():
     assert _anchors(forward) == _anchors(reversed_)
 
 
-# --------------------------------------------------------------------------
-# Refusals
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("index", [124, 200, -2, -5])
 def test_an_index_outside_the_clip_is_refused_with_the_frame_math(index):
@@ -293,9 +287,6 @@ def test_openapi_documents_the_three_fields_on_the_img2vid_schema():
     assert "-1" in schema["last_frame_image"]["description"]
 
 
-# --------------------------------------------------------------------------
-# The geometry rule (see `_minimax_h3_fit_keyframe`)
-# --------------------------------------------------------------------------
 
 def test_only_a_frame_zero_anchor_is_stretched():
     """The rule follows the FRAME, not the position in the list."""

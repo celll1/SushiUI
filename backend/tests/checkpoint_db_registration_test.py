@@ -184,9 +184,6 @@ class RegistrationLayoutTest(TrainingDbCase):
         self.assertEqual(row.file_size, 10 + 6 + index_path.stat().st_size)
 
     def test_controlnet_standard_directory_checkpoint_is_registered(self):
-        """MUTANT: a naming-convention-based finder. ``_list_checkpoint_entries``
-        globs ``*_step_*.safetensors[.index.json]`` and never matches a
-        ControlNet "standard" directory save -- the before/after diff must."""
         trainer = FakeTrainer(self.dir, layout="controlnet_dir")
         before = set(self.dir.iterdir())
         trainer.save_checkpoint(step=300, epoch=1)
@@ -199,9 +196,6 @@ class RegistrationLayoutTest(TrainingDbCase):
         self.assertEqual(row.file_size, len("{}") + 20)
 
 
-# ---------------------------------------------------------------------------
-# 2. Upsert behavior and failure isolation
-# ---------------------------------------------------------------------------
 
 class RegistrationBehaviorTest(TrainingDbCase):
     def test_v2_rewind_deletes_only_run_database_metrics(self):
@@ -303,9 +297,6 @@ class RegistrationBehaviorTest(TrainingDbCase):
         trainer._record_checkpoint_db_row(step=77, epoch=0, before_entries=before)
 
 
-# ---------------------------------------------------------------------------
-# 3. Full bundle wiring + pruning deletes the row
-# ---------------------------------------------------------------------------
 
 class BundleAndPruningTest(TrainingDbCase):
     def test_save_checkpoint_bundle_registers_the_row(self):

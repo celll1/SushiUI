@@ -35,7 +35,6 @@ from core.training.vae_swap import (
 )
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _unet(channels=4):
     unet = nn.Module()
@@ -233,9 +232,6 @@ def test_same_weights_different_scaling_separates_cache_and_adapter_identity():
     assert not verdict.refuse and verdict.code == "lora_base_vae_mismatch"
 
 
-# ---------------------------------------------------------------------------
-# 4. Preflight refusals
-# ---------------------------------------------------------------------------
 
 def test_an_extracted_vae_cannot_be_left_unbundled():
     with pytest.raises(ValueError, match="cannot be loaded"):
@@ -357,9 +353,6 @@ def test_a_native_run_is_not_probed_at_all():
     assert validate_latent_io(native) == []
 
 
-# ---------------------------------------------------------------------------
-# 5. Bundled, then read back
-# ---------------------------------------------------------------------------
 
 def _write_checkpoint(tmp_path, vae_state, metadata, name="swapped.safetensors"):
     state = {"model.diffusion_model.input_blocks.0.0.weight": torch.zeros(4, 16, 3, 3)}

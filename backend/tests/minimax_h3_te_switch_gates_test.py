@@ -170,9 +170,6 @@ def _switch(manager, path):
     }, manager.model_revision, manager.component_revision)
 
 
-# ---------------------------------------------------------------------------
-# The switch carries the projection, in both directions
-# ---------------------------------------------------------------------------
 
 def test_switching_to_a_converted_encoder_installs_its_resolved_projection(tmp_path):
     root, dit = _tree(tmp_path)
@@ -214,9 +211,6 @@ def test_switching_back_to_a_released_encoder_leaves_no_projection_behind(tmp_pa
     assert manager.current_model_info["te_text_only"] is False
 
 
-# ---------------------------------------------------------------------------
-# The three pairing gates, at switch time
-# ---------------------------------------------------------------------------
 
 def _bundle(tmp_path, te_path, dit, *, override=None):
     return loader.build_minimax_h3_text_encoder_bundle(
@@ -301,9 +295,6 @@ def test_a_second_matching_projection_is_refused_rather_than_guessed(tmp_path):
     assert components["te_text_only"] is False
 
 
-# ---------------------------------------------------------------------------
-# The listing the UI offers from
-# ---------------------------------------------------------------------------
 
 def test_listing_reports_the_pairing_a_switch_would_actually_form(tmp_path):
     root, dit = _tree(tmp_path)

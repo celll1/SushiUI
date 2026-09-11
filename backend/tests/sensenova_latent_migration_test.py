@@ -74,9 +74,6 @@ T_EPS = 0.02
 PATCH = NATIVE_GEN_LATENT_PATCH
 
 
-# ---------------------------------------------------------------------------
-# Trees
-# ---------------------------------------------------------------------------
 
 def _vision(channels: int, patch: int) -> NEOVisionModel:
     """The REAL gen ViT at a small width; its patch embed is one of the two
@@ -120,9 +117,6 @@ def _params(module) -> dict:
             for name, p in module.named_parameters()}
 
 
-# ---------------------------------------------------------------------------
-# §10.2 -- the geometry
-# ---------------------------------------------------------------------------
 
 def test_the_pixel_head_is_what_it_always_was():
     """The generalisation's defaults reproduce the shipped model exactly:
@@ -471,9 +465,6 @@ def test_shape_invariant_tensors_and_the_bundled_vae_survive_a_round_trip(tmp_pa
         assert torch.equal(tensor, saved[name]), name
 
 
-# ---------------------------------------------------------------------------
-# Refusals and declarations
-# ---------------------------------------------------------------------------
 
 def test_the_capability_gate_is_still_shut():
     """§10.6: the entry comes off only when the acceptance conditions pass on
@@ -872,7 +863,6 @@ def test_a_p8_config_block_survives_the_metadata_codec(tmp_path):
         path=written)
 
 
-# --- The noise-scale recalibration a swap needs (§10.4) -----------------------
 
 
 def test_the_gain_sentinel_and_its_one_contradiction():

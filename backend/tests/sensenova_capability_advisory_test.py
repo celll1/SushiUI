@@ -95,9 +95,6 @@ def _git_show(path: str, commit: str = SHIPPED_COMMIT) -> str:
     return result.stdout.decode("utf-8")
 
 
-# ---------------------------------------------------------------------------
-# NEGATIVE CONTROLS: the contradiction as it shipped
-# ---------------------------------------------------------------------------
 
 def test_negative_control_the_shipped_table_called_the_feature_unsupported():
     source = _git_show("backend/api/arch_capabilities.py")
@@ -115,7 +112,6 @@ def test_negative_control_the_api_accepted_the_parameter_the_table_denied():
     the side that was wrong."""
     for source in (_git_show("backend/core/training/train_runner.py"),
                    (BACKEND / "core/training/train_runner.py").read_text(encoding="utf-8")):
-        # Read as a live value, never refused: the flag selects a branch.
         assert "train_understanding = _normalize_sensenova_bool(" in source
     with _sensenova():
         assert _apply_sensenova_training_contract(
@@ -136,9 +132,6 @@ def test_negative_control_the_shipped_reason_named_the_wrong_denominator():
     assert round(PEAK_GIB / CARD_GIB * 100) == 68
 
 
-# ---------------------------------------------------------------------------
-# The fix: one answer, in all three places
-# ---------------------------------------------------------------------------
 
 def test_the_feature_is_no_longer_declared_unsupported():
     assert training_feature_unsupported_reason(

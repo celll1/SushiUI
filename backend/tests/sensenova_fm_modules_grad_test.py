@@ -146,9 +146,6 @@ def test_the_double_carries_the_checkpoint_tensor_count():
     assert len(list(_FmTransformer().fm_modules.parameters())) == FM_TENSORS
 
 
-# ---------------------------------------------------------------------------
-# The function itself
-# ---------------------------------------------------------------------------
 
 def test_build_step_context_is_no_grad_by_default_and_differentiable_on_request():
     transformer = _FmTransformer()
@@ -183,9 +180,6 @@ def test_build_step_context_carries_no_unconditional_no_grad_decorator():
     assert getattr(_build_step_context, "__wrapped__", None) is None
 
 
-# ---------------------------------------------------------------------------
-# Through the training step
-# ---------------------------------------------------------------------------
 
 def test_the_option_on_gives_every_one_of_the_16_tensors_a_gradient():
     transformer = _train_fm_modules(_FmTransformer(), True)

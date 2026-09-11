@@ -79,9 +79,6 @@ def step_once(scheduler, seed=0):
     return scheduler.step(model_out, scheduler.timesteps[0], sample).prev_sample
 
 
-# ---------------------------------------------------------------------------
-# The defect: v-pred run loaded from a single file
-# ---------------------------------------------------------------------------
 
 def test_v_pred_single_file_source_is_realigned():
     trainer = fake_trainer(prediction_target="velocity")
@@ -179,9 +176,6 @@ def test_absent_scheduler_is_carried_not_raised():
     assert source.scheduler is None
 
 
-# ---------------------------------------------------------------------------
-# No sibling sampling path may read original_scheduler directly again
-# ---------------------------------------------------------------------------
 
 def test_every_training_sample_site_uses_the_helper():
     sites = 0

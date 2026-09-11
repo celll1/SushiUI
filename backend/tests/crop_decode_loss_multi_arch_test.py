@@ -180,7 +180,6 @@ def test_lens_and_ideogram4_unpatchify_routing(base_trainer, handler_cls):
     latent_h, latent_w = 8, 8
     N = latent_h * latent_w
 
-    # Create 32-ch VAE for Lens/Ideogram4
     base_trainer.vae = MockVAE(in_channels=32, scale=8, identifier="lens_vae")
     # Packed sequence has C * 4 = 128 channels
     packed_seq = torch.randn(B, N, 128, requires_grad=True)
@@ -259,7 +258,6 @@ def test_vae_swap_dynamic_tracking(base_trainer):
     clean1 = torch.randn(B, C1, H, W)
     t = torch.tensor([0.5])
 
-    # 1. First run with initial 16-ch VAE
     compute_crop_decode_loss(
         trainer=base_trainer,
         model_pred=clean1,
@@ -274,7 +272,6 @@ def test_vae_swap_dynamic_tracking(base_trainer):
     mod1 = base_trainer._crop_decode_loss_module
     assert mod1.vae.identifier == "vae_16ch"
 
-    # 2. VAE Swap happens: trainer.vae is replaced by a 32-ch swapped VAE
     swapped_vae = MockVAE(in_channels=32, scale=8, identifier="swapped_32ch_vae")
     base_trainer.vae = swapped_vae
 
@@ -302,7 +299,6 @@ def test_vae_swap_dynamic_tracking(base_trainer):
 
 def test_vae_cpu_offload_device_safety(base_trainer):
     """If trainer.vae was moved to CPU (latent cache swap), compute_crop_decode_loss ensures device safety."""
-    # Move VAE parameters to CPU explicitly
     base_trainer.vae.to("cpu")
     base_trainer.device = torch.device("cpu")
 

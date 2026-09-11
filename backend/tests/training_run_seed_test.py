@@ -62,9 +62,6 @@ _BASE_TRAINER_SRC = (_BACKEND / "core" / "training" / "base_trainer.py").read_te
     encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Pinned copy of base_trainer.py's non-bucketed batch building (both arms).
-# ---------------------------------------------------------------------------
 
 def _build_non_bucketed_batches(items, batch_size, priority_items=None):
     if priority_items is not None:
@@ -98,9 +95,6 @@ def _bucketed_order(seed, n=64):
     return [item["image_path"] for batch in manager.build_batch_indices(4) for item in batch]
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
 
 def test_a_configured_seed_is_used_verbatim():
     assert resolve_run_seed(0) == (0, False)
@@ -181,9 +175,6 @@ def test_same_seed_same_order_bucketed():
     assert sorted(first) == sorted(_items(64))
 
 
-# ---------------------------------------------------------------------------
-# Wiring
-# ---------------------------------------------------------------------------
 
 def test_both_inline_shuffle_sites_draw_from_the_seeded_module():
     assert "random.shuffle(normal_items)" in _BASE_TRAINER_SRC

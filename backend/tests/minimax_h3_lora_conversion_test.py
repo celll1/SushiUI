@@ -292,9 +292,6 @@ def test_qkv_split_falls_back_to_shared_down_when_not_block_diagonal():
     assert torch.equal(fused, split_stack)
 
 
-# ---------------------------------------------------------------------------
-# 3. fc1 SwiGLU half swap: applied, and a negative control for reversal/removal
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("path", [F1_PATH, F2_PATH])
 def test_fc1_swap_applied_and_reversible(path):
@@ -330,9 +327,6 @@ def test_fc1_swap_applied_and_reversible(path):
     assert not torch.equal(targets[mapped]["up"], raw_up)
 
 
-# ---------------------------------------------------------------------------
-# 4. Scale: F1 (no alpha) -> 1.0; F2 (real alphas) -> 1.0
-# ---------------------------------------------------------------------------
 
 def test_f1_no_alpha_resolves_to_scale_one():
     _require(F1_PATH)
@@ -354,9 +348,6 @@ def test_f2_real_alphas_resolve_to_scale_one():
         assert weights["scale_ratio"] == pytest.approx(1.0), (module_path, weights["scale_ratio"])
 
 
-# ---------------------------------------------------------------------------
-# 5. Variant guard
-# ---------------------------------------------------------------------------
 
 def test_variant_guard_refuses_explicit_mismatch():
     warnings = []

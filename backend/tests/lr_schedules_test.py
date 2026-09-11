@@ -88,9 +88,6 @@ def _diffusers(name: str, W: int, T: int, lr: float = BASE_LR):
     ).lr_lambdas[0]
 
 
-# ---------------------------------------------------------------------------
-# The old plateau_cosine_floor lambda, transcribed (deleted from base_trainer)
-# ---------------------------------------------------------------------------
 
 def _legacy_plateau(W: int, T: int, decay_start_ratio: float, floor_ratio: float):
     W = max(0, int(W))
@@ -112,9 +109,6 @@ def _legacy_plateau(W: int, T: int, decay_start_ratio: float, floor_ratio: float
     return lr_lambda
 
 
-# ---------------------------------------------------------------------------
-# Bit-identity against diffusers, over the compatible window
-# ---------------------------------------------------------------------------
 
 _COMPATIBLE = ("constant_with_warmup", "linear", "cosine",
                "cosine_with_restarts")
@@ -173,9 +167,6 @@ def test_polynomial_no_longer_refuses_a_tiny_learning_rate():
     assert scheduler.lr_lambdas[0](0) == 1.0
 
 
-# ---------------------------------------------------------------------------
-# plateau_cosine_floor: bit-identical to the deleted implementation
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("W,T", _SHAPES + [(0, 10000), (500, 10000)])
 @pytest.mark.parametrize("ratio,floor", [(0.85, 0.25), (0.0, 0.0), (1.0, 0.5),
@@ -208,9 +199,6 @@ def test_plateau_decay_start_equals_total():
     assert ours(200) == 0.25
 
 
-# ---------------------------------------------------------------------------
-# The deliberate changes
-# ---------------------------------------------------------------------------
 
 def test_constant_now_warms_up():
     ours = _ours("constant", 100, 1000)
@@ -243,9 +231,6 @@ def test_cosine_with_restarts_is_a_single_cosine_today():
         assert single(step) == restarts(step), step
 
 
-# ---------------------------------------------------------------------------
-# Purity (§4.3)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", LR_SCHEDULER_NAMES)
 def test_evaluation_order_does_not_change_any_value(name):

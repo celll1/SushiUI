@@ -64,9 +64,6 @@ from core.training.relora_trainer import ReLoRATrainer
 BASE_LR = 1e-4
 
 
-# ---------------------------------------------------------------------------
-# The deleted CosineWithMultipleWarmups.get_lr(), transcribed
-# ---------------------------------------------------------------------------
 
 class LegacyCosineWithMultipleWarmups:
     """A copy of ``relora_scheduler.py``'s multiplier, module and all deleted.
@@ -148,9 +145,6 @@ def _legacy_all_registered(T, W, Wr, restarts, min_lr_ratio=0.0):
     return legacy.multiplier
 
 
-# ---------------------------------------------------------------------------
-# The shipped curve
-# ---------------------------------------------------------------------------
 
 def _optimizer(lr=BASE_LR, groups=1):
     params = [torch.nn.Parameter(torch.zeros(4)) for _ in range(groups)]
@@ -206,9 +200,6 @@ def test_a_live_restart_is_the_same_curve_whenever_it_is_delivered():
         assert full(step) == live(step), step
 
 
-# ---------------------------------------------------------------------------
-# The correctness change of §17.3
-# ---------------------------------------------------------------------------
 
 def test_the_old_scheduler_really_did_shorten_a_segment_on_resume():
     """The defect this phase fixes, demonstrated against the transcription.
@@ -249,9 +240,6 @@ def test_a_segment_decays_towards_the_run_end_not_towards_the_next_merge():
     assert ours(midpoint) == pytest.approx(0.5, abs=1e-9)
 
 
-# ---------------------------------------------------------------------------
-# Persistence: the events are the restart list now
-# ---------------------------------------------------------------------------
 
 def test_restarts_survive_a_dump_and_load_and_a_later_one_is_dropped():
     """``dump(upto)`` truncates like every other event: rewinding to an earlier
@@ -392,9 +380,6 @@ def test_the_legacy_rebuild_does_not_run_when_events_carry_the_restarts():
     assert harness.lr_timeline.restarts() == [500]
 
 
-# ---------------------------------------------------------------------------
-# The three fallbacks are unreachable for ReLoRA
-# ---------------------------------------------------------------------------
 
 def test_relora_builds_a_lambdalr_with_one_lambda_per_group():
     spec = _spec(200, 2000, 100)
@@ -551,9 +536,6 @@ def test_evaluation_order_does_not_change_any_value():
         assert shuffled[step] == value, step
 
 
-# ---------------------------------------------------------------------------
-# Vocabulary and trainer wiring
-# ---------------------------------------------------------------------------
 
 def test_relora_is_resolvable_but_not_selectable():
     assert "relora" in INTERNAL_SCHEDULER_NAMES

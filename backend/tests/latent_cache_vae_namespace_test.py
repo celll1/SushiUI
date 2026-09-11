@@ -24,7 +24,6 @@ from core.training.base_trainer import BaseTrainer
 from core.training.vae_swap import module_latent_hash
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _tiny_vae():
     """A real AutoencoderKL, small enough to build in milliseconds. Two calls
@@ -76,7 +75,6 @@ def _cache_root(tmp_path, monkeypatch):
     return tmp_path
 
 
-# --- (a) two VAEs, two directories ------------------------------------------
 
 def test_two_vaes_get_two_directories_under_one_arch_namespace(capsys):
     first, second = _tiny_vae(), _tiny_vae()
@@ -99,7 +97,6 @@ def test_a_run_that_cannot_name_its_vae_falls_into_one_shared_bucket():
     assert _setup(_trainer(None)).cache_dir.name == "vae-unknown"
 
 
-# --- (b) switching away and back is free ------------------------------------
 
 def test_switching_back_to_the_first_vae_reuses_its_latents(capsys):
     first, second = _tiny_vae(), _tiny_vae()
@@ -137,7 +134,6 @@ def test_switching_back_survives_a_swap_declared_on_only_one_of_the_runs():
     assert _setup(_trainer(vae)).has_latent("a.png", 512, 512)
 
 
-# --- (c) text embeddings do not depend on the VAE ---------------------------
 
 def test_text_embeddings_stay_put_when_the_vae_changes():
     first, second = _tiny_vae(), _tiny_vae()
@@ -163,7 +159,6 @@ def test_the_latent_cache_points_at_that_same_text_embedding_directory():
     assert cache.cache_dir not in cache.embeddings_dir.parents
 
 
-# --- (d) what the switch left behind ----------------------------------------
 
 def test_the_listing_names_every_vae_cache_with_what_it_cost(tmp_path):
     first, second = _tiny_vae(), _tiny_vae()

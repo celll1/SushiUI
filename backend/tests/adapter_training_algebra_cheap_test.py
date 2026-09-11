@@ -108,7 +108,6 @@ def build(algorithm, options=None, seed=3, weight_decompose=False):
     return adapter, layers, model
 
 
-# --- the spec -------------------------------------------------------------
 
 def test_a_missing_field_normalizes_to_ordinary_lora():
     spec = resolve_training_adapter_spec(SimpleNamespace(config={}))
@@ -162,7 +161,6 @@ def test_lokr_options_reach_the_layer():
     assert layer.decompose_both and hasattr(layer, "lokr_w1_a")
 
 
-# --- the optimizer census -------------------------------------------------
 
 @pytest.mark.parametrize("algorithm,wd", CENSUS, ids=CENSUS_IDS)
 def test_every_factor_reaches_the_optimizer_exactly_once(algorithm, wd):
@@ -255,7 +253,6 @@ def test_the_fused_backward_hooks_fire_once_per_factor(algorithm, wd):
     assert all(not torch.equal(p, old) for p, old in zip(params, before))
 
 
-# --- export and resume ----------------------------------------------------
 
 @pytest.mark.parametrize("algorithm,folded", [("loha", "hada_w1_a"),
                                               ("lokr", "lokr_w1")])
@@ -356,7 +353,6 @@ def test_a_failed_resume_restores_the_layers_alpha(algorithm, tmp_path):
     assert [layer.alpha for layer in resumed.values()] == alphas_before
 
 
-# --- the two capability axes ----------------------------------------------
 
 def test_require_will_not_answer_without_an_axis():
     capability = ARCH_REGISTRY["krea2"].adapter_capability
@@ -445,7 +441,6 @@ def test_the_branch_factory_refuses_a_weight_only_quantized_base(algorithm,
     new_adapter_branch(algorithm, base, rank=RANK, alpha=ALPHA)
 
 
-# --- the run-level contract, refused before the model loads ---------------
 
 def _contract(network, method="lora", architecture="krea2", train=None):
     from core.training import train_runner

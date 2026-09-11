@@ -41,9 +41,6 @@ _NON_SENSENOVA_IMAGE_ARCHS = [
 ]
 
 
-# --------------------------------------------------------------------------
-# `image_defaults_for_arch`: the no-op proof
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", _NON_SENSENOVA_IMAGE_ARCHS + [None, "", "not_an_arch"])
 def test_non_sensenova_arch_resolves_to_generation_defaults_unchanged(arch):

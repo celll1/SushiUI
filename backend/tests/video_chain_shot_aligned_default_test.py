@@ -73,9 +73,6 @@ def _grid() -> VideoGridSpec:
     return VideoGridSpec.from_video_constraints(video_constraints_payload()["minimax_h3"])
 
 
-# --------------------------------------------------------------------------
-# 1. The resolution rule itself
-# --------------------------------------------------------------------------
 
 def test_the_wire_default_is_unset_not_a_mode():
     """`None` has to survive to the planner: it is not the same as `fixed`."""
@@ -103,9 +100,6 @@ def test_a_named_mode_wins_in_both_directions(named):
     assert resolve_segment_length_mode(named, [], TARGET) == named
 
 
-# --------------------------------------------------------------------------
-# 2. NEGATIVE CONTROL: an explicit `fixed` is byte-identical to the shipped plan
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("segment_frames", [None, SEGMENT, 200, CAP])
 @pytest.mark.parametrize("target", [300, 500, 1000])
@@ -120,9 +114,6 @@ def test_named_fixed_ignores_the_shots_entirely(segment_frames, target):
     ]
 
 
-# --------------------------------------------------------------------------
-# 3. Over the wire (POST /video-chain/plan), no server started
-# --------------------------------------------------------------------------
 
 def _app():
     from fastapi import FastAPI

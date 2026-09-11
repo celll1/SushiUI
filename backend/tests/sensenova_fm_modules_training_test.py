@@ -109,9 +109,6 @@ def test_off_is_the_same_when_fm_modules_is_absent_entirely():
     assert not hasattr(transformer, "fm_modules")
 
 
-# ---------------------------------------------------------------------------
-# On
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("branch", ["gen", "both"])
 def test_on_adds_the_16_tensors_to_the_generation_group(branch):
@@ -187,9 +184,6 @@ def test_the_branch_warning_is_emitted_once_not_per_call(capsys):
     assert out.count("sensenova_train_fm_modules_branch_mismatch") == 1
 
 
-# ---------------------------------------------------------------------------
-# Gradient-norm attribution
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("branch", ["gen", "both"])
 def test_fm_parameters_report_under_the_generation_component(branch):

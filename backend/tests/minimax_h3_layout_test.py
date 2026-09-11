@@ -236,9 +236,6 @@ def test_unpack_audio_rows_is_channel_major():
             assert torch.equal(unpacked[ch, :, t], rows[ch * num_latents + t])
 
 
-# ---------------------------------------------------------------------------
-# Noise draw order
-# ---------------------------------------------------------------------------
 
 # Geometry of the recorded digests: T = 22 @ 384x640 -> T_lat 7, 24x40 latents,
 # T_aud 37.
@@ -337,9 +334,6 @@ def test_audio_enable_does_not_perturb_the_draw_sequence():
     assert "audio_enable" not in inspect.signature(ops.draw_noise).parameters
 
 
-# ---------------------------------------------------------------------------
-# Visual conditioning (fl2va)
-# ---------------------------------------------------------------------------
 
 class _ScaleNoiseOnly:
     """The vendored scheduler's `scale_noise`, isolated (no weights needed)."""
@@ -759,9 +753,6 @@ def test_build_condition_rows_requires_one_draw_per_condition():
     assert ops.build_condition_rows(_ScaleNoiseOnly(), [], []).numel() == 0
 
 
-# ---------------------------------------------------------------------------
-# Frame geometry
-# ---------------------------------------------------------------------------
 
 def test_latent_frame_and_audio_latent_geometry():
     """The two closed forms, on the values Phase 0 measured."""

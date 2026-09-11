@@ -42,9 +42,6 @@ PROJECTION_4B = "mmh3-4b-ClipProj-celeb-mlp.safetensors"
 D_IN, TEXT_DIM = 6, 9
 
 
-# ---------------------------------------------------------------------------
-# Fixtures: tiny stand-ins for every real file the measurement touches
-# ---------------------------------------------------------------------------
 
 class _Tokenizer:
     """Deterministic word-level tokenizer; `add_special_tokens` is honoured."""
@@ -182,9 +179,6 @@ def _fabricate_bank(root, suite, components, *, reference_name="released_32b.saf
     return str(reference_path)
 
 
-# ---------------------------------------------------------------------------
-# 1. The prompt suite is a tracked, versioned asset
-# ---------------------------------------------------------------------------
 
 def test_the_shipped_suite_is_the_gate_corpus_and_carries_a_version():
     suite = ta.load_suite()
@@ -241,9 +235,6 @@ def test_a_bank_from_another_suite_is_not_compared_against(
     assert ta.measure_substitution(components, root=root) is None
 
 
-# ---------------------------------------------------------------------------
-# 2. Identity keying
-# ---------------------------------------------------------------------------
 
 def test_the_same_file_keys_the_same_way(tmp_path):
     path = str(tmp_path / "encoder.safetensors")
@@ -332,9 +323,6 @@ def test_the_measurement_key_depends_on_all_three_files_and_the_suite():
         assert ta.measurement_key(*changed) != key
 
 
-# ---------------------------------------------------------------------------
-# 3. Storage: written, read back, and degrading to "none"
-# ---------------------------------------------------------------------------
 
 def test_a_measurement_is_stored_and_read_back(tmp_path, stub_encode, suite):
     projection = _projection_file(tmp_path)
@@ -389,9 +377,6 @@ def test_a_bank_whose_tensor_file_vanished_is_not_offered(tmp_path, stub_encode,
     assert ta.measure_substitution(components, root=root) is None
 
 
-# ---------------------------------------------------------------------------
-# 4. The metrics, on tensors with known answers
-# ---------------------------------------------------------------------------
 
 def _pairs(reference, candidate):
     return [(reference, candidate)]
@@ -491,9 +476,6 @@ def test_a_projection_that_changed_the_row_count_is_refused(tmp_path, stub_encod
         ta.measure_substitution(components, root=root)
 
 
-# ---------------------------------------------------------------------------
-# 6. Building a bank: the two refusals
-# ---------------------------------------------------------------------------
 
 def test_a_substitute_cannot_be_used_as_a_reference(tmp_path, stub_encode):
     projection = _projection_file(tmp_path)

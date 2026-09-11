@@ -67,7 +67,6 @@ def _clean_execution_state():
     clear_probe_cache()
 
 
-# -- fixtures --------------------------------------------------------------
 
 def _base(seed: int = 0) -> nn.Linear:
     torch.manual_seed(seed)
@@ -122,7 +121,6 @@ def _x(seed: int = 11) -> torch.Tensor:
     return torch.randn((3, D_IN), generator=generator)
 
 
-# -- the reference backend -------------------------------------------------
 
 class TestReferenceBackend:
     def test_the_reference_backend_is_registered_and_needs_no_probe(self):
@@ -167,7 +165,6 @@ class TestReferenceBackend:
                                branch.reference_delta(x)), f"{name}: delta"
 
 
-# -- selection -------------------------------------------------------------
 
 class TestSelection:
     def test_an_unknown_backend_is_refused_with_its_code(self):
@@ -204,7 +201,6 @@ class TestSelection:
         assert active_backend() is None
 
 
-# -- the probe -------------------------------------------------------------
 
 class TestProbe:
     def test_a_correct_backend_passes_and_then_runs(self):
@@ -312,7 +308,6 @@ class TestProbe:
         assert "probe budget" in (result.reason or "")
 
 
-# -- the latch -------------------------------------------------------------
 
 class TestLatch:
     def test_a_backend_that_raises_during_its_probe_latches_off(self):
@@ -419,7 +414,6 @@ class TestLatch:
         assert "before it produced any result" in warnings[0][0]
 
 
-# -- warm-up ---------------------------------------------------------------
 
 class TestWarmUp:
     def test_warm_up_probes_every_region_before_any_step(self):
@@ -514,7 +508,6 @@ class TestWarmUp:
         assert report.regions == 1 and report.usable == 0
 
 
-# -- the dispatch point ----------------------------------------------------
 
 class TestDispatchPoint:
     """A future fused backend must replace the delta computation without any

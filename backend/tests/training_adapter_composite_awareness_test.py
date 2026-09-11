@@ -49,7 +49,6 @@ from core.adapters import (  # noqa: E402
 RANK, ALPHA = 4, 8
 
 
-# --- helpers ---------------------------------------------------------------
 
 def cover(parent, slot, branch_name="installed"):
     """Install a composite with one branch over ``parent[slot]``.
@@ -99,7 +98,6 @@ def trainer(**kwargs):
     return types.SimpleNamespace(**kwargs)
 
 
-# --- ACE-Step: include-test (_is_target) + skip-test ------------------------
 
 def test_acestep_enumerates_and_skips_an_occupied_target():
     from acestep_lora_roundtrip_cheap_test import build_dit
@@ -132,7 +130,6 @@ def test_acestep_enumerates_and_skips_an_occupied_target():
     assert_left_alone(dit, parent, attr, composite, before)
 
 
-# --- pure skip-tests over an already composite-aware model enumerator -------
 
 def _skip_case(build_model, iter_targets, scope, adapter_cls, trainer_kwargs):
     plain = build_model()
@@ -223,7 +220,6 @@ def test_minit2i_text_encoder_skips_an_occupied_target():
     assert_left_alone(te, parent, attr, composite, before)
 
 
-# --- LTX-2.3: include-tests, feed-forward descent guard, skip-test ----------
 
 _LTX2_FF_SCOPE = {"attention": True, "audio": False, "av_cross": False, "ff": True}
 
@@ -275,7 +271,6 @@ def test_ltx2_feed_forward_walk_does_not_descend_into_a_composite():
     assert sorted(yielded) == sorted(baseline)
 
 
-# --- MiniMax-H3: include-test + skip-test ----------------------------------
 
 def test_minimax_h3_enumerates_and_skips_an_occupied_target():
     from minimax_h3_lora_roundtrip_cheap_test import _Stub
@@ -303,7 +298,6 @@ def test_minimax_h3_enumerates_and_skips_an_occupied_target():
     assert_left_alone(model, parent, attr, composite, before)
 
 
-# --- SD1.5 / SDXL: descent guard in the UNet walk, skip in the TE walk ------
 
 def _first_transformer_linear(unet):
     """(parent, attr, path) of a Linear inside the first Transformer2DModel."""
@@ -450,7 +444,6 @@ def test_zimage_wrap_decision_skips_a_composite_unchanged():
     assert_left_alone(model, attn, "to_q", composite, before)
 
 
-# --- SenseNova: refuse rather than nest, on both routes ---------------------
 
 def test_sensenova_lora_refuses_a_composite_covered_target():
     from sensenova_lora_roundtrip_cheap_test import build_model
@@ -498,7 +491,6 @@ def test_sensenova_full_finetune_refuses_a_composite_covered_target():
     assert_left_alone(model, parent, attr, composite, before)
 
 
-# --- the sample-preview detour's site collector ----------------------------
 
 class _DetourStub(nn.Module):
     def __init__(self):
@@ -533,7 +525,6 @@ def test_training_lora_detour_is_unchanged_on_a_plain_wrapped_tree():
     assert {id(w) for _p, _a, w in sites} == {id(model.a), id(model.b)}
 
 
-# --- the shared walker's own contract --------------------------------------
 
 def test_walker_matches_named_modules_when_no_adapter_is_installed():
     from sd15_lora_roundtrip_cheap_test import build_unet

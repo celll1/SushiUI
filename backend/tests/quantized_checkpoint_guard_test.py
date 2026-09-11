@@ -562,7 +562,6 @@ class DeclaredSemanticsGuardTest(unittest.TestCase):
         model.fc = torch.nn.Linear(8, 8, bias=False)
         return model
 
-    # -- negative controls ---------------------------------------------------
 
     def test_an_unmarked_int8_checkpoint_is_unaffected(self):
         from core.models.ideogram4.vendor.int8_linear import (
@@ -597,7 +596,6 @@ class DeclaredSemanticsGuardTest(unittest.TestCase):
         self.assertIsNone(guard.unsupported_quant_semantics_report(_plain_sd()))
         guard.refuse_unsupported_quant_semantics(_plain_sd(), arch="flux2")
 
-    # -- the refusal ---------------------------------------------------------
 
     def test_the_real_convrot_marker_decodes(self):
         parsed = guard.decode_comfy_quant_marker(self._marker(self.CONVROT_MARKER))

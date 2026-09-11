@@ -137,9 +137,6 @@ def _census(stochastic_rounding: bool, steps: int) -> Dict[str, float]:
     }
 
 
-# ---------------------------------------------------------------------------
-# The negative control: what the shipped configuration does
-# ---------------------------------------------------------------------------
 
 class NegativeControlTest(unittest.TestCase):
     """Adafactor at the shipped default, on this route's own seam.
@@ -174,9 +171,6 @@ class NegativeControlTest(unittest.TestCase):
         self.assertAlmostEqual(four_hundred["drift_fraction"], 1.0, places=2)
 
 
-# ---------------------------------------------------------------------------
-# The trainer stub: real BaseTrainer.setup_optimizer, no model
-# ---------------------------------------------------------------------------
 
 class _StubTrainer:
     """The smallest object ``BaseTrainer.setup_optimizer`` runs against.
@@ -464,9 +458,6 @@ class SenseNovaLoraUnchangedTest(unittest.TestCase):
         self.assertTrue(getattr(trainer.optimizer.step_param, WRAPPED_ATTR, False))
 
 
-# ---------------------------------------------------------------------------
-# The dropout guard
-# ---------------------------------------------------------------------------
 
 _BRANCH_FLAGS = {
     "gen": {"train_unet": True, "train_text_encoder": False},

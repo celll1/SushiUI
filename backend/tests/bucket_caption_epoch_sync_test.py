@@ -103,9 +103,6 @@ def _flat_bucket_entries(bm):
     return [info for infos in bm.buckets.values() for info in infos]
 
 
-# ===========================================================================
-# M1 -- the caption in the bucket tracks the reload
-# ===========================================================================
 
 def test_bucket_caption_reflects_epoch_reload():
     ds = _Dataset("ds1", [
@@ -215,9 +212,6 @@ def test_missing_item_does_not_raise_or_leak():
     assert entries["b.png"] == "dropped-by-reload"
 
 
-# ===========================================================================
-# M5 -- no-bucketing path is untouched
-# ===========================================================================
 
 def test_no_bucketing_path_untouched():
     ds = _Dataset("ds1", [{"image_path": "a.png", "width": 1024, "height": 1024, "caption": "1girl"}])

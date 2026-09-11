@@ -155,9 +155,6 @@ def _drop(model):
     gc.collect()
 
 
-# ---------------------------------------------------------------------------
-# Which config the module is built from
-# ---------------------------------------------------------------------------
 
 def test_declared_dims_build_the_module_at_the_files_own_width(tmp_path, capsys):
     official = _official_tree(tmp_path)
@@ -252,9 +249,6 @@ def test_a_file_that_does_not_declare_text_only_still_requires_the_vision_tower(
         loader._build_text_encoder(te_path, official)
 
 
-# ---------------------------------------------------------------------------
-# Selection: a converted file is never auto-selected
-# ---------------------------------------------------------------------------
 
 def _tree(tmp_path, te_files):
     root = tmp_path / "tree"
@@ -312,9 +306,6 @@ def test_capability_predicate_rejects_a_converted_file_directly(tmp_path):
     assert loader._te_capability_accept(path) is False
 
 
-# ---------------------------------------------------------------------------
-# The candidate listing
-# ---------------------------------------------------------------------------
 
 def test_listing_shows_a_converted_file_as_selectable_but_not_default(tmp_path):
     path = tmp_path / CONVERTED_NAME

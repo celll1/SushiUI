@@ -25,9 +25,6 @@ from core.models.common import gguf_container as g  # noqa: E402
 from core.models.minimax_music3 import loader  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Detection
-# ---------------------------------------------------------------------------
 
 def test_is_minimax_music3_gguf_dit_true_for_the_dit_signature(tmp_path):
     from tests.minimax_music3_gguf_fixture import write_tiny_gguf_dit_and_official_tree
@@ -187,10 +184,6 @@ def test_gguf_dit_q8_0_refusal_fires_before_official_configs_are_even_needed(tmp
         )
 
 
-# ---------------------------------------------------------------------------
-# Pruned text-encoder GGUF: round trip on an all-unquantized fixture, Q8_0
-# refusal on a Q8_0-bearing one (mirrors the real staged file's situation).
-# ---------------------------------------------------------------------------
 
 def test_pruned_gguf_text_encoder_builder_round_trip(tmp_path):
     from tests.minimax_music3_gguf_fixture import write_tiny_pruned_gguf_text_encoder_and_official_tree

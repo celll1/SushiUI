@@ -51,9 +51,6 @@ from core.models.components.wiring import (  # noqa: E402
 )
 
 
-# ===========================================================================
-# helpers
-# ===========================================================================
 
 def _write_video(path: str, num_frames: int, fps: float, w: int = 64, h: int = 48):
     """Write a lossless FFV1 clip whose frame ``i`` is the constant colour
@@ -80,9 +77,6 @@ def _indices_of(clip: torch.Tensor):
     return out
 
 
-# ===========================================================================
-# 1. clip-length validity
-# ===========================================================================
 
 # (value, expected) -- pinned from the pre-refactor implementation. Note the
 # two quirks that are behaviour, not accident: both validators int()-coerce, so
@@ -122,9 +116,6 @@ def test_default_clip_lengths_unchanged():
     assert B.LTX_SPATIAL_DIVISIBILITY == 32
 
 
-# ===========================================================================
-# 2. clip_span / pick_clip_length
-# ===========================================================================
 
 @pytest.mark.parametrize("length,stride,expected", [
     (9, 1, 9), (9, 2, 17), (1, 5, 1), (49, 1, 49), (0, 0, 1), (17, 3, 49),
@@ -159,9 +150,6 @@ def test_pick_clip_length(num_frames, stride, allowed, expected):
     assert B.pick_clip_length(num_frames, stride, allowed) == expected
 
 
-# ===========================================================================
-# 3. sample_clip_window
-# ===========================================================================
 
 @pytest.mark.parametrize("num_frames,length,stride,expected", [
     (100, 9, 1, 45),     # centered: (100-9)//2
@@ -186,9 +174,6 @@ def test_sample_clip_window_training_stays_in_range():
         assert 0 <= s <= 100 - 17
 
 
-# ===========================================================================
-# 4. spatial bucket
-# ===========================================================================
 
 @pytest.mark.parametrize("w,h,res,expected", [
     (1920, 1080, 768, (992, 576)),
@@ -202,9 +187,6 @@ def test_spatial_bucket(w, h, res, expected):
     assert b.width % 32 == 0 and b.height % 32 == 0
 
 
-# ===========================================================================
-# 5. load_clip
-# ===========================================================================
 
 @pytest.fixture(scope="module")
 def clip24(tmp_path_factory):
@@ -300,9 +282,6 @@ def test_clip_key_never_collides_with_image_key():
             != LatentCache.compute_image_hash("D:/v/a.webm", 768, 512))
 
 
-# ===========================================================================
-# 7. VideoBucketManager
-# ===========================================================================
 
 def test_vbm_defaults_and_filtering():
     vbm = B.VideoBucketManager(base_resolutions=[512])
@@ -427,9 +406,6 @@ def test_ltx_index_policy_and_no_extra_key_fields():
                                              resample_policy="index"))
 
 
-# ===========================================================================
-# 9. Phase 6a: MiniMax-H3 (17n+5, 24 fps, 22-frame decodable floor)
-# ===========================================================================
 
 H3 = MINIMAX_H3_TEMPORAL
 
@@ -527,9 +503,6 @@ def test_h3_key_discriminates_policy_tiling_and_start_time():
     assert len(set(keys)) == len(keys), "every policy field must discriminate"
 
 
-# ---------------------------------------------------------------------------
-# 9b. timestamp resampling -- the sampled SOURCE indices
-# ---------------------------------------------------------------------------
 
 def test_h3_source_indices_24fps_are_consecutive():
     """A 24 fps source needs no resampling: 1:1, same as the index policy."""
@@ -585,9 +558,6 @@ def test_h3_sample_window_returns_seconds():
     assert abs(w.start_time - w.start_frame / 30.0) < 1e-9
 
 
-# ---------------------------------------------------------------------------
-# 9c. the blocker this phase exists to remove: load_clip rejecting 22 frames
-# ---------------------------------------------------------------------------
 
 def test_h3_lengths_load_through_the_shared_loader(clip30):
     """22 and 39 frames were REJECTED by `load_clip` before Phase 6a."""

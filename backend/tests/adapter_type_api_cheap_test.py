@@ -121,7 +121,6 @@ def scanned(tmp_path_factory):
     return manager, directory, entries
 
 
-# --- what the FILE is ------------------------------------------------------
 
 def test_sd_scripts_loha_is_no_longer_reported_as_an_ordinary_lora(scanned):
     _, _, entries = scanned
@@ -217,7 +216,6 @@ def test_details_endpoint_reports_the_same_fields_as_the_list(scanned):
     assert info["layers"] and info["exists"] is True
 
 
-# --- the per-file cache ----------------------------------------------------
 
 def test_rescan_does_not_reread_unchanged_files(scanned, monkeypatch):
     manager, _, _ = scanned
@@ -257,7 +255,6 @@ def test_an_edited_file_is_reread(tmp_path):
     assert manager.get_available_loras(force_rescan=True)[0]["adapter_type"] == "loha"
 
 
-# --- the assertion ---------------------------------------------------------
 
 def _items(manager, monkeypatch, payload):
     """Driven through `asyncio.run`, which is also what pins that the disk read
@@ -378,7 +375,6 @@ def test_every_other_item_field_survives_the_parse(scanned, monkeypatch):
     assert item["components"] == ["transformer"] and item["some_future_key"] == 3
 
 
-# --- capability reporting --------------------------------------------------
 
 def test_capability_payload_is_read_from_the_enablement_table():
     from api.arch_capabilities import adapter_families_payload
@@ -499,7 +495,6 @@ def test_no_panel_rebuilds_a_lora_item_field_by_field(panel):
             pytest.fail(f"{panel} constructs a LoRA item inline: {line.strip()}")
 
 
-# --- spec parity -----------------------------------------------------------
 
 def _openapi_schema(name):
     import yaml

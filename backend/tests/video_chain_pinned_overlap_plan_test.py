@@ -45,9 +45,6 @@ def _grid() -> VideoGridSpec:
     return VideoGridSpec.from_video_constraints(video_constraints_payload()["minimax_h3"])
 
 
-# --------------------------------------------------------------------------
-# 1. The plan states the length the chain reaches
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("overlap", OVERLAPS)
 def test_every_segments_end_is_what_the_generation_would_return(overlap):
@@ -227,9 +224,6 @@ def test_a_capability_floor_below_the_measurement_would_fail_here():
     assert MINIMAX_H3_PINNED_TAIL_MIN_FRAMES == 5
 
 
-# --------------------------------------------------------------------------
-# 3. The queue sends the request the plan assumed
-# --------------------------------------------------------------------------
 
 def _videochain_ts() -> str:
     path = os.path.join(

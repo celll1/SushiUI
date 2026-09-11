@@ -172,10 +172,6 @@ def _call(monkeypatch, tmp_path, manager, session, content: bytes, **overrides):
     return asyncio.run(routes.generate_aud2aud(**kwargs))
 
 
-# ---------------------------------------------------------------------------
-# ACE-Step no-op proof: the params dict this route builds for an ACE-Step
-# request is unaffected by MiniMax Music 3's three new keys.
-# ---------------------------------------------------------------------------
 
 _ACESTEP_ORIGINAL_KEYS = (
     "prompt", "lyrics", "seed", "inference_steps", "guidance_scale", "shift", "cover_strength", "mode",

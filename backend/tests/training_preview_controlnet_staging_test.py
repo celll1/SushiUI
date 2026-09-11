@@ -53,9 +53,6 @@ def _generator(device, dtype):
 
 
 def test_cached_controlnet_is_restaged_on_every_preview(monkeypatch):
-    """MUTANT: dropping the re-stage after load_controlnet. Preview #1 works;
-    the preview finally moves the cached module to CPU; preview #2 raises
-    'Expected all tensors to be on the same device' forever after."""
     import torch
 
     cn = _FakeControlNet()

@@ -40,9 +40,6 @@ from core.training.adapters.sensenova_adapter import SenseNovaLoRAAdapter
 from core.training.ops import sensenova_ops
 
 
-# ---------------------------------------------------------------------------
-# Module trees
-# ---------------------------------------------------------------------------
 
 
 class _Attention(nn.Module):
@@ -126,9 +123,6 @@ def _grouped_for(transformer, branch):
     }
 
 
-# ---------------------------------------------------------------------------
-# A. The enumerator
-# ---------------------------------------------------------------------------
 
 
 def test_understanding_targets_are_294_with_no_suffix_anywhere():
@@ -187,9 +181,6 @@ def test_gradient_unreachable_targets_are_named_not_counted():
     assert len(und) - len(dead) == 289
 
 
-# ---------------------------------------------------------------------------
-# B. Inference application
-# ---------------------------------------------------------------------------
 
 
 def test_inference_now_applies_understanding_keys_instead_of_dropping_them():
@@ -304,9 +295,6 @@ def test_partial_application_is_reported_rather_than_silent():
     assert check_lora_application(grouped, 588, None) is None
 
 
-# ---------------------------------------------------------------------------
-# C. Training adapter
-# ---------------------------------------------------------------------------
 
 
 def _adapter(transformer, *, train_text_encoder=True, rank=2, alpha=4, **lrs):
@@ -510,9 +498,6 @@ def test_positive_assertion_catches_a_partially_differentiable_prefix():
         sensenova_ops._assert_immutable_prefix_cache(cache, 4, trainable=True)
 
 
-# ---------------------------------------------------------------------------
-# E. The differentiable prefix pass
-# ---------------------------------------------------------------------------
 
 
 class _UndLayer(nn.Module):

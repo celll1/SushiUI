@@ -72,9 +72,6 @@ ENC_GRID = 4
 REPA_SIZE = 32
 
 
-# ---------------------------------------------------------------------------
-# Toy transformer
-# ---------------------------------------------------------------------------
 
 class _Layer(nn.Module):
     """One decoder layer. ``mix`` averages over the sequence, so a perturbation
@@ -249,9 +246,6 @@ def _pixels(batch: int = 1):
     return torch.rand(batch, 3, REPA_SIZE, REPA_SIZE) * 2 - 1
 
 
-# ---------------------------------------------------------------------------
-# (a) the disabled path
-# ---------------------------------------------------------------------------
 
 def _decoder_forward(model, hidden, batch=1):
     return sensenova_ops.forward_gen_decoder_layers(
@@ -336,9 +330,6 @@ def test_a_forward_clears_what_a_previous_one_stashed():
     assert model.decoder._repa_tap_out is None
 
 
-# ---------------------------------------------------------------------------
-# the handler's answer
-# ---------------------------------------------------------------------------
 
 def test_the_handler_answers_with_the_decoder_its_width_and_its_layer_count():
     model = _toy()
@@ -403,9 +394,6 @@ def test_sensenova_does_not_consume_the_block_loop_features():
     assert ARCH_REGISTRY["sensenova"].consumes_block_loop_features is False
 
 
-# ---------------------------------------------------------------------------
-# (b) the gradient reaches the model
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("checkpoint_layers", [False, True])
 def test_the_tap_carries_gradient_to_the_layers_at_and_below_it(checkpoint_layers):
@@ -443,9 +431,6 @@ def test_the_tap_carries_gradient_to_the_layers_at_and_below_it(checkpoint_layer
     assert hidden.grad is not None and float(hidden.grad.abs().sum()) > 0
 
 
-# ---------------------------------------------------------------------------
-# (c) spatial correspondence
-# ---------------------------------------------------------------------------
 
 def test_the_tap_is_the_image_tokens_at_the_token_grid():
     """One row per 32px token, not per pixel or per latent cell: the sequence
@@ -493,9 +478,6 @@ def test_the_index_builder_lays_the_same_grid_out_row_major():
     assert indexes[2].tolist() == [i % TW for i in range(TOKENS)]
 
 
-# ---------------------------------------------------------------------------
-# the per-step path
-# ---------------------------------------------------------------------------
 
 def test_train_step_adds_a_finite_alignment_term_that_reaches_the_decoder():
     model = _toy()
@@ -596,9 +578,6 @@ def test_the_arch_handler_passes_the_batch_pixels_through():
     assert seen["repa_pixels"] is pixels
 
 
-# ---------------------------------------------------------------------------
-# (e) the packed batch form
-# ---------------------------------------------------------------------------
 
 def test_the_packed_sequence_regroups_item_major():
     """batch > 1 packs every item's tokens along ONE sequence axis, so the tap
@@ -653,9 +632,6 @@ def test_a_packed_tap_with_the_wrong_item_count_refuses():
         _train_step(trainer, repa_pixels=_pixels(batch=2), batch=2)
 
 
-# ---------------------------------------------------------------------------
-# (d) the full-FT save
-# ---------------------------------------------------------------------------
 
 _FULL_FT_LAYERS = 42
 _FULL_FT_IN, _FULL_FT_OUT = 8, 4
@@ -765,9 +741,6 @@ def test_a_sharded_save_puts_the_projector_where_the_resume_will_look(tmp_path, 
     assert written.endswith(repa_module.CHECKPOINT_SUFFIXES)
 
 
-# ---------------------------------------------------------------------------
-# the capability table
-# ---------------------------------------------------------------------------
 
 def test_sensenova_is_offered_the_repa_control():
     assert "repa" not in TRAINING_FEATURE_UNSUPPORTED.get("sensenova", {})

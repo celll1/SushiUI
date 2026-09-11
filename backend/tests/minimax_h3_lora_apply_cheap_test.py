@@ -36,11 +36,6 @@ from core.training.adapters.minimax_h3_adapter import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# Stub transformer: the vendored module-tree NAMING the adapter walks
-# (transformer_blocks.<i>.attn.{to_q,to_k,to_v,to_out.0} / ff.{net.0.proj,net.2}),
-# at widths chosen to be tiny -- nothing here depends on the real sizes.
-# ---------------------------------------------------------------------------
 
 _HIDDEN = 16
 _INNER = 8
@@ -135,9 +130,6 @@ def _codes(recorded):
     return [code for _message, code in recorded]
 
 
-# ---------------------------------------------------------------------------
-# 1. Headline fix: a SushiUI-trained LoRA normalises to the adapter's own paths
-# ---------------------------------------------------------------------------
 
 def test_native_round_trip_matches_the_adapter_paths_exactly(tmp_path):
     path, count = _save_native_lora(tmp_path)

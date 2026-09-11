@@ -28,7 +28,6 @@ from core.training.vae_swap import module_latent_hash
 NAMESPACE = "sdxl__c4__dtfloat16"
 
 
-# --- fixtures ---------------------------------------------------------------
 
 def _tiny_vae():
     """A real AutoencoderKL, small enough to build in milliseconds. Two calls
@@ -81,7 +80,6 @@ def _one_namespace(monkeypatch):
     monkeypatch.setattr(lc, "vae_cache_namespace", lambda _hash: "vae-collision")
 
 
-# --- the identity that gets recorded ----------------------------------------
 
 def test_a_fresh_cache_records_this_run_s_vae():
     vae = _tiny_vae()
@@ -109,7 +107,6 @@ def test_the_recorded_identity_is_the_encoding_module_not_the_resolver():
     assert cache.cache_dir.name == f"vae-{module_latent_hash(vae)}"
 
 
-# --- (b) same VAE: the cache is reused --------------------------------------
 
 def test_the_same_vae_reuses_the_cached_latents(capsys):
     vae = _tiny_vae()
@@ -133,7 +130,6 @@ def test_a_different_base_model_with_the_same_vae_keeps_the_cache(capsys):
     assert "Model path differs" in out and "Validation passed" in out
 
 
-# --- a collision in one namespace: separated by the stamp, and said out loud --
 
 def test_two_vaes_sharing_a_namespace_discard_the_cache_and_log_what_differed(
         capsys, _one_namespace):
@@ -186,7 +182,6 @@ def test_one_stale_dataset_does_not_discard_the_others(_one_namespace):
     assert not caches["ds2"].has_latent("a.png", 512, 512)
 
 
-# --- the three paths a flag-based invalidation missed ------------------------
 
 def test_the_video_and_audio_hit_paths_see_a_mismatched_cache_as_empty(_one_namespace):
     # LTX-2.3 / MiniMax-H3 / ACE-Step decide a cache hit with load_clip_record /
@@ -243,7 +238,6 @@ def test_an_interrupted_regeneration_leaves_no_stamp_the_old_vae_can_use(
     assert again.load_cache_info()["vae_latent_hash"] == module_latent_hash(first)
 
 
-# --- an unhashable VAE: keep the latents, but never leave a stamp ------------
 
 class _UnhashableVAE(torch.nn.Module):
     """A live VAE whose state_dict() raises, which is the only way
@@ -297,7 +291,6 @@ def test_the_next_run_in_that_bucket_does_not_trust_an_unverified_cache(capsys):
     assert not again.has_latent("a.png", 512, 512)
 
 
-# --- only the latent space is worth deleting an encode over ------------------
 
 def test_a_training_dtype_change_keeps_the_cache(capsys):
     vae = _tiny_vae()
@@ -351,7 +344,6 @@ def test_a_crash_mid_stamp_leaves_the_previous_stamp_intact(monkeypatch):
     assert list(cache.cache_dir.glob("*.tmp")) != []  # the debris is the temp file
 
 
-# --- the VAE identity is not always computable ------------------------------
 
 def test_a_run_without_a_vae_records_no_identity_and_still_matches_itself():
     # Pixel-space archs (MiniT2I) have no VAE; two such runs agree rather than

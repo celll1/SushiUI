@@ -236,9 +236,6 @@ def test_cooldown_is_required_exactly_when_more_than_one_fire_is_allowed():
                              "cooldown": 2})["cooldown"] == 2
 
 
-# ---------------------------------------------------------------------------
-# D45: what may be watched
-# ---------------------------------------------------------------------------
 
 def test_learning_rate_is_not_a_signal_and_says_why():
     with pytest.raises(ValueError) as e:
@@ -383,9 +380,6 @@ def test_the_window_grid_is_absolute_so_a_resume_cannot_shift_it():
     assert b_closed[0] == a_closed[1]
 
 
-# ---------------------------------------------------------------------------
-# below / above
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("predicate,threshold,values,expected", [
     ("below", 0.5, [1.0, 0.9, 0.4], [False, False, True]),
@@ -414,9 +408,6 @@ def test_below_and_above_fire_on_the_observation_that_crosses(
     assert edge.observe(threshold) is False
 
 
-# ---------------------------------------------------------------------------
-# D48 / D61 / D62: max_fires and cooldown
-# ---------------------------------------------------------------------------
 
 def test_a_trigger_disarms_after_max_fires_and_stays_visible():
     trigger = Trigger(**validate_trigger(
@@ -464,9 +455,6 @@ def test_the_plateau_baseline_is_dropped_after_a_firing():
     assert trigger.best is None and trigger.misses == 0
 
 
-# ---------------------------------------------------------------------------
-# D50 / D51: firing through the ordinary add(), and what a refusal costs
-# ---------------------------------------------------------------------------
 
 def test_a_firing_materialises_an_ordinary_event_at_the_current_step(tmp_path):
     trainer = FakeTrainer(tmp_path, name="plateau_cosine_floor", T=1000,
@@ -553,9 +541,6 @@ def test_an_ignored_firing_still_counts(tmp_path):
     assert not is_refused_result("ignored_already_decaying")
 
 
-# ---------------------------------------------------------------------------
-# D45: the ring, fed at the metrics site and read at seam (c)
-# ---------------------------------------------------------------------------
 
 def test_the_metrics_site_feeds_the_ring_and_the_poll_drains_it(tmp_path):
     trainer = FakeTrainer(tmp_path, T=1000)
@@ -746,9 +731,6 @@ def test_a_resume_from_before_a_firing_drops_the_event_and_rearms(tmp_path):
     assert resumed.state(20) == STATE_DECAYING
 
 
-# ---------------------------------------------------------------------------
-# Registration through the control queue (§20.6/D53) and the published state
-# ---------------------------------------------------------------------------
 
 def test_registration_and_cancellation_ride_the_queue_and_make_no_event(tmp_path):
     trainer = FakeTrainer(tmp_path, T=1000)
@@ -866,9 +848,6 @@ def test_the_interval_is_on_the_global_axis_and_gas_does_not_divide_it(tmp_path)
     assert decay["at"] == 25
 
 
-# ---------------------------------------------------------------------------
-# API surface
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def routes():
@@ -1100,9 +1079,6 @@ def test_the_published_state_is_documented():
     assert set(schema["required"]) == set(trigger.status())
 
 
-# ---------------------------------------------------------------------------
-# D61 / D62 / D63 / D64: audit fixes
-# ---------------------------------------------------------------------------
 
 def test_non_finite_signals_are_silently_dropped_by_the_ring():
     ts = TriggerSet()

@@ -53,9 +53,6 @@ def _middle_third_pinned():
     return tuple(t for t in range(NUM_AUDIO_LATENTS) if not free_lo <= t < free_hi)
 
 
-# --------------------------------------------------------------------------
-# build_packed_layout: the permutation and what it does to num_condition_audio_rows
-# --------------------------------------------------------------------------
 
 def test_no_pin_leaves_the_permutation_none_and_pins_nothing():
     """NEGATIVE CONTROL: the unpinned layout is not touched by this feature."""
@@ -247,9 +244,6 @@ def test_unpack_audio_rows_on_the_restored_block_is_channel_correct():
     assert torch.equal(unpacked[0, :, 0], rows[0])
 
 
-# --------------------------------------------------------------------------
-# pin_target_audio's whole-track case is now the P=all-latents degenerate case
-# --------------------------------------------------------------------------
 
 def test_pin_target_audio_generalises_to_an_identity_permutation():
     """The whole-track shorthand is bitwise unchanged: the identity permutation
@@ -272,9 +266,6 @@ def test_pin_target_audio_and_pinned_audio_latents_are_mutually_exclusive():
         _layout((0,), pin_target_audio=True)
 
 
-# --------------------------------------------------------------------------
-# Validation
-# --------------------------------------------------------------------------
 
 def test_pinned_audio_latents_out_of_range_is_refused():
     with pytest.raises(ValueError, match="outside this clip"):
@@ -309,9 +300,6 @@ def test_ref2va_layout_carries_the_same_none_keys():
     assert layout["audio_row_order"] is None
 
 
-# --------------------------------------------------------------------------
-# plan_audio_pin_latents: the route/backend-shared snap arithmetic
-# --------------------------------------------------------------------------
 
 def test_free_and_pinned_are_exact_complements():
     free, pinned = plan_audio_pin_latents(40, 85, 207, fps=24.0, latents_per_second=40.0)
@@ -349,9 +337,6 @@ def test_the_free_span_is_clamped_to_the_audio_grid():
     assert free[0] == 0
 
 
-# --------------------------------------------------------------------------
-# Backend wiring: `_generate_vidinpaint_minimax_h3`'s `regenerate_range` mode
-# --------------------------------------------------------------------------
 
 GENERATED_VALUE = 7
 SOURCE_VALUE = 200

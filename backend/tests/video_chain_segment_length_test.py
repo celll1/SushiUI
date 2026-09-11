@@ -37,11 +37,6 @@ def _read(*parts: str) -> str:
         return handle.read()
 
 
-# ---------------------------------------------------------------------------
-# 1. api.ts: VideoConstraints declares the advisory `trained_max_frames`
-#    field, kept separate from the hard `max_frames` field it is served
-#    alongside for MiniMax-H3.
-# ---------------------------------------------------------------------------
 class VideoConstraintsFieldTest(unittest.TestCase):
     def setUp(self):
         self.source = _read("frontend", "src", "utils", "api.ts")
@@ -112,9 +107,6 @@ class ChainHelperSignatureTest(unittest.TestCase):
         self.assertIn("segmentFrames > 0", fn)
 
 
-# ---------------------------------------------------------------------------
-# 3. videoFrameLabel always states the floor, even with no ceiling.
-# ---------------------------------------------------------------------------
 class VideoFrameLabelTest(unittest.TestCase):
     def setUp(self):
         self.fn = frontend_definition("videoFrameLabel")
@@ -141,10 +133,6 @@ class QueueItemFieldTest(unittest.TestCase):
         self.assertIn("chainSegmentFrames?: number | null;", match.group(1))
 
 
-# ---------------------------------------------------------------------------
-# 5. videoChain.ts: continuation-building and chain-advancing both thread
-#    the segment length through, and it survives onto each queue item.
-# ---------------------------------------------------------------------------
 class VideoChainUtilTest(unittest.TestCase):
     def setUp(self):
         self.source = _read("frontend", "src", "utils", "videoChain.ts")

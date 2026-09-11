@@ -47,9 +47,6 @@ def _mask(*bits):
     return torch.tensor([bool(b) for b in bits])
 
 
-# ---------------------------------------------------------------------------
-# Batch size 1: the scalar loss IS the item's loss
-# ---------------------------------------------------------------------------
 
 def test_a_null_step_at_batch_one_is_attributed_to_null():
     t = _StubTrainer()
@@ -121,9 +118,6 @@ def test_the_per_item_loss_is_consumed_so_it_cannot_leak_into_the_next_step():
     assert "loss_null" not in out and "loss_cond" not in out
 
 
-# ---------------------------------------------------------------------------
-# The stash itself
-# ---------------------------------------------------------------------------
 
 def test_the_stash_records_one_mse_per_item():
     t = _StubTrainer()
@@ -155,9 +149,6 @@ def test_the_stash_is_skipped_when_the_mechanism_is_off():
     assert getattr(t, "_last_loss_per_sample", None) is None
 
 
-# ---------------------------------------------------------------------------
-# Grad norm: labelled, never split
-# ---------------------------------------------------------------------------
 
 def test_a_grad_norm_from_an_all_null_window_is_labelled_null():
     t = _StubTrainer()
@@ -195,9 +186,6 @@ def test_no_grad_label_without_the_mechanism():
     assert t.drain() == {}
 
 
-# ---------------------------------------------------------------------------
-# Presentation
-# ---------------------------------------------------------------------------
 
 def test_every_emitted_series_is_registered_for_the_chart():
     for name in ("loss_null", "loss_cond", "cfg_null_frac",

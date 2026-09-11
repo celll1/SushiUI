@@ -40,9 +40,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from core.training.base_trainer import BaseTrainer, ItemDimensionError  # noqa: E402
 
 
-# ===========================================================================
-# helpers
-# ===========================================================================
 
 # 1224x1168 and 2150x3036 are real members of run 121's dataset; neither is /32.
 ORIGINALS = [
@@ -220,9 +217,6 @@ def test_video_and_audio_items_keep_their_own_dims():
         t._assert_item_pixel_align(item, item.get("width"), item.get("height"))
 
 
-# ===========================================================================
-# M2 -- idempotence and log quiet
-# ===========================================================================
 
 def test_fit_is_idempotent_and_does_not_relog(capsys):
     """M2. The fit now runs once per epoch, so re-running it must change nothing
@@ -297,9 +291,6 @@ def test_genuinely_unreadable_files_are_still_called_corruption(capsys):
     assert "ITEM ENCODE FAILED" not in capsys.readouterr().out
 
 
-# ===========================================================================
-# M5 -- skipped batches are counted and surfaced
-# ===========================================================================
 
 def test_skipped_batches_are_a_registered_metric():
     """A skip leaves a HOLE in training_metrics -- that hole is how run 121 was

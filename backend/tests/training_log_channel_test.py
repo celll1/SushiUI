@@ -34,9 +34,6 @@ from core.training.training_events import (  # noqa: E402
 from core.training.training_process import TrainingProcess  # noqa: E402
 
 
-# --------------------------------------------------------------------------
-# Harness: a real _monitor_logs run over a scripted stdout.
-# --------------------------------------------------------------------------
 
 class _FakeStdout:
     def __init__(self, lines):
@@ -139,9 +136,6 @@ def _run_fp8_full_finetune_load(arch):
     return trainer, quantize, buf.getvalue().splitlines()
 
 
-# --------------------------------------------------------------------------
-# Negative control: the shipped behaviour.
-# --------------------------------------------------------------------------
 
 class NegativeControlTest(unittest.TestCase):
     """What the SenseNova stochastic-rounding override did before this change.
@@ -175,9 +169,6 @@ class NegativeControlTest(unittest.TestCase):
         self.assertIsNone(parse_training_event(self.SHIPPED_TEXT))
 
 
-# --------------------------------------------------------------------------
-# The channel carries it, asserted on the emit path.
-# --------------------------------------------------------------------------
 
 class OverrideReachesTheChannelTest(unittest.TestCase):
     def _run_enforce(self):
@@ -305,9 +296,6 @@ class AllFourKnownWarningsAreWiredTest(unittest.TestCase):
             self.assertEqual(printed, [], f"{name} still prints the notice only")
 
 
-# --------------------------------------------------------------------------
-# Volume: the bound holds under a flood.
-# --------------------------------------------------------------------------
 
 class FloodBoundTest(unittest.TestCase):
     def _sentinel(self, i):
@@ -372,9 +360,6 @@ class FloodBoundTest(unittest.TestCase):
             merge_run_warnings([], {"level": "info", "code": None, "message": "m"}))
 
 
-# --------------------------------------------------------------------------
-# Parsing robustness and the other message types.
-# --------------------------------------------------------------------------
 
 class ParsingTest(unittest.TestCase):
     def test_round_trip(self):

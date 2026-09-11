@@ -60,9 +60,6 @@ ENC_DIM = 8
 ENC_GRID = 4
 
 
-# ---------------------------------------------------------------------------
-# Stubs and fixtures
-# ---------------------------------------------------------------------------
 
 class _StubEncoder(nn.Module):
     """A frozen teacher shaped like SigLIP2: a square token grid, no CLS."""
@@ -160,9 +157,6 @@ def _train_step(trainer, *, repa_pixels, seed=7):
     )
 
 
-# ---------------------------------------------------------------------------
-# (a) the disabled path
-# ---------------------------------------------------------------------------
 
 def test_a_fresh_lens_carries_the_tap_attributes_unarmed():
     """Inference loads the same class; the attributes must exist and be inert."""
@@ -203,9 +197,6 @@ def test_a_forward_clears_what_a_previous_one_stashed():
     assert model._repa_tap_out is None
 
 
-# ---------------------------------------------------------------------------
-# the handler's answer
-# ---------------------------------------------------------------------------
 
 def test_the_handler_answers_with_the_dit_its_width_and_its_block_count():
     model = _tiny_lens()
@@ -258,9 +249,6 @@ def test_lens_does_not_consume_the_block_loop_features():
     assert ARCH_REGISTRY["lens"].consumes_block_loop_features is False
 
 
-# ---------------------------------------------------------------------------
-# (b) the gradient reaches the model
-# ---------------------------------------------------------------------------
 
 def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     model = _tiny_lens()
@@ -291,9 +279,6 @@ def test_the_tap_carries_gradient_to_the_blocks_at_and_below_it():
     assert _grad_norm(model.img_in) > 0
 
 
-# ---------------------------------------------------------------------------
-# (c) spatial correspondence
-# ---------------------------------------------------------------------------
 
 def test_the_tap_is_the_image_stream_at_the_latent_grid():
     model = _tiny_lens().eval()
@@ -337,9 +322,6 @@ def test_the_tokens_are_row_major_over_the_latent_grid(cell):
     assert float(moved[index]) > 2.0 * float(moved.median())
 
 
-# ---------------------------------------------------------------------------
-# the per-step path
-# ---------------------------------------------------------------------------
 
 def test_train_step_adds_a_finite_alignment_term_that_reaches_the_dit():
     model = _tiny_lens()
@@ -430,9 +412,6 @@ def test_the_arch_handler_passes_the_batch_pixels_through():
     assert seen["repa_pixels"] is pixels
 
 
-# ---------------------------------------------------------------------------
-# (d) the second forward path, and the full-FT save
-# ---------------------------------------------------------------------------
 
 class _MissingFBCache:
     """Enough of core.inference.fbcache for that branch to run (always a miss)."""
@@ -480,9 +459,6 @@ def test_a_full_finetune_save_pairs_the_projector_with_the_file_it_wrote(tmp_pat
     assert (tmp_path / "lens_step_5.repa.safetensors").is_file()
 
 
-# ---------------------------------------------------------------------------
-# the capability table, the handlers and the trainer's refusals agree
-# ---------------------------------------------------------------------------
 
 def test_lens_is_offered_the_repa_control():
     assert "repa" not in TRAINING_FEATURE_UNSUPPORTED.get("lens", {})

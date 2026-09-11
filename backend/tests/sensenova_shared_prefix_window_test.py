@@ -148,9 +148,6 @@ def _run_window(trainer, context, tokens, images, targets, *, step_each=True):
     return losses
 
 
-# --------------------------------------------------------------------------
-# (A) the mechanism: one cut, one grad buffer, leaf reuse
-# --------------------------------------------------------------------------
 
 
 def test_shared_window_reuses_one_set_of_leaves_and_never_grows_a_pending_list(
@@ -199,9 +196,6 @@ def test_shared_window_cuts_once_per_window_and_per_iteration_cuts_n_times(
         assert cuts["n"] == expected_cuts, shared
 
 
-# --------------------------------------------------------------------------
-# (G) und invariance across the window, and its negative control
-# --------------------------------------------------------------------------
 
 
 def test_understanding_weights_are_bit_identical_until_the_window_flushes(
@@ -712,9 +706,6 @@ def test_the_mnt_loop_breaks_on_an_aborted_window():
     assert "window_aborted" in guard and "break" in guard
 
 
-# --------------------------------------------------------------------------
-# (C) the census, window-aware
-# --------------------------------------------------------------------------
 
 
 def _census_with(deferred_names=("und.a", "und.b")):
@@ -795,9 +786,6 @@ def test_begin_step_defaults_to_requiring_everything():
         census.assert_complete()
 
 
-# --------------------------------------------------------------------------
-# Untouched paths
-# --------------------------------------------------------------------------
 
 
 def test_deferred_parameters_are_empty_without_the_shared_route():
@@ -919,9 +907,6 @@ def test_begin_window_and_is_final_iteration_are_inert_off_the_shared_route():
     assert context.is_final_iteration() is True
 
 
-# --------------------------------------------------------------------------
-# (B) the settings themselves
-# --------------------------------------------------------------------------
 
 
 def test_defaults_are_off_and_sum():

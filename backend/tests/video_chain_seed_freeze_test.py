@@ -105,9 +105,6 @@ def _validate(manifest: dict, recompute: bool = True) -> dict:
     return body["manifest"]
 
 
-# --------------------------------------------------------------------------
-# plan: -1 is resolved once and frozen
-# --------------------------------------------------------------------------
 
 
 def test_plan_freezes_a_concrete_seed_per_segment():
@@ -182,9 +179,6 @@ def test_an_unresolved_root_seed_is_never_drawn_at_validate_time():
     assert [s["seed"] for s in result["segments"]] == [4242, 4242]
 
 
-# --------------------------------------------------------------------------
-# the frontend send path (no TS test runner in this repo: source pins)
-# --------------------------------------------------------------------------
 
 
 def _read(*parts: str) -> str:

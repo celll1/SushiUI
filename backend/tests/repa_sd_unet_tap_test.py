@@ -58,9 +58,6 @@ ENC_DIM = 6
 ENC_GRID = 4
 
 
-# ---------------------------------------------------------------------------
-# Stubs and fixtures
-# ---------------------------------------------------------------------------
 
 class _StubEncoder(nn.Module):
     """A frozen teacher shaped like SigLIP2: a square token grid, no CLS."""
@@ -200,9 +197,6 @@ def _hook_count(unet) -> int:
     return sum(len(m._forward_hooks) for m in unet.modules())
 
 
-# ---------------------------------------------------------------------------
-# (a) the disabled path
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_a_fresh_unet_carries_no_tap_state_and_no_hook(arch):
@@ -362,9 +356,6 @@ def test_the_unets_do_not_consume_the_block_loop_features(arch):
     assert ARCH_REGISTRY[arch].consumes_block_loop_features is False
 
 
-# ---------------------------------------------------------------------------
-# (c) the spatial correspondence
-# ---------------------------------------------------------------------------
 
 def _capture_tokens(monkeypatch):
     """Record what the spatial helper hands the shared token-sequence path."""
@@ -474,9 +465,6 @@ def test_a_teacher_batch_that_does_not_pair_with_the_tap_is_refused():
                                             torch.rand(1, 3, 32, 32))
 
 
-# ---------------------------------------------------------------------------
-# (d) the gradient reaches the U-Net -- checkpointing on and off
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ARCHS)
 @pytest.mark.parametrize("checkpointing", (False, True))
@@ -514,9 +502,6 @@ def test_the_alignment_term_alone_reaches_the_blocks_up_to_the_tap(arch, checkpo
     assert unet.conv_out.weight.grad is None
 
 
-# ---------------------------------------------------------------------------
-# (e) the per-step path
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_train_step_adds_a_finite_alignment_term_that_reaches_the_unet(arch):
@@ -594,9 +579,6 @@ def test_the_arch_handler_passes_the_batch_pixels_through(arch):
     assert seen["repa_pixels"] is pixels
 
 
-# ---------------------------------------------------------------------------
-# (f) the full-parameter sidecar
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_a_full_finetune_save_pairs_the_projector_with_the_file_it_wrote(arch, tmp_path):
@@ -623,9 +605,6 @@ def test_a_full_finetune_save_pairs_the_projector_with_the_file_it_wrote(arch, t
     assert (tmp_path / "model_step_5.repa.safetensors").is_file()
 
 
-# ---------------------------------------------------------------------------
-# (g) the capability table
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_both_unets_are_offered_the_repa_control(arch):

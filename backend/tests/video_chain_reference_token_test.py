@@ -171,9 +171,6 @@ def test_split_alignment_instruction_only_matches_the_head():
     assert split_alignment_instruction(body, "") == ("", body)
 
 
-# --------------------------------------------------------------------------
-# the routes: plan -> edit -> validate
-# --------------------------------------------------------------------------
 
 
 def _app():

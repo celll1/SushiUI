@@ -118,9 +118,6 @@ def _resume_chain(position_fn, *, batches_per_epoch=100, session_steps=30,
     return saved
 
 
-# ---------------------------------------------------------------------------
-# start_epoch restoration
-# ---------------------------------------------------------------------------
 
 def test_start_epoch_restored_from_training_state():
     """Epoch-count run: resuming a state saved in epoch N restarts at epoch N."""

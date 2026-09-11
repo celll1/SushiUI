@@ -28,14 +28,12 @@ def make_dummy_setup(old_n: int, new_n: int, hidden: int = 8):
     new_tags = [t for t in old_tag_to_idx if int(t.split("_")[1]) < new_n]
     new_tag_to_idx = {t: i for i, t in enumerate(new_tags)}
 
-    # Build a tiny model with a Linear head matching new_n
     class M(nn.Module):
         def __init__(self):
             super().__init__()
             self.head = nn.Linear(hidden, new_n)
     model = M()
 
-    # Build a fresh optimizer for the new model
     optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
     return model, optim, old_tag_to_idx, new_tag_to_idx
 
@@ -196,7 +194,6 @@ def test_shape_match_no_op():
 def test_added_tags_zero_init():
     print("\n=== Test 4: Vocab GROWS — new tags zero-initialised ===")
     OLD_N, NEW_N, H = 90, 100, 8
-    # Build new vocab: tag_0..tag_99 (10 new beyond old_n=90)
     old_tag_to_idx = {f"tag_{i}": i for i in range(OLD_N)}
     new_tag_to_idx = {f"tag_{i}": i for i in range(NEW_N)}
 

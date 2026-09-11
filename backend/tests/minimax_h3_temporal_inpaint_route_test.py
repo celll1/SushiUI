@@ -55,9 +55,6 @@ def _plan(start, end, clip_frames=CLIP, arch="minimax_h3"):
         arch, clip_frames=clip_frames)
 
 
-# --------------------------------------------------------------------------
-# The addressable unit
-# --------------------------------------------------------------------------
 
 def test_the_latent_spans_tile_the_clip_exactly():
     """The (1,4,4,4,4) chunking, against the module that already relies on it."""
@@ -115,9 +112,6 @@ def test_the_pinned_frames_are_exactly_the_complement_of_the_regenerated_ones():
     assert regenerate == set(range(min(regenerate), max(regenerate) + 1))
 
 
-# --------------------------------------------------------------------------
-# The refusals
-# --------------------------------------------------------------------------
 
 def test_an_invalid_clip_length_is_refused_rather_than_snapped():
     """Snapping a clip length means deleting frames the caller said to keep."""
@@ -189,9 +183,6 @@ def test_an_architecture_without_a_declared_chunking_is_refused():
     assert "temporal inpaint" in str(error.value).lower()
 
 
-# --------------------------------------------------------------------------
-# The orchestration: the pin and the paste, each with its own control
-# --------------------------------------------------------------------------
 
 GENERATED_VALUE = 7      # what the fake model "generates"
 SOURCE_VALUE = 200       # what the source clip carries

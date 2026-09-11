@@ -37,9 +37,6 @@ from model_root import model_path  # noqa: E402
 from core.models.common.convrot_int8_linear import ConvRotInt8Linear  # noqa: E402
 from core.models.minimax_music3 import convrot_remap, loader  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# supported_int8_convrot_marker -- synthetic
-# ---------------------------------------------------------------------------
 
 
 def _marker_tensor(payload: dict) -> torch.Tensor:
@@ -97,9 +94,6 @@ def test_supported_int8_convrot_marker_rejects_a_missing_scale():
         convrot_remap.supported_int8_convrot_marker("layer.comfy_quant", marker, header, path="fixture")
 
 
-# ---------------------------------------------------------------------------
-# _split_convrot_sidecar -- synthetic, no checkpoint
-# ---------------------------------------------------------------------------
 
 
 def test_split_convrot_sidecar_equal_three_way():

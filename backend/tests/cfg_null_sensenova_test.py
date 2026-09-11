@@ -131,9 +131,6 @@ def _training_conditional_query(transformer, prompt):
         append_text="<think>\n\n</think>\n\n<img>")
 
 
-# ---------------------------------------------------------------------------
-# The query string (strategy §6.3)
-# ---------------------------------------------------------------------------
 
 def test_the_inference_expressions_this_parity_rests_on_are_unchanged():
     assert _INFERENCE_UNCOND_QUERY in _PIPELINE_OPS
@@ -186,9 +183,6 @@ def test_an_empty_caption_is_not_the_null():
     assert len(conditional_empty) > len(null)
 
 
-# ---------------------------------------------------------------------------
-# Positional parity: the image indexes (strategy §6.3, audit row 7)
-# ---------------------------------------------------------------------------
 
 def test_the_prefix_length_is_the_nulls_own():
     trainer = _StubTrainer()
@@ -437,9 +431,6 @@ def test_the_null_is_not_memoized():
     assert not re.search(r"lru_cache|_null_prefix_cache", _SENSENOVA_OPS)
 
 
-# ---------------------------------------------------------------------------
-# Reference-conditioned items: refuse (strategy §6.3, recommended first release)
-# ---------------------------------------------------------------------------
 
 def _params(**kwargs):
     base = {CFG_KEY: None, LEGACY_KEY: None, REFERENCE_IMAGES_KEY: False,
@@ -536,9 +527,6 @@ def test_the_refusal_reaches_the_trainer_and_the_train_runner_preflight():
     assert "resolve_and_check(" in preflight
 
 
-# ---------------------------------------------------------------------------
-# Rate 0: nothing changes (strategy §3 rule 2)
-# ---------------------------------------------------------------------------
 
 def test_a_zero_rate_draws_no_label_at_all():
     from core.training.base_trainer import BaseTrainer

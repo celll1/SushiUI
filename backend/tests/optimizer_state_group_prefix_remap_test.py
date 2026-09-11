@@ -76,9 +76,6 @@ def _moment(optimizer, param, key="exp_avg"):
     return optimizer.state[param][key]
 
 
-# ---------------------------------------------------------------------------
-# Unchanged behaviour
-# ---------------------------------------------------------------------------
 
 def test_identical_layout_loads_fully_and_sets_no_flag():
     model = _params(3)
@@ -133,9 +130,6 @@ def test_trailing_group_removed_keeps_everything_live():
     assert trainer._optimizer_state_partially_fresh is False
 
 
-# ---------------------------------------------------------------------------
-# The fm_modules case: a LEADING group grows by appending
-# ---------------------------------------------------------------------------
 
 def test_growing_group_remaps_later_groups():
     """Generation group 294 -> 310 (fm_modules appended); understanding group
@@ -202,9 +196,6 @@ def test_shrinking_group_keeps_the_leading_prefix():
     assert trainer._optimizer_state_partially_fresh is False
 
 
-# ---------------------------------------------------------------------------
-# The safety guard
-# ---------------------------------------------------------------------------
 
 def test_size_mismatch_refuses_the_remap():
     """Growth that is not append-only: the leading params are DIFFERENT

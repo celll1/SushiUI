@@ -121,9 +121,6 @@ def results_by_id(output_dir):
     return {r["request_id"]: r for r in control_rpc.list_results(output_dir)}
 
 
-# ---------------------------------------------------------------------------
-# The transport is shared, and the sample queue is unchanged
-# ---------------------------------------------------------------------------
 
 def test_the_two_queues_do_not_see_each_other(tmp_path):
     sample_rpc.queue_request(tmp_path, seed=1, run_id=RUN_ID)
@@ -295,9 +292,6 @@ def test_a_poll_with_nothing_queued_changes_nothing(tmp_path):
     assert trainer.lr_timeline.events == before
 
 
-# ---------------------------------------------------------------------------
-# Result codes, per request_id
-# ---------------------------------------------------------------------------
 
 def test_the_result_code_is_recorded_per_request_id(tmp_path):
     trainer = FakeTrainer(tmp_path, name="plateau_cosine_floor", T=100,
@@ -433,9 +427,6 @@ def test_a_command_with_no_run_id_is_claimable(tmp_path):
     assert trainer.state(10) == STATE_DECAYING
 
 
-# ---------------------------------------------------------------------------
-# .lr_schedule.json: never a state the run has left
-# ---------------------------------------------------------------------------
 
 def test_the_status_file_is_written_on_the_first_poll(tmp_path):
     trainer = FakeTrainer(tmp_path, name="plateau_cosine_floor", T=100,
@@ -597,9 +588,6 @@ def test_clear_all_removes_commands_and_results_but_not_the_state(tmp_path):
     assert control_rpc.read_status(tmp_path) == {"state": "floor"}
 
 
-# ---------------------------------------------------------------------------
-# API surface
-# ---------------------------------------------------------------------------
 
 def test_the_endpoints_are_documented_in_openapi():
     import yaml
@@ -826,9 +814,6 @@ def test_a_retarget_the_trainer_cannot_build_comes_back_as_an_error(tmp_path):
     assert [e["kind"] for e in trainer.lr_timeline.dump(20)] == ["total_steps"]
 
 
-# ---------------------------------------------------------------------------
-# R3: the display file writes absolute positions (D32 / §19.8)
-# ---------------------------------------------------------------------------
 
 def test_the_status_file_carries_the_anchor_and_absolute_positions(tmp_path):
     trainer = FakeTrainer(tmp_path, name="constant", T=200)
@@ -954,9 +939,6 @@ def test_a_checkpoint_before_the_order_drops_the_reservation(tmp_path):
     assert len(saver.lr_timeline.dump(100)) == 2
 
 
-# ---------------------------------------------------------------------------
-# R3: the endpoint (§19.8)
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
 def routes():
@@ -1138,9 +1120,6 @@ def test_the_documented_defaults_are_the_ones_the_endpoint_uses():
         assert props[key]["default"] == value, key
 
 
-# ---------------------------------------------------------------------------
-# R4: the preview endpoint (D20/D29, §19.8)
-# ---------------------------------------------------------------------------
 
 def publish(trainer, global_step: int = 0):
     """Write `.lr_schedule.json`, which is all the API process gets to read."""
@@ -1323,9 +1302,6 @@ def test_the_preview_endpoint_is_documented_in_openapi():
         "/LrSchedulePreviewConfig")
 
 
-# ---------------------------------------------------------------------------
-# R5: scale / hold / undo through the endpoint and the claim path (§19.6)
-# ---------------------------------------------------------------------------
 
 def test_every_derived_op_queues_as_a_retarget_and_lands_as_one(routes, tmp_path):
     for index, body in enumerate(({"op": "scale", "gain": 0.5},
@@ -1411,9 +1387,6 @@ def test_the_endpoint_refuses_a_derived_op_it_cannot_honour(
     assert control_rpc.list_pending_requests(tmp_path) == []
 
 
-# ---------------------------------------------------------------------------
-# F1: the position a preview dates its candidates from
-# ---------------------------------------------------------------------------
 
 def test_a_preview_reads_the_live_step_when_the_display_file_is_stale(
         routes, tmp_path):
@@ -1473,9 +1446,6 @@ def test_the_live_step_is_converted_to_the_scheduler_axis(routes, tmp_path):
     assert preview["step"] == 60
 
 
-# ---------------------------------------------------------------------------
-# The six gaps the frontend found
-# ---------------------------------------------------------------------------
 
 def test_the_endpoint_accepts_the_runs_own_internal_curve(routes, tmp_path):
     """Gap 1: whether an internal name is legal needs the run, so the endpoint

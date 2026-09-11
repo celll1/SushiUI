@@ -144,7 +144,6 @@ class TestBaseTrainerDiagnosticsHook:
 
         rollout_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
 
-        # Call real unbound method on trainer instance
         BaseTrainer._run_convergence_diagnostics(
             trainer,
             current_step=100,
@@ -162,11 +161,6 @@ class TestBaseTrainerDiagnosticsHook:
         assert not math.isnan(logged_metrics["diag_low_freq_power_ratio"])
 
 
-# ---------------------------------------------------------------------------
-# The x0 producer: ops/crop_decode_loss.compute_crop_decode_loss is the ONE
-# place that fills _last_predicted_latent. Nothing below assigns it by hand --
-# that is the defect these tests exist to catch.
-# ---------------------------------------------------------------------------
 
 import ast
 import inspect

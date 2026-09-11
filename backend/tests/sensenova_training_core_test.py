@@ -102,7 +102,6 @@ def test_load_components_keeps_training_runtime_minimal():
         weight_dtype=torch.bfloat16,
         device=torch.device("cpu"),
         attention_backend="native",
-        # Read by the shared VAE-swap fold load_components now runs.
         config={},
     )
     components = {

@@ -51,3 +51,38 @@ test files. It found 2,749 procedural-comment candidates, 1,772 decorative
 separator candidates, 552 possibly trivial docstrings, 43 disabled debug lines,
 and 119 test docstrings containing mutation-history narration. These are review
 queues, not deletion targets: every candidate is judged in context.
+
+## Outcome
+
+The five implementation units removed 6,234 lines from 415 file revisions:
+
+| Commit | Unit | Result |
+|---|---|---|
+| `5cc12f20` | Legacy/debug | Removed retired implementations and disabled debug snippets from 8 files. |
+| `8eae417e` | Backend | Removed 1,435 lines of API, inference and pipeline narration from 48 files. |
+| `9022243c` | Training | Removed 1,355 lines of training narration from 86 files. |
+| `23587b8a` | Frontend | Removed 652 lines of component and request-flow narration from 70 files. |
+| `5d356653` | Tests | Removed 2,488 lines of section banners, procedural narration and mutation-investigation history from 203 files. |
+
+Public API docstrings were retained because FastAPI can expose them through the
+generated schema. Comments explaining numerical domains, tensor shapes,
+ordering, ownership, synchronization, memory lifetime, compatibility or a
+known unsafe simplification were also retained. A final conservative scan still
+identified 938 lines by lexical shape; contextual review rejected that batch
+because it mixed decorative headings with those load-bearing explanations.
+Lexical candidate counts are therefore not a completion target.
+
+## Verification result
+
+- Every changed Python production file compiled, and changed backend modules
+  imported with CUDA initialization stubbed; CUDA remained uninitialized.
+- Every changed frontend line was verified as a removed full-line comment.
+  Build and type-check commands were intentionally not run under repository
+  policy.
+- All 203 test-file revisions were compared to their parent after removing
+  docstrings from both syntax trees. Their executable ASTs were identical.
+- A focused CPU-only run completed 266 tests successfully. Three failures were
+  unrelated existing expectations: one configuration-key census mismatch, one
+  Lion extension link collision, and one obsolete SenseNova block-swap refusal
+  expectation.
+- `git diff --check` passed for every accepted unit.

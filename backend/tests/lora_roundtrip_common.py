@@ -1,9 +1,9 @@
 """Shared plumbing for the per-architecture cheap LoRA round-trip gates.
 
-Only the parts that carry no architecture-specific meaning live here: the
-sys.path bootstrap, the warning interception, and three tiny numeric helpers.
-Stub trees, target sets and every assertion stay in the per-architecture file
-so a failure names its architecture in the file name alone.
+This module holds only bootstrap and numeric helpers. Architecture-neutral
+stacking, unload, and oracle checks live in
+``adapter_lycoris_roundtrip_cheap_test.py``; the per-architecture files retain
+their target topology, key conversion, component lifetime, and refusal seams.
 
 The gates are named ``<arch>_lora_roundtrip_cheap_test.py`` and each runs in
 about a second on CPU with no real weights. Their sibling

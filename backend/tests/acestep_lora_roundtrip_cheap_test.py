@@ -7,12 +7,9 @@ The Phase-0 defect this pins: ACE-Step can train an opt-in MLP scope, while
 generation was attention-only, so the MLP half of a self-trained LoRA was
 dropped without a word.
 
-ACE-Step is on ``CompositeAdapterLayer``, so this file is also the adoption
-gate: two LoRAs over one module must SUM, in either selection order, without
-perturbing what either one does alone. The stacking refusal these tests used to
-assert is gone; the numerics that replace it are checked with ``torch.equal``,
-because a tolerance would hide exactly the reassociation a "simplification" of
-the strength folding would introduce.
+Architecture-neutral composite algebra is covered once in
+``adapter_lycoris_roundtrip_cheap_test.py``. This file retains ACE-Step's target
+scope, codec, lifecycle, and refusal seams.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/acestep_lora_roundtrip_cheap_test.py -v
@@ -26,12 +23,12 @@ from torch import nn
 from safetensors.torch import load_file, save_file
 
 from lora_roundtrip_common import (
-    LoRALinearLayer, lora_delta, module_ids, randomise_lora_layers,
+    LoRALinearLayer, lora_delta, randomise_lora_layers,
     warning_codes, warning_probe,
 )
 
 from api.error_handlers import ValidationError  # noqa: E402
-from core.adapters import CompositeAdapterLayer, lora_branch_dtype  # noqa: E402
+from core.adapters import CompositeAdapterLayer  # noqa: E402
 from core.pipeline_backends.acestep import AceStepMixin  # noqa: E402
 from core.training.adapters.acestep_adapter import (  # noqa: E402
     DEFAULT_ACESTEP_SCOPE, AceStepLoRAAdapter, _flatten_to_sdscripts,
@@ -133,11 +130,6 @@ def lora_layer_paths(model):
             if isinstance(module, LoRALinearLayer)}
 
 
-def sole_branch(composite):
-    assert len(composite) == 1, f"expected one branch, got {composite.branch_names}"
-    return composite.get_branch(composite.branch_names[0])
-
-
 def train_and_save(tmp_path, scope=None, name="acestep.safetensors", seed=1234):
     scope = ATTN_AND_MLP if scope is None else scope
     dit = build_dit()
@@ -202,115 +194,6 @@ def test_acestep_wrapped_forward_is_base_plus_scaled_branch(tmp_path):
         assert not torch.allclose(composite(x), base, atol=1e-5), f"{target}: branch is inert"
 
 
-def test_acestep_single_lora_is_bit_identical_to_the_pre_composite_wrapper(tmp_path):
-    """The composite must not change one-LoRA arithmetic by one ULP.
-
-    The reference is what the loader built before adoption: a ``LoRALinearLayer``
-    over the same base, its weights copied the same way, its scale written as
-    ``(alpha / rank) * strength``. ``torch.equal``, not a tolerance -- folding
-    the strength anywhere but into the branch's own scale reassociates the
-    multiply and shows up here and nowhere else.
-    """
-    path, trained_paths = train_and_save(tmp_path)
-
-    dit = build_dit()
-    _Backend(dit)._load_lora_acestep([{"path": path, "strength": STRENGTH}])
-
-    modules = dict(dit.named_modules())
-    for target in sorted(trained_paths):
-        composite = modules[target]
-        base = composite.original_module
-        down, up = file_branch_tensors(path, target)
-
-        reference = LoRALinearLayer(base, rank=RANK, alpha=float(ALPHA), lora_name=target)
-        dtype = lora_branch_dtype(base)
-        with torch.no_grad():
-            reference.lora_down.weight.data = down.to(device=base.weight.device, dtype=dtype)
-            reference.lora_up.weight.data = up.to(device=base.weight.device, dtype=dtype)
-        reference.scale = (float(ALPHA) / RANK) * STRENGTH
-
-        assert sole_branch(composite).scale == reference.scale, target
-        x = torch.randn(3, base.in_features)
-        assert torch.equal(composite(x), reference(x)), target
-
-
-def test_acestep_two_loras_over_one_module_sum_their_deltas(tmp_path):
-    """The adoption gate: base + delta_a + delta_b, against the analytic sum."""
-    path_a, trained_paths = train_and_save(tmp_path, seed=1234)
-    path_b, paths_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    assert paths_b == trained_paths, "both files must cover the same targets to stack"
-
-    dit = build_dit()
-    _Backend(dit)._load_lora_acestep([{"path": path_a, "strength": STRENGTH},
-                                      {"path": path_b, "strength": STRENGTH_B}])
-
-    assert wrapped_paths(dit) == trained_paths
-    modules = dict(dit.named_modules())
-    for target in sorted(trained_paths):
-        composite = modules[target]
-        assert len(composite) == 2, f"{target}: {composite.branch_names}"
-        base_module = composite.original_module
-        down_a, up_a = file_branch_tensors(path_a, target)
-        down_b, up_b = file_branch_tensors(path_b, target)
-        x = torch.randn(3, base_module.in_features)
-        expected = (base_module(x)
-                    + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH)
-                    + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B))
-        assert torch.allclose(composite(x), expected, atol=1e-5), target
-        # Both branches really contribute: dropping either changes the output.
-        assert not torch.allclose(
-            composite(x),
-            base_module(x) + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH),
-            atol=1e-5), f"{target}: the second LoRA is inert"
-
-
-def test_acestep_stacked_result_is_independent_of_selection_order(tmp_path):
-    path_a, trained_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _pb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    a = {"path": path_a, "strength": STRENGTH}
-    b = {"path": path_b, "strength": STRENGTH_B}
-
-    forward = build_dit()
-    _Backend(forward)._load_lora_acestep([a, b])
-    reverse = build_dit()
-    _Backend(reverse)._load_lora_acestep([b, a])
-
-    forward_modules = dict(forward.named_modules())
-    reverse_modules = dict(reverse.named_modules())
-    for target in sorted(trained_paths):
-        one, two = forward_modules[target], reverse_modules[target]
-        assert torch.equal(one.original_module.weight, two.original_module.weight), target
-        x = torch.randn(3, one.original_module.in_features)
-        # Two branches: the deltas are summed before the base is added, and fp
-        # addition commutes, so this is EXACT. (Three or more branches would
-        # only hold up to associativity.)
-        assert torch.equal(one(x), two(x)), target
-
-
-def test_acestep_removing_one_branch_leaves_the_other_exactly_as_if_alone(tmp_path):
-    """A stacked branch must not perturb its neighbour's own arithmetic."""
-    path_a, trained_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _pb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    alone = build_dit()
-    _Backend(alone)._load_lora_acestep([{"path": path_a, "strength": STRENGTH}])
-
-    stacked = build_dit()
-    _Backend(stacked)._load_lora_acestep([{"path": path_a, "strength": STRENGTH},
-                                          {"path": path_b, "strength": STRENGTH_B}])
-
-    alone_modules = dict(alone.named_modules())
-    stacked_modules = dict(stacked.named_modules())
-    for target in sorted(trained_paths):
-        one = alone_modules[target]
-        two = stacked_modules[target]
-        assert torch.equal(one.original_module.weight, two.original_module.weight), target
-        two.remove_branch(two.branch_names[1])
-        assert two.branch_names == one.branch_names, target
-        x = torch.randn(3, one.original_module.in_features)
-        assert torch.equal(one(x), two(x)), target
-
-
 def test_acestep_selecting_the_same_file_twice_is_two_branches(tmp_path):
     """Branch names carry the request index, so a duplicate selection is not a
     duplicate-name refusal."""
@@ -325,72 +208,7 @@ def test_acestep_selecting_the_same_file_twice_is_two_branches(tmp_path):
         assert len(set(modules[target].branch_names)) == 2, target
 
 
-def test_acestep_alpha_beats_the_rank_fallback(tmp_path):
-    path, trained_paths = train_and_save(tmp_path)
-    dit = build_dit()
-    _Backend(dit)._load_lora_acestep([{"path": path, "strength": STRENGTH}])
-    modules = dict(dit.named_modules())
-    assert {round(sole_branch(modules[t]).scale, 9) for t in trained_paths} == \
-        {round(SCALE * STRENGTH, 9)}
-
-    stripped = tmp_path / "no_alpha.safetensors"
-    save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
-              str(stripped), metadata={"model_type": "acestep"})
-    dit2 = build_dit()
-    _Backend(dit2)._load_lora_acestep([{"path": str(stripped), "strength": STRENGTH}])
-    modules2 = dict(dit2.named_modules())
-    assert {round(sole_branch(modules2[t]).scale, 9) for t in trained_paths} == \
-        {round(STRENGTH, 9)}
-
-
-def test_acestep_unload_restores_the_identical_objects_and_is_idempotent(tmp_path):
-    path, trained_paths = train_and_save(tmp_path)
-
-    dit = build_dit()
-    before = dict(dit.named_modules())
-    backend = _Backend(dit)
-    backend._load_lora_acestep([{"path": path, "strength": 1.0}])
-
-    backend._unload_lora_acestep()
-    after = dict(dit.named_modules())
-    for target in trained_paths:
-        assert after[target] is before[target], target
-    assert not wrapped_paths(dit)
-    assert not backend._acestep_lora_wrapped_modules
-
-    backend._unload_lora_acestep()  # second unload: no-op, not a re-splice
-    assert dict(dit.named_modules()) == after
-
-
-def test_acestep_unload_after_a_stack_restores_the_identical_objects(tmp_path):
-    path_a, trained_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _pb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    dit = build_dit()
-    before = dict(dit.named_modules())
-    backend = _Backend(dit)
-    backend._load_lora_acestep([{"path": path_a, "strength": STRENGTH},
-                                {"path": path_b, "strength": STRENGTH_B}])
-    assert wrapped_paths(dit) == trained_paths
-
-    backend._unload_lora_acestep()
-    after = dict(dit.named_modules())
-    for target in trained_paths:
-        assert after[target] is before[target], target
-    assert not wrapped_paths(dit)
-    assert not backend._acestep_lora_wrapped_modules
-
-    backend._unload_lora_acestep()
-    assert dict(dit.named_modules()) == after
-
-
-def test_acestep_missing_file_refuses(warnings_seen):
-    with pytest.raises(ValidationError):
-        _Backend(build_dit())._load_lora_acestep(
-            [{"path": "no_such_acestep_lora.safetensors"}])
-
-
-def test_acestep_missing_file_warns(warnings_seen):
+def test_acestep_missing_file_refuses_and_warns(warnings_seen):
     with pytest.raises(ValidationError):
         _Backend(build_dit())._load_lora_acestep(
             [{"path": "no_such_acestep_lora.safetensors"}])
@@ -508,30 +326,3 @@ def test_acestep_diffusers_format_lyric_scope_stacks_and_restores(tmp_path, warn
     assert not backend._acestep_lora_wrapped_modules
     for target in LYRIC_TARGETS:
         assert dict(dit.named_modules())[target] is before[target], target
-
-
-def test_acestep_model_reload_never_splices_model_a_into_model_b(tmp_path):
-    path, trained_paths = train_and_save(tmp_path)
-
-    dit_a = build_dit()
-    backend = _Backend(dit_a)
-    backend._load_lora_acestep([{"path": path, "strength": 1.0}])
-    a_ids = module_ids(dit_a) | {id(m) for m in backend._acestep_lora_original_modules.values()}
-
-    dit_b = _Dit()  # a DIFFERENT random init, so no module can be shared by accident
-    b_ids_before = module_ids(dit_b)
-    assert not (a_ids & b_ids_before), "setup: A and B must not already share modules"
-
-    backend.acestep_components = {"dit": dit_b}
-    assert backend._acestep_lora_wrapped_modules, "the stale set must be truthy to be a test"
-    backend._unload_lora_acestep()
-    assert module_ids(dit_b) == b_ids_before, "model B's module graph was modified"
-    assert not (module_ids(dit_b) & a_ids), "a module of model A was installed into model B"
-
-    b_before = dict(dit_b.named_modules())
-    backend._load_lora_acestep([{"path": path, "strength": 1.0}])
-    assert wrapped_paths(dit_b) == trained_paths
-    backend._unload_lora_acestep()
-    for target in trained_paths:
-        assert dict(dit_b.named_modules())[target] is b_before[target], target
-    assert not (module_ids(dit_b) & a_ids)

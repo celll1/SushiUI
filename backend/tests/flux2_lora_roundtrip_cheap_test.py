@@ -8,16 +8,10 @@ The Phase-0 defect this pins: FLUX.2 training could save Qwen text-encoder
 adapters, but generation applied transformer tensors only, so the TE half of a
 mixed checkpoint was silently inert.
 
-FLUX.2 is on ``CompositeAdapterLayer``, so this file is also the adoption gate:
-two LoRAs over one module must SUM, in either selection order, without
-perturbing what either one does alone -- and PER COMPONENT, because the two
-components have DIFFERENT LIFETIMES. The text encoder's wrappers are torn down
-in every generation's ``finally`` (``_restore_flux2_te_lora``) while the
-transformer's outlive the generation, so bit-identity, restore identity and the
-stack are each asserted for both halves separately. The stacking refusal these
-tests used to assert is gone; the numerics that replace it are checked with
-``torch.equal``, because a tolerance would hide exactly the reassociation a
-"simplification" of the strength folding would introduce.
+Common composite algebra is covered in
+``adapter_lycoris_roundtrip_cheap_test.py``. This file retains FLUX.2's
+two-component targeting, unequal lifetimes, quantization, block-swap, and
+refusal seams.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/flux2_lora_roundtrip_cheap_test.py -v
@@ -31,12 +25,12 @@ from torch import nn
 from safetensors.torch import load_file, save_file
 
 from lora_roundtrip_common import (
-    LoRALinearLayer, lora_delta, module_ids, randomise_lora_layers,
+    LoRALinearLayer, lora_delta, randomise_lora_layers,
     warning_codes, warning_probe,
 )
 
 from core.adapters import (  # noqa: E402
-    AdapterIncompatible, CompositeAdapterLayer, lora_branch_dtype,
+    AdapterIncompatible, CompositeAdapterLayer,
 )
 from core.pipeline_backends.flux2 import (  # noqa: E402
     Flux2Mixin, _flux2_te_lora_targets, _flux2_transformer_lora_targets,
@@ -150,11 +144,6 @@ def lora_layer_paths(model):
             if isinstance(module, LoRALinearLayer)}
 
 
-def sole_branch(composite):
-    assert len(composite) == 1, f"expected one branch, got {composite.branch_names}"
-    return composite.get_branch(composite.branch_names[0])
-
-
 def train_and_save(tmp_path, name="flux2.safetensors", seed=1234, with_te=True):
     """Returns (path, transformer target paths, text-encoder target paths)."""
     transformer, text_encoder = _Transformer(), _TextEncoder()
@@ -181,24 +170,6 @@ def file_branch_tensors(path, target, prefix="lora_transformer_"):
     stem = prefix + target.replace(".", "_")
     return (saved[f"{stem}.lora_down.weight"], saved[f"{stem}.lora_up.weight"],
             saved.get(f"{stem}.alpha"))
-
-
-def pre_composite_reference(base, down, up, alpha, strength):
-    """What the loader built BEFORE adoption, tensor for tensor.
-
-    Re-derives the compute dtype exactly as ``_wrap_with_lora_flux2`` does
-    rather than assuming fp32, so the gate keeps meaning something on a
-    quantized base.
-    """
-    rank = int(down.shape[0])
-    alpha_value = alpha.item() if alpha is not None else rank
-    reference = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name="ref")
-    dtype = lora_branch_dtype(base)
-    with torch.no_grad():
-        reference.lora_down.weight.data = down.to(device=base.weight.device, dtype=dtype)
-        reference.lora_up.weight.data = up.to(device=base.weight.device, dtype=dtype)
-    reference.scale = (alpha_value / rank) * strength
-    return reference
 
 
 @pytest.fixture
@@ -265,138 +236,6 @@ def test_flux2_wrapped_forward_is_base_plus_scaled_branch(tmp_path):
     assert checked == len(tf_paths) + len(te_paths)
 
 
-# ---------------------------------------------------------------------------
-# Gate 4: a single LoRA is bit-identical to the pre-composite wrapper
-# ---------------------------------------------------------------------------
-
-def test_flux2_single_lora_is_bit_identical_to_the_pre_composite_wrapper(tmp_path):
-    """The composite must not change one-LoRA arithmetic by one ULP.
-
-    Asserted PER COMPONENT: the transformer and the text encoder are wrapped by
-    separate passes with separate lifetimes, so a folding mistake could land on
-    one of them alone. ``torch.equal``, not a tolerance -- folding the strength
-    anywhere but into the branch's own scale reassociates the multiply and shows
-    up here and nowhere else.
-    """
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    _Backend(transformer, text_encoder)._load_lora_flux2(
-        [{"path": path, "strength": STRENGTH}])
-
-    checked = 0
-    for model, paths, prefix in ((transformer, tf_paths, "lora_transformer_"),
-                                 (text_encoder, te_paths, "lora_te_")):
-        modules = dict(model.named_modules())
-        for target in sorted(paths):
-            composite = modules[target]
-            base = composite.original_module
-            down, up, alpha = file_branch_tensors(path, target, prefix)
-            reference = pre_composite_reference(base, down, up, alpha, STRENGTH)
-
-            assert sole_branch(composite).scale == reference.scale, target
-            x = torch.randn(3, base.in_features)
-            assert torch.equal(composite(x), reference(x)), f"{prefix}{target}"
-            checked += 1
-    assert checked == len(tf_paths) + len(te_paths)
-
-
-# ---------------------------------------------------------------------------
-# Gates 1-3: the stack
-# ---------------------------------------------------------------------------
-
-def test_flux2_two_loras_over_one_module_sum_their_deltas(tmp_path):
-    """The adoption gate: base + delta_a + delta_b, against the analytic sum."""
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, tf_b, te_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    assert (tf_b, te_b) == (tf_paths, te_paths), "both files must cover the same targets"
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    _Backend(transformer, text_encoder)._load_lora_flux2(
-        [{"path": path_a, "strength": STRENGTH},
-         {"path": path_b, "strength": STRENGTH_B}])
-
-    for model, paths, prefix in ((transformer, tf_paths, "lora_transformer_"),
-                                 (text_encoder, te_paths, "lora_te_")):
-        assert wrapped_paths(model) == paths
-        modules = dict(model.named_modules())
-        for target in sorted(paths):
-            composite = modules[target]
-            assert len(composite) == 2, f"{target}: {composite.branch_names}"
-            base_module = composite.original_module
-            down_a, up_a, _aa = file_branch_tensors(path_a, target, prefix)
-            down_b, up_b, _ab = file_branch_tensors(path_b, target, prefix)
-            x = torch.randn(3, base_module.in_features)
-            expected = (base_module(x)
-                        + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH)
-                        + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B))
-            assert torch.allclose(composite(x), expected, atol=1e-5), target
-            # Both branches really contribute: dropping either changes the output.
-            assert not torch.allclose(
-                composite(x),
-                base_module(x) + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH),
-                atol=1e-5), f"{target}: the second LoRA is inert"
-            assert not torch.allclose(
-                composite(x),
-                base_module(x) + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B),
-                atol=1e-5), f"{target}: the first LoRA is inert"
-
-
-def test_flux2_stacked_result_is_independent_of_selection_order(tmp_path):
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tf, _te = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    a = {"path": path_a, "strength": STRENGTH}
-    b = {"path": path_b, "strength": STRENGTH_B}
-
-    fwd_tf, fwd_te = _Transformer(), _TextEncoder()
-    _Backend(fwd_tf, fwd_te)._load_lora_flux2([a, b])
-    rev_tf, rev_te = _Transformer(), _TextEncoder()
-    _Backend(rev_tf, rev_te)._load_lora_flux2([b, a])
-
-    for one_model, two_model, paths in ((fwd_tf, rev_tf, tf_paths),
-                                        (fwd_te, rev_te, te_paths)):
-        one_modules = dict(one_model.named_modules())
-        two_modules = dict(two_model.named_modules())
-        for target in sorted(paths):
-            one, two = one_modules[target], two_modules[target]
-            assert torch.equal(one.original_module.weight,
-                               two.original_module.weight), target
-            x = torch.randn(3, one.original_module.in_features)
-            # Two branches: the deltas are summed before the base is added, and
-            # fp addition commutes, so this is EXACT. (Three or more branches
-            # would only hold up to associativity.)
-            assert torch.equal(one(x), two(x)), target
-
-
-def test_flux2_removing_one_branch_leaves_the_other_exactly_as_if_alone(tmp_path):
-    """A stacked branch must not perturb its neighbour's own arithmetic."""
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tf, _te = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    alone_tf, alone_te = _Transformer(), _TextEncoder()
-    _Backend(alone_tf, alone_te)._load_lora_flux2(
-        [{"path": path_a, "strength": STRENGTH}])
-
-    stacked_tf, stacked_te = _Transformer(), _TextEncoder()
-    _Backend(stacked_tf, stacked_te)._load_lora_flux2(
-        [{"path": path_a, "strength": STRENGTH},
-         {"path": path_b, "strength": STRENGTH_B}])
-
-    for alone, stacked, paths in ((alone_tf, stacked_tf, tf_paths),
-                                  (alone_te, stacked_te, te_paths)):
-        alone_modules = dict(alone.named_modules())
-        stacked_modules = dict(stacked.named_modules())
-        for target in sorted(paths):
-            one = alone_modules[target]
-            two = stacked_modules[target]
-            assert torch.equal(one.original_module.weight,
-                               two.original_module.weight), target
-            two.remove_branch(two.branch_names[1])
-            assert two.branch_names == one.branch_names, target
-            x = torch.randn(3, one.original_module.in_features)
-            assert torch.equal(one(x), two(x)), target
-
-
 def test_flux2_a_text_encoder_only_second_lora_leaves_the_transformer_alone(tmp_path):
     """The per-component accounting must survive stacking: a file with no
     transformer keys must not make the transformer look like it failed, and it
@@ -430,52 +269,6 @@ def test_flux2_a_text_encoder_only_second_lora_leaves_the_transformer_alone(tmp_
 # ---------------------------------------------------------------------------
 # Gate 5: restore identity, and the two components' different lifetimes
 # ---------------------------------------------------------------------------
-
-def test_flux2_unload_restores_the_identical_objects_and_is_idempotent(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    before = {**dict(transformer.named_modules()), **{
-        f"te::{n}": m for n, m in text_encoder.named_modules()}}
-    backend = _Backend(transformer, text_encoder)
-    backend._load_lora_flux2([{"path": path, "strength": 1.0}])
-
-    # _flux2_cleanup is the finally of every generate entry point.
-    backend._flux2_cleanup(gen_succeeded=False)
-    assert backend._unload_lora_flux2() == len(tf_paths)
-
-    for target in tf_paths:
-        assert dict(transformer.named_modules())[target] is before[target], target
-    for target in te_paths:
-        assert dict(text_encoder.named_modules())[target] is before[f"te::{target}"], target
-    assert not wrapped_paths(transformer) and not wrapped_paths(text_encoder)
-
-    assert backend._unload_lora_flux2() == 0  # second unload: no-op, not a re-splice
-    backend._flux2_cleanup(gen_succeeded=True)
-    assert not wrapped_paths(transformer) and not wrapped_paths(text_encoder)
-
-
-def test_flux2_unload_after_a_stack_restores_the_identical_objects(tmp_path):
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tf, _te = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    before = {**dict(transformer.named_modules()), **{
-        f"te::{n}": m for n, m in text_encoder.named_modules()}}
-    backend = _Backend(transformer, text_encoder)
-    backend._load_lora_flux2([{"path": path_a, "strength": STRENGTH},
-                              {"path": path_b, "strength": STRENGTH_B}])
-    assert wrapped_paths(transformer) == tf_paths
-    assert wrapped_paths(text_encoder) == te_paths
-
-    assert backend._unload_lora_flux2() == len(tf_paths) + len(te_paths)
-    for target in tf_paths:
-        assert dict(transformer.named_modules())[target] is before[target], target
-    for target in te_paths:
-        assert dict(text_encoder.named_modules())[target] is before[f"te::{target}"], target
-    assert not backend._flux2_lora_wrapped_modules
-    assert backend._unload_lora_flux2() == 0
-
 
 def test_flux2_the_text_encoder_lifetime_is_shorter_than_the_transformers(tmp_path):
     """``_restore_flux2_te_lora`` runs in EVERY generation's finally and must
@@ -519,28 +312,6 @@ def test_flux2_a_leaked_wrapper_is_restored_before_the_next_load(tmp_path):
 # ---------------------------------------------------------------------------
 # Alpha precedence, the refusals, and the shape-mismatch skip
 # ---------------------------------------------------------------------------
-
-def test_flux2_alpha_beats_the_rank_fallback(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    _Backend(transformer, text_encoder)._load_lora_flux2(
-        [{"path": path, "strength": STRENGTH}])
-    scales = {round(sole_branch(m).scale, 9)
-              for model in (transformer, text_encoder)
-              for m in model.modules() if isinstance(m, CompositeAdapterLayer)}
-    assert scales == {round(SCALE * STRENGTH, 9)}
-
-    stripped = tmp_path / "no_alpha.safetensors"
-    save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
-              str(stripped), metadata={"model_type": "flux2"})
-    transformer2, text_encoder2 = _Transformer(), _TextEncoder()
-    _Backend(transformer2, text_encoder2)._load_lora_flux2(
-        [{"path": str(stripped), "strength": STRENGTH}])
-    scales2 = {round(sole_branch(m).scale, 9)
-               for model in (transformer2, text_encoder2)
-               for m in model.modules() if isinstance(m, CompositeAdapterLayer)}
-    assert scales2 == {round(STRENGTH, 9)}
-
 
 def test_flux2_missing_file_refuses_and_warns(warnings_seen):
     with pytest.raises(FileNotFoundError):
@@ -740,38 +511,3 @@ def test_flux2_block_swap_sees_one_base_per_target_and_a_uniform_rename(tmp_path
 # ---------------------------------------------------------------------------
 # Model reload
 # ---------------------------------------------------------------------------
-
-def test_flux2_model_reload_never_splices_model_a_into_model_b(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-    second, _tf, _te = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    tf_a, te_a = _Transformer(), _TextEncoder()
-    backend = _Backend(tf_a, te_a)
-    backend._load_lora_flux2([{"path": path, "strength": STRENGTH},
-                              {"path": second, "strength": STRENGTH_B}])
-    a_ids = (module_ids(tf_a) | module_ids(te_a)
-             | {id(m) for m in backend._flux2_lora_original_modules.values()})
-
-    tf_b, te_b = _Transformer(seed=21), _TextEncoder(seed=23)
-    b_ids_before = module_ids(tf_b) | module_ids(te_b)
-    assert not (a_ids & b_ids_before), "setup: A and B must not already share modules"
-
-    # The model switch: pipeline.py replaces the component dict wholesale.
-    backend.flux2_components = {"transformer": tf_b, "text_encoder": te_b, "vae": None}
-    backend._flux2_cleanup(gen_succeeded=False)
-    backend._unload_lora_flux2()
-
-    assert module_ids(tf_b) | module_ids(te_b) == b_ids_before, "model B was modified"
-    assert not ((module_ids(tf_b) | module_ids(te_b)) & a_ids)
-
-    b_before = {**dict(tf_b.named_modules()),
-                **{f"te::{n}": m for n, m in te_b.named_modules()}}
-    backend._load_lora_flux2([{"path": path, "strength": 1.0}])
-    assert wrapped_paths(tf_b) == tf_paths and wrapped_paths(te_b) == te_paths
-    backend._flux2_cleanup(gen_succeeded=False)
-    backend._unload_lora_flux2()
-    for target in tf_paths:
-        assert dict(tf_b.named_modules())[target] is b_before[target], target
-    for target in te_paths:
-        assert dict(te_b.named_modules())[target] is b_before[f"te::{target}"], target
-    assert not ((module_ids(tf_b) | module_ids(te_b)) & a_ids)

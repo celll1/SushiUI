@@ -226,7 +226,7 @@ def _quantize_unet(unet, quantization: str):
                     f"lacks FP8 support); falling back to full precision",
                     code="quantization_fallback",
                 )
-                return copy.deepcopy(unet)
+                return unet
 
             try:
                 # Clone the model
@@ -252,7 +252,7 @@ def _quantize_unet(unet, quantization: str):
                     f"falling back to full precision",
                     code="quantization_fallback",
                 )
-                return copy.deepcopy(unet)
+                return unet
 
         else:
             print(f"[Quantization] Unsupported quantization type: {quantization}")
@@ -263,7 +263,7 @@ def _quantize_unet(unet, quantization: str):
                 f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
                 code="quantization_fallback",
             )
-            return copy.deepcopy(unet)
+            return unet
 
     except Exception as e:
         print(f"[Quantization] Error during quantization: {e}")
@@ -274,7 +274,7 @@ def _quantize_unet(unet, quantization: str):
         )
         import traceback
         traceback.print_exc()
-        return copy.deepcopy(unet)
+        return unet
 
 
 def move_text_encoders_to_gpu(pipeline):
@@ -653,7 +653,7 @@ def _quantize_transformer(transformer, quantization: str):
                 f"{torch.__version__} lacks FP8 support); falling back to full precision",
                 code="quantization_fallback",
             )
-            return copy.deepcopy(transformer)
+            return transformer
 
         try:
             # Clone the model
@@ -687,7 +687,7 @@ def _quantize_transformer(transformer, quantization: str):
                 f"falling back to full precision",
                 code="quantization_fallback",
             )
-            return copy.deepcopy(transformer)
+            return transformer
 
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
@@ -698,7 +698,7 @@ def _quantize_transformer(transformer, quantization: str):
         f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
         code="quantization_fallback",
     )
-    return copy.deepcopy(transformer)
+    return transformer
 
 
 def _quantize_text_encoder(text_encoder, quantization: str):
@@ -738,7 +738,7 @@ def _quantize_text_encoder(text_encoder, quantization: str):
                 f"{torch.__version__} lacks FP8 support); falling back to full precision",
                 code="quantization_fallback",
             )
-            return copy.deepcopy(text_encoder)
+            return text_encoder
 
         try:
             # Clone the model
@@ -794,7 +794,7 @@ def _quantize_text_encoder(text_encoder, quantization: str):
                 f"falling back to full precision",
                 code="quantization_fallback",
             )
-            return copy.deepcopy(text_encoder)
+            return text_encoder
 
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
@@ -805,7 +805,7 @@ def _quantize_text_encoder(text_encoder, quantization: str):
         f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
         code="quantization_fallback",
     )
-    return copy.deepcopy(text_encoder)
+    return text_encoder
 
 
 # ============================================================

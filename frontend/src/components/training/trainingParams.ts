@@ -85,6 +85,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "sensenova_four_phase_grad_reduction", "sensenova_full_finetune_save_format",
   "sensenova_sample_kv_cache_streaming", "sensenova_mot_pageable_staging",
   "sensenova_mot_overlap_transfer", "sensenova_train_fm_modules",
+  "sensenova_train_generation_norms",
   "sensenova_train_scopes",
   "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
   "bundle_vae",

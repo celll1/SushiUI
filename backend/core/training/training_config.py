@@ -421,6 +421,10 @@ def _build_train_section(
             "sensenova_train_fm_modules",
             _TD["sensenova_train_fm_modules"],
         )
+        train["sensenova_train_generation_norms"] = p.get(
+            "sensenova_train_generation_norms",
+            _TD["sensenova_train_generation_norms"],
+        )
         train["sensenova_mot_pageable_staging"] = p.get(
             "sensenova_mot_pageable_staging",
             _TD["sensenova_mot_pageable_staging"],

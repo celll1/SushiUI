@@ -136,6 +136,7 @@ const SENSENOVA_SCOPE_OPTIONS: { value: SenseNovaTrainScope; label: string }[] =
   { value: "understanding_decoder", label: "Understanding decoder" },
   { value: "shared", label: "Shared embeddings + LM head" },
   { value: "generation_decoder", label: "Generation decoder" },
+  { value: "generation_norms", label: "Generation decoder norms" },
   { value: "generation_flow", label: "Generation vision + flow modules" },
 ];
 
@@ -381,7 +382,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sensenova_sample_kv_cache_streaming: false,
   sensenova_mot_pageable_staging: false,
   sensenova_mot_overlap_transfer: false,
-  sensenova_train_fm_modules: false,
+  sensenova_train_fm_modules: true,
+  sensenova_train_generation_norms: true,
   sensenova_train_scopes: [],
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
@@ -5703,7 +5705,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
             <h3 className="text-sm font-medium text-gray-300">SenseNova Objective Scopes</h3>
             <p className="text-xs text-gray-500">
-              Required when task views are configured. An empty selection keeps legacy generation scope behavior.
+              Required when task views are configured. An empty selection uses the full generation path (gen-all).
             </p>
             {SENSENOVA_SCOPE_OPTIONS.map((scope) => {
               const selected = params.sensenova_train_scopes || [];
@@ -5768,8 +5770,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
+                id="sensenova-train-generation-norms"
+                checked={params.sensenova_train_generation_norms ?? true}
+                onChange={(e) => updateParam("sensenova_train_generation_norms", e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="sensenova-train-generation-norms" className="text-xs text-gray-300 cursor-pointer">
+                Train Generation RMSNorms
+              </label>
+            </div>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
                 id="sensenova-train-fm-modules"
-                checked={params.sensenova_train_fm_modules ?? false}
+                checked={params.sensenova_train_fm_modules ?? true}
                 onChange={(e) => updateParam("sensenova_train_fm_modules", e.target.checked)}
                 disabled={!!requiredValue("sensenova_train_fm_modules")}
                 title={requiredValue("sensenova_train_fm_modules")?.reason}
@@ -5781,18 +5795,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
             <RequiredValueNote entry={requiredValue("sensenova_train_fm_modules")} />
             <p className="text-xs text-gray-500">
-              A full fine-tune trains the 294 decoder Linears per MoT half, which is the set the
-              INT8 load dequantizes. fm_modules is not quantized, so it is not in that set: the
+              By default, a generation full fine-tune trains gen-all: the 294 decoder Linears,
+              all 253 generation-side decoder RMSNorm tensors, and fm_modules. The Linears are the set the
+              INT8 load dequantizes; fm_modules contains the
               generation ViT&apos;s patch and dense embeddings, the timestep and noise-scale
               embedders and the two fm_head convolutions — 16 tensors, 63,117,504 parameters
-              (120.4 MiB in BF16) — stay frozen. Measured across two run checkpoints 4,960 steps
-              apart, every one of them is byte-identical while the generation decoder moved
-              3.09e-3 relative.
-              Enabling this adds them to the generation parameter group at the U-Net learning rate.
+              (120.4 MiB in BF16). This switch keeps them in the generation parameter group at
+              the U-Net learning rate; disabling it keeps only this flow container frozen.
               Every save format already writes them, so an update is kept.
-              Changing this setting on a resume changes the generation group&apos;s parameter count,
-              so the saved optimizer state cannot be reloaded and momentum/variance restart from
-              zero for every trained parameter, not just the new ones.
+              Generation RMSNorms use a separate trailing optimizer group. On a legacy resume,
+              the decoder and fm_modules moments are restored unchanged, while only the new norm
+              group starts fresh and receives the configured resume warmup.
               Cost is not measured. Enabling this makes the training step build an autograd graph
               over the generation ViT and the timestep/noise-scale embedders, which it did not
               build before — with these frozen that stage runs under no_grad and builds no graph

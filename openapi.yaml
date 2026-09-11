@@ -24322,16 +24322,16 @@ components:
             architecture.
         sensenova_train_fm_modules:
           type: 'boolean'
-          default: false
+          default: true
           description: >-
-            SenseNova U1.5 full fine-tuning only. Adds `transformer.fm_modules`
-            to the trained set, in the GENERATION parameter group at `unet_lr`.
+            SenseNova U1.5 full fine-tuning only. Keeps `transformer.fm_modules`
+            in the gen-all trained set, in the GENERATION parameter group at
+            `unet_lr`. Enabled by default.
 
-            A full fine-tune's scope is the set of decoder Linears the loader
-            dequantized from INT8 (294 per MoT half), which is a consequence of
-            the INT8 layout rather than a statement about what is worth
-            training: `fm_modules` is not quantized, so it is not materialized,
-            so it is not optimized. Measured on two real run checkpoints 4,960
+            The former scope was only the decoder Linears the loader dequantized
+            from INT8 (294 per MoT half). That was a consequence of the INT8
+            layout rather than a statement about what is worth training.
+            Measured on two real run checkpoints 4,960
             steps apart with this option off, every `fm_modules` tensor is
             byte-identical (0.0 drift) while the generation decoder moved
             3.09e-3 relative.
@@ -24352,12 +24352,12 @@ components:
             tensors through as they stand), so no format change is needed to
             keep an update.
 
-            ON A RESUME, changing this setting changes the generation parameter
-            group's count (294 vs 310), so the saved optimizer state cannot be
-            reloaded and momentum/variance restart from zero for every trained
-            parameter, not just the new ones.
+            ON A RESUME, changing this setting or moving from the former
+            Linear-only default to gen-all changes the generation parameter
+            group's count. The leading-prefix remap keeps compatible leading
+            state and initializes newly inserted parameters fresh.
 
-            COST is not measured. Enabling it makes the training step build an
+            COST is not measured. Keeping it enabled makes the training step build an
             autograd graph over the generation ViT and the timestep/noise-scale
             embedders, which it did not build before: those run inside the
             per-step embed builder the inference path shares, under no_grad
@@ -24367,16 +24367,28 @@ components:
             Ignored (accepted and warned) by every other architecture and by
             SenseNova LoRA, which wraps Linears and has no `fm_modules` target.
             See docs/guides/SENSENOVA_TRAINING_DESIGN.md, "Trained scope".
+        sensenova_train_generation_norms:
+          type: 'boolean'
+          default: true
+          description: >-
+            SenseNova full fine-tuning only. Trains the 253 generation-side
+            decoder RMSNorm tensors (358,912 parameters on U1.5). They occupy a
+            trailing generation optimizer group so a legacy resume preserves
+            every existing decoder/fm_modules moment and applies the configured
+            resume warmup only to this newly added group. Explicit task runs use
+            the `generation_norms` scope instead.
         sensenova_train_scopes:
           type: array
           items:
             type: string
-            enum: [understanding_vision, understanding_decoder, shared, generation_decoder, generation_flow]
+            enum: [understanding_vision, understanding_decoder, shared, generation_decoder, generation_norms, generation_flow]
           default: []
           uniqueItems: true
           description: >-
             Explicit SenseNova optimizer scopes. Required when any dataset has
-            task_views. Empty preserves legacy image-generation scope semantics.
+            task_views. Empty selects gen-all for the legacy image-generation
+            objective: generation decoder Linears, generation decoder RMSNorms,
+            and flow-matching modules.
         sensenova_full_finetune_save_format:
           type: 'string'
           enum: ['mixed', 'bf16', 'int8']

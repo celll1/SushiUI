@@ -2570,6 +2570,10 @@ class BaseTrainer(ABC):
             "sensenova_train_fm_modules",
             _TD_PHASE_EVICTION["sensenova_train_fm_modules"],
         ))
+        self.sensenova_train_generation_norms = bool(_tc.get(
+            "sensenova_train_generation_norms",
+            _TD_PHASE_EVICTION["sensenova_train_generation_norms"],
+        ))
         # Validated by SenseNovaFullParameterAdapter, its only reader.
         self.sensenova_full_finetune_save_format = str(_tc.get(
             "sensenova_full_finetune_save_format",
@@ -5499,6 +5503,8 @@ class BaseTrainer(ABC):
         import re
 
         self._optimizer_state_partially_fresh = False
+        self._optimizer_fresh_param_group_indices = {}
+        self._optimizer_fresh_param_ids = {}
 
         optimizers = all_optimizers(self)
         if not optimizers:
@@ -5773,6 +5779,25 @@ class BaseTrainer(ABC):
             for i, kept, fresh, saved_n, cur_n in per_group)
         report = (f"{kept_total} of {kept_total + fresh_total} live parameter tensor(s) "
                   f"kept their saved state, {fresh_total} start fresh [{detail}]")
+        fresh_by_optimizer = getattr(
+            self, "_optimizer_fresh_param_group_indices", None
+        )
+        if fresh_by_optimizer is None:
+            fresh_by_optimizer = {}
+            self._optimizer_fresh_param_group_indices = fresh_by_optimizer
+        fresh_by_optimizer[id(optimizer)] = {
+            index for index, kept, fresh, saved_n, cur_n in per_group if fresh > 0
+        }
+        fresh_param_ids = getattr(self, "_optimizer_fresh_param_ids", None)
+        if fresh_param_ids is None:
+            fresh_param_ids = {}
+            self._optimizer_fresh_param_ids = fresh_param_ids
+        fresh_param_ids[id(optimizer)] = {
+            id(parameter)
+            for index, kept, fresh, saved_n, cur_n in per_group
+            if fresh > 0
+            for parameter in optimizer.param_groups[index]["params"][kept:]
+        }
         return new_state, report, fresh_total
 
     def _load_one_optimizer_state(self, optimizer, optimizer_state, label: str) -> bool:
@@ -7066,11 +7091,12 @@ class BaseTrainer(ABC):
 
             lr(step) = base_lr * schedule(step) * min(1, (step - resume) / W)
 
-        so the underlying schedule keeps its absolute position and only the
-        first ``W`` post-reset steps are attenuated. Every scheduler this
-        project builds is a ``LambdaLR`` (``lr_schedules.build_lr_scheduler``),
-        and each is wrapped, not just ``self.lr_scheduler``, so fused optimizer
-        groups re-arm too.
+        so the underlying schedule keeps its absolute position. After a partial
+        state load, only wholly fresh parameter groups receive the ramp; groups
+        whose moments were restored retain their exact schedule. Every scheduler
+        this project builds is a ``LambdaLR``
+        (``lr_schedules.build_lr_scheduler``), and fused optimizers are handled
+        independently too.
 
         Must run BEFORE ``_reassert_config_lr_on_resume()``: that method
         evaluates the live lambdas to write each param group's LR, so installing
@@ -7114,8 +7140,18 @@ class BaseTrainer(ABC):
         # scheduler-axis step like every other argument they take (§17.1).
         anchor = resume_scheduler_position(self, global_step)
         rearmed = 0
+        rearmed_groups = 0
         skipped = 0
-        for scheduler in all_lr_schedulers(self):
+        schedulers = all_lr_schedulers(self)
+        optimizers = all_optimizers(self)
+        fresh_groups = getattr(
+            self, "_optimizer_fresh_param_group_indices", {}
+        )
+        targeted = bool(
+            getattr(self, "_optimizer_state_partially_fresh", False)
+            and fresh_groups and len(schedulers) == len(optimizers)
+        )
+        for scheduler_index, scheduler in enumerate(schedulers):
             if scheduler is None:
                 continue
             lambdas = getattr(scheduler, "lr_lambdas", None)
@@ -7125,9 +7161,18 @@ class BaseTrainer(ABC):
                 # is left alone rather than guessed at.
                 skipped += 1
                 continue
+            selected = (
+                fresh_groups.get(id(optimizers[scheduler_index]), set())
+                if targeted else set(range(len(lambdas)))
+            )
             scheduler.lr_lambdas = [
-                self._compose_warmup_lambda(fn, anchor, warmup) for fn in lambdas
+                self._compose_warmup_lambda(fn, anchor, warmup)
+                if group_index in selected else fn
+                for group_index, fn in enumerate(lambdas)
             ]
+            rearmed_groups += len(selected)
+            if not selected:
+                continue
             rearmed += 1
 
         if not rearmed:
@@ -7140,7 +7185,8 @@ class BaseTrainer(ABC):
                   f"{configured}-step ({warmup} LR update)")
         print(f"{self.log_prefix} {cause}. "
               f"Re-arming the configured {length} warmup from step {anchor} "
-              f"over {rearmed} schedule(s)"
+              f"over {rearmed_groups} fresh parameter group(s) in "
+              f"{rearmed} schedule(s)"
               + (f" ({skipped} non-LambdaLR skipped)" if skipped else "")
               + " -- the underlying schedule keeps its position.")
         return True
@@ -17902,6 +17948,7 @@ class BaseTrainer(ABC):
                                         _scope_ids.get(scope, set()) for scope in (
                                             "understanding_decoder",
                                             "generation_decoder",
+                                            "generation_norms",
                                             "generation_flow",
                                         )
                                     ))

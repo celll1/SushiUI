@@ -485,7 +485,7 @@ def _apply_sensenova_task_contract(
 
     allowed_scopes = {
         "understanding_vision", "understanding_decoder", "shared",
-        "generation_decoder", "generation_flow",
+        "generation_decoder", "generation_norms", "generation_flow",
     }
     scopes = list(train_config.get("sensenova_train_scopes") or [])
     if not scopes:
@@ -497,7 +497,8 @@ def _apply_sensenova_task_contract(
     }:
         raise ValueError("Text-output tasks freeze every parameter on their path")
     if tasks & IMAGE_TASKS and not set(scopes) & {
-        "understanding_decoder", "shared", "generation_decoder", "generation_flow",
+        "understanding_decoder", "shared", "generation_decoder",
+        "generation_norms", "generation_flow",
     }:
         raise ValueError("Image-output tasks freeze every parameter on their path")
     if network_type == "lora" and set(scopes) - {
@@ -608,7 +609,8 @@ def _apply_sensenova_full_finetune_contract(
                 f"ignored. Leave it at {INHERIT_GEN_PATCH} to inherit that "
                 f"patch deliberately.")
     if resolve_vae_swap_source(train_config) and not _normalize_sensenova_bool(
-            train_config, "sensenova_train_fm_modules", False):
+            train_config, "sensenova_train_fm_modules",
+            TRAINING_DEFAULTS["sensenova_train_fm_modules"]):
         # The served requirement (arch_capabilities: required value, lifted when
         # vae_swap_source is empty), enforced before the load rather than only
         # when the resize runs.
@@ -616,8 +618,8 @@ def _apply_sensenova_full_finetune_contract(
             "SenseNova vae_swap_source requires sensenova_train_fm_modules: the "
             "swap rebuilds the generation ViT's patch embed and the fm_head's "
             "output convolution, both of which live in transformer.fm_modules "
-            "and are outside the default full fine-tune scope, so without it "
-            "they would stay at their initialisation for the whole run."
+            "and are part of the default gen-all full fine-tune scope, so "
+            "without it they would stay at their initialisation for the whole run."
         )
     if train_config.get("optimizer_stochastic_rounding") is False:
         # Only reachable for an explicit False; a None (unset) is forced on

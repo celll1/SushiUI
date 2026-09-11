@@ -1,4 +1,4 @@
-"""SenseNova MoT training adapters (LoRA, and full parameter over one MoT half)."""
+"""SenseNova MoT training adapters (LoRA and scoped full-parameter training)."""
 
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
@@ -41,6 +41,68 @@ def _unique_parameters(parameters: Iterable[nn.Parameter]) -> List[nn.Parameter]
             seen.add(id(parameter))
             result.append(parameter)
     return result
+
+
+def _generation_norm_parameters(transformer: nn.Module) -> List[nn.Parameter]:
+    """Generation-only RMSNorm parameters from the MoT decoder."""
+    core = transformer.language_model.model
+    layers = list(core.layers)
+    layer_names = (
+        "input_layernorm_mot_gen",
+        "post_attention_layernorm_mot_gen",
+    )
+    attention_names = (
+        "q_norm_mot_gen",
+        "q_norm_hw_mot_gen",
+        "k_norm_mot_gen",
+        "k_norm_hw_mot_gen",
+    )
+    has_any = any(
+        hasattr(layer, name) or hasattr(layer.self_attn, name)
+        for layer in layers
+        for name in (*layer_names, *attention_names)
+    ) or hasattr(core, "norm_mot_gen")
+    # Small structural test doubles predate the norms. The real tree is strict:
+    # once any generation norm is present, a partial layout is refused.
+    if not has_any:
+        return []
+
+    modules: List[nn.Module] = []
+    missing = []
+    for index, layer in enumerate(layers):
+        for name in layer_names:
+            module = getattr(layer, name, None)
+            if module is None:
+                missing.append(f"layers.{index}.{name}")
+            else:
+                modules.append(module)
+        for name in attention_names:
+            module = getattr(layer.self_attn, name, None)
+            if module is None:
+                missing.append(f"layers.{index}.self_attn.{name}")
+            else:
+                modules.append(module)
+    final_norm = getattr(core, "norm_mot_gen", None)
+    if final_norm is None:
+        missing.append("norm_mot_gen")
+    else:
+        modules.append(final_norm)
+    if missing:
+        raise RuntimeError(
+            "SenseNova generation norm scope found a partial MoT norm layout "
+            f"(first missing: {missing[0]})"
+        )
+    parameters = _unique_parameters(
+        parameter for module in modules for parameter in module.parameters()
+    )
+    bad = [parameter.dtype for parameter in parameters
+           if not parameter.dtype.is_floating_point]
+    if bad:
+        raise RuntimeError(
+            "SenseNova generation norm scope contains a non-floating-point "
+            f"parameter ({bad[0]})"
+        )
+    return parameters
 
 
 class SenseNovaLoRAAdapter(BaseLoRAAdapter):
@@ -239,7 +301,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
 
 
 class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
-    """Train the decoder Linears the loader materialized, and nothing else.
+    """Train the selected MoT branch and generation path components.
 
     Everything comes from ``trainer.transformer``; ``trainer.text_encoder`` is
     never read, because ``load_components`` sets it to None and the generic
@@ -253,14 +315,12 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
     are one set rather than two that agree. ``train_unet`` is the generation
     half, ``train_text_encoder`` the understanding one.
 
-    The generation modules outside the decoder (``fm_head``, the generation ViT,
-    the embedders, the ``*_norm_mot_gen`` norms) are frozen by default: they are
-    not quantized, so the loader does not materialize them, and including them
-    unconditionally would break that identity. ``sensenova_train_fm_modules``
-    (SENSENOVA_TRAINING_DESIGN.md, "Trained scope") opts the ``fm_modules``
-    container back in, through ``_fm_parameters`` not ``_resolve_scope`` so the
-    decoder-Linear count stays exactly what the loader materialized. The
-    ``*_norm_mot_gen`` norms stay frozen either way.
+    The default generation scope is gen-all: the 294 materialized decoder
+    Linears, all generation-side decoder RMSNorms, and ``fm_modules``. The last
+    two are collected outside ``_resolve_scope`` so its exact Linear count stays
+    the guard against a silently unmaterialized INT8 module. Explicit task
+    scopes retain separate ``generation_decoder``, ``generation_norms`` and
+    ``generation_flow`` controls.
     """
 
     def _fm_parameters(self, branch: str) -> List[nn.Parameter]:
@@ -323,7 +383,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
     def _scope_parameters(
         self, branch: str, targets: List[Tuple[str, Any, str, nn.Module]],
     ) -> Dict[str, List[nn.Parameter]]:
-        """Resolve the five explicit task scopes from the live model tree."""
+        """Resolve explicit task scopes, or the default branch scope."""
         trainer = self.trainer
         transformer = trainer.transformer
         by_scope: Dict[str, List[nn.Parameter]] = {}
@@ -344,6 +404,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 by_scope["generation_decoder"] = _unique_parameters([
                     *by_scope.get("generation_decoder", ()), *fm,
                 ])
+            if branch in ("gen", "both") and bool(getattr(
+                    trainer, "sensenova_train_generation_norms", True)):
+                by_scope["generation_norms"] = _generation_norm_parameters(transformer)
             return by_scope
 
         if "understanding_vision" in scopes:
@@ -371,6 +434,8 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 )
                 for parameter in module.parameters()
             )
+        if "generation_norms" in scopes:
+            by_scope["generation_norms"] = _generation_norm_parameters(transformer)
         if "generation_flow" in scopes:
             by_scope["generation_flow"] = _unique_parameters(
                 transformer.fm_modules.parameters()
@@ -531,10 +596,14 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 ("understanding_decoder", und_lr, "text_encoder_1"),
                 ("shared", float(trainer.learning_rate), "shared"),
                 ("generation_decoder", unet_lr, "unet"),
+                ("generation_norms", unet_lr, "generation_norms"),
                 ("generation_flow", unet_lr, "generation_flow"),
             ) if _explicit_scopes(trainer) else (
                 ("generation_decoder", unet_lr, "unet"),
                 ("understanding_decoder", und_lr, "text_encoder_1"),
+                # Trailing preserves every legacy group's positional optimizer
+                # state; this newly added group alone is fresh on resume.
+                ("generation_norms", unet_lr, "generation_norms"),
             )
         )
         groups: List[Dict[str, Any]] = []
@@ -576,6 +645,7 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
                 "understanding_decoder": LORA_COMPONENT_TEXT_ENCODER_1,
                 "shared": LORA_COMPONENT_TEXT_ENCODER_1,
                 "generation_decoder": LORA_COMPONENT_UNET,
+                "generation_norms": LORA_COMPONENT_UNET,
                 "generation_flow": LORA_COMPONENT_UNET,
             }
             for scope, parameters in self._scope_parameters(branch, targets).items():

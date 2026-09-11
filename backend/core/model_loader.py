@@ -8,8 +8,6 @@ from safetensors.torch import load_file
 from pathlib import Path
 
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
-# DEUS support removed - architecture no longer maintained
-# ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
 ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova"]
 
 class ModelLoader:
@@ -250,15 +248,6 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
-            # DEUS support removed - architecture no longer maintained
-            # elif model_type == "deus":
-            #     # DEUS uses DDPM with epsilon prediction (same as SDXL base)
-            #     print(f"[ModelLoader] Inferred prediction config from DEUS architecture")
-            #     return {
-            #         "noise_process": "ddpm",
-            #         "prediction_target": "epsilon",
-            #         "source": "inferred"
-            #     }
             else:  # sd15, sdxl
                 print(f"[ModelLoader] Inferred prediction config from {model_type.upper()} architecture")
                 return {
@@ -952,26 +941,7 @@ class ModelLoader:
                     if has_double_blocks and has_single_blocks and has_img_attn:
                         return "flux2"
 
-                    # DEUS support removed - architecture no longer maintained
-                    # Priority 3: DEUS detection by state_dict keys
-                    # DEUS uses SigLIP-2 text encoder with key prefix "conditioner.embedders.0.model."
-                    # AND it has U-Net keys (unlike Z-Image which uses transformer)
                     has_unet_keys = any(k.startswith('model.diffusion_model.') for k in keys)
-
-                    # DEUS-specific detection removed:
-                    # has_siglip2_keys = any(
-                    #     k.startswith('conditioner.embedders.0.model.text_model.embeddings') for k in keys
-                    # )
-                    # has_siglip2_layers = any(
-                    #     k.startswith('conditioner.embedders.0.model.text_model.encoder.layers') for k in keys
-                    # )
-                    # has_dual_clip = (
-                    #     any(k.startswith('conditioner.embedders.0.transformer') for k in keys) and
-                    #     any(k.startswith('conditioner.embedders.1.') for k in keys)
-                    # )
-                    # if has_unet_keys and has_siglip2_keys and has_siglip2_layers and not has_dual_clip:
-                    #     print(f"[ModelLoader] Detected DEUS model (SigLIP-2 text encoder): {model_path}")
-                    #     return "deus"
 
                     # Priority 3: SD/SDXL detection
                     if has_unet_keys:
@@ -1732,76 +1702,6 @@ class ModelLoader:
             traceback.print_exc()
             raise
 
-    # DEUS support removed - architecture no longer maintained
-    # @staticmethod
-    # def load_deus_from_safetensors(
-    #     file_path: str,
-    #     device: str = "cuda",
-    #     torch_dtype: torch.dtype = torch.float16
-    # ) -> Dict[str, Any]:
-    #     """Load DEUS model from safetensors file using diffusers DeusPipeline
-    #
-    #     DEUS architecture uses:
-    #     - SigLIP-2 text encoder (1152d, variable sequence length)
-    #     - U-Net with RoPE 2D positional encoding
-    #     - SDXL VAE (same as SDXL)
-    #     - 2-Pass CFG for inference
-    #
-    #     Args:
-    #         file_path: Path to DEUS safetensors file
-    #         device: Device to load models on
-    #         torch_dtype: Data type for model weights
-    #
-    #     Returns:
-    #         Dict containing unet, vae, text_encoder, tokenizer, scheduler, processor
-    #     """
-    #     if not os.path.exists(file_path):
-    #         raise FileNotFoundError(f"DEUS model file not found: {file_path}")
-    #
-    #     print(f"[ModelLoader] Loading DEUS model from: {file_path}")
-    #     print(f"[ModelLoader] Using diffusers DeusPipeline.from_single_file()")
-    #
-    #     try:
-    #         # Import the DEUS pipeline from the installed diffusers package.
-    #         from diffusers.pipelines.deus import DeusPipeline
-    #         from diffusers.schedulers import EulerDiscreteScheduler
-    #
-    #         # Load pipeline using from_single_file
-    #         pipeline = DeusPipeline.from_single_file(
-    #             file_path,
-    #             torch_dtype=torch_dtype,
-    #         )
-    #
-    #         # Move components to device
-    #         print(f"[ModelLoader] Moving DEUS components to {device}...")
-    #         pipeline.text_encoder.to(device)
-    #         pipeline.unet.to(device)
-    #         # VAE uses fp32 for better quality (same as SDXL)
-    #         pipeline.vae.to(device, dtype=torch.float32)
-    #
-    #         print(f"[ModelLoader] DEUS model loaded successfully")
-    #         print(f"  - U-Net: {type(pipeline.unet).__name__}")
-    #         print(f"  - Text Encoder: {type(pipeline.text_encoder).__name__}")
-    #         print(f"  - VAE: {type(pipeline.vae).__name__}")
-    #         print(f"  - Scheduler: {type(pipeline.scheduler).__name__}")
-    #
-    #         # Return components in dict format (consistent with Z-Image)
-    #         return {
-    #             "unet": pipeline.unet,
-    #             "vae": pipeline.vae,
-    #             "text_encoder": pipeline.text_encoder,
-    #             "tokenizer": pipeline.processor.tokenizer if hasattr(pipeline.processor, 'tokenizer') else None,
-    #             "processor": pipeline.processor,
-    #             "scheduler": pipeline.scheduler,
-    #             "pipeline": pipeline,  # Keep reference to pipeline for encode_prompt etc.
-    #         }
-    #
-    #     except Exception as e:
-    #         print(f"[ModelLoader] Error loading DEUS model: {e}")
-    #         import traceback
-    #         traceback.print_exc()
-    #         raise
-
     @staticmethod
     def _split_flux2_sushiui_state_dict(raw: dict):
         """Split a sushiUI FLUX.2 full-FT save into transformer / VAE / TE sub-dicts.
@@ -2331,11 +2231,6 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Ideogram 4 (combined single-file)")
             return ModelLoader.load_ideogram4_from_path(file_path, torch.bfloat16)
 
-        # DEUS support removed - architecture no longer maintained
-        # if model_type == "deus":
-        #     print(f"[ModelLoader] Loading as DEUS (SigLIP-2 text encoder)")
-        #     return ModelLoader.load_deus_from_safetensors(file_path, device, torch_dtype)
-
         # Z-Image Comfy format
         if model_type == "zimage":
             print(f"[ModelLoader] Loading as Z-Image (Comfy safetensors format)")
@@ -2764,15 +2659,6 @@ class ModelLoader:
         ModelLoader._refuse_load_time_te_choice(
             model_type, text_encoder_file, clip_projection_file)
         ModelLoader._refuse_hybrid_on_other_arch(model_type, hybrid)
-
-        # DEUS support removed - architecture no longer maintained
-        # if model_type == "deus":
-        #     # DEUS diffusers format directory loading
-        #     # For now, raise NotImplementedError (safetensors is the primary format)
-        #     raise NotImplementedError(
-        #         f"DEUS diffusers format directory loading is not yet implemented.\n"
-        #         f"Please use safetensors format instead."
-        #     )
 
         # Z-Image uses component-based loading
         if model_type == "zimage":

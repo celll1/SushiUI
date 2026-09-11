@@ -12901,14 +12901,12 @@ async def get_gpu_stats():
                         }
                         stats.append(gpu_stats)
 
-                # print(f"[GPU Stats] nvidia-smi: {len(stats)} GPU(s) found")
                 return {
                     "available": True,
                     "gpus": stats
                 }
 
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-            # print(f"[GPU Stats] nvidia-smi failed ({e}), falling back to torch")
             pass
 
         # Fallback to torch-only stats

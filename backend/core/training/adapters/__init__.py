@@ -9,8 +9,6 @@ from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
 from .sd15_adapter import SD15LoRAAdapter, SD15FullParameterAdapter
 from .sdxl_adapter import SDXLLoRAAdapter, SDXLFullParameterAdapter
 from .zimage_adapter import ZImageLoRAAdapter, ZImageFullParameterAdapter
-# DEUS support removed - architecture no longer maintained
-# from .deus_adapter import DEUSLoRAAdapter, DEUSFullParameterAdapter
 from .flux2_adapter import FLUX2LoRAAdapter, FLUX2FullParameterAdapter
 from .anima_adapter import AnimaLoRAAdapter, AnimaFullParameterAdapter
 from .lens_adapter import LensLoRAAdapter, LensFullParameterAdapter
@@ -37,9 +35,6 @@ __all__ = [
     "SDXLFullParameterAdapter",
     "ZImageLoRAAdapter",
     "ZImageFullParameterAdapter",
-    # DEUS support removed
-    # "DEUSLoRAAdapter",
-    # "DEUSFullParameterAdapter",
     "FLUX2LoRAAdapter",
     "FLUX2FullParameterAdapter",
     "AnimaLoRAAdapter",

@@ -3179,8 +3179,7 @@ class BaseTrainer(ABC):
         from core.model_loader import ModelLoader
         model_type = ModelLoader.detect_model_type(self.model_path)
         self.is_zimage = (model_type == "zimage")
-        # DEUS support removed - architecture no longer maintained
-        self.is_deus = False  # (model_type == "deus")
+        self.is_deus = False
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
@@ -3216,9 +3215,6 @@ class BaseTrainer(ABC):
             acestep_ops.load_components(self)
         elif self.is_zimage:
             zimage_ops.load_components(self)
-        # DEUS support removed
-        # elif self.is_deus:
-        #     self._load_deus_components()
         elif self.is_flux2:
             flux2_ops.load_components(self)
         elif self.is_anima:
@@ -4188,99 +4184,6 @@ class BaseTrainer(ABC):
         from core.training.ops import minit2i_ops
         return minit2i_ops.setup_block_swap(self)
 
-    # DEUS support removed - architecture no longer maintained
-    # def _load_deus_components(self):
-    #     """Load DEUS model components.
-    #
-    #     DEUS architecture:
-    #     - SigLIP-2 text encoder (1152d output, variable sequence length)
-    #     - U-Net with Transformer2DModel blocks
-    #     - SDXL VAE (same scaling factor 0.13025)
-    #     - DDPM epsilon prediction
-    #
-    #     Key differences from SDXL:
-    #     - Single text encoder (SigLIP-2) vs dual CLIP
-    #     - No pooled_embeddings
-    #     - No time_ids / added_cond_kwargs
-    #     """
-    #     print(f"{self.log_prefix} Detected DEUS model")
-    #     print(f"{self.log_prefix} Loading DEUS components from {self.model_path}")
-    #
-    #     from core.model_loader import ModelLoader
-    #     from diffusers import DDPMScheduler
-    #
-    #     components = ModelLoader.load_deus_from_safetensors(
-    #         file_path=self.model_path,
-    #         device="cpu",
-    #         torch_dtype=self.weight_dtype
-    #     )
-    #
-    #     # Store components
-    #     self.unet = components["unet"]
-    #     self.vae = components["vae"]
-    #     self.text_encoder = components["text_encoder"]
-    #     self.tokenizer = components.get("tokenizer")
-    #     self.processor = components.get("processor")
-    #     self.scheduler = components["scheduler"]
-    #     self.pipeline = components.get("pipeline")  # Keep reference for encode_prompt
-    #
-    #     # DEUS specific: no text_encoder_2, no transformer
-    #     self.text_encoder_2 = None
-    #     self.tokenizer_2 = None
-    #     self.transformer = None
-    #     self.transformer_original = None
-    #
-    #     # Create DDPM scheduler for training
-    #     self.noise_scheduler = DDPMScheduler.from_config(self.scheduler.config)
-    #
-    #     # Save original scheduler for inference (sample generation)
-    #     self.original_scheduler = self.scheduler
-    #
-    #     # Convert VAE to vae_dtype
-    #     self.vae = self.vae.to(dtype=self.vae_dtype)
-    #
-    #     # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-    #     if hasattr(self.unet, 'enable_gradient_checkpointing'):
-    #         self.unet.enable_gradient_checkpointing()
-    #         print(f"{self.log_prefix} Gradient checkpointing enabled for DEUS U-Net")
-    #     else:
-    #         print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for DEUS U-Net")
-    #
-    #     # Enable gradient checkpointing for Text Encoder
-    #     if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-    #         self.text_encoder.gradient_checkpointing_enable()
-    #         print(f"{self.log_prefix} Gradient checkpointing enabled for SigLIP-2 Text Encoder")
-    #
-    #     # Move VAE to device (always frozen during training)
-    #     print(f"{self.log_prefix} Moving VAE to {self.device}...")
-    #     self.vae.to(self.device)
-    #
-    #     # Move U-Net to device
-    #     print(f"{self.log_prefix} Moving U-Net to {self.device}...")
-    #     self.unet.to(self.device)
-    #
-    #     # Move Text Encoder to device
-    #     print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-    #     self.text_encoder.to(self.device)
-    #
-    #     print(f"{self.log_prefix} DEUS model loaded successfully")
-    #     print(f"{self.log_prefix} U-Net: {self.unet.__class__.__name__}")
-    #     print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
-    #     print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-    #
-    #     # Debug: Check for inf/nan in U-Net parameters
-    #     unet_has_inf = False
-    #     unet_has_nan = False
-    #     for name, param in self.unet.named_parameters():
-    #         if torch.isinf(param).any():
-    #             print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains inf!")
-    #             unet_has_inf = True
-    #         if torch.isnan(param).any():
-    #             print(f"{self.log_prefix} WARNING: U-Net param '{name}' contains nan!")
-    #             unet_has_nan = True
-    #     if not unet_has_inf and not unet_has_nan:
-    #         print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
-
     def _flux2_block_swap_h2d_args(self):
         """Delegator (plan P3c): body lives in
         ``ops/flux2_ops.block_swap_h2d_args``. Kept on the trainer because it has
@@ -4345,8 +4248,7 @@ class BaseTrainer(ABC):
         # Detect model type from checkpoint
         model_type = ModelLoader.detect_model_type(checkpoint_path)
         self.is_zimage = (model_type == "zimage")
-        # DEUS support removed - architecture no longer maintained
-        self.is_deus = False  # (model_type == "deus")
+        self.is_deus = False
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
@@ -4358,12 +4260,6 @@ class BaseTrainer(ABC):
         self.is_acestep = (model_type == "acestep")
         self.is_sensenova = (model_type == "sensenova")
         self.is_sdxl = False
-
-        # DEUS support removed
-        # if self.is_deus:
-        #     print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
-        #     ...
-        #     return
 
         if self.is_sensenova:
             self.model_path = checkpoint_path
@@ -8778,10 +8674,6 @@ class BaseTrainer(ABC):
         if self.is_sdxl and getattr(self, "sdxl_te_type", "none") not in ("none", "clip", "", None):
             return self._encode_prompt_custom_te(prompt, requires_grad)
 
-        # DEUS support removed
-        # if self.is_deus:
-        #     return self._encode_prompt_deus(prompt, requires_grad)
-
         # Check prompt length - use tokenizer_2 for SDXL as it determines chunking
         tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
         tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
@@ -8792,14 +8684,6 @@ class BaseTrainer(ABC):
 
         # Long prompt - use chunking
         return self._encode_prompt_chunked(prompt, requires_grad)
-
-    # DEUS support removed - architecture no longer maintained
-    # def _encode_prompt_deus(self, prompt: str, requires_grad: bool = False):
-    #     """
-    #     Encode prompt using DEUS's SigLIP-2 text encoder.
-    #     ...
-    #     """
-    #     pass
 
     def _encode_prompt_custom_te(self, prompt: str, requires_grad: bool = False):
         """Encode a prompt with the swapped SDXL text encoder + bridge adapters.

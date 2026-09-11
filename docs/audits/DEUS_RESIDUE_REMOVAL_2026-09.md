@@ -32,3 +32,15 @@ test a live warning string; otherwise they are updated with the warning.
   without loading model weights.
 - Check `openapi.yaml`, backend defaults and frontend consumers together.
 - Search tracked files after cleanup and classify every remaining case.
+
+## Result
+
+- `1007e50a` removed the unreachable sampling, preview-decoder and feature-gate
+  branches. The focused generation suite passed 86 tests.
+- `89aed629` removed the retired architecture from defaults, training state,
+  frontend descriptions and OpenAPI. Compilation and CUDA-free imports passed;
+  the focused VAE and path-redaction suite passed 128 tests.
+- The OpenAPI example exactly matches `BUNDLE_VAE_DEFAULTS_BY_ARCH`.
+- A case-insensitive tracked-file scan leaves only this audit, the protective
+  `.gitignore` rule, and the ordinary-language token in Anima's tokenizer
+  `tokenizer.json` and `vocab.json`. None is executable DEUS support.

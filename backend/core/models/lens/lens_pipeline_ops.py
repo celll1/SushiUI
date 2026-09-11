@@ -389,6 +389,7 @@ def _apply_advanced_cfg_lens(
     sigma_now: float,
     sigma_max: float = 1.0,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, float, Any]:
     """CFG + Lens-specific norm-scaling + optional schedule/SNR-rescale/threshold.
 
@@ -410,7 +411,7 @@ def _apply_advanced_cfg_lens(
     developer_mode = bool(cfg.get("developer_mode", False))
 
     current_snr = None
-    if snr_alpha > 0.0 or developer_mode:
+    if snr_alpha > 0.0 or (developer_mode and collect_metrics):
         uncond_norm = torch.norm(v_uncond).item()
         if uncond_norm > 1e-8:
             current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
@@ -441,7 +442,7 @@ def _apply_advanced_cfg_lens(
         noise_pred = dynamic_thresholding(noise_pred, percentile=dyn_percentile, clamp_value=dyn_mimic)
 
     cfg_metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) \
-        if developer_mode else None
+        if developer_mode and collect_metrics else None
     return noise_pred, cfg_now, cfg_metrics
 
 
@@ -600,6 +601,7 @@ def _lens_style_step(
     guidance_scale: float,
     img_shapes,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any]:
     """One style-active denoise step for Lens: a REF capture forward (the style
     reference re-noised to this step's CURRENT sigma, using the TARGET's own
@@ -670,6 +672,7 @@ def _lens_style_step(
 
     noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
         noise_pred_cond, noise_pred_uncond, guidance_scale, sigma_now, 1.0, advanced_cfg,
+        collect_metrics,
     )
 
     # --- CFG-decoupled style guidance (Lens) ---
@@ -735,6 +738,7 @@ def _lens_style_step(
             forced_advanced_cfg["cfg_schedule_type"] = "constant"
             noise_pred, _, cfg_metrics = _apply_advanced_cfg_lens(
                 cond_rewritten, noise_pred_uncond, _cfg_now, sigma_now, 1.0, forced_advanced_cfg,
+                collect_metrics,
             )
 
     return noise_pred, cfg_metrics
@@ -754,6 +758,7 @@ def _lens_style_step_multi(
     guidance_scale: float,
     img_shapes,
     advanced_cfg: Optional[Dict[str, Any]],
+    collect_metrics: bool = True,
 ) -> Tuple[torch.Tensor, Any]:
     """Multi-reference (N>1) generalization of ``_lens_style_step``: ONE REF
     capture forward PER reference (each with its OWN ``StyleTransferConfig`` --
@@ -833,6 +838,7 @@ def _lens_style_step_multi(
 
     noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
         noise_pred_cond, noise_pred_uncond, guidance_scale, sigma_now, 1.0, advanced_cfg,
+        collect_metrics,
     )
     return noise_pred, cfg_metrics
 
@@ -915,6 +921,9 @@ def denoise_loop(
     try:
         for i, t in enumerate(scheduler.timesteps):
             raise_if_cancelled()
+            collect_cfg_metrics = callback_requests(
+                progress_callback, "wants_cfg_metrics", i, total_steps
+            )
             sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
             hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
@@ -932,7 +941,7 @@ def denoise_loop(
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -940,7 +949,7 @@ def denoise_loop(
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -960,6 +969,7 @@ def denoise_loop(
                 cond, uncond = noise_out.chunk(2)
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                    collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1068,6 +1078,9 @@ def denoise_loop_img2img(
     try:
         for i, t in enumerate(timesteps_to_use):
             raise_if_cancelled()
+            collect_cfg_metrics = callback_requests(
+                progress_callback, "wants_cfg_metrics", i, total_steps
+            )
             sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)
             hidden_states = latents.repeat(2, 1, 1)
@@ -1085,7 +1098,7 @@ def denoise_loop_img2img(
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1093,7 +1106,7 @@ def denoise_loop_img2img(
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1113,6 +1126,7 @@ def denoise_loop_img2img(
                 cond, uncond = noise_out.chunk(2)
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                    collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1225,6 +1239,9 @@ def denoise_loop_inpaint(
     try:
         for i, t in enumerate(timesteps_to_use):
             raise_if_cancelled()
+            collect_cfg_metrics = callback_requests(
+                progress_callback, "wants_cfg_metrics", i, total_steps
+            )
             sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)
             hidden_states = latents.repeat(2, 1, 1)
@@ -1242,7 +1259,7 @@ def denoise_loop_inpaint(
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1250,7 +1267,7 @@ def denoise_loop_inpaint(
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
-                    guidance_scale, img_shapes, advanced_cfg,
+                    guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1270,6 +1287,7 @@ def denoise_loop_inpaint(
                 cond, uncond = noise_out.chunk(2)
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                    collect_cfg_metrics,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)

@@ -64,9 +64,7 @@ def restore_generated_images(db, outputs_dir):
             elif filename.startswith("inpaint"):
                 generation_type = "inpaint"
             else:
-                # No dedicated gallery filter exists for an "unknown" type
-                # (see gallery_type_visibility_test.py); txt2img is the
-                # closest recoverable guess and keeps the row filterable.
+                # txt2img is the closest recoverable guess for an unknown type.
                 generation_type = "txt2img"
 
             # Get file creation time

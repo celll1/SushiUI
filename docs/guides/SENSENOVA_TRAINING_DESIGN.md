@@ -4,10 +4,10 @@ This document records the shipped behavior and refusal boundary. It intentionall
 omits the chronological implementation log, abandoned alternatives, and future
 roadmap.
 
-The accepted but not-yet-implemented image-to-text and mixed-objective design is
-`docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`. Nothing in that decision
-changes the shipped image-generation loss or the meaning of
-`train_text_encoder` described here until its training phases are implemented.
+The implemented image-to-text and mixed-objective contract is recorded in
+`docs/decisions/SENSENOVA_TEXT_OUTPUT_DESIGN.md`. Image-generation loss and
+the legacy meaning of `train_text_encoder` remain unchanged for configurations
+that do not declare text-task views.
 
 ## Supported methods
 
@@ -50,7 +50,8 @@ written back. `sensenova_mot_phase_eviction` can be combined with it and owns
 only the physical layers that remain resident. The four-phase backward split
 is still optional except where the existing trained-understanding/phase-
 eviction contract requires it. This composition is implemented but not yet GPU
-validated; see the pending matrix in
+validated. The common transfer primitive's completed evidence and its
+architecture-level boundary are recorded in
 `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.
 
 `sensenova_full_finetune_save_format: int8` is the only export a NEW run may be

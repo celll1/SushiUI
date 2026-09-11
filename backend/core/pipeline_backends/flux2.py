@@ -336,10 +336,17 @@ class Flux2Mixin:
           the Linears, so the selection would differ from the offline audit) and
           the user gets a warning; that is the same contract Krea 2 has.
         """
-        from core.vram_optimization import apply_runtime_int8_quantization
+        from core.vram_optimization import (
+            _discard_runtime_quantization_cache,
+            apply_runtime_int8_quantization,
+        )
 
         if transformer is None:
             return transformer
+        if str(params.get("unet_quantization") or "").lower() == "int8":
+            _discard_runtime_quantization_cache(self.flux2_components, "transformer")
+            if self.flux2_components is not None:
+                transformer = self.flux2_components.get("transformer", transformer)
 
         # Checked, not asserted: `python -O` strips an assert, and this is the one
         # invariant whose violation is invisible (a conversion that "succeeded"
@@ -822,6 +829,14 @@ class Flux2Mixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.flux2_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.flux2_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -919,8 +934,11 @@ class Flux2Mixin:
             text_encoder_quantization = self._flux2_te_quantization_with_lora(text_encoder_quantization)
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+                )
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -1124,8 +1142,12 @@ class Flux2Mixin:
                 # No Block Swap - ensure ALL weights are on GPU
                 # This is important when switching from Block Swap ON to OFF
                 from core.memory_management.block_offloading import weighs_to_device
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.flux2_components,
+                        cache_identity=repr((_kh_model_key, attention_type, attention_impl)),
+                    )
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -2347,6 +2369,14 @@ class Flux2Mixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.flux2_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.flux2_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -2448,8 +2478,11 @@ class Flux2Mixin:
                 params.get("text_encoder_quantization"))
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+                )
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -2669,8 +2702,12 @@ class Flux2Mixin:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.flux2_components,
+                        cache_identity=repr((_kh_model_key, attention_type, attention_impl)),
+                    )
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -3161,6 +3198,14 @@ class Flux2Mixin:
                         pass
 
         invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+        from core.vram_optimization import (
+            offload_cached_runtime_quantization,
+            restore_runtime_quantization_sources,
+        )
+        restore_runtime_quantization_sources(self.flux2_components)
+        if _kh_is_block_swapped:
+            offload_cached_runtime_quantization(self.flux2_components, "transformer")
+            discard_resident(self, "transformer")
 
         _kh_total_bytes = 0
         if _kh_requested:
@@ -3267,8 +3312,11 @@ class Flux2Mixin:
                 params.get("text_encoder_quantization"))
 
             print("[FLUX.2] Stage 1: Text encoding...")
-            if not is_resident(self, "text_encoder", _kh_model_key):
-                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if text_encoder_quantization not in (None, "", "none") or not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(
+                    text_encoder, text_encoder_quantization,
+                    cache_owner=self.flux2_components, cache_identity=_kh_model_key,
+                )
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -3510,8 +3558,12 @@ class Flux2Mixin:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                if not is_resident(self, "transformer", _kh_model_key):
-                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if transformer_quantization not in (None, "", "none") or not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(
+                        transformer, transformer_quantization,
+                        cache_owner=self.flux2_components,
+                        cache_identity=repr((_kh_model_key, attention_type, attention_impl)),
+                    )
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:

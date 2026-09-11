@@ -14,6 +14,9 @@ from typing import Dict, Optional
 import copy
 
 
+_RUNTIME_FP8_CACHE_KEY = "_runtime_fp8_cache"
+
+
 def _add_generation_warning(message: str, code: str = None) -> None:
     """Best-effort: record a feature-degradation warning for the current generation.
 
@@ -25,6 +28,81 @@ def _add_generation_warning(message: str, code: str = None) -> None:
         add_warning(message, code=code)
     except Exception:
         pass
+
+
+def _cached_runtime_quantization(
+    source,
+    quantization: str,
+    quantize,
+    *,
+    cache_owner: Optional[Dict] = None,
+    cache_identity: Optional[str] = None,
+    component_name: str,
+):
+    """Select at most one lifecycle-bounded quantized copy per component."""
+    key = None
+    cache = None
+    if cache_owner is not None:
+        cache = cache_owner.setdefault(_RUNTIME_FP8_CACHE_KEY, {})
+        entry = cache.get(component_name)
+        if entry is not None:
+            source = entry["source"]
+        key = (cache_identity, quantization, id(source))
+        if entry is not None and entry["key"] == key:
+            cache_owner[component_name] = entry["model"]
+            return entry["model"], True, True
+
+    candidate = quantize(source, quantization)
+    if candidate is source:
+        if cache_owner is not None:
+            cache_owner[component_name] = source
+        return source, False, False
+
+    if cache is not None:
+        previous = cache.get(component_name)
+        if previous is not None and previous["model"] is not candidate:
+            try:
+                previous["model"].to("cpu")
+            except Exception:
+                pass
+        cache[component_name] = {"key": key, "source": source, "model": candidate}
+        cache_owner[component_name] = candidate
+    return candidate, True, False
+
+
+def restore_runtime_quantization_sources(components: Optional[Dict]) -> None:
+    """Expose source modules before per-request adapter mutation and selection."""
+    if not components:
+        return
+    for component_name, entry in components.get(_RUNTIME_FP8_CACHE_KEY, {}).items():
+        components[component_name] = entry["source"]
+
+
+def offload_cached_runtime_quantization(
+    components: Optional[Dict], component_name: str
+) -> None:
+    if not components:
+        return
+    entry = components.get(_RUNTIME_FP8_CACHE_KEY, {}).get(component_name)
+    if entry is not None:
+        entry["model"].to("cpu")
+
+
+def _discard_runtime_quantization_cache(
+    components: Optional[Dict], component_name: str
+) -> None:
+    if not components:
+        return
+    cache = components.get(_RUNTIME_FP8_CACHE_KEY, {})
+    entry = cache.pop(component_name, None)
+    if entry is not None:
+        try:
+            entry["model"].to("cpu")
+        except Exception:
+            pass
+        components[component_name] = entry["source"]
+    if not cache:
+        components.pop(_RUNTIME_FP8_CACHE_KEY, None)
 
 
 def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None, vision_encoder=None):
@@ -445,7 +523,9 @@ def move_vae_to_cpu(pipeline):
 # Z-Image VRAM Optimization
 # ============================================================
 
-def move_zimage_text_encoder_to_gpu(text_encoder, quantization=None):
+def move_zimage_text_encoder_to_gpu(
+    text_encoder, quantization=None, *, cache_owner=None, cache_identity=None
+):
     """Move Z-Image text encoder to GPU for encoding (with optional quantization)
 
     Args:
@@ -460,6 +540,9 @@ def move_zimage_text_encoder_to_gpu(text_encoder, quantization=None):
 
     # Fast path: No quantization
     if not quantization or quantization == "none":
+        restore_runtime_quantization_sources(cache_owner)
+        if cache_owner is not None:
+            text_encoder = cache_owner.get("text_encoder", text_encoder)
         print("[VRAM] Moving Z-Image Text Encoder to GPU for encoding...")
         text_encoder.to('cuda:0', non_blocking=False)
         return text_encoder
@@ -473,14 +556,22 @@ def move_zimage_text_encoder_to_gpu(text_encoder, quantization=None):
         print(f"[Quantization] Moving Text Encoder to CPU for quantization...")
         text_encoder.to('cpu')
 
-    # Quantize (creates a copy)
-    quantized_text_encoder = _quantize_text_encoder(text_encoder, quantization)
+    quantized_text_encoder, applied, cached = _cached_runtime_quantization(
+        text_encoder,
+        quantization,
+        _quantize_text_encoder,
+        cache_owner=cache_owner,
+        cache_identity=cache_identity,
+        component_name="text_encoder",
+    )
 
     # Move quantized copy to GPU
     print(f"[Quantization] Moving quantized Text Encoder to GPU...")
     quantized_text_encoder.to('cuda:0', non_blocking=False)
 
-    print(f"[Quantization] Text Encoder quantization complete ({quantization})")
+    if applied:
+        state = "cache reused" if cached else "complete"
+        print(f"[Quantization] Text Encoder quantization {state} ({quantization})")
 
     return quantized_text_encoder
 
@@ -497,7 +588,9 @@ def move_zimage_text_encoder_to_cpu(text_encoder):
         torch.cuda.empty_cache()
 
 
-def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+def move_zimage_transformer_to_gpu(
+    transformer, quantization: Optional[str] = None, *, cache_owner=None, cache_identity=None
+):
     """Move Z-Image transformer to GPU for inference, optionally with quantization
 
     Note: Z-Image transformer does not support torch.compile yet
@@ -522,6 +615,7 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
     # rather than to the "unsupported on this architecture" refusal it used to
     # get. Same shape as move_flux2_transformer_to_gpu's.
     if _normalize_quantization(quantization) == RUNTIME_INT8_VALUE:
+        _discard_runtime_quantization_cache(cache_owner, "transformer")
         quantization = None
 
     if transformer is None:
@@ -549,6 +643,9 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
 
     # Fast path: No quantization (most common case)
     if not quantization:
+        restore_runtime_quantization_sources(cache_owner)
+        if cache_owner is not None:
+            transformer = cache_owner.get("transformer", transformer)
         print("[VRAM] Moving Z-Image Transformer to GPU for inference...")
         transformer.to('cuda:0', non_blocking=False)
         return transformer
@@ -563,8 +660,18 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
 
     # Apply quantization (similar to U-Net quantization)
     try:
-        quantized_transformer = _quantize_transformer(transformer, quantization)
+        quantized_transformer, applied, cached = _cached_runtime_quantization(
+            transformer,
+            quantization,
+            _quantize_transformer,
+            cache_owner=cache_owner,
+            cache_identity=cache_identity,
+            component_name="transformer",
+        )
         quantized_transformer.to('cuda:0', non_blocking=False)
+        if applied:
+            state = "cache reused" if cached else "complete"
+            print(f"[Quantization] Z-Image Transformer quantization {state} ({quantization})")
         return quantized_transformer
     except Exception as e:
         print(f"[VRAM] Warning: Quantization failed: {e}")
@@ -655,6 +762,14 @@ def _quantize_transformer(transformer, quantization: str):
             )
             return transformer
 
+        if not any(isinstance(module, torch.nn.Linear) for module in transformer.modules()):
+            _add_generation_warning(
+                f"Transformer quantization '{quantization}' converted no supported layers; "
+                "falling back to full precision",
+                code="quantization_fallback",
+            )
+            return transformer
+
         try:
             # Clone the model
             quantized_transformer = copy.deepcopy(transformer)
@@ -740,6 +855,17 @@ def _quantize_text_encoder(text_encoder, quantization: str):
             )
             return text_encoder
 
+        if not any(
+            isinstance(module, (torch.nn.Linear, torch.nn.Embedding))
+            for module in text_encoder.modules()
+        ):
+            _add_generation_warning(
+                f"Text encoder quantization '{quantization}' converted no supported layers; "
+                "falling back to full precision",
+                code="quantization_fallback",
+            )
+            return text_encoder
+
         try:
             # Clone the model
             quantized_text_encoder = copy.deepcopy(text_encoder)
@@ -812,7 +938,9 @@ def _quantize_text_encoder(text_encoder, quantization: str):
 # FLUX.2-Specific VRAM Optimization
 # ============================================================
 
-def move_flux2_text_encoder_to_gpu(text_encoder, quantization=None):
+def move_flux2_text_encoder_to_gpu(
+    text_encoder, quantization=None, *, cache_owner=None, cache_identity=None
+):
     """Move FLUX.2 text encoder (Qwen3) to GPU for encoding (with optional quantization)
 
     Args:
@@ -827,6 +955,9 @@ def move_flux2_text_encoder_to_gpu(text_encoder, quantization=None):
 
     # Fast path: No quantization
     if not quantization or quantization == "none":
+        restore_runtime_quantization_sources(cache_owner)
+        if cache_owner is not None:
+            text_encoder = cache_owner.get("text_encoder", text_encoder)
         print("[VRAM] Moving FLUX.2 Text Encoder (Qwen3) to GPU for encoding...")
         text_encoder.to('cuda:0', non_blocking=False)
         return text_encoder
@@ -840,19 +971,29 @@ def move_flux2_text_encoder_to_gpu(text_encoder, quantization=None):
         print(f"[Quantization] Moving Text Encoder to CPU for quantization...")
         text_encoder.to('cpu')
 
-    # Quantize (creates a copy)
-    quantized_text_encoder = _quantize_text_encoder(text_encoder, quantization)
+    quantized_text_encoder, applied, cached = _cached_runtime_quantization(
+        text_encoder,
+        quantization,
+        _quantize_text_encoder,
+        cache_owner=cache_owner,
+        cache_identity=cache_identity,
+        component_name="text_encoder",
+    )
 
     # Move quantized copy to GPU
     print(f"[Quantization] Moving quantized Text Encoder to GPU...")
     quantized_text_encoder.to('cuda:0', non_blocking=False)
 
-    print(f"[Quantization] FLUX.2 Text Encoder quantization complete ({quantization})")
+    if applied:
+        state = "cache reused" if cached else "complete"
+        print(f"[Quantization] FLUX.2 Text Encoder quantization {state} ({quantization})")
 
     return quantized_text_encoder
 
 
-def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+def move_flux2_transformer_to_gpu(
+    transformer, quantization: Optional[str] = None, *, cache_owner=None, cache_identity=None
+):
     """Move FLUX.2 transformer to GPU for inference, optionally with quantization
 
     Args:
@@ -874,6 +1015,7 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
     # to do but move it, so the request degrades to a plain move rather than to
     # the "unsupported on this architecture" refusal it used to get.
     if _normalize_quantization(quantization) == RUNTIME_INT8_VALUE:
+        _discard_runtime_quantization_cache(cache_owner, "transformer")
         quantization = None
 
     if transformer is None:
@@ -901,6 +1043,9 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
 
     # Fast path: No quantization (most common case)
     if not quantization:
+        restore_runtime_quantization_sources(cache_owner)
+        if cache_owner is not None:
+            transformer = cache_owner.get("transformer", transformer)
         print("[VRAM] Moving FLUX.2 Transformer to GPU for inference...")
         transformer.to('cuda:0', non_blocking=False)
         return transformer
@@ -915,9 +1060,18 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
 
     # Apply quantization (similar to U-Net quantization)
     try:
-        quantized_transformer = _quantize_transformer(transformer, quantization)
+        quantized_transformer, applied, cached = _cached_runtime_quantization(
+            transformer,
+            quantization,
+            _quantize_transformer,
+            cache_owner=cache_owner,
+            cache_identity=cache_identity,
+            component_name="transformer",
+        )
         quantized_transformer.to('cuda:0', non_blocking=False)
-        print(f"[Quantization] FLUX.2 Transformer quantization complete ({quantization})")
+        if applied:
+            state = "cache reused" if cached else "complete"
+            print(f"[Quantization] FLUX.2 Transformer quantization {state} ({quantization})")
         return quantized_transformer
     except Exception as e:
         print(f"[VRAM] Warning: Quantization failed: {e}")

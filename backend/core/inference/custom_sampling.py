@@ -11,6 +11,7 @@ Based on diffusers' pipeline implementation but with added flexibility.
 import os
 import torch
 from core.inference.callback_utils import callback_requests
+from core.inference.schedule_utils import snapshot_schedule_scalars
 
 # Every latent normalisation below goes through the shared layer, deliberately
 # WITHOUT a wiring spec: `_loaded_wiring()` still reports sd15/sdxl's own
@@ -2240,9 +2241,12 @@ def custom_sampling_loop(
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
 
-    sigma_max = 0.0
-    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
-        sigma_max = float(scheduler.sigmas[0].item())
+    timestep_scalars = snapshot_schedule_scalars(timesteps)
+    sigma_scalars = (
+        snapshot_schedule_scalars(scheduler.sigmas)
+        if hasattr(scheduler, 'sigmas') else []
+    )
+    sigma_max = sigma_scalars[0] if sigma_scalars else 0.0
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
     # Track previous SNR for SNR-based adaptive CFG
@@ -2255,6 +2259,7 @@ def custom_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
+        t_scalar = timestep_scalars[i]
         # Check for cancellation (only in inference context, not training)
         try:
             from core.pipeline import pipeline_manager
@@ -2266,8 +2271,8 @@ def custom_sampling_loop(
             pass
 
         if nag_active and nag_sigma_end > 0.0:
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                current_sigma = float(scheduler.sigmas[i].item())
+            if i < len(sigma_scalars):
+                current_sigma = sigma_scalars[i]
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
                     from core.inference.nag_processor import restore_original_processors
@@ -2286,8 +2291,8 @@ def custom_sampling_loop(
                 print(f"[CustomSampling] Step {i}: Updated prompt embeddings")
 
         current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
+        if i < len(sigma_scalars):
+            current_sigma = sigma_scalars[i]
 
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
@@ -2704,7 +2709,7 @@ def custom_sampling_loop(
 
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t_scalar}")
                     print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
                     print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
                     print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
@@ -2844,10 +2849,10 @@ def custom_sampling_loop(
                     developer_mode=developer_mode
                 )
             if cfg_metrics is not None:
-                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['timestep'] = int(t_scalar)
                 cfg_metrics['step'] = i
-                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+                if i < len(sigma_scalars):
+                    cfg_metrics['sigma'] = sigma_scalars[i]
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
@@ -3335,9 +3340,12 @@ def custom_img2img_sampling_loop(
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
-    sigma_max = 0.0
-    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
-        sigma_max = float(scheduler.sigmas[0].item())
+    timestep_scalars = snapshot_schedule_scalars(timesteps)
+    sigma_scalars = (
+        snapshot_schedule_scalars(scheduler.sigmas)
+        if hasattr(scheduler, 'sigmas') else []
+    )
+    sigma_max = sigma_scalars[0] if sigma_scalars else 0.0
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
     # Track previous SNR for SNR-based adaptive CFG
@@ -3355,6 +3363,7 @@ def custom_img2img_sampling_loop(
 
     # Denoising loop
     for i, t in enumerate(timesteps):
+        t_scalar = timestep_scalars[i]
         # Check for cancellation (only in inference context, not training)
         try:
             from core.pipeline import pipeline_manager
@@ -3366,8 +3375,8 @@ def custom_img2img_sampling_loop(
             pass
 
         if nag_active and nag_sigma_end > 0.0:
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                current_sigma = float(scheduler.sigmas[i].item())
+            if i < len(sigma_scalars):
+                current_sigma = sigma_scalars[i]
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
                     from core.inference.nag_processor import restore_original_processors
@@ -3386,8 +3395,8 @@ def custom_img2img_sampling_loop(
                 print(f"[CustomSampling] Step {t_start + i}: Updated prompt embeddings")
 
         current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
+        if i < len(sigma_scalars):
+            current_sigma = sigma_scalars[i]
 
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
@@ -3808,7 +3817,7 @@ def custom_img2img_sampling_loop(
 
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t_scalar}")
                     print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
                     print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
                     print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
@@ -3950,10 +3959,10 @@ def custom_img2img_sampling_loop(
                     developer_mode=developer_mode
                 )
             if cfg_metrics is not None:
-                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['timestep'] = int(t_scalar)
                 cfg_metrics['step'] = i
-                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+                if i < len(sigma_scalars):
+                    cfg_metrics['sigma'] = sigma_scalars[i]
 
             progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
@@ -5136,9 +5145,12 @@ def custom_inpaint_sampling_loop(
             )
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
-    sigma_max = 0.0
-    if hasattr(scheduler, 'sigmas') and len(scheduler.sigmas) > 0:
-        sigma_max = float(scheduler.sigmas[0].item())
+    timestep_scalars = snapshot_schedule_scalars(timesteps)
+    sigma_scalars = (
+        snapshot_schedule_scalars(scheduler.sigmas)
+        if hasattr(scheduler, 'sigmas') else []
+    )
+    sigma_max = sigma_scalars[0] if sigma_scalars else 0.0
     print(f"[CustomSampling] Sigma max: {sigma_max}, CFG schedule: {cfg_schedule_type}")
 
     # Track previous SNR for SNR-based adaptive CFG
@@ -5225,7 +5237,7 @@ def custom_inpaint_sampling_loop(
             "sampler": type(scheduler).__name__,
             "num_inference_steps": num_inference_steps,
             "t_start": t_start,
-            "timesteps": [float(_t.item()) for _t in timesteps],
+            "timesteps": timestep_scalars,
             "outpaint_strength": strength,
             "outpaint_resample_count": outpaint_resample_count,
             "outpaint_jump_length": outpaint_jump_length,
@@ -5261,6 +5273,7 @@ def custom_inpaint_sampling_loop(
     # ITERATION-ORDER-IDENTICAL to the original `enumerate(timesteps)`.
     for visit_idx, (i, is_forward_jump) in enumerate(_outpaint_visit_schedule):
         t = timesteps[i]
+        t_scalar = timestep_scalars[i]
 
         # REGIONAL ADDITIONAL PROMPT: reset the per-step OUTPAINT B3 capture
         # hand-off (see the outpaint_reference_active model-call branch below,
@@ -5312,8 +5325,8 @@ def custom_inpaint_sampling_loop(
             pass
 
         if nag_active and nag_sigma_end > 0.0:
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                current_sigma = float(scheduler.sigmas[i].item())
+            if i < len(sigma_scalars):
+                current_sigma = sigma_scalars[i]
                 if current_sigma < nag_sigma_end:
                     print(f"[CustomSampling] Deactivating NAG at step {i} (sigma={current_sigma:.4f} < {nag_sigma_end})")
                     from core.inference.nag_processor import restore_original_processors
@@ -5331,8 +5344,8 @@ def custom_inpaint_sampling_loop(
                 current_prompt_embeds, current_negative_prompt_embeds, current_pooled_prompt_embeds, current_negative_pooled_prompt_embeds = new_embeds
 
         current_sigma = 0.0
-        if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-            current_sigma = float(scheduler.sigmas[i].item())
+        if i < len(sigma_scalars):
+            current_sigma = sigma_scalars[i]
 
         current_guidance_scale = calculate_dynamic_cfg(
             sigma=current_sigma,
@@ -5936,7 +5949,7 @@ def custom_inpaint_sampling_loop(
 
                 if first_iteration_debug:
                     print(f"\n[CustomSampling] [Debug] ========== FIRST DENOISING ITERATION ==========")
-                    print(f"[CustomSampling] [Debug] timestep (t): {t.item()}")
+                    print(f"[CustomSampling] [Debug] timestep (t): {t_scalar}")
                     print(f"[CustomSampling] [Debug] latent_model_input shape: {latent_model_input.shape}, dtype: {latent_model_input.dtype}")
                     print(f"[CustomSampling] [Debug] latent_model_input min: {latent_model_input.min().item():.4f}, max: {latent_model_input.max().item():.4f}, mean: {latent_model_input.mean().item():.4f}")
                     print(f"[CustomSampling] [Debug] prompt_embeds_input shape: {prompt_embeds_input.shape}, dtype: {prompt_embeds_input.dtype}")
@@ -6352,14 +6365,14 @@ def custom_inpaint_sampling_loop(
                 latents.detach().to(dtype=torch.float32, device="cpu").numpy(),
             )
             _dbg_sigma = None
-            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                _dbg_sigma = float(scheduler.sigmas[i].item())
+            if i < len(sigma_scalars):
+                _dbg_sigma = sigma_scalars[i]
             with open(_outpaint_debug_steps_path, "a", encoding="utf-8") as _dbg_sf:
                 _dbg_sf.write(_dbg_json.dumps({
                     "i": i,
                     "visit_idx": visit_idx,
                     "is_forward_jump": bool(is_forward_jump),
-                    "timestep": float(t.item()),
+                    "timestep": t_scalar,
                     "sigma": _dbg_sigma,
                 }) + "\n")
 
@@ -6490,10 +6503,10 @@ def custom_inpaint_sampling_loop(
                     developer_mode=developer_mode
                 )
             if cfg_metrics is not None:
-                cfg_metrics['timestep'] = int(t.item())
+                cfg_metrics['timestep'] = int(t_scalar)
                 cfg_metrics['step'] = i
-                if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
-                    cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
+                if i < len(sigma_scalars):
+                    cfg_metrics['sigma'] = sigma_scalars[i]
 
             # HONEST OUTPAINT PREVIEW: substitute the pre-pin snapshot for the
             # DISPLAYED x0 only -- `pred_original_sample` itself (the pinned

@@ -1313,8 +1313,7 @@ Paths below are relative to `backend/core/training/`.
   denoise loop is repo-owned (`core/models/minimax_h3/h3_pipeline_ops.py`) —
   upstream ships a Modular pipeline only — over vendored, frozen model classes
   (`core/models/minimax_h3/vendor/`). Every number below is measured on an
-  RTX 6000 Ada 48 GB (sm_89) with 93.6 GB RAM; the protocols and full tables are
-  in `scratchpad/minimax_h3_{k0,phase0t,phase2,phase4}_results.md`.
+  RTX 6000 Ada 48 GB (sm_89) with 93.6 GB RAM.
   - **Two schedules, two grids.** The loop steps the video rows on the shift-12.0
     sigma grid and the audio rows on the shift-3.0 grid, once per iteration —
     the diffusers reference shape, exact on each stream's own grid. (ComfyUI
@@ -1347,8 +1346,7 @@ Paths below are relative to `backend/core/training/`.
       Anchors bind on the `ref2va` partition too when laid out from its
       post-reference rotary origin (min 11.27, control 67.43), with the image
       reference still binding (CLIP-image cosine −0.0179 against the control,
-      +0.0004 outside the anchor's ±8-frame neighbourhood). Protocols and
-      numbers: `scratchpad/minimax_h3_c0_results.md`.
+      +0.0004 outside the anchor's ±8-frame neighbourhood).
       **Replicated through the shipped route** at 640×384 × 124 frames, 6
       steps, one seed (12345): first/mid-60/last/3-anchor {0,60,123} all
       reproduce the harness's argmin-exact result (min RMS 6.44–7.05) and the
@@ -1357,8 +1355,7 @@ Paths below are relative to `backend/core/training/`.
       design says they do (`keyframe_resolved_frames` in the response).
       Protocols, numbers and the one substitution it required (the no-anchor
       control has no `/generate/img2vid` request shape and used
-      `/generate/txt2vid` instead, per that route's own refusal message):
-      `scratchpad/minimax_h3_c2_results.md`.
+      `/generate/txt2vid` instead, per that route's own refusal message).
     - **The scope of that measurement**, stated because it is narrower than the
       feature: one prompt family, seeds 12345/4242, **6 sampling steps** at both
       canvases (the shipped default is 20 — the anchor rows are never denoised
@@ -1402,8 +1399,8 @@ Paths below are relative to `backend/core/training/`.
       flow-energy correlation beats the other track's in ≥ 3 of 4 arms;
       transient → nearest contact ≤ 2 frames for ≥ 8 of 12): at **1344×768 ×
       124 frames, 6 steps**, image + pinned track scored **4/4** and **12/12**,
-      and pinned track with **no image at all** scored **4/4** and 9/12
-      (`scratchpad/minimax_h3_c0_results.md`). Replicated **through the shipped
+      and pinned track with **no image at all** scored **4/4** and 9/12.
+      Replicated **through the shipped
       route** at **640×384 × 124 frames, 4 steps**, two seeds × two synthetic
       transient tracks: image + track **4/4** own-beats-other (own r
       +0.347…+0.508, other −0.117…+0.014) and 11/12 transients within 2 frames;
@@ -1411,8 +1408,7 @@ Paths below are relative to `backend/core/training/`.
       contact metric is reported as PARTIAL rather than as a pass — the blob
       tracker found the ball in under a quarter of the frames in both
       seed-12345 imageless arms, so only 2 of 4 arms produced a number at all
-      (4 of 6 transients over those two). Protocols, raw output, scripts and
-      artefacts: `scratchpad/minimax_h3_c3_results.md`.
+      (4 of 6 transients over those two).
     - **The scope of that measurement**, stated because a user will assume more:
       the tracks were **impulsive** — sharp broadband transients over silence,
       three per track. **Speech, pitch and timbre were not measured at all**,
@@ -1446,8 +1442,7 @@ Paths below are relative to `backend/core/training/`.
       impulse) against **0.060 versus the other track**, digitally silent
       stretches preserved as exact zeros, and the decoded audio identical across
       seeds and across the imageless/keyed cases — one hash per uploaded file,
-      which generated or decoded audio could not be
-      (`scratchpad/minimax_h3_c3_results.md` §5).
+      which generated or decoded audio could not be.
     - **The noise draw is unchanged.** All three draws happen in the recorded
       K0.6 order and the audio draw is DISCARDED after the fact, so the video
       noise is bit-identical to a free-audio run at the same seed. This is kept
@@ -1908,9 +1903,7 @@ Paths below are relative to `backend/core/training/`.
     in time and 1.25 GB lower, because the resident base and the per-forward FP8
     dequant dominate and neither scales with sequence length. **Not measured:**
     whether a stills-trained LoRA transfers to `t2va`/`fl2va` output, and whether
-    it reduces motion. The pre-registered experiment that would answer both
-    (`scratchpad/minimax_h3_q1_overturn.md` §8: CLIP-image transfer ≥ 0.05 and a
-    Farneback optical-flow floor of 0.80× base) has not been run. At inference the
+    it reduces motion. At inference the
     video block is always `T_lat ≥ 7`, so a `T_lat = 1` block is a 304-row
     sequence where training on clips is 1818 rows; whether attention behaves
     comparably at that length is untested.
@@ -2012,8 +2005,7 @@ Paths below are relative to `backend/core/training/`.
       vision block).
     - **Measured** (four live generations through the endpoint at 640×384×124 on
       the ref2va file, `blocks_to_swap=0`, fp8 DiT on the dequant path, empty
-      `warnings[]`; the gallery rows of all four are in
-      `scratchpad/h3_ref2vid_run{1..4}.json`, and two were timed): one image
+      `warnings[]`; two were timed): one image
       reference at 6 steps (5 evaluations) **190 s wall / 22.65 GB peak**; one
       image + one video
       reference with its soundtrack, at 4 steps (3 evaluations) and
@@ -2058,24 +2050,23 @@ Paths below are relative to `backend/core/training/`.
     reference bind, K5's seam criterion) was run twice on this exact endpoint.
     Attempt 1 shipped a different mechanism (routed to `/generate/ref2vid`,
     regenerating every frame) and was reverted because two of the three
-    criteria had no preserved/generated boundary to read
-    (`scratchpad/minimax_h3_av8_results.md`). Attempt 2 ran on the actual
-    `extend_forward` surface with every criterion evaluable
-    (`scratchpad/minimax_h3_av8_run2_results.md`): boundary-anchor bind passed
+    criteria had no preserved/generated boundary to read. Attempt 2 ran on the
+    actual `extend_forward` surface with every criterion evaluable:
+    boundary-anchor bind passed
     (5.226 RMS against a bar of 25), reference bind passed (CLIP-L/14 mean
     cosine 0.96466 vs the no-reference arm's 0.85961), paste exactness passed
     (max\|diff\| 0), and **the seam criterion failed** — 0.526 against the
     arm's own interior p95 of 0.428. Per the registered disposition the
-    feature did not ship on that result, and the design's prior "permanently
-    out of scope" declaration (`scratchpad/minimax_h3_design.md` §11) was
-    reinstated. **Measured context, not a mitigation**: the same seam metric
+    feature did not ship on that result, and the prior "permanently out of
+    scope" boundary was reinstated. **Measured context, not a mitigation**:
+    the same seam metric
     at the same protocol rejects the untouched no-reference extend even
     harder on this clip (0.909 against its own p95 of 0.255) — the metric
     does not discriminate the feature from the baseline it was added to, but
     the registered criterion was against each arm's own interior p95, and the
     reference arm exceeded it, so this does not reverse the fail.
-    The repo owner then reviewed three `extend_forward` clips by eye (no
-    threshold, `scratchpad/minimax_h3_ab_visual_arms.md`) and judged the
+    The repo owner then reviewed three `extend_forward` clips by eye, without a
+    numerical threshold, and judged the
     no-image-reference arm (source clip carried as the sole video reference)
     good; the arm with an added image reference showed the reference acting
     as a keyframe at the head of the extension, which was traced to the image
@@ -2629,14 +2620,10 @@ Paths below are relative to `backend/core/training/`.
       enumerator, three branches (`gen`/`und`/`both`) — and the adapter
       refuses any other count per branch. Both vision towers, `embed_tokens`
       and `lm_head` stay frozen regardless.
-      - **Understanding-branch LoRA (Phase U, `3d837202`..`327276df`)** is the
-        mirror of Z-Image's declaration: LoRA *does* train this arch's
-        "text encoder" (it is the same LLM), while full fine-tuning of it is
-        not implemented — hence
-        `TRAINING_FEATURE_UNSUPPORTED["sensenova"]["text_encoder_training"]`
-        carries `methods=["full_finetune"]` rather than being deleted. LR
-        rides the `text_encoder_1_lr` → `text_encoder_lr` → `unet_lr` chain
-        (the und half registers as `text_encoder_1`, not `unet`).
+      - **Understanding-branch training** uses the same LLM half for LoRA and
+        full-parameter training. LR rides the `text_encoder_1_lr` →
+        `text_encoder_lr` → `unet_lr` chain (the und half registers as
+        `text_encoder_1`, not `unet`).
       - **5 of the 294 und targets are structurally unreachable** and that is
         the model's shape, not a defect: a prefix keeps `past_key_values` and
         discards `last_hidden_state`, so layer 41's `q_proj`, `o_proj` and all
@@ -2806,9 +2793,9 @@ Paths below are relative to `backend/core/training/`.
         (the next **t index**), which coincides with `input_ids.shape[1]`
         only on the text-only path. Getting this wrong misplaces the image
         tokens' t coordinate with **no shape error**.
-    - **Not implemented**: full fine-tune (Phase 2b, blocked on obtaining a
-      bf16 generation-branch base). Design, rationale and the DONE/PENDING
-      boundary: `docs/guides/SENSENOVA_TRAINING_DESIGN.md`.
+    - **Full-parameter training** supports either MoT half or both. The exact
+      preflight, trainable scope, checkpoint formats, and measured boundary are
+      maintained in `docs/guides/SENSENOVA_TRAINING_DESIGN.md`.
   - **`sensenova_mot_phase_eviction`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): MoT phase-exclusive half-weight
     eviction. Each of the 42 layers carries two halves — "understanding"

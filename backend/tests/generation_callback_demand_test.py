@@ -8,7 +8,7 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 from api.generation_utils import create_progress_callback_factory
-from core.inference.callback_utils import callback_requests
+from core.inference.callback_utils import callback_requests, compose_sampler_callbacks
 
 
 def _callback(*, predicted_x0=True, enabled=True, interval=4):
@@ -49,3 +49,40 @@ def test_unknown_callbacks_preserve_previous_behavior():
     callback = lambda *args: None
     callback.wants_predicted_x0 = broken_predicate
     assert callback_requests(callback, "wants_predicted_x0", 3, 10)
+
+
+def test_composed_callbacks_keep_both_calling_conventions():
+    calls = []
+
+    def progress(step, total, latents, metrics, pred_x0):
+        calls.append(("progress", step, total, latents, metrics, pred_x0))
+
+    progress.wants_predicted_x0 = lambda step, total: step == total - 1
+    progress.wants_cfg_metrics = lambda step, total: step == 0
+
+    def diffusers_step(pipe, step, timestep, kwargs):
+        calls.append(("step", pipe, step, timestep, kwargs))
+        return kwargs
+
+    callback = compose_sampler_callbacks(progress, diffusers_step)
+    callback(2, 3, "latents", "metrics", "x0")
+
+    assert calls == [
+        ("step", None, 2, None, {"latents": "latents"}),
+        ("progress", 2, 3, "latents", "metrics", "x0"),
+    ]
+    assert callback_requests(callback, "wants_predicted_x0", 2, 3)
+    assert not callback_requests(callback, "wants_cfg_metrics", 2, 3)
+
+
+def test_step_only_callback_declines_preview_diagnostics():
+    calls = []
+    callback = compose_sampler_callbacks(
+        None, lambda pipe, step, timestep, kwargs: calls.append((step, kwargs))
+    )
+
+    callback(1, 4, "latents")
+
+    assert calls == [(1, {"latents": "latents"})]
+    assert not callback_requests(callback, "wants_predicted_x0", 1, 4)
+    assert not callback_requests(callback, "wants_cfg_metrics", 1, 4)

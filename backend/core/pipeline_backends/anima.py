@@ -885,6 +885,7 @@ class AnimaMixin:
                     torch.cuda.empty_cache()
 
             try:
+                from core.inference.callback_utils import compose_sampler_callbacks
                 latents = sample_txt2img(
                     transformer=transformer, scheduler=scheduler,
                     cond_embeds=cond, uncond_embeds=uncond,
@@ -892,7 +893,7 @@ class AnimaMixin:
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
-                    step_callback=(progress_callback or step_callback),
+                    step_callback=compose_sampler_callbacks(progress_callback, step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),
@@ -1170,6 +1171,7 @@ class AnimaMixin:
                     torch.cuda.empty_cache()
 
             try:
+                from core.inference.callback_utils import compose_sampler_callbacks
                 latents = sample_img2img(
                     transformer=transformer, scheduler=scheduler,
                     init_latents=init_latents,
@@ -1178,7 +1180,7 @@ class AnimaMixin:
                     denoising_strength=denoising_strength,
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
-                    step_callback=(progress_callback or step_callback),
+                    step_callback=compose_sampler_callbacks(progress_callback, step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),
@@ -1465,6 +1467,7 @@ class AnimaMixin:
                     torch.cuda.empty_cache()
 
             try:
+                from core.inference.callback_utils import compose_sampler_callbacks
                 latents = sample_inpaint(
                     transformer=transformer, scheduler=scheduler,
                     init_latents=init_latents, mask_latents=mask_latents,
@@ -1473,7 +1476,7 @@ class AnimaMixin:
                     denoising_strength=denoising_strength,
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
-                    step_callback=(progress_callback or step_callback),
+                    step_callback=compose_sampler_callbacks(progress_callback, step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),

@@ -12112,8 +12112,9 @@ components:
             It is flat across subsequent generations, but is not returned to
             the OS and persists for the process lifetime, including for later
             generations run with this toggle off. Ignored (accepted and warned) by
-            every other architecture. Not related to `blocks_to_swap`, which
-            SenseNova does not implement.
+            every other architecture. It is mutually exclusive with
+            SenseNova's branch-aware `blocks_to_swap` conductor because both
+            mechanisms would otherwise own the same MoT weights.
           example: false
         sensenova_kv_cache_streaming:
           type: boolean

@@ -25,6 +25,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.callback_utils import callback_requests
+from core.inference.schedule_utils import snapshot_schedule_scalars
 import time as _time
 from core.inference.generation_timing import generation_timer
 from core.models.components.vae_registry import normalize, denormalize
@@ -1214,8 +1215,9 @@ class ZImageMixin:
             else:
                 # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
                 # Normalize timestep to [0, 1] range (Z-Image: 1000=start/noisy, 0=end/clean)
-                t_normalized = timesteps_img2img[0].item() / 1000.0
-                print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_img2img[0].item():.1f}, t_norm={t_normalized:.3f}")
+                start_t = snapshot_schedule_scalars(timesteps_img2img[:1])[0]
+                t_normalized = start_t / 1000.0
+                print(f"[Z-Image] Manual flow matching noise addition: t={start_t:.1f}, t_norm={t_normalized:.3f}")
                 noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
@@ -1628,8 +1630,9 @@ class ZImageMixin:
                 noised_latents = scheduler.add_noise(init_latents, noise, timesteps_inpaint[0:1])
             else:
                 # Manual flow matching noise addition: x_t = (1 - t) * x_0 + t * noise
-                t_normalized = timesteps_inpaint[0].item() / 1000.0
-                print(f"[Z-Image] Manual flow matching noise addition: t={timesteps_inpaint[0].item():.1f}, t_norm={t_normalized:.3f}")
+                start_t = snapshot_schedule_scalars(timesteps_inpaint[:1])[0]
+                t_normalized = start_t / 1000.0
+                print(f"[Z-Image] Manual flow matching noise addition: t={start_t:.1f}, t_norm={t_normalized:.3f}")
                 noised_latents = (1.0 - t_normalized) * init_latents + t_normalized * noise
 
             print(f"[Z-Image] Noised latents shape: {noised_latents.shape}, dtype: {noised_latents.dtype}")
@@ -2080,7 +2083,7 @@ class ZImageMixin:
 
     def _zimage_style_step(
         self, transformer, style_cfg, style_ref_x0, style_eps_ref,
-        t, latents, prompt_embeds_list, negative_prompt_embeds_list,
+        t, sigma_now, latents, prompt_embeds_list, negative_prompt_embeds_list,
         apply_cfg: bool, guidance_scale: float, has_fp8_weights: bool,
         step_idx: int, num_inference_steps: int,
         style_refs=None, style_combine_mode: str = "stack",
@@ -2116,8 +2119,6 @@ class ZImageMixin:
         from core.inference.reference_style import StyleContext
 
         batch_size = len(prompt_embeds_list)
-        sigma_now = float(t.item()) / 1000.0
-
         input_dtype = torch.bfloat16 if has_fp8_weights else next(transformer.parameters()).dtype
         timestep = t.expand(latents.shape[0]).to(input_dtype)
         timestep = (1000 - timestep) / 1000
@@ -2510,13 +2511,18 @@ class ZImageMixin:
         # Denoising loop with progress callback
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
         # We normalize progress to user-requested num_inference_steps for UI consistency
+        timestep_scalars = snapshot_schedule_scalars(timesteps)
+        normalized_timestep_scalars = snapshot_schedule_scalars(
+            (1000 - timesteps) / 1000
+        )
         for i, t in enumerate(timesteps):
+            t_scalar = timestep_scalars[i]
             if self.cancel_requested:
                 print("[Z-Image] Generation cancelled by user")
                 raise RuntimeError("Generation cancelled by user")
             # Skip last step if t=0 (flow matching termination)
-            if t == 0 and i == len(timesteps) - 1:
-                print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")
+            if t_scalar == 0 and i == len(timesteps) - 1:
+                print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t_scalar:.2f} | Skipping last step (flow matching termination)")
                 continue
 
             normalized_step = int((i / len(timesteps)) * num_inference_steps)
@@ -2531,7 +2537,7 @@ class ZImageMixin:
             # Normalize timestep to [0, 1]
             timestep = t.expand(latents.shape[0])
             timestep = (1000 - timestep) / 1000
-            t_norm = timestep[0].item()
+            t_norm = normalized_timestep_scalars[i]
 
             # CFG truncation logic (disable CFG after certain timestep)
             # Default value from Z-Image: DEFAULT_CFG_TRUNCATION = 1.0
@@ -2566,7 +2572,8 @@ class ZImageMixin:
             if style_active_step:
                 noise_pred = self._zimage_style_step(
                     transformer, style_cfg, style_ref_x0, style_eps_ref,
-                    t, latents, prompt_embeds_list, negative_prompt_embeds_list,
+                    t, t_scalar / 1000.0, latents,
+                    prompt_embeds_list, negative_prompt_embeds_list,
                     apply_cfg, current_guidance_scale, has_fp8_weights,
                     normalized_step, num_inference_steps,
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
@@ -2757,11 +2764,10 @@ class ZImageMixin:
                 # Add noise to original latents at current timestep
                 # This ensures non-masked area follows the same noise schedule
                 if i < len(timesteps) - 1:  # Not the last step
-                    next_t = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor([0.0], device=device)
                     noise_for_original = torch.randn_like(original_latents_device)
 
                     # Flow Matching: add noise at next timestep level
-                    t_next_normalized = next_t.item() / 1000.0
+                    t_next_normalized = timestep_scalars[i + 1] / 1000.0
                     noised_original = (1.0 - t_next_normalized) * original_latents_device + t_next_normalized * noise_for_original
                 else:
                     # Last step: use clean original latents

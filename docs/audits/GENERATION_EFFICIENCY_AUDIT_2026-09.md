@@ -41,3 +41,216 @@ is explicitly classified as opt-in or measurement-dependent.
 - Record bit-exact requirements and the smallest representative GPU benchmark
   needed for candidates that cannot be proven statically.
 - Re-scan the generation tree after each cleanup unit.
+
+## Result
+
+The generation tree has useful static cleanup left. The highest-value finding
+is not a kernel substitution: API generation enters its executor worker with
+autograd enabled, while the shared SD1.5/SDXL sampling and prompt-encoding path
+does not provide its own complete `no_grad` boundary. Several newer backends do
+have local guards, but that does not protect the shared path or future entry
+points. A central `torch.no_grad()` boundary is the first implementation unit.
+
+The next tier is work whose result is immediately discarded: predicted-clean
+latents and CFG diagnostics are built on every denoise step even when the
+progress callback emits a preview only every few steps. Repeated device-scalar
+reads and unconditional debug reductions also introduce avoidable CUDA
+synchronization. These are more likely to improve latency consistency than a
+large kernel rewrite, and do not require changing model arithmetic.
+
+No static claim is made that removing every `empty_cache()` call is beneficial.
+Many calls sit between mutually exclusive, multi-gigabyte components and may be
+needed to make cached blocks reusable. Only demonstrably duplicate terminal
+flushes are direct cleanup candidates; phase-boundary calls require a GPU
+fragmentation benchmark.
+
+## Findings suitable for equivalent implementation
+
+| Priority | Finding | Cost removed | Required proof |
+|---|---|---|---|
+| P0 | Put the blocking generation call in `backend/api/routes.py::_run_generation_in_executor` under `torch.no_grad()` | Autograd metadata and saved tensors throughout unguarded inference, especially shared SD prompt encoding and U-Net sampling | Executor test that grad is disabled inside the worker and request `contextvars` still propagate; representative seed comparison |
+| P0 | Remove or developer-gate unconditional sampler and adapter diagnostics | GPU reductions, `.item()`/`.tolist()` synchronization and console I/O | Logging test; no tensor result changes |
+| P1 | Give the progress callback a cheap `wants_preview(step, total)`/`wants_metrics(...)` query | Predicted-clean latent casts/copies and metrics that the callback discards between preview intervals | Existing callback behavior at initial, first, interval and final steps; unknown callbacks conservatively request data |
+| P1 | Replace the scheduler `pred_original_sample.detach().clone()` with a non-copying detached view where ownership permits | One latent-sized device copy per SD denoise step | Supported-scheduler alias/ownership tests and seeded output comparison |
+| P1 | Snapshot scheduler scalars once instead of calling `.item()`/`float(t)` in each iteration | One or more GPU-to-CPU synchronization points per denoise step | Exact scalar equality for each supported scheduler and seeded output comparison |
+| P1 | Remove duplicate terminal `empty_cache()` calls | Redundant allocator flush/synchronization after a component has already been offloaded | Mocked call-count tests plus peak-reserved-memory measurement |
+| P2 | Gate detailed device/module inspection behind developer logging | Repeated module scans, reductions and log contention at every staging phase | Normal/developer logging tests |
+| P2 | Extract only pure orchestration shared by txt2img/img2img/inpaint | Three-way maintenance duplication without altering numerical loops | Existing mode-specific tests; no unification of mask or visit-schedule arithmetic |
+
+### 1. Missing common autograd boundary
+
+`_run_generation_in_executor` copies the request context into the worker and
+calls the supplied function directly. PyTorch grad mode is thread-local, and a
+new executor worker has grad enabled by default. A CPU probe using the project
+environment confirmed both `torch.is_grad_enabled() is True` and
+`Linear(...).requires_grad is True` inside such a worker.
+
+The shared SD loops in `backend/core/inference/custom_sampling.py` and prompt
+encoding in `backend/core/pipeline.py` are not wholly enclosed by `no_grad`.
+There is also no reliable model-wide `requires_grad_(False)` fallback in that
+path. Keeping graph history across denoise iterations is unnecessary for
+generation and can retain large activations. The API executor is the narrowest
+common boundary and protects nested upscale generation as well as future
+backends.
+
+Use `no_grad`, not `inference_mode`, for the first change. Some tensors leave
+the worker for saving, preview, or callback handling; `inference_mode` imposes
+additional tensor mutation rules and therefore needs a broader compatibility
+audit. Local backend decorators can remain: nested `no_grad` is cheap and makes
+the backend safe when called outside the API.
+
+### 2. Debug work on the hot path
+
+`backend/core/inference/custom_sampling.py` enables its first-iteration debug
+blocks unconditionally in all three shared SD loops. These blocks perform
+min/max/mean reductions and scalar extraction. Scheduler diagnostics also
+materialize values with `.tolist()`. `backend/core/pipeline_backends/zimage.py`
+computes a full adapter-weight norm during normal LoRA generation. These are
+observability operations, not generation inputs, and should run only in
+developer mode.
+
+### 3. Preview and metric work that is discarded
+
+`backend/api/generation_utils.py` decodes and transmits previews only for the
+initial/first/final steps and `preview_interval` steps. Several denoise loops
+nevertheless construct `pred_x0` every step before invoking that callback:
+
+- Z-Image and Flux2 cast the latent and prediction to FP32 for the computation.
+- Anima computes `pred_x0` in all three modes and an additional masked preview
+  tensor for inpaint.
+- Krea2, Lens and Ideogram 4 also construct predicted-clean latents on every
+  callback step.
+- The shared SD path calculates CFG norms/dot products and extracts several
+  scalars in developer mode even on steps whose metrics are discarded.
+
+The callback factory should expose a side-effect-free demand predicate. A
+backend may omit preview-only values only when that predicate explicitly says
+they are not wanted. A callback without the new attribute must retain the old
+behavior. MiniMax-H3 and SenseNova already condition their analogous work on
+whether a step callback exists; MiniT2I's predicted-clean value is part of the
+sampler update and cannot be skipped.
+
+### 4. Per-step scalar synchronization
+
+Anima, Krea2, Lens, Ideogram 4, MiniT2I, SenseNova and Z-Image contain
+per-iteration `.item()`, `float(tensor)`, or tensor truth-value conversions.
+Some paths read the same invariant maximum sigma on every step. Each read can
+force the CPU to wait for queued CUDA work.
+
+Create the device schedule as before, then obtain its Python scalar view once
+with one CPU transfer and enumerate both views together. Hoist invariant scalar
+values outside the loop. Do not independently recompute schedules on the CPU:
+using the scalar view of the actual device schedule avoids dtype/rounding drift.
+
+### 5. Copies and allocator flushes
+
+The three shared SD loops clone the scheduler's detached predicted-original
+sample on every step. The downstream preview and reference-guide operations are
+read-only or out-of-place, so the clone appears unnecessary. Because scheduler
+implementations may return aliases, removal is contingent on an ownership test
+covering every supported scheduler.
+
+Krea2, Lens and Ideogram 4 each flush the CUDA cache immediately after final VAE
+offload and then flush it again in unconditional cleanup. The second adjacent
+flush is redundant. Calls between text encoding, denoising and VAE decode are
+not classified as redundant: they may release cached blocks before the next
+large component is staged and must be evaluated with allocated/reserved/peak
+measurements and fragmentation-sensitive repeated runs.
+
+### 6. Runtime quantization copies and cache identity
+
+`backend/core/vram_optimization.py` deep-copies a full model even on several
+runtime-FP8 failure/unsupported paths. That can leave the original CPU model
+beside an unquantized copy while the copy is mistakenly treated as the
+quantized result. Flux2 and Z-Image text-encoder FP8 paths also return a local
+copy without consistently replacing or caching the component identity, so
+later generations may repeat copy and quantization work. With keep-hot state,
+component-name residency and the actual object can diverge.
+
+This should be a separate correctness/performance unit: quantization helpers
+must report success explicitly, never clone on failure, and cache a successful
+object under a key including model identity and quantization mode. A persistent
+cache trades repeated startup work for host RAM, so its eviction policy and
+resident-object bookkeeping need dedicated tests before implementation.
+
+## Architecture review matrix
+
+| Architecture | Static result |
+|---|---|
+| SD1.5 / SDXL | Highest autograd risk; unconditional reductions; discarded metrics; per-step preview clone; three large duplicated sampling loops |
+| Z-Image | Local inference guards exist; unconditional LoRA norm, FP32 preview work, scalar synchronization and runtime-FP8 identity/caching remain |
+| Flux2 | Local guards exist; FP32 preview work and runtime-FP8 identity/caching remain; three mode backends duplicate staging/setup |
+| Anima | Local guards exist; preview work and scalar reads remain; three mode paths duplicate orchestration |
+| Lens | Local guards exist; preview work, scalar reads and a duplicate terminal cache flush remain |
+| Krea2 | Local guards exist; preview work, scalar reads and a duplicate terminal cache flush remain |
+| Ideogram 4 | Local guards exist; preview work, repeated scalar reads and a duplicate terminal cache flush remain |
+| MiniT2I | Predicted-clean value is sampler state, not removable; scalar reads can be consolidated |
+| SenseNova U1.5 | Preview construction is already callback-conditional; a CFG-path scalar synchronization remains |
+| LTX-2.3 | Diffusers pipeline owns most denoising; common no-grad boundary is defensive; phase staging requires GPU measurement |
+| MiniMax-H3 | Predicted-clean video latent is already callback-conditional; common boundary is defensive; large component staging requires GPU measurement |
+| ACE-Step 1.5 | Common boundary is defensive; staged LM/DiT/VAE cleanup should be benchmarked rather than statically collapsed |
+| MiniMax Music 3 | Autoregressive/depth-decoder residency dominates; common boundary is defensive; cache/offload trade-offs require long-form audio measurement |
+
+## Adjacent correctness finding
+
+Anima passes `progress_callback or step_callback` into all three samplers. The
+progress callback is normally present, so a separately supplied step callback
+is dropped. The generic LoRA step callback also follows the Diffusers callback
+signature, while Anima's sampler callback uses the internal five-argument
+preview signature. This is not an efficiency refactor and must not be folded
+into one casually: Anima needs an explicit callback adapter/composition rule
+with step-range LoRA tests.
+
+## Measurement-dependent or non-equivalent ideas
+
+The following are not approved as equivalent static cleanup:
+
+- Cross-generation prompt-embedding caches. Keys must cover model/tokenizer,
+  prompt parsing, maximum length, clip skip, adapter state and quantization;
+  GPU caching also consumes persistent VRAM.
+- Keeping the VAE resident from image encode through final decode. It avoids
+  transfers but raises denoising peak VRAM.
+- Changing attention backends, precision, quantization, `torch.compile`, tiled
+  decode or interpolation implementations. These change numerical or kernel
+  behavior and remain opt-in.
+- Asynchronous preview decode. It changes CUDA stream contention and tensor
+  lifetime and needs end-to-end measurement.
+- Removing all phase-boundary `empty_cache()` calls. Measure repeated cold/hot
+  generations and allocator fragmentation first.
+- Replacing the SciPy latent-resize round trip with `torch.interpolate`. The
+  interpolation result is not assumed numerically equivalent.
+- Reusing a fixed Z-Image inpaint noise tensor. The current per-step random draw
+  is suspicious for reproducibility and allocation cost, but changing it alters
+  RNG/output semantics and belongs in a separate correctness review.
+- Streaming video frames to both lossless and proxy encoders instead of calling
+  `frames.tobytes()` for each output. This can reduce host RAM copies, not VRAM,
+  and requires subprocess/codec failure tests.
+
+## Proposed implementation commits
+
+1. **Disable autograd for API generation.** Add the executor regression test
+   and compare representative seeded outputs.
+2. **Remove hot-path diagnostics.** Gate sampler reductions, adapter norms and
+   detailed device scans behind developer logging.
+3. **Make preview work demand-driven.** Add callback demand predicates, skip
+   discarded predicted-clean/metric computation, then remove proven-safe SD
+   preview clones.
+4. **Collapse schedule synchronizations.** Snapshot exact scalar schedules and
+   hoist invariants one architecture family at a time.
+5. **Deduplicate terminal cleanup.** Remove only adjacent allocator flushes;
+   retain phase boundaries pending measurements.
+6. **Repair runtime quantization ownership.** Introduce explicit success and
+   cache identity semantics with host-RAM and keep-hot tests.
+7. **Consolidate orchestration.** Extract tested staging/style/callback helpers
+   only after behavior is covered; retain distinct numerical loops.
+
+## GPU verification backlog
+
+For each affected image family, run the same seed/configuration before and after
+with preview disabled and with interval 1/4. Record output hash (bit-exact where
+the arithmetic is unchanged), wall time after warm-up, peak allocated VRAM,
+peak reserved VRAM, and synchronization-sensitive step timing. Repeat at least
+three hot generations to reveal fragmentation. Video/audio families need one
+short and one realistic-duration case; component staging and host RAM must be
+recorded in addition to VRAM. Phase-boundary allocator changes and persistent
+quantization caches are not complete until these measurements pass.

@@ -1,5 +1,7 @@
 # Generation common block offload
 
+Status: implemented on all generation architectures; runtime validation deferred.
+
 ## Goal
 
 Cover every generation architecture with the shared immutable transfer engine

@@ -1435,12 +1435,11 @@ mixed fp8/fp32 tree). No decomposed pair moved, and the training axis
   check: this architecture is excluded from `keep_models_hot` outright, and its
   offloader is per-generation for the same reason (the DiT leaves the GPU before
   every decode). The advisory is called from its single
-  `prepare_block_devices_before_forward()` site. `NO_BLOCK_SWAP`: SenseNova's
-  `blocks_to_swap` is inert — its backend never reads it — and its MoT phase
-  evictor is not a `TransformerBlockOffloader`: `select_mot_weight_modules`
-  classifies by `_owns_persistent_tensor` and a `_mot_gen` path substring, and
-  `move_non_gen_to_device` / `on_phase` move a module's OWN `_parameters`, so a
-  LoHa's bare factors travel with the half they sit under. The
+  `prepare_block_devices_before_forward()` site. `PACKED_WITH_BLOCK`:
+  SenseNova installs its branch-aware frozen conductor after adapters; the
+  conductor recursively snapshots every parameter, so LoHa/LoKr factors travel
+  with the owning branch bundle. Its separate MoT phase evictor also moves a
+  module's own parameters, but is mutually exclusive with block swap. The
   `.lora_down`/`.lora_up` marker in `_is_adapter` is training-only
   (`require_exact_symmetry`), which generation never sets.
 - **SenseNova's opt-in key canonicalization carries LyCORIS unchanged.**

@@ -285,7 +285,7 @@ Refusals / declines in the adapter and ops:
 |---|---|---|
 | Attention conduit entry | **unsupported** — attention goes through transformers' `ALL_ATTENTION_FUNCTIONS` keyed by `config._attn_implementation`, never `core.attention.dispatch_attention` | `AceStepAttention.forward`; `acestep_ops.setup_attention_backend` is a documented no-op stub |
 | Block swap boundary (training) | supported: `LayerOffloadConductor` over `transformer.decoder.layers` | `acestep_ops.setup_block_swap` (raises if `.decoder.layers` is absent) |
-| Block swap (generation) | **unsupported** — `core.pipeline_backends.acestep` contains no `blocks_to_swap` / `enable_block_swap` path (only a docstring reference in `_acestep_runtime_int8` explaining why no offloader precheck is passed). Note there is also no `ARCH_UNSUPPORTED["acestep"]["block_swap"]` entry, so the capability table does not currently declare this | `core.pipeline_backends.acestep` (absence); `api.arch_capabilities` block-swap section (no entry) |
+| Block swap (generation) | supported on txt2aud, aud2aud/repaint, and audio outpaint | `AceStepMixin._acestep_maybe_install_block_offload` → `FrozenModuleOffloadConductor` over `dit.decoder.layers`; `blocks_to_swap=0` disables it |
 | FBCache indicator | **unsupported** | `api.arch_capabilities._FBCACHE_UNSUPPORTED` |
 | Spectrum / output forecaster | **unsupported** | `api.arch_capabilities._SPECTRUM_UNSUPPORTED` |
 | Quantized Linear swap (load time) | supported, int8 + fp8, independently detected | `loader._swap_quantized_linears` → `swap_linears_to_int8` / `swap_linears_to_fp8`; verified by `verify_quantized_swap` |

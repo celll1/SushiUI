@@ -256,7 +256,7 @@ Refusals / gates:
 | Hook | Supported | Owning symbol |
 |---|---|---|
 | Attention conduit entry | yes | `Krea2Attention.forward` → `core.attention.dispatch_attention` (layout `BSHD`, `enable_gqa`); stamped by `Krea2Transformer2DModel._stamp_attention_backend`, set from `Krea2Mixin._krea2_apply_attention_backend` (inference) and `ops/krea2_ops.setup_attention_backend` (training) |
-| Block swap — inference | **unsupported** | `arch_capabilities` `_add("krea2", "block_swap", …)`; `pipeline_backends/krea2.py` never reads `blocks_to_swap` |
+| Block swap — inference | yes | `Krea2Mixin._krea2_maybe_install_block_offload` → `FrozenModuleOffloadConductor` over `transformer.transformer_blocks`; installed after runtime INT8 and adapters, removed before adapter restore |
 | Block swap — training | yes | `ops/krea2_ops.setup_block_swap` → `core.memory_management.LayerOffloadConductor(layers=transformer.transformer_blocks)`, stored as `transformer._layer_offload_conductor` |
 | FBCache indicator | **unsupported** | `api/arch_capabilities._FBCACHE_UNSUPPORTED` includes `krea2`; the vendored forward has no `_fbcache` branch |
 | Spectrum forecaster | **unsupported** | `api/arch_capabilities._SPECTRUM_UNSUPPORTED` includes `krea2` |

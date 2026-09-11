@@ -363,11 +363,10 @@ not being custom), `conditioner.embedders.0.transformer.*`
   called from **both** `prepare_models_for_training` and
   `setup_trainable_parameters`. LoRA is still allowed.
 * `SDXLArchHandler.vae_decode` raises `NotImplementedError`.
-* Block swap: `SDXLArchHandler.setup_block_swap` is a documented no-op; declared
-  unsupported in `api.arch_capabilities` — *"the SDXL U-Net training path has no
-  block-swap consumer … its VRAM story is the sequential
-  text-encoder/U-Net/VAE component offload"*. Fused optimizer groups are therefore
-  unreachable (`num_optimizer_groups` is read only under `blocks_to_swap > 0`).
+* Training block swap: `SDXLArchHandler.setup_block_swap` is a documented no-op.
+  Fused optimizer groups are therefore unreachable (`num_optimizer_groups` is
+  read only under `blocks_to_swap > 0`). Generation has a separate forward-only
+  U-Net stage conductor.
 * ControlNet: `ControlNetSDXLAdapter.create_controlnet` accepts only
   `{"standard", "lllite"}` and raises `ValueError` otherwise, with the same guard
   repeated in `setup_trainable_parameters`, `save_checkpoint`, `load_checkpoint`
@@ -380,8 +379,8 @@ not being custom), `conditioner.embedders.0.transformer.*`
 |---|---|---|
 | Attention conduit entry | `core.inference.attention_processors.set_attention_processor(unet, backend, mode)` → `UnifiedAttnProcessor` on every `unet.attn_processors` entry | Supported. Inference: installed by `_generate_*_sd` when `attention_type != "normal"`, or force-installed when style transfer is active. Training: `sd_sdxl_ops.setup_attention_backend`, `attention_impl == "conduit"` branch, `mode=AttentionMode.TRAINING`; its docstring notes this is the only way `tq` engages in training, since the `"diffusers"` branch's `to_diffusers_backend` collapses `tq` to native. `added_cond_kwargs` / `time_ids` / pooled embeds are computed outside attention and are untouched by the swap. Original processors saved to `trainer._sdxl_original_attn_processors`. |
 | Attention backend capability gate | `core.attention.registry` specs (`sage`: `allowed_head_dims={64,96,128}`; `tq`: `{64,128}`; `flash`: `max_head_dim=256`), evaluated in `core.attention.config`; `trainer._resolve_training_backend` strips `sage` in training | Supported. The checkpoint's `attention_head_dim` decides which backends survive; that value is not in this repository. |
-| Block swap boundary | — | **Unsupported.** Generation: `api.arch_capabilities` `_add("sdxl", "block_swap", ...)` — `core.pipeline` / `core.vram_optimization` never read `blocks_to_swap`/`enable_block_swap`. Training: `SDXLArchHandler.setup_block_swap` returns `None`. |
-| Component offload (the substitute) | `core.vram_optimization.move_text_encoders_to_gpu/cpu`, `move_unet_to_gpu/cpu`, `move_vae_to_gpu/cpu`; `log_device_status` reports placement and quantization | Supported. |
+| Block swap boundary | `DiffusionPipelineManager._maybe_install_sd_unet_block_offload` → `FrozenModuleOffloadConductor` over `down_blocks`, `mid_block`, `up_blocks` | Generation supported for txt2img/img2img/inpaint and delegated outpaint; mutually exclusive with `torch.compile`. Training remains unsupported (`SDXLArchHandler.setup_block_swap` returns `None`). |
+| Component offload | `core.vram_optimization.move_text_encoders_to_gpu/cpu`, `move_unet_to_gpu/cpu`, `move_vae_to_gpu/cpu`; `log_device_status` reports placement and quantization | Supported and composed with generation block swap; a split U-Net is not marked keep-hot. |
 | FBCache indicator | `core.inference.fbcache_unet.FBCacheBlockController` / `build_unet_fbcache_controller`, built from all three `custom_sampling` loops | Supported. Indicator `down_blocks[branch]` with `branch = max(1, min(cache_branch, n_down - 1))`; reused region `down_blocks[branch+1:]` + `mid_block`. Params `fbcache_enable`, `fbcache_threshold`, `fbcache_warmup_steps`, `fbcache_cache_branch`. |
 | Spectrum (SFF) block cache | `core.inference.spectrum_unet.SpectrumBlockController` + `core.inference.spectrum_forecaster.SpectrumForecaster` | Supported. `spectrum_unet`'s docstring names SDXL explicitly; caches the deep `down_blocks[cache_branch:]` + `mid_block` features. |
 | Quantized `Linear` swap | `core.vram_optimization._quantize_unet` via `move_unet_to_gpu(pipeline, quantization, use_torch_compile)` | Supported for `fp8_e4m3fn` / `fp8_e5m2` only, as a whole-module `deepcopy().to(dtype=fp8)` — not a per-`Linear` swap. Original at `pipeline._original_unet`, copies cached in `pipeline._quantized_unet_cache` keyed `"{quant}"` or `"{quant}_compile"`. Runtime int8 is refused by `_refuse_runtime_int8_elsewhere` (DiT-only). Unsupported types warn with code `quantization_fallback`. |
@@ -414,7 +413,7 @@ not being custom), `conditioner.embedders.0.transformer.*`
 | Full fine-tuning refused on a weight-only quantized base | `base_adapter.reject_quantized_base`, called twice in `SDXLFullParameterAdapter` |
 | Runtime int8 refused (DiT-only) | `core.vram_optimization._refuse_runtime_int8_elsewhere` |
 | U-Net quantization limited to `fp8_e4m3fn` / `fp8_e5m2`; FP8 needs PyTorch ≥ 2.1.0 | `core.vram_optimization._quantize_unet` |
-| Block swap and fused optimizer groups unavailable | `SDXLArchHandler.setup_block_swap`; `api.arch_capabilities` `block_swap` / `num_optimizer_groups` rows |
+| Training block swap and fused optimizer groups unavailable | `SDXLArchHandler.setup_block_swap`; training capability `block_swap` / `num_optimizer_groups` rows |
 | `text_encoder_quantization` and `attention_impl` (generation) are not consumed | `api.arch_capabilities` `_add("sdxl", ...)` rows |
 | `text_encoder_file` / `clip_projection_file` / MiniMax-H3 hybrid refused at load | `ModelLoader._refuse_load_time_te_choice`; `ModelLoader._refuse_hybrid_on_other_arch` |
 | ControlNet training type restricted to `standard` / `lllite` | `ControlNetSDXLAdapter.create_controlnet` and its four sibling dispatch guards |

@@ -19,6 +19,7 @@ from .anima_scheduler import AnimaFlowMatchScheduler, calculate_shift_anima
 from core.inference.cancellation import raise_if_cancelled
 from core.inference.callback_utils import callback_requests
 from core.inference.generation_timing import time_phase
+from core.inference.schedule_utils import snapshot_schedule_scalars
 from core.inference.spectrum_forecaster import build_output_forecaster
 
 
@@ -606,6 +607,8 @@ def sample_txt2img(
     seq_len = latent_h * latent_w
     shift = calculate_shift_anima(seq_len)
     scheduler.set_timesteps(num_inference_steps, device=torch.device(device), shift=shift)
+    sigma_scalars = snapshot_schedule_scalars(scheduler.sigmas)
+    sigma_max_f = sigma_scalars[0]
 
     # Initial noise [B, C, 1, latent_h, latent_w]. C is the DiT's own count, not
     # the 16 of Anima's shipped VAE: a VAE-swapped checkpoint carries another.
@@ -638,7 +641,7 @@ def sample_txt2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_now_f = sigma_scalars[i]
 
             # FBCache: select the cond instance + current step for the conditional pass
             # (mirrors how _block_offloader is attached; None -> forward unchanged).
@@ -711,7 +714,6 @@ def sample_txt2img(
             else:
                 v_uncond = None
 
-            sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )
@@ -865,6 +867,8 @@ def sample_img2img(
     seq_len = latent_h * latent_w
     shift = calculate_shift_anima(seq_len)
     scheduler.set_timesteps(num_inference_steps, device=torch.device(device), shift=shift)
+    sigma_scalars = snapshot_schedule_scalars(scheduler.sigmas)
+    sigma_max_f = sigma_scalars[0]
 
     # Pick starting step from denoising_strength
     start_step = int(num_inference_steps * (1.0 - denoising_strength))
@@ -896,7 +900,7 @@ def sample_img2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_now_f = sigma_scalars[i]
 
             if fbcache_cond is not None:
                 real_transformer._fbcache = fbcache_cond
@@ -955,7 +959,6 @@ def sample_img2img(
             else:
                 v_uncond = None
 
-            sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )
@@ -1079,6 +1082,8 @@ def sample_inpaint(
     seq_len = latent_h * latent_w
     shift = calculate_shift_anima(seq_len)
     scheduler.set_timesteps(num_inference_steps, device=torch.device(device), shift=shift)
+    sigma_scalars = snapshot_schedule_scalars(scheduler.sigmas)
+    sigma_max_f = sigma_scalars[0]
 
     start_step = int(num_inference_steps * (1.0 - denoising_strength))
     start_step = max(0, min(start_step, num_inference_steps - 1))
@@ -1110,7 +1115,7 @@ def sample_inpaint(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_now_f = sigma_scalars[i]
 
             if fbcache_cond is not None:
                 real_transformer._fbcache = fbcache_cond
@@ -1169,7 +1174,6 @@ def sample_inpaint(
             else:
                 v_uncond = None
 
-            sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )

@@ -79,8 +79,8 @@ def _fm_ids(transformer: nn.Module) -> set:
     return {id(p) for p in transformer.fm_modules.parameters()}
 
 
-def test_the_option_is_off_by_default():
-    assert TRAINING_DEFAULTS["sensenova_train_fm_modules"] is False
+def test_the_option_is_on_by_default_for_gen_all():
+    assert TRAINING_DEFAULTS["sensenova_train_fm_modules"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,9 @@ case). A group that GREW -- ``sensenova_train_fm_modules`` appends 16 fm_modules
 params to the END of the generation group, 294 -> 310 -- reset every moment of
 all 16.2B trained parameters instead.
 
+The gen-all migration keeps that legacy group intact and appends the generation
+RMSNorms as a new group, allowing the scheduler to re-warm only those norms.
+
 The saved ``state`` is keyed by a FLAT parameter index in param_groups order, so
 once any group changes size every LATER group's offsets shift: the entries must
 be re-keyed, not filtered. ``test_growing_group_remaps_later_groups`` is the one
@@ -110,6 +113,7 @@ def test_trailing_group_added_keeps_the_model_groups():
         assert torch.equal(_moment(live, p), want)
     assert projector[0] not in live.state
     assert trainer._optimizer_state_partially_fresh is True
+    assert trainer._optimizer_fresh_param_group_indices[id(live)] == {2}
 
 
 def test_trailing_group_removed_keeps_everything_live():
@@ -173,6 +177,53 @@ def test_growing_group_reports_the_counts():
     assert "9 of 11 live parameter tensor(s) kept their saved state, 2 start fresh" in printed
     assert "group 0: 6 kept / 2 fresh (6 saved -> 8 live)" in printed
     assert "group 1: 3 kept / 0 fresh (3 saved -> 3 live)" in printed
+
+
+def test_trailing_norm_group_is_the_only_group_marked_for_rewarmup():
+    decoder_and_fm = _params(10, numel=4, seed=1)
+    norms = _params(3, numel=4, seed=2)
+    _, saved = _stepped([decoder_and_fm])
+    live = _adamw([decoder_and_fm, norms])
+    trainer = _Trainer()
+
+    ok, _ = _load(trainer, live, saved)
+
+    assert ok is True
+    assert trainer._optimizer_fresh_param_group_indices[id(live)] == {1}
+    assert trainer._optimizer_fresh_param_ids[id(live)] == {
+        id(parameter) for parameter in norms
+    }
+
+
+def test_run127_lion_layout_restores_old_group_and_marks_only_norms_fresh(monkeypatch):
+    from core.training.optimizers import lion8bit_ringbuffer as lion_module
+
+    monkeypatch.setattr(lion_module, "get_extension", lambda: object())
+    decoder_and_fm = _params(10, numel=4, seed=1)
+    norms = _params(3, numel=4, seed=2)
+    saved_optimizer = lion_module.Lion8bit_RingBuffer(
+        [{"params": decoder_and_fm, "lr": 1e-4}], use_8bit=False,
+    )
+    expected = []
+    for index, parameter in enumerate(decoder_and_fm):
+        moment = torch.full_like(parameter, index + 1.0)
+        saved_optimizer.state[parameter]["exp_avg"] = moment
+        saved_optimizer.state[parameter]["is_8bit"] = False
+        expected.append(moment.clone())
+
+    live = lion_module.Lion8bit_RingBuffer([
+        {"params": decoder_and_fm, "lr": 1e-4},
+        {"params": norms, "lr": 1e-4},
+    ], use_8bit=False)
+    trainer = _Trainer()
+
+    ok, _ = _load(trainer, live, saved_optimizer.state_dict())
+
+    assert ok is True
+    for parameter, moment in zip(decoder_and_fm, expected):
+        assert torch.equal(live.state[parameter]["exp_avg"], moment)
+    assert all(parameter not in live.state for parameter in norms)
+    assert trainer._optimizer_fresh_param_group_indices[id(live)] == {1}
 
 
 def test_shrinking_group_keeps_the_leading_prefix():

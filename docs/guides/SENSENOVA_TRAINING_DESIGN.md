@@ -114,30 +114,38 @@ authoritative implementation; this guide does not override their refusals.
 
 ### Trained scope
 
-A full fine-tune's default scope is the 294 decoder Linears per selected half —
-the set the int8 load dequantizes. That is a consequence of the quantization
-layout, not a claim about what is worth training: `transformer.fm_modules` (the
+A generation full fine-tune's default scope is **gen-all**: the 294 decoder
+Linears the int8 load dequantizes, all generation-side decoder RMSNorms, and
+`transformer.fm_modules` (the
 generation ViT's patch and dense embeddings, the timestep and noise-scale
-embedders, and the `fm_head` convolutions that emit the pixel prediction) is not
-quantized, so it is not materialized and was never optimized. Measured on two
+embedders, and the `fm_head` convolutions that emit the pixel prediction).
+Previously the non-quantized modules were not optimized merely because they did
+not pass through materialization. Measured on two
 checkpoints of one run 4,960 steps apart, all 16 of its tensors are
 byte-identical while the generation decoder moved 3.09e-3 relative.
 
-`sensenova_train_fm_modules` (default off) adds those 16 tensors / 63,117,504
-parameters (120.4 MiB bf16, counted from the checkpoint index) to the generation
+The norm scope is 253 tensors / 358,912 parameters on U1.5: six RMSNorm weights
+per layer across 42 layers (two residual-path norms and four q/k axis norms),
+plus the final generation norm. They add negligible optimizer storage beside
+the 8.10B decoder Linears but remain separate from the exact INT8
+materialization census.
+
+`sensenova_train_fm_modules` (default on) controls those 16 tensors / 63,117,504
+parameters (120.4 MiB bf16, counted from the checkpoint index) in the generation
 parameter group at `unet_lr`. It is generation-side, so an understanding-only
 branch warns (`sensenova_train_fm_modules_branch_mismatch`) and proceeds without
 them. The decoder-Linear count is collected and checked exactly as before; the fm
 parameters come from a separate path so the unmaterialized-int8 guard keeps its
 exact expectation. Every save format already writes non-decoder tensors as they
-stand, so an update survives the checkpoint. The `*_norm_mot_gen` norms stay
-frozen either way.
-
-Changing the setting on a resume changes the generation group's parameter count
-(294 vs 310), which `optimizer.load_state_dict` rejects. The per-group
-leading-prefix remap salvages the rest: on run 122's resume at step 38,768 it
-kept 588 of 604 parameters' saved state and started the 16 added ones fresh, and
-the re-warmup fired for them.
+stand, so an update survives the checkpoint. The generation RMSNorms use a
+separate trailing optimizer group at `unet_lr`. This ordering deliberately keeps
+the former generation group byte-for-byte as decoder Linears followed by
+`fm_modules`, so a legacy checkpoint retains every compatible optimizer moment.
+Only the new norm group starts fresh, and `rewarmup_on_optimizer_reset` composes
+the configured warmup onto that group's scheduler lambda alone; the restored
+generation group stays at its existing absolute schedule position. Explicit
+task runs expose the same group as `generation_norms`; selecting
+`generation_decoder` alone retains the former decoder-Linear-only behavior.
 
 Until the `enable_grad` plumbing below, the option moved only the 4 `fm_head`
 tensors: the other 12 sat inside a `@torch.no_grad()` and received no gradient at

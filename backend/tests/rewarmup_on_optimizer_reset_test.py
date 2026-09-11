@@ -24,6 +24,7 @@ objects (no model, no dataset, no GPU). What they pin down:
   is not restarted);
 * every scheduler is re-armed, not just ``self.lr_scheduler`` -- fused optimizer
   groups each carry their own;
+* after a partial load, only wholly fresh parameter groups are re-armed;
 * it is inert when the state restores, when the warmup is 0, and when the
   config turns it off.
 """
@@ -129,6 +130,31 @@ def test_every_fused_group_scheduler_is_rearmed():
     for i in range(4):
         assert h.multiplier(60000, which=i) == pytest.approx(0.0), f"group {i}"
         assert h.multiplier(60500, which=i) == pytest.approx(0.25), f"group {i}"
+
+
+def test_partial_resume_rewarms_only_the_fresh_param_group():
+    h = RearmHarness(warmup=1000)
+    old = torch.nn.Parameter(torch.zeros(2))
+    new = torch.nn.Parameter(torch.zeros(2))
+    h.optimizer = torch.optim.AdamW([
+        {"params": [old], "lr": 1e-6},
+        {"params": [new], "lr": 1e-6},
+    ])
+    h.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        h.optimizer, [_plateau_then_half(1000), _plateau_then_half(1000)]
+    )
+    h.optimizers = [h.optimizer]
+    h.lr_schedulers = [h.lr_scheduler]
+    h.fused_optimizer_groups = None
+    h._optimizer_state_partially_fresh = True
+    h._optimizer_fresh_param_group_indices = {id(h.optimizer): {1}}
+    h._fast_forward_lr_schedulers(60000)
+
+    assert h._rearm_warmup_after_optimizer_reset(60000) is True
+    assert h.lr_scheduler.lr_lambdas[0](60000) == pytest.approx(0.5)
+    assert h.lr_scheduler.lr_lambdas[0](60500) == pytest.approx(0.5)
+    assert h.lr_scheduler.lr_lambdas[1](60000) == pytest.approx(0.0)
+    assert h.lr_scheduler.lr_lambdas[1](60500) == pytest.approx(0.25)
 
 
 def test_each_wrapper_keeps_its_own_inner_lambda():

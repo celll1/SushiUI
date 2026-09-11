@@ -15889,14 +15889,16 @@ class TrainingRunCreateRequest(BaseModel):
     sensenova_sample_kv_cache_streaming: bool = TRAINING_DEFAULTS[
         "sensenova_sample_kv_cache_streaming"
     ]
-    # SenseNova full fine-tune only: add transformer.fm_modules to the generation
-    # parameter group. Off keeps the decoder-Linear-only scope byte for byte.
+    # SenseNova full fine-tune only: include transformer.fm_modules in gen-all.
     sensenova_train_fm_modules: bool = TRAINING_DEFAULTS[
         "sensenova_train_fm_modules"
     ]
+    sensenova_train_generation_norms: bool = TRAINING_DEFAULTS[
+        "sensenova_train_generation_norms"
+    ]
     sensenova_train_scopes: List[Literal[
         "understanding_vision", "understanding_decoder", "shared",
-        "generation_decoder", "generation_flow",
+        "generation_decoder", "generation_norms", "generation_flow",
     ]] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["sensenova_train_scopes"]))
 
     @field_validator("sensenova_train_scopes")

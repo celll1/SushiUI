@@ -90,6 +90,124 @@ def _collected(groups):
     return len(params), sum(p.numel() for p in params)
 
 
+class _Norm(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(4, dtype=torch.bfloat16))
+
+
+def _attach_generation_norms(transformer: nn.Module) -> set[int]:
+    core = transformer.language_model.model
+    modules = []
+    for layer in core.layers:
+        for name in ("input_layernorm_mot_gen", "post_attention_layernorm_mot_gen"):
+            module = _Norm()
+            setattr(layer, name, module)
+            modules.append(module)
+        for name in (
+            "q_norm_mot_gen", "q_norm_hw_mot_gen",
+            "k_norm_mot_gen", "k_norm_hw_mot_gen",
+        ):
+            module = _Norm()
+            setattr(layer.self_attn, name, module)
+            modules.append(module)
+    core.norm_mot_gen = _Norm()
+    modules.append(core.norm_mot_gen)
+    return {id(parameter) for module in modules for parameter in module.parameters()}
+
+
+def _attach_small_fm_modules(transformer: nn.Module) -> set[int]:
+    transformer.fm_modules = nn.ModuleDict({
+        "vision_model_mot_gen": nn.Linear(4, 4),
+        "timestep_embedder": nn.Linear(4, 4),
+        "noise_scale_embedder": nn.Linear(4, 4),
+        "fm_head": nn.Linear(4, 4),
+    }).to(torch.bfloat16)
+    return {id(parameter) for parameter in transformer.fm_modules.parameters()}
+
+
+def test_default_generation_full_ft_is_gen_all():
+    transformer = _materialized("gen")
+    norm_ids = _attach_generation_norms(transformer)
+    fm_ids = _attach_small_fm_modules(transformer)
+    trainer = _full_ft_trainer(
+        "gen", transformer, sensenova_train_fm_modules=True,
+    )
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    collected = {id(parameter) for group in groups for parameter in group["params"]}
+    decoder_ids = {
+        id(parameter)
+        for _, _, _, module in iter_sensenova_lora_targets(
+            transformer, branch="gen"
+        )
+        for parameter in module.parameters()
+    }
+    assert len(norm_ids) == 42 * 6 + 1
+    assert collected == decoder_ids | norm_ids | fm_ids
+    assert [group["name"] for group in groups] == [
+        "generation_decoder", "generation_norms",
+    ]
+    assert {id(parameter) for parameter in groups[0]["params"]} == decoder_ids | fm_ids
+    assert {id(parameter) for parameter in groups[1]["params"]} == norm_ids
+    assert all(parameter.requires_grad for parameter in transformer.parameters())
+
+
+def test_explicit_generation_scopes_keep_the_three_gen_all_parts_separate():
+    transformer = _materialized("gen")
+    norm_ids = _attach_generation_norms(transformer)
+    fm_ids = _attach_small_fm_modules(transformer)
+    trainer = _full_ft_trainer(
+        "gen", transformer,
+        sensenova_train_fm_modules=True,
+        learning_rate=1e-5,
+        image_encoder_lr=None,
+    )
+    trainer.config = {
+        "optimizer": "adafactor",
+        "_sensenova_explicit_tasks": ["t2i"],
+        "sensenova_train_scopes": [
+            "generation_decoder", "generation_norms", "generation_flow",
+        ],
+    }
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    assert [group["name"] for group in groups] == [
+        "generation_decoder", "generation_norms", "generation_flow",
+    ]
+    assert {id(parameter) for parameter in groups[1]["params"]} == norm_ids
+    assert {id(parameter) for parameter in groups[2]["params"]} == fm_ids
+
+
+def test_explicit_generation_decoder_retains_the_linear_only_scope():
+    transformer = _materialized("gen")
+    norm_ids = _attach_generation_norms(transformer)
+    fm_ids = _attach_small_fm_modules(transformer)
+    trainer = _full_ft_trainer(
+        "gen", transformer,
+        sensenova_train_fm_modules=True,
+        learning_rate=1e-5,
+        image_encoder_lr=None,
+    )
+    trainer.config = {
+        "optimizer": "adafactor",
+        "_sensenova_explicit_tasks": ["t2i"],
+        "sensenova_train_scopes": ["generation_decoder"],
+    }
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    adapter.prepare_models_for_training()
+    groups = adapter.setup_trainable_parameters()
+
+    collected = {id(parameter) for parameter in groups[0]["params"]}
+    assert len(collected) == 294
+    assert not collected & norm_ids
+    assert not collected & fm_ids
+
+
 
 def test_negative_control_the_sd15_fallthrough_collects_zero():
     """Reproduces the bug the ``elif`` branch prevents, with the numbers.

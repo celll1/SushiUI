@@ -61,6 +61,9 @@ def test_openapi_has_typed_dataset_task_contract():
     assert request["dataset_configs"]["items"]["$ref"].endswith("/DatasetConfigItem")
     assert schemas["DatasetConfigItem"]["properties"]["task_views"]["items"]["$ref"].endswith("/SenseNovaTaskView")
     assert request["sensenova_train_scopes"]["default"] == []
+    assert "generation_norms" in request["sensenova_train_scopes"]["items"]["enum"]
+    assert request["sensenova_train_fm_modules"]["default"] is True
+    assert request["sensenova_train_generation_norms"]["default"] is True
 
 
 def test_frontend_exposes_task_views_and_scopes():
@@ -69,8 +72,10 @@ def test_frontend_exposes_task_views_and_scopes():
     params = (ROOT / "frontend/src/components/training/trainingParams.ts").read_text(encoding="utf-8")
     assert "task_views?: SenseNovaTaskView[]" in api
     assert "sensenova_train_scopes?: SenseNovaTrainScope[]" in api
+    assert "sensenova_train_generation_norms?: boolean" in api
     assert "SenseNova task views" in panel
     assert '"sensenova_train_scopes"' in params
+    assert '"sensenova_train_generation_norms"' in params
 
 
 def test_task_view_api_validation_is_strict():

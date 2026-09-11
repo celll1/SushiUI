@@ -299,6 +299,7 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # Widens a SenseNova full fine-tune's scope past the decoder Linears; no
     # relation to the eviction keys above.
     "sensenova_train_fm_modules": ["sensenova_train_fm_modules"],
+    "sensenova_train_generation_norms": ["sensenova_train_generation_norms"],
     # Aligned CFG null-condition training. The deprecated MiniT2I-only
     # `minit2i_label_drop_rate` is deliberately NOT an arming key: an
     # architecture without the mechanism has always accepted and ignored it,
@@ -328,6 +329,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_pageable_staging": "SenseNova MoT phase eviction pageable host staging",
     "sensenova_mot_overlap_transfer": "SenseNova MoT phase eviction overlapped half swap",
     "sensenova_train_fm_modules": "SenseNova flow-matching module training (fm_modules)",
+    "sensenova_train_generation_norms": "SenseNova generation RMSNorm training",
     "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
     "lr_layer_decay": "layer-wise learning-rate decay",
     "repa": "REPA (representation alignment with a frozen vision encoder)",
@@ -1133,6 +1135,16 @@ for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
 _add_training_feature_unsupported(
     "sensenova", "sensenova_train_fm_modules",
     "fm_modules training is a full-fine-tune parameter-scope option; SenseNova LoRA wraps the 294 decoder Linears per branch and fm_modules holds none of them",
+    methods=["lora", "relora", "controlnet"])
+
+# --- SenseNova generation RMSNorm training ---------------------------------
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sensenova"}):
+    _add_training_feature_unsupported(
+        _a, "sensenova_train_generation_norms",
+        "the _mot_gen decoder RMSNorms are specific to SenseNova's MoT generation half; this architecture has no equivalent separately scoped parameter set")
+_add_training_feature_unsupported(
+    "sensenova", "sensenova_train_generation_norms",
+    "generation RMSNorm training is a full-fine-tune parameter-scope option; SenseNova LoRA wraps only Linear modules",
     methods=["lora", "relora", "controlnet"])
 
 # --- Sample generation during training --------------------------------------

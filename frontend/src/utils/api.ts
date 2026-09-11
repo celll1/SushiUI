@@ -6508,7 +6508,7 @@ export interface TrainingRun {
 }
 
 export type SenseNovaTrainingTask = "t2i" | "ti2i" | "i2t_caption" | "i2t_tags" | "i2t_caption_tags";
-export type SenseNovaTrainScope = "understanding_vision" | "understanding_decoder" | "shared" | "generation_decoder" | "generation_flow";
+export type SenseNovaTrainScope = "understanding_vision" | "understanding_decoder" | "shared" | "generation_decoder" | "generation_norms" | "generation_flow";
 
 export interface SenseNovaTaskView {
   task: SenseNovaTrainingTask;
@@ -6573,8 +6573,10 @@ export interface TrainingRunCreateRequest {
   // tensors / 63,117,504 params -- the generation ViT embeddings, the timestep
   // and noise-scale embedders, fm_head), in the generation group at unet_lr.
   // Needs train_unet; warned and ignored on an understanding-only branch.
-  // Changing it on a resume resets the optimizer state (group count moves).
+  // Resume keeps the compatible leading state when this changes.
   sensenova_train_fm_modules?: boolean;
+  // Separate trailing group so a legacy resume re-warms only these fresh params.
+  sensenova_train_generation_norms?: boolean;
   sensenova_train_scopes?: SenseNovaTrainScope[];
   base_model_path: string;
   gpu_index?: number | null;  // Physical GPU index to run this training run on; null = backend default device

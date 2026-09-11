@@ -26,6 +26,7 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.callback_utils import callback_requests
+from core.inference.schedule_utils import snapshot_schedule_scalars
 from core.models.components.vae_registry import (
     normalize as _vae_normalize,
     denormalize as _vae_denormalize,
@@ -1214,6 +1215,7 @@ class Flux2Mixin:
             sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
             scheduler.set_timesteps(num_inference_steps, device=self.device, mu=mu)
             timesteps = scheduler.timesteps
+            timestep_scalars = snapshot_schedule_scalars(timesteps)
             scheduler.set_begin_index(0)
 
             # Determine input dtype for transformer (FP8 quantized uses BF16 input)
@@ -1307,6 +1309,7 @@ class Flux2Mixin:
                     spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
+                t_scalar = timestep_scalars[i]
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
                     self.cancel_requested = False
@@ -1351,7 +1354,7 @@ class Flux2Mixin:
                         if style_refs is not None:
                             noise_pred = self._flux2_style_step_multi(
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -1359,7 +1362,7 @@ class Flux2Mixin:
                         else:
                             noise_pred = self._flux2_style_step(
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -1937,6 +1940,7 @@ class Flux2Mixin:
         step_idx: int,
         total_steps: int,
         t,
+        sigma_now: float,
         latents: torch.Tensor,
         prompt_embeds: torch.Tensor,
         text_ids: torch.Tensor,
@@ -1970,7 +1974,6 @@ class Flux2Mixin:
         from core.inference.reference_style import StyleContext
         from core.inference.style_flux2 import set_flux2_style_context
 
-        sigma_now = float(t.item()) / 1000.0
         ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
         progress = style_cfg.step_progress(step_idx, total_steps)
 
@@ -2090,6 +2093,7 @@ class Flux2Mixin:
         step_idx: int,
         total_steps: int,
         t,
+        sigma_now: float,
         latents: torch.Tensor,
         prompt_embeds: torch.Tensor,
         text_ids: torch.Tensor,
@@ -2118,7 +2122,6 @@ class Flux2Mixin:
         from core.inference.reference_style import StyleContext
         from core.inference.style_flux2 import set_flux2_style_context
 
-        sigma_now = float(t.item()) / 1000.0
         text_seq_len = text_ids.shape[1]
         image_seq_len = latents.shape[1]
         timestep = t.expand(latents.shape[0]).to(transformer_input_dtype) / 1000
@@ -2572,8 +2575,9 @@ class Flux2Mixin:
 
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
+            timestep_scalars = snapshot_schedule_scalars(timesteps)
 
-            t_value = timesteps[0].item() / 1000.0
+            t_value = timestep_scalars[0] / 1000.0
             noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
             latents = (1 - t_value) * init_latents + t_value * noise
 
@@ -2839,6 +2843,7 @@ class Flux2Mixin:
                     spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
+                t_scalar = timestep_scalars[i]
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
                     self.cancel_requested = False
@@ -2881,7 +2886,7 @@ class Flux2Mixin:
                         if style_refs is not None:
                             noise_pred = self._flux2_style_step_multi(
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -2889,7 +2894,7 @@ class Flux2Mixin:
                         else:
                             noise_pred = self._flux2_style_step(
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -3411,8 +3416,9 @@ class Flux2Mixin:
 
             t_start = max(int(len(timesteps) * (1 - denoising_strength)), 1)
             timesteps = timesteps[t_start:]
+            timestep_scalars = snapshot_schedule_scalars(timesteps)
 
-            t_value = timesteps[0].item() / 1000.0
+            t_value = timestep_scalars[0] / 1000.0
             noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
             latents = (1 - t_value) * init_latents_packed + t_value * noise
 
@@ -3678,6 +3684,7 @@ class Flux2Mixin:
                     spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
+                t_scalar = timestep_scalars[i]
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
                     self.cancel_requested = False
@@ -3720,7 +3727,7 @@ class Flux2Mixin:
                         if style_refs is not None:
                             noise_pred = self._flux2_style_step_multi(
                                 transformer_wrapper, style_refs, style_combine_mode, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -3728,7 +3735,7 @@ class Flux2Mixin:
                         else:
                             noise_pred = self._flux2_style_step(
                                 transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                i, total_steps, t, t_scalar / 1000.0, latents, prompt_embeds, text_ids,
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
@@ -3846,7 +3853,7 @@ class Flux2Mixin:
                 # Noise original latents to current timestep using Flow Matching interpolation
                 if i < len(timesteps) - 1:
                     # Flow Matching: normalize timestep [0, 1000] -> [0.0, 1.0]
-                    t_value = timesteps[i + 1].item() / 1000.0
+                    t_value = timestep_scalars[i + 1] / 1000.0
                     # Linear interpolation: x_t = (1 - t) * x_0 + t * noise
                     init_latents_noised = (1 - t_value) * init_latents_packed + t_value * noise
                 else:

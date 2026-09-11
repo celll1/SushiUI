@@ -248,8 +248,8 @@ measured. They are deliberately not enabled by default in this static pass.
 |---|---|---|
 | Cross-generation prompt-embedding cache | MiniMax-H3's plain text-only path already has a bounded eight-entry CPU LRU keyed by encoder, projection, prompt and conditioning width. Do not generalize it yet. | Each architecture needs keys for tokenizer/parser settings, maximum length, clip skip, adapter/textual-inversion state, quantization and model reload. Compare host RAM and repeated-prompt latency; cached tensors stay on CPU. |
 | Keep VAE resident between image encode and final decode | Implemented through the existing opt-in `keep_models_hot` budget policy; no second switch was added. | SDXL img2img produced pixel-identical output. The measured request used 7.180 GB peak allocated versus 6.586 GB cold and reduced recorded generation time from 1.826 s to 0.682 s. |
-| Asynchronous preview decode | Retain synchronous, demand-driven preview. Skipping unused previews already removes the unconditional cost without extending tensor lifetime. | Prove callback ordering, cancellation and teardown safety, then compare step latency and peak allocated/reserved VRAM with preview intervals 1 and 4. |
-| Remove phase-boundary `empty_cache()` | Retain phase boundaries. Only adjacent terminal duplicates were removed. | Compare at least three cold and three hot generations using the newly recorded allocated and reserved peaks; reject a removal that increases failures, reservation growth or fragmentation. |
+| Asynchronous preview decode | Rejected. The existing message contract couples progress, preview and CFG metrics for one step. GPU decode shares the generation stream; deferring only JPEG/base64 still cannot emit that message until conversion completes. | Overlap would require a second CUDA stream plus latent retention, or split/stale WebSocket messages. Both add memory and change observable ordering for negligible expected gain after demand-driven preview landed. |
+| Remove phase-boundary `empty_cache()` | Rejected generally; the VAE keep-hot path skips only the offload/flush pair it makes unnecessary. | Mutually exclusive multi-GB stages rely on cache release for fragmentation tolerance. There is no architecture-neutral equivalent removal. |
 | Stream video frames into FFmpeg | Implemented for master and proxy encoders. | Focused tests prove identical byte order, bounded writes, non-contiguous input handling and failure cleanup. |
 
 ## Intentionally non-equivalent ideas
@@ -343,11 +343,14 @@ does not exceed noise or when it moves the cost to a less acceptable resource.
    0.594 GB peak allocated VRAM for a 1.144 s reduction in recorded generation
    time in the representative two-step probe; broader behavior is covered by
    user generation feedback.
-3. **Preview decode overlap.** Split only CPU-bound preview conversion from the
-   denoise callback after proving ordered delivery, bounded queue depth,
-   cancellation and teardown. GPU tiny-autoencoder decode stays synchronous
-   unless a separate-stream experiment shows a win without raising the denoise
-   peak or changing callback semantics.
+3. **Preview decode overlap — rejected.** The synchronous callback emits one
+   atomic per-step message containing progress, preview and CFG metrics. A CPU
+   worker cannot shorten that callback without splitting or delaying the
+   message. A CUDA worker additionally retains the latent and tiny decoder on a
+   separate stream, raising peak VRAM and introducing stream/cancellation
+   synchronization. Demand-driven preview already removes work on unrequested
+   steps, so the remaining overlap candidate is not an equivalent low-risk
+   optimization.
 4. **Cross-generation prompt embeddings.** Reuse the bounded CPU-cache pattern
    already shipped for MiniMax-H3, but give each architecture an explicit key
    provider covering model/tokenizer/parser, length, clip-skip, adapter,

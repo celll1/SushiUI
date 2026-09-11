@@ -19,6 +19,7 @@ from core.inference.cancellation import raise_if_cancelled
 from core.inference.callback_utils import callback_requests
 from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
+from core.inference.schedule_utils import snapshot_schedule_scalars
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +593,7 @@ def _lens_style_step(
     step_idx: int,
     total_steps: int,
     t,
+    sigma_now: float,
     latents: torch.Tensor,
     encoder_features: List[torch.Tensor],
     encoder_mask: torch.Tensor,
@@ -626,7 +628,6 @@ def _lens_style_step(
     """
     from core.inference.reference_style import StyleContext
 
-    sigma_now = float(t.item()) / 1000.0
     ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
     progress = style_cfg.step_progress(step_idx, total_steps)
 
@@ -746,6 +747,7 @@ def _lens_style_step_multi(
     step_idx: int,
     total_steps: int,
     t,
+    sigma_now: float,
     latents: torch.Tensor,
     encoder_features: List[torch.Tensor],
     encoder_mask: torch.Tensor,
@@ -777,8 +779,6 @@ def _lens_style_step_multi(
     reference through ``_lens_style_step`` instead so that exact pre-multi-ref
     code path executes byte-identically)."""
     from core.inference.reference_style import StyleContext
-
-    sigma_now = float(t.item()) / 1000.0
 
     cond_features = [f[0:1] for f in encoder_features]
     cond_mask = encoder_mask[0:1]
@@ -879,6 +879,7 @@ def denoise_loop(
 
     img_shapes = [(1, latent_h, latent_w)]
     total_steps = len(scheduler.timesteps)
+    timestep_scalars = snapshot_schedule_scalars(scheduler.timesteps)
 
     # Training-free reference-style transfer (see core.inference.reference_style):
     # active only when a style reference image is attached. Mutually exclusive
@@ -914,6 +915,7 @@ def denoise_loop(
     try:
         for i, t in enumerate(scheduler.timesteps):
             raise_if_cancelled()
+            sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
             hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
 
@@ -926,21 +928,18 @@ def denoise_loop(
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
-                sigma_t = t.item() / 1000.0
             elif style_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
             elif style_multi_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
@@ -959,7 +958,6 @@ def denoise_loop(
                 )
 
                 cond, uncond = noise_out.chunk(2)
-                sigma_t = t.item() / 1000.0
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
                 )
@@ -1047,9 +1045,10 @@ def denoise_loop_img2img(
     timesteps = scheduler.timesteps
     start_step = max(int(len(timesteps) * (1.0 - denoising_strength)), 1)
     timesteps_to_use = timesteps[start_step:]
+    timestep_scalars = snapshot_schedule_scalars(timesteps_to_use)
 
     # Add noise at the start timestep level (flow-matching linear interpolation)
-    t_start_value = timesteps_to_use[0].item() / 1000.0
+    t_start_value = timestep_scalars[0] / 1000.0
     generator = None
     if seed is not None and seed >= 0:
         generator = torch.Generator(device=init_latents.device).manual_seed(seed)
@@ -1069,6 +1068,7 @@ def denoise_loop_img2img(
     try:
         for i, t in enumerate(timesteps_to_use):
             raise_if_cancelled()
+            sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)
             hidden_states = latents.repeat(2, 1, 1)
 
@@ -1081,21 +1081,18 @@ def denoise_loop_img2img(
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
-                sigma_t = t.item() / 1000.0
             elif style_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
             elif style_multi_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
@@ -1114,7 +1111,6 @@ def denoise_loop_img2img(
                 )
 
                 cond, uncond = noise_out.chunk(2)
-                sigma_t = t.item() / 1000.0
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
                 )
@@ -1202,6 +1198,7 @@ def denoise_loop_inpaint(
     timesteps = scheduler.timesteps
     start_step = max(int(len(timesteps) * (1.0 - denoising_strength)), 1)
     timesteps_to_use = timesteps[start_step:]
+    timestep_scalars = snapshot_schedule_scalars(timesteps_to_use)
 
     generator = None
     if seed is not None and seed >= 0:
@@ -1212,7 +1209,7 @@ def denoise_loop_inpaint(
                               device=init_latents.device, dtype=init_latents.dtype)
 
     # Starting latent: noise init_latents at the start noise level
-    t_start_value = timesteps_to_use[0].item() / 1000.0
+    t_start_value = timestep_scalars[0] / 1000.0
     latents = (1.0 - t_start_value) * init_latents + t_start_value * init_noise
 
     img_shapes = [(1, latent_h, latent_w)]
@@ -1228,6 +1225,7 @@ def denoise_loop_inpaint(
     try:
         for i, t in enumerate(timesteps_to_use):
             raise_if_cancelled()
+            sigma_t = timestep_scalars[i] / 1000.0
             timestep = t.expand(2).to(latents.dtype)
             hidden_states = latents.repeat(2, 1, 1)
 
@@ -1240,21 +1238,18 @@ def denoise_loop_inpaint(
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
-                sigma_t = t.item() / 1000.0
             elif style_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
             elif style_multi_active_step:
-                sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step_multi(
                     real_transformer, style_refs, style_combine_mode,
-                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
                 if spectrum is not None:
@@ -1273,7 +1268,6 @@ def denoise_loop_inpaint(
                 )
 
                 cond, uncond = noise_out.chunk(2)
-                sigma_t = t.item() / 1000.0
                 noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
                     cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
                 )

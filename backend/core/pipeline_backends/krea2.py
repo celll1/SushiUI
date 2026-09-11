@@ -139,6 +139,30 @@ class Krea2Mixin:
         print(f"[Krea2] Attention backend: {backend} "
               f"(from attention_type={params.get('attention_type')!r})")
 
+    def _krea2_maybe_install_block_offload(self, params, transformer, device):
+        if not bool(params.get("enable_block_swap", False)):
+            return None
+        requested = int(params.get("blocks_to_swap", 0) or 0)
+        if requested <= 0:
+            return None
+        blocks = getattr(transformer, "transformer_blocks", None)
+        if blocks is None or len(blocks) < 2:
+            raise ValueError("Krea 2 block offload requires transformer_blocks")
+        from core.memory_management import FrozenModuleOffloadConductor
+
+        conductor = FrozenModuleOffloadConductor(
+            root=transformer,
+            modules=blocks,
+            blocks_to_swap=requested,
+            device=device,
+            use_pinned_memory=bool(params.get("use_pinned_memory", False)),
+            ring_size=int(params.get("block_swap_ring_size", 2) or 2),
+        )
+        conductor.register_hooks()
+        print(f"[Krea2] Common block offload enabled "
+              f"({conductor.blocks_to_swap}/{len(blocks)} blocks)")
+        return conductor
+
     @staticmethod
     def _krea2_lora_warn(message: str, code: str) -> None:
         """Record a user-visible generation warning. ``message`` is embedded in the
@@ -617,6 +641,8 @@ class Krea2Mixin:
             # LoRA wrappers hold the current Linear modules, so this must follow
             # both the INT8 conversion and the GPU stage above.
             self._load_lora_krea2(params.get("loras") or [])
+            block_offloader = self._krea2_maybe_install_block_offload(
+                params, transformer, device)
 
             # Training-free reference-style transfer. OFF by default
             # (style_transfer/style_transfers absent -> (None, None, None,
@@ -649,6 +675,8 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                if block_offloader is not None:
+                    block_offloader.cleanup()
                 # Unconditional: a guard here would skip the restore in exactly the
                 # cases that leak wrappers into the next generation.
                 self._unload_lora_krea2()
@@ -737,6 +765,8 @@ class Krea2Mixin:
 
             # Must follow the INT8 conversion and the GPU stage (see txt2img).
             self._load_lora_krea2(params.get("loras") or [])
+            block_offloader = self._krea2_maybe_install_block_offload(
+                params, transformer, device)
 
             # Training-free reference-style transfer (see the txt2img comment
             # above for the single-ref/multi-ref routing invariant).
@@ -763,6 +793,8 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                if block_offloader is not None:
+                    block_offloader.cleanup()
                 self._unload_lora_krea2()
                 if _kh_keep_transformer:
                     mark_resident(self, "transformer", _kh_model_key)
@@ -862,6 +894,8 @@ class Krea2Mixin:
 
             # Must follow the INT8 conversion and the GPU stage (see txt2img).
             self._load_lora_krea2(params.get("loras") or [])
+            block_offloader = self._krea2_maybe_install_block_offload(
+                params, transformer, device)
 
             # Training-free reference-style transfer (see the txt2img comment
             # above for the single-ref/multi-ref routing invariant).
@@ -888,6 +922,8 @@ class Krea2Mixin:
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
+                if block_offloader is not None:
+                    block_offloader.cleanup()
                 self._unload_lora_krea2()
                 if _kh_keep_transformer:
                     mark_resident(self, "transformer", _kh_model_key)

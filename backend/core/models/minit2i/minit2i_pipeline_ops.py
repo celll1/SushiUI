@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from core.inference.schedule_utils import snapshot_schedule_scalars
 from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 from PIL import Image
@@ -125,7 +126,7 @@ def prepare_style_reference(vae, style_image: Image.Image, height: int, width: i
 
 @torch.no_grad()
 def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                           style_cfg, style_ref_x0, style_eps_ref, step_idx, num_steps):
+                           style_cfg, style_ref_x0, style_eps_ref, step_idx, num_steps, t_val):
     """One style-active x0-prediction step: bypasses ``_predict_x0_cfg``'s BATCHED
     ``[cond, uncond]`` forward for this step entirely -- capture forward (style
     reference re-noised to the CURRENT ``t``, using the SAME ``x_t = image*t +
@@ -158,7 +159,6 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     from core.inference.reference_style import StyleContext
     from core.inference.style_minit2i import set_minit2i_style_context
 
-    t_val = float(t.reshape(-1)[0].item())
     use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
     progress = style_cfg.step_progress(step_idx, num_steps)
 
@@ -198,7 +198,7 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
 
 @torch.no_grad()
 def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                                 style_refs, style_combine_mode, step_idx, num_steps):
+                                 style_refs, style_combine_mode, step_idx, num_steps, t_val):
     """Multi-reference (N>1) variant of ``_predict_x0_style_step``: one capture
     forward PER reference (each with its OWN ``StyleTransferConfig`` -- block_range,
     strengths, freq curve, step gating -- skipped if not step-active THIS step,
@@ -218,7 +218,6 @@ def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_
     from core.inference.reference_style import StyleContext
     from core.inference.style_minit2i import set_minit2i_style_context
 
-    t_val = float(t.reshape(-1)[0].item())
     use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
 
     try:
@@ -320,9 +319,8 @@ def _cleanup_minit2i_fbcache(net, fbcache):
             net._fbcache_step = None
 
 
-def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval):
+def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval, t_val):
     """CFG x0 prediction. neg_* may be None -> mask-zeroed pure uncond."""
-    t_val = float(t.reshape(-1)[0].item())
     use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
     if not use_cfg:
         return transformer(x, t, text, mask)
@@ -381,6 +379,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     from core.inference.cancellation import raise_if_cancelled
     n = len(ts) - 1
     total = n - start_idx
+    timestep_scalars = snapshot_schedule_scalars(ts)
     spectrum = build_output_forecaster(spectrum_params, total, "MiniT2I")
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     style_multi_active = style_refs is not None and len(style_refs) > 1
@@ -407,6 +406,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             t0 = ts[i]
             t1 = ts[i + 1]
             t = t0.expand(1).to(x.dtype)
+            t_val = timestep_scalars[i]
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(j)
             if spectrum_skip:
                 pred_x0 = spectrum.forecast(j)
@@ -417,14 +417,14 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                 # not affect single-ref behavior at all.
                 pred_x0 = _predict_x0_style_step_multi(
                     _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                    style_refs, style_combine_mode, j, total,
+                    style_refs, style_combine_mode, j, total, t_val,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
             elif style_active and style_cfg.is_step_active(j, total):
                 pred_x0 = _predict_x0_style_step(
                     _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                    style_cfg, style_ref_x0, style_eps_ref, j, total,
+                    style_cfg, style_ref_x0, style_eps_ref, j, total, t_val,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
@@ -432,7 +432,10 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                 # FBCache: hand the net the current step index (mirrors _block_offloader attach).
                 if fbcache is not None and _fb_net is not None:
                     _fb_net._fbcache_step = j
-                pred_x0 = _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval)
+                pred_x0 = _predict_x0_cfg(
+                    transformer, x, t, text, mask, neg_text, neg_mask,
+                    cfg_scale, cfg_interval, t_val,
+                )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
             v = (pred_x0 - x) / (1.0 - t0).clamp_min(0.05)

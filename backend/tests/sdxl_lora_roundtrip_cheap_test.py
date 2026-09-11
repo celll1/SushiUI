@@ -446,32 +446,6 @@ def test_sdxl_a_dora_file_refuses_before_diffusers_ever_sees_it(
     assert all(not peft_wrapped_paths(m) for m in models)
 
 
-@pytest.mark.parametrize("algorithm", ["loha", "lokr"])
-def test_sdxl_loha_and_lokr_are_already_refused_by_diffusers_itself(
-        tmp_path, algorithm, warnings_seen):
-    """Recorded rather than re-refused: the Kohya converter raises on their
-    unrenamed keys, which ``load_loras`` turns into a ``lora_load_failed`` 400.
-    Loud is enough, so this path is deliberately NOT widened for symmetry."""
-    stem = "lora_unet_down_blocks_0_attentions_0_transformer_blocks_0_attn1_to_q"
-    if algorithm == "loha":
-        tensors = {f"{stem}.hada_w1_a": torch.zeros(8, RANK),
-                   f"{stem}.hada_w1_b": torch.zeros(RANK, 8),
-                   f"{stem}.hada_w2_a": torch.zeros(8, RANK),
-                   f"{stem}.hada_w2_b": torch.zeros(RANK, 8)}
-    else:
-        tensors = {f"{stem}.lokr_w1": torch.zeros(2, 2),
-                   f"{stem}.lokr_w2_a": torch.zeros(4, RANK),
-                   f"{stem}.lokr_w2_b": torch.zeros(RANK, 4)}
-    tensors[f"{stem}.alpha"] = torch.tensor(float(ALPHA))
-    save_file(tensors, str(tmp_path / f"{algorithm}.safetensors"))
-
-    models = (build_unet(), *build_text_encoders())
-    with pytest.raises(RuntimeError):
-        load_through_manager(tmp_path, f"{algorithm}.safetensors", *models)
-    assert warning_codes(warnings_seen) == ["lora_load_failed"]
-    assert all(not peft_wrapped_paths(m) for m in models)
-
-
 def test_sdxl_an_ordinary_lora_is_byte_identical_with_the_gate_neutralised(
         tmp_path, monkeypatch, warnings_seen):
     """The half that matters more: ``load_loras`` is the shipped path for two

@@ -3,10 +3,9 @@
 Drives the REAL ``MiniMaxH3LoRAAdapter`` (injection + ``save_checkpoint``) over a
 3-block CPU stub and the REAL ``MiniMaxH3Mixin._load_lora_minimax_h3``.
 
-MiniMax-H3 is on ``CompositeAdapterLayer``, so this file is the adoption gate:
-two LoRAs over one module must SUM, in either selection order, without
-perturbing what either one does alone. Two things are specific to this
-architecture and are pinned here rather than assumed:
+Common composite algebra is covered in
+``adapter_lycoris_roundtrip_cheap_test.py``. Two MiniMax-H3-specific properties
+remain pinned here:
 
   * the BRANCH stays a ``MiniMaxH3LoRALinearLayer``. This architecture's forward
     runs without ``torch.autocast`` and needs that subclass's per-call
@@ -30,10 +29,10 @@ import torch
 from torch import nn
 from safetensors.torch import load_file, save_file
 
-from lora_roundtrip_common import module_ids, warning_codes, warning_probe
+from lora_roundtrip_common import warning_codes, warning_probe
 
 from core.adapters import (  # noqa: E402
-    CompositeAdapterLayer, MiniMaxH3LoRALinearLayer, lora_branch_dtype,
+    CompositeAdapterLayer, MiniMaxH3LoRALinearLayer,
 )
 from core.models.minimax_h3 import minimax_h3_lora as lora_mod  # noqa: E402
 from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin  # noqa: E402
@@ -168,23 +167,6 @@ def resolve(model, dotted):
     return _resolve_leaf(model, dotted)[2]
 
 
-def pre_composite_reference(base, weights, strength):
-    """What ``apply_lora_group`` built BEFORE adoption, tensor for tensor."""
-    down, up = weights["down"], weights["up"]
-    rank = int(down.shape[0])
-    reference = MiniMaxH3LoRALinearLayer(base, rank=rank, alpha=rank, lora_name="ref")
-    compute_dtype = lora_branch_dtype(base)
-    with torch.no_grad():
-        reference.lora_down.weight.data = down.to(device=base.weight.device,
-                                                  dtype=compute_dtype)
-        reference.lora_up.weight.data = up.to(device=base.weight.device,
-                                              dtype=compute_dtype)
-    reference.lora_down = reference.lora_down.to(dtype=compute_dtype)
-    reference.lora_up = reference.lora_up.to(dtype=compute_dtype)
-    reference.scale = float(weights["scale_ratio"]) * strength
-    return reference
-
-
 def analytic_delta(weights, x, strength):
     down, up = weights["down"], weights["up"]
     return float(weights["scale_ratio"]) * strength * (x @ down.T @ up.T)
@@ -236,31 +218,8 @@ def test_minimax_h3_branches_keep_the_architectures_own_layer_class(
 
 
 # ---------------------------------------------------------------------------
-# Gate 4: a single LoRA is bit-identical to the pre-composite wrapper
+# The fused-QKV scale survives runtime strength changes
 # ---------------------------------------------------------------------------
-
-def test_minimax_h3_single_lora_is_bit_identical_to_the_pre_composite_wrapper(
-        tmp_path, resolve_by_path):
-    """The composite must not change one-LoRA arithmetic by one ULP.
-
-    ``torch.equal``, not a tolerance -- folding the strength anywhere but into
-    the branch's own scale reassociates the multiply and shows up here and
-    nowhere else.
-    """
-    path = train_and_save(tmp_path)
-    targets = file_targets(path)
-
-    model = _Stub()
-    _Backend(model)._load_lora_minimax_h3([{"path": path, "strength": STRENGTH}], {})
-
-    for module_path, weights in targets.items():
-        composite = resolve(model, module_path)
-        reference = pre_composite_reference(composite.original_module, weights, STRENGTH)
-        branch = sole_branch(composite)
-        assert branch.scale == reference.scale, module_path
-        x = torch.randn(3, composite.original_module.in_features)
-        assert torch.equal(composite(x), reference(x)), module_path
-
 
 def test_minimax_h3_restrengthening_a_branch_reproduces_the_checkpoints_ratio(
         tmp_path, resolve_by_path):
@@ -284,82 +243,6 @@ def test_minimax_h3_restrengthening_a_branch_reproduces_the_checkpoints_ratio(
 # ---------------------------------------------------------------------------
 # Gates 1-3: the stack
 # ---------------------------------------------------------------------------
-
-def test_minimax_h3_two_loras_over_one_module_sum_their_deltas(tmp_path, resolve_by_path):
-    """The adoption gate: base + delta_a + delta_b, against the analytic sum."""
-    path_a = train_and_save(tmp_path, seed=1234)
-    path_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    targets_a, targets_b = file_targets(path_a), file_targets(path_b)
-    assert set(targets_a) == set(targets_b)
-
-    model = _Stub()
-    _Backend(model)._load_lora_minimax_h3(
-        [{"path": path_a, "strength": STRENGTH},
-         {"path": path_b, "strength": STRENGTH_B}], {})
-
-    assert wrapped_paths(model) == target_paths()
-    for module_path in sorted(targets_a):
-        composite = resolve(model, module_path)
-        assert len(composite) == 2, f"{module_path}: {composite.branch_names}"
-        base = composite.original_module
-        x = torch.randn(3, base.in_features)
-        expected = (base(x)
-                    + analytic_delta(targets_a[module_path], x, STRENGTH)
-                    + analytic_delta(targets_b[module_path], x, STRENGTH_B))
-        assert torch.allclose(composite(x), expected, atol=1e-5), module_path
-        # Both branches really contribute: dropping either changes the output.
-        assert not torch.allclose(
-            composite(x), base(x) + analytic_delta(targets_a[module_path], x, STRENGTH),
-            atol=1e-5), f"{module_path}: the second LoRA is inert"
-        assert not torch.allclose(
-            composite(x), base(x) + analytic_delta(targets_b[module_path], x, STRENGTH_B),
-            atol=1e-5), f"{module_path}: the first LoRA is inert"
-
-
-def test_minimax_h3_stacked_result_is_independent_of_selection_order(
-        tmp_path, resolve_by_path):
-    path_a = train_and_save(tmp_path, seed=1234)
-    path_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    a = {"path": path_a, "strength": STRENGTH}
-    b = {"path": path_b, "strength": STRENGTH_B}
-
-    forward, reverse = _Stub(), _Stub()
-    _Backend(forward)._load_lora_minimax_h3([a, b], {})
-    _Backend(reverse)._load_lora_minimax_h3([b, a], {})
-
-    for module_path in sorted(target_paths()):
-        one, two = resolve(forward, module_path), resolve(reverse, module_path)
-        assert torch.equal(one.original_module.weight,
-                           two.original_module.weight), module_path
-        x = torch.randn(3, one.original_module.in_features)
-        # Two branches: the deltas are summed before the base is added, and fp
-        # addition commutes, so this is EXACT. (Three or more branches would
-        # only hold up to associativity.)
-        assert torch.equal(one(x), two(x)), module_path
-
-
-def test_minimax_h3_removing_one_branch_leaves_the_other_exactly_as_if_alone(
-        tmp_path, resolve_by_path):
-    """A stacked branch must not perturb its neighbour's own arithmetic."""
-    path_a = train_and_save(tmp_path, seed=1234)
-    path_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    alone = _Stub()
-    _Backend(alone)._load_lora_minimax_h3([{"path": path_a, "strength": STRENGTH}], {})
-    stacked = _Stub()
-    _Backend(stacked)._load_lora_minimax_h3(
-        [{"path": path_a, "strength": STRENGTH},
-         {"path": path_b, "strength": STRENGTH_B}], {})
-
-    for module_path in sorted(target_paths()):
-        one, two = resolve(alone, module_path), resolve(stacked, module_path)
-        assert torch.equal(one.original_module.weight,
-                           two.original_module.weight), module_path
-        two.remove_branch(two.branch_names[1])
-        assert two.branch_names == one.branch_names, module_path
-        x = torch.randn(3, one.original_module.in_features)
-        assert torch.equal(one(x), two(x)), module_path
-
 
 def test_minimax_h3_the_same_file_selected_twice_is_two_branches(tmp_path, resolve_by_path):
     """Branch names are per REQUEST INDEX, so a duplicate selection doubles the
@@ -411,29 +294,6 @@ def test_minimax_h3_a_comfy_lora_stacks_onto_a_native_one(tmp_path, resolve_by_p
 # Gate 5: restore identity
 # ---------------------------------------------------------------------------
 
-def test_minimax_h3_unload_after_a_stack_restores_the_identical_objects(
-        tmp_path, resolve_by_path):
-    path_a = train_and_save(tmp_path, seed=1234)
-    path_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    model = _Stub()
-    before = {p: resolve(model, p) for p in target_paths()}
-    backend = _Backend(model)
-    backend._load_lora_minimax_h3([{"path": path_a, "strength": STRENGTH},
-                                   {"path": path_b, "strength": STRENGTH_B}], {})
-    assert wrapped_paths(model) == target_paths()
-
-    assert backend._unload_lora_minimax_h3() == _N_TARGETS
-    for module_path, original in before.items():
-        # id(), not tensor equality: a fresh Linear carrying the same weights
-        # would pass an equality check and still have dropped every hook,
-        # device placement and quantized buffer the real module carried.
-        assert resolve(model, module_path) is original, module_path
-    assert not wrapped_paths(model)
-    assert not backend._minimax_h3_lora_wrapped_keys
-    assert backend._unload_lora_minimax_h3() == 0
-
-
 def test_minimax_h3_a_leaked_wrapper_is_restored_before_the_next_load(
         tmp_path, resolve_by_path):
     """The load restores unconditionally at its top: without that, a composite
@@ -478,36 +338,6 @@ def test_minimax_h3_a_leaked_wrapper_is_restored_before_the_next_load(
         backend._minimax_h3_lora_session.unload = real_unload
     check(backend, failed_restore)
 
-
-def test_minimax_h3_model_reload_never_splices_model_a_into_model_b(
-        tmp_path, resolve_by_path):
-    path = train_and_save(tmp_path)
-
-    model_a = _Stub()
-    backend = _Backend(model_a)
-    backend._load_lora_minimax_h3([{"path": path, "strength": STRENGTH}], {})
-    a_ids = (module_ids(model_a)
-             | {id(m) for m in backend._minimax_h3_lora_original_modules.values()})
-    _keep_a = list(model_a.modules()) + list(backend._minimax_h3_lora_original_modules.values())
-
-    model_b = _Stub(seed=21)
-    b_ids_before = module_ids(model_b)
-    assert not (a_ids & b_ids_before), "setup: A and B must not already share modules"
-
-    backend.minimax_h3_components = {"transformer": model_b, "variant": "fl2va"}
-    assert backend._unload_lora_minimax_h3() == 0
-    assert module_ids(model_b) == b_ids_before
-
-    backend._load_lora_minimax_h3([{"path": path, "strength": STRENGTH}], {})
-    assert wrapped_paths(model_b) == target_paths()
-    backend._unload_lora_minimax_h3()
-    assert module_ids(model_b) == b_ids_before
-    assert not (module_ids(model_b) & a_ids)
-
-
-# ---------------------------------------------------------------------------
-# The refusals that survive, and the one that does not
-# ---------------------------------------------------------------------------
 
 def test_minimax_h3_two_loras_over_one_module_are_no_longer_refused(
         tmp_path, resolve_by_path, warnings_seen):

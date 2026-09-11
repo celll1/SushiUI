@@ -9,14 +9,10 @@ prompt encode) -> ``_load_lora_minit2i``.
 The ordering is the point: a TE LoRA applied after the encode wraps the right
 modules, reports a non-zero count, and changes nothing.
 
-MiniT2I is on ``CompositeAdapterLayer``, so this file is also the adoption
-gate: two LoRAs over one module must SUM, in either selection order, without
-perturbing what either one does alone -- and PER COMPONENT, since the
-transformer and the text encoder hold separate composites and share one
-bookkeeping map pair partitioned by the ``te::`` namespace. The stacking
-refusal these tests used to assert is gone; the numerics that replace it are
-checked with ``torch.equal``, because a tolerance would hide exactly the
-reassociation a "simplification" of the strength folding would introduce.
+Common composite algebra is covered in
+``adapter_lycoris_roundtrip_cheap_test.py``. This file retains MiniT2I's
+two-phase transformer/text-encoder ordering, rollback, lifetime, and refusal
+seams.
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minit2i_lora_roundtrip_cheap_test.py -v
@@ -177,11 +173,6 @@ def lora_layer_paths(model):
             if isinstance(module, LoRALinearLayer)}
 
 
-def sole_branch(composite):
-    assert len(composite) == 1, f"expected one branch, got {composite.branch_names}"
-    return composite.get_branch(composite.branch_names[0])
-
-
 def train_and_save(tmp_path, name="minit2i.safetensors", seed=1234, with_te=True):
     """Returns (path, transformer target paths, text-encoder target paths)."""
     transformer = _Transformer()
@@ -206,24 +197,6 @@ def file_branch_tensors(path, target, to_stem):
     saved = load_file(path)
     stem = to_stem(target)
     return saved[f"{stem}.lora_down.weight"], saved[f"{stem}.lora_up.weight"]
-
-
-def pre_composite_reference(base, down, up, strength, alpha=None):
-    """What the loader built BEFORE adoption, tensor for tensor."""
-    alpha_value = float(ALPHA if alpha is None else alpha)
-    rank = int(down.shape[0])
-    reference = LoRALinearLayer(base, rank=rank, alpha=alpha_value, lora_name="ref")
-    compute_dtype = (base.weight.dtype if base.weight.dtype.is_floating_point
-                     else torch.float32)
-    with torch.no_grad():
-        reference.lora_down.weight.data = down.to(device=base.weight.device,
-                                                  dtype=compute_dtype)
-        reference.lora_up.weight.data = up.to(device=base.weight.device,
-                                              dtype=compute_dtype)
-    reference.lora_down = reference.lora_down.to(dtype=compute_dtype)
-    reference.lora_up = reference.lora_up.to(dtype=compute_dtype)
-    reference.scale = (alpha_value / rank) * strength
-    return reference
 
 
 def load_both_halves(backend, configs):
@@ -296,125 +269,6 @@ def test_minit2i_wrapped_forward_is_base_plus_scaled_branch(tmp_path):
     assert checked == len(tf_paths) + len(te_paths)
 
 
-def test_minit2i_single_lora_is_bit_identical_to_the_pre_composite_wrapper(tmp_path):
-    """The composite must not change one-LoRA arithmetic by one ULP.
-
-    Asserted for BOTH components separately: they are wrapped by two calls at
-    two different points in the generation, so a folding mistake could land on
-    one of them alone. ``torch.equal``, not a tolerance -- folding the strength
-    anywhere but into the branch's own scale reassociates the multiply and shows
-    up here and nowhere else.
-    """
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(transformer, text_encoder),
-                     [{"path": path, "strength": STRENGTH}])
-
-    checked = 0
-    for model, paths, to_stem in ((transformer, tf_paths, flatten_to_key),
-                                  (text_encoder, te_paths, flatten_to_te_key)):
-        modules = dict(model.named_modules())
-        for target in sorted(paths):
-            composite = modules[target]
-            base = composite.original_module
-            down, up = file_branch_tensors(path, target, to_stem)
-            reference = pre_composite_reference(base, down, up, STRENGTH)
-
-            assert sole_branch(composite).scale == reference.scale, target
-            x = torch.randn(3, D)
-            assert torch.equal(composite(x), reference(x)), target
-            checked += 1
-    assert checked == len(tf_paths) + len(te_paths)
-
-
-def test_minit2i_two_loras_over_one_module_sum_their_deltas(tmp_path):
-    """The adoption gate: base + delta_a + delta_b, against the analytic sum."""
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, tf_b, te_b = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    assert (tf_b, te_b) == (tf_paths, te_paths), "both files must cover the same targets"
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(transformer, text_encoder),
-                     [{"path": path_a, "strength": STRENGTH},
-                      {"path": path_b, "strength": STRENGTH_B}])
-
-    for model, paths, to_stem in ((transformer, tf_paths, flatten_to_key),
-                                  (text_encoder, te_paths, flatten_to_te_key)):
-        assert wrapped_paths(model) == paths
-        modules = dict(model.named_modules())
-        for target in sorted(paths):
-            composite = modules[target]
-            assert len(composite) == 2, f"{target}: {composite.branch_names}"
-            base_module = composite.original_module
-            down_a, up_a = file_branch_tensors(path_a, target, to_stem)
-            down_b, up_b = file_branch_tensors(path_b, target, to_stem)
-            x = torch.randn(3, D)
-            expected = (base_module(x)
-                        + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH)
-                        + lora_delta(down_b, up_b, x, ALPHA, RANK, STRENGTH_B))
-            assert torch.allclose(composite(x), expected, atol=1e-5), target
-            # Both branches really contribute: dropping either changes the output.
-            assert not torch.allclose(
-                composite(x),
-                base_module(x) + lora_delta(down_a, up_a, x, ALPHA, RANK, STRENGTH),
-                atol=1e-5), f"{target}: the second LoRA is inert"
-
-
-def test_minit2i_stacked_result_is_independent_of_selection_order(tmp_path):
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tb, _eb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-    a = {"path": path_a, "strength": STRENGTH}
-    b = {"path": path_b, "strength": STRENGTH_B}
-
-    fwd_tf, fwd_te = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(fwd_tf, fwd_te), [a, b])
-    rev_tf, rev_te = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(rev_tf, rev_te), [b, a])
-
-    for one_model, two_model, paths in ((fwd_tf, rev_tf, tf_paths),
-                                        (fwd_te, rev_te, te_paths)):
-        one_modules = dict(one_model.named_modules())
-        two_modules = dict(two_model.named_modules())
-        for target in sorted(paths):
-            one, two = one_modules[target], two_modules[target]
-            assert torch.equal(one.original_module.weight,
-                               two.original_module.weight), target
-            x = torch.randn(3, D)
-            # Two branches: the deltas are summed before the base is added, and
-            # fp addition commutes, so this is EXACT. (Three or more branches
-            # would only hold up to associativity.)
-            assert torch.equal(one(x), two(x)), target
-
-
-def test_minit2i_removing_one_branch_leaves_the_other_exactly_as_if_alone(tmp_path):
-    """A stacked branch must not perturb its neighbour's own arithmetic."""
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tb, _eb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    alone_tf, alone_te = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(alone_tf, alone_te),
-                     [{"path": path_a, "strength": STRENGTH}])
-
-    stacked_tf, stacked_te = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(stacked_tf, stacked_te),
-                     [{"path": path_a, "strength": STRENGTH},
-                      {"path": path_b, "strength": STRENGTH_B}])
-
-    for alone, stacked, paths in ((alone_tf, stacked_tf, tf_paths),
-                                  (alone_te, stacked_te, te_paths)):
-        alone_modules = dict(alone.named_modules())
-        stacked_modules = dict(stacked.named_modules())
-        for target in sorted(paths):
-            one, two = alone_modules[target], stacked_modules[target]
-            assert torch.equal(one.original_module.weight,
-                               two.original_module.weight), target
-            two.remove_branch(two.branch_names[1])
-            assert two.branch_names == one.branch_names, target
-            x = torch.randn(3, D)
-            assert torch.equal(one(x), two(x)), target
-
-
 def test_minit2i_a_stack_on_the_transformer_leaves_the_text_encoder_untouched(tmp_path):
     """Per-component lifecycle: the two components hold SEPARATE composites, and
     the shared bookkeeping is partitioned by the ``te::`` namespace.
@@ -445,78 +299,6 @@ def test_minit2i_a_stack_on_the_transformer_leaves_the_text_encoder_untouched(tm
         assert len(two) == 1, f"{target}: {two.branch_names}"
         x = torch.randn(3, D)
         assert torch.equal(one(x), two(x)), target
-
-
-def test_minit2i_alpha_beats_the_rank_fallback(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(transformer, text_encoder),
-                     [{"path": path, "strength": STRENGTH}])
-    scales = {round(sole_branch(m).scale, 9) for model in (transformer, text_encoder)
-              for m in model.modules() if isinstance(m, CompositeAdapterLayer)}
-    assert scales == {round(SCALE * STRENGTH, 9)}
-
-    md_only = tmp_path / "md_alpha.safetensors"
-    save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
-              str(md_only), metadata={"model_type": "minit2i", "lora_alpha": str(4 * RANK)})
-    transformer2, text_encoder2 = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(transformer2, text_encoder2),
-                     [{"path": str(md_only), "strength": 1.0}])
-    assert {round(sole_branch(m).scale, 9) for model in (transformer2, text_encoder2)
-            for m in model.modules() if isinstance(m, CompositeAdapterLayer)} == {4.0}
-
-    none = tmp_path / "no_alpha.safetensors"
-    save_file({k: v for k, v in load_file(path).items() if not k.endswith(".alpha")},
-              str(none), metadata={"model_type": "minit2i"})
-    transformer3, text_encoder3 = _Transformer(), _TextEncoder()
-    load_both_halves(_Backend(transformer3, text_encoder3),
-                     [{"path": str(none), "strength": 1.0}])
-    assert {round(sole_branch(m).scale, 9) for model in (transformer3, text_encoder3)
-            for m in model.modules() if isinstance(m, CompositeAdapterLayer)} == {1.0}
-
-
-def test_minit2i_unload_restores_the_identical_objects_and_is_idempotent(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    before = {**dict(transformer.named_modules()),
-              **{f"te::{n}": m for n, m in text_encoder.named_modules()}}
-    backend = _Backend(transformer, text_encoder)
-    _n_te, total = load_both_halves(backend, [{"path": path, "strength": 1.0}])
-
-    assert backend._unload_lora_minit2i() == total
-    for target in tf_paths:
-        assert dict(transformer.named_modules())[target] is before[target], target
-    for target in te_paths:
-        assert dict(text_encoder.named_modules())[target] is before[f"te::{target}"], target
-    assert not wrapped_paths(transformer) and not wrapped_paths(text_encoder)
-    assert backend._unload_lora_minit2i() == 0
-
-
-def test_minit2i_unload_after_a_stack_restores_the_identical_objects(tmp_path):
-    path_a, tf_paths, te_paths = train_and_save(tmp_path, seed=1234)
-    path_b, _tb, _eb = train_and_save(tmp_path, name="second.safetensors", seed=4321)
-
-    transformer, text_encoder = _Transformer(), _TextEncoder()
-    before = {**dict(transformer.named_modules()),
-              **{f"te::{n}": m for n, m in text_encoder.named_modules()}}
-    backend = _Backend(transformer, text_encoder)
-    load_both_halves(backend, [{"path": path_a, "strength": STRENGTH},
-                               {"path": path_b, "strength": STRENGTH_B}])
-    assert wrapped_paths(transformer) == tf_paths
-    assert wrapped_paths(text_encoder) == te_paths
-
-    assert backend._unload_lora_minit2i() == len(tf_paths) + len(te_paths)
-    for target in tf_paths:
-        assert dict(transformer.named_modules())[target] is before[target], target
-    for target in te_paths:
-        assert dict(text_encoder.named_modules())[target] is before[f"te::{target}"], target
-    assert not wrapped_paths(transformer) and not wrapped_paths(text_encoder)
-    assert not backend._minit2i_lora_keys
-
-    assert backend._unload_lora_minit2i() == 0
-    for target in tf_paths:
-        assert dict(transformer.named_modules())[target] is before[target], target
 
 
 def test_minit2i_a_leaked_wrapper_is_restored_before_the_next_load(tmp_path):
@@ -647,37 +429,6 @@ def test_minit2i_unmatched_module_is_refused_before_either_pass(tmp_path,
     assert not wrapped_paths(transformer)
     assert not wrapped_paths(text_encoder)
     assert "lora_partial" in warning_codes(warnings_seen)
-
-
-def test_minit2i_model_reload_never_splices_model_a_into_model_b(tmp_path):
-    path, tf_paths, te_paths = train_and_save(tmp_path)
-    second, _t2, _e2 = train_and_save(tmp_path, name="second.safetensors", seed=99)
-
-    tf_a, te_a = _Transformer(), _TextEncoder()
-    backend = _Backend(tf_a, te_a)
-    load_both_halves(backend, [{"path": path, "strength": 1.0},
-                               {"path": second, "strength": STRENGTH_B}])
-    a_ids = (module_ids(tf_a) | module_ids(te_a)
-             | {id(m) for m in backend._minit2i_lora_orig.values()})
-
-    tf_b, te_b = _Transformer(seed=8), _TextEncoder(seed=9)
-    b_ids_before = module_ids(tf_b) | module_ids(te_b)
-    assert not (a_ids & b_ids_before), "setup: A and B must not already share modules"
-
-    backend.minit2i_components = {"transformer": tf_b, "text_encoder": te_b}
-    assert backend._minit2i_lora_keys, "the stale set must be truthy to be a test"
-    assert backend._unload_lora_minit2i() == 0
-    assert module_ids(tf_b) | module_ids(te_b) == b_ids_before
-    assert not ((module_ids(tf_b) | module_ids(te_b)) & a_ids)
-
-    b_before = {**dict(tf_b.named_modules()),
-                **{f"te::{n}": m for n, m in te_b.named_modules()}}
-    _n_te, total = load_both_halves(backend, [{"path": path, "strength": 1.0}])
-    assert total == len(tf_paths) + len(te_paths)
-    assert backend._unload_lora_minit2i() == total
-    for target in tf_paths:
-        assert dict(tf_b.named_modules())[target] is b_before[target], target
-    assert not ((module_ids(tf_b) | module_ids(te_b)) & a_ids)
 
 
 def test_minit2i_reloading_only_the_text_encoder_keeps_the_transformer_half(tmp_path):

@@ -91,6 +91,7 @@ machine-local working material.
 
 | Document | Purpose |
 |---|---|
+| `docs/audits/DOCUMENTATION_HYGIENE_2026-09.md` | Documentation publication-boundary audit and accepted cleanup plan. |
 | `docs/legal/THIRD_PARTY_PROVENANCE.md` | Vendored/adapted source ledger and redistribution gate. |
 | `.claude/agents/arch-maintainer.md` | Architecture-maintenance subagent definition. |
 | `.claude/agents/api-tester.md` | API-test subagent definition. |

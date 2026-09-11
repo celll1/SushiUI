@@ -587,7 +587,7 @@ def test_the_training_preset_round_trips_every_adapter_algebra_field():
     saved. `weight_decompose` really did fall through that hole.
 
     The preset payload is derived (getRequestData() minus PRESET_EXCLUDED_KEYS)
-    and gated for every parameter by training_preset_payload_test.py; this pins
+    and gated for every parameter by the frontend request builder; this pins
     the one group where a gap is a wrong-adapter bug rather than a lost
     preference. It asserts the EXACT method gate rather than the mere presence
     of the key, because the gate decides whether the value reaches the preset:

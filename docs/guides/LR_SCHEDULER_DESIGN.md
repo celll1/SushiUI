@@ -720,7 +720,6 @@ LLRD はグループの**基準 LR の係数**であり、スケジュール（�
 8. `TrainingConfig.tsx` DEFAULT_PARAMS + UI（条件表示は `lr_scheduler` 値で）
 9. **`trainingParams.ts:32-33` の `PARAM_KEYS`**（漏れると編集保存のたびに既定へ戻る）
 10. `PRESET_EXCLUDED_KEYS`（`:189-199`）には入れない（LR キーはプリセットが運ぶ）
-11. ガードテスト `backend/tests/training_preset_payload_test.py`
 
 ### 12.4 語彙（D18）
 

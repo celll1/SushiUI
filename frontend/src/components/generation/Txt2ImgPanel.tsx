@@ -2110,6 +2110,9 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         // honor either (phase 1 loads BF16/FP16 only; arch_capabilities warns).
         unet_quantization: params.unet_quantization,
         quantized_gemm_mode: params.quantized_gemm_mode,
+        blocks_to_swap: params.enable_block_swap ? params.blocks_to_swap : 0,
+        use_pinned_memory: params.use_pinned_memory,
+        block_swap_ring_size: params.block_swap_ring_size,
       };
       addToQueue({
         type: "txt2aud",

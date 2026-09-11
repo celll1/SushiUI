@@ -1416,6 +1416,9 @@ export interface Txt2AudParams {
   // loader swaps in Int8Linear/Fp8Linear for a weight-only quantized DiT, and
   // unet_quantization "int8" produces the same classes at runtime.
   quantized_gemm_mode?: QuantizedGemmMode;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
+  block_swap_ring_size?: number;
 }
 
 // aud2aud (cover): multipart -- prompt/lyrics/cover params + an uploaded
@@ -1479,6 +1482,9 @@ export interface Aud2AudParams {
   // loader swaps in Int8Linear/Fp8Linear for a weight-only quantized DiT, and
   // unet_quantization "int8" produces the same classes at runtime.
   quantized_gemm_mode?: QuantizedGemmMode;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
+  block_swap_ring_size?: number;
 }
 
 // Audio temporal outpaint (ACE-Step 1.5 extend): place a (optionally
@@ -1525,6 +1531,9 @@ export interface OutpaintAudioParams {
   // `guidance_scale` above; same field/semantics as
   // Txt2AudParams.flow_guidance_scale). `undefined` resolves to 1.7.
   flow_guidance_scale?: number;
+  blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
+  block_swap_ring_size?: number;
   // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
   // this architecture (a one-time in-place conversion of the audio DiT -- NOT
   // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
@@ -3686,6 +3695,9 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
         ? params.unet_quantization
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
+    blocks_to_swap: params.blocks_to_swap ?? 0,
+    use_pinned_memory: params.use_pinned_memory ?? false,
+    block_swap_ring_size: params.block_swap_ring_size ?? 2,
   };
 
   const response = await postGenerationRequest("/generate/txt2aud", body);
@@ -3744,6 +3756,9 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("use_pinned_memory", String(params.use_pinned_memory ?? false));
+  formData.append("block_swap_ring_size", String(params.block_swap_ring_size ?? 2));
 
   const response = await postGenerationRequest("/generate/aud2aud", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -4563,6 +4578,9 @@ export const generateOutpaintAudio = async (params: OutpaintAudioParams, referen
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("use_pinned_memory", String(params.use_pinned_memory ?? false));
+  formData.append("block_swap_ring_size", String(params.block_swap_ring_size ?? 2));
 
   const response = await postGenerationRequest("/generate/outpaint/audio", formData, {
     headers: { "Content-Type": "multipart/form-data" },

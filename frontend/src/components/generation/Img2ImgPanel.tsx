@@ -2655,6 +2655,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
         // params or the UI value is silently dropped.
         unet_quantization: params.unet_quantization,
         quantized_gemm_mode: params.quantized_gemm_mode,
+        blocks_to_swap: params.enable_block_swap ? params.blocks_to_swap : 0,
+        use_pinned_memory: params.use_pinned_memory,
+        block_swap_ring_size: params.block_swap_ring_size,
       };
       addToQueue({
         type: "aud2aud",

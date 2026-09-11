@@ -153,9 +153,8 @@ class HostStateOffTest(unittest.TestCase):
     def test_base_trainer_default_is_off(self):
         # Read off __init__ rather than constructing a trainer: what is pinned
         # is that the key is read from train_config and defaults to off, so
-        # nothing turns it on by accident. It now ALSO has an API/UI surface
-        # (optimizer_diagnostic_switch_config_test.py records why), and the YAML
-        # key stays the channel underneath it.
+        # nothing turns it on by accident. It also has an API/UI surface; YAML
+        # remains the channel underneath it.
         source = Path(BACKEND_ROOT / "core" / "training" / "base_trainer.py").read_text(
             encoding="utf-8"
         )

@@ -408,8 +408,7 @@ class EditPathWiringTest(unittest.TestCase):
         """255a3ab5's decision stands for the census.
 
         Its sibling ``optimizer_state_host_resident`` took the full parameter
-        chain instead (optimizer_diagnostic_switch_config_test.py records why),
-        so it is deliberately not in this list.
+        chain, so it is deliberately not in this list.
         """
         from api.param_defaults import TRAINING_DEFAULTS
         from api.routes import TrainingRunCreateRequest

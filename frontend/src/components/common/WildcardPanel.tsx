@@ -29,7 +29,6 @@ export default function WildcardPanel({ onInsert }: WildcardPanelProps) {
   const [editingEntryContent, setEditingEntryContent] = useState("");
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
 
-  // Load all groups
   useEffect(() => {
     loadGroups();
   }, []);

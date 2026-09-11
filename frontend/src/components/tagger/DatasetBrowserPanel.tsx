@@ -75,7 +75,6 @@ export default function DatasetBrowserPanel({
     onResize: setGridWidthPx,
   });
 
-  // --- helpers ---
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());

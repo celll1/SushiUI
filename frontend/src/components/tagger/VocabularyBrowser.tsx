@@ -21,7 +21,6 @@ const CATEGORY_ORDER = [
 
 type FilterMode = "partial" | "wildcard" | "regex";
 
-// Convert fnmatch-style wildcard to RegExp
 function wildcardToRegex(pattern: string): RegExp | null {
   try {
     const escaped = pattern
@@ -73,7 +72,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
   const [regexError, setRegexError] = useState<string | null>(null);
 
-  // Fetch vocabulary when opened
   useEffect(() => {
     if (!open || vocab) return;
     if (!runId && !useLoadedModel) return;
@@ -88,7 +86,6 @@ export default function VocabularyBrowser({ runId, useLoadedModel, defaultOpen =
       .finally(() => setLoading(false));
   }, [open, runId, useLoadedModel]);
 
-  // Build flat tag list
   const allTags = useMemo<Array<{ tag: string; category: string }>>(() => {
     if (!vocab) return [];
     const tagToCategory = vocab.tag_to_category || {};

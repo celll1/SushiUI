@@ -58,7 +58,6 @@ export default function BulkTagEditorPanel({
 
   const tagSuggestionsCtx = useTagSuggestions();
 
-  // Fetch tags for all selected images in parallel
   useEffect(() => {
     setLoading(true);
     setBulkAdd(new Map());
@@ -103,7 +102,6 @@ export default function BulkTagEditorPanel({
       .catch(() => {});
   }, [tagCoverage.counts.size]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Group tags by category
   const groupedTags = useMemo(() => {
     const groups = new Map<CategoryName, string[]>(CATEGORY_ORDER.map((c) => [c, []]));
     for (const tag of tagCoverage.counts.keys()) {
@@ -156,7 +154,6 @@ export default function BulkTagEditorPanel({
 
     for (const img of selectedImages) {
       const current = loadedTags.get(img.rel_path) ?? [];
-      // Apply: remove first, then add
       let next = current.filter((t) => !bulkRemove.has(t));
       for (const t of bulkAdd.keys()) {
         if (!next.includes(t)) next = [...next, t];
@@ -164,7 +161,6 @@ export default function BulkTagEditorPanel({
       try {
         await browserSaveTags(img.rel_path, next);
         updates.push({ relPath: img.rel_path, hasTags: next.length > 0 });
-        // Update loadedTags in-place for coverage recalc
         setLoadedTags((prev) => new Map([...prev, [img.rel_path, next]]));
       } catch {
         errorCount++;

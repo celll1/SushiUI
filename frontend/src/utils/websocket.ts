@@ -127,7 +127,6 @@ class ProgressClient {
       return;
     }
 
-    // Close any existing connection first
     if (this.eventSource) {
       console.log('[SSE] Closing existing connection');
       this.eventSource.close();

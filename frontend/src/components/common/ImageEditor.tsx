@@ -77,7 +77,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
   { imageUrl, onSave, onClose, onSaveMask, mode = "edit", initialMaskUrl, auxiliaryControls },
   ref,
 ) {
-  // Set global flag when Image Editor is mounted
   useEffect(() => {
     document.body.dataset.imageEditorOpen = "true";
     return () => {
@@ -108,7 +107,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       { id: "base", name: "Base", visible: true, opacity: 1, editable: false, deletable: false },
       { id: "layer1", name: "Layer 1", visible: true, opacity: 1, editable: true, deletable: false }, // First layer not deletable
     ];
-    // Add inpaint mask layer in inpaint mode
     if (mode === "inpaint") {
       baseLayers.push({ id: "mask", name: "Inpaint Mask", visible: true, opacity: 1, editable: true, deletable: false });
     }
@@ -169,22 +167,18 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
   const needsComposeRef = useRef(false); // Flag to batch composeLayers calls
   const lastCursorUpdateRef = useRef(0); // Timestamp of last cursor color update
 
-  // Calculate color from RGB with alpha
   const getColorFromRGB = () => {
     return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
   };
 
-  // Calculate color from RGB with full opacity (for drawing preview)
   const getColorFromRGBOpaque = () => {
     return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 1)`;
   };
 
-  // Calculate color from HSL and lightness with alpha
   const getColorFromHSL = () => {
     return `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`;
   };
 
-  // Convert RGB to HSL
   const rgbToHsl = (r: number, g: number, b: number) => {
     r /= 255;
     g /= 255;
@@ -212,7 +206,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     };
   };
 
-  // Update RGB when HSL changes
   useEffect(() => {
     if (updatingSourceRef.current === 'rgb') {
       updatingSourceRef.current = null;
@@ -221,7 +214,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
     updatingSourceRef.current = 'hsl';
     const color = getColorFromHSL();
-    // Convert HSL to RGB for display
     const temp = document.createElement('div');
     temp.style.color = color;
     document.body.appendChild(temp);
@@ -234,7 +226,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     }
   }, [hue, saturation, lightness]);
 
-  // Update HSL when RGB changes
   useEffect(() => {
     if (updatingSourceRef.current === 'hsl') {
       updatingSourceRef.current = null;
@@ -466,7 +457,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-      // Set canvas sizes
       const width = img.width;
       const height = img.height;
       baseLayer.width = width;
@@ -481,7 +471,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         baseCtx.drawImage(img, 0, 0);
       }
 
-      // Initialize editable layer canvases
       const editableLayers = layers.filter(l => l.editable);
       for (const layer of editableLayers) {
         let canvas = layerCanvasRefs.current.get(layer.id);
@@ -519,7 +508,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       // Composite layers
       composeLayers();
 
-      // Calculate initial zoom to fit canvas in container
       const containerWidth = container.clientWidth;
       const containerHeight = container.clientHeight;
       const scaleX = containerWidth / width;
@@ -535,7 +523,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         y: (containerHeight - displayHeight) / 2,
       });
 
-      // Save initial state for active layer
       const activeLayer = layers.find(l => l.id === activeLayerId);
       if (activeLayer && activeLayer.editable) {
         const canvas = layerCanvasRefs.current.get(activeLayer.id);
@@ -672,7 +659,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const centerX = (composite.width * zoom) / 2;
     const centerY = (composite.height * zoom) / 2;
 
-    // Apply inverse rotation
     const rad = (-rotation * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
@@ -683,7 +669,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const rotatedX = relX * cos - relY * sin + centerX;
     const rotatedY = relX * sin + relY * cos + centerY;
 
-    // Convert to canvas coordinates
     const x = rotatedX / zoom;
     const y = rotatedY / zoom;
 
@@ -710,7 +695,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     // Apply blur only within circular area matching brush size
     for (let py = 0; py < height; py++) {
       for (let px = 0; px < width; px++) {
-        // Calculate distance from center
         const worldX = startX + px;
         const worldY = startY + py;
         const dist = Math.sqrt((worldX - centerX) ** 2 + (worldY - centerY) ** 2);
@@ -757,7 +741,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     ctx.putImageData(imageData, startX, startY);
   };
 
-  // Apply alpha to completed stroke
   const applyAlphaToStroke = (ctx: CanvasRenderingContext2D) => {
     if (!strokeSnapshotRef.current || alpha >= 1) {
       // No need to apply alpha if it's 100%
@@ -776,7 +759,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
     // Apply alpha only to the new pixels (difference from snapshot)
     for (let i = 0; i < current.length; i += 4) {
-      // Check if pixel changed from snapshot
       if (current[i] !== snapshot[i] ||
           current[i+1] !== snapshot[i+1] ||
           current[i+2] !== snapshot[i+2] ||
@@ -801,7 +783,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const width = canvas.width;
     const height = canvas.height;
 
-    // Parse fill color to rgba values
     const temp = document.createElement('canvas');
     temp.width = 1;
     temp.height = 1;
@@ -816,18 +797,15 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const fillB = fillData[2];
     const fillA = fillData[3];
 
-    // Get image data
     const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
 
-    // Get target color at start position
     const startIdx = (startY * width + startX) * 4;
     const targetR = data[startIdx];
     const targetG = data[startIdx + 1];
     const targetB = data[startIdx + 2];
     const targetA = data[startIdx + 3];
 
-    // Calculate color distance
     const colorDistance = (r: number, g: number, b: number, a: number): number => {
       const dr = r - targetR;
       const dg = g - targetG;
@@ -857,15 +835,12 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
       const [x, y] = pos;
 
-      // Check bounds
       if (x < 0 || x >= width || y < 0 || y >= height) continue;
 
-      // Check if already visited
       const key = y * width + x;
       if (visited.has(key)) continue;
       visited.add(key);
 
-      // Check if color matches
       if (!colorMatch(x, y)) continue;
 
       // Fill pixel
@@ -875,7 +850,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       data[idx + 2] = fillB;
       data[idx + 3] = fillA;
 
-      // Add neighbors to stack (8-directional for better gap filling)
       stack.push([x + 1, y]);     // right
       stack.push([x - 1, y]);     // left
       stack.push([x, y + 1]);     // down
@@ -897,8 +871,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     return oneMinusT * oneMinusT * p0 + 2 * oneMinusT * t * p1 + t * t * p2;
   };
 
-  // Calculate smooth curve point using midpoint-based quadratic Bezier
-  // Returns {x, y} for a point at parameter t along the curve
   const getSmoothCurvePoint = (
     prevX: number | null,
     prevY: number | null,
@@ -916,7 +888,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       };
     }
 
-    // Start from midpoint between prev and from
     const startX = (prevX + fromX) / 2;
     const startY = (prevY + fromY) / 2;
     // End at midpoint between from and to
@@ -959,7 +930,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
         // If we have previous point, use quadratic Bezier curve
         if (prevX !== null && prevY !== null) {
-          // Start from midpoint between prev and from
           const startX = (prevX + fromX) / 2;
           const startY = (prevY + fromY) / 2;
           // End at midpoint between from and to
@@ -1124,14 +1094,12 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
           const layerCanvas = getLayerCanvas(activeLayerId);
           const layerCtx = layerCanvas?.getContext("2d");
           if (layerCanvas && layerCtx) {
-            // Check if stroke has been drawing for a meaningful time (>100ms) or distance
             const now = Date.now();
             const drawingDuration = strokeStartRef.current ? now - strokeStartRef.current.time : 0;
             const drawingDistance = strokeDistanceRef.current;
 
             // Only save to history if stroke is significant (>100ms or >5px)
             if (drawingDuration > 100 || drawingDistance > 5) {
-              // Apply alpha for pen tool if needed
               if (tool === "pen") {
                 applyAlphaToStroke(layerCtx);
                 composeLayers();
@@ -1160,7 +1128,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const compositeCtx = composite?.getContext("2d");
     if (!composite || !compositeCtx) return;
 
-    // Get active editable layer
     const activeLayer = layers.find(l => l.id === activeLayerId);
     if (!activeLayer || !activeLayer.editable || !activeLayer.visible) return;
 
@@ -1211,7 +1178,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
     setIsDrawing(true);
 
-    // Initialize stroke tracking
     const now = Date.now();
     strokeStartRef.current = { x: point.x, y: point.y, time: now };
     lastPointRef.current = { x: point.x, y: point.y, time: now };
@@ -1227,7 +1193,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       // Save layer state before starting stroke
       strokeSnapshotRef.current = layerCtx.getImageData(0, 0, layerCanvas.width, layerCanvas.height);
 
-      // Initialize stroke path
       strokePathRef.current = [{
         x: point.x,
         y: point.y,
@@ -1275,7 +1240,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const newPanX = e.clientX - panStart.x;
       const newPanY = e.clientY - panStart.y;
 
-      // Apply panning bounds - keep at least part of canvas visible
       const composite = compositeCanvasRef.current;
       if (composite) {
         const canvasWidth = composite.width * zoom;
@@ -1311,7 +1275,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
     const point = getCanvasPoint(e);
 
-    // Store screen coordinates for cursor preview (relative to container)
     const containerRect = container.getBoundingClientRect();
     setCursorPos({
       x: e.clientX - containerRect.left,
@@ -1332,16 +1295,13 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
             const x = Math.round(point.x);
             const y = Math.round(point.y);
 
-            // Check bounds
             if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
               const imageData = ctx.getImageData(x, y, 1, 1);
               const r = imageData.data[0];
               const g = imageData.data[1];
               const b = imageData.data[2];
 
-              // Calculate relative luminance (ITU-R BT.709)
               const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-              // Use white border on dark backgrounds, black border on light backgrounds
               setCursorBorderColor(luminance < 128 ? "white" : "black");
             }
           } catch (e) {
@@ -1356,7 +1316,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const lastPoint = lastPointRef.current;
       if (!lastPoint) return;
 
-      // Get active layer
       const activeLayer = layers.find(l => l.id === activeLayerId);
       if (!activeLayer || !activeLayer.editable) return;
 
@@ -1367,17 +1326,14 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const now = Date.now();
       const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
-      // Check for low pressure to trigger exit tapering (for pen tablets)
       const isLowPressure = e.pressure > 0 && e.pressure < 0.15;
 
-      // Calculate velocity (pixels per millisecond)
       const dx = point.x - lastPoint.x;
       const dy = point.y - lastPoint.y;
       const distance = Math.hypot(dx, dy);
       const timeDelta = now - lastPoint.time;
       const velocity = timeDelta > 0 ? distance / timeDelta : 0;
 
-      // Update stroke distance
       strokeDistanceRef.current += distance;
 
       if (tool === "pen") {
@@ -1395,7 +1351,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         // Calculate current pressure (reduce during tapering)
         const currentPressure = isTapering ? Math.max(0.1, pressure * (1 - taperProgressRef.current)) : pressure;
 
-        // Store point in stroke path
         strokePathRef.current.push({
           x: point.x,
           y: point.y,
@@ -1448,14 +1403,12 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         }
       }
 
-      // Update points for tracking direction
       prevPointRef.current = lastPoint;
       lastPointRef.current = { x: point.x, y: point.y, time: now };
     }
   };
 
   const handlePointerUp = (e?: React.PointerEvent<HTMLCanvasElement>) => {
-    // Remove pointer from active set
     if (e) {
       activePointersRef.current.delete(e.pointerId);
     }
@@ -1470,7 +1423,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     }
 
     if (isDrawing) {
-      // Get active layer
       const activeLayer = layers.find(l => l.id === activeLayerId);
       if (!activeLayer || !activeLayer.editable) return;
 
@@ -1515,7 +1467,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
   };
 
   const handlePointerLeave = (e?: React.PointerEvent<HTMLCanvasElement>) => {
-    // Remove pointer from active set
     if (e) {
       activePointersRef.current.delete(e.pointerId);
     }
@@ -1534,7 +1485,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         const layerCanvas = getLayerCanvas(activeLayerId);
         const layerCtx = layerCanvas?.getContext("2d");
         if (layerCanvas && layerCtx) {
-          // Apply alpha to completed stroke
           applyAlphaToStroke(layerCtx);
           setIsTapering(false);
           saveToHistory(activeLayerId, layerCtx);
@@ -1600,7 +1550,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       return;
     }
 
-    // Find the smallest available layer number (1, 2, or 3)
     const existingNumbers = layers
       .filter(l => l.id.startsWith('layer'))
       .map(l => parseInt(l.id.replace('layer', '')))
@@ -1631,10 +1580,8 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
 
     if (!confirm(`Delete ${layer.name}?`)) return;
 
-    // Remove layer from state
     setLayers(prev => prev.filter(l => l.id !== layerId));
 
-    // Remove canvas from map
     layerCanvasRefs.current.delete(layerId);
 
     // If deleting active layer, switch to another editable layer
@@ -1657,7 +1604,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const delta = e.deltaY > 0 ? (1 - zoomWheelSpeed) : (1 + zoomWheelSpeed);
       const newZoom = Math.max(0.1, Math.min(10, zoom * delta));
 
-      // Get cursor position relative to container
       const rect = container.getBoundingClientRect();
       const cursorX = e.clientX - rect.left;
       const cursorY = e.clientY - rect.top;
@@ -1688,7 +1634,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const container = containerRef.current;
     if (!composite || !container) return;
 
-    // Reset zoom to fit
     const containerWidth = container.clientWidth;
     const containerHeight = container.clientHeight;
     const scaleX = containerWidth / composite.width;
@@ -1696,7 +1641,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     const initialZoom = Math.min(scaleX, scaleY, 1);
     setZoom(initialZoom);
 
-    // Reset rotation
     setRotation(0);
 
     // Center the image
@@ -1777,7 +1721,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const newCenterX = (touch1.clientX + touch2.clientX) / 2;
       const newCenterY = (touch1.clientY + touch2.clientY) / 2;
 
-      // Calculate distance change ratio for pinch zoom
       const distanceChangeRatio = distance / pinchDistance;
 
       // If distance change is significant (> 5% change), it's a pinch zoom
@@ -1811,7 +1754,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         const newPanX = panOffset.x + deltaX;
         const newPanY = panOffset.y + deltaY;
 
-        // Apply panning bounds - keep at least part of canvas visible
         const composite = compositeCanvasRef.current;
         const container = containerRef.current;
         if (composite && container) {
@@ -1880,7 +1822,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     }
   }, []);
 
-  // Handle fullscreen change events
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -1892,10 +1833,8 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     };
   }, []);
 
-  // Handle orientation change
   useEffect(() => {
     const handleOrientationChange = () => {
-      // Reset view to fit new orientation
       setTimeout(() => {
         resetViewTransform();
       }, 100); // Small delay to ensure layout has updated
@@ -1916,7 +1855,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
     window.addEventListener("keyup", handleKeyUp);
     if (container) {
       container.addEventListener("wheel", handleWheel, { passive: false });
-      // Add touch event listeners to container to catch touches outside canvas
       container.addEventListener("touchstart", handleTouchStart, { passive: false });
       container.addEventListener("touchmove", handleTouchMove, { passive: false });
       container.addEventListener("touchend", handleTouchEnd);
@@ -2675,7 +2613,6 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
                           if (canvas && ctx) {
                             ctx.clearRect(0, 0, canvas.width, canvas.height);
                             composeLayers();
-                            // Save to history
                             saveToHistory(layer.id, ctx);
                           }
                         }

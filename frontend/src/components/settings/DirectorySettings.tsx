@@ -20,7 +20,6 @@ export default function DirectorySettings() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Load settings on mount
   useEffect(() => {
     loadSettings();
   }, []);
@@ -34,7 +33,6 @@ export default function DirectorySettings() {
 
       const data: DirectorySettingsData = await response.json();
 
-      // Convert arrays to newline-separated strings
       setModelDirs((data.model_dirs || []).join("\n"));
       setLoraDirs((data.lora_dirs || []).join("\n"));
       setControlnetDirs((data.controlnet_dirs || []).join("\n"));

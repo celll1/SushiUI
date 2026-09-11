@@ -95,7 +95,6 @@ export default function InputWithTagSuggestions({
         });
         setShowSuggestions(suggestions.length > 0);
 
-        // Update position
         if (inputRef.current) {
           const rect = inputRef.current.getBoundingClientRect();
           const suggestionsHeight = 256;
@@ -125,7 +124,6 @@ export default function InputWithTagSuggestions({
     const tag = tagToAdd || value.trim();
     if (!tag) return;
 
-    // Find category from suggestions
     const suggestion = tagSuggestions.find(s => s.tag === tag);
     const category = suggestion?.category || "general";
 
@@ -174,8 +172,6 @@ export default function InputWithTagSuggestions({
   };
 
   const handleBlur = () => {
-    // Close suggestions when input loses focus
-    // Use setTimeout to allow click events on suggestions to fire first
     setTimeout(() => {
       setShowSuggestions(false);
     }, 200);

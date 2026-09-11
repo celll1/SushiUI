@@ -173,7 +173,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
   useEffect(() => {
     mountedRef.current = true;
-    // Load persisted images on startup (like Img2ImgPanel does)
     if (!imagesLoaded) {
       void loadPersistedImages().finally(() => {
         if (mountedRef.current) setImagesLoaded(true);
@@ -212,7 +211,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     value.forEach((v, idx) => {
       console.log(`[ControlNetSelector] value[${idx}] from parent:`, v.model_path);
     });
-    // Detect model types for all loaded ControlNets
     value.forEach((cn, index) => {
       if (cn.model_path && !modelTypes.has(index)) {
         detectModelType(cn.model_path, index);
@@ -225,7 +223,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     if (!imagesLoaded) return;
 
     value.forEach((cn, index) => {
-      // Check if we have image, preprocessor enabled, but no preprocessed preview yet
       if (
         imagePreviews.has(index) &&
         cn.enable_preprocessor &&
@@ -257,13 +254,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       const imageRefs: { [index: number]: string } = JSON.parse(stored);
       const newPreviews = new Map<number, string>();
 
-      // Load all temp images in parallel
       await Promise.all(
         Object.entries(imageRefs).map(async ([index, ref]) => {
           try {
             const imageData = await loadTempImage(ref);
             if (imageData) {
-              // Store full data URL in previews for display
               newPreviews.set(parseInt(index), imageData);
             }
           } catch (error) {
@@ -272,7 +267,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         })
       );
 
-      // Update image previews state
       if (newPreviews.size > 0) {
         if (!mountedRef.current) return;
         setImagePreviews(newPreviews);
@@ -292,11 +286,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
       const imageRef = await saveTempImage(fullImageData);
 
-      // Update stored references
       const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
       const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
 
-      // Delete old reference if exists
       if (imageRefs[index]) {
         await deleteTempImageRef(imageRefs[index]);
       }
@@ -438,7 +430,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     // Delete the image reference before removing the ControlNet
     await deleteImageReference(index);
 
-    // Remove from local preview state
     setImagePreviews(prev => {
       const newMap = new Map(prev);
       newMap.delete(index);
@@ -519,7 +510,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     setIsPreprocessing(prev => new Map(prev).set(index, true));
 
     try {
-      // Convert data URL to Blob
       const response = await fetch(imageData);
       const blob = await response.blob();
 
@@ -530,7 +520,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
         blurStrength: blurStrength.get(index) ?? 1.5
       });
 
-      // Store preprocessed preview
       setPreprocessedPreviews(prev => new Map(prev).set(index, result.preprocessed_image));
       console.log(`[ControlNetSelector] Preprocessing complete for index ${index}`);
     } catch (error) {
@@ -544,13 +533,10 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     const reader = new FileReader();
     reader.onload = async (e) => {
       const fullDataUrl = e.target?.result as string;
-      // Remove data:image/...;base64, prefix for storage
       const base64Data = fullDataUrl.split(",")[1];
 
-      // Update local preview state (with full data URL for display)
       setImagePreviews(prev => new Map(prev).set(index, fullDataUrl));
 
-      // Save to temp storage
       await saveImageReference(index, base64Data);
 
       // Notify parent without image_base64 to prevent localStorage overflow
@@ -592,7 +578,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const handleEditImage = (index: number) => {
-    // Check if image exists in local previews
     if (imagePreviews.has(index)) {
       setEditingImageIndex(index);
     }
@@ -602,10 +587,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     if (editingImageIndex !== null) {
       const base64Data = editedImageUrl.split(",")[1];
 
-      // Update local preview state
       setImagePreviews(prev => new Map(prev).set(editingImageIndex, editedImageUrl));
 
-      // Save to temp storage
       await saveImageReference(editingImageIndex, base64Data);
 
       // Notify parent without image_base64
@@ -680,7 +663,6 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                     const newModelPath = e.target.value;
                     updateControlNet(index, { model_path: newModelPath });
 
-                    // Reset showPreprocessed when model changes
                     setShowPreprocessed(prev => {
                       const newMap = new Map(prev);
                       newMap.set(index, false);
@@ -821,18 +803,15 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                             }
                           }
 
-                          // Save to temp storage
                           const imageRef = await saveTempImage(imageDataUrl);
                           console.log("[ControlNetSelector] Saved to tempStorage:", imageRef);
 
-                          // Update local preview
                           setImagePreviews(prev => {
                             const newMap = new Map(prev);
                             newMap.set(index, imageDataUrl);
                             return newMap;
                           });
 
-                          // Save reference to localStorage
                           const stored = localStorage.getItem(IMAGE_STORAGE_KEY);
                           const imageRefs: { [index: number]: string } = stored ? JSON.parse(stored) : {};
                           if (imageRefs[index]) {
@@ -1013,14 +992,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                             return newMap;
                           });
 
-                          // Reset show preprocessed flag
                           setShowPreprocessed(prev => {
                             const newMap = new Map(prev);
                             newMap.set(index, false);
                             return newMap;
                           });
 
-                          // Update config
                           await updateControlNet(index, { preprocessor: newPreprocessor });
 
                           // Re-preprocess with new preprocessor if not "none"

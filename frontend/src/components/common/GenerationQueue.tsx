@@ -22,7 +22,6 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
   const [elapsedTime, setElapsedTime] = useState(0);
   const [lastGenInfo, setLastGenInfo] = useState<LastGenerationInfo | null>(null);
 
-  // Update elapsed time every 100ms when generating
   useEffect(() => {
     if (!currentItem || currentItem.status !== "generating" || !currentItem.startTime) {
       setElapsedTime(0);
@@ -37,7 +36,6 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
     return () => clearInterval(interval);
   }, [currentItem]);
 
-  // Save last generation info when generation completes
   useEffect(() => {
     if (currentItem && currentItem.status === "generating") {
       // Store current generation info while it's running

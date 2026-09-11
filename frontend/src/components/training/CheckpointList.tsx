@@ -17,7 +17,6 @@ export default function CheckpointList({ checkpoints, runId }: CheckpointListPro
     );
   }
 
-  // Extract checkpoint info from path
   const getCheckpointInfo = (path: string) => {
     const filename = path.split(/[/\\]/).pop() || path;
     const stepMatch = filename.match(/step-(\d+)/i);
@@ -35,7 +34,6 @@ export default function CheckpointList({ checkpoints, runId }: CheckpointListPro
     const filename = checkpointPath.split(/[/\\]/).pop();
     const downloadUrl = `/api/training/runs/${runId}/checkpoints/${encodeURIComponent(filename || "")}`;
 
-    // Open download link
     window.open(downloadUrl, "_blank");
   };
 

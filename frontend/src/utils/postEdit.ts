@@ -217,7 +217,6 @@ export function flattenChroma(imageData: ImageData, strength: number): void {
     i22[i] = co22 * invDet;
   }
 
-  // Process one chroma channel through the guided filter, blend in place.
   const processChannel = (p: Float32Array) => {
     const mp = boxFilter(p, W, H, radius);
     const Rp = new Float32Array(N);

@@ -58,7 +58,6 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
   const debounceRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyRef   = useRef<HTMLDivElement>(null);
 
-  // Fetch status on mount + restore last-used paths from history
   useEffect(() => {
     getSigLIP2Status()
       .then((s) => { setStatus(s); onStatusChange(s); })
@@ -77,7 +76,6 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
     }
   }, []);
 
-  // Close history dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) {
@@ -160,7 +158,6 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
       const s = await getSigLIP2Status();
       setStatus(s);
       onStatusChange(s);
-      // Save successful load to history
       const entry: LoaderHistory = { checkpointPath, visionEncoderPath, vocabPath, modelType, loraRank, loraAlpha };
       saveHistory(entry);
       setHistory(loadHistory());

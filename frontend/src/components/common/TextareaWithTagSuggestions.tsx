@@ -95,7 +95,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   // Expose the internal textarea ref to parent components
   useImperativeHandle(forwardedRef, () => internalTextareaRef.current as HTMLTextAreaElement);
 
-  // Get textarea ref from Textarea component
   useEffect(() => {
     if (containerRef.current) {
       const textarea = containerRef.current.querySelector("textarea");
@@ -121,12 +120,10 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }
   }, [suggestions, selectedIndex]);
 
-  // Calculate cursor position in pixels using a hidden div mirror
   const getCursorCoordinates = (textarea: HTMLTextAreaElement, position: number) => {
     const style = window.getComputedStyle(textarea);
     const rect = textarea.getBoundingClientRect();
 
-    // Create a mirror div to measure text position with wrapping
     const mirror = document.createElement('div');
     const mirrorStyle = mirror.style;
 
@@ -141,7 +138,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       mirrorStyle.setProperty(prop, style.getPropertyValue(prop));
     });
 
-    // Set mirror-specific styles
     mirrorStyle.position = 'absolute';
     mirrorStyle.visibility = 'hidden';
     mirrorStyle.whiteSpace = 'pre-wrap'; // Important: match textarea wrapping
@@ -152,27 +148,21 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     document.body.appendChild(mirror);
 
-    // Set text content up to cursor position
     const textBeforeCursor = textarea.value.substring(0, position);
     mirror.textContent = textBeforeCursor;
 
-    // Create a span at the cursor position to measure
     const cursorSpan = document.createElement('span');
     cursorSpan.textContent = '|'; // Placeholder character
     mirror.appendChild(cursorSpan);
 
-    // Get the position of the cursor span
     const cursorRect = cursorSpan.getBoundingClientRect();
     const mirrorRect = mirror.getBoundingClientRect();
 
-    // Calculate relative position within mirror
     const relativeTop = cursorRect.top - mirrorRect.top;
     const relativeLeft = cursorRect.left - mirrorRect.left;
 
-    // Clean up
     document.body.removeChild(mirror);
 
-    // Calculate absolute position (account for scroll and padding)
     const paddingTop = parseFloat(style.paddingTop) || 0;
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
     const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5;
@@ -207,7 +197,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       const results = await searchTags(currentTag, 20, filterMode);
       console.log('[TagSuggestions] Found results:', results.length);
 
-      // Check if the tag is still valid (user might have continued typing)
       const textarea = internalTextareaRef.current;
       if (textarea && textarea.tagName === "TEXTAREA") {
         const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
@@ -227,7 +216,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
             setSuggestions(results);
             setSelectedIndex(results.length > 0 ? 0 : -1);
 
-            // Calculate position for suggestions dropdown near cursor
             if (results.length > 0) {
               const coords = getCursorCoordinates(textarea, cursorPos);
               setSuggestionsPosition({
@@ -284,7 +272,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     setHistory((prevHistory) => {
       // Remove any entries after current index (when user makes new change after undo)
       const newHistory = prevHistory.slice(0, historyIndex + 1);
-      // Add new entry
       newHistory.push({ text, cursorPos });
       // Limit to 50 entries
       if (newHistory.length > 50) {
@@ -308,7 +295,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     const textarea = internalTextareaRef.current;
     if (textarea && textarea.tagName === "TEXTAREA") {
-      // Create synthetic event for onChange
       const syntheticEvent = {
         target: { ...textarea, value: prevState.text },
         currentTarget: { ...textarea, value: prevState.text },
@@ -316,7 +302,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
       onChange(syntheticEvent);
 
-      // Set cursor position
       setTimeout(() => {
         textarea.selectionStart = prevState.cursorPos;
         textarea.selectionEnd = prevState.cursorPos;
@@ -337,7 +322,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
     const textarea = internalTextareaRef.current;
     if (textarea && textarea.tagName === "TEXTAREA") {
-      // Create synthetic event for onChange
       const syntheticEvent = {
         target: { ...textarea, value: nextState.text },
         currentTarget: { ...textarea, value: nextState.text },
@@ -345,7 +329,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
       onChange(syntheticEvent);
 
-      // Set cursor position
       setTimeout(() => {
         textarea.selectionStart = nextState.cursorPos;
         textarea.selectionEnd = nextState.cursorPos;
@@ -356,7 +339,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     setHistoryIndex((prev) => prev + 1);
   };
 
-  // Handle text change
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     onChange(e);
     if (!tagFeaturesEnabled) {
@@ -407,7 +389,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     // Try searching with the new filter
     const results = await searchTags(currentTag, 20, newFilterMode);
 
-    // Check if tag hasn't changed
     const latestTag = getCurrentTag(textarea.value, textarea.selectionStart);
     if (latestTag !== currentTag) {
       console.log('[TagSuggestions] Tag changed during search, aborting');
@@ -431,9 +412,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     }
   };
 
-  // Handle key down for navigation and shortcuts
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Call external onKeyDown if provided
     if (externalOnKeyDown) {
       externalOnKeyDown(e);
       // If external handler prevented default or stopped propagation, respect that
@@ -503,7 +482,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
         isTagOperationRef.current = true;
         lastValueRef.current = result.text;
 
-        // Create synthetic event for onChange
         const syntheticEvent = {
           target: { ...textarea, value: result.text },
           currentTarget: { ...textarea, value: result.text },
@@ -535,7 +513,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
         isTagOperationRef.current = true;
         lastValueRef.current = result.text;
 
-        // Create synthetic event for onChange
         const syntheticEvent = {
           target: { ...textarea, value: result.text },
           currentTarget: { ...textarea, value: result.text },
@@ -589,7 +566,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
 
       const result = deleteTagAtCursor(value, cursorPos);
 
-      // Create synthetic event for onChange
       const syntheticEvent = {
         ...e,
         target: { ...textarea, value: result.text },
@@ -609,7 +585,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       return;
     }
 
-    // Handle suggestions navigation
     if (suggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -631,7 +606,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
           acceptSuggestion(suggestions[selectedIndex].tag);
         }
       } else if (e.key === "Delete") {
-        // Remove selected tag from recent history
         if (selectedIndex >= 0 && selectedIndex < suggestions.length) {
           e.preventDefault();
           const tagToRemove = suggestions[selectedIndex].tag;
@@ -676,10 +650,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
       }
     }
 
-    // Add tag to recent history
     addToRecentTags(tag);
 
-    // Create synthetic event for onChange
     const syntheticEvent = {
       target: { ...textarea, value: result.text },
       currentTarget: { ...textarea, value: result.text },
@@ -700,7 +672,6 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
     setFilterMode('all'); // Reset filter to 'all' when suggestions are hidden
   };
 
-  // Handle blur - clear suggestions when focus is lost
   const handleBlur = () => {
     // Use setTimeout to allow click on suggestion to register before clearing
     setTimeout(() => {

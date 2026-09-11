@@ -807,7 +807,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
 
-    // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
     const savedLength = saved ? saved.length : 0;
     console.log(`[Txt2Img] Loading params from localStorage (${savedLength} chars)`);
@@ -844,7 +843,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
-    // Load preview image
 
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview) {
@@ -872,31 +870,26 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       setGeneratedAudioInfo(savedAudio.info);
     }
 
-    // Load resolution step setting
     const savedResolutionStep = localStorage.getItem('resolution_step');
     if (savedResolutionStep) {
       setResolutionStep(parseInt(savedResolutionStep));
     }
 
-    // Load developer mode
     const savedDeveloperMode = localStorage.getItem('developer_mode');
     if (savedDeveloperMode === 'true') {
       setDeveloperMode(true);
     }
 
-    // Load advanced CFG settings visibility
     const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
     if (savedShowAdvancedCFG === 'true') {
       setShowAdvancedCFG(true);
     }
 
-    // Load attention type from global settings
     const savedAttentionType = readGlobalAttentionType();
     if (savedAttentionType) {
       setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
     }
 
-    // Load custom presets
     const savedAspectRatioPresets = localStorage.getItem('aspect_ratio_presets');
     if (savedAspectRatioPresets) {
       try {
@@ -915,7 +908,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
-    // Load panel visibility settings
     const savedVisibility = localStorage.getItem('txt2img_visibility');
     if (savedVisibility) {
       try {
@@ -925,7 +917,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
-    // Load loop generation config
     const savedLoopGen = localStorage.getItem(LOOP_GENERATION_STORAGE_KEY);
     if (savedLoopGen) {
       try {
@@ -935,7 +926,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
-    // Load reference images (FLUX.2 Image Edit)
     const loadRefImages = async () => {
       const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
       if (savedRefImageRefs) {
@@ -1128,7 +1118,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   }, [isBackendReady]);
 
-  // Reset torch.compile when developer mode is disabled
   useEffect(() => {
     if (!developerMode) {
       setParams(prev => {
@@ -1140,7 +1129,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   }, [developerMode]);
 
-  // Load samplers and schedule types immediately on mount (don't wait for model)
   useEffect(() => {
     loadSamplers();
     loadScheduleTypes();
@@ -1161,7 +1149,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   }, [params, isMounted]);
 
-  // Save preview image to localStorage whenever it changes
   useEffect(() => {
     if (isMounted && generatedImage) {
       saveImagePreview(PREVIEW_KEYS, generatedImage);
@@ -1188,7 +1175,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   }, [generatedAudio, generatedAudioInfo, isMounted]);
 
-  // Save loop generation config to localStorage whenever it changes
   useEffect(() => {
     if (isMounted) {
       localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
@@ -1229,7 +1215,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     // Note: Send image is not applicable for txt2img (no input image)
 
-    // Send prompt if checked
     if (sendPrompt) {
       const txt2imgParams = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
       txt2imgParams.prompt = params.prompt;
@@ -1237,7 +1222,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(txt2imgParams));
     }
 
-    // Send parameters if checked
     if (sendParameters) {
       const txt2imgParams = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
       txt2imgParams.steps = params.steps;
@@ -1260,7 +1244,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       return;
     }
 
-    // Send image if checked
     if (sendImage) {
       try {
         const tempRef = await saveTempImage(generatedImage);
@@ -1277,7 +1260,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     console.log("[Txt2Img] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
     console.log("[Txt2Img] sendToImg2Img - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send prompt and/or parameters
     sendToPanel(sourceParams, "img2img_params", {
       sendPrompt,
       sendParameters,
@@ -1316,7 +1298,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       return;
     }
 
-    // Send image if checked
     if (sendImage) {
       try {
         await sendBase64ImageToInpaint(generatedImage);
@@ -1331,7 +1312,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     console.log("[Txt2Img] sendToInpaint - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
     console.log("[Txt2Img] sendToInpaint - sourceParams.prompt:", sourceParams.prompt);
 
-    // Send prompt and/or parameters
     sendToPanel(sourceParams, "inpaint_params", {
       sendPrompt,
       sendParameters,
@@ -1353,7 +1333,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       return;
     }
 
-    // Send image if checked
     if (sendImage) {
       try {
         await sendBase64ImageToOutpaint(generatedImage);
@@ -1365,7 +1344,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     // Use generated image params if available, otherwise fall back to current UI params
     const sourceParams = generatedImageParams || params;
 
-    // Send prompt and/or parameters
     sendToPanel(sourceParams, "outpaint_params", {
       sendPrompt,
       sendParameters,
@@ -1516,7 +1494,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           const base64Data = event.target.result as string;
           newPreviews.push(base64Data);
 
-          // Save to tempImageStorage
           try {
             const ref = await saveTempImage(base64Data);
             newRefs.push(ref);
@@ -1525,10 +1502,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           }
 
           if (newPreviews.length === newFiles.length) {
-            // Use functional setState to get the latest state
             setRefImagePreviews((prevPreviews) => [...prevPreviews, ...newPreviews]);
 
-            // Update localStorage with refs
             const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
             const existingRefs = savedRefImageRefs ? JSON.parse(savedRefImageRefs) : [];
             const allRefs = [...existingRefs, ...newRefs];
@@ -1540,7 +1515,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       reader.readAsDataURL(file);
     }
 
-    // Use functional setState to get the latest state
     setRefImages((prevFiles) => [...prevFiles, ...newFiles]);
   };
 
@@ -1548,7 +1522,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     setRefImages(refImages.filter((_, i) => i !== index));
     setRefImagePreviews(refImagePreviews.filter((_, i) => i !== index));
 
-    // Remove from localStorage
     const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
     if (savedRefImageRefs) {
       try {
@@ -1594,7 +1567,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           const base64Data = event.target.result as string;
           newPreviews.push(base64Data);
 
-          // Save to tempImageStorage
           try {
             const ref = await saveTempImage(base64Data);
             newRefs.push(ref);
@@ -1603,10 +1575,8 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           }
 
           if (newPreviews.length === imageFiles.length) {
-            // Use functional setState to get the latest state
             setRefImagePreviews((prevPreviews) => [...prevPreviews, ...newPreviews]);
 
-            // Update localStorage with refs
             const savedRefImageRefs = localStorage.getItem(REF_IMAGES_STORAGE_KEY);
             const existingRefs = savedRefImageRefs ? JSON.parse(savedRefImageRefs) : [];
             const allRefs = [...existingRefs, ...newRefs];
@@ -1618,7 +1588,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       reader.readAsDataURL(file);
     }
 
-    // Use functional setState to get the latest state
     setRefImages((prevFiles) => [...prevFiles, ...imageFiles]);
   };
 
@@ -1637,7 +1606,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   };
 
   const handleGenerateTIPO = async () => {
-    // Use params.prompt directly, or selection if user has selected text
     const textarea = promptTextareaRef.current;
     let inputPrompt = params.prompt;
 
@@ -1659,7 +1627,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
 
     setIsGeneratingTIPO(true);
     try {
-      // Build category order and enabled map from settings
       const categoryOrder = tipoSettings.categories.map(c => c.id);
       const enabledCategories: Record<string, boolean> = {};
       tipoSettings.categories.forEach(c => {
@@ -1920,7 +1887,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }),
   }), [developerMode, showAdvancedCFG]);
 
-  // Add generation request to queue
   const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -1978,7 +1944,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       }
     }
 
-    // Prepare TIPO config if use_tipo is enabled
     let tipo_config = undefined;
     if (params.use_tipo) {
       const categoryOrder = tipoSettings.categories.map((c: any) => c.id);
@@ -2001,7 +1966,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       };
     }
 
-    // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
     const hasEnabledLoopSteps = loopGenerationConfig.enabled && loopGenerationConfig.steps.some(s => s.enabled);
     // Main step decode directive: resizeMode is moot for the main step (it has
@@ -2250,8 +2214,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
       return;
     }
 
-    // Add main generation to queue
-    // Debug log for quantization
     if (params.unet_quantization) {
       console.log('[Txt2Img] Adding to queue with quantization:', params.unet_quantization);
     }
@@ -2442,7 +2404,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     for (let i = 0; i < enabledSteps.length; i++) {
       const step = enabledSteps[i];
 
-      // Calculate size based on mode
       let stepWidth: number;
       let stepHeight: number;
 
@@ -2456,7 +2417,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         stepHeight = step.height || mainParams.height;
       }
 
-      // Prepare params for this loop step
       const stepParams: any = {
         prompt: mainParams.prompt,
         negative_prompt: mainParams.negative_prompt,
@@ -2584,19 +2544,15 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
         stepParams.nag_negative_prompt = step.nag_negative_prompt ?? mainParams.nag_negative_prompt;
       }
 
-      // Apply LoRA inheritance
       stepParams.loras = step.useMainLoRAs ? (mainParams.loras || []) : [];
 
-      // Apply reference images inheritance
       if (step.useMainRefImages ?? true) {
         stepParams.ref_images = refImages.length > 0 ? refImages : undefined;
       }
 
-      // Apply ControlNet inheritance
       if (step.useMainControlNets) {
         stepParams.controlnets = mainParams.controlnets || [];
       } else {
-        // Use step's custom ControlNets, but filter out image_base64 for useLoopImage
         console.log(`[Txt2Img] Loop step ${i}: Processing ${step.controlnets?.length || 0} ControlNets`);
         stepParams.controlnets = (step.controlnets || []).map((cn, idx) => {
           console.log(`[Txt2Img] ControlNet ${idx}: model=${cn.model_path}, useLoopImage=${cn.useLoopImage}, has_image=${!!cn.image_base64}`);
@@ -2679,7 +2635,6 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
     }
   }, [queue, currentItem, isGenerating, generateForever, params, chainPause]);
 
-  // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle if Prompt Editor or Image Editor is open

@@ -334,8 +334,6 @@ export function StartupProvider({ children }: StartupProviderProps) {
       if (cancelled) return;
       const { ok, modelInfo: info } = await syncModelInfo();
       if (cancelled) return;
-      // Stop the fast poll once the backend answers AND has a model loaded;
-      // steady state is the slow sync effect below.
       if (ok && info) stopPolling();
     };
 

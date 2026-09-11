@@ -284,7 +284,6 @@ export default function OutpaintPlacementCanvas({
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     registerPointer(e);
   };
-  // --- end two-finger pinch resize ------------------------------------------
 
   const startDrag = (mode: DragMode) => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();

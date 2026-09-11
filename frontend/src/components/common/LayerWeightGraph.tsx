@@ -26,7 +26,6 @@ const LayerWeightGraph: React.FC<LayerWeightGraphProps> = ({
   const MIN_WEIGHT = 0;
   const MAX_WEIGHT = 2;
 
-  // Update canvas width based on container size
   useEffect(() => {
     const updateWidth = () => {
       if (containerRef.current) {

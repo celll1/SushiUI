@@ -23,7 +23,6 @@ export default function Card({
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [isMounted, setIsMounted] = useState(false);
 
-  // Load collapsed state from localStorage
   useEffect(() => {
     setIsMounted(true);
     if (storageKey && typeof window !== "undefined") {
@@ -34,7 +33,6 @@ export default function Card({
     }
   }, [storageKey]);
 
-  // Save collapsed state to localStorage
   useEffect(() => {
     if (isMounted && storageKey && typeof window !== "undefined") {
       localStorage.setItem(storageKey, collapsed.toString());

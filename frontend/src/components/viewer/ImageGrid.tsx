@@ -148,7 +148,6 @@ export default function ImageGrid() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [touchEnd, setTouchEnd] = useState<number | null>(null);
 
-  // Filter states
   const [filterTxt2Img, setFilterTxt2Img] = useState(true);
   const [filterImg2Img, setFilterImg2Img] = useState(true);
   const [filterInpaint, setFilterInpaint] = useState(true);
@@ -190,7 +189,6 @@ export default function ImageGrid() {
     try {
       setLoading(true);
 
-      // Build generation types filter
       const types: string[] = [];
       if (filterTxt2Img) types.push("txt2img");
       if (filterImg2Img) types.push("img2img");
@@ -239,12 +237,10 @@ export default function ImageGrid() {
     }
   }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, filterUpscale, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
-  // Reset to page 1 when filters change, then load images
   useEffect(() => {
     setCurrentPage(1);
   }, [filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, filterUpscale, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
-  // Load images when filters or page change
   useEffect(() => {
     loadImages();
   }, [loadImages]);
@@ -299,7 +295,6 @@ export default function ImageGrid() {
       });
   };
 
-  // Extract unique tags from all prompts for autocomplete - memoized
   const tagSuggestions = useMemo((): string[] => {
     if (!tagSearchInput || tagSearchInput.length < 2) return [];
 
@@ -610,16 +605,13 @@ export default function ImageGrid() {
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)
 
-    // Build params object by merging prompt and parameters
     const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
 
-    // Send prompt if checked
     if (sendPrompt) {
       txt2imgParams.prompt = image.prompt;
       txt2imgParams.negative_prompt = image.negative_prompt;
     }
 
-    // Send parameters if checked
     if (sendParameters) {
       txt2imgParams.steps = image.steps;
       txt2imgParams.cfg_scale = image.cfg_scale;
@@ -635,7 +627,6 @@ export default function ImageGrid() {
       txt2imgParams.width = image.width;
       txt2imgParams.height = image.height;
 
-      // Add Advanced CFG parameters (always load, even if constant)
       if (image.cfg_schedule_type) {
         txt2imgParams.cfg_schedule_type = image.cfg_schedule_type;
       }
@@ -656,7 +647,6 @@ export default function ImageGrid() {
         txt2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
-      // Add NAG parameters
       if (image.nag_enable === 'True') {
         txt2imgParams.nag_enable = true;
         txt2imgParams.nag_scale = parseFloat(image.nag_scale || "5.0");
@@ -692,7 +682,6 @@ export default function ImageGrid() {
         sendAudioToImg2Img(`/outputs/${image.filename}`);
       } else {
         try {
-          // Load image from /outputs/ and save to tempStorage
           const imageUrl = `/outputs/${image.filename}`;
           const response = await fetch(imageUrl);
           const blob = await response.blob();
@@ -719,19 +708,16 @@ export default function ImageGrid() {
       }
     }
 
-    // Build params object by merging prompt and parameters
     const img2imgParams = JSON.parse(localStorage.getItem("img2img_params") || "{}");
     console.log("[ImageGrid] sendToImg2Img - sendPrompt:", sendPrompt, "sendParameters:", sendParameters);
     console.log("[ImageGrid] sendToImg2Img - image.prompt:", image.prompt);
 
-    // Send prompt if checked
     if (sendPrompt) {
       img2imgParams.prompt = image.prompt;
       img2imgParams.negative_prompt = image.negative_prompt;
       console.log("[ImageGrid] sendToImg2Img - Set prompt to:", img2imgParams.prompt);
     }
 
-    // Send parameters if checked
     if (sendParameters) {
       img2imgParams.steps = image.steps;
       img2imgParams.cfg_scale = image.cfg_scale;
@@ -742,7 +728,6 @@ export default function ImageGrid() {
       img2imgParams.height = image.height;
       img2imgParams.denoising_strength = 0.75;
 
-      // Add Advanced CFG parameters (always load, even if constant)
       if (image.cfg_schedule_type) {
         img2imgParams.cfg_schedule_type = image.cfg_schedule_type;
       }
@@ -763,7 +748,6 @@ export default function ImageGrid() {
         img2imgParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
-      // Add NAG parameters
       if (image.nag_enable === 'True') {
         img2imgParams.nag_enable = true;
         img2imgParams.nag_scale = parseFloat(image.nag_scale || "5.0");
@@ -833,16 +817,13 @@ export default function ImageGrid() {
       }
     }
 
-    // Build params object by merging prompt and parameters
     const inpaintParams = JSON.parse(localStorage.getItem("inpaint_params") || "{}");
 
-    // Send prompt if checked
     if (sendPrompt) {
       inpaintParams.prompt = image.prompt;
       inpaintParams.negative_prompt = image.negative_prompt;
     }
 
-    // Send parameters if checked
     if (sendParameters) {
       inpaintParams.steps = image.steps;
       inpaintParams.cfg_scale = image.cfg_scale;
@@ -853,7 +834,6 @@ export default function ImageGrid() {
       inpaintParams.height = image.height;
       inpaintParams.denoising_strength = 0.75;
 
-      // Add Advanced CFG parameters (always load, even if constant)
       if (image.cfg_schedule_type) {
         inpaintParams.cfg_schedule_type = image.cfg_schedule_type;
       }
@@ -874,7 +854,6 @@ export default function ImageGrid() {
         inpaintParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
-      // Add NAG parameters
       if (image.nag_enable === 'True') {
         inpaintParams.nag_enable = true;
         inpaintParams.nag_scale = parseFloat(image.nag_scale || "5.0");
@@ -945,16 +924,13 @@ export default function ImageGrid() {
       }
     }
 
-    // Build params object by merging prompt and parameters
     const outpaintParams = JSON.parse(localStorage.getItem("outpaint_params") || "{}");
 
-    // Send prompt if checked
     if (sendPrompt) {
       outpaintParams.prompt = image.prompt;
       outpaintParams.negative_prompt = image.negative_prompt;
     }
 
-    // Send parameters if checked
     if (sendParameters) {
       outpaintParams.steps = image.steps;
       outpaintParams.cfg_scale = image.cfg_scale;
@@ -962,7 +938,6 @@ export default function ImageGrid() {
       outpaintParams.schedule_type = image.parameters?.schedule_type || "uniform";
       outpaintParams.seed = image.seed;
 
-      // Add Advanced CFG parameters (always load, even if constant)
       if (image.cfg_schedule_type) {
         outpaintParams.cfg_schedule_type = image.cfg_schedule_type;
       }
@@ -983,7 +958,6 @@ export default function ImageGrid() {
         outpaintParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
       }
 
-      // Add NAG parameters
       if (image.nag_enable === 'True') {
         outpaintParams.nag_enable = true;
         outpaintParams.nag_scale = parseFloat(image.nag_scale || "5.0");
@@ -1010,7 +984,6 @@ export default function ImageGrid() {
 
   const sendToUpscale = async (image: GeneratedImage) => {
     try {
-      // Load image from /outputs/ and save to tempStorage
       const imageUrl = `/outputs/${image.filename}`;
       const response = await fetch(imageUrl);
       const blob = await response.blob();
@@ -1063,7 +1036,6 @@ export default function ImageGrid() {
     router.push("/generate?tab=upscale");
   };
 
-  // Send a still image to the img2vid panel as a keyframe.
   const sendToImg2Vid = async (image: GeneratedImage) => {
     try {
       await sendImageToImg2Vid(`/outputs/${image.filename}`);

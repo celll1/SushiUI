@@ -75,14 +75,12 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
         // Ensure WebSocket is connected
         wsClient.connect();
 
-        // Start scanning (this will send progress via WebSocket)
         const scanResult = await scanDataset(newDataset.id);
 
         // Scan complete
         setScanningProgress(100);
         setScanningMessage("Scan complete!");
 
-        // Fetch scan preview to show detected structure
         try {
           const preview = await scanDatasetPreview(newDataset.id);
           setScanPreview(preview);

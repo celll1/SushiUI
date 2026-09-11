@@ -67,12 +67,10 @@ async function buildTagCategoryCache(): Promise<Record<string, string>> {
 
   tagCategoryCache = {};
 
-  // Add special tags
   for (const [tag, category] of Object.entries(SPECIAL_TAGS)) {
     tagCategoryCache[tag] = category;
   }
 
-  // Load tag lists from backend (already cached in tagSuggestions)
   const categories = ["general", "character", "copyright", "artist", "meta", "model"];
 
   for (const category of categories) {
@@ -149,7 +147,6 @@ function shuffleArray<T>(array: T[]): T[] {
  */
 function sortCountTags(tags: string[]): string[] {
   return [...tags].sort((a, b) => {
-    // Extract leading number from tag
     const numA = a.match(/^(\d+)/);
     const numB = b.match(/^(\d+)/);
 
@@ -180,7 +177,6 @@ function reorderTagsByCategory(
   categorizedTags: CategorizedTag[],
   categoryOrder: Array<{ id: string; enabled: boolean; randomize?: boolean }>
 ): string {
-  // Group tags by category
   const tagsByCategory: Record<string, string[]> = {};
 
   for (const { tag, category } of categorizedTags) {

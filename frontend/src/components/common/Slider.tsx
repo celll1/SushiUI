@@ -25,7 +25,6 @@ export default function Slider({
     const delta = e.deltaY < 0 ? step : -step;
     const newValue = Math.max(min, Math.min(max, value + delta));
 
-    // Create synthetic event for onChange
     const syntheticEvent = {
       target: { value: newValue.toString() },
       currentTarget: { value: newValue.toString() }

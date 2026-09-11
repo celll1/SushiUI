@@ -91,7 +91,6 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
 
     const tagsByCategory: Record<string, string[]> = {};
 
-    // Extract tags from TIPO output structure
     for (const [tipoKey, content] of Object.entries(rawOutput)) {
       // Skip non-array fields and special fields
       if (!Array.isArray(content) || tipoKey === 'target' || tipoKey === 'tag' || tipoKey === 'extended') {
@@ -118,7 +117,6 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
       if (enabled && tagsByCategory[id]) {
         let tags = [...tagsByCategory[id]];
 
-        // Apply randomization if enabled
         if (randomize) {
           tags = tags.sort(() => Math.random() - 0.5);
         }
@@ -145,7 +143,6 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
       const processedPrompt = await replaceWildcardsInPrompt(inputPrompt.trim());
       console.log('[TIPO Panel] Wildcard replaced prompt:', processedPrompt);
 
-      // Get category order settings
       const categoryOrder = getCategoryOrder();
       const categoryOrderIds = categoryOrder.map(cat => cat.id);
       const enabledCategories = categoryOrder.reduce((acc, cat) => {
@@ -153,7 +150,6 @@ const TIPOPanel = forwardRef<TIPOPanelRef, TIPOPanelProps>(({ onInsert, onOverwr
         return acc;
       }, {} as Record<string, boolean>);
 
-      // Call TIPO API with wildcard-replaced prompt
       const response = await generateTIPOPrompt({
         input_prompt: processedPrompt,
         model_name: localSettings.model_name,

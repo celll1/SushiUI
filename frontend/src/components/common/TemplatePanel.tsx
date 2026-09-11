@@ -29,7 +29,6 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
   const [editingName, setEditingName] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Load templates and categories
   useEffect(() => {
     loadTemplates();
   }, []);
@@ -41,7 +40,6 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
     setCategories(["All", ...allCategories]);
   };
 
-  // Filter templates by category and search query
   const filteredTemplates = templates.filter(template => {
     // Category filter
     const matchesCategory = selectedCategory === "All" || template.category === selectedCategory;
@@ -60,7 +58,6 @@ export default function TemplatePanel({ currentPrompt, onInsert }: TemplatePanel
       return;
     }
 
-    // Use "Untitled(date-time)" if name is empty
     const templateName = newTemplateName.trim() ||
       `Untitled ${new Date().toLocaleString('ja-JP', {
         year: 'numeric',

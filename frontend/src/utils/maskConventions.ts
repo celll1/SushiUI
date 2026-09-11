@@ -12,9 +12,6 @@
  * because the mask-layer PNG encoding logic itself lives here now.
  */
 
-// ---------------------------------------------------------------------------
-// Mask polarity
-// ---------------------------------------------------------------------------
 
 /**
  * "white_generate": white/opaque mask pixels mark the region to
@@ -64,9 +61,6 @@ export const MASK_OVERLAY_CANVAS_COMPOSITE_OPERATION: GlobalCompositeOperation =
   MASK_OVERLAY_BLEND_MODE;
 export const MASK_OVERLAY_CSS_MIX_BLEND_MODE = MASK_OVERLAY_BLEND_MODE;
 
-// ---------------------------------------------------------------------------
-// Mask-layer PNG encoding
-// ---------------------------------------------------------------------------
 
 /**
  * Encode a mask layer canvas (RGBA, alpha-based drawing) into an opaque
@@ -95,7 +89,6 @@ export function encodeMaskLayerToPng(canvas: HTMLCanvasElement): string | null {
   const tempImageData = tempCtx.createImageData(tempCanvas.width, tempCanvas.height);
   const tempData = tempImageData.data;
 
-  // Convert: alpha channel -> grayscale, where white = area to inpaint
   for (let i = 0; i < maskData.length; i += 4) {
     const a = maskData[i + 3];
     if (a > 0) {
@@ -119,9 +112,6 @@ export function encodeMaskLayerToPng(canvas: HTMLCanvasElement): string | null {
   return tempCanvas.toDataURL("image/png");
 }
 
-// ---------------------------------------------------------------------------
-// Device pixel ratio - deliberately unhandled
-// ---------------------------------------------------------------------------
 
 /**
  * ImageEditor sizes its canvases to the source image's native pixel

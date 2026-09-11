@@ -37,7 +37,6 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
-  // Load saved order from localStorage with migration
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -65,7 +64,6 @@ export default function CategoryOrderPanel({ currentPrompt, onApplyOrder }: Cate
     }
   }, []);
 
-  // Save order to localStorage whenever it changes
   const saveOrder = (newCategories: TagCategory[]) => {
     setCategories(newCategories);
     try {

@@ -47,7 +47,6 @@ export default function TaggerSettingsDialog({ isOpen, onClose, onSave }: Tagger
     modelVersion: "cl_tagger_1_02",
   });
 
-  // Load settings from localStorage
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
@@ -272,7 +271,6 @@ function DualThresholdSlider({
       lastWheelTargetRef.current = null;
     }, 200);
 
-    // Calculate new value (wheel up = increase, down = decrease)
     const delta = e.deltaY < 0 ? 0.05 : -0.05;
 
     if (targetHandle === 'remove') {

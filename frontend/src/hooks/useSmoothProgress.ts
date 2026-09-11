@@ -92,7 +92,6 @@ export function useSmoothProgress(
     }
 
     if (!prev || progress < prev.step) {
-      // Run start, or the counter restarted (batch / loop generation).
       emaRef.current = null;
     } else if (progress > prev.step && prev.step >= 1) {
       // Step 1's window also contains model load and text encoding, so it is

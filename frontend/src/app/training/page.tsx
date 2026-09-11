@@ -52,7 +52,6 @@ function TrainingPageContent() {
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
 
-  // Detect mobile screen size
   useEffect(() => {
     const checkMobile = () => {
       setIsMobile(window.innerWidth < 1024); // lg breakpoint

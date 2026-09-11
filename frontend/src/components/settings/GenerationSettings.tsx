@@ -18,7 +18,6 @@ export default function GenerationSettings() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Load settings on mount
   useEffect(() => {
     loadSettings();
   }, []);

@@ -44,7 +44,6 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   // Tagger settings (shared across batch operations)
   const [taggerSettings, setTaggerSettings] = useState<TaggerSettings | null>(null);
 
-  // Load dataset and compute categories using tagSuggestions
   useEffect(() => {
     const loadDataset = async () => {
       if (!tagSuggestionsContext.isLoaded) {
@@ -62,7 +61,6 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
           // Batch categorize all tags at once (much faster than individual searches)
           const categoryMap = await tagSuggestionsContext.getCategoriesForTags(tags);
 
-          // Convert Map to Record for state
           const categoryRecord: Record<string, string> = {};
           const statsWithCategories: Record<string, { category: string; count: number }> = {};
 
@@ -160,7 +158,6 @@ export default function DatasetViewer({ datasetId }: DatasetViewerProps) {
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
 
-  // Open detail panel on mobile when item is selected
   const handleSelectItemMobile = useCallback((item: DatasetItem) => {
     handleSelectItem(item);
     setMobileDetailOpen(true);

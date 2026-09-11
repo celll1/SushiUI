@@ -15,7 +15,6 @@ import RangeSlider from "../common/RangeSlider";
 import Slider from "../common/Slider";
 
 interface GalleryFilterProps {
-  // Filter states
   filterTxt2Img: boolean;
   setFilterTxt2Img: (value: boolean) => void;
   filterImg2Img: boolean;

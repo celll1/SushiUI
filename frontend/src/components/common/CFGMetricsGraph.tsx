@@ -22,7 +22,6 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Set canvas size with devicePixelRatio for crisp rendering
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * dpr;
@@ -172,7 +171,6 @@ export default function CFGMetricsGraph({ metrics, className = "" }: CFGMetricsG
     const padding = { top: 20, right: 20, bottom: 40, left: 60 };
     const graphWidth = rect.width - padding.left - padding.right;
 
-    // Find closest point
     const useTimestep = metrics[0].sigma === undefined;
     const xValues = metrics.map(m => useTimestep ? m.timestep : m.sigma!);
     const xMin = Math.min(...xValues);

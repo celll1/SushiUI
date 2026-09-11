@@ -6,7 +6,6 @@ import WebSocket from 'ws';
 // through Next.js proxy even when accessed from external networks
 
 export async function GET(request: NextRequest) {
-  // Create a readable stream for SSE
   const encoder = new TextEncoder();
 
   let ws: WebSocket | null = null;
@@ -47,7 +46,6 @@ export async function GET(request: NextRequest) {
 
       ws.on('open', () => {
         console.log('[SSE] Connected to backend WebSocket');
-        // Send initial connection message
         const data = `data: ${JSON.stringify({ type: 'connected' })}\n\n`;
         safeEnqueue(controller, encoder.encode(data));
       });

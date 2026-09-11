@@ -2803,7 +2803,7 @@ def custom_sampling_loop(
             if needs_pred_original else None
         )
         if pred_original_sample is not None:
-            pred_original_sample = pred_original_sample.detach().clone()
+            pred_original_sample = pred_original_sample.detach()
 
         # Reference Guide blending (txt2img)
         if ref_guides:
@@ -3911,7 +3911,7 @@ def custom_img2img_sampling_loop(
             if needs_pred_original else None
         )
         if pred_original_sample is not None:
-            pred_original_sample = pred_original_sample.detach().clone()
+            pred_original_sample = pred_original_sample.detach()
 
         # Reference Guide blending (img2img)
         if ref_guides:
@@ -6376,7 +6376,7 @@ def custom_inpaint_sampling_loop(
             if needs_pred_original else None
         )
         if pred_original_sample is not None:
-            pred_original_sample = pred_original_sample.detach().clone()
+            pred_original_sample = pred_original_sample.detach()
 
         # Reference Guide blending (inpaint) - applied before mask blending
         if ref_guides:

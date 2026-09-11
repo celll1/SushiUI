@@ -25,7 +25,7 @@ What else is checked:
   table refuses ``lr_layer_decay`` for, and every other declared one implements
   it;
 * §12.3's checklist for the two new keys, ``PARAM_KEYS`` included -- the entry
-  ``training_edit_restore_coverage_test.py`` structurally cannot check.
+  source-level restore checks structurally cannot check.
 
 CPU-only and hermetic: no model, no dataset, no GPU.
 """
@@ -852,7 +852,7 @@ def test_the_request_model_declares_it_with_the_shared_default(key):
 @pytest.mark.parametrize("key", sorted(NEW_KEYS))
 def test_the_form_restores_it(key):
     """Missing here, an edit-save silently resets the run to the default --
-    and `training_edit_restore_coverage_test.py` cannot see it, because its
+    and source-level restore checks cannot see it, because their
     idea of "sent" is built from this same list."""
     assert key in _param_keys()
 

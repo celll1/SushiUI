@@ -187,7 +187,7 @@ const PARAM_EXTRA_RESTORE_KEYS: string[] = [
  * YAML, and this list is not the restore list: a key here and NOWHERE else is
  * silently lost on edit (that was rescan_before_training). Everything else in
  * the request is saved; adding an entry is a visible choice, pinned by
- * training_preset_payload_test.py and training_edit_restore_coverage_test.py.
+ * training_preset_payload_test.py.
  *
  * The auxiliary model paths (vision_encoder_path, repa_tagger_model_dir,
  * repa_siglip2_repo, minit2i_flan_t5_path, minit2i_scratch_init_from) are

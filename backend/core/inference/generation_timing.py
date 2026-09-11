@@ -25,7 +25,8 @@ The same singleton carries the generation's PEAK VRAM, for the same reason it
 carries the wall time: it is measured around one generation and belongs in the
 same metadata. ``reset()`` arms it, a backend that resets the CUDA peak counter
 for its own per-phase logging folds the old peak in first
-(``note_peak_vram()``), and ``peak_vram_dict()`` reports the maximum.
+(``note_peak_vram()``), and ``peak_vram_dict()`` reports allocated and reserved
+maxima.
 """
 
 import time
@@ -49,6 +50,7 @@ class GenerationTimer:
     def __init__(self) -> None:
         self._phases: Dict[str, float] = {}
         self._peak_vram_bytes: int = 0
+        self._peak_vram_reserved_bytes: int = 0
         self._peak_armed: bool = False
 
     def reset(self) -> None:
@@ -61,6 +63,7 @@ class GenerationTimer:
         """
         self._phases = {}
         self._peak_vram_bytes = 0
+        self._peak_vram_reserved_bytes = 0
         self._peak_armed = False
         try:
             import torch
@@ -84,17 +87,28 @@ class GenerationTimer:
         try:
             import torch
 
-            self._peak_vram_bytes = max(self._peak_vram_bytes,
-                                        int(torch.cuda.max_memory_allocated()))
+            self._peak_vram_bytes = max(
+                self._peak_vram_bytes,
+                int(torch.cuda.max_memory_allocated()),
+            )
+            self._peak_vram_reserved_bytes = max(
+                self._peak_vram_reserved_bytes,
+                int(torch.cuda.max_memory_reserved()),
+            )
         except Exception:
             pass
 
     def peak_vram_dict(self) -> Dict[str, float]:
-        """`{"peak_vram_gb": GiB}`, or empty when nothing armed the tracking."""
+        """Allocated/reserved peaks in GiB, or empty when tracking is unarmed."""
         if not self._peak_armed:
             return {}
         self.note_peak_vram()
-        return {"peak_vram_gb": round(self._peak_vram_bytes / (1024 ** 3), 3)}
+        return {
+            "peak_vram_gb": round(self._peak_vram_bytes / (1024 ** 3), 3),
+            "peak_vram_reserved_gb": round(
+                self._peak_vram_reserved_bytes / (1024 ** 3), 3
+            ),
+        }
 
     @contextmanager
     def phase(self, name: str):

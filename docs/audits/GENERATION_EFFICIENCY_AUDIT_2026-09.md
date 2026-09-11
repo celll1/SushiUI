@@ -92,6 +92,11 @@ FFmpeg. It no longer materializes a video-sized `bytes` object for the master
 and a second one for the lossless preview. Focused tests cover byte order,
 non-contiguous input, bounded writes and master/proxy failure behavior.
 
+Generation metadata now records both peak allocated and peak reserved VRAM.
+This makes the remaining phase-boundary allocator experiments observable:
+lower allocated memory alone cannot justify removing a cache flush when the
+reserved pool grows or repeated hot generations fragment.
+
 ## Findings suitable for equivalent implementation
 
 | Priority | Finding | Cost removed | Required proof |

@@ -759,8 +759,8 @@ class AnimaMixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -777,17 +777,18 @@ class AnimaMixin:
                 self._anima_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+                _kh_components["text_encoder"] = self.anima_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+                _kh_components["transformer"] = self.anima_components.get("transformer")
+            _kh_components["vae"] = self.anima_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
@@ -879,9 +880,10 @@ class AnimaMixin:
                     self._anima_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._anima_style_configs(params, width, height, device)
-                self._anima_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._anima_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:
@@ -1046,8 +1048,8 @@ class AnimaMixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -1061,17 +1063,18 @@ class AnimaMixin:
                 self._anima_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+                _kh_components["text_encoder"] = self.anima_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+                _kh_components["transformer"] = self.anima_components.get("transformer")
+            _kh_components["vae"] = self.anima_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
@@ -1079,14 +1082,13 @@ class AnimaMixin:
         _kh_gen_succeeded = False
 
         try:
-            # Encode init image. This is the generation's first use of the VAE, so
-            # this is the cross-generation entry point for it (the later decode-stage
-            # move below is an intra-generation re-stage, unaffected by keep-hot).
+            # Keep-hot budgets the VAE beside the denoiser, avoiding a second transfer.
             if not is_resident(self, "vae", _kh_model_key):
                 self._anima_move("vae", device)
             init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
-            self._anima_move("vae", "cpu")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._anima_move("vae", "cpu")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             # Text encoding
@@ -1165,9 +1167,10 @@ class AnimaMixin:
                     self._anima_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._anima_style_configs(params, width, height, device)
-                self._anima_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._anima_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:
@@ -1337,8 +1340,8 @@ class AnimaMixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
-            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
-            keep_hot_requested,
+            discard_resident, should_keep_resident, compute_model_key,
+            additional_residency_nbytes, keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
         _kh_model_key = compute_model_key(self, params)
@@ -1352,17 +1355,18 @@ class AnimaMixin:
                 self._anima_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
             if not cpu_text_encoding:
-                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+                _kh_components["text_encoder"] = self.anima_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
-            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+                _kh_components["transformer"] = self.anima_components.get("transformer")
+            _kh_components["vae"] = self.anima_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
@@ -1370,14 +1374,13 @@ class AnimaMixin:
         _kh_gen_succeeded = False
 
         try:
-            # Encode init image. This is the generation's first use of the VAE, so
-            # this is the cross-generation entry point for it (the later decode-stage
-            # move below is an intra-generation re-stage, unaffected by keep-hot).
+            # Keep-hot budgets the VAE beside the denoiser, avoiding a second transfer.
             if not is_resident(self, "vae", _kh_model_key):
                 self._anima_move("vae", device)
             init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
-            self._anima_move("vae", "cpu")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._anima_move("vae", "cpu")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             mask_latents = make_mask_latents(
@@ -1461,9 +1464,10 @@ class AnimaMixin:
                     self._anima_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._anima_style_configs(params, width, height, device)
-                self._anima_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._anima_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:

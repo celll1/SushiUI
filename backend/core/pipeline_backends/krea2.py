@@ -71,7 +71,7 @@ class Krea2Mixin:
         """
         from core.keep_hot import (
             invalidate_if_model_changed, should_keep_resident, compute_model_key,
-            component_nbytes, keep_hot_requested,
+            additional_residency_nbytes, keep_hot_requested,
         )
         requested = keep_hot_requested(params)
         model_key = compute_model_key(self, params)
@@ -88,16 +88,16 @@ class Krea2Mixin:
             ),
         )
 
-        total_bytes = 0
+        components = {}
         if requested:
-            total_bytes += component_nbytes(self.krea2_components.get("text_encoder"))
+            components["text_encoder"] = self.krea2_components.get("text_encoder")
             if not has_loras:
-                total_bytes += component_nbytes(self.krea2_components.get("transformer"))
-            total_bytes += component_nbytes(self.krea2_components.get("vae"))
+                components["transformer"] = self.krea2_components.get("transformer")
+            components["vae"] = self.krea2_components.get("vae")
         guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=total_bytes,
+            component_bytes=additional_residency_nbytes(self, model_key, components),
         ) if requested else False
 
         keep_te = requested and guard_ok
@@ -660,9 +660,10 @@ class Krea2Mixin:
                     self._krea2_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._krea2_style_configs(params, transformer, device)
-                self._krea2_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._krea2_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:
@@ -737,17 +738,15 @@ class Krea2Mixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
 
             print("[Krea2] Stage 2: Encoding init image...")
-            # First use of VAE this generation only: honor cross-generation residency
-            # on entry, but always offload after (VAE is reused again at Stage 4, so
-            # this is an intermediate step, not the generation's final exit point).
             if not is_resident(self, "vae", _kh_model_key):
                 self._krea2_move("vae", device)
             init_latents = vae_encode(
                 self.krea2_components["vae"], init_image, cfg["height"], cfg["width"],
                 cfg["patch_size"], device=device, dtype=torch.float32)
-            self._krea2_move("vae", "cpu")
-            discard_resident(self, "vae")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             print("[Krea2] Stage 3: Denoising (SDEdit)...")
@@ -775,9 +774,10 @@ class Krea2Mixin:
                 self._krea2_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._krea2_style_configs(params, transformer, device)
-                self._krea2_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._krea2_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:
@@ -862,17 +862,15 @@ class Krea2Mixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
 
             print("[Krea2] Stage 2: Encoding init image + mask...")
-            # First use of VAE this generation only: honor cross-generation residency
-            # on entry, but always offload after (VAE is reused again at Stage 4, so
-            # this is an intermediate step, not the generation's final exit point).
             if not is_resident(self, "vae", _kh_model_key):
                 self._krea2_move("vae", device)
             init_latents = vae_encode(
                 self.krea2_components["vae"], init_image, height, width,
                 cfg["patch_size"], device=device, dtype=torch.float32)
-            self._krea2_move("vae", "cpu")
-            discard_resident(self, "vae")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
             mask_latent = prepare_mask_latent(
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32)
@@ -902,9 +900,10 @@ class Krea2Mixin:
                 self._krea2_move("vae", device)
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._krea2_style_configs(params, transformer, device)
-                self._krea2_move("vae", "cpu")
-                discard_resident(self, "vae")
-                if torch.cuda.is_available():
+                if not _kh_keep_vae:
+                    self._krea2_move("vae", "cpu")
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available() and not _kh_keep_vae:
                     torch.cuda.empty_cache()
 
             try:

@@ -28,7 +28,7 @@ Safety invariants (do not relax without re-reading the design doc):
     longer trust the pipeline state going into the next generation.
 """
 
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Mapping, Optional
 
 import torch
 
@@ -292,6 +292,8 @@ def component_nbytes(component) -> int:
     """
     if component is None:
         return 0
+    if isinstance(component, (tuple, list)):
+        return sum(component_nbytes(item) for item in component)
     try:
         total = 0
         for p in component.parameters():
@@ -301,3 +303,18 @@ def component_nbytes(component) -> int:
         return total
     except Exception:
         return 0
+
+
+def additional_residency_nbytes(
+    manager,
+    model_key: str,
+    components: Mapping[str, object],
+) -> int:
+    """Bytes not already covered by the current keep-hot resident set."""
+    state = _ensure_state(manager)
+    resident = state["resident"] if state["model_key"] == model_key else set()
+    return sum(
+        component_nbytes(component)
+        for name, component in components.items()
+        if name not in resident
+    )

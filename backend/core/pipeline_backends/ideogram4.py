@@ -671,7 +671,8 @@ class Ideogram4Mixin:
 
     def _ideogram4_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
                                 height: int, width: int, device, dtype,
-                                model_key: Optional[str] = None, ref_index: int = 0):
+                                model_key: Optional[str] = None, ref_index: int = 0,
+                                keep_vae: bool = False):
         """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
         style_transfer dict.
 
@@ -714,9 +715,10 @@ class Ideogram4Mixin:
             self._ideogram4_move("vae", device)
         vae_gpu = self.ideogram4_components["vae"]
         ref_x0 = vae_encode(vae_gpu, style_dict["image"], height, width, device=device, dtype=dtype)
-        self._ideogram4_move("vae", "cpu")
-        discard_resident(self, "vae")
-        if torch.cuda.is_available():
+        if not keep_vae:
+            self._ideogram4_move("vae", "cpu")
+            discard_resident(self, "vae")
+        if torch.cuda.is_available() and not keep_vae:
             torch.cuda.empty_cache()
 
         seed = params.get("seed", -1)
@@ -726,7 +728,8 @@ class Ideogram4Mixin:
         return cfg, ref_x0, eps_ref
 
     def _ideogram4_style_config(self, params: Dict[str, Any], height: int, width: int,
-                                device, dtype, model_key: Optional[str] = None):
+                                device, dtype, model_key: Optional[str] = None,
+                                keep_vae: bool = False):
         """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
         ``params["style_transfer"]`` (assembled by
         ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
@@ -740,10 +743,12 @@ class Ideogram4Mixin:
 
         return self._ideogram4_style_triple(
             params, style_dict, height, width, device, dtype, model_key=model_key, ref_index=0,
+            keep_vae=keep_vae,
         )
 
     def _ideogram4_style_configs(self, params: Dict[str, Any], height: int, width: int,
-                                 device, dtype, model_key: Optional[str] = None):
+                                 device, dtype, model_key: Optional[str] = None,
+                                 keep_vae: bool = False):
         """Build the full style-transfer configuration for Ideogram 4 generation,
         covering both the single-reference path (legacy ``(style_cfg,
         style_ref_x0, style_eps_ref)`` triple, exactly as ``_ideogram4_style_config``
@@ -766,7 +771,7 @@ class Ideogram4Mixin:
                     continue
                 refs.append(self._ideogram4_style_triple(
                     params, style_dict, height, width, device, dtype,
-                    model_key=model_key, ref_index=idx,
+                    model_key=model_key, ref_index=idx, keep_vae=keep_vae,
                 ))
             if len(refs) > 1:
                 return None, None, None, refs, combine_mode
@@ -777,6 +782,7 @@ class Ideogram4Mixin:
 
         style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
             params, height, width, device, dtype, model_key=model_key,
+            keep_vae=keep_vae,
         )
         return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
@@ -970,7 +976,7 @@ class Ideogram4Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
-            should_keep_resident, compute_model_key, component_nbytes,
+            should_keep_resident, compute_model_key, additional_residency_nbytes,
             keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
@@ -986,17 +992,20 @@ class Ideogram4Mixin:
                 self._ideogram4_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.ideogram4_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+                _kh_components["transformer"] = (
+                    self.ideogram4_components.get("transformer"),
+                    self.ideogram4_components.get("unconditional_transformer"),
+                )
+            _kh_components["vae"] = self.ideogram4_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         # Ideogram 4 has no CPU-text-encoding mode, so TE eligibility is guard-only.
         _kh_keep_te = _kh_requested and _kh_guard_ok
@@ -1070,7 +1079,8 @@ class Ideogram4Mixin:
                 # (both here and inside denoise_loop/_run_loop) is untouched.
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._ideogram4_style_configs(
-                        params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                        params, cfg["height"], cfg["width"], device, dtype,
+                        model_key=_kh_model_key, keep_vae=_kh_keep_vae,
                     )
                 if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
@@ -1154,7 +1164,7 @@ class Ideogram4Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
-            should_keep_resident, compute_model_key, component_nbytes,
+            should_keep_resident, compute_model_key, additional_residency_nbytes,
             keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
@@ -1170,17 +1180,20 @@ class Ideogram4Mixin:
                 self._ideogram4_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.ideogram4_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+                _kh_components["transformer"] = (
+                    self.ideogram4_components.get("transformer"),
+                    self.ideogram4_components.get("unconditional_transformer"),
+                )
+            _kh_components["vae"] = self.ideogram4_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
@@ -1204,8 +1217,9 @@ class Ideogram4Mixin:
                 self.ideogram4_components["vae"], init_image, cfg["height"], cfg["width"],
                 device=device, dtype=torch.float32,
             )
-            self._ideogram4_move("vae", "cpu")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._ideogram4_move("vae", "cpu")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
 
             style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
@@ -1249,7 +1263,8 @@ class Ideogram4Mixin:
                 # routing invariant.
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._ideogram4_style_configs(
-                        params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                        params, cfg["height"], cfg["width"], device, dtype,
+                        model_key=_kh_model_key, keep_vae=_kh_keep_vae,
                     )
                 if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
@@ -1345,7 +1360,7 @@ class Ideogram4Mixin:
 
         from core.keep_hot import (
             invalidate_if_model_changed, is_resident, mark_resident,
-            should_keep_resident, compute_model_key, component_nbytes,
+            should_keep_resident, compute_model_key, additional_residency_nbytes,
             keep_hot_requested,
         )
         _kh_requested = keep_hot_requested(params)
@@ -1361,17 +1376,20 @@ class Ideogram4Mixin:
                 self._ideogram4_move("vae", "cpu"),
             ),
         )
-        _kh_total_bytes = 0
+        _kh_components = {}
         if _kh_requested:
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            _kh_components["text_encoder"] = self.ideogram4_components.get("text_encoder")
             if not (_kh_is_block_swapped or _kh_has_loras):
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
-                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
-            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+                _kh_components["transformer"] = (
+                    self.ideogram4_components.get("transformer"),
+                    self.ideogram4_components.get("unconditional_transformer"),
+                )
+            _kh_components["vae"] = self.ideogram4_components.get("vae")
         _kh_guard_ok = should_keep_resident(
             self, "combined", params,
             is_block_swapped=False, is_cpu_inference=False,
-            component_bytes=_kh_total_bytes,
+            component_bytes=additional_residency_nbytes(
+                self, _kh_model_key, _kh_components),
         ) if _kh_requested else False
         _kh_keep_te = _kh_requested and _kh_guard_ok
         _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
@@ -1395,8 +1413,9 @@ class Ideogram4Mixin:
                 self.ideogram4_components["vae"], init_image, height, width,
                 device=device, dtype=torch.float32,
             )
-            self._ideogram4_move("vae", "cpu")
-            if torch.cuda.is_available():
+            if not _kh_keep_vae:
+                self._ideogram4_move("vae", "cpu")
+            if torch.cuda.is_available() and not _kh_keep_vae:
                 torch.cuda.empty_cache()
             mask_latent = prepare_mask_latent(
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32,
@@ -1443,7 +1462,8 @@ class Ideogram4Mixin:
                 # routing invariant.
                 style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
                     self._ideogram4_style_configs(
-                        params, height, width, device, dtype, model_key=_kh_model_key,
+                        params, height, width, device, dtype,
+                        model_key=_kh_model_key, keep_vae=_kh_keep_vae,
                     )
                 if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors

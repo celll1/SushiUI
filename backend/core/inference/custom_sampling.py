@@ -574,6 +574,7 @@ def inloop_hard_flatten_step(
     latents: torch.Tensor,
     pred_original_sample: torch.Tensor,
     min_region_frac: float,
+    keep_vae_resident: bool = False,
 ) -> Tuple[torch.Tensor, bool]:
     """In-loop hard-flatten latent injection (SD1.5/SDXL, validated in proto2).
 
@@ -585,10 +586,8 @@ def inloop_hard_flatten_step(
     injection - the x0-space delta maps 1:1 into ``prev_sample``; no scheduler
     scaling). When no confident flat region is found the step is a complete no-op.
 
-    The VAE is staged to GPU only for this decode/encode and returned to CPU
-    afterwards, matching the loop's existing VRAM discipline (VAE on CPU during
-    U-Net work). Returns ``(latents, applied)``; on any failure the latents are
-    returned unchanged so a bad step can never corrupt the run.
+    The VAE returns to CPU unless the caller's memory policy keeps it resident.
+    Returns ``(latents, applied)``; failures leave the running latents unchanged.
     """
     if pred_original_sample is None:
         return latents, False
@@ -617,7 +616,8 @@ def inloop_hard_flatten_step(
         print(f"[InLoopFlatten] step skipped (decode/encode failed): {e}")
         return latents, False
     finally:
-        move_vae_to_cpu(pipeline)
+        if not keep_vae_resident:
+            move_vae_to_cpu(pipeline)
 
 
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
@@ -1905,6 +1905,8 @@ def custom_sampling_loop(
     style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
     style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,  # multi-reference (N>1): list of (StyleTransferConfig, ref_x0, eps_ref) triples, one per reference image; only consulted when len>1 (build_style_transfer_multi)
     style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
+    keep_denoiser_resident: bool = False,
+    keep_vae_resident: bool = False,
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -2214,7 +2216,8 @@ def custom_sampling_loop(
         ref_guides = prepare_reference_guide_latents(
             ref_guide_configs, pipeline, width, height, device, dtype, generator
         )
-        move_vae_to_cpu(pipeline)
+        if not keep_vae_resident:
+            move_vae_to_cpu(pipeline)
 
     # Current prompt embeds (will be updated by callback)
     current_prompt_embeds = prompt_embeds
@@ -2821,7 +2824,7 @@ def custom_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region)
+                flatten_in_loop_min_region, keep_vae_resident=keep_vae_resident)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -2876,8 +2879,8 @@ def custom_sampling_loop(
 
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-    # Offload U-Net to CPU to free VRAM for VAE
-    move_unet_to_cpu(pipeline)
+    if not keep_denoiser_resident:
+        move_unet_to_cpu(pipeline)
 
     # loop_decode="none": latent passthrough for loop generation. Skip VAE/PiD
     # entirely and hand back the clean normalised latent (pre-denormalize -- the
@@ -2929,7 +2932,7 @@ def custom_sampling_loop(
 
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never
     # staged; the PiD net offloads itself in pid_final_decode's finally).
-    if not _pid_active or _use_real_vae_only:
+    if (not _pid_active or _use_real_vae_only) and not keep_vae_resident:
         move_vae_to_cpu(pipeline)
 
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength)
@@ -3017,9 +3020,11 @@ def custom_img2img_sampling_loop(
     init_latents_override: Optional[torch.Tensor] = None,  # Loop-generation latent passthrough: when
                                 # set, SKIPS the init_image VAE-encode entirely and uses this tensor
                                 # directly as init_latents (already in the vae_normalize(encode(img))
-                                # frame -- the SAME frame this function's own encode block
-                                # produces). init_image is then only a size placeholder (its
-                                # pixels are never read/encoded) -- see pipeline.py's generate_img2img.
+                                 # frame -- the SAME frame this function's own encode block
+                                 # produces). init_image is then only a size placeholder (its
+                                 # pixels are never read/encoded) -- see pipeline.py's generate_img2img.
+    keep_denoiser_resident: bool = False,
+    keep_vae_resident: bool = False,
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -3216,8 +3221,9 @@ def custom_img2img_sampling_loop(
 
     # Move VAE back to CPU after initial encoding (harmless no-op if it was
     # never staged -- e.g. latent passthrough with no reference guides).
-    print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
-    move_vae_to_cpu(pipeline)
+    if not keep_vae_resident:
+        print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
+        move_vae_to_cpu(pipeline)
 
     # Add noise to latents based on timestep
     # Ensure generator is on the correct device
@@ -3933,7 +3939,7 @@ def custom_img2img_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region)
+                flatten_in_loop_min_region, keep_vae_resident=keep_vae_resident)
 
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
@@ -3981,8 +3987,8 @@ def custom_img2img_sampling_loop(
 
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-    # Offload U-Net to CPU to free VRAM for VAE
-    move_unet_to_cpu(pipeline)
+    if not keep_denoiser_resident:
+        move_unet_to_cpu(pipeline)
 
     # loop_decode="none": latent passthrough for loop generation -- see
     # custom_sampling_loop's Stage-3 site for the full rationale. `latents`
@@ -4035,7 +4041,7 @@ def custom_img2img_sampling_loop(
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean)
 
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
-    if not _pid_active or _use_real_vae_only:
+    if (not _pid_active or _use_real_vae_only) and not keep_vae_resident:
         move_vae_to_cpu(pipeline)
 
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength, dc_bias=_dc_bias)
@@ -4329,6 +4335,8 @@ def custom_inpaint_sampling_loop(
                                         # outpaint_preserve_mode=="exact" here) then restores the
                                         # preserved rect byte-exact. 0 (default) = no effect on this
                                         # gate.
+    keep_denoiser_resident: bool = False,
+    keep_vae_resident: bool = False,
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -4900,8 +4908,9 @@ def custom_inpaint_sampling_loop(
         )
 
     # Move VAE back to CPU after initial encoding
-    print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
-    move_vae_to_cpu(pipeline)
+    if not keep_vae_resident:
+        print(f"[CustomSampling] Moving VAE to CPU after initial encoding")
+        move_vae_to_cpu(pipeline)
 
     current_prompt_embeds = prompt_embeds
     current_negative_prompt_embeds = negative_prompt_embeds
@@ -6404,7 +6413,7 @@ def custom_inpaint_sampling_loop(
         if flatten_in_loop and i in _flatten_inject_steps:
             latents, _ = inloop_hard_flatten_step(
                 pipeline, latents, pred_original_sample,
-                flatten_in_loop_min_region)
+                flatten_in_loop_min_region, keep_vae_resident=keep_vae_resident)
 
         # HONEST OUTPAINT PREVIEW (display-only; scratchpad/
         # outpaint_seam_latent_stage.md section 4.1 Phase 2): snapshot the
@@ -6549,8 +6558,8 @@ def custom_inpaint_sampling_loop(
 
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-    # Offload U-Net to CPU to free VRAM for VAE
-    move_unet_to_cpu(pipeline)
+    if not keep_denoiser_resident:
+        move_unet_to_cpu(pipeline)
 
     # loop_decode="none": latent passthrough -- see custom_sampling_loop's
     # Stage-3 site for the full rationale. NOTE: inpaint's pixel-space mask
@@ -6619,7 +6628,7 @@ def custom_inpaint_sampling_loop(
         _outpaint_hf_roundtrip = compute_outpaint_hf_roundtrip(pipeline, image_latents)
 
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
-    if not _pid_active or _use_real_vae_only:
+    if (not _pid_active or _use_real_vae_only) and not keep_vae_resident:
         move_vae_to_cpu(pipeline)
 
     # Scale from [-1, 1] to [0, 1] with robust nan/inf handling

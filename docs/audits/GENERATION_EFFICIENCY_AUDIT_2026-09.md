@@ -321,3 +321,34 @@ then use `generation_time`, phase timings, `peak_vram_gb` and
 `peak_vram_reserved_gb` from each output's metadata. A single cold run is not
 evidence for allocator changes: record warm runs separately and preserve the
 per-run sequence so reservation growth is visible.
+
+## GPU completion plan
+
+The remaining candidates are evaluated and committed independently in this
+order. A candidate is rejected rather than shipped when its measured benefit
+does not exceed noise or when it moves the cost to a less acceptable resource.
+
+1. **Phase-boundary allocator flushes.** Inventory transitions rather than raw
+   call sites, remove only flushes whose next allocation succeeds repeatedly,
+   and compare hot-run latency plus allocated/reserved peaks. Cleanup after an
+   exception and explicit release operations remain outside this removal.
+2. **VAE encode-to-decode residency.** Audit the existing `keep_models_hot`
+   wiring first. It already owns VAE residency for SD, Anima, Lens, Krea2,
+   Flux2, Z-Image, Ideogram 4 and MiniT2I; do not add a competing mechanism.
+   Measure whether img2img/inpaint cold paths still perform an avoidable
+   encode→CPU→GPU→decode round trip, and extend the shared policy only where
+   the denoiser fits beside the VAE with configured headroom.
+3. **Preview decode overlap.** Split only CPU-bound preview conversion from the
+   denoise callback after proving ordered delivery, bounded queue depth,
+   cancellation and teardown. GPU tiny-autoencoder decode stays synchronous
+   unless a separate-stream experiment shows a win without raising the denoise
+   peak or changing callback semantics.
+4. **Cross-generation prompt embeddings.** Reuse the bounded CPU-cache pattern
+   already shipped for MiniMax-H3, but give each architecture an explicit key
+   provider covering model/tokenizer/parser, length, clip-skip, adapter,
+   textual-inversion and quantization state. Architectures without a complete
+   invalidation identity are rejected rather than cached approximately.
+
+The first available real-model probe uses the already loaded SenseNova model;
+other families are tested only when a local checkpoint is available. API
+restart, when needed, is performed only through `/api/v1/system/restart-backend`.

@@ -86,9 +86,6 @@ def sync_free() -> None:
     torch.cuda.reset_peak_memory_stats()
 
 
-# ---------------------------------------------------------------------------
-# Building optimizers the way the trainer does
-# ---------------------------------------------------------------------------
 
 class ParamBag(nn.Module):
     """Bare parameters with a loss whose gradient is exactly a tensor we choose.
@@ -199,9 +196,6 @@ def register_fused_hooks(name: str, opt: Any, bag: ParamBag) -> str:
     return "step_param hooks"
 
 
-# ---------------------------------------------------------------------------
-# Arm: correctness
-# ---------------------------------------------------------------------------
 
 # Small enough that the whole matrix fits in one process; the ULP question is
 # per-element and does not depend on the tensor count.
@@ -220,7 +214,6 @@ def run_correctness_case(
     opt, notes = build_optimizer(name, params, sr, fused)
     seam = register_fused_hooks(name, opt, bag) if fused else "step()"
 
-    # Step 1 -- the headline measurement.
     if fused:
         bag.loss().backward()
         torch.cuda.synchronize()
@@ -449,9 +442,6 @@ def arm_vram() -> List[Dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Arm: cpuring -- the unwired CPU-state path
-# ---------------------------------------------------------------------------
 
 class HostStateAllocator:
     """Probe-local equivalent of the production persistent host allocator.
@@ -611,9 +601,6 @@ def arm_cpuring() -> List[Dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Arm: fusedgrad -- does tensor.grad = None actually cap gradient residency
-# ---------------------------------------------------------------------------
 
 class Chain(nn.Module):
     """A sequential chain, so gradients become ready one tensor at a time."""

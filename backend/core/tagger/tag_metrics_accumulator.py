@@ -92,9 +92,6 @@ class TagMetricsAccumulator:
         self.last_epoch_delta = np.zeros(vocab_size, dtype=np.int32)
         self.epochs_elapsed: int = 0
 
-    # ------------------------------------------------------------------
-    # Update (called every training batch)
-    # ------------------------------------------------------------------
 
     def update(self, preds: torch.Tensor, labels: torch.Tensor) -> None:
         """Accumulate one batch of predictions.
@@ -135,9 +132,6 @@ class TagMetricsAccumulator:
             pos_flat.scatter_add_(0, pos_flat_idx.long(), ones_pos)
             self.pos_hist_cur += pos_flat.reshape(V, self.n_bins).numpy()
 
-    # ------------------------------------------------------------------
-    # Epoch rotation
-    # ------------------------------------------------------------------
 
     def rotate_epoch(self) -> None:
         """Call at epoch end (after saving epoch-boundary checkpoint).
@@ -170,9 +164,6 @@ class TagMetricsAccumulator:
         np.copyto(self.tag_count_epoch_start, self.tag_count)
         self.epochs_elapsed += 1
 
-    # ------------------------------------------------------------------
-    # Metrics computation
-    # ------------------------------------------------------------------
 
     def _merged(self, epoch_boundary: bool):
         """Return (pos_hist_f, total_hist_f, total_images) for the current window.
@@ -297,9 +288,6 @@ class TagMetricsAccumulator:
             "best_thr":    best_thr,
         }
 
-    # ------------------------------------------------------------------
-    # Vocabulary growth (Danbooru vocab expansion during training)
-    # ------------------------------------------------------------------
 
     def grow(self, new_vocab_size: int) -> None:
         """Resize all per-tag arrays to ``new_vocab_size`` (zero-padding new tags).
@@ -334,9 +322,6 @@ class TagMetricsAccumulator:
         )
         self.vocab_size = new_vocab_size
 
-    # ------------------------------------------------------------------
-    # Deficiency selection (low-F1 Danbooru augmentation feed)
-    # ------------------------------------------------------------------
 
     def deficient_tag_indices(
         self,
@@ -461,9 +446,6 @@ class TagMetricsAccumulator:
             "total_images": self.total_images_cur,
         }
 
-    # ------------------------------------------------------------------
-    # Serialisation
-    # ------------------------------------------------------------------
 
     def compute_calibration_table(
         self,
@@ -665,9 +647,6 @@ class TagMetricsAccumulator:
                 result[scalar_key] = result[scalar_key].item()
         return result
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @property
     def has_data(self) -> bool:

@@ -39,9 +39,6 @@ from core.training.rescan_control import RescanSkipped
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-# ---------------------------------------------------------------------------
-# Pre-flight mode normalization
-# ---------------------------------------------------------------------------
 
 RESCAN_MODES = ("off", "path", "smart", "force")
 
@@ -372,9 +369,6 @@ def detect_drift(
     )
 
 
-# ---------------------------------------------------------------------------
-# In-process rescan — wraps the existing /datasets/{id}/scan route handler
-# ---------------------------------------------------------------------------
 
 async def rescan_dataset_inline(
     dataset_id: int, datasets_db,

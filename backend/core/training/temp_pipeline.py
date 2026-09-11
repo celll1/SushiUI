@@ -73,9 +73,6 @@ class TempPipeline:
         self.vae_scale_factor = vae_scale_factor
         self.image_processor = None   # not needed by custom_sampling_loop
 
-    # ------------------------------------------------------------------
-    # diffusers-pipeline-like surface
-    # ------------------------------------------------------------------
 
     @property
     def components(self) -> Dict[str, Any]:

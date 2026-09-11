@@ -323,9 +323,6 @@ EXTRA_METRIC_DEFS = {
     "vae_val_blockiness": {"label": "Val blockiness", "color": "#fb923c", "dashed": False, "axis": "right",
                            "family": "validation", "scale_group": "blockiness",
                            "range": _AUTO_0, "sampling": "periodic"},
-    # ---- MiniMax-H3 (joint video + audio) ---------------------------------
-    # Per-modality velocity MSE that sum (video + audio_loss_weight * audio)
-    # into the total loss -- see minimax_h3_ops.train_step.
     "h3_video_loss": {"label": "H3 video loss", "color": "#60a5fa", "dashed": True, **_LOSS},
     "h3_audio_loss": {"label": "H3 audio loss", "color": "#f472b6", "dashed": True, **_LOSS},
     # Fraction of the batch whose item carried a real audio track this step (vs.

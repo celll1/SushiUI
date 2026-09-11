@@ -89,7 +89,6 @@ class GradTimestepCosineProbe:
         self._bucket: Optional[int] = None
         self._passes = [0, 0]
 
-    # -- projections ----------------------------------------------------
     def _projection(self, size: int, device, dtype) -> torch.Tensor:
         """A fixed [size, k] Gaussian with variance 1/k, shared by same-sized params.
 
@@ -108,7 +107,6 @@ class GradTimestepCosineProbe:
         self._proj[key] = mat
         return mat
 
-    # -- lifecycle ------------------------------------------------------
     def begin_window(self) -> None:
         self._acc = {self.LOW: {}, self.HIGH: {}}
         self._bucket = None
@@ -150,7 +148,6 @@ class GradTimestepCosineProbe:
         except Exception:
             return
 
-    # -- readout --------------------------------------------------------
     def finish_window(self) -> Dict[str, float]:
         """Cosine between the two buckets' accumulated gradients, per component.
 

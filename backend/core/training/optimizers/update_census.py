@@ -30,7 +30,6 @@ class UpdateCensus:
         self.enabled = False
         self.steps_checked = 0
 
-    # -- expectation set ---------------------------------------------------
 
     def expect(
         self,
@@ -86,7 +85,6 @@ class UpdateCensus:
     def updated_count(self) -> int:
         return len(self._updated)
 
-    # -- per-step ----------------------------------------------------------
 
     def begin_step(
         self,
@@ -148,7 +146,6 @@ class UpdateCensus:
         )
 
 
-# -- attachment ------------------------------------------------------------
 
 
 def attach_update_census(optimizer, census: Optional[UpdateCensus]) -> None:
@@ -167,7 +164,6 @@ def record_param_update(optimizer, param: nn.Parameter) -> None:
         census.record(param)
 
 
-# -- applied-update ledger (see the module docstring) -----------------------
 
 _applied_updates = 0
 

@@ -6,9 +6,6 @@ Based on: diffusers/scripts/convert_diffusers_to_original_sdxl.py
 import re
 import torch
 
-# =================#
-# UNet Conversion #
-# =================#
 
 _unet_conversion_map = [
     ("time_embed.0.weight", "time_embedding.linear_1.weight"),
@@ -72,9 +69,6 @@ def convert_unet_state_dict_to_original(unet_state_dict: dict) -> dict:
     return {sd_name: unet_state_dict[hf_name] for hf_name, sd_name in mapping.items()}
 
 
-# ================#
-# VAE Conversion #
-# ================#
 
 _vae_conversion_map = [
     ("nin_shortcut", "conv_shortcut"),
@@ -126,9 +120,6 @@ def convert_vae_state_dict_to_original(vae_state_dict: dict) -> dict:
     return new_state_dict
 
 
-# =========================#
-# Text Encoder Conversion #
-# =========================#
 
 _textenc_conversion_lst = [
     ("transformer.resblocks.", "text_model.encoder.layers."),

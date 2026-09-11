@@ -43,7 +43,6 @@ def get_extension():
     if not wrapper_cpp.exists():
         raise FileNotFoundError(f"C++ wrapper not found: {wrapper_cpp}")
 
-    # Build directory
     build_dir = current_dir / "build" / "lion8bit"
     build_dir.mkdir(parents=True, exist_ok=True)
 

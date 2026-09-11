@@ -94,7 +94,6 @@ def load_components(trainer) -> None:
             )
             is_sdxl_model = False
 
-        # Extract components
         trainer.vae = temp_pipeline.vae
         trainer.text_encoder = temp_pipeline.text_encoder
         trainer.tokenizer = temp_pipeline.tokenizer
@@ -104,7 +103,6 @@ def load_components(trainer) -> None:
         # prediction_type="epsilon", so sampling_scheduler_source() realigns it.
         trainer.original_scheduler = temp_pipeline.scheduler
 
-        # Use DDPMScheduler for training
         trainer.noise_scheduler = DDPMScheduler(
             beta_start=0.00085,
             beta_end=0.012,
@@ -150,20 +148,17 @@ def load_components(trainer) -> None:
             torch_dtype=trainer.dtype
         )
 
-        # Save original scheduler for inference (sample generation)
         from diffusers.schedulers import EulerDiscreteScheduler
         trainer.original_scheduler = EulerDiscreteScheduler.from_pretrained(
             trainer.model_path,
             subfolder="scheduler"
         )
 
-        # Use DDPMScheduler for training
         trainer.noise_scheduler = DDPMScheduler.from_pretrained(
             trainer.model_path,
             subfolder="scheduler"
         )
 
-        # Check for SDXL
         if (Path(trainer.model_path) / "text_encoder_2").exists():
             trainer.text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
                 trainer.model_path,
@@ -180,7 +175,6 @@ def load_components(trainer) -> None:
             trainer.tokenizer_2 = None
             is_sdxl_model = False
 
-    # Store SDXL flag
     trainer.is_sdxl = is_sdxl_model
 
     # A VAE swap resizes the latent-facing convs and a custom TE adds bridge
@@ -552,7 +546,6 @@ def encode_prompt_chunked(trainer, prompt: str, requires_grad: bool = False):
         # NoBOS mode: strip all BOS/EOS tokens
         processed_chunks = []
         for chunk_emb in chunk_embeds_list:
-            # Remove first (BOS) and last (EOS) tokens
             processed_chunks.append(chunk_emb[:, 1:-1, :])
         text_embeddings = torch.cat(processed_chunks, dim=1)
 
@@ -605,7 +598,6 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
         print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
 
-    # Clean up intermediate tensors
     del encoder_output
     return latents
 
@@ -740,7 +732,6 @@ def train_step(
         elif noise_process == "flow":
             # Flow Matching: sample continuous timesteps [0, 1]
             if trainer.timestep_sampler is not None:
-                # Use timestep sampler (already returns [0, 1])
                 timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
             else:
                 # Uniform sampling from [0, 1]
@@ -759,7 +750,6 @@ def train_step(
             # Flow matching: timesteps are already [0, 1]
             pass
 
-    # Add noise to latents using unified framework
     noisy_latents = add_noise_unified(
         noise_process=noise_process,
         noise_scheduler=trainer.noise_scheduler,
@@ -851,7 +841,6 @@ def train_step(
 
     # DEUS debug check removed (architecture no longer maintained)
 
-    # Get target based on unified framework
     prediction_target = getattr(trainer, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility
     target = get_target_unified(
         noise_process=noise_process,
@@ -862,8 +851,6 @@ def train_step(
         timesteps=timesteps,
     )
 
-    # Calculate loss (always in fp32)
-    # TEMPORARY: .float() is redundant since everything is FP32, but kept for safety
     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
     loss_per_sample = loss_per_element.mean([1, 2, 3])
 
@@ -874,7 +861,6 @@ def train_step(
     min_snr_weights = None
     if trainer.min_snr_gamma > 0 and prediction_target == "epsilon":
         if trainer.reconstruction_loss_weight > 0:
-            # Return weights for dual loss compensation
             loss_per_sample_weighted, min_snr_weights = apply_snr_weight(
                 loss_per_sample, timesteps, trainer.noise_scheduler, trainer.min_snr_gamma,
                 return_weights=True, alphas_cumprod_cached=alphas_cumprod_cached
@@ -889,10 +875,8 @@ def train_step(
 
     mse_loss = loss_per_sample_weighted.mean()
 
-    # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 
-    # Compute predicted latent once (used by both regularization losses and debug save)
     predicted_latent_for_reg = None
     predicted_latent_for_recon = None  # Will be set in reconstruction loss path
     # The crop decode loss backpropagates through this x_0, so it must be the
@@ -902,7 +886,6 @@ def train_step(
     if (trainer.snr_regularization_loss is not None
             or trainer.energy_regularization_loss is not None
             or crop_decode_on):
-        # Compute predicted latent from model_pred (keep gradients for backprop)
         predicted_latent_for_reg = predict_original_latent_unified(
             noise_process=noise_process,
             prediction_target=prediction_target,
@@ -914,7 +897,6 @@ def train_step(
 
     # SNR regularization (周波数領域の過剰デノイズ抑制)
     if trainer.snr_regularization_loss is not None:
-        # Convert timesteps to continuous [0, 1] for regularization
         if noise_process == "ddpm":
             timesteps_continuous = timesteps.float() / trainer.noise_scheduler.config.num_train_timesteps
         else:  # flow
@@ -929,7 +911,6 @@ def train_step(
 
     # Energy regularization (空間領域のエネルギー保存)
     if trainer.energy_regularization_loss is not None:
-        # Convert timesteps to continuous [0, 1] for regularization
         if noise_process == "ddpm":
             timesteps_continuous = timesteps.float() / trainer.noise_scheduler.config.num_train_timesteps
         else:  # flow
@@ -1245,7 +1226,6 @@ def generate_sample(
     from core.inference.schedulers import get_scheduler
     from core.training.temp_pipeline import sampling_scheduler_source
 
-    # Set models to eval mode
     trainer.unet.eval()
     trainer.vae.eval()
     trainer.text_encoder.eval()
@@ -1268,7 +1248,6 @@ def generate_sample(
 
         if trainer.is_sdxl:
             from diffusers import StableDiffusionXLPipeline
-            # Create a minimal pipeline object
             class TempPipeline:
                 def __init__(self, unet, vae, text_encoder, text_encoder_2, scheduler, tokenizer, tokenizer_2):
                     self.unet = unet
@@ -1287,14 +1266,12 @@ def generate_sample(
             if schedule_type == "sgm_uniform":
                 schedule_type_mapped = "uniform"
 
-            # Create scheduler using get_scheduler()
             scheduler = get_scheduler(
                 pipeline=sampling_scheduler_source(trainer),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 
-            # Create temporary pipeline
             pipeline = TempPipeline(
                 unet=trainer.unet,
                 vae=trainer.vae,
@@ -1306,7 +1283,6 @@ def generate_sample(
             )
         else:
             from diffusers import StableDiffusionPipeline
-            # Create a minimal pipeline object for SD1.5
             class TempPipeline:
                 def __init__(self, unet, vae, text_encoder, scheduler, tokenizer):
                     self.unet = unet
@@ -1323,14 +1299,12 @@ def generate_sample(
             if schedule_type == "sgm_uniform":
                 schedule_type_mapped = "uniform"
 
-            # Create scheduler using get_scheduler()
             scheduler = get_scheduler(
                 pipeline=sampling_scheduler_source(trainer),
                 sampler=sampler,
                 schedule_type=schedule_type_mapped
             )
 
-            # Create temporary pipeline
             pipeline = TempPipeline(
                 unet=trainer.unet,
                 vae=trainer.vae,
@@ -1339,9 +1313,6 @@ def generate_sample(
                 tokenizer=trainer.tokenizer
             )
 
-        # ========================================
-        # STEP 2: Text Encoding
-        # ========================================
         trainer.move_text_encoder_to_gpu()
 
         # Encode prompt
@@ -1392,9 +1363,6 @@ def generate_sample(
         trainer.move_text_encoder_to_cpu()
         torch.cuda.empty_cache()
 
-        # ========================================
-        # STEP 2.5: Vision Encoder conditioning (if reference image + VE loaded)
-        # ========================================
         ve_obj = getattr(trainer, 'vision_encoder', None)
         if reference_image_path and ve_obj is not None:
             try:
@@ -1422,9 +1390,6 @@ def generate_sample(
             except Exception as ve_err:
                 print(f"{trainer.log_prefix} [Sample] WARNING: VE conditioning failed: {ve_err}, skipping")
 
-        # ========================================
-        # STEP 3: Create Generator
-        # ========================================
         if seed < 0:
             actual_seed = random.randint(0, 2**32 - 1)
         else:
@@ -1438,7 +1403,6 @@ def generate_sample(
         trainer.move_main_model_to_gpu()
         trainer.move_vae_to_gpu()
 
-        # Detect v-prediction and apply guidance_rescale if needed
         is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
         guidance_rescale = 0.7 if is_v_prediction else 0.0
 
@@ -1485,7 +1449,6 @@ def generate_sample(
                 attention_type="normal",  # Normal attention for training samples
             )
 
-            # Move models back to CPU
             trainer.move_main_model_to_cpu()
             trainer.move_vae_to_cpu()
             torch.cuda.empty_cache()
@@ -1498,7 +1461,6 @@ def generate_sample(
         print(f"{trainer.log_prefix} [Sample] Sample generation failed - this is expected for early training steps")
         print(f"{trainer.log_prefix} [Sample] Training will continue normally")
 
-        # Return a placeholder image (blank white image)
         from PIL import Image
         placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
         return placeholder

@@ -51,13 +51,11 @@ def build_vocab_lineage(
         if predecessor not in preds:
             preds.append(predecessor)
 
-    # 1. Comma merges — tail first (most specific), head last.
     if comma_resolver is not None and hasattr(comma_resolver, "canonical_parts"):
         for canonical, parts in comma_resolver.canonical_parts().items():
             for predecessor in reversed(parts):
                 _add(canonical, predecessor)
 
-    # 2. Alias renames — old deprecated tag -> new canonical.
     if alias_resolver is not None:
         for old_tag in old_tag_to_idx:
             try:

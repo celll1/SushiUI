@@ -48,7 +48,6 @@ def load_components(trainer) -> None:
         companion_path=getattr(trainer, "anima_companion_path", None),
     )
 
-    # Store components on the trainer in the standard slots.
     trainer.transformer = components["transformer"]
     trainer.transformer_original = trainer.transformer  # No wrapper for Anima.
     trainer.vae = components["vae"]
@@ -671,12 +670,10 @@ def generate_sample(
         trainer.text_encoder.eval()
 
     try:
-        # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
         trainer.move_main_model_to_cpu()
         trainer._relocate_main_model_optimizer_state("cpu")
         torch.cuda.empty_cache()
 
-        # --- Stage 1: text encoding ---
         trainer.move_text_encoder_to_gpu()
         cond = _anima_encode_prompt(
             trainer.text_encoder, trainer.tokenizer, trainer.t5_tokenizer,
@@ -724,7 +721,6 @@ def generate_sample(
             )
         del cond, uncond
 
-        # --- Stage 3: VAE decode ---
         trainer.move_main_model_to_cpu()
         torch.cuda.empty_cache()
         trainer.move_vae_to_gpu()
@@ -735,7 +731,6 @@ def generate_sample(
         trainer.move_vae_to_cpu()
         del latents
 
-        # --- Restore transformer to GPU for continued training ---
         trainer.move_main_model_to_gpu()
         trainer._relocate_main_model_optimizer_state(device)
         torch.cuda.empty_cache()

@@ -458,7 +458,6 @@ class ScheduleTimeline:
         if self.announce:
             emit_training_warning(message, code=code)
 
-    # -- seams -----------------------------------------------------------
 
     def set_total_steps(self, value: int) -> None:
         """Seam (a), the construction event. Re-anchoring is a different seam
@@ -786,7 +785,6 @@ class ScheduleTimeline:
         """Whether this run's param groups carry identities (D37)."""
         return any(s.group is not None for s in self.group_specs)
 
-    # -- pure reads ------------------------------------------------------
 
     def nominal_total(self, default: int) -> int:
         """``T_nominal``: the FIRST total_steps event, the axis §7.2 warps onto."""
@@ -877,7 +875,6 @@ class ScheduleTimeline:
         step = int(step)
         return self._chain_value(self._fold_curve(spec, step), step)
 
-    # -- internals -------------------------------------------------------
 
     def _append(self, event: Dict[str, Any]) -> None:
         event["seq"] = self._next_seq

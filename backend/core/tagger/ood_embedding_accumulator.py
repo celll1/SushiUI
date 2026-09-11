@@ -34,7 +34,6 @@ class OodEmbeddingAccumulator:
         self.reservoir: list[np.ndarray] = []  # each entry: (D,) float32
         self.n_seen: int  = 0
 
-    # ------------------------------------------------------------------
 
     def update(self, embs: np.ndarray) -> None:
         """Add a batch of embeddings (B, D) to the reservoir."""
@@ -50,7 +49,6 @@ class OodEmbeddingAccumulator:
                 if j < self.max_samples:
                     self.reservoir[j] = e.copy()
 
-    # ------------------------------------------------------------------
 
     def finalize(self, save_path: str) -> dict:
         """Fit a multivariate Gaussian and save to *save_path*.
@@ -77,7 +75,6 @@ class OodEmbeddingAccumulator:
             cov += np.eye(cov.shape[0]) * 1e-6
             cov_inv = np.linalg.inv(cov)
 
-        # Compute per-sample Mahalanobis distances for percentile thresholds
         diffs = E - mu  # (N, D)
         dists = np.sqrt(np.maximum(0.0, np.einsum("nd,de,ne->n", diffs, cov_inv, diffs)))
         p50 = float(np.percentile(dists, 50))
@@ -96,7 +93,6 @@ class OodEmbeddingAccumulator:
         )
         return {"n_samples": n, "n_seen": self.n_seen, "p50": p50, "p95": p95}
 
-    # ------------------------------------------------------------------
 
     def save_reservoir(self, path: str) -> None:
         """Save raw reservoir to *path* for later resume."""

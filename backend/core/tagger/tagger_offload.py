@@ -69,7 +69,6 @@ class TaggerTrainerHandle:
         self.restored_event = restored_event
         self.pending_decision: Optional[OffloadDecision] = None
 
-        # Set by attach()
         self._model: Optional[torch.nn.Module] = None
         self._optimizer: Optional[torch.optim.Optimizer] = None
         self._criterion: Optional[torch.nn.Module] = None
@@ -77,7 +76,6 @@ class TaggerTrainerHandle:
         self._vocabulary = None  # TagVocabulary snapshot — for training-model inference
         self._owner_tid: Optional[int] = None
 
-        # Set by offload(), consumed by restore()
         self._param_origin_devices: Dict[int, torch.device] = {}
         self._buffer_origin_devices: Dict[int, torch.device] = {}
         self._cached_opt_state: Optional[Dict[str, Any]] = None
@@ -85,7 +83,6 @@ class TaggerTrainerHandle:
         self._criterion_origin_device: Optional[torch.device] = None
         self._active_decision: Optional[OffloadDecision] = None
 
-    # -- TrainerHandle protocol ------------------------------------------
 
     def trainer_label(self) -> str:
         return f"tagger:{self.run_id[:8]}"
@@ -101,7 +98,6 @@ class TaggerTrainerHandle:
         opt = m  # uint8 state1 (~param numel bytes) + state2 (~param numel)
         return m + b + 2 * opt
 
-    # -- public API used from the trainer thread -------------------------
 
     def attach(
         self,
@@ -164,7 +160,6 @@ class TaggerTrainerHandle:
             self._buffer_origin_devices[id(b)] = b.device
             b.data = b.data.to("cpu", non_blocking=True)
 
-        # 2. Optimizer state — state_dict round-trip (bnb-safe path)
         opt_state = self._optimizer.state_dict()
         _move_state_dict_inplace(opt_state, "cpu")
         if decision.mode in ("disk", "split"):
@@ -177,7 +172,6 @@ class TaggerTrainerHandle:
         # Clear the optimizer's per-parameter state to release the CUDA buffers
         self._optimizer.state.clear()
 
-        # 3. Loss criterion buffers (CS-ASL pre-computed per-tag tensors)
         if self._criterion is not None:
             try:
                 first_buf = next(self._criterion.buffers(), None)
@@ -204,7 +198,6 @@ class TaggerTrainerHandle:
 
         device = torch.device("cuda")
 
-        # 1. Model params/buffers
         for p in self._model.parameters():
             orig = self._param_origin_devices.get(id(p), device)
             p.data = p.data.to(orig, non_blocking=True)
@@ -214,7 +207,6 @@ class TaggerTrainerHandle:
         self._param_origin_devices.clear()
         self._buffer_origin_devices.clear()
 
-        # 2. Optimizer state
         if self._swap_path is not None and os.path.isfile(self._swap_path):
             opt_state = torch.load(self._swap_path, map_location="cpu", weights_only=False)
             _move_state_dict_inplace(opt_state, device)
@@ -229,7 +221,6 @@ class TaggerTrainerHandle:
             self._optimizer.load_state_dict(self._cached_opt_state)
             self._cached_opt_state = None
 
-        # 3. Criterion
         if self._criterion is not None and self._criterion_origin_device is not None:
             self._criterion.to(self._criterion_origin_device)
         self._criterion_origin_device = None
@@ -239,7 +230,6 @@ class TaggerTrainerHandle:
         self._active_decision = None
         print(f"[TaggerHandle:{self.run_id[:8]}] restore complete (mode was {mode_was})")
 
-    # -- inference from training model -----------------------------------
 
     def can_predict(self) -> bool:
         """True when the training model is attached and currently on CUDA."""
@@ -337,7 +327,6 @@ class TaggerTrainerHandle:
             raw_probs = cal_probs
             _calibrated = True
 
-        # Build the full item list (Quality/Rating handled separately below).
         all_items = []
         for i in range(len(raw_probs)):
             tag = idx_to_tag.get(i)

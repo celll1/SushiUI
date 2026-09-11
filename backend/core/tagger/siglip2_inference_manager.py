@@ -27,9 +27,6 @@ from core.tagger.tag_selection import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Singleton accessor
-# ---------------------------------------------------------------------------
 
 _manager: Optional["SigLIP2InferenceManager"] = None
 
@@ -41,9 +38,6 @@ def get_siglip2_inference_manager() -> "SigLIP2InferenceManager":
     return _manager
 
 
-# ---------------------------------------------------------------------------
-# Helper: split a >2GB ONNX model into WebGPU-loadable sequential parts
-# ---------------------------------------------------------------------------
 
 def _split_onnx_for_webgpu(onnx_path: str, max_bytes: int = 1_900_000_000) -> Optional[str]:
     """Split a (possibly >2GB) ONNX model into sequential sub-models whose
@@ -260,9 +254,6 @@ def _filter_tag_metrics_npz(
         return False
 
 
-# ---------------------------------------------------------------------------
-# Manager class
-# ---------------------------------------------------------------------------
 
 # ONNX intermediate node name for CLS embedding (input to final classification head).
 # Used for OOD detection via Mahalanobis distance on the 1152-dim feature vector.
@@ -301,9 +292,6 @@ class SigLIP2InferenceManager:
         self._last_cls_emb: Optional["np.ndarray"] = None
         self._cls_emb_hook_handle = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def load_model(
         self,
@@ -353,7 +341,6 @@ class SigLIP2InferenceManager:
                       f"the checkpoint head cannot be verified — predictions may "
                       f"be wrong if vocabulary changed since the checkpoint was saved.")
 
-        # 1. Load vocabulary (needed for all model types)
         with open(vocab_path, "r", encoding="utf-8") as fh:
             vocab = json.load(fh)
         idx_to_tag       = {int(k): v for k, v in vocab["idx_to_tag"].items()}
@@ -410,9 +397,7 @@ class SigLIP2InferenceManager:
         _mode_str = "NaFlex" if is_naflex else "standard"
         print(f"[SigLIP2Manager] Processor mode: {_mode_str}")
 
-        # 4. Load model (branched by type)
         if checkpoint_path.endswith(".onnx"):
-            # --- ONNX model ---
             import onnxruntime as ort
             opts = ort.SessionOptions()
             opts.log_severity_level = 2
@@ -425,7 +410,6 @@ class SigLIP2InferenceManager:
             _provider = self.onnx_session.get_providers()[0]
             print(f"[SigLIP2Manager] ONNX session created | provider={_provider}")
         else:
-            # --- safetensors model (full / lora) ---
             model_type = _detect_model_type(checkpoint_path)
             # meta already read above
 
@@ -475,10 +459,8 @@ class SigLIP2InferenceManager:
             model.to(self.device)
             self.model = model
 
-        # 5. Store state
         self.processor           = processor
         self.is_naflex           = is_naflex
-        # Build reverse map for tag→idx lookup (needed for conditional inference)
         tag_to_idx = {tag: idx for idx, tag in idx_to_tag.items()}
         self.vocabulary          = {
             "idx_to_tag":      idx_to_tag,
@@ -566,8 +548,6 @@ class SigLIP2InferenceManager:
             except Exception as _e:
                 print(f"[SigLIP2Manager] WARNING: OOD reference load failed: {_e}")
         if not checkpoint_path.endswith(".onnx") and self.ood_ref is not None and self.model is not None:
-            # Register a persistent forward_pre_hook on the classification head to
-            # capture the CLS embedding (head input) for Mahalanobis distance computation.
             def _capture_cls_emb(module, args):
                 import numpy as np
                 # args[0]: [1, pool_dim] or [pool_dim] tensor
@@ -587,7 +567,6 @@ class SigLIP2InferenceManager:
             "num_tags":   num_tags,
         }
 
-    # ------------------------------------------------------------------
 
     def predict(
         self,
@@ -660,7 +639,6 @@ class SigLIP2InferenceManager:
         ood_distance: Optional[float] = None
         if self.model_type == "onnx":
             pv_np = inputs["pixel_values"].float().numpy()
-            # Use OOD embedding session when requested and available
             _use_ood = (
                 use_ood_detection
                 and self.ood_ref is not None
@@ -849,9 +827,6 @@ class SigLIP2InferenceManager:
             "ood_distance":     ood_distance,
         }
 
-    # ------------------------------------------------------------------
-    # Context-conditional inference helpers
-    # ------------------------------------------------------------------
 
     # Categories whose logits are intentionally NOT modified by context
     # correction (they have their own top-1 selection per image).
@@ -946,7 +921,6 @@ class SigLIP2InferenceManager:
         values  = self.lr_matrix["lr_values"][offsets[pos]:offsets[pos + 1]]
         correction[targets] += float(sign) * float(lam) * values
 
-    # ------------------------------------------------------------------
 
     def merge_lora_and_save(self, output_path: str) -> str:
         """Merge LoRA weights into the vision encoder and save as a full model.
@@ -1009,7 +983,6 @@ class SigLIP2InferenceManager:
         print(f"[SigLIP2Manager] Merged LoRA checkpoint saved → {saved}")
         return saved
 
-    # ------------------------------------------------------------------
 
     def export_onnx(
         self,
@@ -1155,7 +1128,6 @@ class SigLIP2InferenceManager:
                 num_tags = len(keep_indices)
                 _strip_keep_indices = keep_indices  # reindex _tag_metrics.npz to match
                 print(f"[SigLIP2Manager] strip_unknown_tags: removed {removed} Unknown heads → {num_tags} tags remain")
-                # Build filtered vocabulary dict for output
                 old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(keep_indices)}
                 new_t2i = {tag: old_to_new[idx] for tag, idx in tag_to_idx.items() if idx in old_to_new}
                 new_i2t = {str(v): k for k, v in new_t2i.items()}
@@ -1173,7 +1145,6 @@ class SigLIP2InferenceManager:
             else:
                 print("[SigLIP2Manager] strip_unknown_tags: no Unknown tags found, skipping")
 
-        # Build a dummy input using the processor on a tiny image
         dummy_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
         _proc_kw = {"images": dummy_img, "return_tensors": "pt"}
         if self.is_naflex:
@@ -1247,7 +1218,6 @@ class SigLIP2InferenceManager:
         # Restore model device
         export_model.to(self.device)
 
-        # Save vocabulary alongside the ONNX file
         vocab_out = os.path.splitext(output_path)[0] + "_vocabulary.json"
         if export_vocab_data is not None:
             with open(vocab_out, "w", encoding="utf-8") as fh:
@@ -1319,7 +1289,6 @@ class SigLIP2InferenceManager:
 
         return output_path, vocab_out
 
-    # ------------------------------------------------------------------
 
     def unload(self) -> None:
         """Unload the current model and free VRAM."""
@@ -1351,11 +1320,7 @@ class SigLIP2InferenceManager:
         self._last_cls_emb = None
         print("[SigLIP2Manager] Model unloaded.")
 
-    # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # OOD detection helpers
-    # ------------------------------------------------------------------
 
     def _ensure_ood_session(self) -> None:
         """Create (or reuse) an ORT session that outputs logits + CLS embedding.
@@ -1375,7 +1340,6 @@ class SigLIP2InferenceManager:
         # Load ONNX without external data (weights referenced via .data file)
         model_proto = onnx.load(self.checkpoint_path, load_external_data=False)
 
-        # Add the CLS embedding node as a graph output
         emb_type = onnx.helper.make_tensor_value_info(
             _OOD_EMB_NODE, onnx.TensorProto.FLOAT, None
         )
@@ -1533,7 +1497,6 @@ class SigLIP2InferenceManager:
             cov += np.eye(cov.shape[0]) * 1e-6
             cov_inv = np.linalg.inv(cov)
 
-        # Compute distances on the training set to get percentiles
         dists = np.array([
             float(np.sqrt(max(0.0, (e - mu) @ cov_inv @ (e - mu))))
             for e in embeddings

@@ -229,9 +229,6 @@ def _forward_gen_layers(
     return model.norm_mot_gen(hidden_states)
 
 
-# ---------------------------------------------------------------------------
-# Shared setup
-# ---------------------------------------------------------------------------
 
 
 def _load(model_path: str, seed: int):
@@ -303,9 +300,6 @@ def _budget(vram_gate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Arm 1 -- no-grad K/V parity
-# ---------------------------------------------------------------------------
 
 
 def _run_parity_arm(args: argparse.Namespace) -> dict[str, Any]:
@@ -375,9 +369,6 @@ def _run_parity_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Arm 2 -- gradient propagation + prefix GC ON/OFF parity
-# ---------------------------------------------------------------------------
 
 
 def _loss_from_prefix(transformer, prefix_cache, fixed_inputs) -> torch.Tensor:
@@ -533,9 +524,6 @@ def _run_grad_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Arm 3 -- non-checkpointed prefix materialization census
-# ---------------------------------------------------------------------------
 
 
 class _CeilingReached(RuntimeError):
@@ -611,9 +599,6 @@ def _run_gcoff_arm(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 _ARMS = {
     "parity": _run_parity_arm,

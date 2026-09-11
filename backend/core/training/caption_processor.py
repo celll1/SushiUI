@@ -108,7 +108,6 @@ def process_caption(
         # enable_gelbooru=True for training to reduce "Unknown" tags
         tag_manager = get_tag_group_manager(tag_group_dir, enable_gelbooru=True)
 
-        # Group tokens by category
         categorized: Dict[str, List[str]] = {}
         unknown_tags: List[str] = []
 
@@ -136,7 +135,6 @@ def process_caption(
             if category in categorized:
                 reordered_tokens.extend(categorized[category])
 
-        # Add unknown tags at the end
         reordered_tokens.extend(unknown_tags)
 
         # Debug: Log reordered tokens only once
@@ -146,7 +144,6 @@ def process_caption(
 
         token_list = reordered_tokens
 
-    # Step 2: Caption dropout (全キャプションをドロップ)
     if not apply_caption_dropout(caption, caption_dropout_rate):
         return ""
 
@@ -168,7 +165,6 @@ def process_caption(
 
     # Tag-level dropout (タグ単位でのドロップアウト)
     if tag_dropout_rate > 0 or tag_dropout_category_rates:
-        # Initialize tag manager if category-specific rates are provided
         tag_manager = None
         if tag_dropout_category_rates:
             from core.training.tag_group_utils import get_tag_group_manager
@@ -255,7 +251,6 @@ def process_caption(
 
                 token_list = fixed_tokens + shuffleable_tokens
 
-    # Step 6: Tag normalization (normalize tags to standard format)
     if normalize_tags:
         from core.training.tag_group_utils import normalize_tag_for_output
         token_list = [normalize_tag_for_output(token) for token in token_list]
@@ -341,14 +336,12 @@ def process_caption_with_tag_data(
     Returns:
         Processed caption string (comma-separated tags)
     """
-    # Extract tags with categories
     tags_with_categories = [(item["tag"], item.get("category", "")) for item in tag_data]
 
     # Step 1: Category ordering (reorder tags by category)
     # This is done FIRST, before dropout and shuffle
     category_order = caption_config.get("category_order", None)
     if category_order and len(category_order) > 0:
-        # Group tags by category
         categorized: Dict[str, List[tuple]] = {}
         unknown_tags: List[tuple] = []
 
@@ -366,12 +359,10 @@ def process_caption_with_tag_data(
             if category in categorized:
                 reordered_tags.extend(categorized[category])
 
-        # Add unknown tags at the end
         reordered_tags.extend(unknown_tags)
 
         tags_with_categories = reordered_tags
 
-    # Apply tag dropout (category-aware)
     tag_dropout_rate = caption_config.get("tag_dropout_rate", 0.0)
     tag_dropout_per_epoch = caption_config.get("tag_dropout_per_epoch", False)
     tag_dropout_keep_first_n = caption_config.get("tag_dropout_keep_first_n", 0)
@@ -404,7 +395,6 @@ def process_caption_with_tag_data(
 
         tags_with_categories = filtered_tags
 
-    # Apply shuffle (category-aware)
     shuffle_tokens = caption_config.get("shuffle_tokens", False)
     shuffle_per_epoch = caption_config.get("shuffle_per_epoch", False)
     shuffle_keep_first_n = caption_config.get("shuffle_keep_first_n", 0)
@@ -468,11 +458,9 @@ def process_caption_with_tag_data(
                             shuffled_tags.extend(person_count_tags)
                             person_count_tags = []  # Clear to avoid duplicates
 
-                        # Add shuffled tags from this category
                         if category in groups_dict:
                             shuffled_tags.extend(groups_dict[category])
 
-                        # Add non-shuffled tags from this category
                         category_non_shuffled = [t for t in non_shuffled_tags if t[1] == category]
                         shuffled_tags.extend(category_non_shuffled)
 
@@ -521,6 +509,5 @@ def process_caption_with_tag_data(
         from core.training.tag_group_utils import normalize_tag_for_output
         tags = [normalize_tag_for_output(tag) for tag in tags]
 
-    # Apply caption dropout
     caption_dropout_rate = caption_config.get("caption_dropout_rate", 0.0)
     return apply_caption_dropout(", ".join(tags), caption_dropout_rate)

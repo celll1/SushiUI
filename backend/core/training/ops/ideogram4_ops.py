@@ -293,7 +293,6 @@ def train_step(
     v_target = latents - noise                            # x0 - noise
     t_model = (1.0 - sigma).to(trainer.training_dtype)        # model time [0,1]
 
-    # Build packed conditioning (text + image positions/indicator/segment).
     text_features = concat_layer_features(encoder_features)  # [B, L, 53248]
     cond = build_training_conditioning(text_features, encoder_mask, latent_h, latent_w)
     max_text = cond["max_text_tokens"]

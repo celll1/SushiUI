@@ -55,7 +55,6 @@ _SOURCE_IDENTITY_ALIASES = {
 }
 
 
-# ---- format detection ------------------------------------------------------
 
 def _first_param_state(state_dict: dict) -> Optional[dict]:
     state = state_dict.get("state") if isinstance(state_dict, dict) else None
@@ -165,7 +164,6 @@ def _target_format(optimizer) -> Optional[str]:
     return None
 
 
-# ---- per-param state remaps ------------------------------------------------
 
 def _algo(fmt: str) -> str:
     return "adamw" if "adamw" in fmt else "lion"

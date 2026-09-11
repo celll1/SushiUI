@@ -199,7 +199,6 @@ def build_priority_batches(
     batches = []
 
     if bucket_manager:
-        # Group by (entry_index, bucket_resolution) for optimal batching
         groups: Dict[Tuple[int, Tuple[int, int]], List[Tuple[Dict, Any]]] = {}
         for item, dataset, entry_idx in priority_items:
             bucket_key = (entry_idx, (item.get("width", 1024), item.get("height", 1024)))
@@ -207,7 +206,6 @@ def build_priority_batches(
                 groups[bucket_key] = []
             groups[bucket_key].append((item, dataset))
 
-        # Build batches from groups, ordered by entry_index
         for group_key in sorted(groups.keys()):
             group_items = groups[group_key]
             for i in range(0, len(group_items), batch_size):

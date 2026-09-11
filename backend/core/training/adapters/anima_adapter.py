@@ -43,9 +43,6 @@ from core.models.anima.anima_lora import (
 )
 
 
-# ----------------------------------------------------------------------
-# LoRA adapter
-# ----------------------------------------------------------------------
 
 class AnimaLoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for Anima DiT models."""
@@ -56,7 +53,6 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         super().__init__(trainer, lora_rank, lora_alpha, lora_dtype)
         self.scope = dict(DEFAULT_TRAINING_SCOPE) if scope is None else dict(scope)
 
-    # -- LoRA injection -------------------------------------------------
 
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         """Wrap target Linear modules of the Anima DiT with LoRALinearLayer.
@@ -144,7 +140,6 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         print("[AnimaLoRAAdapter] Qwen3 text encoder is frozen - no LoRA applied to TE")
         return 0
 
-    # -- Optimizer parameters ------------------------------------------
 
     def arch_param_groups(self, lora_layers: Dict[str, nn.Module]
                                     ) -> List[Dict[str, Any]]:
@@ -159,7 +154,6 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
                 self.trainer, "unet_lr", label="Anima LoRA"),
         })
 
-    # -- Checkpoint --------------------------------------------------
 
     def checkpoint_metadata(self, lora_layers: Dict[str, nn.Module],
                             step: int, epoch: int) -> Dict[str, str]:
@@ -176,9 +170,6 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         }
 
 
-# ----------------------------------------------------------------------
-# Full-parameter adapter (skeleton; full implementation in Phase C.2)
-# ----------------------------------------------------------------------
 
 class AnimaFullParameterAdapter(BaseFullParameterAdapter):
     """Full-parameter training adapter for Anima DiT models.
@@ -340,9 +331,6 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             output_path = Path(str(output_path) + ".safetensors")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Save the DiT state dict with the `net.` prefix — the sd-scripts
-        # native convention also accepted by our Phase A inference loader,
-        # which auto-strips the prefix on load.
         dit_state = trainer.transformer.state_dict()
         combined: Dict[str, torch.Tensor] = {}
         for k, v in dit_state.items():

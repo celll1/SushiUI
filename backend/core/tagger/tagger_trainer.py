@@ -77,9 +77,6 @@ def resolve_training_device(gpu_index: Optional[int]) -> torch.device:
     return torch.device(f"cuda:{gpu_index}")
 
 
-# ------------------------------------------------------------------
-# Optimizer factory
-# ------------------------------------------------------------------
 
 def _build_optimizer(
     params,
@@ -104,9 +101,6 @@ def _build_optimizer(
         raise ValueError(f"Unknown optimizer: {optimizer_name!r}. Use 'adamw', 'adamw8bit', or 'lion8bit'.")
 
 
-# ------------------------------------------------------------------
-# Validation utilities
-# ------------------------------------------------------------------
 
 def _compute_all_metrics(
     all_preds: torch.Tensor,
@@ -188,9 +182,6 @@ def _find_best_threshold(
     return best_thr, f1_at_thr[best_thr]
 
 
-# ------------------------------------------------------------------
-# Prefetch helper
-# ------------------------------------------------------------------
 
 def _prefetch_loader(loader, stop_event: threading.Event, maxsize: int = 2):
     """Iterate *loader* in a background thread, yielding batches via a bounded queue.
@@ -231,9 +222,6 @@ def _prefetch_loader(loader, stop_event: threading.Event, maxsize: int = 2):
         yield item
 
 
-# ------------------------------------------------------------------
-# Label statistics for π-aware loss functions
-# ------------------------------------------------------------------
 
 def _grow_criterion_buffers(criterion, new_size: int) -> int:
     """Pad any 1-D per-tag buffer on *criterion* (pi, gammas, label_weight, …)
@@ -290,9 +278,6 @@ def _compute_label_stats(
     return pi, N_pos, N_neg
 
 
-# ------------------------------------------------------------------
-# Checkpoint state helpers
-# ------------------------------------------------------------------
 
 def _capture_rng() -> Dict[str, Any]:
     """Capture current Python + PyTorch CPU RNG state as a serialisable dict."""
@@ -716,9 +701,6 @@ def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, An
     return best_name, best_state
 
 
-# ------------------------------------------------------------------
-# Main trainer
-# ------------------------------------------------------------------
 
 class TaggerTrainer:
     """Training loop for SigLIP2 tagger.
@@ -774,7 +756,6 @@ class TaggerTrainer:
 
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save vocabulary snapshot
         vocab_path = os.path.join(output_dir, "vocabulary.json")
         with open(vocab_path, "w", encoding="utf-8") as f:
             json.dump(vocabulary.to_dict(), f, ensure_ascii=False, indent=2)
@@ -801,7 +782,6 @@ class TaggerTrainer:
                 f"dataset's image paths and the loss configuration."
             )
 
-    # ------------------------------------------------------------------
 
     def train(
         self,
@@ -815,7 +795,6 @@ class TaggerTrainer:
         cfg = self.config
         device = resolve_training_device(cfg.get("gpu_index"))
 
-        # Build model
         print(f"[TaggerTrainer] === Phase: model build ===")
         print(f"[TaggerTrainer] Building model (method={cfg.get('training_method', 'lora')}, "
               f"num_tags={self.vocabulary.num_tags}, device={device})...")
@@ -939,7 +918,6 @@ class TaggerTrainer:
                     }
                     if _vocab_independent:
                         _missing, _unexpected = model.load_state_dict(_vocab_independent, strict=False)
-                        # Remove head/LoRA from missing (they are loaded separately)
                         _missing = [m for m in _missing if not (m.startswith("head.") or m.startswith("lora."))]
                         if _missing:
                             print(f"[TaggerTrainer] WARNING: missing keys during vocab-independent load: {_missing[:5]}{'...' if len(_missing) > 5 else ''}")
@@ -1056,7 +1034,6 @@ class TaggerTrainer:
             _N_neg = _N_neg.to(device)
             print(f"[TaggerTrainer] π_n stats: mean={_pi.mean():.4f} "
                   f"min={_pi.min():.4f} max={_pi.max():.4f}")
-            # Save label stats for inference-time CS-ASL logit bias correction
             if loss_fn_name in ("cs_asl", "h_cs_asl"):
                 import numpy as np
                 _stats_path = os.path.join(self.output_dir, "label_stats.npz")
@@ -1274,9 +1251,6 @@ class TaggerTrainer:
 
         _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
 
-        # ------------------------------------------------------------------
-        # Training loop
-        # ------------------------------------------------------------------
         for epoch in range(1, epochs + 1):
             if self._stop_requested:
                 break
@@ -1639,7 +1613,6 @@ class TaggerTrainer:
                     })
                     del _buf_p, _buf_l
 
-            # --- Stop checkpoint (mid-epoch or epoch-boundary) ---
             if self._stop_requested:
                 # Release the DataLoader iterator early so worker processes
                 # (num_workers > 0) are terminated before the checkpoint is saved.
@@ -1918,9 +1891,6 @@ class TaggerTrainer:
             **(final_search or {}),
         }
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
 
     def _validate(
         self,
@@ -2044,9 +2014,6 @@ class TaggerTrainer:
             "optimal_threshold": optimal_threshold,
         }
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _make_metadata(
         self, epoch: int, step: int, best_f1: float, best_threshold: float
@@ -2092,9 +2059,6 @@ class TaggerTrainer:
                 print(f"[TaggerTrainer] Callback error: {e}")
 
 
-# ------------------------------------------------------------------
-# Entry point (called from API in a background thread/process)
-# ------------------------------------------------------------------
 
 def run_tagger_training(
     run_id: str,
@@ -2119,7 +2083,6 @@ def run_tagger_training(
 
     datasets_db = DatasetsSessionLocal()
     try:
-        # Build vocabulary
         print(f"[TaggerTraining] === Phase: vocabulary ===")
         print(f"[TaggerTraining] Building tag vocabulary from {len(dataset_ids)} dataset(s)...")
         progress_callback and progress_callback(run_id, "phase", {
@@ -2130,7 +2093,6 @@ def run_tagger_training(
         if isinstance(ban_tags, str):
             ban_tags = [t.strip() for t in ban_tags.splitlines() if t.strip()] or None
 
-        # Build tag alias resolver if requested
         use_tag_aliases = bool(config.get("use_tag_aliases", False))
         alias_resolver = None
         if use_tag_aliases:
@@ -2262,7 +2224,6 @@ def run_tagger_training(
             config = dict(config)
         config["is_naflex"] = _is_naflex
 
-        # Build datasets
         print(f"[TaggerTraining] === Phase: dataset ===")
         print(f"[TaggerTraining] Building TaggerDataset ({vocabulary.num_tags} tags)...")
         progress_callback and progress_callback(run_id, "phase", {
@@ -2741,7 +2702,6 @@ def run_tagger_training(
                 try:
                     from core.tagger.siglip2_extractor import extract_vision_encoder as _extract_ve
                     _extract_ve(_hf_repo, _base_dst)
-                    # Write _metadata.json with vision_encoder_repo for later loading
                     _base_meta_dst = _base_dst.replace(".safetensors", "_metadata.json")
                     json.dump({"vision_encoder_repo": _hf_repo}, open(_base_meta_dst, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
                     config["base_model_path"] = "base_model.safetensors"
@@ -2830,7 +2790,6 @@ def run_tagger_training(
                 print(f"[TaggerTraining] Vocab lineage: {len(vocab_lineage)} renamed/merged "
                       f"tag(s) will inherit head weights from predecessors")
 
-        # Run trainer
         trainer = TaggerTrainer(
             run_id=run_id,
             config=config,
@@ -2903,7 +2862,6 @@ def run_tagger_training(
 
     finally:
         import gc as _gc
-        # Stop the live tag-refresh detector thread if it was started.
         try:
             if _tag_refresh_detector is not None:
                 _tag_refresh_detector.stop()
@@ -2911,7 +2869,6 @@ def run_tagger_training(
             pass
         except Exception as _e:
             print(f"[TaggerTraining] tag-refresh detector stop error: {_e}")
-        # Stop the Danbooru background fetch thread if it was started.
         try:
             if _danbooru_buffer is not None:
                 _danbooru_buffer.stop()

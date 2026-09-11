@@ -445,9 +445,6 @@ def _build_train_section(
     # cpu_prefetch mode: how many batches ahead the CPU worker may pre-encode
     train["text_encoding_prefetch_depth"] = p.get("text_encoding_prefetch_depth", 4)
 
-    # ---- Anima (Cosmos-Predict2 DiT) training knobs ----
-    # Read unconditionally; non-Anima trainers ignore them via config.get().
-    # SSoT: api/param_defaults.TRAINING_DEFAULTS.
     train["anima_lora_scope"] = p.get("anima_lora_scope", "attention,mlp,llm_adapter")
     train["train_llm_adapter"] = p.get("train_llm_adapter", True)
     train["anima_attn_mlp_lr_factor"] = p.get("anima_attn_mlp_lr_factor", 1.0)
@@ -515,7 +512,6 @@ def _build_train_section(
     train["lens_img_lr_factor"] = p.get("lens_img_lr_factor", 1.0)
     train["lens_txt_lr_factor"] = p.get("lens_txt_lr_factor", 1.0)
 
-    # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")
     train["ideogram4_train_uncond"] = p.get("ideogram4_train_uncond", False)
     train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", 1.0)
@@ -541,7 +537,6 @@ def _build_train_section(
     train["cfg_uncond_drop_per_mnt"] = bool(p.get(
         "cfg_uncond_drop_per_mnt", _TD["cfg_uncond_drop_per_mnt"]))
 
-    # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
     train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")
     train["minit2i_te_lora_scope"] = p.get("minit2i_te_lora_scope", "attn,ff")
     # Deprecated spelling, written through EXACTLY as supplied -- null included,
@@ -565,15 +560,12 @@ def _build_train_section(
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
     train["minit2i_inherit_final_layer"] = p.get("minit2i_inherit_final_layer", False)
 
-    # ---- Krea 2 (single-stream flow-matching MMDiT) — other archs ignore. ----
     train["krea2_lora_scope"] = p.get("krea2_lora_scope", "attn,mlp")
     train["krea2_lr_factor"] = p.get("krea2_lr_factor", 1.0)
     train["krea2_discrete_flow_shift"] = p.get("krea2_discrete_flow_shift", 2.5)
 
-    # ---- ACE-Step 1.5 (turbo audio DiT) — other archs ignore. ----
     train["acestep_lora_scope"] = p.get("acestep_lora_scope", "attention")
 
-    # ---- REPA (Representation Alignment). SSoT: param_defaults. ----
     train["repa_enable"] = p.get("repa_enable", TRAINING_DEFAULTS["repa_enable"])
     train["repa_encoder_source"] = p.get("repa_encoder_source", TRAINING_DEFAULTS["repa_encoder_source"])
     train["repa_tagger_model_dir"] = p.get("repa_tagger_model_dir", TRAINING_DEFAULTS["repa_tagger_model_dir"])
@@ -586,9 +578,6 @@ def _build_train_section(
     train["repa_latent_stem_path"] = p.get("repa_latent_stem_path", TRAINING_DEFAULTS["repa_latent_stem_path"])
     train["repa_profile_steps"] = p.get("repa_profile_steps", TRAINING_DEFAULTS["repa_profile_steps"])
 
-    # ---- Online Danbooru augmentation (image-generation) ----
-    # Read unconditionally; ignored when danbooru_aug_enable is False.
-    # SSoT: api/param_defaults.TRAINING_DEFAULTS.
     train["danbooru_aug_enable"] = p.get("danbooru_aug_enable", False)
     train["danbooru_aug_queries"] = p.get("danbooru_aug_queries", "")
     train["danbooru_aug_weight_static"] = p.get("danbooru_aug_weight_static", 1.0)
@@ -959,7 +948,6 @@ class TrainingConfigGenerator:
             caption_processing=caption_processing,
         )
 
-        # Parse the LoRA YAML and modify for ReLoRA
         config = yaml.safe_load(lora_yaml)
         process = config["config"]["process"][0]
         process["network"]["type"] = "relora"

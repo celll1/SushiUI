@@ -164,9 +164,6 @@ def register_hooks(name: str, optimizer, module) -> None:
         register_lion8bit_fused_backward(optimizer, module)
 
 
-# ---------------------------------------------------------------------------
-# Arm: pinalias -- does pin_memory() on an allocator buffer duplicate it?
-# ---------------------------------------------------------------------------
 
 
 def arm_pinalias() -> List[Dict[str, Any]]:
@@ -193,9 +190,6 @@ def arm_pinalias() -> List[Dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Arm: hoststate -- G-RB2
-# ---------------------------------------------------------------------------
 
 
 def run_hoststate_case(name: str, tiles: int, host_resident: bool, fused: bool) -> Dict[str, Any]:
@@ -290,9 +284,6 @@ def arm_hoststate(optimizer: str, host_resident: bool, path: str) -> List[Dict[s
     return [res]
 
 
-# ---------------------------------------------------------------------------
-# Arm: census -- G-RB3
-# ---------------------------------------------------------------------------
 
 
 def run_census_case(name: str, tiles: int, deny_hook_for: Optional[int]) -> Dict[str, Any]:
@@ -361,7 +352,6 @@ def arm_census() -> List[Dict[str, Any]]:
     return out
 
 
-# ---------------------------------------------------------------------------
 
 def arm_censuscost() -> List[Dict[str, Any]]:
     """What the census costs per step at SenseNova's parameter count.

@@ -160,7 +160,6 @@ def get_bucket_for_image_size(
         resolution = get_resolution_from_area(width, height)
 
     if bucket_list is None:
-        # Use smaller of requested resolution and image resolution
         real_resolution = get_resolution_from_area(width, height)
         resolution = min(resolution, real_resolution)
         bucket_list = get_bucket_sizes(resolution=resolution, divisibility=divisibility)
@@ -170,7 +169,6 @@ def get_bucket_for_image_size(
         if bucket.width == width and bucket.height == height:
             return bucket
 
-    # Find closest bucket (minimize cropped pixels)
     closest_bucket = None
     min_removed_pixels = float("inf")
 
@@ -178,7 +176,6 @@ def get_bucket_for_image_size(
         scale_w = bucket.width / width
         scale_h = bucket.height / height
 
-        # Use larger scale to minimize crop amount
         scale = max(scale_w, scale_h)
 
         new_width = int(width * scale)
@@ -234,7 +231,6 @@ class BucketManager:
         self.multi_resolution_mode = multi_resolution_mode
         self.separate_by_reference = separate_by_reference
 
-        # Generate bucket lists for each resolution
         self.bucket_lists: Dict[int, List[BucketResolution]] = {}
         for res in base_resolutions:
             self.bucket_lists[res] = get_bucket_sizes(res, divisibility)
@@ -349,7 +345,6 @@ class BucketManager:
         else:
             bucket = self.select_bucket(width, height, target_resolution=target_resolution)
 
-        # Create image info
         image_info = {
             "image_path": image_path,
             "caption": caption,
@@ -360,7 +355,6 @@ class BucketManager:
             "target_resolution": target_resolution,
             "has_reference": has_reference,  # Track reference status
         }
-        # Store actual reference image paths (for VE conditioning and ControlNet)
         if reference_images:
             image_info["reference_images"] = reference_images
 
@@ -376,7 +370,6 @@ class BucketManager:
         else:
             bucket_key = bucket
 
-        # Add to bucket
         if bucket_key not in self.buckets:
             self.buckets[bucket_key] = []
         self.buckets[bucket_key].append(image_info)
@@ -433,8 +426,6 @@ class BucketManager:
         """
         batch_list = []
 
-        # Process each bucket separately
-        # Bucket key is either BucketResolution or (BucketResolution, has_reference)
         for bucket_key, items in self.buckets.items():
             # Split items in this bucket into batches
             for start_idx in range(0, len(items), batch_size):

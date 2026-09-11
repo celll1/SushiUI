@@ -221,17 +221,14 @@ class AdamW8bit_RingBuffer(Optimizer):
             "absmax_z",     # FP32 absmax tracking for z
         }
 
-        # Create quantization maps (once, shared across all parameters)
         if use_8bit:
             self._init_quantization_maps()
 
     def _init_quantization_maps(self):
         """Initialize quantization maps on device."""
-        # Create dynamic quantization maps
         qmap_signed = create_quantization_map(signed=True)       # For exp_avg
         qmap_unsigned = create_quantization_map(signed=False)    # For exp_avg_sq
 
-        # Initialize on device (copies to constant memory)
         self.ext.init_quantization_maps(qmap_signed, qmap_unsigned)
 
         print("[AdamW8bit_RingBuffer] Quantization maps initialized on device")
@@ -275,9 +272,6 @@ class AdamW8bit_RingBuffer(Optimizer):
         schedule_free = group.get('schedule_free', False)
 
         if use_8bit:
-            # ============================================================
-            # 8-bit Quantized States (Ring Buffer Allocation)
-            # ============================================================
 
             blocksize = 256  # Must match QUANTIZATION_BLOCKSIZE in CUDA kernel
             n = p.numel()
@@ -291,7 +285,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                     state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
                     state['exp_avg_sq'].zero_()
 
-                    # Initialize z by quantizing p, then transfer to CPU
                     device = p.device if p.device.type == 'cuda' else torch.device('cuda:0')
                     z_quantized, absmax_z_init = quantize_blockwise_inplace(p.detach().clone().to(device), blocksize)
 
@@ -330,7 +323,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                     # Schedule-Free: only exp_avg_sq and z (no exp_avg)
                     state['exp_avg_sq'] = torch.zeros(n, dtype=torch.uint8, device=device)
 
-                    # Initialize z by quantizing p (z starts as a quantized copy of p)
                     z_quantized, absmax_z_init = quantize_blockwise_inplace(p.detach().clone().to(device), blocksize)
                     state['z'] = z_quantized
                     # absmax_z will be allocated later, initialized with absmax_z_init
@@ -348,7 +340,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                 # Schedule-Free: absmax for exp_avg_sq and z
                 state['absmax2'] = torch.zeros(num_blocks, dtype=torch.float32, device=device)
 
-                # Initialize absmax_z from quantized p (if available)
                 if '_absmax_z_init' in state:
                     state['absmax_z'] = state['_absmax_z_init'].to(device)
                     del state['_absmax_z_init']  # Clean up temporary storage
@@ -469,7 +460,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                 # Only convert floating-point types, never UINT8
                 if param.is_floating_point() and value.dtype != torch.uint8:
                     value = value.to(param.dtype)
-                # Move to parameter's device
                 value = value.to(param.device)
                 return value
             elif isinstance(value, dict):
@@ -501,7 +491,6 @@ class AdamW8bit_RingBuffer(Optimizer):
             else:
                 state[k] = v
 
-        # Update parameter groups
         def update_group(group, new_group):
             new_group["params"] = group["params"]
             # Add missing keys from current defaults (for backward compatibility)
@@ -529,7 +518,6 @@ class AdamW8bit_RingBuffer(Optimizer):
         # serialized (it lives in self.state); this is the step() path's half.
         state_dict['step_count'] = self.step_count
 
-        # Add Schedule-Free/RAdam specific state
         if self.schedule_free or self.use_radam:
             state_dict['k'] = self.k
             state_dict['weight_sum'] = self.weight_sum
@@ -662,9 +650,6 @@ class AdamW8bit_RingBuffer(Optimizer):
 
         self.step_count += 1
 
-        # ============================================================
-        # Schedule-Free: Update global state
-        # ============================================================
         if self.schedule_free:
             # Ensure optimizer is in train mode
             if not self.train_mode:
@@ -681,9 +666,6 @@ class AdamW8bit_RingBuffer(Optimizer):
             use_8bit = group['use_8bit']
             schedule_free = group.get('schedule_free', False)
 
-            # ============================================================
-            # Schedule-Free: Compute learning rate schedule and weight
-            # ============================================================
             if schedule_free:
                 use_radam = group.get('use_radam', False)
                 r = group['r']
@@ -691,11 +673,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                 k = self.k
 
                 if use_radam:
-                    # ============================================================
-                    # RAdam Schedule-Free: Adaptive LR via Rectified Adam
-                    # ============================================================
-                    # Reference: https://arxiv.org/abs/1908.03265 (RAdam paper)
-                    # Based on: schedulefree/radam_schedulefree.py (Facebook Research)
 
                     import math
 
@@ -723,15 +700,11 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                     scheduled_lr = lr * rect
 
-                    # Update lr_max (for weight calculation)
                     self.lr_max = max(scheduled_lr, self.lr_max)
 
                     # Bias correction for Schedule-Free
                     bias_correction2_sf = bias_correction2
                 else:
-                    # ============================================================
-                    # AdamW Schedule-Free: Linear warmup
-                    # ============================================================
                     warmup_steps = group['warmup_steps']
 
                     # Linear warmup (use k+1 because k increments at end of step)
@@ -742,13 +715,11 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                     scheduled_lr = lr * sched
 
-                    # Update lr_max
                     self.lr_max = max(scheduled_lr, self.lr_max)
 
                     # Bias correction (use k+1, not step_count)
                     bias_correction2_sf = 1 - beta2 ** (k + 1)
 
-                # Compute weight for averaging (common for both AdamW and RAdam)
                 weight = ((k + 1) ** r) * (self.lr_max ** weight_lr_power)
                 self.weight_sum += weight
 
@@ -786,7 +757,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                         f"parameters resident (blocks_to_swap=0)."
                     )
 
-                # Initialize state on first use
                 if len(self.state[p]) == 0:
                     self._init_param_state(p)
 
@@ -827,14 +797,8 @@ class AdamW8bit_RingBuffer(Optimizer):
                     p_for_kernel = p  # CUDA kernel updates param directly
 
                 if use_8bit:
-                    # ============================================================
-                    # 8-bit Quantized Update (CUDA Kernel)
-                    # ============================================================
 
                     if schedule_free:
-                        # ============================================================
-                        # Schedule-Free: Update exp_avg_sq and z, then update y (p)
-                        # ============================================================
 
                         stochastic_z = bool(group['stochastic_rounding'])
 
@@ -868,9 +832,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                             self._copy_stochastic_bf16(p, p_fp32)
 
                     else:
-                        # ============================================================
-                        # Standard AdamW 8-bit Update
-                        # ============================================================
 
                         self.ext.adamw_8bit_update(
                             p_for_kernel,           # param (GPU) - FP32 buffer if stochastic_rounding
@@ -894,18 +855,9 @@ class AdamW8bit_RingBuffer(Optimizer):
                             self._copy_stochastic_bf16(p, p_fp32)
 
                 else:
-                    # ============================================================
-                    # FP32 Update
-                    # ============================================================
-                    # Note: Even though states remain FP32, parameter updates
-                    # still need stochastic rounding when writing to BF16 params
 
                     if schedule_free:
-                        # ============================================================
-                        # Schedule-Free FP32 Update
-                        # ============================================================
 
-                        # Use p_for_kernel (FP32 buffer) if stochastic rounding enabled
                         if use_stochastic_rounding:
                             y = p_fp32  # Update FP32 buffer
                         else:
@@ -936,7 +888,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                             z_master = None
                         z_for_update = z if z_master is None else z_master
 
-                        # Update exp_avg_sq (second moment)
                         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                         # Bias correction for second moment (use Schedule-Free k+1)
@@ -949,12 +900,9 @@ class AdamW8bit_RingBuffer(Optimizer):
                         if weight_decay > 0:
                             grad_normalized.add_(y, alpha=weight_decay)
 
-                        # Update y (training parameters)
-                        # y = (1 - ckp1) * y + ckp1 * z + lr * (beta1 * (1 - ckp1) - 1) * grad_normalized
                         y.lerp_(end=z_for_update, weight=ckp1)
                         y.add_(grad_normalized, alpha=scheduled_lr * (beta1 * (1 - ckp1) - 1))
 
-                        # Update z (main sequence)
                         z_for_update.sub_(grad_normalized, alpha=scheduled_lr)
 
                         # Stochastic rounding: FP32 images → BF16 storage
@@ -964,14 +912,10 @@ class AdamW8bit_RingBuffer(Optimizer):
                             self._copy_stochastic_bf16(p, p_fp32)
 
                     else:
-                        # ============================================================
-                        # Standard AdamW FP32 Update
-                        # ============================================================
 
                         exp_avg = state['exp_avg']
                         exp_avg_sq = state['exp_avg_sq']
 
-                        # Update momentum
                         exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
                         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
@@ -996,7 +940,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                         denom = corrected_exp_avg_sq.sqrt().add_(eps)
                         step_size = scheduled_lr
 
-                        # Use p_for_kernel (FP32 buffer) if stochastic rounding enabled
                         if use_stochastic_rounding:
                             p_update = p_fp32  # Update FP32 buffer
                         else:
@@ -1006,7 +949,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                         if weight_decay > 0:
                             p_update.mul_(1 - scheduled_lr * weight_decay)
 
-                        # Apply update
                         p_update.addcdiv_(corrected_exp_avg, denom, value=-step_size)
 
                         # Stochastic rounding: FP32 buffer → BF16 param
@@ -1090,8 +1032,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if state is None or 'z' not in state:
                     continue
 
-                # Set p to y: p.lerp_(end=z, weight=1-beta1)
-                # This is equivalent to: p = beta1 * p + (1 - beta1) * z
                 self._lerp_param_toward_z(p, self._z_dense(p, state), 1 - beta1, group)
 
         self.train_mode = True
@@ -1113,8 +1053,6 @@ class AdamW8bit_RingBuffer(Optimizer):
                 if state is None or 'z' not in state:
                     continue
 
-                # Set p to x: p.lerp_(end=z, weight=1-1/beta1)
-                # This is equivalent to: p = (1/beta1) * p + (1 - 1/beta1) * z
                 self._lerp_param_toward_z(p, self._z_dense(p, state), 1 - 1 / beta1, group)
 
         self.train_mode = False
@@ -1193,7 +1131,6 @@ def patch_adamw8bit_ringbuffer(model: Optional[nn.Module], optimizer: AdamW8bit_
             record_fused_grad_observation(optimizer, param)
             apply_fused_grad_clip(optimizer, param)
 
-            # Initialize state if needed
             if len(optimizer.state[param]) == 0:
                 optimizer._init_param_state(param)
 

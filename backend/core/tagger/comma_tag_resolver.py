@@ -71,9 +71,6 @@ class CommaTagResolver:
     def __len__(self) -> int:
         return len(self._canonical_cat)
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @classmethod
     def build_from_category_map(cls, category_map: Dict[str, str]) -> "CommaTagResolver":
@@ -142,9 +139,6 @@ class CommaTagResolver:
             print(f"[CommaTagResolver] Could not build from taglist cache: {e}")
             return cls()
 
-    # ------------------------------------------------------------------
-    # Resolution
-    # ------------------------------------------------------------------
 
     def category_of(self, canonical: str) -> Optional[str]:
         """Category for a canonical comma-free tag, or None if not a comma-tag."""

@@ -178,7 +178,6 @@ def load_components(trainer) -> None:
         torch_dtype=trainer.weight_dtype
     )
 
-    # Store components
     trainer.transformer = components["transformer"]
     trainer.transformer_original = trainer.transformer  # FLUX.2 doesn't need wrapper
     trainer.vae = components["vae"]
@@ -197,7 +196,6 @@ def load_components(trainer) -> None:
     trainer.base_model_repo = config.get("base_model_repo", None)
     trainer.is_distilled = config.get("is_distilled", False)
 
-    # Convert VAE to vae_dtype
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
     # Latent space: the base's own declaration first (the loader already built the
@@ -453,7 +451,6 @@ def train_step(
     # Sample noise (standard normal distribution)
     noise = torch.randn_like(latents)
 
-    # Add noise using flow matching: noisy = (1 - t) * latents + t * noise
     noisy_latents = add_noise_unified(
         noise_process=noise_process,
         noise_scheduler=trainer.noise_scheduler,
@@ -479,7 +476,6 @@ def train_step(
     # img_ids are also extended with reference position IDs
     packed_reference_latents = None
     if reference_latents_nested is not None and len(reference_latents_nested) > 0:
-        # Process each batch item's reference images
         all_packed_refs = []
         all_ref_ids = []
 
@@ -494,7 +490,6 @@ def train_step(
                 packed_ref = packed_ref.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
                 item_packed_refs.append(packed_ref)
 
-                # Prepare position IDs for this reference image
                 ref_img_id = trainer._flux2_prepare_latent_ids(ref_latent).to(trainer.device)
                 # Apply T coordinate offset: T = scale + scale * ref_idx (scale=10)
                 # ref_idx 0 -> T=10, ref_idx 1 -> T=20, ref_idx 2 -> T=30, etc.
@@ -575,7 +570,6 @@ def train_step(
         # Also slice noisy_latents for consistency in loss computation
         noisy_latents = noisy_latents[:, :original_seq_len, :]
 
-    # Get target using unified framework
     target = get_target_unified(
         noise_process=noise_process,
         prediction_target=prediction_target,
@@ -585,17 +579,14 @@ def train_step(
         timesteps=timesteps,
     )
 
-    # Calculate MSE loss (always in fp32)
     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
     loss_per_sample = loss_per_element.mean([1, 2])  # Mean over seq_len and channels
 
     # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
     mse_loss = loss_per_sample.mean()
 
-    # Add regularization if enabled
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 
-    # Compute predicted latent once (used by regularization losses and dual loss)
     predicted_latent_for_reg = None
     if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None or trainer.reconstruction_loss_weight > 0:
         predicted_latent_for_reg = predict_original_latent_unified(
@@ -625,7 +616,6 @@ def train_step(
         )
         regularization_loss = regularization_loss + energy_reg_loss
 
-    # Calculate reconstruction loss
     if trainer.reconstruction_loss_weight > 0:
         if predicted_latent_for_reg is not None:
             predicted_latent_for_recon = predicted_latent_for_reg
@@ -764,7 +754,6 @@ def train_step(
         except Exception as _dbg_e:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
-    # Return loss tensor and loss values
     pred_loss_value = mse_loss.detach()
     recon_loss_value = recon_loss.detach()
 
@@ -824,23 +813,17 @@ def generate_sample(
 
     print(f"{trainer.log_prefix} Generating FLUX.2 sample: {prompt[:50]}...")
 
-    # Set models to eval mode for inference
     trainer.transformer.eval()
     trainer.vae.eval()
     trainer.text_encoder.eval()
 
-    # Store original devices for restoration
     text_encoder_device = next(trainer.text_encoder.parameters()).device
     vae_device = next(trainer.vae.parameters()).device
     transformer_device = next(trainer.transformer.parameters()).device
 
     try:
-        # ============================================================
-        # Stage 0: Offload Transformer AND Optimizer State to CPU
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
 
-        # Move Transformer to CPU
         trainer.transformer.to("cpu")
 
         # CRITICAL: Move Optimizer state (gradients, momentum) to CPU
@@ -854,9 +837,6 @@ def generate_sample(
         torch.cuda.empty_cache()
         log_verbose(f"{trainer.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
 
-        # ============================================================
-        # Stage 1: Text Encoding (Qwen3)
-        # ============================================================
         if text_encoder_device != trainer.device:
             log_verbose(f"{trainer.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
             trainer.text_encoder.to(trainer.device)
@@ -876,16 +856,10 @@ def generate_sample(
             trainer.text_encoder.to(text_encoder_device)
         torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 1.5: Move Transformer back to GPU for denoising
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Moving Transformer to GPU for denoising")
         trainer.transformer.to(transformer_device)
         torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 1.6: Reference Image VAE encoding (FLUX.2 latent concat)
-        # ============================================================
         packed_reference_latents = None
         ref_img_ids = None
         if reference_image_path:
@@ -921,9 +895,6 @@ def generate_sample(
                 packed_reference_latents = None
                 ref_img_ids = None
 
-        # ============================================================
-        # Stage 2: Prepare Latents
-        # ============================================================
         vae_scale_factor = 8
         patch_size = 2
 
@@ -934,7 +905,6 @@ def generate_sample(
         # FLUX.2 has 32 latent channels, but patchified to 128
         num_channels_latents = trainer.transformer.config.in_channels // 4  # 32
 
-        # Create random latents with seed
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)
         generator = torch.Generator(device=trainer.device).manual_seed(seed)
@@ -942,7 +912,6 @@ def generate_sample(
         latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
         latents = torch.randn(latent_shape, generator=generator, device=trainer.device, dtype=prompt_embeds.dtype)
 
-        # Prepare latent position IDs
         latent_ids = _flux2_prepare_latent_ids_for_sample(latents).to(trainer.device)
 
         # Pack latents: (B, C, H, W) -> (B, H*W, C)
@@ -954,22 +923,16 @@ def generate_sample(
             latent_ids = torch.cat([latent_ids, ref_img_ids], dim=1)
             print(f"{trainer.log_prefix} [Sample] Latents after reference concat: {latents.shape}")
 
-        # ============================================================
-        # Stage 3: Denoising Loop
-        # ============================================================
         log_verbose(f"{trainer.log_prefix} [Sample] Running denoising loop")
 
-        # Prepare timesteps
         image_seq_len = latents.shape[1]
         mu = _flux2_compute_empirical_mu_for_sample(image_seq_len, num_inference_steps)
 
-        # Set timesteps with sigmas
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         trainer.scheduler.set_timesteps(num_inference_steps, device=trainer.device, mu=mu)
         timesteps = trainer.scheduler.timesteps
         trainer.scheduler.set_begin_index(0)
 
-        # Check if distilled model (no CFG)
         is_distilled = getattr(trainer.transformer.config, "is_distilled", False)
         do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
@@ -1047,14 +1010,10 @@ def generate_sample(
         if negative_prompt_embeds is not None:
             del negative_prompt_embeds, negative_text_ids
 
-        # ============================================================
-        # Stage 4: Offload Transformer to CPU, move VAE to GPU
-        # ============================================================
         print(f"{trainer.log_prefix} [Sample] Moving Transformer to CPU to free VRAM")
         trainer.transformer.to("cpu")
         torch.cuda.empty_cache()
 
-        # Move VAE to GPU for decoding
         if vae_device != trainer.device:
             print(f"{trainer.log_prefix} [Sample] Moving VAE to GPU for decoding")
             trainer.vae.to(device=trainer.device, dtype=trainer.vae_dtype)
@@ -1062,7 +1021,6 @@ def generate_sample(
         # Decode latents
         image = _decode_flux2_latents(trainer, latents, latent_ids, latent_height, latent_width)
 
-        # Move VAE back to CPU
         if vae_device != trainer.device:
             print(f"{trainer.log_prefix} [Sample] Moving VAE back to CPU")
             trainer.vae.to(device=vae_device, dtype=trainer.vae_dtype)
@@ -1071,12 +1029,8 @@ def generate_sample(
         del latents, latent_ids
         torch.cuda.empty_cache()
 
-        # ============================================================
-        # Stage 5: Restore Transformer and Optimizer State to GPU
-        # ============================================================
         print(f"{trainer.log_prefix} [Sample] Restoring Transformer and Optimizer state to GPU")
 
-        # Move Transformer back to GPU
         trainer.transformer.to(transformer_device)
 
         # CRITICAL: Move Optimizer state back to GPU
@@ -1152,7 +1106,6 @@ def _flux2_encode_prompt_for_sample(trainer, prompt: str):
     batch_size, num_channels, seq_len, hidden_dim = out.shape
     prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
 
-    # Generate text IDs for RoPE
     batch_size, seq_len = prompt_embeds.shape[:2]
     text_ids = torch.zeros(batch_size, seq_len, 4, device=device, dtype=torch.long)
     text_ids[..., 0] = 0  # T dimension
@@ -1165,7 +1118,6 @@ def _flux2_prepare_latent_ids_for_sample(latents: torch.Tensor) -> torch.Tensor:
     """Prepare latent position IDs for FLUX.2 sample generation."""
     batch_size, channels, height, width = latents.shape
 
-    # Create position IDs for each latent position
     latent_ids = torch.zeros(batch_size, height * width, 4, device=latents.device)
 
     # T=0, H, W, L coordinates
@@ -1207,11 +1159,8 @@ def _decode_flux2_latents(
 
     from core.models.components.vae_registry import denormalize
 
-    # Step 1: Unpack latents using position IDs: (B, H*W, C) -> (B, C, H, W)
     latents = trainer._flux2_unpack_latents_with_ids(latents, latent_ids)
 
-    # Step 2: Unpatchify: (B, 128, H/2, W/2) -> (B, 32, H, W), then denormalise
-    # on the VAE's own packed domain (§8.4).
     latents = trainer._flux2_unpatchify_latents(latents)
     latents = denormalize(latents, trainer.vae, getattr(trainer, "wiring", None))
 
@@ -1222,7 +1171,6 @@ def _decode_flux2_latents(
     with torch.no_grad():
         image = trainer.vae.decode(latents, return_dict=False)[0]
 
-    # Convert to PIL
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     image = (image[0] * 255).astype(np.uint8)

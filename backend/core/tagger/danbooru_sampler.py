@@ -60,9 +60,6 @@ _COOC_CATEGORY_FIELDS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Standalone label / mask builder (mirrors TaggerDataset._build_label_and_mask)
-# ---------------------------------------------------------------------------
 
 def _build_label_and_mask_standalone(
     tags: List[str],
@@ -110,9 +107,6 @@ def _build_label_and_mask_standalone(
     return label, loss_mask
 
 
-# ---------------------------------------------------------------------------
-# DanbooruSampleBuffer
-# ---------------------------------------------------------------------------
 
 class DanbooruSampleBuffer:
     """Background daemon thread that pre-fetches Danbooru images as tensors.
@@ -428,9 +422,6 @@ class DanbooruSampleBuffer:
         self._total_static_collected = 0  # per-string collected for legacy static queries
         self._total_train_count_collected = 0  # collected for train-count-deficient tags
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def start(self) -> None:
         self._stop.clear()
@@ -479,9 +470,6 @@ class DanbooruSampleBuffer:
             self._collect_count.clear()    # reset per-tag query/new_tag/low_f1 quota
             self._cycle_gen += 1
 
-    # ------------------------------------------------------------------
-    # Consumer
-    # ------------------------------------------------------------------
 
     def get_nowait(self) -> Optional[Tuple]:
         """Return a buffered sample (pv, pam, ss, raw_tags) or None."""
@@ -634,9 +622,6 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             return {t: self._query_last_used.get(t, 0.0) for t in self._query_tags}
 
-    # ------------------------------------------------------------------
-    # Worker thread
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _translate_query(q: str) -> str:
@@ -1199,7 +1184,6 @@ class DanbooruSampleBuffer:
             print(f"[DanbooruSampler] Image decode error (post {post.get('id')}): {exc}")
             return None
 
-        # Run vision processor
         try:
             inputs = self._processor(images=[img], return_tensors="pt")
         except Exception as exc:
@@ -1218,14 +1202,11 @@ class DanbooruSampleBuffer:
         # Propose unknown approved tags to vocab expander (if configured)
         if self._expander is not None:
             known = set(self._vocabulary.tag_to_idx.keys())
-            # 1) Surveyor-approved (recently created) tags appearing in this post.
             if self._surveyor is not None:
                 approved = self._surveyor.get_approved()
                 new_approved = ({normalize_tag(t) for t in raw_tags if t} & approved) - known
                 if new_approved:
                     self._expander.propose(new_approved)
-            # 2) Co-occurrence discovery (created-at independent; category from
-            #    the post's tag_string_<category> fields).
             if self._cooc_enable:
                 self._update_cooc(post, known)
 
@@ -1247,9 +1228,6 @@ class DanbooruSampleBuffer:
         return (pixel_values, pixel_attention_mask, spatial_shapes, raw_tags)
 
 
-# ---------------------------------------------------------------------------
-# MixedDataLoader
-# ---------------------------------------------------------------------------
 
 class MixedDataLoader:
     """DataLoader wrapper that interleaves pure-Danbooru batches.

@@ -125,7 +125,6 @@ class TaggerDataset(Dataset):
         self.quality_masking_mode = quality_masking_mode
         print(f"[TaggerDataset] Quality masking mode: {quality_masking_mode}")
 
-        # Detect NaFlex vs standard by probing the processor output
         _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
         self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
         print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
@@ -158,9 +157,6 @@ class TaggerDataset(Dataset):
         self._alias_resolver = None
         self._comma_resolver = None
 
-    # ------------------------------------------------------------------
-    # Construction helpers
-    # ------------------------------------------------------------------
 
     def _build_samples(
         self,
@@ -265,7 +261,6 @@ class TaggerDataset(Dataset):
                     total_captions += 1
             print(f"[TaggerDataset]   {total_captions} tag captions loaded")
 
-            # Build samples
             _n_valid = len(valid_item_ids)
             for _bi, item_id in enumerate(tqdm(valid_item_ids, desc=f"  Building samples (dataset {dataset_id})", unit="item", leave=False)):
                 if _bi % 5000 == 0:
@@ -296,9 +291,6 @@ class TaggerDataset(Dataset):
             self._comma_resolver, self._alias_resolver,
         )
 
-    # ------------------------------------------------------------------
-    # Dataset interface
-    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return len(self._samples)
@@ -359,9 +351,6 @@ class TaggerDataset(Dataset):
         label, loss_mask = self._build_label_and_mask(tags)
         return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
 
-    # ------------------------------------------------------------------
-    # Label / mask construction
-    # ------------------------------------------------------------------
 
     def _build_label_and_mask(
         self, tags: List[str]
@@ -378,7 +367,6 @@ class TaggerDataset(Dataset):
         label     = torch.zeros(n_tags, dtype=torch.float32)
         loss_mask = torch.ones(n_tags,  dtype=torch.float32)
 
-        # Set positive labels
         tag_set = set(tags)
         for tag in tag_set:
             if tag in voc.tag_to_idx:
@@ -421,9 +409,6 @@ class TaggerDataset(Dataset):
         return label, loss_mask
 
 
-# ------------------------------------------------------------------
-# Collate function — supports both NaFlex (variable patches) and standard
-# ------------------------------------------------------------------
 
 def tagger_collate_fn(batch):
     """Collate batch items.
@@ -466,9 +451,6 @@ def tagger_collate_fn(batch):
     )
 
 
-# ------------------------------------------------------------------
-# Image loading helper
-# ------------------------------------------------------------------
 
 def _load_image(path: str) -> Image.Image:
     img = Image.open(path)

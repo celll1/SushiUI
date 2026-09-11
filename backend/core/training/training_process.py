@@ -217,7 +217,6 @@ class TrainingProcess:
             str(self.run_id),
         ]
 
-        # Set environment variables
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"  # Disable buffering for real-time logs
         # Add backend directory to PYTHONPATH so imports work
@@ -349,7 +348,6 @@ class TrainingProcess:
         lr_pattern = re.compile(r"lr:\s*([\d.e-]+)")
 
         try:
-            # Use async iteration for non-blocking I/O
             while True:
                 try:
                     line_bytes = await self.process.stdout.readline()
@@ -394,11 +392,9 @@ class TrainingProcess:
                     if not line:
                         continue
 
-                # Send log to callback
                 if log_callback:
                     log_callback(line)
 
-                # Parse progress information
                 step_match = step_pattern.search(line)
                 loss_match = loss_pattern.search(line)
                 lr_match = lr_pattern.search(line)
@@ -456,7 +452,6 @@ class TrainingProcess:
             print(f"[Training] Stopping process (user requested)")
             self.is_user_stopped = True  # Mark as user-requested stop
 
-            # Create stop flag file for graceful shutdown (works on Windows)
             stop_flag_file = Path(self.output_dir) / ".stop_training"
             try:
                 stop_flag_file.touch()

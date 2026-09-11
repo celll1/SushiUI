@@ -118,14 +118,12 @@ class SNRRegularizationLoss(nn.Module):
             5. If timestep_adaptive: penalty *= (1 - timestep)  # stronger at low timestep
             6. loss = mean(penalty) * weight
         """
-        # Compute SNR for both latents
         snr_pred = self.compute_snr(predicted_latent)  # [B]
         snr_true = self.compute_snr(true_latent)       # [B]
 
         # SNR difference (positive = predicted is "cleaner" than true -> overbaking)
         snr_diff = snr_pred - snr_true  # [B]
 
-        # Apply penalty based on mode
         if self.penalty_mode == "relu":
             # Only penalize when predicted SNR > true SNR (overbaking)
             snr_penalty = torch.relu(snr_diff)  # [B]
@@ -177,7 +175,6 @@ class SNRRegularizationLoss(nn.Module):
             snr_true = self.compute_snr(true_latent)
             snr_diff = snr_pred - snr_true
 
-            # Compute loss (with gradient for actual training)
         loss = self.forward(predicted_latent, true_latent, timestep)
 
         with torch.no_grad():

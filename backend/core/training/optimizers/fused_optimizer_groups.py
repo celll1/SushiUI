@@ -93,7 +93,6 @@ class FusedOptimizerGroups:
                             record_fused_grad_observation(self.optimizers[idx], tensor)
                             apply_fused_grad_clip(self.optimizers[idx], tensor)
 
-                            # Get optimizer index for this parameter
                             i = self.parameter_optimizer_map[tensor]
 
                             # Increment counter
@@ -240,7 +239,6 @@ def create_optimizer_groups(
         if not group_params:
             break
 
-        # Create optimizer for this group using factory
         from ..optimizer_factory import OptimizerFactory
         optimizer = OptimizerFactory.create_optimizer(
             optimizer_type=optimizer_type,

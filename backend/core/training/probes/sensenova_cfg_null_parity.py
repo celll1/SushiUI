@@ -84,9 +84,6 @@ def default_model_path() -> str:
     return os.path.join(_model_root(), *DEFAULT_CHECKPOINT)
 
 
-# ---------------------------------------------------------------------------
-# Weightless: the vendor builders bound to a `self` that carries no parameters
-# ---------------------------------------------------------------------------
 
 
 class QueryBuilders:
@@ -252,9 +249,6 @@ def index_parity(transformer, tokenizer, resolutions=DEFAULT_RESOLUTIONS) -> dic
     return {"resolutions": results, "all_equal": all(r["equal"] for r in results)}
 
 
-# ---------------------------------------------------------------------------
-# With weights
-# ---------------------------------------------------------------------------
 
 
 def _cuda_memory() -> dict[str, int]:

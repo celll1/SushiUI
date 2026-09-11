@@ -51,9 +51,6 @@ _DEFAULT_SIGLIP2_REPO = "google/siglip2-so400m-patch14-384"
 PROJECTOR_PARAM_DTYPE = torch.float32
 
 
-# ------------------------------------------------------------------
-# Encoder loading
-# ------------------------------------------------------------------
 
 def _checkpoint_metadata(checkpoint: str) -> Dict[str, Any]:
     stem, _ext = os.path.splitext(checkpoint)
@@ -595,9 +592,6 @@ def load_repa_encoder(
     return encoder, enc_dim, native_size
 
 
-# ------------------------------------------------------------------
-# Preprocessing + target extraction
-# ------------------------------------------------------------------
 
 def preprocess_for_repa(images_m1p1: torch.Tensor, size: int) -> torch.Tensor:
     """Resize a [-1,1] image batch [B,3,H,W] to a square [B,3,size,size].
@@ -643,9 +637,6 @@ def encode_repa_targets(
     return feat
 
 
-# ------------------------------------------------------------------
-# Projector + loss
-# ------------------------------------------------------------------
 
 class RepaProjector(nn.Module):
     """Trainable 3-layer MLP head mapping DiT hidden -> encoder feature space.
@@ -1074,9 +1065,6 @@ def apply_repa_loss_spatial(trainer, loss, feature_map, repa_pixels):
     return apply_repa_loss(trainer, loss, tokens, repa_pixels, gh, gw)
 
 
-# ------------------------------------------------------------------
-# Projector plumbing shared by every training adapter
-# ------------------------------------------------------------------
 
 def repa_enabled(trainer) -> bool:
     """True when this run has a live REPA projector to train and save."""
@@ -1141,9 +1129,6 @@ def save_projector_sidecar(trainer, checkpoint_path, *, label: str) -> None:
         print(f"[{label}] WARNING: REPA projector save failed: {_e}")
 
 
-# ------------------------------------------------------------------
-# Per-step use
-# ------------------------------------------------------------------
 
 def take_repa_tap(trainer) -> Optional[torch.Tensor]:
     """Read and clear the hidden state the forward stashed at the tap depth.

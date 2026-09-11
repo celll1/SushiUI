@@ -571,7 +571,6 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
                         "passes to the LR scheduler.")
         raise VaeConfigError(message)
 
-    # ---- losses -----------------------------------------------------------
     for key in _LOSS_WEIGHT_KEYS:
         if _as_number(cfg, key) < 0:
             raise VaeConfigError(f"{key} must be >= 0, got {cfg[key]}")
@@ -651,7 +650,6 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
             f"the reported loss instead of subtracting one."
         )
 
-    # ---- shapes / cadence -------------------------------------------------
     for key in ("resolution", "validation_resolution"):
         value = _as_int(cfg, key)
         if value < 64 or value % 8 != 0:
@@ -742,7 +740,6 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
     # The boolean toggles were already parsed strictly (and written back as real
     # bools) at the top of this function.
 
-    # ---- optimisation ------------------------------------------------------
     if _as_number(cfg, "learning_rate") <= 0:
         # 0 is refused rather than treated as "freeze": every optimizer step
         # becomes a no-op, so the run finishes, reports success and exports a

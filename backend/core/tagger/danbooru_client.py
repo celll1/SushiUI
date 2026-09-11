@@ -61,9 +61,6 @@ class DanbooruClient:
         self._api_interval = api_interval
         self._dl_speed_bytes_per_sec = dl_speed_kbps * 1024
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _wait_for_api_rate(self) -> None:
         """Block until at least api_interval seconds have passed since the last API call.
@@ -86,9 +83,6 @@ class DanbooruClient:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def fetch_posts(self, tags: str, page: int = 1, min_score: int = 0) -> List[dict]:
         """Fetch up to 200 posts from Danbooru matching ``tags`` on ``page``.

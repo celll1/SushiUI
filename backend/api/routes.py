@@ -18,6 +18,7 @@ from PIL import Image
 import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import torch
 
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
 from database.models import GeneratedImage, StudioRenderJob, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
@@ -1204,7 +1205,12 @@ async def _run_generation_in_executor(loop, executor, fn):
     single ``Context`` object cannot be entered twice).
     """
     ctx = contextvars.copy_context()
-    return await loop.run_in_executor(executor, lambda: ctx.run(fn))
+
+    def run_without_grad():
+        with torch.no_grad():
+            return ctx.run(fn)
+
+    return await loop.run_in_executor(executor, run_without_grad)
 
 
 async def _hash_saved_media(file_path: str) -> str:
